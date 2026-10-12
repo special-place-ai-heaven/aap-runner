@@ -8,6 +8,9 @@ set -euo pipefail
 DISTRO=aap-runner
 INSTALL_DIR=${AAP_RUNNER_INSTALL_DIR:-/mnt/c/aap-runner}
 STAGE=${AAP_RUNNER_STAGE:-/mnt/c/aap-runner-staging}
+# Written before import. A re-run that still sees aap-runner stops and
+# tells the operator to unregister only this distro.
+INSTALL_MARKER=${AAP_RUNNER_INSTALL_MARKER:-/mnt/c/wsl/aap-runner.installing}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=labels.sh
 source "${SCRIPT_DIR}/labels.sh"
@@ -182,8 +185,50 @@ install_docker_apt() {
     > /etc/apt/sources.list.d/docker.list
 }
 
+# A non-zero status from wsl.exe, powershell.exe, or schtasks.exe stops
+# the install. The message names the command and the exit code.
+run_checked() {
+  local desc="$1" rc=0
+  shift
+  "$@" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "refusing: ${desc} failed (exit ${rc})" >&2
+    exit 1
+  fi
+}
+
+require_operator_jq() {
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "refusing: jq is required on the operator distro. Install it with: sudo apt-get install jq" >&2
+    exit 1
+  fi
+}
+
+# UTF-16 from wsl.exe is NUL-separated. Command substitution truncates at
+# the first NUL, so strip them in the pipe before the match.
+mount_text_is_already() {
+  local text
+  text=$(printf '%s' "$1" | tr -d '\000')
+  [[ "${text}" == *[Aa]lready* ]]
+}
+
 distro_exists() {
-  wsl.exe -l -q | tr -d '\000\r' | grep -qx "${DISTRO}"
+  local list rc=0
+  list=$(wsl.exe -l -q 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    printf '%s\n' "${list}" | tr -d '\000' >&2
+    echo "refusing: wsl.exe -l -q failed (exit ${rc})" >&2
+    exit 1
+  fi
+  printf '%s' "${list}" | tr -d '\000\r' | grep -qx "${DISTRO}"
+}
+
+# Half-installed aap-runner is not resumed. The command names only this distro.
+half_install_refusal() {
+  printf '%s\n' "refusing: distro ${DISTRO} is already registered. A half-installed distro is not resumed."
+  printf '%s\n' "Unregister only this distro, then re-run bootstrap:"
+  printf '%s\n' "wsl --unregister ${DISTRO}"
+  printf '%s\n' "That command does not unregister any other distro."
 }
 
 copy_staged() {
@@ -570,7 +615,7 @@ networking_stop_reason() {
 # on the Windows LAN and the bridge filter does not see that traffic.
 refuse_mirrored_networking() {
   local mode="" have_wslinfo=no inside=no cfg_state=skipped
-  local raw="" profile="" cfg="" reason="" grep_rc=0
+  local raw="" profile="" cfg="" reason="" grep_rc=0 ps_rc=0
   if [[ "${WSL_DISTRO_NAME:-}" == "${DISTRO}" || ! -d /mnt/c ]]; then
     inside=yes
   fi
@@ -581,7 +626,12 @@ refuse_mirrored_networking() {
   if [[ -d /mnt/c ]]; then
     cfg_state=unreadable
     if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
-      raw=$(powershell.exe -NoProfile -NonInteractive -Command '[Environment]::GetFolderPath("UserProfile")' | tr -d '\r' || true)
+      ps_rc=0
+      raw=$(powershell.exe -NoProfile -NonInteractive -Command '[Environment]::GetFolderPath("UserProfile")' | tr -d '\000\r') || ps_rc=$?
+      if [[ "${ps_rc}" -ne 0 ]]; then
+        echo "refusing: powershell.exe could not read the Windows user profile (exit ${ps_rc})" >&2
+        exit 1
+      fi
       if [[ -n "${raw}" ]]; then
         profile=$(wslpath -u "${raw}" || true)
       fi
@@ -636,7 +686,8 @@ lock_work_disk_acl() {
 }
 
 self_check() {
-  local tmp cfg reason rc err
+  local tmp cfg reason rc err body msg gap nulled
+  require_operator_jq
   labels_self_check
   tmp=$(mktemp)
   printf 'abc' > "${tmp}"
@@ -855,12 +906,54 @@ self_check() {
     exit 1
   fi
   rm -rf "${tmp}"
+  rc=0
+  err=$(run_checked "wsl.exe --exec simulated" false 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *"refusing: wsl.exe --exec simulated failed"* ]]; then
+    echo "a simulated wsl.exe failure was accepted" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  body=$(declare -f outside)
+  [[ "${body}" == *'--exec'* ]]
+  [[ "${body}" == *'stage-into-distro.sh'* ]]
+  [[ "${body}" == *'set -euo pipefail'* ]]
+  if [[ "${body}" == *'bash -lc'* || "${body}" == *'AAP_STAGE_BOOT'* ]]; then
+    echo "outside() still re-parses the stage path through a shell" >&2
+    exit 1
+  fi
+  msg=$(half_install_refusal)
+  [[ "${msg}" == *"wsl --unregister ${DISTRO}"* ]]
+  [[ "${msg}" != *Ubuntu* && "${msg}" != *docker-desktop* ]]
+  nulled=$(printf 'a\0l\0r\0e\0a\0d\0y' | tr -d '\000')
+  if ! mount_text_is_already "${nulled}"; then
+    echo "UTF-16 'already' was not recognized after NUL stripping" >&2
+    exit 1
+  fi
+  if mount_text_is_already "The requested operation requires elevation."; then
+    echo "an elevation error was treated as already mounted" >&2
+    exit 1
+  fi
+  if ! gap=$(install_gaps no inactive inactive 1 1); then
+    echo "a failed install was treated as complete" >&2
+    exit 1
+  fi
+  [[ "${gap}" == *"/opt/aap-runner/bootstrap.sh"* ]]
+  [[ "${gap}" == *"docker"* && "${gap}" == *"sysbox"* ]]
+  [[ "${gap}" == *"AAP-CRRR-Mount-Work-Disk"* ]]
+  [[ "${gap}" == *"aap-crrr-runner:local"* ]]
+  if install_gaps yes active active 0 0; then
+    echo "a complete install was treated as incomplete" >&2
+    exit 1
+  fi
+  bash "${SCRIPT_DIR}/stage-into-distro.sh" --self-check
   bash "${SCRIPT_DIR}/mount-work-disk.sh" --self-check
   echo "checksum self-check ok"
 }
 
 outside() {
   local win_install win_tar
+  set -euo pipefail
+  require_operator_jq
   if [[ "${WSL_DISTRO_NAME:-}" == "${DISTRO}" ]]; then
     echo "run bootstrap from the operator distro, not from ${DISTRO}" >&2
     exit 1
@@ -877,8 +970,11 @@ outside() {
   ensure_work_vhdx
   attach_work_vhdx
   if distro_exists; then
-    echo "distro ${DISTRO} already exists; wsl --unregister ${DISTRO} yourself before re-running" >&2
+    half_install_refusal >&2
     exit 1
+  fi
+  if [[ -f "${INSTALL_MARKER}" ]]; then
+    rm -f "${INSTALL_MARKER}"
   fi
 
   local work
@@ -889,10 +985,12 @@ outside() {
   download "${SYSBOX_URL}" "${work}/${SYSBOX_NAME}" "${SYSBOX_SHA256}"
   download "${RUNNER_URL}" "${work}/${RUNNER_NAME}" "${RUNNER_SHA256}"
 
-  mkdir -p "${INSTALL_DIR}"
+  mkdir -p "${INSTALL_DIR}" "$(dirname "${INSTALL_MARKER}")"
+  printf '%s\n' "${DISTRO}" > "${INSTALL_MARKER}"
   win_install=$(wslpath -w "${INSTALL_DIR}")
   win_tar=$(wslpath -w "${work}/${UBUNTU_NAME}")
-  wsl.exe --import "${DISTRO}" "${win_install}" "${win_tar}" --version 2
+  run_checked "wsl.exe --import ${DISTRO}" \
+    wsl.exe --import "${DISTRO}" "${win_install}" "${win_tar}" --version 2
 
   rm -rf "${STAGE}"
   mkdir -p "${STAGE}"
@@ -903,16 +1001,69 @@ outside() {
     "${SCRIPT_DIR}/aap-runner-manager.service" "${SCRIPT_DIR}/nftables.conf" \
     "${SCRIPT_DIR}/wsl.conf" "${SCRIPT_DIR}/manager.conf.example" \
     "${SCRIPT_DIR}/evidence.sh" "${SCRIPT_DIR}/bootstrap.sh" \
-    "${SCRIPT_DIR}/labels.sh" "${STAGE}/"
+    "${SCRIPT_DIR}/labels.sh" "${SCRIPT_DIR}/stage-into-distro.sh" "${STAGE}/"
 
-  wsl.exe -d "${DISTRO}" -u root -- env "AAP_STAGE_BOOT=${STAGE}/bootstrap.sh" \
-    bash -lc "mkdir -p /opt/aap-runner && cp \"\$AAP_STAGE_BOOT\" /opt/aap-runner/bootstrap.sh && cp \"\$(dirname \"\$AAP_STAGE_BOOT\")/labels.sh\" /opt/aap-runner/labels.sh && bash /opt/aap-runner/bootstrap.sh --inside-packages"
+  # --exec does not join the command into the distro shell. The stage path
+  # and the disk size are positional arguments of stage-into-distro.sh.
+  run_checked "wsl.exe --exec stage-into-distro.sh" \
+    wsl.exe -d "${DISTRO}" -u root --exec /bin/bash \
+    "${STAGE}/stage-into-distro.sh" "${STAGE}" "${WORK_DISK_GB}"
   rm -rf "${STAGE}"
 
   register_mount_task
 
-  wsl.exe --terminate "${DISTRO}"
-  wsl.exe -d "${DISTRO}" -u root -- bash /opt/aap-runner/bootstrap.sh --inside-runtime
+  run_checked "wsl.exe --terminate ${DISTRO}" \
+    wsl.exe --terminate "${DISTRO}"
+  run_checked "wsl.exe --exec bootstrap.sh --inside-runtime" \
+    wsl.exe -d "${DISTRO}" -u root --exec /bin/bash \
+    /opt/aap-runner/bootstrap.sh --inside-runtime
+  verify_install
+}
+
+# Echoes what is still missing. Returns 1 when every check passed.
+install_gaps() {
+  local bootstrap="$1" docker_state="$2" sysbox_state="$3" task_rc="$4" image_rc="$5"
+  local gap=""
+  [[ "${bootstrap}" == yes ]] || gap="${gap} missing /opt/aap-runner/bootstrap.sh."
+  [[ "${docker_state}" == active ]] || gap="${gap} docker is ${docker_state:-missing}."
+  [[ "${sysbox_state}" == active ]] || gap="${gap} sysbox is ${sysbox_state:-missing}."
+  [[ "${task_rc}" -eq 0 ]] || gap="${gap} task AAP-CRRR-Mount-Work-Disk is not registered."
+  [[ "${image_rc}" -eq 0 ]] || gap="${gap} image aap-crrr-runner:local is not built."
+  if [[ -n "${gap}" ]]; then
+    printf '%s\n' "${gap# }"
+    return 0
+  fi
+  return 1
+}
+
+verify_inside() {
+  local bootstrap=no docker_state sysbox_state image_rc=0 gap
+  if [[ -f /opt/aap-runner/bootstrap.sh ]]; then
+    bootstrap=yes
+  fi
+  docker_state=$(systemctl is-active docker 2>/dev/null || true)
+  if systemctl is-active --quiet sysbox || systemctl is-active --quiet sysbox-mgr; then
+    sysbox_state=active
+  else
+    sysbox_state=$(systemctl is-active sysbox 2>/dev/null || systemctl is-active sysbox-mgr 2>/dev/null || true)
+  fi
+  docker image inspect aap-crrr-runner:local >/dev/null 2>&1 || image_rc=$?
+  if gap=$(install_gaps "${bootstrap}" "${docker_state}" "${sysbox_state}" 0 "${image_rc}"); then
+    echo "refusing: ${gap}" >&2
+    exit 1
+  fi
+}
+
+verify_install() {
+  local task_rc=0
+  run_checked "wsl.exe --exec bootstrap.sh --verify-install" \
+    wsl.exe -d "${DISTRO}" -u root --exec /bin/bash \
+    /opt/aap-runner/bootstrap.sh --verify-install
+  schtasks.exe /Query /TN AAP-CRRR-Mount-Work-Disk >/dev/null || task_rc=$?
+  if [[ "${task_rc}" -ne 0 ]]; then
+    echo "refusing: schtasks.exe /Query /TN AAP-CRRR-Mount-Work-Disk failed (exit ${task_rc})" >&2
+    exit 1
+  fi
 }
 
 ensure_work_vhdx() {
@@ -942,16 +1093,19 @@ ensure_work_vhdx() {
 }
 
 attach_work_vhdx() {
-  local win err
+  local win err rc=0
   win=$(wslpath -w "${WORK_VHDX}")
-  if err=$(wsl.exe --mount --vhd "${win}" --bare 2>&1); then
+  # Strip NULs in the pipe. A bash variable truncates at the first NUL,
+  # which hides the word "already" in UTF-16 wsl.exe output.
+  err=$(wsl.exe --mount --vhd "${win}" --bare 2>&1 | tr -d '\000') || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
     return 0
   fi
-  if [[ "${err}" == *[Aa]lready* ]]; then
+  if mount_text_is_already "${err}"; then
     return 0
   fi
   printf '%s\n' "${err}" >&2
-  echo "wsl --mount --bare failed. Run bootstrap from an elevated shell." >&2
+  echo "refusing: wsl.exe --mount --bare failed (exit ${rc}). Run bootstrap from an elevated shell." >&2
   exit 1
 }
 
@@ -962,18 +1116,22 @@ valid_operator_sid() {
 }
 
 installing_operator_sid() {
-  local line sid=""
+  local line sid="" text rc=0
   if ! command -v powershell.exe >/dev/null 2>&1; then
     echo "refusing: powershell.exe is required to resolve the operator SID" >&2
     return 1
   fi
+  text=$(powershell.exe -NoProfile -NonInteractive -Command '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value' | tr -d '\000\r') || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "refusing: powershell.exe could not resolve the operator SID (exit ${rc})" >&2
+    return 1
+  fi
   while IFS= read -r line || [[ -n "${line}" ]]; do
-    line=${line//$'\r'/}
     line=${line// /}
     if valid_operator_sid "${line}"; then
       sid="${line}"
     fi
-  done < <(powershell.exe -NoProfile -NonInteractive -Command '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value')
+  done <<< "${text}"
   if [[ -z "${sid}" ]]; then
     echo "refusing: could not resolve the installing operator SID" >&2
     return 1
@@ -1029,7 +1187,7 @@ render_mount_task_xml() {
 }
 
 register_mount_task() {
-  local ps1_win vhdx_win xml_dest xml ps1_body sid
+  local ps1_win vhdx_win xml_dest xml ps1_body sid rc
   local task_dir
   task_dir=$(dirname "${WORK_VHDX}")
   mkdir -p "${task_dir}"
@@ -1056,18 +1214,37 @@ register_mount_task() {
   lock_windows_admin_only "${ps1_win}"
   lock_windows_admin_only "$(wslpath -w "${xml_dest}")"
   lock_windows_admin_only "$(wslpath -w "${WORK_VHDX}")"
-  schtasks.exe /Delete /TN AAP-CRRR-C-Free-GB /F >/dev/null 2>&1 || true
-  if ! schtasks.exe /Create /TN AAP-CRRR-Mount-Work-Disk /XML "$(wslpath -w "${xml_dest}")" /F; then
-    echo "failed to register scheduled task AAP-CRRR-Mount-Work-Disk for ${sid}." >&2
+  delete_retired_mount_task
+  rc=0
+  schtasks.exe /Create /TN AAP-CRRR-Mount-Work-Disk /XML "$(wslpath -w "${xml_dest}")" /F || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "refusing: schtasks.exe /Create /TN AAP-CRRR-Mount-Work-Disk failed (exit ${rc})." >&2
     echo "Run bootstrap from an elevated shell. Install stopped." >&2
     exit 1
   fi
+}
+
+# The retired task is absent on a first install. Any other schtasks failure stops.
+delete_retired_mount_task() {
+  local out rc=0
+  out=$(schtasks.exe /Delete /TN AAP-CRRR-C-Free-GB /F 2>&1) || rc=$?
+  out=$(printf '%s' "${out}" | tr -d '\000')
+  if [[ "${rc}" -eq 0 ]]; then
+    return 0
+  fi
+  if [[ "${out}" == *[Cc]annot\ find\ the\ file* || "${out}" == *[Dd]oes\ not\ exist* ]]; then
+    return 0
+  fi
+  printf '%s\n' "${out}" >&2
+  echo "refusing: schtasks.exe /Delete /TN AAP-CRRR-C-Free-GB failed (exit ${rc})" >&2
+  exit 1
 }
 
 case "${1:-}" in
   --self-check) self_check ;;
   --inside-packages) inside_packages ;;
   --inside-runtime) inside_runtime ;;
+  --verify-install) verify_inside ;;
   "") outside ;;
   *)
     echo "usage: bootstrap.sh [--self-check]" >&2

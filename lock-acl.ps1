@@ -2,6 +2,8 @@
 # or directory, and set the owner to Administrators. Bootstrap runs this
 # from an elevated shell. Directories pass the two ACEs down to children.
 # A leftover writer, or any other owner, fails the install.
+# Get-Acl and Set-Acl work in Windows PowerShell 5.1 and PowerShell 7.
+# FileInfo.GetAccessControl does not exist in PowerShell 7.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
@@ -15,9 +17,7 @@ if (-not (Test-Path -LiteralPath $LiteralPath)) {
 $allowed = @('S-1-5-18', 'S-1-5-32-544')
 $adminsSid = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-544'
 $item = Get-Item -LiteralPath $LiteralPath
-$sections = [System.Security.AccessControl.AccessControlSections]::Access -bor `
-    [System.Security.AccessControl.AccessControlSections]::Owner
-$acl = $item.GetAccessControl($sections)
+$acl = Get-Acl -LiteralPath $LiteralPath
 $acl.SetAccessRuleProtection($true, $false)
 for ($i = 0; $i -lt 10 -and @($acl.Access).Count -gt 0; $i++) {
     foreach ($rule in @($acl.Access)) {
@@ -45,17 +45,15 @@ foreach ($sidText in $allowed) {
     $acl.AddAccessRule($rule)
 }
 $acl.SetOwner($adminsSid)
-$item.SetAccessControl($acl)
+Set-Acl -LiteralPath $LiteralPath -AclObject $acl
 
-$checkItem = Get-Item -LiteralPath $LiteralPath
-$ownerAcl = $checkItem.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Owner)
-$ownerSid = $ownerAcl.GetOwner([System.Security.Principal.SecurityIdentifier])
+$check = Get-Acl -LiteralPath $LiteralPath
+$ownerSid = $check.GetOwner([System.Security.Principal.SecurityIdentifier])
 if ($null -eq $ownerSid -or $ownerSid.Value -ne 'S-1-5-32-544') {
     $shown = if ($null -eq $ownerSid) { 'missing' } else { $ownerSid.Value }
     Write-Error "owner of $LiteralPath is $shown; expected S-1-5-32-544"
     exit 1
 }
-$check = $checkItem.GetAccessControl('Access')
 $seen = @()
 foreach ($rule in @($check.Access)) {
     $id = $rule.IdentityReference
