@@ -125,6 +125,54 @@ grep -qx removed "${log}" || fail "the pool was not cleaned up on the drained ex
 [[ ! -e "${RUN_DIR}/status.json" ]] || fail "status.json was left after a drained exit"
 echo "drain removes and deregisters the listener, lets the job finish, exits 0 ok"
 
+# Undrain before the pool finished draining: the drained slot starts again,
+# so the pool is back to AAP_RUNNER_COUNT. Slot 1 has a long job; slot 2
+# runs short ones.
+# shellcheck disable=SC2317
+run_one() {
+  echo "run $1" >> "${log}"
+  if [[ "$1" == 1 ]]; then
+    set_slot_state 1 running aap-crrr-1-long long
+    sleep 4
+  else
+    set_slot_state 2 running aap-crrr-2-short short
+    sleep 0.2
+  fi
+  set_slot_state "$1" idle
+  return 0
+}
+rm -f "${RUN_DIR}/drain"
+: > "${log}"
+(run_pool) 2> "${err}" &
+pool=$!
+for _ in $(seq 1 50); do
+  [[ "$(runs 1)" -ge 1 && "$(runs 2)" -ge 1 ]] && break
+  sleep 0.1
+done
+: > "${RUN_DIR}/drain"
+for _ in $(seq 1 50); do
+  grep -qx 'slot 2 drained' "${err}" && break
+  sleep 0.1
+done
+grep -qx 'slot 2 drained' "${err}" || fail "slot 2 did not drain: $(cat "${err}")"
+before=$(runs 2)
+sleep 0.5
+[[ "$(runs 2)" -eq "${before}" ]] || fail "slot 2 ran a job while drained"
+rm -f "${RUN_DIR}/drain"
+for _ in $(seq 1 30); do
+  [[ "$(runs 2)" -gt "${before}" ]] && break
+  sleep 0.1
+done
+[[ "$(runs 2)" -gt "${before}" ]] || fail "slot 2 did not start again after the drain file was removed: $(cat "${err}")"
+grep -qx 'slot 2: drain file removed; starting it again' "${err}" || fail "no restart line: $(cat "${err}")"
+[[ "$(runs 1)" -eq 1 ]] || fail "slot 1's long job was interrupted or repeated"
+kill -0 "${pool}" 2>/dev/null || fail "the manager exited after the undrain"
+kill -TERM "${pool}"
+rc=0
+wait "${pool}" || rc=$?
+[[ "${rc}" -eq 143 ]] || fail "SIGTERM exit was ${rc}; want 143"
+echo "undrain starts drained slots again ok"
+
 # run_one while draining: the created container is removed before it starts,
 # so no runner registers and no token is minted.
 # Re-source for the real run_one; keep this test's RUN_DIR.

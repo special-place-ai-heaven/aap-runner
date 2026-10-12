@@ -18,7 +18,12 @@ has_line() {
 
 has_line aap-workdisk.service 'After=local-fs-pre.target var-lib-ghrunner.mount'
 has_line aap-workdisk.service 'Restart=on-failure'
-has_line aap-runner-manager.service 'Requires=docker.service sysbox.service aap-workdisk.service'
+has_line aap-runner-manager.service 'Requires=docker.service aap-workdisk.service'
+has_line aap-runner-manager.service 'Wants=sysbox.service'
+has_line aap-runner-manager.service 'SuccessExitStatus=143'
+if grep -q '^Requires=.*sysbox' "${dir}/aap-runner-manager.service"; then
+  fail "the manager Requires= sysbox; a sysbox-mgr crash would stop it for good"
+fi
 has_line aap-runner-manager.service 'After=docker.service sysbox.service aap-workdisk.service network-online.target'
 has_line aap-runner-manager.service 'Restart=on-failure'
 has_line aap-runner-manager.service 'TimeoutStopSec=90'
@@ -28,6 +33,36 @@ has_line sysbox-restart.conf 'Restart=on-failure'
 has_line sysbox-restart.conf 'RestartSec=5'
 has_line sysbox-restart.conf 'StartLimitIntervalSec=0'
 echo "unit lines ok"
+
+# systemd-analyze verify on the units and drop-ins as installed. ExecStart
+# points at /bin/true and docker and sysbox are stubs, so only this text is
+# judged. verify exits 0 on an unknown key or a bad value, so any output fails.
+if command -v systemd-analyze >/dev/null 2>&1; then
+  sd=$(mktemp -d)
+  for u in aap-runner-manager.service aap-workdisk.service; do
+    sed 's|^ExecStart=.*|ExecStart=/bin/true|' "${dir}/${u}" > "${sd}/${u}"
+  done
+  for u in docker containerd sysbox sysbox-mgr sysbox-fs; do
+    printf '[Service]\nType=oneshot\nExecStart=/bin/true\n' > "${sd}/${u}.service"
+    mkdir "${sd}/${u}.service.d"
+    cp "${dir}/docker-workdisk.conf" "${sd}/${u}.service.d/workdisk.conf"
+  done
+  for u in sysbox sysbox-mgr sysbox-fs; do
+    cp "${dir}/sysbox-restart.conf" "${sd}/${u}.service.d/restart.conf"
+  done
+  # cp from /mnt/c keeps drvfs exec bits; install them as bootstrap does.
+  find "${sd}" -type d -exec chmod 0755 {} +
+  find "${sd}" -type f -exec chmod 0644 {} +
+  rc=0
+  out=$(SYSTEMD_UNIT_PATH="${sd}:" systemd-analyze verify --man=no \
+    "${sd}/aap-runner-manager.service" "${sd}/aap-workdisk.service" \
+    "${sd}/docker.service" "${sd}/sysbox.service" "${sd}/sysbox-mgr.service" 2>&1) || rc=$?
+  rm -rf "${sd}"
+  [[ "${rc}" -eq 0 && -z "${out}" ]] || fail "systemd-analyze verify (exit ${rc}): ${out}"
+  echo "systemd-analyze verify ok"
+else
+  echo "systemd-analyze verify skipped: systemd-analyze is not installed"
+fi
 
 boot="${dir}/bootstrap.sh"
 for unit in sysbox sysbox-mgr sysbox-fs; do

@@ -10,6 +10,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.sh"
 # Exact match for AAP_RUNNER_LABELS_VERSION in labels.sh.
 require_labels_version 1 || exit 1
 
+# `aap-runner-manager --version` prints this. The Windows supervisor reads it
+# to tell this manager (drain, status, limits) from one that would treat an
+# unknown argument as "start the pool".
+MANAGER_VERSION="aap-runner-manager 2"
 CONFIG_PATH=/etc/aap-runner/manager.conf
 # Optional. The Windows supervisor writes the tray's settings here.
 LIMITS_PATH=/etc/aap-runner/limits.conf
@@ -45,6 +49,11 @@ SLOT_MEMORY=""
 SLOT_PIDS=()
 SLOT_STARTED=()
 SLOT_FAILS=()
+# Slots that stopped for a drain. They start again when the drain file goes.
+SLOT_DRAINED=()
+# Deregistrations in flight in this process, and their runner names.
+DEREG_PIDS=()
+DEREG_NAMES=()
 # A slot that dies this many times in a row, each within SLOT_FAST_SECONDS of
 # starting, is retired. When every slot is retired the manager exits 1 and
 # systemd restarts the whole pool.
@@ -482,20 +491,28 @@ mint_installation_token() {
   payload=$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' "${iat}" "${exp}" "${AAP_GITHUB_APP_ID}" | b64url)
   sig=$(printf '%s' "${header}.${payload}" | openssl dgst -binary -sha256 -sign "${AAP_GITHUB_APP_PRIVATE_KEY_PATH}" | b64url)
   jwt="${header}.${payload}.${sig}"
-  curl --silent --show-error --fail \
+  auth_header "${jwt}" | curl --silent --show-error --fail \
+    --connect-timeout 5 --max-time 15 \
     -X POST \
-    -H "Authorization: Bearer ${jwt}" \
+    -H @- \
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/app/installations/${AAP_GITHUB_APP_INSTALLATION_ID}/access_tokens" \
     | jq -er '.token'
 }
 
+# Every bearer token reaches curl on stdin (-H @-), never in its argv, so it
+# is not in /proc/<pid>/cmdline. printf is a builtin: no process carries it.
+auth_header() {
+  printf 'Authorization: Bearer %s\n' "$1"
+}
+
 mint_registration_token() {
   local installation_token
   installation_token=$(mint_installation_token) || return 1
-  curl --silent --show-error --fail \
+  auth_header "${installation_token}" | curl --silent --show-error --fail \
+    --connect-timeout 5 --max-time 15 \
     -X POST \
-    -H "Authorization: Bearer ${installation_token}" \
+    -H @- \
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/orgs/${AAP_GITHUB_ORG}/actions/runners/registration-token" \
     | jq -er '.token'
@@ -514,15 +531,15 @@ runner_name_of() {
 }
 
 # One attempt. A runner that is not listed, or a DELETE that returns 404, is
-# already gone. The token is only in curl's argv, as for the registration token.
+# already gone. The token goes to curl on stdin (auth_header).
 deregister_runner_once() {
   local name="$1" token id code
   token=$(mint_installation_token) || return 1
-  id=$(curl --silent --show-error --fail --max-time 10 -G \
-    -H "Authorization: Bearer ${token}" \
+  id=$(auth_header "${token}" | curl --silent --show-error --fail \
+    --connect-timeout 5 --max-time 10 -G \
+    -H @- \
     -H "Accept: application/vnd.github+json" \
     --data-urlencode "name=${name}" \
-    --data-urlencode "per_page=1" \
     "https://api.github.com/orgs/${AAP_GITHUB_ORG}/actions/runners" \
     | jq -r --arg n "${name}" '[.runners[]? | select(.name == $n) | .id][0] // empty') || return 1
   if [[ -z "${id}" ]]; then
@@ -530,9 +547,10 @@ deregister_runner_once() {
     return 0
   fi
   [[ "${id}" =~ ^[0-9]+$ ]] || return 1
-  code=$(curl --silent --show-error --max-time 10 -o /dev/null -w '%{http_code}' \
+  code=$(auth_header "${token}" | curl --silent --show-error \
+    --connect-timeout 5 --max-time 10 -o /dev/null -w '%{http_code}' \
     -X DELETE \
-    -H "Authorization: Bearer ${token}" \
+    -H @- \
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/orgs/${AAP_GITHUB_ORG}/actions/runners/${id}") || code=""
   case "${code}" in
@@ -560,19 +578,20 @@ deregister_runner() {
 }
 
 # Every name in parallel. Whatever is still running after
-# DEREGISTER_BUDGET_SECONDS is killed and logged.
+# DEREGISTER_BUDGET_SECONDS is killed and logged. The pids are kept in
+# DEREG_PIDS so a SIGTERM that lands mid-batch (stop_pool) can take them over.
 deregister_runners() {
   local pid alive deadline name
-  local -a pids=()
   [[ "$#" -gt 0 ]] || return 0
   for name in "$@"; do
     deregister_runner "${name}" &
-    pids+=("$!")
+    DEREG_PIDS+=("$!")
+    DEREG_NAMES+=("${name}")
   done
   deadline=$((SECONDS + DEREGISTER_BUDGET_SECONDS))
   while ((SECONDS < deadline)); do
     alive=0
-    for pid in "${pids[@]}"; do
+    for pid in "${DEREG_PIDS[@]}"; do
       if kill -0 "${pid}" 2>/dev/null; then
         alive=1
       fi
@@ -580,13 +599,15 @@ deregister_runners() {
     ((alive)) || break
     sleep 0.2
   done
-  for pid in "${pids[@]}"; do
+  for pid in "${DEREG_PIDS[@]}"; do
     if kill -0 "${pid}" 2>/dev/null; then
       echo "warning: deregistration took over ${DEREGISTER_BUDGET_SECONDS}s; stopped it" >&2
       kill "${pid}" 2>/dev/null || true
     fi
   done
-  wait "${pids[@]}" 2>/dev/null || true
+  wait "${DEREG_PIDS[@]}" 2>/dev/null || true
+  DEREG_PIDS=()
+  DEREG_NAMES=()
 }
 
 # Removes only this job's container, its anonymous volumes, and its network.
@@ -762,7 +783,9 @@ slot_container() {
 # a job, else idle once a slot listens, else starting. job: the most
 # recently started running job, or "". slots and runner_count:
 # AAP_RUNNER_COUNT. job_cpus and job_memory: the pool totals as configured,
-# after limits.conf. Paused is a Windows-side state and never appears here.
+# after limits.conf. job_cpus is a JSON number and may be fractional (2.5)
+# when manager.conf says so; the supervisor treats a non-integer as unknown.
+# Paused is a Windows-side state and never appears here.
 status_json() {
   local f st ns name busy=0 idle=0 best=-1 job="" state=starting
   for f in "${RUN_DIR}"/slot-[1-9]; do
@@ -1159,6 +1182,7 @@ drain_listening_slots() {
     wait "${SLOT_PIDS[slot]}" 2>/dev/null || true
     remove_slot_containers "${slot}"
     unset "SLOT_PIDS[${slot}]"
+    SLOT_DRAINED[slot]=1
     rm -f "${RUN_DIR}/slot-${slot}"
     if [[ -n "${runner}" ]]; then
       runners+=("${runner}")
@@ -1188,13 +1212,21 @@ stop_pool() {
         ;;
     esac
   done
-  for pid in "${SLOT_PIDS[@]}" "${TICK_PID}"; do
+  # A drain batch this SIGTERM interrupted: systemd's SIGTERM reaches those
+  # processes too, so stop them and run their names again in this batch. A
+  # repeat is harmless: a runner that is gone is not listed, or is a 404.
+  runners+=("${DEREG_NAMES[@]}")
+  for pid in "${SLOT_PIDS[@]}" "${TICK_PID}" "${DEREG_PIDS[@]}"; do
     if [[ -n "${pid}" ]]; then
       kill "${pid}" 2>/dev/null || true
     fi
   done
   remove_job_containers
-  wait 2>/dev/null || true
+  # Only these children. A bare wait would also wait on anything else this
+  # shell started, without a bound.
+  wait "${SLOT_PIDS[@]}" "${TICK_PID}" "${DEREG_PIDS[@]}" 2>/dev/null || true
+  DEREG_PIDS=()
+  DEREG_NAMES=()
   deregister_runners "${runners[@]}"
   rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9]
 }
@@ -1214,6 +1246,16 @@ run_pool() {
   done
   start_tick
   while true; do
+    # Undrain: the drain file is gone, so drained slots (not retired ones)
+    # start again and the pool is back to AAP_RUNNER_COUNT.
+    if ! draining; then
+      for slot in "${!SLOT_DRAINED[@]}"; do
+        echo "slot ${slot}: drain file removed; starting it again" >&2
+        unset "SLOT_DRAINED[${slot}]"
+        SLOT_FAILS[slot]=0
+        start_slot "${slot}" 0
+      done
+    fi
     if [[ "${#SLOT_PIDS[@]}" -eq 0 ]]; then
       # Exit 0 so Restart=on-failure leaves a drained manager stopped.
       if draining; then
@@ -1248,6 +1290,7 @@ run_pool() {
     if [[ "${rc}" -eq 0 ]] && draining; then
       echo "slot ${slot} drained" >&2
       unset "SLOT_PIDS[${slot}]"
+      SLOT_DRAINED[slot]=1
       write_status
       continue
     fi
@@ -1269,6 +1312,20 @@ run_pool() {
 }
 
 main() {
+  # Only no argument starts the pool, which first removes every job
+  # container. Anything unknown stops here, before any docker call.
+  case "${1-}" in
+    '' | --self-check | --assert-mounts | --check-limits | --drain | --undrain) ;;
+    --version)
+      echo "${MANAGER_VERSION}"
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+
   if [[ "${BASH_VERSINFO[0]}" -lt 5 || ("${BASH_VERSINFO[0]}" -eq 5 && "${BASH_VERSINFO[1]}" -lt 1) ]]; then
     echo "refusing: bash ${BASH_VERSION} is older than 5.1; the slot supervisor needs wait -n -p" >&2
     exit 1
