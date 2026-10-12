@@ -173,8 +173,10 @@ Describe 'aap-runner host supervisor' {
                 'task AAP-CRRR-Mount-Work-Disk'
                 'sleep 2'
                 'wsl -d aap-runner --exec /bin/sleep infinity'
+                'wsl -d aap-runner -u root -- /bin/grep -q -- --undrain /usr/local/sbin/aap-runner-manager'
                 'wsl -d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --undrain'
                 'wsl -d aap-runner -u root -- /bin/systemctl start sysbox aap-runner-manager'
+                'wsl -d aap-runner -u root -- /bin/systemctl is-active sysbox aap-runner-manager'
                 'wsl -d aap-runner -u root -- /bin/systemctl is-active sysbox aap-runner-manager'
                 'wsl -d aap-runner -u root -- /bin/cat /run/aap-runner/status.json'
             )
@@ -187,7 +189,7 @@ Describe 'aap-runner host supervisor' {
             $s.job_memory_gib | Should -Be 72
         }
 
-        It 'ignores a failing --undrain' {
+        It 'logs a failing --undrain and continues' {
             $script:responder = {
                 param($line)
                 if ($line -like '*--undrain') { return (Get-AapFakeResult 1 '') }
@@ -196,7 +198,7 @@ Describe 'aap-runner host supervisor' {
             Write-AapStateFile '{"desired":"on"}'
             Invoke-AapCycle
             $AapRt.Mode | Should -Be 'on'
-            Get-AapLogText | Should -Match 'undrain exit 1 \(ignored\)'
+            Get-AapLogText | Should -Match 'undrain exit 1'
         }
 
         It 'mirrors a running job from the manager' {
@@ -232,6 +234,7 @@ Describe 'aap-runner host supervisor' {
     Describe 'Off sequence' {
         BeforeEach {
             $AapRt.Mode = 'on'
+            $AapRt.ManagerOk = $true
             $AapRt.KeepAlive = Get-AapFakeProcess
             $script:keep = $AapRt.KeepAlive
             $script:activeLeft = 2
@@ -457,6 +460,7 @@ Describe 'aap-runner host supervisor' {
     Describe 'limits apply' {
         BeforeEach {
             $AapRt.Mode = 'on'
+            $AapRt.ManagerOk = $true
             $AapRt.KeepAlive = Get-AapFakeProcess
             $AapRt.NextHealth = $script:clock.Now.AddHours(1)
             Write-AapStateFile '{"desired":"on"}'
@@ -552,6 +556,7 @@ Describe 'aap-runner host supervisor' {
     Describe 'pause and resume' {
         BeforeEach {
             $AapRt.Mode = 'on'
+            $AapRt.ManagerOk = $true
             $AapRt.KeepAlive = Get-AapFakeProcess
             $script:keep = $AapRt.KeepAlive
             $AapRt.NextHealth = $script:clock.Now.AddHours(1)
@@ -672,6 +677,80 @@ Describe 'aap-runner host supervisor' {
             Read-AapDesired | Should -Be 'off'
             Write-AapStateFile '{"desired":"on"}'
             Read-AapDesired | Should -Be 'on'
+        }
+    }
+
+    Describe 'manager flag probe' {
+        BeforeEach {
+            $script:probe = 'wsl -d aap-runner -u root -- /bin/grep -q -- --undrain /usr/local/sbin/aap-runner-manager'
+            $script:probeCode = 0
+            $script:responder = {
+                param($line)
+                if ($line -like '*/bin/grep -q -- --undrain *') { return (Get-AapFakeResult $script:probeCode '') }
+                if ($line -like '*is-active aap-runner-manager') { return (Get-AapFakeResult 3 'inactive') }
+                return (& $script:healthy $line)
+            }
+            # Paused plus new limits: every settings path that would use a flag.
+            Write-AapSettingsFile '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":true}'
+        }
+
+        It 'makes zero manager-flag calls across On, settings, health and Off when the probe fails' {
+            $script:probeCode = 1
+            Write-AapStateFile '{"desired":"on"}'
+            Invoke-AapCycle
+            $AapRt.Mode | Should -Be 'on'
+            $s = Get-AapStatusFile
+            $s.state | Should -Be 'error'
+            $s.detail | Should -Be 'manager on the distro predates this supervisor; re-run install-host.ps1 from this branch'
+            $script:calls | Should -Contain 'wsl -d aap-runner -u root -- /bin/systemctl start sysbox aap-runner-manager'
+            $script:clock.Now = $script:clock.Now.AddMinutes(2)
+            Invoke-AapCycle
+            Write-AapStateFile '{"desired":"off"}'
+            Invoke-AapCycle
+            $AapRt.Mode | Should -Be 'off'
+            $script:calls[-1] | Should -Be 'wsl --terminate aap-runner'
+            @($script:calls | Where-Object { $_ -like '*/usr/local/sbin/aap-runner-manager -*' }).Count | Should -Be 0
+            @($script:calls | Where-Object { $_ -like '*limits.conf*' }).Count | Should -Be 0
+            Get-AapLogText | Should -Match 'WARN no drain'
+            (Get-AapStatusFile).state | Should -Be 'off'
+        }
+
+        It 'probes once and keeps the normal sequence when the probe passes' {
+            Write-AapSettingsFile '{"runner_count":4,"job_cpus":28,"job_memory_gib":72,"paused":false}'
+            Write-AapStateFile '{"desired":"on"}'
+            Invoke-AapCycle
+            foreach ($i in 1..5) {
+                $script:clock.Now = $script:clock.Now.AddMinutes(2)
+                Invoke-AapCycle
+            }
+            @($script:calls | Where-Object { $_ -eq $script:probe }).Count | Should -Be 1
+            $script:calls | Should -Contain 'wsl -d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --undrain'
+            (Get-AapStatusFile).state | Should -Be 'idle'
+        }
+
+        It 'probes again at the next health tick after a failure' {
+            $script:probeCode = 1
+            Write-AapStateFile '{"desired":"on"}'
+            Invoke-AapCycle
+            $script:probeCode = 0
+            $script:clock.Now = $AapRt.NextHealth
+            Invoke-AapCycle
+            @($script:calls | Where-Object { $_ -eq $script:probe }).Count | Should -Be 2
+            $AapRt.ManagerOk | Should -BeTrue
+        }
+
+        It 'logs the journal when a unit is not active after start' {
+            $script:responder = {
+                param($line)
+                if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 3 "active`nfailed") }
+                if ($line -like '*journalctl -u aap-runner-manager -n 5 --no-pager') { return (Get-AapFakeResult 0 "line one`nexit-code=1 FAILURE") }
+                return (Get-AapFakeResult 0 '')
+            }
+            $ok = Invoke-AapUnitStart @('sysbox', 'aap-runner-manager')
+            $ok | Should -BeFalse
+            $script:calls | Should -Contain 'wsl -d aap-runner -u root -- /bin/journalctl -u aap-runner-manager -n 5 --no-pager'
+            $script:calls | Should -Not -Contain 'wsl -d aap-runner -u root -- /bin/journalctl -u sysbox -n 5 --no-pager'
+            Get-AapLogText | Should -Match 'aap-runner-manager is failed after start; journal: line one exit-code=1 FAILURE'
         }
     }
 

@@ -73,6 +73,7 @@ $AapRt = @{}
 $AapStates = @('off', 'starting', 'idle', 'running', 'draining', 'paused', 'error')
 $AapManagerStates = @('starting', 'idle', 'running', 'draining')
 $AapManager = '/usr/local/sbin/aap-runner-manager'
+$AapOldManager = 'manager on the distro predates this supervisor; re-run install-host.ps1 from this branch'
 $AapLimitsFile = '/etc/aap-runner/limits.conf'
 # The only multi-word argument wsl.exe ever gets. A constant, so stdin is the
 # only data channel into it. Same /bin/sh -c "..." form as install-host.ps1's
@@ -96,6 +97,8 @@ function Initialize-AapRuntime {
     $AapRt.RefusedWhy = $null
     $AapRt.Effective = $null
     $AapRt.VmWarned = $false
+    $AapRt.ManagerOk = $null
+    $AapRt.ProbedAt = [DateTimeOffset]::MinValue
     $AapRt.Status = $null
     $AapRt.StatusAt = [DateTimeOffset]::MinValue
 }
@@ -441,6 +444,42 @@ function Wait-AapManagerInactive([string]$AbortWhen, [string]$Detail) {
     }
 }
 
+# An older manager ignores unknown flags: --drain, --undrain or
+# --check-limits would start a full pool, kill running jobs and block. So no
+# manager flag is used until a passive probe shows the installed manager
+# knows them. grep cannot start a pool; --version is not called on an
+# unknown manager for the same reason. A pass is cached until Off; a failure
+# is probed again at a later health tick (30 s or more after the last
+# probe), so a reinstall is picked up.
+function Test-AapManagerFlag {
+    if ($null -eq $AapRt.ManagerOk) {
+        $r = Invoke-AapRoot @('/bin/grep', '-q', '--', '--undrain', $AapManager)
+        $AapRt.ManagerOk = ($r.Code -eq 0)
+        $AapRt.ProbedAt = Get-AapNow
+        if (-not $AapRt.ManagerOk) { Write-AapLog "WARN probe exit $($r.Code): $AapOldManager" }
+    }
+    return $AapRt.ManagerOk
+}
+
+# systemctl start, then is-active on the same units. A unit that is not
+# active gets its last 5 journal lines in the log. Returns $true when all
+# units are active.
+function Invoke-AapUnitStart([string[]]$Units) {
+    $r = Invoke-AapRoot (@('/bin/systemctl', 'start') + $Units)
+    if ($r.Code -ne 0) { Write-AapLog "systemctl start $($Units -join ' ') exit $($r.Code): $(Format-AapText $r.Err)" }
+    $lines = @(Split-AapLine (Invoke-AapRoot (@('/bin/systemctl', 'is-active') + $Units)).Out)
+    $ok = $true
+    for ($i = 0; $i -lt $Units.Count; $i++) {
+        $state = 'unknown'
+        if ($i -lt $lines.Count) { $state = $lines[$i] }
+        if ($state -eq 'active') { continue }
+        $ok = $false
+        $j = Invoke-AapRoot @('/bin/journalctl', '-u', $Units[$i], '-n', '5', '--no-pager')
+        Write-AapLog "$($Units[$i]) is $state after start; journal: $(Format-AapText ($j.Out + ' ' + $j.Err) 600)"
+    }
+    return $ok
+}
+
 # Off -> On. Every step is idempotent, so it is also the recovery path after
 # a supervisor restart.
 function Invoke-AapOn {
@@ -454,11 +493,12 @@ function Invoke-AapOn {
         return
     }
     Invoke-AapKeepAlive
-    # Ignored on failure: an older manager has no --undrain.
-    $r = Invoke-AapRoot @($AapManager, '--undrain')
-    if ($r.Code -ne 0) { Write-AapLog "undrain exit $($r.Code) (ignored)" }
-    $r = Invoke-AapRoot @('/bin/systemctl', 'start', 'sysbox', 'aap-runner-manager')
-    if ($r.Code -ne 0) { Write-AapLog "systemctl start exit $($r.Code): $(Format-AapText $r.Err)" }
+    if (Test-AapManagerFlag) {
+        $r = Invoke-AapRoot @($AapManager, '--undrain')
+        if ($r.Code -ne 0) { Write-AapLog "undrain exit $($r.Code): $(Format-AapText $r.Err)" }
+    }
+    # systemctl is safe on the old manager too.
+    [void](Invoke-AapUnitStart @('sysbox', 'aap-runner-manager'))
     $AapRt.Mode = 'on'
     Invoke-AapHealth
 }
@@ -470,6 +510,10 @@ function Invoke-AapOn {
 function Invoke-AapHealth {
     Invoke-AapKeepAlive
     Set-AapVmPriority
+    if ($AapRt.ManagerOk -eq $false -and ((Get-AapNow) - $AapRt.ProbedAt).TotalSeconds -ge 30) {
+        $AapRt.ManagerOk = $null
+        [void](Test-AapManagerFlag)
+    }
     $r = Invoke-AapRoot @('/bin/systemctl', 'is-active', 'sysbox', 'aap-runner-manager')
     $lines = @(Split-AapLine $r.Out)
     $sysbox = 'unknown'
@@ -488,7 +532,9 @@ function Invoke-AapHealth {
         }
         $detail = ''
         if ($AapRt.RefusedWhy) { $detail = $AapRt.RefusedWhy }
-        if ($AapRt.Paused) {
+        if ($AapRt.ManagerOk -eq $false) {
+            Write-AapStatus 'error' '' $AapOldManager
+        } elseif ($AapRt.Paused) {
             Write-AapStatus 'paused' '' $detail
         } elseif ($m -and $m.State) {
             Write-AapStatus $m.State $m.Job $detail
@@ -503,8 +549,8 @@ function Invoke-AapHealth {
     $delay = Get-AapBackoffDelay $AapRt.Failures
     $detail = "sysbox=$sysbox manager=$manager; restart $($AapRt.Failures)"
     Write-AapLog "unhealthy: $detail; next check in $delay s"
-    [void](Invoke-AapRoot @('/bin/systemctl', 'start', 'sysbox'))
-    if (-not $AapRt.Paused) { [void](Invoke-AapRoot @('/bin/systemctl', 'start', 'aap-runner-manager')) }
+    [void](Invoke-AapUnitStart @('sysbox'))
+    if (-not $AapRt.Paused) { [void](Invoke-AapUnitStart @('aap-runner-manager')) }
     if ($AapRt.Failures -ge 5) {
         Write-AapStatus 'error' '' "$detail failed; retrying every $delay s"
     } else {
@@ -528,7 +574,7 @@ function Invoke-AapPause {
 function Invoke-AapResume {
     Write-AapLog 'resume'
     [void](Invoke-AapRoot @($AapManager, '--undrain'))
-    [void](Invoke-AapRoot @('/bin/systemctl', 'start', 'aap-runner-manager'))
+    [void](Invoke-AapUnitStart @('aap-runner-manager'))
     $AapRt.Paused = $false
     $AapRt.NextHealth = [DateTimeOffset]::MinValue
 }
@@ -574,7 +620,7 @@ function Invoke-AapLimitChange($Limits) {
     [void](Invoke-AapRoot @($AapManager, '--drain'))
     if ((Wait-AapManagerInactive 'off' "applying limits $key") -eq 'aborted') { return }
     [void](Invoke-AapRoot @($AapManager, '--undrain'))
-    [void](Invoke-AapRoot @('/bin/systemctl', 'start', 'aap-runner-manager'))
+    [void](Invoke-AapUnitStart @('aap-runner-manager'))
     $AapRt.Applied = $key
     $AapRt.NextHealth = [DateTimeOffset]::MinValue
 }
@@ -584,6 +630,8 @@ function Invoke-AapLimitChange($Limits) {
 # does not restart the manager for nothing.
 function Sync-AapSettingsFile {
     $s = Read-AapSettingsFile
+    # Pause and limits need manager flags; an old manager ignores settings.
+    if (($s.Paused -or $null -ne $s.Limits -or $AapRt.Paused) -and -not (Test-AapManagerFlag)) { return }
     if ($s.Paused -and -not $AapRt.Paused) {
         if ((Invoke-AapPause) -eq 'aborted') { return }
     } elseif (-not $s.Paused -and $AapRt.Paused) {
@@ -602,15 +650,19 @@ function Sync-AapSettingsFile {
 # tray flips back to On while draining, the drain is undone instead of
 # waiting up to 6 h.
 function Invoke-AapOff {
-    Write-AapStatus 'draining' '' 'drain requested'
-    $r = Invoke-AapRoot @($AapManager, '--drain')
-    if ($r.Code -ne 0) { Write-AapLog "drain exit $($r.Code): $(Format-AapText $r.Err)" }
-    if ((Wait-AapManagerInactive 'on' 'stopping') -eq 'aborted') {
-        Write-AapLog 'desired is on again during drain; undraining'
-        [void](Invoke-AapRoot @($AapManager, '--undrain'))
-        $AapRt.Paused = $false
-        $AapRt.NextHealth = [DateTimeOffset]::MinValue
-        return
+    if (Test-AapManagerFlag) {
+        Write-AapStatus 'draining' '' 'drain requested'
+        $r = Invoke-AapRoot @($AapManager, '--drain')
+        if ($r.Code -ne 0) { Write-AapLog "drain exit $($r.Code): $(Format-AapText $r.Err)" }
+        if ((Wait-AapManagerInactive 'on' 'stopping') -eq 'aborted') {
+            Write-AapLog 'desired is on again during drain; undraining'
+            [void](Invoke-AapRoot @($AapManager, '--undrain'))
+            $AapRt.Paused = $false
+            $AapRt.NextHealth = [DateTimeOffset]::MinValue
+            return
+        }
+    } else {
+        Write-AapLog "WARN no drain: $AapOldManager; terminating, which ends any running job"
     }
     $r = Invoke-AapWsl -Arguments @('--terminate', $AapCfg.Distro)
     if ($r.Code -ne 0) { Write-AapLog "terminate exit $($r.Code): $(Format-AapText $r.Err)" }
@@ -622,6 +674,7 @@ function Invoke-AapOff {
     $AapRt.Paused = $false
     $AapRt.Applied = $null
     $AapRt.Effective = $null
+    $AapRt.ManagerOk = $null
     Write-AapStatus 'off' '' 'stopped'
 }
 

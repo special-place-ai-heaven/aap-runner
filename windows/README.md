@@ -24,6 +24,15 @@ it.** The only reason is that WSL sessions belong to the logon session
   to exit after its job, then `wsl.exe --terminate aap-runner`. Flipping back to
   on while draining undrains instead.
 - **While Off** it makes no `wsl.exe` call, so Vmmem can exit.
+- **Old manager:** before its first `--drain`, `--undrain` or
+  `--check-limits` call, the supervisor greps the installed manager for
+  `--undrain`. An older manager ignores unknown flags and would start a full
+  pool instead, so when the grep fails no manager flag is ever used. The
+  status is `error` until `install-host.ps1` from this branch is re-run. On
+  still starts the units with `systemctl`, settings are ignored, and Off
+  terminates the distro without a drain, ending any running job.
+- **After every `systemctl start`** it checks `is-active` and logs the last
+  5 journal lines of a unit that did not come up.
 
 ## Contracts
 
