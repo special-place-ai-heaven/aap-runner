@@ -134,7 +134,7 @@ Bootstrap creates the file once, from an elevated shell:
 New-VHD -Path C:\wsl\aap-runner-work.vhdx -SizeBytes 60GB -Fixed
 ```
 
-`New-VHD` is a Hyper-V cmdlet. It is absent, or it errors, on Windows Home and on any host whose Hyper-V Virtual Machine Management service (VMMS) is not running. The script then uses diskpart and applies the same ACL. `maximum=` is MiB (`AAP_WORK_DISK_GIB * 1024`). For the 60 GiB default that is `61440`, the same size as PowerShell's `60GB`. A 100 GiB disk is `102400` MiB. Bootstrap passes `-SizeGiB` from `AAP_WORK_DISK_GIB` (default 60):
+`New-VHD` is a Hyper-V cmdlet. It is absent, or it errors, on Windows Home and on any host whose Hyper-V Virtual Machine Management service (VMMS) is not running. The script then uses diskpart and applies the same ACL. The diskpart script is written in `C:\wsl` after that directory is locked, and it is deleted when diskpart returns. It is not written under `%TEMP%`. A `-Path` that is not a drive-letter `.vhdx` path is refused before the directory is created. `C:\wsl` is locked as soon as it is created, before the install marker or the VHDX is written. `maximum=` is MiB (`AAP_WORK_DISK_GIB * 1024`). For the 60 GiB default that is `61440`, the same size as PowerShell's `60GB`. A 100 GiB disk is `102400` MiB. Bootstrap passes `-SizeGiB` from `AAP_WORK_DISK_GIB` (default 60):
 
 ```text
 create vdisk file="C:\wsl\aap-runner-work.vhdx" maximum=61440 type=fixed
@@ -353,13 +353,19 @@ After the App key and `manager.conf` are in place:
 `aap-runner` has automount off, so it cannot read the Windows profile or run `wsl.exe`. From the operator distro:
 
 ```bash
-bash ops/self-hosted-runner/evidence-host.sh
+AAP_RUNNERS_READ_TOKEN="$(cat ~/.aap-runners-token)" bash ops/self-hosted-runner/evidence-host.sh
 ```
 
 That script runs `wsl.exe --version`, reads `%USERPROFILE%\.wslconfig` (or records that the file is absent), fetches the org's registered runners with `GET /orgs/special-place-ai-heaven/actions/runners`, copies those captures into the distro, and runs `aap-runner-evidence`. Evidence prints the wsl text under `HOST-REPORTED (operator-supplied, not verified)`. The distro did not read those files itself, so the printed text is not a verified pass. A missing `wsl --version` capture or a missing `.wslconfig` capture calls `bad` with `host P0 bundle is incomplete`. The rest of the evidence still prints, and the script exits non-zero. An operator-captured `absent` marker for `.wslconfig` is the Windows NAT default and is printed as `wslconfig: absent`. The registered-runner list (name, status, labels) is printed in that same bundle so it can be compared with `manager.conf`. A missing `gh` or a failed request is written into the list and does not by itself fail evidence. The App private key, the registration token, and the runners read token are not printed.
 
 The runners fetch does not use `gh auth login` and does not use whatever account `gh` is already logged in as. It reads `AAP_RUNNERS_READ_TOKEN` and passes that value as `GH_TOKEN` for the one `gh api` call. If the variable is missing, the bundle records `runners fetch: skipped (no AAP_RUNNERS_READ_TOKEN)` and evidence continues.
 
-Create that token as a fine-grained personal access token. Resource owner: `special-place-ai-heaven`. Organization permission: **Self-hosted runners: Read**. Every other organization permission, and every repository permission, stays at no access. Repository access can be public repositories only. If the organization requires approval of fine-grained tokens, an owner approves it before the fetch works. Set an expiry and rotate it. In the operator shell, export `AAP_RUNNERS_READ_TOKEN` from a mode-600 file. Do not put the token on the command line, in `manager.conf`, or in the distro.
+Create that token as a fine-grained personal access token. Resource owner: `special-place-ai-heaven`. Organization permission: **Self-hosted runners: Read**. Every other organization permission, and every repository permission, stays at no access. Repository access can be public repositories only. If the organization requires approval of fine-grained tokens, an owner approves it before the fetch works. Set an expiry and rotate it. Save it as `~/.aap-runners-token` with mode 600 (`chmod 600 ~/.aap-runners-token`). Run evidence with that file for the one command:
+
+```bash
+AAP_RUNNERS_READ_TOKEN="$(cat ~/.aap-runners-token)" bash evidence-host.sh
+```
+
+Do not `export` the token into the shell. Do not put it in `manager.conf` or in the distro.
 
 The script prints `uname -r`, then the host-reported `wsl --version` and `.wslconfig`. A missing capture fails, as above. It also prints the GitHub registered-runner list from that capture. It prints the final runner label line and refuses unless that line is `self-hosted,linux,<base>[,extras]` with base `crrr` or `fresh`. On the distro it checks that no `drvfs` or `9p` Windows drive is mounted (`/mnt/wsl` and `/mnt/wslg` are WSL tmpfs and are not a failure), whether `cmd.exe` can run, `nft list ruleset`, `wslinfo --networking-mode`, the bridge `EnableIPv6`, `id ghrunner`, the `ghrunner` sudo listing, `df` of the containerd root, containerd state, sysbox bind, and Docker root (all must be the work disk), `sysbox-runc` in `docker info`, and `stat` of `/etc/aap-runner/app.pem` and `/etc/aap-runner/manager.conf`. It then starts one Sysbox container with the job memory, cpu, and pids limits and no host mounts. From inside that container it prints the container gateway, `AAP_WINDOWS_HOST_IP` (the distro default route), whether `/mnt` is empty, and the result of connecting to that gateway, that Windows host IP, `192.168.1.1`, and `fd00:aaaa::1` (those four must fail) plus `https://github.com/` (that must succeed). It exits non-zero when any of those observations is missing or wrong. It does not mint a registration token and it does not print the App key.

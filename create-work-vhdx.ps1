@@ -5,13 +5,20 @@
 # PowerShell's 1GB is 1024^3, so New-VHD -SizeBytes (SizeGiB * 1GB) is the
 # same size. New-VHD is absent, or it errors, on Windows Home and on any
 # host whose Hyper-V Virtual Machine Management service (VMMS) is not
-# running. That failure falls back to diskpart, then the same ACL.
+# running. That failure falls back to diskpart. The diskpart script is
+# written in the VHDX directory after that directory is locked, then deleted.
+# It is never written under %TEMP%.
 param(
     [Parameter(Mandatory = $true)]
     [string]$Path,
     [Parameter(Mandatory = $true)]
     [int]$SizeGiB
 )
+# Before the directory, the lock, the marker, or the VHDX.
+if ($Path -notmatch '^[A-Za-z]:\\[A-Za-z0-9 _.\\-]+\.vhdx$') {
+    Write-Error 'refusing: -Path must match ^[A-Za-z]:\\[A-Za-z0-9 _.\\-]+\.vhdx$' -ErrorAction Continue
+    exit 1
+}
 $ErrorActionPreference = 'Stop'
 $dir = Split-Path -Parent $Path
 if (-not (Test-Path -LiteralPath $dir)) {
@@ -39,7 +46,8 @@ if (Get-Command New-VHD -ErrorAction SilentlyContinue) {
     }
 }
 if (-not $created) {
-    $dp = Join-Path $env:TEMP ("aap-runner-work-diskpart-{0}.txt" -f [guid]::NewGuid().ToString('n'))
+    # Same directory as the VHDX, already locked above. Not %TEMP%.
+    $dp = Join-Path $dir 'aap-runner-diskpart.txt'
     $line = 'create vdisk file="{0}" maximum={1} type=fixed' -f $Path, $maximumMb
     Set-Content -Encoding ascii -Path $dp -Value $line
     try {
@@ -49,7 +57,9 @@ if (-not $created) {
             exit $p.ExitCode
         }
     } finally {
-        Remove-Item -LiteralPath $dp -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $dp) {
+            Remove-Item -LiteralPath $dp -Force -ErrorAction SilentlyContinue
+        }
     }
     $created = 'diskpart'
 }

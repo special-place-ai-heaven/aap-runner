@@ -685,6 +685,19 @@ lock_work_disk_acl() {
   lock_windows_admin_only "$(wslpath -w "${WORK_VHDX}")"
 }
 
+# Create the directory and lock it before any file is written there.
+lock_created_windows_dir() {
+  local linux_dir="$1"
+  mkdir -p "${linux_dir}"
+  lock_windows_admin_only "$(wslpath -w "${linux_dir}")"
+}
+
+# Same rule as create-work-vhdx.ps1. Checked here so a bad path never
+# reaches diskpart.
+vhdx_windows_path_ok() {
+  [[ "$1" =~ ^[A-Za-z]:\\[A-Za-z0-9\ _.\\-]+\.vhdx$ ]]
+}
+
 self_check() {
   local tmp cfg reason rc err body msg gap nulled
   require_operator_jq
@@ -945,6 +958,95 @@ self_check() {
     echo "a complete install was treated as incomplete" >&2
     exit 1
   fi
+  if ! vhdx_windows_path_ok 'C:\wsl\aap-runner-work.vhdx'; then
+    echo "C:\\wsl\\aap-runner-work.vhdx was refused" >&2
+    exit 1
+  fi
+  if ! vhdx_windows_path_ok 'C:\wsl\my disk.vhdx'; then
+    echo "a VHDX path with a space was refused" >&2
+    exit 1
+  fi
+  if vhdx_windows_path_ok 'C:/wsl/foo.vhdx' \
+    || vhdx_windows_path_ok '\\server\share\foo.vhdx' \
+    || vhdx_windows_path_ok 'C:\wsl\foo.txt' \
+    || vhdx_windows_path_ok 'C:\wsl\foo.vhdx.exe' \
+    || vhdx_windows_path_ok 'C:\wsl\foo&bar.vhdx'; then
+    echo "a non-drive-letter or non-.vhdx path was accepted" >&2
+    exit 1
+  fi
+  if [[ "$(retired_task_action 0)" != delete ]]; then
+    echo "an existing retired task was not selected for delete" >&2
+    exit 1
+  fi
+  if [[ "$(retired_task_action 1)" != skip ]]; then
+    echo "a missing retired task was selected for delete" >&2
+    exit 1
+  fi
+  body=$(declare -f delete_retired_mount_task)
+  if [[ "${body}" == *"cannot find"* || "${body}" == *"does not exist"* ]]; then
+    echo "retired-task delete still matches English text" >&2
+    exit 1
+  fi
+  if [[ "${body}" != *'/Query'* || "${body%%/Delete*}" != *'/Query'* ]]; then
+    echo "retired-task delete does not query before it deletes" >&2
+    exit 1
+  fi
+  body=$(declare -f ensure_work_vhdx)
+  if [[ "${body%%vhdx_windows_path_ok*}" != *lock_created_windows_dir* ]]; then
+    echo "C:\\wsl is not locked before the VHDX path is checked" >&2
+    exit 1
+  fi
+  if [[ "${body%%create-work-vhdx.ps1*}" != *vhdx_windows_path_ok* ]]; then
+    echo "the VHDX is created before its path is checked" >&2
+    exit 1
+  fi
+  body=$(declare -f outside)
+  if [[ "${body}" != *'lock_created_windows_dir "$(dirname "${INSTALL_MARKER}")"'* ]]; then
+    echo "the install marker is written before C:\\wsl is locked" >&2
+    exit 1
+  fi
+  body=$(declare -f register_mount_task)
+  if [[ "${body%%mount-work-vhdx.ps1*}" != *lock_created_windows_dir* ]]; then
+    echo "the logon script is written before C:\\wsl is locked" >&2
+    exit 1
+  fi
+  vhdx_ps1=$(< "${SCRIPT_DIR}/create-work-vhdx.ps1")
+  if [[ "${vhdx_ps1}" == *'$env:TEMP'* ]]; then
+    echo "create-work-vhdx.ps1 writes the diskpart script under TEMP" >&2
+    exit 1
+  fi
+  if [[ "${vhdx_ps1}" != *"Join-Path \$dir 'aap-runner-diskpart.txt'"* \
+    || "${vhdx_ps1}" != *'Remove-Item -LiteralPath $dp'* ]]; then
+    echo "the diskpart script is not written beside the VHDX and deleted" >&2
+    exit 1
+  fi
+  if [[ "${vhdx_ps1}" != *'^[A-Za-z]:\\[A-Za-z0-9 _.\\-]+\.vhdx$'* ]]; then
+    echo "create-work-vhdx.ps1 does not refuse a bad -Path" >&2
+    exit 1
+  fi
+  path_line=$(grep -n -- '-notmatch' "${SCRIPT_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
+  lock_line=$(grep -n -- '& $lock -LiteralPath $dir' "${SCRIPT_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
+  new_line=$(grep -n -- 'New-VHD -Path' "${SCRIPT_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
+  dp_line=$(grep -n -- 'aap-runner-diskpart.txt' "${SCRIPT_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
+  if [[ -z "${path_line}" || -z "${lock_line}" || -z "${new_line}" || -z "${dp_line}" \
+    || "${path_line}" -ge "${lock_line}" || "${lock_line}" -ge "${new_line}" \
+    || "${new_line}" -ge "${dp_line}" ]]; then
+    echo "create-work-vhdx.ps1 does not check the path, lock the directory, then create the VHDX" >&2
+    exit 1
+  fi
+  readme=$(< "${SCRIPT_DIR}/README.md")
+  if [[ "${readme}" != *'AAP_RUNNERS_READ_TOKEN="$(cat ~/.aap-runners-token)" bash evidence-host.sh'* ]]; then
+    echo "README does not document the one-shot runners token" >&2
+    exit 1
+  fi
+  if [[ "${readme}" == *'export AAP_RUNNERS_READ_TOKEN'* ]]; then
+    echo "README exports the runners token" >&2
+    exit 1
+  fi
+  if [[ "${readme}" != *'chmod 600 ~/.aap-runners-token'* ]]; then
+    echo "README does not require mode 600 on the token file" >&2
+    exit 1
+  fi
   bash "${SCRIPT_DIR}/stage-into-distro.sh" --self-check
   bash "${SCRIPT_DIR}/mount-work-disk.sh" --self-check
   echo "checksum self-check ok"
@@ -985,7 +1087,9 @@ outside() {
   download "${SYSBOX_URL}" "${work}/${SYSBOX_NAME}" "${SYSBOX_SHA256}"
   download "${RUNNER_URL}" "${work}/${RUNNER_NAME}" "${RUNNER_SHA256}"
 
-  mkdir -p "${INSTALL_DIR}" "$(dirname "${INSTALL_MARKER}")"
+  mkdir -p "${INSTALL_DIR}"
+  # C:\wsl is locked before the install marker is written.
+  lock_created_windows_dir "$(dirname "${INSTALL_MARKER}")"
   printf '%s\n' "${DISTRO}" > "${INSTALL_MARKER}"
   win_install=$(wslpath -w "${INSTALL_DIR}")
   win_tar=$(wslpath -w "${work}/${UBUNTU_NAME}")
@@ -1067,8 +1171,14 @@ verify_install() {
 }
 
 ensure_work_vhdx() {
-  local avail bytes win
+  local avail bytes win dir
+  dir=$(dirname "${WORK_VHDX}")
+  lock_created_windows_dir "${dir}"
   win=$(wslpath -w "${WORK_VHDX}")
+  if ! vhdx_windows_path_ok "${win}"; then
+    echo "refusing: ${win} must match ^[A-Za-z]:\\\\[A-Za-z0-9 _.\\\\-]+\\.vhdx$" >&2
+    exit 1
+  fi
   if [[ -f "${WORK_VHDX}" ]]; then
     bytes=$(stat -c '%s' "${WORK_VHDX}")
     if [[ "${bytes}" -lt "${WORK_DISK_BYTES}" ]]; then
@@ -1190,7 +1300,8 @@ register_mount_task() {
   local ps1_win vhdx_win xml_dest xml ps1_body sid rc
   local task_dir
   task_dir=$(dirname "${WORK_VHDX}")
-  mkdir -p "${task_dir}"
+  # Lock the folder before the logon script or the task xml is written.
+  lock_created_windows_dir "${task_dir}"
   vhdx_win=$(wslpath -w "${WORK_VHDX}")
   ps1_body=$(< "${SCRIPT_DIR}/mount-work-vhdx.ps1")
   ps1_body=${ps1_body//__AAP_VHDX__/${vhdx_win}}
@@ -1224,20 +1335,25 @@ register_mount_task() {
   fi
 }
 
-# The retired task is absent on a first install. Any other schtasks failure stops.
+# Query exit 0 means the retired task exists. Any other status means it does
+# not. The wording of the query is not part of the decision.
+retired_task_action() {
+  if [[ "$1" -eq 0 ]]; then
+    printf '%s\n' delete
+  else
+    printf '%s\n' skip
+  fi
+}
+
 delete_retired_mount_task() {
-  local out rc=0
-  out=$(schtasks.exe /Delete /TN AAP-CRRR-C-Free-GB /F 2>&1) || rc=$?
-  out=$(printf '%s' "${out}" | tr -d '\000')
-  if [[ "${rc}" -eq 0 ]]; then
+  local query_rc=0 action
+  schtasks.exe /Query /TN AAP-CRRR-C-Free-GB >/dev/null 2>&1 || query_rc=$?
+  action=$(retired_task_action "${query_rc}")
+  if [[ "${action}" == skip ]]; then
     return 0
   fi
-  if [[ "${out}" == *[Cc]annot\ find\ the\ file* || "${out}" == *[Dd]oes\ not\ exist* ]]; then
-    return 0
-  fi
-  printf '%s\n' "${out}" >&2
-  echo "refusing: schtasks.exe /Delete /TN AAP-CRRR-C-Free-GB failed (exit ${rc})" >&2
-  exit 1
+  run_checked "schtasks.exe /Delete /TN AAP-CRRR-C-Free-GB" \
+    schtasks.exe /Delete /TN AAP-CRRR-C-Free-GB /F
 }
 
 case "${1:-}" in
