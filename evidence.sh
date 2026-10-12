@@ -8,6 +8,8 @@ set -euo pipefail
 
 # shellcheck source=labels.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.sh"
+# Exact match for AAP_RUNNER_LABELS_VERSION in labels.sh.
+require_labels_version 1 || exit 1
 
 route_gateway() {
   local gw_hex="$1"
@@ -338,7 +340,8 @@ section "kernel"
 uname -r
 
 section "host wsl bundle"
-print_host_bundle
+# bad already sets fail=1. Keep printing the rest of the evidence.
+print_host_bundle || true
 
 section "windows drives"
 # WSL injects /mnt/wsl and /mnt/wslg on every distro. A Windows drive is

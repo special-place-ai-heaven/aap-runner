@@ -6,6 +6,8 @@ set -euo pipefail
 
 # shellcheck source=labels.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.sh"
+# Exact match for AAP_RUNNER_LABELS_VERSION in labels.sh.
+require_labels_version 1 || exit 1
 
 CONFIG_PATH=/etc/aap-runner/manager.conf
 WORK_MOUNT=/var/lib/ghrunner

@@ -11,6 +11,8 @@ STAGE=${AAP_RUNNER_STAGE:-/mnt/c/aap-runner-staging}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=labels.sh
 source "${SCRIPT_DIR}/labels.sh"
+# Exact match for AAP_RUNNER_LABELS_VERSION in labels.sh.
+require_labels_version 1 || exit 1
 # AAP_WORK_DISK_GIB is this host's fixed VHDX size. Absent means 60 (CRRR).
 # diskpart maximum= is MiB (gib * 1024). PowerShell 1GB is 1024^3.
 WORK_VHDX=${AAP_WORK_VHDX:-/mnt/c/wsl/aap-runner-work.vhdx}

@@ -4,6 +4,20 @@
 # before the duplicate check.
 # shellcheck shell=bash
 
+# Bump this when the label contract changes. The manager, bootstrap, and
+# evidence each call require_labels_version with the value they were
+# written against and exit if this stamp differs.
+AAP_RUNNER_LABELS_VERSION=1
+
+require_labels_version() {
+  local expected="$1"
+  if [[ "${AAP_RUNNER_LABELS_VERSION}" == "${expected}" ]]; then
+    return 0
+  fi
+  echo "refusing: AAP_RUNNER_LABELS_VERSION=${AAP_RUNNER_LABELS_VERSION} does not match ${expected}" >&2
+  return 1
+}
+
 label_charset_ok() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]]
 }
@@ -138,6 +152,14 @@ labels_self_check() {
   fi
   [[ "$(compose_runner_labels crrr "")" == "self-hosted,linux,crrr" ]]
   [[ "$(compose_runner_labels fresh heavy)" == "self-hosted,linux,fresh,heavy" ]]
+  require_labels_version "${AAP_RUNNER_LABELS_VERSION}"
+  rc=0
+  err=$(require_labels_version "not-${AAP_RUNNER_LABELS_VERSION}" 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *"does not match not-${AAP_RUNNER_LABELS_VERSION}"* ]]; then
+    echo "a labels version mismatch was accepted" >&2
+    printf '%s\n' "${err}" >&2
+    return 1
+  fi
   echo "labels self-check ok"
 }
 
