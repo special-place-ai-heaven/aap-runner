@@ -1,5 +1,6 @@
 #!/bin/bash
-# Root systemd loop: one fresh Sysbox runner container per job.
+# Root systemd loop: one fresh Sysbox runner container per job, in
+# AAP_RUNNER_COUNT parallel slots.
 # The GitHub App private key stays in this process. It is never passed into
 # the container and never written to a second file.
 set -euo pipefail
@@ -34,6 +35,19 @@ AAP_JOB_MEMORY=""
 AAP_JOB_CPUS=""
 AAP_JOB_PIDS_LIMIT=""
 AAP_JOB_TIMEOUT_MINUTES=""
+# Unset means absent (one slot). A present but empty value is refused.
+unset AAP_RUNNER_COUNT
+# Per-slot docker create limits, set by finish_runner_count.
+SLOT_CPUS=""
+SLOT_MEMORY=""
+SLOT_PIDS=()
+SLOT_STARTED=()
+SLOT_FAILS=()
+# A slot that dies this many times in a row, each within SLOT_FAST_SECONDS of
+# starting, is retired. When every slot is retired the manager exits 1 and
+# systemd restarts the whole pool.
+SLOT_MAX_FAILS=5
+SLOT_FAST_SECONDS=120
 
 below_floor() {
   local avail="$1" floor="$2"
@@ -117,6 +131,7 @@ apply_config_line() {
     AAP_JOB_CPUS) AAP_JOB_CPUS=${val} ;;
     AAP_JOB_PIDS_LIMIT) AAP_JOB_PIDS_LIMIT=${val} ;;
     AAP_JOB_TIMEOUT_MINUTES) AAP_JOB_TIMEOUT_MINUTES=${val} ;;
+    AAP_RUNNER_COUNT) AAP_RUNNER_COUNT=${val} ;;
     *)
       echo "unknown config key: ${key}" >&2
       return 1
@@ -147,6 +162,7 @@ load_config() {
   [[ "${AAP_RUNNER_GROUP}" == "aap-crrr" ]]
   finish_disk_bounds
   finish_job_limits
+  finish_runner_count
   finish_runner_labels
 }
 
@@ -250,6 +266,49 @@ finish_job_limits() {
   if ! valid_timeout_minutes "${AAP_JOB_TIMEOUT_MINUTES}"; then
     echo "refusing: AAP_JOB_TIMEOUT_MINUTES=${AAP_JOB_TIMEOUT_MINUTES}" >&2
     return 1
+  fi
+}
+
+# AAP_RUNNER_COUNT is 1..4 parallel job containers. AAP_JOB_CPUS and
+# AAP_JOB_MEMORY are the pool total, split evenly and rounded down to whole
+# cpus and whole MiB. A slot under 1 cpu or 1g is refused. One slot keeps the
+# configured values verbatim. Runs after finish_job_limits validated them.
+finish_runner_count() {
+  local num unit mult mib cpus
+  [[ -z "${AAP_RUNNER_COUNT+x}" ]] && AAP_RUNNER_COUNT=1
+  if [[ ! "${AAP_RUNNER_COUNT}" =~ ^[1-4]$ ]]; then
+    echo "refusing: AAP_RUNNER_COUNT=${AAP_RUNNER_COUNT} is not 1..4" >&2
+    return 1
+  fi
+  if [[ "${AAP_RUNNER_COUNT}" -eq 1 ]]; then
+    SLOT_CPUS=${AAP_JOB_CPUS}
+    SLOT_MEMORY=${AAP_JOB_MEMORY}
+    return 0
+  fi
+  cpus=$(awk -v n="${AAP_JOB_CPUS}" -v c="${AAP_RUNNER_COUNT}" 'BEGIN { print int(n / c) }')
+  num=${AAP_JOB_MEMORY%[bBkKmMgG]}
+  unit=${AAP_JOB_MEMORY#"${num}"}
+  case "${unit}" in
+    k | K) mult=1024 ;;
+    m | M) mult=$((1024 * 1024)) ;;
+    g | G) mult=$((1024 * 1024 * 1024)) ;;
+    *) mult=1 ;;
+  esac
+  # Bash integers are 64-bit. Refuse before num * mult can wrap.
+  if [[ "${#num}" -gt 18 ]] || ((num > (1 << 62) / mult)); then
+    echo "refusing: AAP_JOB_MEMORY=${AAP_JOB_MEMORY} is too large to split" >&2
+    return 1
+  fi
+  mib=$((num * mult / AAP_RUNNER_COUNT / (1024 * 1024)))
+  if [[ "${cpus}" -lt 1 || "${mib}" -lt 1024 ]]; then
+    echo "refusing: AAP_RUNNER_COUNT=${AAP_RUNNER_COUNT} splits ${AAP_JOB_CPUS} cpus and ${AAP_JOB_MEMORY} into ${cpus} cpus and ${mib}m per slot; each slot needs 1 cpu and 1g" >&2
+    return 1
+  fi
+  SLOT_CPUS=${cpus}
+  if ((mib % 1024 == 0)); then
+    SLOT_MEMORY="$((mib / 1024))g"
+  else
+    SLOT_MEMORY="${mib}m"
   fi
 }
 
@@ -368,17 +427,25 @@ mint_registration_token() {
     | jq -er '.token'
 }
 
+# Removes only this job's container, its anonymous volumes, and its network.
+# No label-wide prune here: another slot's network has no endpoints between
+# docker create and docker start, and a prune would delete it.
+# remove_job_containers prunes at startup and stop, when no slot is running.
 cleanup_job() {
   local name="$1" net="$2"
-  docker rm -f "${name}" || true
+  docker rm -f -v "${name}" || true
   docker network rm "${net}" || true
-  docker volume prune -f --filter label=aap-crrr-job=1 >/dev/null || true
-  docker network prune -f --filter label=aap-crrr-job=1 >/dev/null || true
+}
+
+# Slots start in the same second under one manager PID, so the slot index
+# keeps container and network names unique.
+job_name() {
+  printf 'aap-crrr-%s-%s-%s\n' "$1" "$(date +%s)" "$$"
 }
 
 run_one() {
-  local token="" name net rc=1 killer="" seconds=0
-  name="aap-crrr-$(date +%s)-$$"
+  local slot="$1" token="" name net rc=1 killer="" seconds=0
+  name=$(job_name "${slot}")
   net="${name}"
   # set -e does not apply inside this function: the loop calls it from `if`.
   if ! docker network create --label aap-crrr-job=1 "${net}"; then
@@ -391,12 +458,13 @@ run_one() {
     --interactive \
     --name "${name}" \
     --network "${net}" \
-    --memory "${AAP_JOB_MEMORY}" \
-    --memory-swap "${AAP_JOB_MEMORY}" \
-    --cpus "${AAP_JOB_CPUS}" \
+    --memory "${SLOT_MEMORY}" \
+    --memory-swap "${SLOT_MEMORY}" \
+    --cpus "${SLOT_CPUS}" \
     --cpu-shares "${CPU_SHARES}" \
     --pids-limit "${AAP_JOB_PIDS_LIMIT}" \
     --label aap-crrr-job=1 \
+    --label "aap-crrr-slot=${slot}" \
     --env "AAP_GITHUB_ORG=${AAP_GITHUB_ORG}" \
     --env "AAP_RUNNER_LABELS=${AAP_RUNNER_LABELS}" \
     --env "AAP_RUNNER_GROUP=${AAP_RUNNER_GROUP}" \
@@ -660,37 +728,155 @@ self_check() {
   echo "disk floor self-check ok"
 }
 
-if [[ "${1:-}" == "--self-check" ]]; then
-  self_check
-  exit 0
-fi
+# A dead slot's job container keeps running and holds its cpus and memory.
+# Remove it, and its network (named after the container), before the slot
+# restarts or retires.
+remove_slot_containers() {
+  local id name
+  while IFS= read -r id; do
+    [[ -n "${id}" ]] || continue
+    name=$(docker inspect --format '{{.Name}}' "${id}" 2>/dev/null || true)
+    name=${name#/}
+    docker rm -f -v "${id}" >/dev/null || true
+    if [[ -n "${name}" ]]; then
+      docker network rm "${name}" >/dev/null 2>&1 || true
+    fi
+  done < <(docker ps -aq --filter label=aap-crrr-job=1 --filter "label=aap-crrr-slot=$1")
+}
 
-if [[ "${1:-}" == "--assert-mounts" ]]; then
-  assert_no_mnt_mounts "${2:?container name}"
-  exit 0
-fi
+remove_job_containers() {
+  local stale
+  while IFS= read -r stale; do
+    if [[ -n "${stale}" ]]; then
+      docker rm -f "${stale}" || true
+    fi
+  done < <(docker ps -aq --filter label=aap-crrr-job=1)
+  docker network prune -f --filter label=aap-crrr-job=1 >/dev/null || true
+}
 
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "aap-runner-manager must run as root" >&2
-  exit 1
-fi
+# One slot runs one job at a time, forever. A job that exits non-zero is the
+# normal path: the slot logs it and takes the next job. The slot drops the
+# parent's traps so only the parent cleans up the pool.
+slot_loop() {
+  local slot="$1"
+  trap - EXIT TERM INT
+  while true; do
+    if ! disk_ok; then
+      sleep 60
+      continue
+    fi
+    if ! run_one "${slot}"; then
+      echo "slot ${slot}: runner container exited non-zero; workspace was removed with the container" >&2
+      sleep 5
+    fi
+  done
+}
 
-load_config
-check_key
-
-while IFS= read -r stale; do
-  if [[ -n "${stale}" ]]; then
-    docker rm -f "${stale}" || true
+# Seconds to wait before restarting a slot that has died $1 times in a row.
+slot_restart_delay() {
+  local delay=$((10 * $1))
+  if [[ "${delay}" -gt 60 ]]; then
+    delay=60
   fi
-done < <(docker ps -aq --filter label=aap-crrr-job=1)
+  printf '%s\n' "${delay}"
+}
 
-while true; do
-  if ! disk_ok; then
-    sleep 60
-    continue
+start_slot() {
+  local slot="$1" delay="$2"
+  SLOT_STARTED[slot]=$(($(date +%s) + delay))
+  {
+    sleep "${delay}"
+    slot_loop "${slot}"
+  } &
+  SLOT_PIDS[slot]=$!
+}
+
+# SIGTERM, SIGINT, or exit: stop every slot, remove every job container by
+# label, prune job networks, and reap the slots.
+stop_pool() {
+  local pid
+  trap - EXIT TERM INT
+  for pid in "${SLOT_PIDS[@]}"; do
+    kill "${pid}" 2>/dev/null || true
+  done
+  remove_job_containers
+  wait 2>/dev/null || true
+}
+
+# A dead slot is restarted alone; the other slots' jobs keep running. A
+# retired slot leaves SLOT_PIDS, so wait only sees live slots and never
+# matches a retired PID again. wait -n -p needs bash 5.1. Ubuntu 24.04 ships 5.2.
+run_pool() {
+  local slot i died now
+  trap 'stop_pool; exit 143' TERM INT
+  trap stop_pool EXIT
+  for ((slot = 1; slot <= AAP_RUNNER_COUNT; slot++)); do
+    SLOT_FAILS[slot]=0
+    start_slot "${slot}" 0
+  done
+  while true; do
+    if [[ "${#SLOT_PIDS[@]}" -eq 0 ]]; then
+      echo "all ${AAP_RUNNER_COUNT} slots retired; stopping the manager" >&2
+      exit 1
+    fi
+    died=""
+    wait -n -p died "${SLOT_PIDS[@]}" || true
+    slot=""
+    for i in "${!SLOT_PIDS[@]}"; do
+      if [[ "${SLOT_PIDS[i]}" == "${died}" ]]; then
+        slot=${i}
+      fi
+    done
+    if [[ -z "${slot}" ]]; then
+      sleep 1
+      continue
+    fi
+    now=$(date +%s)
+    if [[ $((now - SLOT_STARTED[slot])) -lt "${SLOT_FAST_SECONDS}" ]]; then
+      SLOT_FAILS[slot]=$((SLOT_FAILS[slot] + 1))
+    else
+      SLOT_FAILS[slot]=1
+    fi
+    remove_slot_containers "${slot}"
+    if [[ "${SLOT_FAILS[slot]}" -ge "${SLOT_MAX_FAILS}" ]]; then
+      echo "slot ${slot} retired after ${SLOT_FAILS[slot]} fast deaths; other slots keep running" >&2
+      unset "SLOT_PIDS[${slot}]"
+      continue
+    fi
+    echo "slot ${slot} exited; restarting it" >&2
+    start_slot "${slot}" "$(slot_restart_delay "${SLOT_FAILS[slot]}")"
+  done
+}
+
+main() {
+  if [[ "${BASH_VERSINFO[0]}" -lt 5 || ("${BASH_VERSINFO[0]}" -eq 5 && "${BASH_VERSINFO[1]}" -lt 1) ]]; then
+    echo "refusing: bash ${BASH_VERSION} is older than 5.1; the slot supervisor needs wait -n -p" >&2
+    exit 1
   fi
-  if ! run_one; then
-    echo "runner container exited non-zero; workspace was removed with the container" >&2
-    sleep 5
+
+  if [[ "${1:-}" == "--self-check" ]]; then
+    self_check
+    exit 0
   fi
-done
+
+  if [[ "${1:-}" == "--assert-mounts" ]]; then
+    assert_no_mnt_mounts "${2:?container name}"
+    exit 0
+  fi
+
+  if [[ "$(id -u)" -ne 0 ]]; then
+    echo "aap-runner-manager must run as root" >&2
+    exit 1
+  fi
+
+  load_config
+  check_key
+  remove_job_containers
+  echo "runner pool: ${AAP_RUNNER_COUNT} slot(s), each --cpus ${SLOT_CPUS} --memory ${SLOT_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT}"
+  run_pool
+}
+
+# Runs only when executed. tests/ source this file for its functions.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

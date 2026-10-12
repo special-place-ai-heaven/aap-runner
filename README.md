@@ -198,6 +198,22 @@ autoMemoryReclaim=gradual
 
 Leave `networkingMode` unset, or set `nat`. `mirrored` is refused. `processors=28` leaves four threads for Windows on a 32-thread host. `autoMemoryReclaim=gradual` returns idle WSL memory to Windows. The manager runs `docker rm -f` when the job exits, so the container does not stay resident.
 
+## Runner pool
+
+`AAP_RUNNER_COUNT` in `manager.conf` is the number of job containers that run at once, 1 to 4. Absent means 1. An empty value, `0`, `5`, or `2.0` is refused. Each slot is its own loop: disk floor check, a fresh registration token, one container, cleanup, repeat. A job that exits non-zero is normal; the slot takes the next job. Container names are `aap-crrr-<slot>-<epoch>-<manager pid>`.
+
+`AAP_JOB_CPUS` and `AAP_JOB_MEMORY` are the pool total. Each container gets total / count, rounded down to whole cpus and whole MiB. A slot under 1 cpu or 1g is refused. `AAP_JOB_PIDS_LIMIT`, the wall clock, `--cpu-shares`, labels, and the runner group are per container and unchanged. Fresh at 24 cpus and `72g`:
+
+| Count | Per container |
+|---|---|
+| 1 | 24 cpus, `72g` |
+| 3 | 8 cpus, `24g` |
+| 4 | 6 cpus, `18g` |
+
+If a slot's loop dies, the manager removes that slot's job container (label `aap-crrr-slot=<N>`) and its network, then restarts that slot alone after 10 s per consecutive death, capped at 60 s. The other slots' jobs keep running. A slot that dies five times in a row, each within 120 s of starting, is retired and not restarted; the other slots and their jobs keep running. When every slot is retired the manager exits 1 and systemd restarts the pool. SIGTERM stops every slot, removes every `aap-crrr-job=1` container, and prunes job networks.
+
+The disk floor is checked before each container starts, not while parallel jobs run. Two or more jobs together can go below it.
+
 ## Threat model
 
 | Actor | What we assume | What limits them |

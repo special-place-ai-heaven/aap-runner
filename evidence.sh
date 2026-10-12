@@ -540,6 +540,7 @@ section "job container"
 memory=12g
 cpus=6
 pids=4096
+count=1
 image=aap-crrr-runner:local
 win_ip=""
 if hex=$(default_route_hex); then
@@ -561,10 +562,13 @@ if [[ -f /etc/aap-runner/manager.conf ]]; then
       AAP_JOB_CPUS) cpus=${val} ;;
       AAP_JOB_PIDS_LIMIT) pids=${val} ;;
       AAP_RUNNER_IMAGE) image=${val} ;;
+      AAP_RUNNER_COUNT) count=${val} ;;
     esac
   done < /etc/aap-runner/manager.conf
 fi
-echo "limits memory=${memory} cpus=${cpus} pids=${pids} image=${image}"
+# memory and cpus are the pool total. The manager splits them over count job
+# containers; this evidence container gets the total.
+echo "limits memory=${memory} cpus=${cpus} pids=${pids} count=${count} image=${image}"
 limits_ok=0
 if expect_mem=$(memory_bytes "${memory}") && expect_cpu=$(cpu_nanos "${cpus}") && [[ "${pids}" =~ ^[1-9][0-9]*$ ]]; then
   limits_ok=1
