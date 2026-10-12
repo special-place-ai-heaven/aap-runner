@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!-- Source file is UTF-8 so it can be reviewed. install-supervisor.ps1
+     writes the installed copy as UTF-16 LE with a BOM. schtasks /XML
+     rejects UTF-8. Logon trigger only: WSL sessions belong to the logon
+     session, so logoff stops the runner by design. -->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Supervise the aap-runner WSL distro from C:\ProgramData\aap-runner\state.json. Runs as the installing operator, not SYSTEM: SYSTEM cannot start a WSL distro.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>__AAP_USER_SID__</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>__AAP_USER_SID__</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PSModulePath=[Environment]::GetEnvironmentVariable('PSModulePath','Machine'); if ([string]::IsNullOrEmpty($env:PSModulePath)) { Write-Error 'refusing: machine PSModulePath is empty'; exit 1 }; &amp; '__AAP_PS1__'"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
