@@ -350,7 +350,10 @@ if ! command -v findmnt >/dev/null 2>&1; then
   bad "findmnt is missing"
   drives=""
 else
-  drives=$(findmnt -n -o FSTYPE,TARGET -t drvfs,9p 2>/dev/null || true)
+  # WSL's read-only GPU driver share (Fresh, WSL 3.0.3:
+  # "/usr/lib/wsl/drivers drivers 9p ro,...,aname=drivers") is not a drive.
+  drives=$(findmnt -rn -o FSTYPE,TARGET,SOURCE,OPTIONS -t drvfs,9p 2>/dev/null \
+    | awk '!($2 == "/usr/lib/wsl/drivers" && $3 == "drivers" && $4 ~ /^ro,/) { print $1, $2 }' || true)
 fi
 printf '%s\n' "${drives:-none}"
 if windows_drive_present <<< "${drives}"; then
@@ -503,14 +506,17 @@ check_on_work /var/lib/ghrunner/docker
 check_on_work /run/containerd
 check_on_work /var/lib/sysbox
 expect_bind() {
-  local path="$1" expect="$2" src
+  local path="$1" expect="$2" src disk="" rel=""
   if ! mountpoint -q "${path}"; then
     bad "${path} is not a bind mount"
     return 0
   fi
   src=$(findmnt -n -o SOURCE "${path}")
   echo "${path} source=${src}"
-  if [[ "${src}" != "${expect}" && "${src}" != *"[$expect]" ]]; then
+  disk=$(findmnt -n -o SOURCE /var/lib/ghrunner 2>/dev/null || true)
+  rel=${expect#/var/lib/ghrunner}
+  # findmnt shows device[path inside the filesystem], e.g. /dev/sde[/containerd].
+  if [[ "${src}" != "${expect}" && "${src}" != *"[$expect]" && ( -z "${disk}" || "${src}" != "${disk}[${rel}]" ) ]]; then
     bad "${path} source is ${src}; expected ${expect}"
   fi
 }

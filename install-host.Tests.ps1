@@ -152,5 +152,18 @@ Assert-Aap ($src.Contains("GetEnvironmentVariable('PSModulePath', 'Machine')")) 
 $tail = $src.Substring($src.LastIndexOf('InvocationName'))
 Assert-Aap ($tail.Contains('Initialize-AapModulePath') -and $tail.IndexOf('Initialize-AapModulePath') -lt $tail.IndexOf('Invoke-AapInstallHost')) 'module path is reset after the install starts'
 
+$plan = Get-AapInstallPlan (Get-AapBaseFacts @{ Denied = @('C:\wsl\aap-runner-work.vhdx') })
+Assert-Aap ($plan.ExitCode -eq 0) 'a locked VHDX failed a non-admin dry run'
+Assert-Aap (($plan.Lines -join "`n") -match 'INFO locked C:\\wsl') 'a locked VHDX was not reported on a dry run'
+$plan = Get-AapInstallPlan (Get-AapBaseFacts @{ DryRun = $false; Elevated = $true; Denied = @('C:\wsl\aap-runner-work.vhdx') })
+Assert-Aap ($plan.ExitCode -eq 1) 'a real run accepted an unreadable VHDX'
+Assert-Aap ($plan.Actions.Count -eq 0) 'an unreadable VHDX still has actions'
+Assert-Aap (-not $tail.Contains('exit (Invoke-AapInstallHost)')) 'plan lines are swallowed into the exit code'
+Assert-Aap (-not $src.Contains('-- /bin/wslpath')) 'wslpath runs through a shell that strips backslashes'
+
+Assert-Aap (-not $src.Contains('2>&1 | Out-String')) 'native stderr merged under Stop ends a PS 5.1 run'
+$q = Invoke-AapQuiet { & cmd.exe /d /c 'echo out & echo err 1>&2 & exit 3' }
+Assert-Aap ($LASTEXITCODE -eq 3 -and $q -match 'out' -and $q -match 'err') "Invoke-AapQuiet lost output or exit code: $LASTEXITCODE $q"
+
 Write-Output 'install-host dry-run tests ok'
 exit 0

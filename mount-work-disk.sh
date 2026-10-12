@@ -107,16 +107,24 @@ stage_bind_dirs() {
   fi
 }
 
+# findmnt prints a bind's SOURCE as device[path inside that filesystem].
+# On Fresh: /dev/sde[/containerd] for ${MOUNT}/containerd, so the path is
+# relative to the work disk's root. disk_dev is the SOURCE of ${MOUNT}.
 bind_source_ok() {
-  local src="$1" expect="$2"
-  [[ "${src}" == "${expect}" || "${src}" == *"[$expect]" ]]
+  local src="$1" expect="$2" disk_dev="${3:-}" rel=""
+  if [[ "${src}" == "${expect}" || "${src}" == *"[$expect]" ]]; then
+    return 0
+  fi
+  [[ -n "${disk_dev}" && "${expect}" == "${MOUNT}/"* ]] || return 1
+  rel=${expect#"${MOUNT}"}
+  [[ "${src}" == "${disk_dev}[${rel}]" ]]
 }
 
 bind_work_dir() {
   local dest="$1" link="$2" src
   if mountpoint -q "${link}"; then
     src=$(findmnt -n -o SOURCE "${link}")
-    if ! bind_source_ok "${src}" "${dest}"; then
+    if ! bind_source_ok "${src}" "${dest}" "$(findmnt -n -o SOURCE "${MOUNT}" 2>/dev/null || true)"; then
       echo "refusing: ${link} is mounted from ${src}, not ${dest}" >&2
       exit 1
     fi
@@ -208,6 +216,19 @@ self_check() {
   bind_source_ok "/dev/sdb[/var/lib/ghrunner/sysbox]" "/var/lib/ghrunner/sysbox"
   if bind_source_ok "/var/lib/sysbox" "/var/lib/ghrunner/sysbox"; then
     echo "a different bind source was accepted" >&2
+    exit 1
+  fi
+  # Recorded on Fresh: findmnt -n -o SOURCE /var/lib/containerd.
+  if ! MOUNT=/var/lib/ghrunner bind_source_ok "/dev/sde[/containerd]" "/var/lib/ghrunner/containerd" /dev/sde; then
+    echo "the Fresh bind source /dev/sde[/containerd] was refused" >&2
+    exit 1
+  fi
+  if MOUNT=/var/lib/ghrunner bind_source_ok "/dev/sdd[/containerd]" "/var/lib/ghrunner/containerd" /dev/sde; then
+    echo "a bind from another disk was accepted" >&2
+    exit 1
+  fi
+  if MOUNT=/var/lib/ghrunner bind_source_ok "/dev/sde[/sysbox]" "/var/lib/ghrunner/containerd" /dev/sde; then
+    echo "a bind of another directory was accepted" >&2
     exit 1
   fi
   rm -rf "${tmp}"

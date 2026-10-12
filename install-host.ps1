@@ -91,6 +91,16 @@ function Get-AapInstallPlan {
         Add-AapLine $lines 'PASS elevation admin'
     }
 
+    foreach ($d in @($Facts.Denied)) {
+        if (-not $d) { continue }
+        if ($Facts.DryRun) {
+            Add-AapLine $lines "INFO locked $d is not readable without elevation"
+        } else {
+            Add-AapLine $lines "FAIL locked $d is not readable without elevation"
+            $failed = $true
+        }
+    }
+
     if (-not $failed -and $Facts.LeftoverExt4 -and -not $Facts.DistroRegistered) {
         Add-AapLine $lines "FAIL leftover $install\ext4.vhdx"
         $failed = $true
@@ -100,7 +110,7 @@ function Get-AapInstallPlan {
     $undoLock = "icacls `"$grand`" /restore `"$parent-acl-before.txt`""
     $undoStage = "Remove-Item -LiteralPath `"$(Join-AapWinPath $parent 'staging')`" -Recurse -Force"
     $undoVhdx = "Remove-Item -LiteralPath `"$vhdx`" -Force"
-    $undoAttach = "wsl.exe --unmount --vhd `"$vhdx`""
+    $undoAttach = "wsl.exe --unmount `"$vhdx`""
     $undoFormat = "Remove-Item -LiteralPath `"$vhdx`" -Force"
     $undoImport = "wsl.exe --unregister $distro"
     $undoTask = 'schtasks.exe /Delete /TN AAP-CRRR-Mount-Work-Disk /F'
@@ -244,6 +254,16 @@ function Test-AapElevated {
     }
 }
 
+# Test-Path throws on a path locked to SYSTEM and Administrators when the
+# caller is not elevated. Returns $true, $false, or $null for denied.
+function Test-AapPathQuiet([string]$Path) {
+    try {
+        return [bool](Test-Path -LiteralPath $Path -ErrorAction Stop)
+    } catch {
+        return $null
+    }
+}
+
 function Test-AapAdminAcl([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
     $acl = Get-Acl -LiteralPath $Path
@@ -273,7 +293,8 @@ function Invoke-AapChecked {
 
 function Get-AapWslPath {
     param([string]$Operator, [string]$WindowsPath)
-    $out = & wsl.exe -d $Operator -- /bin/wslpath -u $WindowsPath
+    # -e: no shell, so the backslashes in the Windows path survive.
+    $out = & wsl.exe -d $Operator -e /bin/wslpath -u $WindowsPath
     if ($LASTEXITCODE -ne 0 -or -not $out) { throw "wslpath failed for $WindowsPath" }
     return ([string]$out).Trim()
 }
@@ -350,12 +371,21 @@ function Invoke-AapEvidenceText {
     $prev = $env:AAP_RUNNER_DISTRO
     $env:AAP_RUNNER_DISTRO = $Distro
     try {
-        $text = & wsl.exe -d $Operator -- /usr/bin/env "AAP_RUNNER_DISTRO=$Distro" /bin/bash $Evidence 2>&1 | Out-String
+        $text = Invoke-AapQuiet { & wsl.exe -d $Operator -- /usr/bin/env "AAP_RUNNER_DISTRO=$Distro" /bin/bash $Evidence }
         return [pscustomobject]@{ Code = $LASTEXITCODE; Text = $text }
     } finally {
         if ($null -eq $prev) { Remove-Item Env:AAP_RUNNER_DISTRO -ErrorAction SilentlyContinue }
         else { $env:AAP_RUNNER_DISTRO = $prev }
     }
+}
+
+# Windows PowerShell 5.1 turns native stderr merged with 2>&1 into a
+# terminating error when $ErrorActionPreference is Stop (Fresh: stat of an
+# absent app.pem ended a non-admin dry run with exit 1 and no plan).
+# $LASTEXITCODE is still the native exit code afterwards.
+function Invoke-AapQuiet([scriptblock]$Block) {
+    $ErrorActionPreference = 'Continue'
+    return (& $Block 2>&1 | ForEach-Object { "$_" } | Out-String)
 }
 
 function Test-AapTaskHashMatch([string]$XmlPath, [string]$HashPath) {
@@ -409,13 +439,15 @@ function Invoke-AapInstallHost {
     $linuxStage = Get-AapWslPath $OperatorDistro $stageWin
     $bootstrap = "$linuxRepo/bootstrap.sh"
 
-    $pre = & wsl.exe -d $OperatorDistro -- /usr/bin/env `
+    $pre = Invoke-AapQuiet {
+        & wsl.exe -d $OperatorDistro -- /usr/bin/env `
         "AAP_RUNNER_DISTRO=$DistroName" `
         "AAP_WORK_VHDX=$linuxVhdx" `
         "AAP_WORK_DISK_GIB=$WorkDiskGiB" `
         "AAP_RUNNER_INSTALL_DIR=$linuxInstall" `
         "AAP_RUNNER_STAGE=$linuxStage" `
-        /bin/bash $bootstrap --preflight 2>&1 | Out-String
+        /bin/bash $bootstrap --preflight
+    }
     $preExit = $LASTEXITCODE
     $proof = ''
     foreach ($line in ($pre -split "`n")) {
@@ -423,15 +455,17 @@ function Invoke-AapInstallHost {
     }
 
     $registered = $false
-    $list = & wsl.exe -l -q 2>&1 | Out-String
+    $list = Invoke-AapQuiet { & wsl.exe -l -q }
     $list = $list -replace [char]0, ''
     foreach ($line in ($list -split "`n")) {
         if ($line.Trim() -eq $DistroName) { $registered = $true }
     }
-    $vhdxExists = Test-Path -LiteralPath $WorkVhdx
+    $denied = New-Object System.Collections.Generic.List[string]
+    $vhdxExists = Test-AapPathQuiet $WorkVhdx
+    if ($null -eq $vhdxExists) { $denied.Add($WorkVhdx); $vhdxExists = $true }
     $aclLocked = $false
-    if (-not $TestMode -and (Test-Path -LiteralPath $parent)) {
-        $aclLocked = Test-AapAdminAcl $parent
+    if (-not $TestMode -and (Test-AapPathQuiet $parent)) {
+        try { $aclLocked = Test-AapAdminAcl $parent } catch { $denied.Add("$parent acl") }
     }
     $taskCurrent = $false
     if (-not $TestMode) {
@@ -439,7 +473,16 @@ function Invoke-AapInstallHost {
         $queried = $LASTEXITCODE -eq 0
         $hashFile = Join-Path $parent 'mount-work-vhdx-task.xml.prev-hash'
         $xmlFile = Join-Path $parent 'mount-work-vhdx-task.xml'
-        if ($queried -and (Test-AapTaskHashMatch $xmlFile $hashFile)) { $taskCurrent = $true }
+        try {
+            if ($queried -and (Test-AapTaskHashMatch $xmlFile $hashFile)) { $taskCurrent = $true }
+            # The xml hash does not cover the logon script. A changed
+            # mount-work-vhdx.ps1 must re-run the task step, which rewrites it.
+            if ($taskCurrent) {
+                $want = ((Get-Content -Raw -LiteralPath (Join-Path $repo 'mount-work-vhdx.ps1')) -replace '__AAP_VHDX__', $WorkVhdx).TrimEnd()
+                $have = (Get-Content -Raw -LiteralPath (Join-Path $parent 'mount-work-vhdx.ps1')).TrimEnd()
+                if ($have -ne $want) { $taskCurrent = $false }
+            }
+        } catch { $denied.Add($xmlFile) }
     }
     $insideDone = $false
     $pem = 'absent'
@@ -447,13 +490,13 @@ function Invoke-AapInstallHost {
     if ($registered) {
         & wsl.exe -d $DistroName -u root -- /bin/test -f /etc/aap-runner/install.done 1>$null 2>$null
         if ($LASTEXITCODE -eq 0) { $insideDone = $true }
-        $mode = & wsl.exe -d $DistroName -u root -- /usr/bin/stat -c '%a:%u' /etc/aap-runner/app.pem 2>&1 | Out-String
+        $mode = Invoke-AapQuiet { & wsl.exe -d $DistroName -u root -- /usr/bin/stat -c '%a:%u' /etc/aap-runner/app.pem }
         if ($LASTEXITCODE -eq 0 -and $mode.Trim() -eq '400:0') { $pem = 'ok' }
-        $en = & wsl.exe -d $DistroName -u root -- /bin/systemctl is-enabled aap-runner-manager 2>&1 | Out-String
+        $en = Invoke-AapQuiet { & wsl.exe -d $DistroName -u root -- /bin/systemctl is-enabled aap-runner-manager }
         if ($en -match '(?m)^enabled\s*$') { $managerOn = $true }
     }
     $attached = $pre -match 'PASS attached-disks work=/dev/'
-    $leftover = (-not $registered) -and (Test-Path -LiteralPath (Join-Path $InstallDir 'ext4.vhdx'))
+    $leftover = (-not $registered) -and [bool](Test-AapPathQuiet (Join-Path $InstallDir 'ext4.vhdx'))
 
     $facts = @{
         DryRun            = [bool]$DryRun
@@ -475,9 +518,10 @@ function Invoke-AapInstallHost {
         ManagerEnabled    = $managerOn
         KeyPath           = $KeyPath
         LeftoverExt4      = [bool]$leftover
+        Denied            = @($denied)
     }
     $plan = Get-AapInstallPlan -Facts $facts
-    foreach ($line in $plan.Lines) { Write-Output $line }
+    foreach ($line in $plan.Lines) { [Console]::Out.WriteLine($line) }
     if ($DryRun -or $plan.ExitCode -ne 0) { return [int]$plan.ExitCode }
     if (-not $proof -and -not $insideDone) { throw 'refusing: networking proof was not recorded' }
 
@@ -513,17 +557,17 @@ function Invoke-AapInstallHost {
                 if ($LASTEXITCODE -ne 0) { throw "create vhdx failed ($LASTEXITCODE)" }
             }
             'task' {
-                & wsl.exe -d $OperatorDistro -u root -- /usr/bin/env "AAP_WORK_VHDX=$linuxVhdx" "AAP_WORK_DISK_GIB=$WorkDiskGiB" /bin/bash $lockedBootstrap --register-task
+                & wsl.exe -d $OperatorDistro -u root -- /usr/bin/env "AAP_RUNNER_DISTRO=$DistroName" "AAP_WORK_VHDX=$linuxVhdx" "AAP_WORK_DISK_GIB=$WorkDiskGiB" /bin/bash $lockedBootstrap --register-task
                 if ($LASTEXITCODE -ne 0) { throw "register-task failed ($LASTEXITCODE)" }
             }
             'attach' {
-                $mountOut = & wsl.exe --mount --vhd $WorkVhdx --bare 2>&1 | Out-String
+                $mountOut = Invoke-AapQuiet { & wsl.exe --mount --vhd $WorkVhdx --bare }
                 if ($LASTEXITCODE -ne 0 -and $mountOut -notmatch 'already' -and $mountOut -notmatch 'WSL_E_USER_VHD_ALREADY_ATTACHED') {
                     throw "wsl --mount --vhd failed ($LASTEXITCODE)"
                 }
             }
             'format' {
-                & wsl.exe -d $OperatorDistro -u root -- /usr/bin/env "AAP_WORK_DISK_GIB=$WorkDiskGiB" /bin/bash $lockedBootstrap --format-work-disk
+                & wsl.exe -d $OperatorDistro -u root -- /usr/bin/env "AAP_RUNNER_DISTRO=$DistroName" "AAP_WORK_DISK_GIB=$WorkDiskGiB" "AAP_RUNNER_STAGE=$linuxStage" /bin/bash $lockedBootstrap --format-work-disk
                 if ($LASTEXITCODE -ne 0) { throw "format failed ($LASTEXITCODE)" }
             }
             'import' {
@@ -571,9 +615,9 @@ function Invoke-AapInstallHost {
                 Copy-AapLockedStaging $repo $stageWin (Join-Path $repo 'staging.sha256')
                 $ev = Invoke-AapEvidenceText $OperatorDistro "$linuxStage/evidence-host.sh" $DistroName
                 if ($ev.Code -ne 0 -or $ev.Text -match 'FAIL ') { throw 'P1 evidence failed' }
-                $en = & wsl.exe -d $DistroName -u root -- /bin/systemctl is-enabled aap-runner-manager 2>&1 | Out-String
+                $en = Invoke-AapQuiet { & wsl.exe -d $DistroName -u root -- /bin/systemctl is-enabled aap-runner-manager }
                 if ($en -match '(?m)^enabled\s*$') { throw 'manager is enabled after P1' }
-                $active = & wsl.exe -d $DistroName -u root -- /bin/systemctl is-active aap-runner-manager 2>&1 | Out-String
+                $active = Invoke-AapQuiet { & wsl.exe -d $DistroName -u root -- /bin/systemctl is-active aap-runner-manager }
                 if ($active.Trim() -eq 'active') { throw 'manager is running after P1' }
             }
         }
@@ -590,7 +634,13 @@ function Invoke-AapInstallHost {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         Initialize-AapModulePath
-        exit (Invoke-AapInstallHost)
+        # Only the [int] return is the exit code. Anything else the function
+        # emits (native command output) is printed, never returned.
+        $code = 1
+        Invoke-AapInstallHost | ForEach-Object {
+            if ($_ -is [int]) { $code = $_ } else { [Console]::Out.WriteLine([string]$_) }
+        }
+        exit $code
     } catch {
         [Console]::Error.WriteLine($_.Exception.Message)
         exit 1

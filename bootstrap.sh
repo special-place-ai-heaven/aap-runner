@@ -161,22 +161,126 @@ drive_is_mounted() {
   mountpoint -q "$1"
 }
 
-# Whole disks other than the distro root. A 650G ext4 disk attached for
-# another distro is not the work VHDX. Exact byte size is the only size match.
+# Operator distro only. The registered runner distro's root disk has no
+# mountpoint in this distro's mount namespace. Block device names are
+# VM-wide, so the runner's own findmnt names it. Never runs a distro that
+# is not ${DISTRO}.
+runner_root_disk_name() {
+  local list="" src=""
+  command -v wsl.exe >/dev/null 2>&1 || return 1
+  [[ -n "${DISTRO:-}" && "${DISTRO}" != "${WSL_DISTRO_NAME:-}" ]] || return 1
+  list=$(wsl.exe -l -q 2>/dev/null | tr -d '\000\r') || return 1
+  printf '%s\n' "${list}" | grep -qx "${DISTRO}" || return 1
+  src=$(wsl.exe -d "${DISTRO}" -u root -e findmnt -n -o SOURCE / 2>/dev/null | tr -d '\000\r') || return 1
+  [[ "${src}" =~ ^/dev/(sd[a-z]+|vd[a-z]+)$ ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+# Whole disks that could be the work VHDX: not swap, not read-only, and
+# with no mountpoint on the disk or any of its partitions. WSL's own disks
+# (the distro root, /usr/lib/linux-tools, /mnt/wslg, the read-only system
+# image, swap) are ignored. Any other unmounted disk, such as a 650G ext4
+# disk attached for another distro, is a candidate and is refused unless
+# it has the work VHDX's exact byte size.
+# AAP_LSBLK_P_FILE and AAP_SWAPS_FILE feed recorded text to the self-check.
 attached_extra_disks() {
-  local root_src="" root_disk="" name size
-  root_src=$(findmnt -n -o SOURCE / 2>/dev/null || true)
-  if [[ -n "${root_src}" ]]; then
-    root_disk=$(lsblk -no PKNAME "${root_src}" 2>/dev/null | awk 'NR==1 { print $1; exit }' || true)
-    if [[ -z "${root_disk}" ]]; then
-      root_disk=$(lsblk -no NAME "${root_src}" 2>/dev/null | awk 'NR==1 { print $1; exit }' || true)
-    fi
+  local text="" swaps=""
+  if [[ -n "${AAP_LSBLK_P_FILE:-}" ]]; then
+    text=$(< "${AAP_LSBLK_P_FILE}")
+  else
+    text=$(lsblk -bnP -o NAME,PKNAME,SIZE,RO,TYPE,FSTYPE,MOUNTPOINT 2>/dev/null || true)
   fi
-  while read -r name size; do
-    [[ -n "${name}" ]] || continue
-    [[ "${name}" == "${root_disk}" ]] && continue
-    printf '%s %s\n' "${name}" "${size}"
-  done < <(lsblk -bn -d -o NAME,SIZE 2>/dev/null || true)
+  if [[ -z "${AAP_IGNORE_DISKS+x}" ]]; then
+    AAP_IGNORE_DISKS=$(runner_root_disk_name || true)
+  fi
+  swaps=$(awk 'NR > 1 { print $1 }' "${AAP_SWAPS_FILE:-/proc/swaps}" 2>/dev/null || true)
+  printf '%s\n' "${text}" | awk -v swaps="${swaps}" -v ignore="${AAP_IGNORE_DISKS:-}" '
+    function field(line, key,   rest) {
+      if (match(line, key "=\"[^\"]*\"") == 0) { return "" }
+      rest = substr(line, RSTART + length(key) + 2, RLENGTH - length(key) - 3)
+      return rest
+    }
+    BEGIN {
+      n = split(swaps, sw, "\n"); for (i = 1; i <= n; i++) { if (sw[i] != "") { isswap[sw[i]] = 1 } }
+      n = split(ignore, ig, " "); for (i = 1; i <= n; i++) { if (ig[i] != "") { skip[ig[i]] = 1 } }
+    }
+    NF {
+      name = field($0, "NAME"); type = field($0, "TYPE"); pk = field($0, "PKNAME")
+      disk = (type == "disk" || pk == "") ? name : pk
+      if (type == "disk" || pk == "") { order[++count] = disk; size[disk] = field($0, "SIZE"); ro[disk] = field($0, "RO") }
+      if (field($0, "MOUNTPOINT") != "") { skip[disk] = 1 }
+      if (field($0, "FSTYPE") == "swap" || ("/dev/" name) in isswap) { skip[disk] = 1 }
+    }
+    END {
+      for (i = 1; i <= count; i++) {
+        d = order[i]
+        if (d == "" || seen[d]++) { continue }
+        if (skip[d] || ro[d] == "1") { continue }
+        print d, size[d]
+      }
+    }'
+}
+
+# Recorded on Fresh (WSL 3.0.3, kernel 6.18.54.1) from the operator distro:
+# lsblk -bnP -o NAME,PKNAME,SIZE,RO,TYPE,FSTYPE,MOUNTPOINT and /proc/swaps.
+# sda is the read-only system image, sdb the kernel tools disk, sdc swap,
+# sdd the operator root. None of them is a candidate.
+fresh_disk_self_check() {
+  local dir rc=0 err="" out=""
+  dir=$(mktemp -d)
+  cat > "${dir}/lsblk" << 'EOF'
+NAME="sda" PKNAME="" SIZE="758038528" RO="1" TYPE="disk" FSTYPE="ext4" MOUNTPOINT=""
+NAME="sdb" PKNAME="" SIZE="101683200" RO="1" TYPE="disk" FSTYPE="ext4" MOUNTPOINT="/usr/lib/linux-tools/6.18.54.1-microsoft-standard-WSL2"
+NAME="sdc" PKNAME="" SIZE="34359742464" RO="0" TYPE="disk" FSTYPE="swap" MOUNTPOINT="[SWAP]"
+NAME="sdd" PKNAME="" SIZE="697932185600" RO="0" TYPE="disk" FSTYPE="ext4" MOUNTPOINT="/mnt/wslg/distro"
+EOF
+  cat > "${dir}/swaps" << 'EOF'
+Filename				Type		Size		Used		Priority
+/dev/sdc                                partition	33554432	0		-2
+EOF
+  local AAP_IGNORE_DISKS=""
+  apply_work_disk_size 20
+  out=$(AAP_LSBLK_P_FILE="${dir}/lsblk" AAP_SWAPS_FILE="${dir}/swaps" attached_extra_disks)
+  if [[ -n "${out}" ]]; then
+    echo "Fresh WSL system disks were treated as candidates: ${out}" >&2
+    exit 1
+  fi
+  if ! err=$(AAP_LSBLK_P_FILE="${dir}/lsblk" AAP_SWAPS_FILE="${dir}/swaps" refuse_foreign_attached_disks 2>&1); then
+    echo "Fresh WSL system disks were refused: ${err}" >&2
+    exit 1
+  fi
+  cp "${dir}/lsblk" "${dir}/lsblk-work"
+  printf '%s\n' 'NAME="sde" PKNAME="" SIZE="21474836480" RO="0" TYPE="disk" FSTYPE="" MOUNTPOINT=""' >> "${dir}/lsblk-work"
+  out=$(AAP_LSBLK_P_FILE="${dir}/lsblk-work" AAP_SWAPS_FILE="${dir}/swaps" attached_extra_disks)
+  if [[ "${out}" != "sde 21474836480" ]]; then
+    echo "a blank 20G work disk on Fresh was not the only candidate: ${out}" >&2
+    exit 1
+  fi
+  if ! AAP_LSBLK_P_FILE="${dir}/lsblk-work" AAP_SWAPS_FILE="${dir}/swaps" refuse_foreign_attached_disks 2>/dev/null; then
+    echo "a blank 20G work disk on Fresh was refused" >&2
+    exit 1
+  fi
+  printf '%s\n' 'NAME="sdf" PKNAME="" SIZE="107374182400" RO="0" TYPE="disk" FSTYPE="ext4" MOUNTPOINT=""' >> "${dir}/lsblk-work"
+  rc=0
+  err=$(AAP_LSBLK_P_FILE="${dir}/lsblk-work" AAP_SWAPS_FILE="${dir}/swaps" refuse_foreign_attached_disks 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *"/dev/sdf=107374182400"* || "${err}" == *sde* ]]; then
+    echo "an unmounted 100G ext4 disk next to a 20G work disk was not refused: ${err}" >&2
+    exit 1
+  fi
+  # The registered runner's own root (1 TiB ext4.vhdx) is unmounted here.
+  cp "${dir}/lsblk" "${dir}/lsblk-runner"
+  printf '%s\n' 'NAME="sde" PKNAME="" SIZE="21474836480" RO="0" TYPE="disk" FSTYPE="ext4" MOUNTPOINT=""' >> "${dir}/lsblk-runner"
+  printf '%s\n' 'NAME="sdf" PKNAME="" SIZE="1099511627776" RO="0" TYPE="disk" FSTYPE="ext4" MOUNTPOINT=""' >> "${dir}/lsblk-runner"
+  if AAP_LSBLK_P_FILE="${dir}/lsblk-runner" AAP_SWAPS_FILE="${dir}/swaps" refuse_foreign_attached_disks 2>/dev/null; then
+    echo "an unknown unmounted 1 TiB disk was accepted" >&2
+    exit 1
+  fi
+  if ! AAP_IGNORE_DISKS=sdf AAP_LSBLK_P_FILE="${dir}/lsblk-runner" AAP_SWAPS_FILE="${dir}/swaps" refuse_foreign_attached_disks 2>/dev/null; then
+    echo "the runner's own root disk was refused" >&2
+    exit 1
+  fi
+  rm -rf "${dir}"
+  apply_work_disk_size 100
 }
 
 # Return 1 when any attached disk is not the work VHDX's exact byte size.
@@ -258,13 +362,62 @@ format_work_disk_fs() {
   if [[ "${decision}" == "mkfs" ]]; then
     mkfs.ext4 -F -L aap-runner-work "${dev}"
   fi
+  record_stage_work_disk_uuid "${dev}" || return 1
   printf '%s\n' "${decision}"
 }
 
+# Operator distro, after the foreign-disk check passed with the operator's
+# full view. Other distros' root disks have no mountpoint in a freshly
+# imported distro's namespace, so the runner selects the work disk by this
+# UUID plus the exact byte size instead of repeating that check.
+record_stage_work_disk_uuid() {
+  local dev="$1" uuid=""
+  [[ -n "${AAP_RUNNER_STAGE:-}" ]] || return 0
+  if ! uuid=$(probe_disk_uuid_here "${dev}"); then
+    echo "refusing: blkid did not return a UUID for ${dev}" >&2
+    return 1
+  fi
+  printf '%s\n' "${uuid}" > "${AAP_RUNNER_STAGE}/work-disk.uuid"
+}
+
+# Inside the runner: the one disk of the work byte size whose UUID is the
+# operator-recorded one. Never formats.
+work_disk_device_by_uuid() {
+  local want="$1" name="" size="" got="" found=""
+  local -a hits=()
+  while read -r name size; do
+    [[ -n "${name}" && "${size}" == "${WORK_DISK_BYTES}" ]] || continue
+    got=$(probe_disk_uuid_here "/dev/${name}" || true)
+    if [[ "${got}" == "${want}" ]]; then
+      hits+=("/dev/${name}")
+    fi
+  done < <(lsblk -bn -d -o NAME,SIZE 2>/dev/null || true)
+  if [[ "${#hits[@]}" -ne 1 ]]; then
+    echo "expected one ${WORK_DISK_BYTES}-byte disk with UUID ${want}; found ${#hits[@]}" >&2
+    return 1
+  fi
+  found=${hits[0]}
+  printf '%s\n' "${found}"
+}
+
 format_work_disk() {
-  local dev decision uuid line
-  decision=$(format_work_disk_fs) || exit 1
-  dev=$(work_disk_device) || exit 1
+  local dev decision uuid line want="" file="${AAP_RUNNER_STAGE:-}/work-disk.uuid"
+  if [[ -n "${AAP_RUNNER_STAGE:-}" && -f "${file}" ]]; then
+    want=$(tr -d '[:space:]' < "${file}")
+    if ! uuid_text_ok "${want}"; then
+      echo "refusing: ${file} is not a UUID" >&2
+      exit 1
+    fi
+    dev=$(work_disk_device_by_uuid "${want}") || exit 1
+    decision=$(work_disk_format_decision "${dev}") || exit 1
+    if [[ "${decision}" != keep ]]; then
+      echo "refusing: ${dev} has UUID ${want} but is not ext4" >&2
+      exit 1
+    fi
+  else
+    decision=$(format_work_disk_fs) || exit 1
+    dev=$(work_disk_device) || exit 1
+  fi
   if ! uuid=$(probe_disk_uuid_here "${dev}"); then
     echo "refusing: blkid did not return a UUID for ${dev}" >&2
     exit 1
@@ -697,11 +850,50 @@ assert_image_store_on_work_disk() {
 
 bind_source_expect() {
   local src="$1" expect="$2"
+  local disk="" rel=""
   if [[ "${src}" == "${expect}" || "${src}" == *"[$expect]" ]]; then
+    return 0
+  fi
+  # findmnt prints device[path inside the filesystem]; on Fresh the work
+  # disk is mounted at /var/lib/ghrunner, so the path is /containerd.
+  disk=$(findmnt -n -o SOURCE /var/lib/ghrunner 2>/dev/null || true)
+  rel=${expect#/var/lib/ghrunner}
+  if [[ -n "${disk}" && "${rel}" != "${expect}" && "${src}" == "${disk}[${rel}]" ]]; then
     return 0
   fi
   echo "refusing: bind source ${src} is not ${expect}" >&2
   exit 1
+}
+
+# Docker 29 keeps an existing docker0's address when bip changes. On Fresh
+# the packages' first start made docker0 172.17.0.1/16 while daemon.json
+# sets bip 172.20.0.1/16, so containers got gateway 172.20.0.1, which no
+# interface held, and had no DNS or egress. Docker is stopped here.
+docker0_want_bip() {
+  jq -r '.bip // empty' /etc/docker/daemon.json 2>/dev/null || true
+}
+
+reset_stale_docker0() {
+  local want have
+  want=$(docker0_want_bip)
+  [[ -n "${want}" ]] || return 0
+  ip link show docker0 >/dev/null 2>&1 || return 0
+  have=$(ip -4 -o addr show dev docker0 | awk '{ print $4; exit }')
+  if [[ "${have}" != "${want}" ]]; then
+    echo "docker0 is ${have:-unaddressed}; daemon.json bip is ${want}; removing the stale bridge"
+    ip link delete docker0
+  fi
+}
+
+require_docker0_bip() {
+  local want have
+  want=$(docker0_want_bip)
+  [[ -n "${want}" ]] || return 0
+  have=$(ip -4 -o addr show dev docker0 2>/dev/null | awk '{ print $4; exit }')
+  if [[ "${have}" != "${want}" ]]; then
+    echo "refusing: docker0 is ${have:-missing}; daemon.json bip is ${want}" >&2
+    exit 1
+  fi
 }
 
 inside_runtime() {
@@ -733,6 +925,7 @@ inside_runtime() {
   systemctl stop docker containerd sysbox sysbox-mgr sysbox-fs >/dev/null 2>&1 || true
   /usr/local/sbin/aap-mount-work-disk
   merge_daemon_json /etc/aap-runner/daemon.json
+  reset_stale_docker0
   if systemctl cat sysbox.service >/dev/null 2>&1; then
     systemctl enable --now sysbox
   else
@@ -742,6 +935,7 @@ inside_runtime() {
   systemctl enable --now containerd
   systemctl enable --now docker
   systemctl restart docker
+  require_docker0_bip
   rootdir=$(docker info -f '{{.DockerRootDir}}')
   if [[ "${rootdir}" != "/var/lib/ghrunner/docker" ]]; then
     echo "dockerd data-root is ${rootdir}; expected /var/lib/ghrunner/docker" >&2
@@ -857,7 +1051,7 @@ wslconfig_wsl2_value_bytes() {
     if [[ "${line}" =~ ^[[:space:]]*$ || "${line}" =~ ^[[:space:]]*# ]]; then
       continue
     fi
-    [[ "${section}" == "wsl2" ]] || continue
+    [[ "${section}" == "${AAP_WSLCONFIG_SECTION:-wsl2}" ]] || continue
     # An inline '#' is a comment. The value is the text before it.
     body=${line%%#*}
     if [[ ! "${body}" =~ ^[[:space:]]*([^=[:space:]]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
@@ -1952,13 +2146,30 @@ preflight_allow_disk_mount() {
 
 preflight_wsl_key() {
   local file="$1" key="$2" label="$3" value="" rc=0
-  if [[ "${file}" == "absent" || -z "${file}" ]]; then
+  if [[ -z "${file}" ]]; then
+    preflight_line FAIL "${label}" "profile path unknown"
+    return 0
+  fi
+  if [[ "${file}" == "absent" ]]; then
     if [[ "${key}" == "automemoryreclaim" ]]; then
       preflight_line WARN "${label}" missing
     else
       preflight_line PASS "${label}" missing
     fi
     return 0
+  fi
+  if [[ "${key}" == "automemoryreclaim" ]]; then
+    # WSL 2.x+ reads it from [experimental] and rejects it under [wsl2]
+    # (Fresh, WSL 3.0.3: "Unknown key 'wsl2.autoMemoryReclaim'").
+    value=$(AAP_WSLCONFIG_SECTION=experimental wslconfig_wsl2_value "${file}" "${key}") || rc=$?
+    if [[ "${rc}" -eq 0 ]]; then
+      preflight_line PASS "${label}" "${value}"
+      return 0
+    fi
+    if [[ "${rc}" -eq 1 ]] && wslconfig_wsl2_value "${file}" "${key}" >/dev/null; then
+      preflight_line WARN "${label}" "under [wsl2]; WSL reads it from [experimental]"
+      return 0
+    fi
   fi
   value=$(wslconfig_wsl2_value "${file}" "${key}") || rc=$?
   if [[ "${rc}" -eq 0 ]]; then
@@ -1976,7 +2187,7 @@ preflight_wsl_key() {
 # Not-elevated is INFO: install-host.ps1 decides whether that blocks the run.
 # Does not import, mount, format, lock, or register a task.
 preflight() {
-  local user="" name="" text="" rc=0 dev="" bytes="" list="" foreign=""
+  local user="" name="" text="" rc=0 dev="" bytes="" list="" foreign="" errfile=""
   local tool url label
   PREFLIGHT_FAILED=0
   AAP_NETWORKING_PROOF=""
@@ -2025,8 +2236,12 @@ preflight() {
     preflight_line INFO elevation "not-admin"
   fi
   rc=0
-  text=$(prove_operator_networking 2>&1) || rc=$?
-  if [[ "${rc}" -eq 0 ]]; then
+  # Not in $( ): the proof and profile path must reach this shell.
+  errfile=$(mktemp)
+  prove_operator_networking 2> "${errfile}" || rc=$?
+  text=$(< "${errfile}")
+  rm -f "${errfile}"
+  if [[ "${rc}" -eq 0 && ( "${AAP_NETWORKING_PROOF}" == nat || "${AAP_NETWORKING_PROOF}" == absent ) ]]; then
     preflight_line PASS networkingMode "${AAP_NETWORKING_PROOF}"
     preflight_line PASS profile "${AAP_WSLCONFIG_PATH}"
   else
@@ -2037,7 +2252,10 @@ preflight() {
   preflight_wsl_key "${AAP_WSLCONFIG_PATH}" swap swap
   preflight_wsl_key "${AAP_WSLCONFIG_PATH}" automemoryreclaim autoMemoryReclaim
   preflight_allow_disk_mount
-  if [[ ! -e "${WORK_VHDX}" ]]; then
+  if [[ ! -e "${WORK_VHDX}" && -d "$(dirname "${WORK_VHDX}")" && ! -r "$(dirname "${WORK_VHDX}")" ]]; then
+    # C:\wsl locked to SYSTEM and Administrators: not listable from here.
+    preflight_line INFO vhdx "parent not readable without elevation"
+  elif [[ ! -e "${WORK_VHDX}" ]]; then
     preflight_line PASS vhdx absent
   elif [[ ! -f "${WORK_VHDX}" ]]; then
     preflight_line FAIL vhdx "not-a-file"
@@ -2189,8 +2407,12 @@ printf '%s\n' /dev/sda1
 EOF
   cat > "${bin}/lsblk" << 'EOF'
 #!/bin/bash
-if [[ "$*" == *PKNAME* ]]; then
-  printf '%s\n' sda
+if [[ "$*" == *-bnP* ]]; then
+  printf '%s\n' 'NAME="sda" PKNAME="" SIZE="274877906944" RO="0" TYPE="disk" FSTYPE="" MOUNTPOINT=""'
+  printf '%s\n' 'NAME="sda1" PKNAME="sda" SIZE="274877906944" RO="0" TYPE="part" FSTYPE="ext4" MOUNTPOINT="/"'
+  if [[ "${AAP_FAKE_FOREIGN_DISK:-}" == 1 ]]; then
+    printf '%s\n' 'NAME="sdd" PKNAME="" SIZE="697932185600" RO="0" TYPE="disk" FSTYPE="ext4" MOUNTPOINT=""'
+  fi
   exit 0
 fi
 printf '%s\n' "sda 274877906944"
@@ -2270,6 +2492,7 @@ EOF
     echo "a size-only lookup saw the 650G disk" >&2
     exit 1
   fi
+  fresh_disk_self_check
   PATH=${saved_path}
   rm -rf "${bin}"
   if [[ ! -f "${SCRIPT_DIR}/staging.sha256" ]]; then
