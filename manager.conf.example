@@ -37,3 +37,9 @@ AAP_JOB_TIMEOUT_MINUTES=120
 # over 3 is 8 cpus and 24g each. A split under 1 cpu or 1g is refused.
 # AAP_JOB_PIDS_LIMIT is per container. One container keeps the values verbatim.
 AAP_RUNNER_COUNT=1
+# Every job mounts /var/lib/ghrunner/sccache (owner the image's runner uid,
+# mode 0700) at /var/cache/aap-sccache, with RUSTC_WRAPPER=sccache and
+# SCCACHE_CACHE_SIZE=10G. ci.yml sets SCCACHE_DIR to one subdirectory per
+# repository; that is a convention, not an isolation boundary. Each directory
+# counts against AAP_DISK_FLOOR_GB. Before each job the whole cache is wiped
+# when it is over 20480 MiB (SCCACHE_TREE_MAX_MB in manager.sh).

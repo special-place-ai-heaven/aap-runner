@@ -48,6 +48,17 @@ SLOT_FAILS=()
 # systemd restarts the whole pool.
 SLOT_MAX_FAILS=5
 SLOT_FAST_SECONDS=120
+# Shared rustc cache on the work disk, bind-mounted into every job. sccache's
+# local disk cache is built for concurrent readers and writers (separate
+# sccache servers, one per job), so parallel slots can share it. ci.yml sets
+# SCCACHE_DIR to a per-repository subdirectory; "default" is for jobs that do not.
+SCCACHE_HOST_DIR=${WORK_MOUNT}/sccache
+SCCACHE_CONTAINER_DIR=/var/cache/aap-sccache
+SCCACHE_CACHE_SIZE=10G
+# SCCACHE_CACHE_SIZE bounds one directory, and any job can create another.
+# Before each job the whole tree is measured; over this cap it is wiped.
+SCCACHE_TREE_MAX_MB=20480
+RUNNER_UID=""
 
 below_floor() {
   local avail="$1" floor="$2"
@@ -437,6 +448,17 @@ cleanup_job() {
   docker network rm "${net}" || true
 }
 
+# du rounds up to whole MiB. rm keeps the top directory and its owner.
+bound_sccache_tree() {
+  local used
+  [[ -d "${SCCACHE_HOST_DIR}" ]] || return 0
+  used=$(du -sm "${SCCACHE_HOST_DIR}" 2>/dev/null | awk '{ print $1 }')
+  if [[ "${used}" =~ ^[0-9]+$ && "${used}" -gt "${SCCACHE_TREE_MAX_MB}" ]]; then
+    echo "sccache tree ${SCCACHE_HOST_DIR} is ${used} MiB, over ${SCCACHE_TREE_MAX_MB}; wiping it" >&2
+    rm -rf "${SCCACHE_HOST_DIR:?}"/*
+  fi
+}
+
 # Slots start in the same second under one manager PID, so the slot index
 # keeps container and network names unique.
 job_name() {
@@ -448,11 +470,18 @@ run_one() {
   name=$(job_name "${slot}")
   net="${name}"
   # set -e does not apply inside this function: the loop calls it from `if`.
+  # disk_ok passed just before this, so the cache dir is on the work disk.
+  bound_sccache_tree
+  if ! install -d -o "${RUNNER_UID}" -m 0700 "${SCCACHE_HOST_DIR}"; then
+    echo "refusing to start a job: could not create ${SCCACHE_HOST_DIR}" >&2
+    return 1
+  fi
   if ! docker network create --label aap-crrr-job=1 "${net}"; then
     return 1
   fi
-  # No -v, no --mount, no /mnt. assert_no_mnt_mounts rejects a source under /mnt
-  # even if the daemon adds one. /mnt/wsl is the shared docker-desktop tmpfs.
+  # One bind mount, the sccache dir on the work disk. No -v, no /mnt.
+  # assert_no_mnt_mounts rejects a source under /mnt even if the daemon adds
+  # one. /mnt/wsl is the shared docker-desktop tmpfs.
   if ! docker create \
     --runtime=sysbox-runc \
     --interactive \
@@ -470,6 +499,10 @@ run_one() {
     --env "AAP_RUNNER_GROUP=${AAP_RUNNER_GROUP}" \
     --env "AAP_WORK_DISK_GIB=${AAP_WORK_DISK_GIB}" \
     --env "AAP_DISK_FLOOR_GB=${AAP_DISK_FLOOR_GB}" \
+    --mount "type=bind,source=${SCCACHE_HOST_DIR},target=${SCCACHE_CONTAINER_DIR}" \
+    --env "RUSTC_WRAPPER=sccache" \
+    --env "SCCACHE_DIR=${SCCACHE_CONTAINER_DIR}/default" \
+    --env "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE}" \
     "${AAP_RUNNER_IMAGE}"; then
     docker network rm "${net}" || true
     return 1
@@ -728,6 +761,30 @@ self_check() {
   echo "disk floor self-check ok"
 }
 
+runner_uid_ok() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+# The cache dir is owned by the image's runner uid, mode 0700. Sysbox mounts
+# host binds ID-mapped, so that host uid is the same uid inside the job.
+# Mode 1777 would let any distro account, ghrunner included, plant cache
+# objects, and so would a runner uid that a distro account also has.
+# Read once at startup with the default runtime and no network.
+resolve_runner_uid() {
+  local out="" account
+  out=$(docker run --rm --pull never --network none --entrypoint id "${AAP_RUNNER_IMAGE}" -u runner 2>/dev/null) || out=""
+  if ! runner_uid_ok "${out}"; then
+    echo "refusing: runner uid in ${AAP_RUNNER_IMAGE} is '${out}', not a plain non-zero integer" >&2
+    return 1
+  fi
+  account=$(getent passwd "${out}" | cut -d: -f1 || true)
+  if [[ -n "${account}" ]]; then
+    echo "refusing: runner uid ${out} is distro account ${account}; the cache would be writable from the distro" >&2
+    return 1
+  fi
+  RUNNER_UID=${out}
+}
+
 # A dead slot's job container keeps running and holds its cpus and memory.
 # Remove it, and its network (named after the container), before the slot
 # restarts or retires.
@@ -871,6 +928,7 @@ main() {
 
   load_config
   check_key
+  resolve_runner_uid
   remove_job_containers
   echo "runner pool: ${AAP_RUNNER_COUNT} slot(s), each --cpus ${SLOT_CPUS} --memory ${SLOT_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT}"
   run_pool

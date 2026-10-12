@@ -57,9 +57,9 @@ systemd=true
 
 Inside the distro: Docker CE `5:29.9.0-1~ubuntu.24.04~noble` and containerd.io `2.4.1-2~ubuntu.24.04~noble`, installed from Docker's apt repository. The key is `https://download.docker.com/linux/ubuntu/gpg`, sha256 `1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570`, fingerprint `9DC858229FC7DD38854AE2D88D81803C0EBFCD88`. There is no `get.docker.com` script and no Ubuntu `docker.io` package. Sysbox CE 0.7.1 is the runtime. Phase 1 on this PC used kernel `6.18.35.2-microsoft-standard-WSL2` with idmapped mounts and no shiftfs. The preflight still has to pass; that kernel is the one that did, not a waiver.
 
-Each job is a new container started with `--runtime=sysbox-runc`. That container has no host mount and no host docker socket. The inner dockerd is 27.3.1 (`docker-ce=5:27.3.1-1~ubuntu.24.04~noble`, containerd.io `1.7.29-1~ubuntu.24.04~noble`). Phase 1 ran MySQL 8.4, which is 8.4.11, on `127.0.0.1:3306` from that inner daemon and reached it from the job container. Service containers stay on that inner dockerd.
+Each job is a new container started with `--runtime=sysbox-runc`. That container has one host mount, the compile cache (see [Runner pool and compile cache](#runner-pool-and-compile-cache)), and no host docker socket. The inner dockerd is 27.3.1 (`docker-ce=5:27.3.1-1~ubuntu.24.04~noble`, containerd.io `1.7.29-1~ubuntu.24.04~noble`). Phase 1 ran MySQL 8.4, which is 8.4.11, on `127.0.0.1:3306` from that inner daemon and reached it from the job container. Service containers stay on that inner dockerd.
 
-Service images are pulled by that inner dockerd on every job. A pre-seeded tarball does not stop the pull. `ci.yml` pins the multi-arch index digest (`image@sha256:…`). `docker save` / `docker load` keeps the platform image and drops the index digest, so the inner daemon still fetches the digest the workflow names. A host mount of a cache would break the no-host-mount rule. A registry on the host is behind the bridge filter, which drops the gateway and RFC1918 on purpose. The pull is network time and bandwidth. The unpacked layers live in the job container's writable layer, which is on the work disk, and `docker rm -f` deletes them with the container. They do not accumulate on the distro root.
+Service images are pulled by that inner dockerd on every job. A pre-seeded tarball does not stop the pull. `ci.yml` pins the multi-arch index digest (`image@sha256:…`). `docker save` / `docker load` keeps the platform image and drops the index digest, so the inner daemon still fetches the digest the workflow names. A host mount of an image cache would add a second host mount; the compile cache is the only one. A registry on the host is behind the bridge filter, which drops the gateway and RFC1918 on purpose. The pull is network time and bandwidth. The unpacked layers live in the job container's writable layer, which is on the work disk, and `docker rm -f` deletes them with the container. They do not accumulate on the distro root.
 
 `ghrunner` is the distro login, uid 1002. It is not in `sudo` or `docker`. `sudo -n -l -U ghrunner` must print `not allowed to run sudo`. sudo 1.9.15p5 exits 0 for that denial, so the exit status is not the check. The manager is a root systemd service. The in-container user `runner` is a different account. It is in the container's `docker` group so it can talk to the inner socket, and it has no sudo. The image includes `build-essential`, `pkg-config`, `libdbus-1-dev`, `mysql-client`, `tar`, `xz-utils`, and `unzip` because the job cannot `apt-get`. `scripts/check-workspace-lints.sh` is bash and awk, which the image already has.
 
@@ -198,7 +198,7 @@ autoMemoryReclaim=gradual
 
 Leave `networkingMode` unset, or set `nat`. `mirrored` is refused. `processors=28` leaves four threads for Windows on a 32-thread host. `autoMemoryReclaim=gradual` returns idle WSL memory to Windows. The manager runs `docker rm -f` when the job exits, so the container does not stay resident.
 
-## Runner pool
+## Runner pool and compile cache
 
 `AAP_RUNNER_COUNT` in `manager.conf` is the number of job containers that run at once, 1 to 4. Absent means 1. An empty value, `0`, `5`, or `2.0` is refused. Each slot is its own loop: disk floor check, a fresh registration token, one container, cleanup, repeat. A job that exits non-zero is normal; the slot takes the next job. Container names are `aap-crrr-<slot>-<epoch>-<manager pid>`.
 
@@ -214,11 +214,15 @@ If a slot's loop dies, the manager removes that slot's job container (label `aap
 
 The disk floor is checked before each container starts, not while parallel jobs run. Two or more jobs together can go below it.
 
+The compile cache is `/var/lib/ghrunner/sccache`, on the work disk. The manager creates it after the floor check, owned by the image's `runner` uid with mode 0700, and bind-mounts it at `/var/cache/aap-sccache`. The uid is read once at startup with `docker run --rm --network none --entrypoint id <image> -u runner`. Anything other than a plain non-zero integer, or a uid that a distro account already has (`getent passwd`), stops the manager. Sysbox mounts host binds ID-mapped, so that host uid is `runner` inside the job. That assumption is verified live after the next install: in a running job, `ls -ln /var/cache/aap-sccache` must show the runner uid and `sccache --show-stats` must report the per-repository cache location.
+
+Each job gets `RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/var/cache/aap-sccache/default`, and `SCCACHE_CACHE_SIZE=10G`. `ci.yml` moves `SCCACHE_DIR` to `/var/cache/aap-sccache/<owner>_<repo>` before sccache starts. That subdirectory is a convention, not a boundary; see the threat model. Parallel jobs of one repository share that directory; sccache's disk cache takes concurrent writers. The 10G limit is per directory, and each directory counts against `AAP_DISK_FLOOR_GB`. Any job can create more directories, so before each job the manager runs `du -sm` on the whole tree and wipes it (`rm -rf` of its contents) when it is over `SCCACHE_TREE_MAX_MB`, 20480 MiB. Jobs already running then miss the cache until it refills. Any repository that runs `cargo` on this runner must install `sccache` (`mozilla-actions/sccache-action`), because `RUSTC_WRAPPER` is set for every job. To clear the cache, stop the manager and remove the directory. To change the size, edit `SCCACHE_CACHE_SIZE` in `manager.sh`. The environment names are whitelisted in `ephemeral-entry.sh`, so this needs the image rebuild below.
+
 ## Threat model
 
 | Actor | What we assume | What limits them |
 |---|---|---|
-| CI job code | Can run whatever the workflow runs, inside one container | No host mount, no host docker socket, inner dockerd only, container and its volumes deleted after the job, fork jobs are not scheduled |
+| CI job code | Can run whatever the workflow runs, inside one container. Every job on this host shares one cache directory read-write as the runner uid. The per-repository `SCCACHE_DIR` is a convention, not a boundary: any job can write objects that a later job of any repository on this host, including main-branch builds, will link. Fork PRs never run here | One host mount (the compile cache on the work disk, never under `/mnt`), no host docker socket, inner dockerd only, container and its volumes deleted after the job, fork jobs are not scheduled |
 | Fork PR | Must not get a runner | Job `if` skips foreign `pull_request` heads. No `pull_request_target`. Org setting keeps fork workflows off. The runner group disallows public repos |
 | Stolen App private key | Attacker can mint registration tokens until the key is revoked | The App has org permission **Self-hosted runners: Read and write** and nothing else. It cannot change branch protection, collaborators, or repo settings. The runner group lists selected repos, so a registered runner is not offered to the rest of the org |
 | `ghrunner` (uid 1002) | Can log in to the distro | No sudo, not in the `docker` group, no Windows filesystem, no Windows PATH |
@@ -329,6 +333,7 @@ PR #39's known-failure inventory is the workspace, agents, and backend test comm
 | `actions/setup-node` | `49933ea5288caeca8642d1e84afbd3f7d6820020` | v4.4.0 |
 | `Swatinem/rust-cache` | `6323deb102c322ba6fcbdcafc7e3dddab59af2b6` | v2.9.2 |
 | `dtolnay/rust-toolchain` | `e2a55d2ffb04f378e9626c28d38b36d230d1e12f` | master 2026-10-09, `toolchain: stable` |
+| `mozilla-actions/sccache-action` | `fc920bf0ec8de6ee65d409111f7ec508035751ba` | v0.0.11 (annotated tag `fd02668681acd5f960e1372061bee5e3e987195c`), `version: v0.18.0` |
 
 `dtolnay/rust-toolchain` selects the toolchain from the ref when you write `@stable`. A SHA pin does not, so every job sets `toolchain: stable` itself.
 

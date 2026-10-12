@@ -72,8 +72,9 @@ runuser -u runner \
 reg_token=""
 unset reg_token AAP_RUNNER_REG_TOKEN
 
-# run.sh is a second runuser, so the disk bounds docker passed in are dropped
-# unless they are named here. config.sh above keeps its own four names.
+# run.sh is a second runuser, so the disk bounds and the sccache settings
+# docker passed in are dropped unless they are named here. config.sh above
+# keeps its own four names.
 exec runuser -u runner \
-  --whitelist-environment=AAP_WORK_DISK_GIB,AAP_DISK_FLOOR_GB \
+  --whitelist-environment=AAP_WORK_DISK_GIB,AAP_DISK_FLOOR_GB,RUSTC_WRAPPER,SCCACHE_DIR,SCCACHE_CACHE_SIZE \
   -- bash -c 'cd /opt/actions-runner && exec ./run.sh'

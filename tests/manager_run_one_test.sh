@@ -1,7 +1,8 @@
 #!/bin/bash
 # run_one with docker, the token mint, and the wall clock stubbed: the
-# docker create argv carries the runtime, per-slot limits, and slot label,
-# and the token goes to stdin, never to argv.
+# docker create argv carries the runtime, per-slot limits, slot label, cache
+# mount and cache env, and the token goes to stdin, never to argv. Also the
+# cache tree cap.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -56,6 +57,8 @@ AAP_RUNNER_GROUP=aap-crrr
 AAP_WORK_DISK_GIB=100
 AAP_DISK_FLOOR_GB=55
 AAP_RUNNER_IMAGE=aap-crrr-runner:local
+RUNNER_UID=$(id -u)
+SCCACHE_HOST_DIR="${work}/sccache"
 
 run_one 2 >/dev/null || fail "run_one returned non-zero with every docker call stubbed to succeed"
 
@@ -85,6 +88,10 @@ pair --pids-limit 8192
 pair --cpu-shares 512
 pair --label aap-crrr-job=1
 pair --label aap-crrr-slot=2
+pair --mount "type=bind,source=${SCCACHE_HOST_DIR},target=/var/cache/aap-sccache"
+pair --env RUSTC_WRAPPER=sccache
+pair --env SCCACHE_DIR=/var/cache/aap-sccache/default
+pair --env SCCACHE_CACHE_SIZE=10G
 [[ "${argv[-1]}" == aap-crrr-runner:local ]] || fail "image is not the last argument: ${argv[-1]}"
 name=""
 for ((i = 0; i < ${#argv[@]} - 1; i++)); do
@@ -100,11 +107,24 @@ if grep -q test-registration-token "${calls}"; then
   fail "the registration token appeared in a docker argv"
 fi
 [[ "$(cat "${stdin_seen}")" == test-registration-token ]] || fail "the token was not on docker start's stdin"
+[[ -d "${SCCACHE_HOST_DIR}" ]] || fail "run_one did not create the cache dir"
+[[ "$(stat -c '%a %u' "${SCCACHE_HOST_DIR}")" == "700 ${RUNNER_UID}" ]] || fail "cache dir is not mode 700 owned by the runner uid"
 if grep -q 'prune' "${calls}"; then
   fail "run_one ran a label-wide prune: $(grep prune "${calls}")"
 fi
 grep -qx "rm -f -v ${name}" "${calls}" || fail "run_one did not remove its own container"
 grep -qx "network rm ${name}" "${calls}" || fail "run_one did not remove its own network"
-echo "token and per-job cleanup ok"
+echo "token, cache dir, and per-job cleanup ok"
+
+mkdir -p "${SCCACHE_HOST_DIR}/repo"
+head -c 2097152 /dev/zero > "${SCCACHE_HOST_DIR}/repo/object"
+SCCACHE_TREE_MAX_MB=8
+bound_sccache_tree 2>/dev/null
+[[ -f "${SCCACHE_HOST_DIR}/repo/object" ]] || fail "a tree under the cap was wiped"
+SCCACHE_TREE_MAX_MB=1
+bound_sccache_tree 2>/dev/null
+[[ -d "${SCCACHE_HOST_DIR}" ]] || fail "the wipe removed the top cache dir"
+[[ -z "$(ls -A "${SCCACHE_HOST_DIR}")" ]] || fail "a tree over the cap was not wiped"
+echo "cache tree cap ok"
 
 echo "manager run_one tests ok"
