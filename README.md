@@ -263,7 +263,9 @@ The script downloads three pinned artifacts and checks sha256 before it uses the
 | Sysbox CE 0.7.1 amd64 | `https://github.com/nestybox/sysbox/releases/download/v0.7.1/sysbox-ce_0.7.1.linux_amd64.deb` | `9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5` |
 | actions-runner 2.338.0 linux-x64 | `https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz` | `af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32` |
 
-The VHDX is imported at `C:\aap-runner` (override with `AAP_RUNNER_INSTALL_DIR`). That path is outside the Windows user profile. After import the distro cannot mount it back.
+The rootfs tarball is downloaded into `C:\aap-runner-staging`, which bootstrap locks to SYSTEM and Administrators, and its sha256 is checked on that copy. `wsl --import` receives that `C:\` path. Importing from `\\wsl.localhost\<the operator distro>\...` stalls, so that path is refused. The staging directory, including the tarball, is removed when bootstrap exits. The import prints `importing aap-runner (this takes ~1-2 min)...` and is limited to 15 minutes; a timeout stops the install. The distro VHDX is created at `C:\aap-runner` (override with `AAP_RUNNER_INSTALL_DIR`). That path is outside the Windows user profile. After import the distro cannot mount it back.
+
+If `wsl -l` does not list `aap-runner` but `C:\aap-runner\ext4.vhdx` is already there, an interrupted import left that folder. Bootstrap tells the operator to delete it and does not delete it itself.
 
 Bootstrap creates the fixed VHDX at `AAP_WORK_DISK_GIB` (default 60), formats it, and registers `AAP-CRRR-Mount-Work-Disk` for the installing operator. The task xml is written as UTF-16 LE with a BOM, because `schtasks /XML` rejects a UTF-8 file. Registering that task needs an elevated shell. If Task Scheduler rejects it, the install stops. An earlier `AAP-CRRR-C-Free-GB` task is deleted if it is present. The task runs at the operator's next logon. This session is already mounted by bootstrap itself. After a reboot the disk stays unmounted until that operator logs on.
 

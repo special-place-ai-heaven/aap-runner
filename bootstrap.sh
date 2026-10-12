@@ -250,7 +250,8 @@ powershell_file_command() {
   shift
   cmd="$(powershell_module_prefix); & $(ps_single_quote "${script}")"
   for arg in "$@"; do
-    if [[ "${arg}" == -* ]]; then
+    # A leading dash is not enough. "-bad; calc" must be quoted data.
+    if [[ "${arg}" =~ ^-[A-Za-z]+$ ]]; then
       cmd+=" ${arg}"
     else
       cmd+=" $(ps_single_quote "${arg}")"
@@ -282,6 +283,48 @@ distro_exists() {
     exit 1
   fi
   printf '%s' "${list}" | tr -d '\000\r' | grep -qx "${DISTRO}"
+}
+
+# wsl --import of \\wsl.localhost\<this-distro>\... stalls. The tarball
+# has to be a drive-letter path on the Windows volume.
+windows_drive_path() {
+  [[ "$1" =~ ^[A-Za-z]:\\ ]]
+}
+
+import_distro() {
+  local win_install="$1" win_tar="$2" rc=0
+  if ! windows_drive_path "${win_tar}"; then
+    echo "refusing: import tarball ${win_tar} is not a Windows drive path. wsl --import from a \\\\wsl.localhost path stalls." >&2
+    return 1
+  fi
+  echo "importing aap-runner (this takes ~1-2 min)..."
+  timeout 15m wsl.exe --import "${DISTRO}" "${win_install}" "${win_tar}" --version 2 || rc=$?
+  if [[ "${rc}" -eq 124 ]]; then
+    echo "refusing: wsl.exe --import ${DISTRO} timed out after 15 minutes" >&2
+    return 1
+  fi
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "refusing: wsl.exe --import ${DISTRO} failed (exit ${rc})" >&2
+    return 1
+  fi
+}
+
+# An interrupted --import leaves ext4.vhdx and no registered distro.
+# Tell the operator to delete that folder. Do not delete it here.
+interrupted_import_leftover() {
+  local vhdx="${INSTALL_DIR}/ext4.vhdx" win
+  if [[ ! -f "${vhdx}" ]]; then
+    return 1
+  fi
+  if command -v wslpath >/dev/null 2>&1; then
+    win=$(wslpath -w "${INSTALL_DIR}")
+  else
+    win=${INSTALL_DIR}
+  fi
+  printf '%s\n' "refusing: ${win} contains ext4.vhdx but distro ${DISTRO} is not registered." >&2
+  printf '%s\n' "An interrupted import left that folder. Delete it, then re-run bootstrap. Bootstrap does not delete it." >&2
+  printf '%s\n' "Remove-Item -LiteralPath '${win}' -Recurse -Force" >&2
+  return 0
 }
 
 # Half-installed aap-runner is not resumed. The command names only this distro.
@@ -917,6 +960,10 @@ self_check() {
     echo "rendered task xml is missing the script path" >&2
     exit 1
   fi
+  if render_mount_task_xml "${sid}" "C:\wsl\mount's.ps1"; then
+    echo "a task script path with a quote was accepted" >&2
+    exit 1
+  fi
   if [[ "${decoded}" == *BootTrigger* || "${decoded}" == *ServiceAccount* || "${decoded}" == *S-1-5-18* ]]; then
     echo "rendered task xml still has a boot trigger or a SYSTEM principal" >&2
     exit 1
@@ -998,6 +1045,52 @@ self_check() {
     echo "outside() still re-parses the stage path through a shell" >&2
     exit 1
   fi
+  [[ "${body}" == *'${STAGE}/${UBUNTU_NAME}'* ]]
+  [[ "${body}" == *'import_distro'* ]]
+  [[ "${body}" == *'interrupted_import_leftover'* ]]
+  if ! printf '%s\n' "${body}" | grep -F -q "rm -rf '\${STAGE}'"; then
+    echo "outside() does not remove the staging directory on exit" >&2
+    exit 1
+  fi
+  if [[ "${body}" == *mktemp* ]]; then
+    echo "outside() still stages the rootfs under the distro tmp" >&2
+    exit 1
+  fi
+  body=$(declare -f import_distro)
+  if ! printf '%s\n' "${body}" | grep -F -q 'timeout 15m' \
+    || ! printf '%s\n' "${body}" | grep -F -q 'importing aap-runner (this takes ~1-2 min)...' \
+    || ! printf '%s\n' "${body}" | grep -F -q 'timed out after 15 minutes'; then
+    echo "import_distro is missing the progress line or the 15 minute timeout" >&2
+    exit 1
+  fi
+  rc=0
+  err=$(import_distro 'C:\aap-runner' '\\wsl.localhost\Ubuntu-24.04\tmp\tmp.X\ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz' 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *'not a Windows drive path'* || "${err}" == *'importing aap-runner'* ]]; then
+    echo "a \\\\wsl.localhost import path was accepted" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  if ! windows_drive_path 'C:\aap-runner-staging\ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz'; then
+    echo "a C:\\ import path was refused" >&2
+    exit 1
+  fi
+  saved_install=${INSTALL_DIR}
+  tmp=$(mktemp -d)
+  INSTALL_DIR=${tmp}
+  if interrupted_import_leftover; then
+    echo "an empty install dir was treated as an interrupted import" >&2
+    exit 1
+  fi
+  printf x > "${tmp}/ext4.vhdx"
+  rc=0
+  err=$(interrupted_import_leftover 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 || "${err}" != *'ext4.vhdx'* || "${err}" != *'does not delete'* || ! -f "${tmp}/ext4.vhdx" ]]; then
+    echo "an interrupted import was deleted or not reported" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  INSTALL_DIR=${saved_install}
+  rm -rf "${tmp}"
   msg=$(half_install_refusal)
   [[ "${msg}" == *"wsl --unregister ${DISTRO}"* ]]
   [[ "${msg}" != *Ubuntu* && "${msg}" != *docker-desktop* ]]
@@ -1042,6 +1135,51 @@ self_check() {
     echo "a different work-disk uuid was accepted" >&2
     exit 1
   fi
+  rm -f "${AAP_WORK_DISK_UUID_FILE}"
+  cat > "${bin}/wsl.exe" << 'EOF'
+#!/bin/bash
+if [[ "$1" == "-l" ]]; then
+  case "${AAP_FAKE_WSL_MODE}" in
+    noreg) exit 0 ;;
+    lfail) exit 1 ;;
+    *) printf '%s\n' aap-runner; exit 0 ;;
+  esac
+fi
+case "${AAP_FAKE_WSL_MODE}" in
+  absent) exit 10 ;;
+  bad) printf '%s\n' 'not-a-uuid'; exit 0 ;;
+  ok) printf '%s\n' 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'; exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "${bin}/wsl.exe"
+  rc=0
+  err=$(AAP_FAKE_WSL_MODE=fail confirm_attached_work_disk 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *"not accepting a size-only match"* ]]; then
+    echo "a failed work-disk.uuid read was accepted as a size-only match" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  if ! AAP_FAKE_WSL_MODE=absent confirm_attached_work_disk; then
+    echo "an absent work-disk.uuid was refused" >&2
+    exit 1
+  fi
+  if ! AAP_FAKE_WSL_MODE=noreg confirm_attached_work_disk; then
+    echo "a missing distro was treated as a failed uuid read" >&2
+    exit 1
+  fi
+  if AAP_FAKE_WSL_MODE=bad confirm_attached_work_disk; then
+    echo "a non-uuid work-disk.uuid was accepted" >&2
+    exit 1
+  fi
+  if AAP_FAKE_WSL_MODE=lfail confirm_attached_work_disk; then
+    echo "a failed wsl -l was accepted as a size-only match" >&2
+    exit 1
+  fi
+  if ! AAP_FAKE_WSL_MODE=ok confirm_attached_work_disk; then
+    echo "a matching uuid from wsl.exe was refused" >&2
+    exit 1
+  fi
   printf '#!/bin/bash\nexit 0\n' > "${bin}/lsblk"
   if confirm_attached_work_disk; then
     echo "no attached disk was accepted" >&2
@@ -1050,9 +1188,19 @@ self_check() {
   PATH=${saved_path}
   rm -rf "${bin}" "${AAP_WORK_DISK_UUID_FILE}"
   unset AAP_WORK_DISK_UUID_FILE
-  cmd=$(powershell_file_command 'C:\wsl\lock-acl.ps1' -LiteralPath 'C:\wsl')
+  cmd=$(powershell_file_command 'C:\wsl\lock-acl.ps1' -LiteralPath 'C:\wsl' '-bad; calc')
   [[ "${cmd}" == *"GetEnvironmentVariable('PSModulePath','Machine')"* ]]
-  [[ "${cmd}" == *"& 'C:\wsl\lock-acl.ps1' -LiteralPath 'C:\wsl'"* ]]
+  [[ "${cmd}" == *"-LiteralPath 'C:\wsl' '-bad; calc'"* ]]
+  stripped=${cmd//\'-bad; calc\'/}
+  if [[ "${stripped}" == *'-bad; calc'* ]]; then
+    echo "powershell_file_command emitted -bad; calc raw" >&2
+    printf '%s\n' "${cmd}" >&2
+    exit 1
+  fi
+  cmd=$(powershell_file_command 'C:\wsl\create-work-vhdx.ps1' -Path 'C:\wsl\aap-runner-work.vhdx' -SizeGiB 100)
+  [[ "${cmd}" == *"-Path 'C:\wsl\aap-runner-work.vhdx' -SizeGiB '100'"* ]]
+  cmd=$(powershell_file_command 'C:\wsl\lock-acl.ps1' -LiteralPath "C:\wsl\o'brien")
+  [[ "${cmd}" == *"-LiteralPath 'C:\wsl\o''brien'"* ]]
   cmd=$(powershell_file_command "C:\wsl\aap's.ps1")
   [[ "${cmd}" == *"& 'C:\wsl\aap''s.ps1'"* ]]
   if [[ "$(grep -c 'powershell\.exe -NoProfile' "${SCRIPT_DIR}/bootstrap.sh")" -ne 2 ]]; then
@@ -1211,30 +1359,29 @@ outside() {
     half_install_refusal >&2
     exit 1
   fi
+  if interrupted_import_leftover; then
+    exit 1
+  fi
   if [[ -f "${INSTALL_MARKER}" ]]; then
     rm -f "${INSTALL_MARKER}"
   fi
 
-  local work
-  work=$(mktemp -d)
+  # Download onto C:\. wsl --import of \\wsl.localhost\<this distro>\... stalls.
+  lock_created_windows_dir "${STAGE}"
   # shellcheck disable=SC2064
-  trap "rm -rf '${work}' '${STAGE}'" EXIT
-  download "${UBUNTU_URL}" "${work}/${UBUNTU_NAME}" "${UBUNTU_SHA256}"
-  download "${SYSBOX_URL}" "${work}/${SYSBOX_NAME}" "${SYSBOX_SHA256}"
-  download "${RUNNER_URL}" "${work}/${RUNNER_NAME}" "${RUNNER_SHA256}"
+  trap "rm -rf '${STAGE}'" EXIT
+  download "${UBUNTU_URL}" "${STAGE}/${UBUNTU_NAME}" "${UBUNTU_SHA256}"
+  download "${SYSBOX_URL}" "${STAGE}/${SYSBOX_NAME}" "${SYSBOX_SHA256}"
+  download "${RUNNER_URL}" "${STAGE}/${RUNNER_NAME}" "${RUNNER_SHA256}"
 
   mkdir -p "${INSTALL_DIR}"
   # C:\wsl is locked before the install marker is written.
   lock_created_windows_dir "$(dirname "${INSTALL_MARKER}")"
   printf '%s\n' "${DISTRO}" > "${INSTALL_MARKER}"
   win_install=$(wslpath -w "${INSTALL_DIR}")
-  win_tar=$(wslpath -w "${work}/${UBUNTU_NAME}")
-  run_checked "wsl.exe --import ${DISTRO}" \
-    wsl.exe --import "${DISTRO}" "${win_install}" "${win_tar}" --version 2
+  win_tar=$(wslpath -w "${STAGE}/${UBUNTU_NAME}")
+  import_distro "${win_install}" "${win_tar}"
 
-  rm -rf "${STAGE}"
-  mkdir -p "${STAGE}"
-  cp "${work}/${UBUNTU_NAME}" "${work}/${SYSBOX_NAME}" "${work}/${RUNNER_NAME}" "${STAGE}/"
   cp "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}/ephemeral-entry.sh" "${SCRIPT_DIR}/manager.sh" \
     "${SCRIPT_DIR}/mount-work-disk.sh" "${SCRIPT_DIR}/aap-workdisk.service" \
     "${SCRIPT_DIR}/daemon.json" "${SCRIPT_DIR}/docker-workdisk.conf" \
@@ -1337,43 +1484,90 @@ ensure_work_vhdx() {
   lock_work_disk_acl
 }
 
-# The UUID file is inside aap-runner. On the operator distro it is not
-# there yet, so a missing file is not a failure: the size check stands.
-expected_work_disk_uuid() {
-  local file="${AAP_WORK_DISK_UUID_FILE:-/etc/aap-runner/work-disk.uuid}" text rc=0
-  if [[ -r "${file}" ]]; then
-    tr -d '[:space:]' < "${file}"
-    return 0
+# Exit 10 means the UUID file is absent. Any other non-zero status is a
+# failed read and must not fall through to a size-only match.
+read_distro_work_disk_uuid() {
+  local file="$1" text rc=0 errf
+  errf=$(mktemp)
+  # Exit 10: not present. Exit 11: present but unreadable. Other: wsl failed.
+  text=$(wsl.exe -d "${DISTRO}" -u root --exec /bin/sh -c \
+    'if [ ! -e "$1" ]; then exit 10; fi; if [ ! -r "$1" ]; then exit 11; fi; tr -d "[:space:]" < "$1"' \
+    sh "${file}" 2>"${errf}" | tr -d '\000') || rc=$?
+  if [[ "${rc}" -eq 10 ]]; then
+    rm -f "${errf}"
+    return 10
   fi
-  if ! command -v wsl.exe >/dev/null 2>&1; then
-    return 1
-  fi
-  text=$(wsl.exe -d "${DISTRO}" -u root --exec /bin/cat "${file}" 2>/dev/null | tr -d '\000\r\n') || rc=$?
   if [[ "${rc}" -ne 0 ]]; then
+    echo "refusing: wsl.exe could not read ${file} (exit ${rc})" >&2
+    if [[ -s "${errf}" ]]; then
+      tr -d '\000' < "${errf}" >&2
+    fi
+    rm -f "${errf}"
     return 1
   fi
+  rm -f "${errf}"
   if [[ ! "${text}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    echo "refusing: wsl.exe read ${file} but it is not a UUID" >&2
     return 1
   fi
   printf '%s\n' "${text}"
 }
 
-# "already attached" is only success when lsblk shows this VHDX's size and,
-# once work-disk.uuid exists, blkid reports that UUID.
-confirm_attached_work_disk() {
-  local dev uuid="" expect=""
-  dev=$(work_disk_device) || return 1
-  uuid=$(blkid -o value -s UUID "${dev}" 2>/dev/null || true)
-  if expect=$(expected_work_disk_uuid); then
-    if [[ -z "${uuid}" || "${uuid}" != "${expect}" ]]; then
-      echo "refusing: ${dev} uuid=${uuid:-missing} is not work-disk.uuid ${expect}" >&2
+# The UUID file is inside aap-runner. Absent (no distro yet, or no file)
+# is exit 10. A wsl.exe read that fails for any other reason is not absent.
+expected_work_disk_uuid() {
+  local file="${AAP_WORK_DISK_UUID_FILE:-/etc/aap-runner/work-disk.uuid}" text list lrc=0
+  if [[ -r "${file}" ]]; then
+    text=$(tr -d '[:space:]' < "${file}")
+    if [[ ! "${text}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+      echo "refusing: ${file} is not a UUID" >&2
       return 1
     fi
-    echo "work disk ${dev} uuid=${uuid} matches work-disk.uuid" >&2
+    printf '%s\n' "${text}"
     return 0
   fi
-  echo "work disk ${dev} (${WORK_DISK_BYTES} bytes) is attached; work-disk.uuid is not recorded yet" >&2
-  return 0
+  if [[ -e "${file}" ]]; then
+    echo "refusing: ${file} is unreadable" >&2
+    return 1
+  fi
+  if ! command -v wsl.exe >/dev/null 2>&1; then
+    return 10
+  fi
+  list=$(wsl.exe -l -q 2>&1) || lrc=$?
+  if [[ "${lrc}" -ne 0 ]]; then
+    if [[ -n "${list}" ]]; then
+      printf '%s\n' "${list}" | tr -d '\000' >&2
+    fi
+    echo "refusing: wsl.exe -l -q failed while reading work-disk.uuid (exit ${lrc})" >&2
+    return 1
+  fi
+  if ! printf '%s' "${list}" | tr -d '\000\r' | grep -qx "${DISTRO}"; then
+    return 10
+  fi
+  read_distro_work_disk_uuid "${file}"
+}
+
+# "already attached" is only success when lsblk shows this VHDX's size and,
+# once work-disk.uuid exists, blkid reports that UUID. A failed read of
+# that file is not treated as "absent".
+confirm_attached_work_disk() {
+  local dev uuid="" expect="" status=0
+  dev=$(work_disk_device) || return 1
+  uuid=$(blkid -o value -s UUID "${dev}" 2>/dev/null || true)
+  expect=$(expected_work_disk_uuid) || status=$?
+  if [[ "${status}" -eq 10 ]]; then
+    echo "work disk ${dev} (${WORK_DISK_BYTES} bytes) is attached; work-disk.uuid is absent" >&2
+    return 0
+  fi
+  if [[ "${status}" -ne 0 ]]; then
+    echo "refusing: work-disk.uuid could not be read; not accepting a size-only match" >&2
+    return 1
+  fi
+  if [[ -z "${uuid}" || "${uuid}" != "${expect}" ]]; then
+    echo "refusing: ${dev} uuid=${uuid:-missing} is not work-disk.uuid ${expect}" >&2
+    return 1
+  fi
+  echo "work disk ${dev} uuid=${uuid} matches work-disk.uuid" >&2
 }
 
 attach_work_vhdx() {
@@ -1453,7 +1647,7 @@ render_mount_task_xml() {
     echo "refusing: operator SID '${sid}' is not a user account SID" >&2
     return 1
   fi
-  if [[ "${ps1_win}" == *'<'* || "${ps1_win}" == *'>'* || "${ps1_win}" == *'&'* || "${ps1_win}" == *'"'* ]]; then
+  if [[ "${ps1_win}" == *'<'* || "${ps1_win}" == *'>'* || "${ps1_win}" == *'&'* || "${ps1_win}" == *'"'* || "${ps1_win}" == *"'"* ]]; then
     echo "refusing: task script path cannot be placed in the task xml" >&2
     return 1
   fi
