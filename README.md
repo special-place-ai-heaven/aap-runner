@@ -17,8 +17,8 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `Dockerfile` | Job image: inner dockerd 27.3.1, mysql-client, no sudo |
 | `ephemeral-entry.sh` | Starts inner dockerd, registers ephemeral, runs one job |
 | `create-work-vhdx.ps1` | One-time 60 GiB fixed VHDX: `New-VHD -Fixed`, or diskpart if that cmdlet is absent |
-| `mount-work-vhdx.ps1` | Boot task: `wsl --mount --vhd <path> --bare` and nothing else |
-| `mount-work-vhdx-task.xml` | SYSTEM at startup, for that one command |
+| `mount-work-vhdx.ps1` | Operator logon task: `wsl --mount --vhd <path> --bare`, log appended under `C:\wsl` |
+| `mount-work-vhdx-task.xml` | That operator's SID, `InteractiveToken`, `HighestAvailable`, logon trigger. Installed as UTF-16 LE |
 | `mount-work-disk.sh` | Inside the distro: mount the ext4 by UUID at `/var/lib/ghrunner` |
 | `aap-workdisk.service` | Runs that mount before Docker and Sysbox |
 | `daemon.json` | dockerd `data-root` `/var/lib/ghrunner/docker`, `ipv6` false |
@@ -26,7 +26,7 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `evidence.sh` | Prints the lockdown observations. Installed as `/usr/local/sbin/aap-runner-evidence` |
 | `lock-acl.ps1` | DACL for the boot-task folder, script, and VHDX: SYSTEM and Administrators only, owner Administrators |
 
-`bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, and `bash evidence.sh --self-check` check the checksum, disk-floor, limit, and route parsers, and the cases where a missing `wslinfo` or an unreadable `.wslconfig` must stop the install. They do not touch WSL.
+`bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, and `bash evidence.sh --self-check` check the checksum, disk-floor, limit, and route parsers, the cases where a missing `wslinfo` or an unreadable `.wslconfig` must stop the install, and that the mount task is rendered for a user SID as UTF-16 LE. They do not touch WSL.
 
 ## What runs where
 
@@ -135,9 +135,9 @@ create vdisk file="C:\wsl\aap-runner-work.vhdx" maximum=61440 type=fixed
 
 It then attaches the disk with `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --bare` and formats the whole disk ext4. The UUID is stored at `/etc/aap-runner/work-disk.uuid`.
 
-At every boot, task `AAP-CRRR-Mount-Work-Disk` runs as SYSTEM and runs only `wsl --mount --vhd <that path> --bare`. Inside `aap-runner`, `aap-mount-work-disk` mounts that UUID at `/var/lib/ghrunner`. `mountFsTab=false` stops WSL from processing fstab; the line is still there with `nofail` for systemd, and the service retries until the UUID appears. `mountpoint -q` failing exits the mount script, and docker.service has `ConditionPathIsMountPoint=/var/lib/ghrunner`, so dockerd does not start on the distro root.
+When the installing operator logs on, task `AAP-CRRR-Mount-Work-Disk` runs as that operator, elevated (`HighestAvailable`), and runs only `wsl --mount --vhd <that path> --bare`. WSL is per Windows user. The same command running as SYSTEM attaches the disk to SYSTEM's WSL VM, and `aap-runner` is not in that VM, so the task is not SYSTEM. There is no boot trigger: `InteractiveToken` has no session until that operator logs on, and a boot task cannot see this user's WSL. The runner is available after the operator logs on, which is the same condition WSL itself needs. The script appends the command output to `C:\wsl\mount-work-vhdx.log`. Inside `aap-runner`, `aap-mount-work-disk` mounts that UUID at `/var/lib/ghrunner`. `mountFsTab=false` stops WSL from processing fstab; the line is still there with `nofail` for systemd, and the service retries until the UUID appears. `mountpoint -q` failing exits the mount script, and docker.service has `ConditionPathIsMountPoint=/var/lib/ghrunner`, so dockerd does not start on the distro root.
 
-`lock-acl.ps1` clears inheritance and leaves only `S-1-5-18` (SYSTEM) and `S-1-5-32-544` (Administrators), full control, on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, `C:\wsl\mount-work-vhdx-task.xml`, and `C:\wsl\aap-runner-work.vhdx`. It sets the owner of each of those paths to Administrators (`S-1-5-32-544`) and reads the owner back. Any other owner, or a non-admin ACE, fails the install. The directory ACEs inherit onto children. Bootstrap runs that script after it creates the VHDX and again after it writes the boot script. Check with `icacls C:\wsl`, `icacls C:\wsl\mount-work-vhdx.ps1`, and `icacls C:\wsl\aap-runner-work.vhdx`. Each list should name only SYSTEM and Administrators, and the owner should be `BUILTIN\Administrators`.
+`lock-acl.ps1` clears inheritance and leaves only `S-1-5-18` (SYSTEM) and `S-1-5-32-544` (Administrators), full control, on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, `C:\wsl\mount-work-vhdx-task.xml`, and `C:\wsl\aap-runner-work.vhdx`. It sets the owner of each of those paths to Administrators (`S-1-5-32-544`) and reads the owner back. Any other owner, or a non-admin ACE, fails the install. The directory ACEs inherit onto children, including `C:\wsl\mount-work-vhdx.log`. The task principal is the installing operator, not SYSTEM. That account is not given its own ACE: the task runs elevated, so the Administrators ACE covers it. Bootstrap runs that script after it creates the VHDX and again after it writes the logon script. Check with `icacls C:\wsl`, `icacls C:\wsl\mount-work-vhdx.ps1`, and `icacls C:\wsl\aap-runner-work.vhdx`. Each list should name only SYSTEM and Administrators, and the owner should be `BUILTIN\Administrators`.
 
 `/var/lib/ghrunner/docker` is dockerd's `data-root`. Job container layers, including the Actions workspace, live there. Sysbox's host state is `/var/lib/sysbox`, replaced with a symlink onto `/var/lib/ghrunner/sysbox` before Sysbox is started. The inner dockerd's data is inside the job container's writable layer, so it is on the same ext4. The distro root VHD still holds the OS packages. It does not hold images or job layers.
 
@@ -160,7 +160,7 @@ The hosted-runner toolchain-delete step is gone. `CARGO_INCREMENTAL=0` and line-
 | WSLInterop binfmt | Registered VM-wide, including inside this distro | With `interop` off, vsock accept fails, so the binfmt cannot launch a Windows exe. It is left registered because it is not per-distro. It is not a way out |
 | `/mnt/wsl` | tmpfs shared by every distro; holds docker-desktop sockets | The manager never bind-mounts `/mnt` or `/mnt/wsl`. It inspects the container and refuses a mount source under `/mnt`. Phase 1's job container had an empty `/mnt` |
 | Windows admin | Rob can `wsl -d aap-runner -u root` | That is the operator. The lockdown is for the distro and the job, not for a local admin who already owns the PC |
-| Boot mount task | The only Windows-side component. SYSTEM runs it at startup | It runs `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --bare` and touches only that VHDX path. The script, its folder, and the VHDX are writable by SYSTEM and Administrators only. It does not read `C:` free space, the user profile, or write into the distro |
+| Mount task | The only Windows-side component. The installing operator runs it at logon, elevated | WSL is per Windows user, so a SYSTEM task would mount into SYSTEM's WSL VM and miss `aap-runner`. The task runs `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --bare` and appends that output to `C:\wsl\mount-work-vhdx.log`. UserId is the operator SID resolved at install, `LogonType` is `InteractiveToken`, and `RunLevel` is `HighestAvailable`. There is no boot trigger, because that logon type has no session until the operator logs on. The runner needs that operator logged on, matching WSL. The script, its folder, the task xml, the log, and the VHDX stay writable by SYSTEM and Administrators only. It does not read `C:` free space, the user profile, or write into the distro |
 
 No long-lived runner credential is stored. The registration token is one job. The runner credential file the Actions service writes lives in the container filesystem and is deleted with `docker rm -f`. The App key never enters the job.
 
@@ -192,6 +192,7 @@ Do this in the org that owns the private AAP repos before starting the manager. 
 - [ ] On `special-place-ai-heaven/symforge`, Settings > Actions > General > Access allows `Agent_Army_Professionals`. Then delete the `SYMFORGE_TOKEN` secret from this repo and from the org. The workflow does not read it.
 - [ ] `.wslconfig` does not set `networkingMode=mirrored`. `wslinfo --networking-mode` is not `mirrored`. Inside `aap-runner`, a missing `wslinfo` is a failed install, and an unreadable `.wslconfig` is a failed install.
 - [ ] `icacls` on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, and `C:\wsl\aap-runner-work.vhdx` lists only SYSTEM and Administrators, and the owner of each path is `BUILTIN\Administrators`.
+- [ ] Task `AAP-CRRR-Mount-Work-Disk` runs as the installing operator: UserId is that user's SID, `LogonType` is `InteractiveToken`, `RunLevel` is `HighestAvailable`, and the trigger is logon. It is not SYSTEM. The operator must be logged on before the disk is attached. `C:\wsl\mount-work-vhdx.log` contains the `wsl --mount` output.
 - [ ] BRUCE has accepted this design. Do not `systemctl start aap-runner-manager` before that.
 
 ## Install
@@ -212,7 +213,7 @@ The script downloads three pinned artifacts and checks sha256 before it uses the
 
 The VHDX is imported at `C:\aap-runner` (override with `AAP_RUNNER_INSTALL_DIR`). That path is outside the Windows user profile. After import the distro cannot mount it back.
 
-Bootstrap creates the 60 GiB fixed VHDX, formats it, and registers `AAP-CRRR-Mount-Work-Disk`. Registering that task needs an elevated shell. If Task Scheduler rejects it, the install stops. An earlier `AAP-CRRR-C-Free-GB` task is deleted if it is present.
+Bootstrap creates the 60 GiB fixed VHDX, formats it, and registers `AAP-CRRR-Mount-Work-Disk` for the installing operator. The task xml is written as UTF-16 LE with a BOM, because `schtasks /XML` rejects a UTF-8 file. Registering that task needs an elevated shell. If Task Scheduler rejects it, the install stops. An earlier `AAP-CRRR-C-Free-GB` task is deleted if it is present. The task runs at the operator's next logon. This session is already mounted by bootstrap itself. After a reboot the disk stays unmounted until that operator logs on.
 
 Bootstrap will refuse to start if `aap-runner` already exists. Unregister is a human decision: `wsl.exe --unregister aap-runner`.
 

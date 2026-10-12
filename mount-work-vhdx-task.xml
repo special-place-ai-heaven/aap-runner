@@ -1,17 +1,20 @@
-<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-16"?>
+<!-- Source file is UTF-8 so it can be reviewed. Bootstrap rewrites the
+     installed copy as UTF-16 LE with a BOM. schtasks /XML rejects UTF-8. -->
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Attach the fixed AAP work VHDX to WSL at boot. Touches only that VHDX path.</Description>
+    <Description>Attach the fixed AAP work VHDX to the installing operator's WSL at logon. WSL mounts are per Windows user, so this task runs as that operator, not as SYSTEM. Touches only that VHDX path.</Description>
   </RegistrationInfo>
   <Triggers>
-    <BootTrigger>
+    <LogonTrigger>
       <Enabled>true</Enabled>
-    </BootTrigger>
+      <UserId>__AAP_USER_SID__</UserId>
+    </LogonTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
-      <LogonType>ServiceAccount</LogonType>
+      <UserId>__AAP_USER_SID__</UserId>
+      <LogonType>InteractiveToken</LogonType>
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>

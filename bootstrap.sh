@@ -494,6 +494,59 @@ self_check() {
     echo "absent .wslconfig on the operator distro was refused: ${reason}" >&2
     exit 1
   fi
+  if valid_operator_sid "S-1-5-18"; then
+    echo "SYSTEM was accepted as the mount-task principal" >&2
+    exit 1
+  fi
+  if valid_operator_sid "S-1-5-21-1-2-3-1001</UserId>"; then
+    echo "a SID with XML markup was accepted" >&2
+    exit 1
+  fi
+  if ! valid_operator_sid "S-1-5-21-111-222-333-1001"; then
+    echo "a user SID was rejected" >&2
+    exit 1
+  fi
+  local task_xml decoded bom sid ps1 count
+  sid="S-1-5-21-111-222-333-1001"
+  ps1='C:\wsl\mount-work-vhdx.ps1'
+  if ! task_xml=$(render_mount_task_xml "${sid}" "${ps1}"); then
+    echo "task xml render failed" >&2
+    exit 1
+  fi
+  tmp=$(mktemp)
+  if ! printf '%s\n' "${task_xml}" | write_utf16_le_bom "${tmp}"; then
+    echo "UTF-16 task xml write failed" >&2
+    exit 1
+  fi
+  bom=$(od -An -t x1 -N 2 "${tmp}" | tr -d ' \n')
+  if [[ "${bom}" != "fffe" ]]; then
+    echo "task xml BOM is ${bom}, expected fffe" >&2
+    exit 1
+  fi
+  decoded=$(iconv -f UTF-16 -t UTF-8 "${tmp}")
+  rm -f "${tmp}"
+  [[ "${decoded}" == *'encoding="UTF-16"'* ]]
+  [[ "${decoded}" == *'<LogonType>InteractiveToken</LogonType>'* ]]
+  [[ "${decoded}" == *'<RunLevel>HighestAvailable</RunLevel>'* ]]
+  [[ "${decoded}" == *'<LogonTrigger>'* ]]
+  [[ "${decoded}" == *"<UserId>${sid}</UserId>"* ]]
+  if ! grep -F -q -- "-File \"${ps1}\"" <<< "${decoded}"; then
+    echo "rendered task xml is missing the script path" >&2
+    exit 1
+  fi
+  if [[ "${decoded}" == *BootTrigger* || "${decoded}" == *ServiceAccount* || "${decoded}" == *S-1-5-18* ]]; then
+    echo "rendered task xml still has a boot trigger or a SYSTEM principal" >&2
+    exit 1
+  fi
+  count=$(printf '%s\n' "${decoded}" | grep -c "<UserId>${sid}</UserId>" || true)
+  if [[ "${count}" -ne 2 ]]; then
+    echo "expected the operator SID on the trigger and the principal, found ${count}" >&2
+    exit 1
+  fi
+  if [[ "$(< "${SCRIPT_DIR}/mount-work-vhdx.ps1")" != *'C:\wsl\mount-work-vhdx.log'* ]]; then
+    echo "mount script does not log under C:\\wsl" >&2
+    exit 1
+  fi
   echo "checksum self-check ok"
 }
 
@@ -592,8 +645,81 @@ attach_work_vhdx() {
   exit 1
 }
 
+# A Windows account SID. SYSTEM (S-1-5-18) and other well-known service
+# SIDs do not match: wsl --mount as those accounts attaches a different VM.
+valid_operator_sid() {
+  [[ "$1" =~ ^S-1-5-21-[0-9]+-[0-9]+-[0-9]+-[0-9]+$ ]]
+}
+
+installing_operator_sid() {
+  local line sid=""
+  if ! command -v powershell.exe >/dev/null 2>&1; then
+    echo "refusing: powershell.exe is required to resolve the operator SID" >&2
+    return 1
+  fi
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line=${line//$'\r'/}
+    line=${line// /}
+    if valid_operator_sid "${line}"; then
+      sid="${line}"
+    fi
+  done < <(powershell.exe -NoProfile -NonInteractive -Command '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value')
+  if [[ -z "${sid}" ]]; then
+    echo "refusing: could not resolve the installing operator SID" >&2
+    return 1
+  fi
+  printf '%s\n' "${sid}"
+}
+
+# schtasks /XML reads the file as UTF-16. A UTF-8 document fails at (1,2).
+# GNU iconv's UTF-16 charset writes the byte-order mark; this host is LE.
+write_utf16_le_bom() {
+  local dest="$1" tmp bom
+  tmp=$(mktemp)
+  cat > "${tmp}"
+  if ! iconv -f UTF-8 -t UTF-16 "${tmp}" > "${dest}"; then
+    rm -f "${tmp}"
+    echo "refusing: iconv could not encode ${dest} as UTF-16" >&2
+    return 1
+  fi
+  rm -f "${tmp}"
+  bom=$(od -An -t x1 -N 2 "${dest}" | tr -d ' \n')
+  if [[ "${bom}" != "fffe" ]]; then
+    echo "refusing: ${dest} is not UTF-16 LE (BOM ${bom:-empty}, expected fffe)" >&2
+    return 1
+  fi
+}
+
+render_mount_task_xml() {
+  local sid="$1" ps1_win="$2" xml
+  if ! valid_operator_sid "${sid}"; then
+    echo "refusing: operator SID '${sid}' is not a user account SID" >&2
+    return 1
+  fi
+  if [[ "${ps1_win}" == *'<'* || "${ps1_win}" == *'>'* || "${ps1_win}" == *'&'* || "${ps1_win}" == *'"'* ]]; then
+    echo "refusing: task script path cannot be placed in the task xml" >&2
+    return 1
+  fi
+  xml=$(< "${SCRIPT_DIR}/mount-work-vhdx-task.xml")
+  if [[ "${xml}" != *'encoding="UTF-16"'* || "${xml}" != *'InteractiveToken'* || "${xml}" != *'LogonTrigger'* ]]; then
+    echo "refusing: task xml template is missing the operator logon principal" >&2
+    return 1
+  fi
+  if [[ "${xml}" == *BootTrigger* || "${xml}" == *ServiceAccount* || "${xml}" == *S-1-5-18* ]]; then
+    echo "refusing: task xml template still targets SYSTEM or boot" >&2
+    return 1
+  fi
+  xml=${xml//__AAP_USER_SID__/${sid}}
+  xml=${xml//__AAP_PS1__/${ps1_win}}
+  if [[ "${xml}" == *__AAP_* ]]; then
+    echo "refusing: task xml still has an unsubstituted placeholder" >&2
+    return 1
+  fi
+  printf '%s\n' "${xml}"
+}
+
 register_mount_task() {
-  local ps1_win vhdx_win xml_dest xml ps1_body
+  local ps1_win vhdx_win xml_dest xml ps1_body sid
   local task_dir
   task_dir=$(dirname "${WORK_VHDX}")
   mkdir -p "${task_dir}"
@@ -602,18 +728,27 @@ register_mount_task() {
   ps1_body=${ps1_body//__AAP_VHDX__/${vhdx_win}}
   ps1_win=$(wslpath -w "${task_dir}/mount-work-vhdx.ps1")
   printf '%s\n' "${ps1_body}" > "${task_dir}/mount-work-vhdx.ps1"
-  xml=$(< "${SCRIPT_DIR}/mount-work-vhdx-task.xml")
-  xml=${xml//__AAP_PS1__/${ps1_win}}
+  if ! sid=$(installing_operator_sid); then
+    exit 1
+  fi
+  if ! xml=$(render_mount_task_xml "${sid}" "${ps1_win}"); then
+    exit 1
+  fi
   xml_dest="${task_dir}/mount-work-vhdx-task.xml"
-  printf '%s\n' "${xml}" > "${xml_dest}"
-  # Folder, boot script, task xml, and VHDX: SYSTEM and Administrators only.
+  if ! printf '%s\n' "${xml}" | write_utf16_le_bom "${xml_dest}"; then
+    exit 1
+  fi
+  echo "registering AAP-CRRR-Mount-Work-Disk for operator ${sid} (logon, InteractiveToken, HighestAvailable)"
+  # Folder, script, task xml, and VHDX: SYSTEM and Administrators only.
+  # The task runs as the operator with HighestAvailable, so the
+  # Administrators ACE covers it. The operator SID is not its own ACE.
   lock_windows_admin_only "$(wslpath -w "${task_dir}")"
   lock_windows_admin_only "${ps1_win}"
   lock_windows_admin_only "$(wslpath -w "${xml_dest}")"
   lock_windows_admin_only "$(wslpath -w "${WORK_VHDX}")"
   schtasks.exe /Delete /TN AAP-CRRR-C-Free-GB /F >/dev/null 2>&1 || true
   if ! schtasks.exe /Create /TN AAP-CRRR-Mount-Work-Disk /XML "$(wslpath -w "${xml_dest}")" /F; then
-    echo "failed to register scheduled task AAP-CRRR-Mount-Work-Disk as SYSTEM." >&2
+    echo "failed to register scheduled task AAP-CRRR-Mount-Work-Disk for ${sid}." >&2
     echo "Run bootstrap from an elevated shell. Install stopped." >&2
     exit 1
   fi
