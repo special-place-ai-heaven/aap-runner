@@ -16,9 +16,13 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `manager.conf.example` | Schema for `/etc/aap-runner/manager.conf`. No secrets |
 | `Dockerfile` | Job image: inner dockerd 27.3.1, mysql-client, no sudo |
 | `ephemeral-entry.sh` | Starts inner dockerd, registers ephemeral, runs one job |
-| `record-c-free-gb.sh` | Root writer for the C: free-space file |
-| `c-free-gb.ps1` | SYSTEM task: read C: and push the number into the distro |
-| `c-free-gb-task.xml` | Task Scheduler definition for that script |
+| `create-work-vhdx.ps1` | One-time 60 GiB fixed VHDX: `New-VHD -Fixed`, or diskpart if that cmdlet is absent |
+| `mount-work-vhdx.ps1` | Boot task: `wsl --mount --vhd <path> --bare` and nothing else |
+| `mount-work-vhdx-task.xml` | SYSTEM at startup, for that one command |
+| `mount-work-disk.sh` | Inside the distro: mount the ext4 by UUID at `/var/lib/ghrunner` |
+| `aap-workdisk.service` | Runs that mount before Docker and Sysbox |
+| `daemon.json` | dockerd `data-root` `/var/lib/ghrunner/docker` |
+| `docker-workdisk.conf` | docker.service drop-in: do not start unless that path is a mount |
 
 `bash bootstrap.sh --self-check` and `bash manager.sh --self-check` check the checksum and disk-floor parsers. They do not touch WSL.
 
@@ -58,7 +62,7 @@ The manager reads `/etc/aap-runner/manager.conf` (mode `0400`, root) and the App
 
 For each job the manager:
 
-1. Refuses to start unless `/run/aap-runner/c-free-gb` is root mode `0400`, fresh, and reports at least 40 GB free on `C:`. `df /` inside the distro is not that number.
+1. Refuses to start unless `/var/lib/ghrunner` is a mountpoint, `df` reports that filesystem as the 60 GiB work disk, and at least 35 GB is free.
 2. Mints a short-lived registration token: App JWT, installation token, then `POST /orgs/{org}/actions/runners/registration-token`. The token stays in memory. It is passed to the container on stdin and unset before `run.sh`.
 3. Starts a container with no `-v`, no `--privileged`, and no `/var/run/docker.sock`:
 
@@ -105,18 +109,31 @@ This is best-effort LAN isolation. It covers bridge egress from this distro. It 
 
 ## Disk floor
 
-`df /` inside `aap-runner` reports the VHD maximum, which on this PC is 1 TB. It does not report free bytes on `C:`. A job step that runs `df -BG --output=avail "$GITHUB_WORKSPACE"` passes while `C:` is already under 40 GB. That step is not in the workflow. It would be a second, false authority for the same fact.
+The work disk is a **60 GiB fixed VHDX** at `C:\wsl\aap-runner-work.vhdx`. Fixed means the file cannot grow, so job layers cannot grow into `C:`. `df` of that ext4 is the free space. `df /` on the distro root is still the distro VHD's maximum (1 TB on this PC) and is not a guard.
 
-The guard is the manager, and it reads a file Windows writes:
+Bootstrap creates the file once, from an elevated shell:
 
-- Task Scheduler task `AAP-CRRR-C-Free-GB` runs as SYSTEM every minute and at boot.
-- `c-free-gb.ps1` reads `Win32_LogicalDisk` for `C:` and calls `wsl.exe -d aap-runner -u root -- /usr/local/sbin/aap-record-c-free-gb <epoch> <free-gb>`.
-- That script writes `/run/aap-runner/c-free-gb`, mode `0400`, owner root. The line is `<unix epoch> <free GB>`.
-- The manager starts a job only when the file is root mode `0400`, the epoch is not more than 180 seconds old (and not more than 30 seconds in the future), and the free GB is at least 40. Missing, stale, or low fails closed. A dead task stops new jobs.
+```powershell
+New-VHD -Path C:\wsl\aap-runner-work.vhdx -SizeBytes 60GB -Fixed
+```
 
-Interop is off, so the distro cannot ask Windows itself. Windows can still enter the distro, which is how the task delivers the number. The job container does not see the file: the manager bind-mounts nothing, and it refuses to start if any mount source is `/mnt` or under `/mnt`.
+`New-VHD` is a Hyper-V cmdlet. When it is absent, the same script uses diskpart. `maximum=61440` is 61440 MiB, which is 60 GiB, the same size as PowerShell's `60GB`:
 
-Bootstrap, running in the operator distro before lockdown, also refuses to import when `df` of `/mnt/c` is under 40 GB. That mount is the Windows volume. It is not the check the manager uses later.
+```text
+create vdisk file="C:\wsl\aap-runner-work.vhdx" maximum=61440 type=fixed
+```
+
+It then attaches the disk with `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --bare` and formats the whole disk ext4. The UUID is stored at `/etc/aap-runner/work-disk.uuid`.
+
+At every boot, task `AAP-CRRR-Mount-Work-Disk` runs as SYSTEM and runs only `wsl --mount --vhd <that path> --bare`. Inside `aap-runner`, `aap-mount-work-disk` mounts that UUID at `/var/lib/ghrunner`. `mountFsTab=false` stops WSL from processing fstab; the line is still there with `nofail` for systemd, and the service retries until the UUID appears. `mountpoint -q` failing exits the mount script, and docker.service has `ConditionPathIsMountPoint=/var/lib/ghrunner`, so dockerd does not start on the distro root.
+
+`/var/lib/ghrunner/docker` is dockerd's `data-root`. Job container layers, including the Actions workspace, live there. Sysbox's host state is `/var/lib/sysbox`, replaced with a symlink onto `/var/lib/ghrunner/sysbox` before Sysbox is started. The inner dockerd's data is inside the job container's writable layer, so it is on the same ext4. The distro root VHD still holds the OS packages. It does not hold images or job layers.
+
+The floor is **35 GB free** (`AAP_DISK_FLOOR_GB=35`). The manager runs `df -BG --output=avail /var/lib/ghrunner` and refuses a job below that. It also refuses when `mountpoint -q` fails, or when `df` size is outside 50–64 GB, which is how a glance at the 1 TB distro VHD fails closed. Each job's first step runs the same `df` on `$GITHUB_WORKSPACE`. That directory is on the container root, whose overlay upper dir is the docker data-root, so it is the same filesystem.
+
+35 GB is the free-space budget for one job after the runner image and Sysbox state are on the disk. Full debuginfo on a hosted runner failed at about 140 GB (`ld: No space left on device` in the workflow comment). This CI uses line-tables-only and `CARGO_INCREMENTAL=0`. Campaign `cargo clean` notes in the repo removed 15.9 GiB, 36.6 GiB, and 41.5 GiB of warm incremental trees. Those trees are larger than one fresh job. 35 GB free is enough for the smaller trees and is the point where a new job is refused. A job that needs more than what remains fills this disk and stops. It does not extend `C:`.
+
+Creating the VHDX needs 60 GB free on `C:` at that moment, measured from the operator distro's `/mnt/c`. That check allocates the file. It is not the per-job floor.
 
 The hosted-runner toolchain-delete step is gone. `CARGO_INCREMENTAL=0` and line-tables-only debug stay.
 
@@ -131,6 +148,7 @@ The hosted-runner toolchain-delete step is gone. `CARGO_INCREMENTAL=0` and line-
 | WSLInterop binfmt | Registered VM-wide, including inside this distro | With `interop` off, vsock accept fails, so the binfmt cannot launch a Windows exe. It is left registered because it is not per-distro. It is not a way out |
 | `/mnt/wsl` | tmpfs shared by every distro; holds docker-desktop sockets | The manager never bind-mounts `/mnt` or `/mnt/wsl`. It inspects the container and refuses a mount source under `/mnt`. Phase 1's job container had an empty `/mnt` |
 | Windows admin | Rob can `wsl -d aap-runner -u root` | That is the operator. The lockdown is for the distro and the job, not for a local admin who already owns the PC |
+| Boot mount task | The only Windows-side component. SYSTEM runs it at startup | It runs `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --bare` and touches only that VHDX path. It does not read `C:` free space, the user profile, or write into the distro |
 
 No long-lived runner credential is stored. The registration token is one job. The runner credential file the Actions service writes lives in the container filesystem and is deleted with `docker rm -f`. The App key never enters the job.
 
@@ -179,7 +197,7 @@ The script downloads three pinned artifacts and checks sha256 before it uses the
 
 The VHDX is imported at `C:\aap-runner` (override with `AAP_RUNNER_INSTALL_DIR`). That path is outside the Windows user profile. After import the distro cannot mount it back.
 
-Bootstrap registers the scheduled task `AAP-CRRR-C-Free-GB` as SYSTEM and then proves it wrote `/run/aap-runner/c-free-gb`. Registering that task needs an elevated shell. If Task Scheduler rejects it, the install stops.
+Bootstrap creates the 60 GiB fixed VHDX, formats it, and registers `AAP-CRRR-Mount-Work-Disk`. Registering that task needs an elevated shell. If Task Scheduler rejects it, the install stops. An earlier `AAP-CRRR-C-Free-GB` task is deleted if it is present.
 
 Bootstrap will refuse to start if `aap-runner` already exists. Unregister is a human decision: `wsl.exe --unregister aap-runner`.
 
@@ -197,7 +215,7 @@ Every job:
 
 - `runs-on: [self-hosted, linux, crrr]`
 - skips a `pull_request` whose head repo is not this repo
-- does not run `df` for the disk floor. Inside the distro that number is the 1 TB VHD, so it would pass while `C:` is already under 40 GB. The manager's reading of `/run/aap-runner/c-free-gb` is the guard
+- starts by refusing unless `df` of the workspace shows the 60 GiB work disk with at least 35 GB free. That is the same filesystem the manager checks with `df -BG --output=avail /var/lib/ghrunner`
 - pins every `uses:` to a 40-character commit SHA, with the version in a comment
 
 Workflow permissions are `{}`. Each job sets `contents: read` plus `actions: write`, because `Swatinem/rust-cache` and `actions/setup-node` cache saves need the Actions cache API. No other permission is granted. No new secret and no new trigger. `secrets.SYMFORGE_TOKEN` was already the public-to-private fallback for the sibling checkout.

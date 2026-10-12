@@ -5,9 +5,10 @@
 set -euo pipefail
 
 CONFIG_PATH=/etc/aap-runner/manager.conf
-C_FREE_PATH=/run/aap-runner/c-free-gb
-# The SYSTEM task rewrites the file every minute. Older than this, refuse.
-C_FREE_MAX_AGE_S=180
+WORK_MOUNT=/var/lib/ghrunner
+# df -BG of the 60 GiB ext4. The distro VHD reports about 1000G.
+WORK_DISK_MIN_GB=50
+WORK_DISK_MAX_GB=64
 AAP_GITHUB_ORG=""
 AAP_GITHUB_APP_ID=""
 AAP_GITHUB_APP_INSTALLATION_ID=""
@@ -20,6 +21,16 @@ AAP_DISK_FLOOR_GB=""
 below_floor() {
   local avail="$1" floor="$2"
   [[ "${avail}" -lt "${floor}" ]]
+}
+
+parse_df_gb() {
+  awk 'NR==2 { gsub(/G/, "", $1); print $1 }'
+}
+
+size_is_work_disk() {
+  local size="$1"
+  [[ "${size}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${size}" -ge "${WORK_DISK_MIN_GB}" && "${size}" -le "${WORK_DISK_MAX_GB}" ]]
 }
 
 b64url() {
@@ -88,21 +99,6 @@ check_key() {
   fi
 }
 
-# 0 = start, 3 = stale, 4 = under floor, 2 = malformed.
-c_free_verdict() {
-  local epoch="$1" gb="$2" now="$3" floor="$4" max_age="$5"
-  if [[ ! "${epoch}" =~ ^[0-9]+$ || ! "${gb}" =~ ^[0-9]+$ ]]; then
-    return 2
-  fi
-  if ((now + 30 < epoch || now - epoch > max_age)); then
-    return 3
-  fi
-  if below_floor "${gb}" "${floor}"; then
-    return 4
-  fi
-  return 0
-}
-
 mount_source_forbidden() {
   case "$1" in
     /mnt | /mnt/ | /mnt/*) return 0 ;;
@@ -129,40 +125,26 @@ assert_no_mnt_mounts() {
 }
 
 disk_ok() {
-  local perms owner line epoch gb now verdict
-  if [[ ! -f "${C_FREE_PATH}" ]]; then
-    echo "refusing to start a job: ${C_FREE_PATH} is missing (scheduled task has not reported C: free space)" >&2
+  local avail size
+  if ! mountpoint -q "${WORK_MOUNT}"; then
+    echo "refusing to start a job: ${WORK_MOUNT} is not a mountpoint" >&2
     return 1
   fi
-  perms=$(stat -c '%a' "${C_FREE_PATH}")
-  owner=$(stat -c '%u' "${C_FREE_PATH}")
-  if [[ "${owner}" != "0" || "${perms}" != "400" ]]; then
-    echo "refusing to start a job: ${C_FREE_PATH} must be root mode 0400" >&2
+  avail=$(df -BG --output=avail "${WORK_MOUNT}" | parse_df_gb)
+  size=$(df -BG --output=size "${WORK_MOUNT}" | parse_df_gb)
+  if [[ ! "${avail}" =~ ^[0-9]+$ ]]; then
+    echo "refusing to start a job: df avail of ${WORK_MOUNT} was not numeric" >&2
     return 1
   fi
-  line=""
-  IFS= read -r line < "${C_FREE_PATH}" || true
-  epoch=${line%% *}
-  gb=${line#* }
-  now=$(date +%s)
-  verdict=0
-  c_free_verdict "${epoch}" "${gb}" "${now}" "${AAP_DISK_FLOOR_GB}" "${C_FREE_MAX_AGE_S}" || verdict=$?
-  case "${verdict}" in
-    0) ;;
-    3)
-      echo "refusing to start a job: C: free-space reading is stale or in the future (epoch ${epoch}, now ${now})" >&2
-      return 1
-      ;;
-    4)
-      echo "refusing to start a job: ${gb}G free on C:; floor is ${AAP_DISK_FLOOR_GB}G" >&2
-      return 1
-      ;;
-    *)
-      echo "refusing to start a job: ${C_FREE_PATH} is not 'epoch gb'" >&2
-      return 1
-      ;;
-  esac
-  echo "disk floor ok: ${gb}G free on C: (reading age $((now - epoch))s)"
+  if ! size_is_work_disk "${size}"; then
+    echo "refusing to start a job: ${WORK_MOUNT} is ${size:-unknown}G; the work disk is 60G" >&2
+    return 1
+  fi
+  if below_floor "${avail}" "${AAP_DISK_FLOOR_GB}"; then
+    echo "refusing to start a job: ${avail}G free on ${WORK_MOUNT}; floor is ${AAP_DISK_FLOOR_GB}G" >&2
+    return 1
+  fi
+  echo "disk floor ok: ${avail}G free on ${WORK_MOUNT} (${size}G filesystem)"
 }
 
 mint_registration_token() {
@@ -240,30 +222,27 @@ run_one() {
 }
 
 self_check() {
-  local now=100000 verdict
-  if ! below_floor 39 40; then
-    echo "39G should be under a 40G floor" >&2
+  local got
+  if ! below_floor 34 35; then
+    echo "34G should be under a 35G floor" >&2
     return 1
   fi
-  if below_floor 40 40 || below_floor 41 40; then
+  if below_floor 35 35 || below_floor 36 35; then
     echo "floor comparison accepted a value that is not under the floor" >&2
     return 1
   fi
-  verdict=0
-  c_free_verdict 99900 65 "${now}" 40 180 || verdict=$?
-  [[ "${verdict}" -eq 0 ]]
-  verdict=0
-  c_free_verdict 99900 39 "${now}" 40 180 || verdict=$?
-  [[ "${verdict}" -eq 4 ]]
-  verdict=0
-  c_free_verdict 90000 65 "${now}" 40 180 || verdict=$?
-  [[ "${verdict}" -eq 3 ]]
-  verdict=0
-  c_free_verdict $((now + 31)) 65 "${now}" 40 180 || verdict=$?
-  [[ "${verdict}" -eq 3 ]]
-  verdict=0
-  c_free_verdict abc 65 "${now}" 40 180 || verdict=$?
-  [[ "${verdict}" -eq 2 ]]
+  got=$(printf 'Avail\n  35G\n' | parse_df_gb)
+  [[ "${got}" == "35" ]]
+  got=$(printf '1G-blocks\n     60G\n' | parse_df_gb)
+  [[ "${got}" == "60" ]]
+  if ! size_is_work_disk 60 || ! size_is_work_disk 59; then
+    echo "60G work disk was rejected" >&2
+    return 1
+  fi
+  if size_is_work_disk 49 || size_is_work_disk 65 || size_is_work_disk 1000; then
+    echo "a filesystem that is not the 60G work disk was accepted" >&2
+    return 1
+  fi
   if ! mount_source_forbidden /mnt || ! mount_source_forbidden /mnt/ || ! mount_source_forbidden /mnt/wsl; then
     echo "mounts under /mnt were allowed" >&2
     return 1

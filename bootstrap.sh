@@ -9,6 +9,11 @@ DISTRO=aap-runner
 INSTALL_DIR=${AAP_RUNNER_INSTALL_DIR:-/mnt/c/aap-runner}
 STAGE=${AAP_RUNNER_STAGE:-/mnt/c/aap-runner-staging}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# 60 GiB fixed. diskpart maximum= is MiB; 60*1024=61440. PowerShell 60GB matches.
+WORK_VHDX=${AAP_WORK_VHDX:-/mnt/c/wsl/aap-runner-work.vhdx}
+WORK_DISK_GB=60
+WORK_DISK_BYTES=64424509440
+WORK_DISK_PART_MB=61440
 
 # noble/current has no separate rootfs tarball. This is the WSL image at that
 # path. The sha256 is the pin; if the "current" file moves, the check stops
@@ -49,9 +54,41 @@ download() {
 }
 
 # df of a drvfs mount (the operator distro's /mnt/c) is the Windows volume.
-# df of / inside aap-runner is the 1 TB VHD and is not a free-space reading.
+# Used once, to allocate the fixed VHDX. It is not the per-job floor.
 avail_gb() {
   df -BG --output=avail "$1" | awk 'NR==2 { gsub(/G/, "", $1); print $1 }'
+}
+
+format_work_disk() {
+  local name dev fstype uuid line
+  local -a names
+  mapfile -t names < <(lsblk -bn -d -o NAME,SIZE | awk -v bytes="${WORK_DISK_BYTES}" '$2 == bytes { print $1 }')
+  if [[ "${#names[@]}" -ne 1 ]]; then
+    echo "expected one ${WORK_DISK_GB}GiB disk (${WORK_DISK_BYTES} bytes); found ${#names[@]}" >&2
+    lsblk -bn -d -o NAME,SIZE >&2 || true
+    exit 1
+  fi
+  name=${names[0]}
+  dev="/dev/${name}"
+  fstype=$(blkid -o value -s TYPE "${dev}" || true)
+  if [[ -n "${fstype}" && "${fstype}" != "ext4" ]]; then
+    echo "refusing to format ${dev}: filesystem is ${fstype}" >&2
+    exit 1
+  fi
+  if [[ -z "${fstype}" ]]; then
+    mkfs.ext4 -F -L aap-runner-work "${dev}"
+  fi
+  uuid=$(blkid -o value -s UUID "${dev}")
+  if [[ ! "${uuid}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    echo "refusing: blkid did not return a UUID for ${dev}" >&2
+    exit 1
+  fi
+  printf '%s\n' "${uuid}" > /etc/aap-runner/work-disk.uuid
+  chmod 644 /etc/aap-runner/work-disk.uuid
+  line="UUID=${uuid} /var/lib/ghrunner ext4 defaults,noatime,nofail,x-systemd.device-timeout=10s 0 2"
+  if ! grep -q ' /var/lib/ghrunner ' /etc/fstab 2>/dev/null; then
+    printf '%s\n' "${line}" >> /etc/fstab
+  fi
 }
 
 install_docker_apt() {
@@ -107,6 +144,7 @@ inside_packages() {
     ca-certificates \
     curl \
     dbus \
+    e2fsprogs \
     git \
     gnupg \
     iptables \
@@ -149,17 +187,25 @@ inside_packages() {
   copy_staged Dockerfile /var/lib/aap-runner/image/Dockerfile
   copy_staged ephemeral-entry.sh /var/lib/aap-runner/image/ephemeral-entry.sh
   copy_staged manager.sh /usr/local/sbin/aap-runner-manager
-  copy_staged record-c-free-gb.sh /usr/local/sbin/aap-record-c-free-gb
+  copy_staged mount-work-disk.sh /usr/local/sbin/aap-mount-work-disk
   copy_staged aap-runner-manager.service /etc/systemd/system/aap-runner-manager.service
+  copy_staged aap-workdisk.service /etc/systemd/system/aap-workdisk.service
+  install -d -m 755 /etc/docker /etc/systemd/system/docker.service.d
+  copy_staged daemon.json /etc/docker/daemon.json
+  copy_staged docker-workdisk.conf /etc/systemd/system/docker.service.d/workdisk.conf
   copy_staged nftables.conf /etc/aap-runner/nftables.conf
   copy_staged wsl.conf /etc/wsl.conf
   if [[ ! -f /etc/aap-runner/manager.conf ]]; then
     copy_staged manager.conf.example /etc/aap-runner/manager.conf
   fi
-  chmod 755 /usr/local/sbin/aap-runner-manager /usr/local/sbin/aap-record-c-free-gb \
+  chmod 755 /usr/local/sbin/aap-runner-manager /usr/local/sbin/aap-mount-work-disk \
     /var/lib/aap-runner/image/ephemeral-entry.sh
+  chmod 644 /etc/docker/daemon.json /etc/systemd/system/docker.service.d/workdisk.conf \
+    /etc/systemd/system/aap-workdisk.service
   chmod 400 /etc/aap-runner/manager.conf
-  chown root:root /etc/aap-runner/manager.conf /usr/local/sbin/aap-runner-manager
+  chown root:root /etc/aap-runner/manager.conf /usr/local/sbin/aap-runner-manager \
+    /etc/docker/daemon.json
+  format_work_disk
 
   verify_sha256 "/var/lib/aap-runner/image/${UBUNTU_NAME}" "${UBUNTU_SHA256}"
   verify_sha256 "/var/lib/aap-runner/image/${RUNNER_NAME}" "${RUNNER_SHA256}"
@@ -189,7 +235,7 @@ rewrite_dns_resolvers() {
 }
 
 inside_runtime() {
-  local state
+  local state rootdir
   state=""
   for _ in $(seq 1 30); do
     state=$(systemctl is-system-running || true)
@@ -206,7 +252,13 @@ inside_runtime() {
       ;;
   esac
 
+  systemctl daemon-reload
+  systemctl enable aap-workdisk
+  /usr/local/sbin/aap-mount-work-disk
+
   apt-get install -y "/var/lib/aap-runner/${SYSBOX_NAME}"
+  systemctl stop sysbox sysbox-mgr sysbox-fs >/dev/null 2>&1 || true
+  /usr/local/sbin/aap-mount-work-disk
   if systemctl cat sysbox.service >/dev/null 2>&1; then
     systemctl enable --now sysbox
   else
@@ -215,6 +267,11 @@ inside_runtime() {
   fi
   systemctl enable --now docker
   systemctl restart docker
+  rootdir=$(docker info -f '{{.DockerRootDir}}')
+  if [[ "${rootdir}" != "/var/lib/ghrunner/docker" ]]; then
+    echo "dockerd data-root is ${rootdir}; expected /var/lib/ghrunner/docker" >&2
+    exit 1
+  fi
 
   if ! docker build -t aap-crrr-runner:local /var/lib/aap-runner/image; then
     echo "runner image build failed; install stopped" >&2
@@ -275,11 +332,13 @@ self_check() {
   printf 'abc' > "${tmp}"
   verify_sha256 "${tmp}" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
   rm -f "${tmp}"
+  [[ "${WORK_DISK_BYTES}" -eq $((WORK_DISK_GB * 1024 * 1024 * 1024)) ]]
+  [[ "${WORK_DISK_PART_MB}" -eq $((WORK_DISK_GB * 1024)) ]]
   echo "checksum self-check ok"
 }
 
 outside() {
-  local avail win_install win_tar
+  local win_install win_tar
   if [[ "${WSL_DISTRO_NAME:-}" == "${DISTRO}" ]]; then
     echo "run bootstrap from the operator distro, not from ${DISTRO}" >&2
     exit 1
@@ -292,11 +351,8 @@ outside() {
     echo "/mnt/c is not mounted; this step has to run before aap-runner is locked down" >&2
     exit 1
   fi
-  avail=$(avail_gb /mnt/c)
-  if [[ "${avail}" -lt 40 ]]; then
-    echo "refusing import: ${avail}G free on C:; floor is 40G" >&2
-    exit 1
-  fi
+  ensure_work_vhdx
+  attach_work_vhdx
   if distro_exists; then
     echo "distro ${DISTRO} already exists; wsl --unregister ${DISTRO} yourself before re-running" >&2
     exit 1
@@ -319,7 +375,8 @@ outside() {
   mkdir -p "${STAGE}"
   cp "${work}/${UBUNTU_NAME}" "${work}/${SYSBOX_NAME}" "${work}/${RUNNER_NAME}" "${STAGE}/"
   cp "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}/ephemeral-entry.sh" "${SCRIPT_DIR}/manager.sh" \
-    "${SCRIPT_DIR}/record-c-free-gb.sh" \
+    "${SCRIPT_DIR}/mount-work-disk.sh" "${SCRIPT_DIR}/aap-workdisk.service" \
+    "${SCRIPT_DIR}/daemon.json" "${SCRIPT_DIR}/docker-workdisk.conf" \
     "${SCRIPT_DIR}/aap-runner-manager.service" "${SCRIPT_DIR}/nftables.conf" \
     "${SCRIPT_DIR}/wsl.conf" "${SCRIPT_DIR}/manager.conf.example" \
     "${SCRIPT_DIR}/bootstrap.sh" "${STAGE}/"
@@ -328,44 +385,71 @@ outside() {
     bash -lc "mkdir -p /opt/aap-runner && cp \"\$AAP_STAGE_BOOT\" /opt/aap-runner/bootstrap.sh && bash /opt/aap-runner/bootstrap.sh --inside-packages"
   rm -rf "${STAGE}"
 
-  register_c_free_task
+  register_mount_task
 
   wsl.exe --terminate "${DISTRO}"
   wsl.exe -d "${DISTRO}" -u root -- bash /opt/aap-runner/bootstrap.sh --inside-runtime
-  prove_c_free_task
 }
 
-register_c_free_task() {
-  local ps1_win xml_dest xml
-  cp "${SCRIPT_DIR}/c-free-gb.ps1" "${INSTALL_DIR}/c-free-gb.ps1"
-  ps1_win=$(wslpath -w "${INSTALL_DIR}/c-free-gb.ps1")
-  xml=$(< "${SCRIPT_DIR}/c-free-gb-task.xml")
-  xml=${xml//__AAP_PS1__/${ps1_win}}
-  xml_dest="${INSTALL_DIR}/c-free-gb-task.xml"
-  printf '%s\n' "${xml}" > "${xml_dest}"
-  icacls.exe "${ps1_win}" /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F'
-  if ! schtasks.exe /Create /TN AAP-CRRR-C-Free-GB /XML "$(wslpath -w "${xml_dest}")" /F; then
-    echo "failed to register scheduled task AAP-CRRR-C-Free-GB as SYSTEM." >&2
-    echo "Run bootstrap from an elevated shell. Install stopped." >&2
+ensure_work_vhdx() {
+  local avail bytes win
+  win=$(wslpath -w "${WORK_VHDX}")
+  if [[ -f "${WORK_VHDX}" ]]; then
+    bytes=$(stat -c '%s' "${WORK_VHDX}")
+    if [[ "${bytes}" -lt "${WORK_DISK_BYTES}" ]]; then
+      echo "refusing: ${WORK_VHDX} is ${bytes} bytes, not a ${WORK_DISK_GB}GiB fixed VHDX" >&2
+      exit 1
+    fi
+    return 0
+  fi
+  avail=$(avail_gb /mnt/c)
+  if [[ "${avail}" -lt "${WORK_DISK_GB}" ]]; then
+    echo "refusing: ${avail}G free on C:; creating the fixed work disk needs ${WORK_DISK_GB}G" >&2
+    exit 1
+  fi
+  if ! powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+    -File "$(wslpath -w "${SCRIPT_DIR}/create-work-vhdx.ps1")" \
+    -Path "${win}" -SizeGiB "${WORK_DISK_GB}"; then
+    echo "failed to create ${win}. Run bootstrap from an elevated shell." >&2
     exit 1
   fi
 }
 
-prove_c_free_task() {
-  local line=""
-  schtasks.exe /Run /TN AAP-CRRR-C-Free-GB
-  for _ in $(seq 1 15); do
-    if line=$(wsl.exe -d "${DISTRO}" -u root -- cat /run/aap-runner/c-free-gb 2>/dev/null); then
-      line=$(printf '%s' "${line}" | tr -d '\r')
-      if [[ "${line}" =~ ^[0-9]+\ [0-9]+$ ]]; then
-        echo "C: free-space task wrote: ${line}"
-        return 0
-      fi
-    fi
-    sleep 2
-  done
-  echo "scheduled task did not write /run/aap-runner/c-free-gb. Install stopped." >&2
+attach_work_vhdx() {
+  local win err
+  win=$(wslpath -w "${WORK_VHDX}")
+  if err=$(wsl.exe --mount --vhd "${win}" --bare 2>&1); then
+    return 0
+  fi
+  if [[ "${err}" == *[Aa]lready* ]]; then
+    return 0
+  fi
+  printf '%s\n' "${err}" >&2
+  echo "wsl --mount --bare failed. Run bootstrap from an elevated shell." >&2
   exit 1
+}
+
+register_mount_task() {
+  local ps1_win vhdx_win xml_dest xml ps1_body
+  local task_dir
+  task_dir=$(dirname "${WORK_VHDX}")
+  mkdir -p "${task_dir}"
+  vhdx_win=$(wslpath -w "${WORK_VHDX}")
+  ps1_body=$(< "${SCRIPT_DIR}/mount-work-vhdx.ps1")
+  ps1_body=${ps1_body//__AAP_VHDX__/${vhdx_win}}
+  ps1_win=$(wslpath -w "${task_dir}/mount-work-vhdx.ps1")
+  printf '%s\n' "${ps1_body}" > "${task_dir}/mount-work-vhdx.ps1"
+  xml=$(< "${SCRIPT_DIR}/mount-work-vhdx-task.xml")
+  xml=${xml//__AAP_PS1__/${ps1_win}}
+  xml_dest="${task_dir}/mount-work-vhdx-task.xml"
+  printf '%s\n' "${xml}" > "${xml_dest}"
+  icacls.exe "${ps1_win}" /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F'
+  schtasks.exe /Delete /TN AAP-CRRR-C-Free-GB /F >/dev/null 2>&1 || true
+  if ! schtasks.exe /Create /TN AAP-CRRR-Mount-Work-Disk /XML "$(wslpath -w "${xml_dest}")" /F; then
+    echo "failed to register scheduled task AAP-CRRR-Mount-Work-Disk as SYSTEM." >&2
+    echo "Run bootstrap from an elevated shell. Install stopped." >&2
+    exit 1
+  fi
 }
 
 case "${1:-}" in

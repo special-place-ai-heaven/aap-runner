@@ -9,4 +9,5 @@ AAP_GITHUB_APP_PRIVATE_KEY_PATH=/etc/aap-runner/app.pem
 AAP_RUNNER_IMAGE=aap-crrr-runner:local
 AAP_RUNNER_LABELS=self-hosted,linux,crrr
 AAP_RUNNER_GROUP=aap-crrr
-AAP_DISK_FLOOR_GB=40
+# Free GiB required on /var/lib/ghrunner before a job starts. The disk is 60 GiB fixed.
+AAP_DISK_FLOOR_GB=35

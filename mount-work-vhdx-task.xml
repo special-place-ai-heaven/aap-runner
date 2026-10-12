@@ -1,17 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>Write C: free gigabytes into the aap-runner distro. Runs as SYSTEM.</Description>
+    <Description>Attach the fixed AAP work VHDX to WSL at boot. Touches only that VHDX path.</Description>
   </RegistrationInfo>
   <Triggers>
-    <TimeTrigger>
-      <Repetition>
-        <Interval>PT1M</Interval>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>
-      <StartBoundary>2026-01-01T00:00:00</StartBoundary>
-      <Enabled>true</Enabled>
-    </TimeTrigger>
     <BootTrigger>
       <Enabled>true</Enabled>
     </BootTrigger>
