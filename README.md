@@ -29,7 +29,7 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `evidence-host.sh` | From the operator distro, passes `wsl --version`, `.wslconfig`, and the GitHub runner list into that script |
 | `lock-acl.ps1` | DACL for the boot-task folder, script, and VHDX: SYSTEM and Administrators only, owner Administrators. Windows PowerShell 5.1 or PowerShell 7 |
 
-`bash labels.sh --self-check`, `bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, `bash evidence.sh --self-check`, `bash mount-work-disk.sh --self-check`, and `bash evidence-host.sh --self-check` check the checksum, disk-floor, limit, route, sudo-listing, daemon.json merge, base-label, and bind-staging parsers, the cases where a missing `wslinfo` or an unreadable `.wslconfig` must stop the install, that a CP1252 comment, CRLF, and a commented `networkingMode` do not make `.wslconfig` unreadable, that an already-attached disk is accepted only when a live UUID probe matches `work-disk.uuid`, and that the mount task is rendered for a user SID as UTF-16 LE. They do not touch WSL.
+`bash labels.sh --self-check`, `bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, `bash evidence.sh --self-check`, `bash mount-work-disk.sh --self-check`, and `bash evidence-host.sh --self-check` check the checksum, disk-floor, limit, route, sudo-listing, daemon.json merge, base-label, and bind-staging parsers, the cases where a missing `wslinfo` or an unreadable `.wslconfig` must stop the install, that a CP1252 comment, CRLF, and a commented `networkingMode` do not make `.wslconfig` unreadable, that an already-attached disk is accepted only when a live UUID probe matches `work-disk.uuid`, that `mkfs` runs only when `blkid -p -o export` exits 2, that an empty `/mnt/c` directory is not a Windows mount, and that the mount task is rendered for a user SID as UTF-16 LE. `pwsh -File install-host.Tests.ps1` checks `-DryRun`. They do not touch WSL.
 
 ## What runs where
 
@@ -118,7 +118,7 @@ Outbound only. The distro does not listen: the nftables input policy is drop, wi
 
 except the distro's DNS resolver, which bootstrap writes into the set from `/etc/resolv.conf`. Those accept rules are above the drops, so a resolver at `127.0.0.53` still answers. Internet destinations are allowed. The packet's destination is filtered, not the bridge gateway, so normal outbound NAT still works.
 
-Bootstrap refuses the install when `wslinfo --networking-mode` prints `mirrored`, and when an uncommented `networkingMode` under `[wsl2]` in the Windows user's `.wslconfig` is `mirrored` (the match is case-insensitive). The file is read as bytes: CR is stripped, and a non-UTF-8 byte in a comment does not make it unreadable. A commented `networkingMode` line is not a setting. Inside the distro this runs as root. An empty `GetFolderPath("UserProfile")` falls back to that Windows identity's `ProfileImagePath` in `HKLM\...\ProfileList`. It does not use `cmd.exe %USERPROFILE%`, which from that root context is the wrong directory. If the file truly cannot be read, or that profile path cannot be resolved while `/mnt/c` is mounted, the refusal prints the path that was tried. An absent `.wslconfig` is the Windows NAT default. Inside `aap-runner` a missing or empty `wslinfo` also refuses. Mirrored mode puts this distro on the Windows LAN. This table does not see that traffic. Leave WSL on NAT.
+The operator distro proves networking before `aap-runner` is imported. `mountpoint -q /mnt/c` is the Windows-reachability test. An empty `/mnt/c` directory is not a mount: `aap-runner` keeps that directory after automount is turned off. The file is read as bytes from the Windows profile: CR is stripped, and a non-UTF-8 byte in a comment does not make it unreadable. A commented `networkingMode` line is not a setting. An empty `GetFolderPath("UserProfile")` falls back to `ProfileImagePath` for that Windows identity. It does not use `%USERPROFILE%`. If the file cannot be read, the refusal prints the path that was tried. An absent file is the NAT default and the proof literal is `absent`. An unset `networkingMode` is `nat`. `mirrored`, or any other value, is refused. `wslinfo --networking-mode` is checked there too. The literal (`nat` or `absent` only) is passed into `--inside-runtime`. Inside `aap-runner` that literal is checked against `wslinfo`. The distro does not read `.wslconfig` and does not call `powershell.exe`. A missing or empty `wslinfo` inside `aap-runner` refuses. A missing `autoMemoryReclaim` is a preflight warning. Mirrored mode puts this distro on the Windows LAN. This table does not see that traffic. Leave WSL on NAT.
 
 The distro `daemon.json` sets `"ipv6": false`. After dockerd starts, bootstrap reads `docker network inspect bridge` and stops unless `EnableIPv6` is `false`. Each job's inner dockerd writes the same file before it listens, and the entry script stops that job if the inner bridge is not `false`.
 
@@ -140,7 +140,7 @@ New-VHD -Path C:\wsl\aap-runner-work.vhdx -SizeBytes 60GB -Fixed
 create vdisk file="C:\wsl\aap-runner-work.vhdx" maximum=61440 type=fixed
 ```
 
-It then attaches the disk with `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --bare` and formats the whole disk ext4. The UUID is stored at `/etc/aap-runner/work-disk.uuid`. A mount error that contains `already` in any case, including `WSL_E_USER_VHD_ALREADY_ATTACHED`, means the VHDX is already attached. Bootstrap then checks `lsblk` for one disk of that VHDX's byte size. Once `work-disk.uuid` exists, the UUID is read with `blkid -p` after `udevadm settle`, so a cache entry from before `mkfs` is not treated as a missing filesystem. `lsblk -dn -o UUID` is the fallback. That probe runs as root inside the distro that sees the disk: this shell when it can read the superblock, otherwise `wsl -d aap-runner -u root`. A different UUID is still refused. `wsl.exe -l` is stripped of UTF-16 NULs before its output is stored.
+It then attaches the disk with `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --bare`. That mount does not require elevation. `mkfs.ext4` runs only when `blkid -p -o export` exits 2. A partition table (`PTTYPE`) or a filesystem other than ext4 refuses, and any other blkid status refuses. Any attached whole disk whose size is not this VHDX's exact byte count fails preflight, so another distro's disk is not formatted. The UUID is stored at `/etc/aap-runner/work-disk.uuid`. A mount error that contains `already` in any case, including `WSL_E_USER_VHD_ALREADY_ATTACHED`, means the VHDX is already attached. Bootstrap then checks `lsblk` for one disk of that VHDX's byte size. Once `work-disk.uuid` exists, the UUID is read with `blkid -p` after `udevadm settle`, so a cache entry from before `mkfs` is not treated as a missing filesystem. `lsblk -dn -o UUID` is the fallback. That probe runs as root inside the distro that sees the disk: this shell when it can read the superblock, otherwise `wsl -d aap-runner -u root`. A different UUID is still refused. `wsl.exe -l` is stripped of UTF-16 NULs before its output is stored.
 
 When the installing operator logs on, task `AAP-CRRR-Mount-Work-Disk` runs as that operator, elevated (`HighestAvailable`), and runs only `wsl --mount --vhd <that path> --bare`. WSL is per Windows user. The same command running as SYSTEM attaches the disk to SYSTEM's WSL VM, and `aap-runner` is not in that VM, so the task is not SYSTEM. There is no boot trigger: `InteractiveToken` has no session until that operator logs on, and a boot task cannot see this user's WSL. The runner is available after the operator logs on, which is the same condition WSL itself needs. The script appends the command output to `C:\wsl\mount-work-vhdx.log`. Inside `aap-runner`, `aap-mount-work-disk` mounts that UUID at `/var/lib/ghrunner`. `mountFsTab=false` stops WSL from processing fstab; the line is still there with `nofail` for systemd, and the service retries until the UUID appears. `mountpoint -q` failing exits the mount script, and docker.service has `ConditionPathIsMountPoint=/var/lib/ghrunner`, so dockerd does not start on the distro root.
 
@@ -164,10 +164,10 @@ The hosted-runner toolchain-delete step is gone. `CARGO_INCREMENTAL=0` and line-
 
 Fresh has 93 GB of RAM and 32 threads. CRRR stays at the defaults in `manager.conf.example`: 60 GiB disk, 35 GB free, `12g`, 6 cpus, 4096 pids, and no extra labels. Fresh is a second `manager.conf`, not a change to those defaults. Both hosts still get `--memory-swap` equal to their own `--memory`, and `--cpu-shares 512`.
 
-Install the work disk at 100 GiB from the operator distro:
+Install the work disk at 100 GiB from an elevated shell:
 
-```bash
-AAP_WORK_DISK_GIB=100 bash ops/self-hosted-runner/bootstrap.sh
+```powershell
+powershell -File ops\self-hosted-runner\install-host.ps1 -WorkDiskGiB 100
 ```
 
 That writes `AAP_WORK_DISK_GIB=100` into a new `/etc/aap-runner/manager.conf` and raises `AAP_DISK_FLOOR_GB` from 35 to 55. An existing conf is left as it is. `df` then accepts 90–104 GB.
@@ -239,7 +239,7 @@ Do this in the org that owns the private AAP repos before starting the manager. 
 - [ ] `ghrunner` is not in `sudo` or `docker`. `sudo -n -l -U ghrunner` prints `not allowed to run sudo`. An exit status of 0 is not a pass.
 - [ ] Sysbox preflight printed `docker info` from inside `--runtime=sysbox-runc`. If it did not, the install stopped and stays stopped.
 - [ ] On `special-place-ai-heaven/symforge`, Settings > Actions > General > Access allows `Agent_Army_Professionals`. Then delete the `SYMFORGE_TOKEN` secret from this repo and from the org. The workflow does not read it.
-- [ ] `.wslconfig` has no uncommented `networkingMode=mirrored` under `[wsl2]`. `wslinfo --networking-mode` is not `mirrored`. Inside `aap-runner`, a missing `wslinfo` is a failed install. An unreadable `.wslconfig` is a failed install, and the refusal names the path that was tried.
+- [ ] `.wslconfig` has no uncommented `networkingMode=mirrored` under `[wsl2]`. The operator distro records the proof before import. Inside `aap-runner`, `wslinfo --networking-mode` matches that proof. A missing `wslinfo` there is a failed install. `HKLM\Software\Policies\WSL\AllowDiskMount` is not 0.
 - [ ] `icacls` on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, and `C:\wsl\aap-runner-work.vhdx` lists only SYSTEM and Administrators, and the owner of each path is `BUILTIN\Administrators`.
 - [ ] `df` of `/var/lib/containerd`, `/run/containerd`, `/var/lib/sysbox`, and `/var/lib/ghrunner/docker` is the 60 GiB work disk. `/var/lib/sysbox` is a bind mount, not a symlink. `docker info` lists the `sysbox-runc` runtime.
 - [ ] Task `AAP-CRRR-Mount-Work-Disk` runs as the installing operator: UserId is that user's SID, `LogonType` is `InteractiveToken`, `RunLevel` is `HighestAvailable`, and the trigger is logon. It is not SYSTEM. The operator must be logged on before the disk is attached. `C:\wsl\mount-work-vhdx.log` contains the `wsl --mount` output.
@@ -247,13 +247,19 @@ Do this in the org that owns the private AAP repos before starting the manager. 
 
 ## Install
 
-On the workstation, from the existing Ubuntu distro (the one that still has `/mnt/c`), with the repo checked out. That distro needs `jq` (`sudo apt-get install jq`). Bootstrap checks for it before it downloads anything and stops with that install command if `jq` is missing.
+The install entry is `install-host.ps1`, from an elevated Windows PowerShell 5.1 or PowerShell 7. It resets `PSModulePath` to the machine value first. `wsl --import`, `wsl --unregister`, `wsl --unmount`, `wsl --shutdown`, and `wsl --mount --vhd --bare` do not need elevation. The same user SID shares one WSL VM either way. Elevation is required because the script locks `C:\wsl` and the VHDX to SYSTEM and Administrators, and the logon task is `HighestAvailable` so it can open that file.
 
-```bash
-bash ops/self-hosted-runner/bootstrap.sh
+```powershell
+powershell -File ops\self-hosted-runner\install-host.ps1 -WorkDiskGiB 100
 ```
 
-The first command inside the new distro is `wsl.exe -d aap-runner -u root --exec /bin/bash <stage>/stage-into-distro.sh <stage> <disk GiB>`. `--exec` passes those paths as arguments. Without it, `wsl.exe` joins the command and the distro shell expands it, which is how an empty `cp` path used to exit 0. A non-zero status from `wsl.exe`, `powershell.exe`, or `schtasks.exe` stops the install. After `--inside-runtime`, bootstrap checks that `/opt/aap-runner/bootstrap.sh` exists, `docker` and sysbox are active, task `AAP-CRRR-Mount-Work-Disk` is registered, and image `aap-crrr-runner:local` is built.
+`-DryRun` calls the same preflight from a non-admin shell, prints each `WOULD` step and its `UNDO` command, writes nothing, and exits 0 when every check passed. Not being elevated is `INFO` on a dry run. `-DistroName` and `-WorkVhdx` override the distro and the VHDX path. `-TestMode` uses an unlocked VHDX under the user profile, skips the ACL lock and the boot task, and runs that same path without elevation. Group Policy `AllowDiskMount` is read from `HKLM\Software\Policies\WSL`. A DWORD of 0 fails preflight. Absent or 1 is allowed, which is how WSL reads it.
+
+A re-run keeps going. A registered distro, a matching task XML hash, an already-locked ACL, or `/etc/aap-runner/install.done` is a skipped step. It does not unregister. `UNDO.md` next to the VHDX lists each change and the revert command. The manager unit is disabled and is not started. P0 evidence treats a missing `/etc/aap-runner/app.pem` as the only accepted FAIL. `-KeyPath` is copied to that path as root mode 0400 on stdin, the source file is deleted, and P1 runs. The manager stays disabled.
+
+On the workstation the operator distro still needs `jq` (`sudo apt-get install jq`). Preflight checks for it before anything is written. `bootstrap.sh` with no arguments refuses and names `install-host.ps1`.
+
+`install-host.ps1` runs `bootstrap.sh --preflight`, locks the staging copy after its sha256 check, then `--register-task`, `--format-work-disk`, `wsl --import`, and `--inside-runtime`. The first command inside the new distro is `wsl.exe -d aap-runner -u root --exec /bin/bash <stage>/stage-into-distro.sh <stage> <disk GiB>`. `--exec` passes those paths as arguments. Without it, `wsl.exe` joins the command and the distro shell expands it, which is how an empty `cp` path used to exit 0. A non-zero status from `wsl.exe`, `powershell.exe`, or `schtasks.exe` stops the install. After `--inside-runtime`, bootstrap checks that `/opt/aap-runner/bootstrap.sh` exists, `docker` and sysbox are active, task `AAP-CRRR-Mount-Work-Disk` is registered, and image `aap-crrr-runner:local` is built. The manager unit is disabled there and is not started.
 
 The script downloads three pinned artifacts and checks sha256 before it uses them. Before each download it prints the URL and the expected size (`Content-Length`, or `expected size unknown` when the server does not send one), then shows `curl --progress-bar`. It does not pipe curl into a shell.
 
@@ -263,21 +269,15 @@ The script downloads three pinned artifacts and checks sha256 before it uses the
 | Sysbox CE 0.7.1 amd64 | `https://github.com/nestybox/sysbox/releases/download/v0.7.1/sysbox-ce_0.7.1.linux_amd64.deb` | `9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5` |
 | actions-runner 2.338.0 linux-x64 | `https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz` | `af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32` |
 
-The rootfs tarball is downloaded into `C:\aap-runner-staging`, which bootstrap locks to SYSTEM and Administrators, and its sha256 is checked on that copy. `wsl --import` receives that `C:\` path. Importing from `\\wsl.localhost\<the operator distro>\...` stalls, so that path is refused. The staging directory, including the tarball, is removed when bootstrap exits. The import prints `importing aap-runner (this takes ~1-2 min)...` and is limited to 15 minutes; a timeout stops the install. The distro VHDX is created at `C:\aap-runner` (override with `AAP_RUNNER_INSTALL_DIR`). That path is outside the Windows user profile. After import the distro cannot mount it back.
+The rootfs tarball is downloaded into the staging directory beside the VHDX (`C:\wsl\staging` on a normal install). That directory is locked to SYSTEM and Administrators after `staging.sha256` matches, and the tarball sha256 is checked on that copy. `wsl --import` receives that `C:\` path. Importing from `\\wsl.localhost\<the operator distro>\...` stalls, so that path is refused. Staging stays in place so a re-run can hash it again. The import prints `importing aap-runner (this takes ~1-2 min)...` and is limited to 15 minutes; a timeout stops the install. The distro VHDX is created at `C:\aap-runner` (override with `-InstallDir`). That path is outside the Windows user profile. After import the distro cannot mount it back.
 
-If `wsl -l` does not list `aap-runner` but `C:\aap-runner\ext4.vhdx` is already there, an interrupted import left that folder. Bootstrap tells the operator to delete it and does not delete it itself.
+If `wsl -l` does not list the distro but `ext4.vhdx` is already in the install directory, preflight fails and does not delete that file.
 
-Bootstrap creates the fixed VHDX at `AAP_WORK_DISK_GIB` (default 60), formats it, and registers `AAP-CRRR-Mount-Work-Disk` for the installing operator. The task xml is written as UTF-16 LE with a BOM, because `schtasks /XML` rejects a UTF-8 file. Registering that task needs an elevated shell. If Task Scheduler rejects it, the install stops. An earlier `AAP-CRRR-C-Free-GB` task is deleted if it is present. The task runs at the operator's next logon. This session is already mounted by bootstrap itself. After a reboot the disk stays unmounted until that operator logs on.
+The fixed VHDX is `AAP_WORK_DISK_GIB` (default 60; Fresh passes `-WorkDiskGiB 100`). `mkfs` runs only when `blkid -p -o export` exits 2. The task xml is written as UTF-16 LE with a BOM, because `schtasks /XML` rejects a UTF-8 file. Registering that task needs an elevated shell because the VHDX is ACL-locked. `-TestMode` does not register it. If Task Scheduler rejects it, the install stops. An earlier `AAP-CRRR-C-Free-GB` task is deleted if it is present. The task runs at the operator's next logon. This session is already mounted by the installer. After a reboot the disk stays unmounted until that operator logs on.
 
-Bootstrap will refuse to start if `aap-runner` already exists, including a half-installed distro. It does not resume that distro and it does not unregister anything itself. Unregister only this distro, then re-run:
+A re-run does not unregister. A registered distro, a task whose xml sha256 matches `mount-work-vhdx-task.xml.prev-hash`, an ACL that is already SYSTEM and Administrators, or `/etc/aap-runner/install.done` is skipped. `UNDO.md` lists `wsl.exe --unregister <distro>` for an import this run actually performed. That command does not unregister Ubuntu, docker-desktop, or any other distro.
 
-```text
-wsl --unregister aap-runner
-```
-
-That command does not unregister Ubuntu, docker-desktop, or any other distro.
-
-After a successful preflight, place the key and fill the empty `AAP_GITHUB_APP_ID` and `AAP_GITHUB_APP_INSTALLATION_ID` in `/etc/aap-runner/manager.conf`. Then:
+After P0, `-KeyPath` installs the key. Fill the empty `AAP_GITHUB_APP_ID` and `AAP_GITHUB_APP_INSTALLATION_ID` in `/etc/aap-runner/manager.conf`. The installer does not start the manager. After BRUCE accepts the design, the operator runs:
 
 ```bash
 wsl.exe -d aap-runner -u root -- systemctl start aap-runner-manager

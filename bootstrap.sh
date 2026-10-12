@@ -5,7 +5,12 @@
 # and no host docker socket mount.
 set -euo pipefail
 
-DISTRO=aap-runner
+# install-host.ps1 passes a throwaway name in -TestMode. The default stays aap-runner.
+DISTRO=${AAP_RUNNER_DISTRO:-aap-runner}
+if [[ ! "${DISTRO}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+  echo "refusing: AAP_RUNNER_DISTRO=${DISTRO} is not a distro name" >&2
+  exit 1
+fi
 INSTALL_DIR=${AAP_RUNNER_INSTALL_DIR:-/mnt/c/aap-runner}
 STAGE=${AAP_RUNNER_STAGE:-/mnt/c/aap-runner-staging}
 # Written before import. A re-run that still sees aap-runner stops and
@@ -101,6 +106,13 @@ UBUNTU_NAME=ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz
 DOCKER_GPG_URL=https://download.docker.com/linux/ubuntu/gpg
 DOCKER_GPG_SHA256=1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570
 DOCKER_GPG_FINGERPRINT=9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+DOCKER_APT_ROOT=https://download.docker.com/linux/ubuntu
+DOCKER_APT_URL=${DOCKER_APT_ROOT}/dists/noble/InRelease
+# Read-only preflight floor. The work VHDX itself is AAP_WORK_DISK_GIB.
+PREFLIGHT_FREE_GB=40
+# Set by preflight after .wslconfig is proved nat or absent. Inside aap-runner
+# this literal is the only accepted proof. The distro does not read the file.
+AAP_NETWORKING_PROOF=""
 DOCKER_CE_VERSION=5:29.9.0-1~ubuntu.24.04~noble
 CONTAINERD_VERSION=2.4.1-2~ubuntu.24.04~noble
 
@@ -143,8 +155,49 @@ avail_gb() {
   df -BG --output=avail "$1" | awk 'NR==2 { gsub(/G/, "", $1); print $1 }'
 }
 
+# An empty directory is not a Windows drive. aap-runner keeps /mnt/c
+# after automount is turned off. mountpoint is false for that directory.
+drive_is_mounted() {
+  mountpoint -q "$1"
+}
+
+# Whole disks other than the distro root. A 650G ext4 disk attached for
+# another distro is not the work VHDX. Exact byte size is the only size match.
+attached_extra_disks() {
+  local root_src="" root_disk="" name size
+  root_src=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+  if [[ -n "${root_src}" ]]; then
+    root_disk=$(lsblk -no PKNAME "${root_src}" 2>/dev/null | awk 'NR==1 { print $1; exit }' || true)
+    if [[ -z "${root_disk}" ]]; then
+      root_disk=$(lsblk -no NAME "${root_src}" 2>/dev/null | awk 'NR==1 { print $1; exit }' || true)
+    fi
+  fi
+  while read -r name size; do
+    [[ -n "${name}" ]] || continue
+    [[ "${name}" == "${root_disk}" ]] && continue
+    printf '%s %s\n' "${name}" "${size}"
+  done < <(lsblk -bn -d -o NAME,SIZE 2>/dev/null || true)
+}
+
+# Return 1 when any attached disk is not the work VHDX's exact byte size.
+# The size-only path must not run while that disk is visible.
+refuse_foreign_attached_disks() {
+  local name size foreign=""
+  while read -r name size; do
+    [[ -n "${name}" ]] || continue
+    if [[ "${size}" != "${WORK_DISK_BYTES}" ]]; then
+      foreign="${foreign} /dev/${name}=${size}"
+    fi
+  done < <(attached_extra_disks)
+  if [[ -n "${foreign}" ]]; then
+    echo "refusing: non-work disk attached:${foreign} (work disk is ${WORK_DISK_BYTES} bytes)" >&2
+    return 1
+  fi
+}
+
 # One whole disk whose byte size is the fixed VHDX. Two of that size is
 # ambiguous, and zero means the VHDX is not attached to this VM.
+# A different size, including another distro's disk, is not a candidate.
 work_disk_device() {
   local -a names
   mapfile -t names < <(lsblk -bn -d -o NAME,SIZE | awk -v bytes="${WORK_DISK_BYTES}" '$2 == bytes { print $1 }')
@@ -156,19 +209,62 @@ work_disk_device() {
   printf '%s\n' "/dev/${names[0]}"
 }
 
-format_work_disk() {
-  local dev fstype uuid line
-  dev=$(work_disk_device) || exit 1
-  # -p reads the superblock. A cache entry from before mkfs has no TYPE.
-  fstype=$(blkid -p -o value -s TYPE "${dev}" 2>/dev/null || true)
-  fstype=$(printf '%s' "${fstype}" | tr -d '[:space:]')
-  if [[ -n "${fstype}" && "${fstype}" != "ext4" ]]; then
-    echo "refusing to format ${dev}: filesystem is ${fstype}" >&2
-    exit 1
+# Field from `blkid -p -o export` text. Returns 1 when the field is absent.
+blkid_export_field() {
+  local text="$1" field="$2" line
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" == "${field}="* ]]; then
+      printf '%s\n' "${line#"${field}"=}"
+      return 0
+    fi
+  done <<< "${text}"
+  return 1
+}
+
+# mkfs only when blkid -p -o export exits 2 (no superblock). Exit 0 with
+# PTTYPE, or with a TYPE other than ext4, refuses. Any other status refuses.
+# Prints mkfs or keep.
+work_disk_format_decision() {
+  local dev="$1" text="" rc=0 pttype="" fstype=""
+  text=$(blkid -p -o export "${dev}" 2>/dev/null) || rc=$?
+  if [[ "${rc}" -eq 2 ]]; then
+    printf '%s\n' mkfs
+    return 0
   fi
-  if [[ -z "${fstype}" ]]; then
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "refusing to format ${dev}: blkid -p exited ${rc}" >&2
+    return 1
+  fi
+  pttype=$(blkid_export_field "${text}" PTTYPE || true)
+  fstype=$(blkid_export_field "${text}" TYPE || true)
+  if [[ -n "${pttype}" ]]; then
+    echo "refusing to format ${dev}: partition table ${pttype}" >&2
+    return 1
+  fi
+  if [[ "${fstype}" != "ext4" ]]; then
+    echo "refusing to format ${dev}: filesystem is ${fstype:-empty}" >&2
+    return 1
+  fi
+  printf '%s\n' keep
+}
+
+# mkfs only when work_disk_format_decision prints mkfs. Prints mkfs or keep.
+# Does not write fstab. install-host.ps1 runs this before distro import.
+format_work_disk_fs() {
+  local dev decision
+  refuse_foreign_attached_disks || return 1
+  dev=$(work_disk_device) || return 1
+  decision=$(work_disk_format_decision "${dev}") || return 1
+  if [[ "${decision}" == "mkfs" ]]; then
     mkfs.ext4 -F -L aap-runner-work "${dev}"
   fi
+  printf '%s\n' "${decision}"
+}
+
+format_work_disk() {
+  local dev decision uuid line
+  decision=$(format_work_disk_fs) || exit 1
+  dev=$(work_disk_device) || exit 1
   if ! uuid=$(probe_disk_uuid_here "${dev}"); then
     echo "refusing: blkid did not return a UUID for ${dev}" >&2
     exit 1
@@ -195,7 +291,7 @@ install_docker_apt() {
   gpg --dearmor < "${tmp}" > /etc/apt/keyrings/docker.gpg
   chmod 0644 /etc/apt/keyrings/docker.gpg
   rm -f "${tmp}"
-  printf '%s\n' 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable' \
+  printf '%s\n' "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] ${DOCKER_APT_ROOT} noble stable" \
     > /etc/apt/sources.list.d/docker.list
 }
 
@@ -609,8 +705,9 @@ bind_source_expect() {
 }
 
 inside_runtime() {
-  local state rootdir listing grant_rc
-  refuse_mirrored_networking
+  local state rootdir listing grant_rc proof
+  proof="${1:-}"
+  require_passed_networking_proof "${proof}"
   state=""
   for _ in $(seq 1 30); do
     state=$(systemctl is-system-running || true)
@@ -682,7 +779,9 @@ inside_runtime() {
   nft -f /etc/nftables.conf
   systemctl enable nftables
 
-  systemctl enable aap-runner-manager
+  # The unit stays disabled. install-host.ps1 never starts it, including after the key is placed.
+  systemctl disable aap-runner-manager
+  printf '%s\n' disabled > /etc/aap-runner/manager.disabled
 
   if [[ "$(id -u ghrunner)" != "1002" ]]; then
     echo "ghrunner uid is $(id -u ghrunner); expected 1002" >&2
@@ -708,20 +807,22 @@ inside_runtime() {
     printf '%s\n' "${listing}" >&2
     exit 1
   fi
-  if [[ -d /mnt/c ]]; then
-    echo "automount is still on: /mnt/c exists after lockdown" >&2
+  if drive_is_mounted /mnt/c; then
+    echo "automount is still on: /mnt/c is mounted after lockdown" >&2
     exit 1
   fi
-  echo "aap-runner install finished. Place the GitHub App key at /etc/aap-runner/app.pem mode 0400, fill /etc/aap-runner/manager.conf, then systemctl start aap-runner-manager."
+  printf '%s\n' 'done' > /etc/aap-runner/install.done
+  echo "aap-runner install finished. The manager is disabled and was not started. install-host.ps1 places the key only after P0, and still does not start the manager."
 }
 
-# Return 0 when an uncommented networkingMode under [wsl2] is mirrored.
-# Return 1 when the file was read and that key is not mirrored.
-# Return 2 when the file cannot be read. Bytes are not decoded as UTF-8:
-# a CP1252 comment must not make the file unreadable. CR is stripped.
-# A commented key is not a setting.
-wslconfig_sets_mirrored() {
-  local file="$1" rc=0 saved_locale="" had_locale=0
+# Print the last uncommented value of one key under [wsl2].
+# Return 0 with that value, 1 when the key is absent, 2 when the file
+# cannot be read. Bytes are not decoded as UTF-8: a CP1252 comment must
+# not make the file unreadable. CR is stripped. A commented key is not
+# a setting. The value keeps its case; callers compare in lowercase.
+wslconfig_wsl2_value() {
+  local file="$1" want="$2" rc=0 saved_locale="" had_locale=0
+  want=$(printf '%s' "${want}" | tr '[:upper:]' '[:lower:]')
   if [[ ! -f "${file}" || ! -r "${file}" ]]; then
     return 2
   fi
@@ -731,7 +832,7 @@ wslconfig_sets_mirrored() {
   fi
   # C locale so a CP1252 byte is one character, not a broken UTF-8 sequence.
   export LC_ALL=C
-  wslconfig_sets_mirrored_bytes "${file}" || rc=$?
+  wslconfig_wsl2_value_bytes "${file}" "${want}" || rc=$?
   if [[ "${had_locale}" -eq 1 ]]; then
     export LC_ALL="${saved_locale}"
   else
@@ -740,8 +841,8 @@ wslconfig_sets_mirrored() {
   return "${rc}"
 }
 
-wslconfig_sets_mirrored_bytes() {
-  local file="$1" line section="" key value first=1 body
+wslconfig_wsl2_value_bytes() {
+  local file="$1" want="$2" line section="" key value first=1 body found=0 got=""
   while IFS= read -r line || [[ -n "${line}" ]]; do
     if [[ "${first}" -eq 1 ]]; then
       line=${line#$'\xef\xbb\xbf'}
@@ -766,11 +867,30 @@ wslconfig_sets_mirrored_bytes() {
     value=${BASH_REMATCH[2]}
     value=${value#"${value%%[![:space:]]*}"}
     value=${value%"${value##*[![:space:]]}"}
-    value=$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')
-    if [[ "${key}" == "networkingmode" && "${value}" == "mirrored" ]]; then
-      return 0
+    if [[ "${key}" == "${want}" ]]; then
+      found=1
+      got=${value}
     fi
   done < <(tr -d '\r' < "${file}")
+  if [[ "${found}" -eq 0 ]]; then
+    return 1
+  fi
+  printf '%s\n' "${got}"
+}
+
+# Return 0 when an uncommented networkingMode under [wsl2] is mirrored.
+# Return 1 when the file was read and that key is not mirrored.
+# Return 2 when the file cannot be read.
+wslconfig_sets_mirrored() {
+  local value="" value_lc="" rc=0
+  value=$(wslconfig_wsl2_value "$1" networkingmode) || rc=$?
+  if [[ "${rc}" -eq 2 ]]; then
+    return 2
+  fi
+  value_lc=$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')
+  if [[ "${rc}" -eq 0 && "${value_lc}" == "mirrored" ]]; then
+    return 0
+  fi
   return 1
 }
 
@@ -815,13 +935,14 @@ networking_stop_reason() {
 }
 
 # wslinfo is the live mode. .wslconfig is the next boot. Either one saying
-# mirrored stops the install. Inside aap-runner a missing wslinfo stops it
-# too, and an unreadable .wslconfig stops it. Mirrored mode puts the distro
-# on the Windows LAN and the bridge filter does not see that traffic.
-# Inside aap-runner this runs as root. GetFolderPath("UserProfile") is
-# then often empty: the Windows profile is not loaded for that interop
-# process. cmd.exe %USERPROFILE% is the wrong directory (System32). The
-# profile path is ProfileImagePath for the Windows identity's SID.
+# mirrored stops the install. The file is read in the operator distro,
+# which has interop. aap-runner does not read it: interop is off and
+# /mnt/c there is an empty directory. Inside aap-runner a missing wslinfo
+# stops the install. Mirrored mode puts the distro on the Windows LAN
+# and the bridge filter does not see that traffic.
+# GetFolderPath("UserProfile") is often empty when this runs as root.
+# cmd.exe %USERPROFILE% is the wrong directory (System32). The profile
+# path is ProfileImagePath for the Windows identity's SID.
 windows_profile_command() {
   # Quoted so bash does not expand $sid. PowerShell concatenates it.
   # A backslash before $sid inside double quotes is easy to misread; the
@@ -866,39 +987,84 @@ windows_user_wslconfig() {
   printf '%s\n' "${profile}/.wslconfig"
 }
 
-refuse_mirrored_networking() {
-  local mode="" have_wslinfo=no inside=no cfg_state=skipped
-  local cfg="" reason="" read_rc=0 ws_rc=0 cfg_path=""
-  if [[ "${WSL_DISTRO_NAME:-}" == "${DISTRO}" || ! -d /mnt/c ]]; then
-    inside=yes
+# Operator distro only. Sets AAP_NETWORKING_PROOF to nat or absent and
+# AAP_WSLCONFIG_PATH to the file, absent, or empty when the profile failed.
+# aap-runner must not call this. It has no interop.
+prove_operator_networking() {
+  local mode="" have_wslinfo=no cfg_state="" cfg="" reason=""
+  local read_rc=0 ws_rc=0 cfg_path="" value="" value_lc=""
+  AAP_NETWORKING_PROOF=""
+  AAP_WSLCONFIG_PATH=""
+  if ! drive_is_mounted /mnt/c; then
+    echo "refusing: /mnt/c is not a mount; cannot read .wslconfig" >&2
+    return 1
   fi
   if command -v wslinfo >/dev/null 2>&1; then
     have_wslinfo=yes
     mode=$(wslinfo --networking-mode 2>/dev/null | tr -d '\r' | head -n 1 || true)
   fi
-  if [[ -d /mnt/c ]]; then
+  cfg=$(windows_user_wslconfig) || ws_rc=$?
+  if [[ "${ws_rc}" -ne 0 ]]; then
+    cfg_path=${cfg:-powershell.exe}
     cfg_state=unreadable
-    cfg=$(windows_user_wslconfig) || ws_rc=$?
-    if [[ "${ws_rc}" -ne 0 ]]; then
-      cfg_path=${cfg:-powershell.exe}
-    elif [[ "${cfg}" == absent ]]; then
-      cfg_state=absent
+  elif [[ "${cfg}" == absent ]]; then
+    AAP_WSLCONFIG_PATH=absent
+    cfg_state=absent
+  else
+    AAP_WSLCONFIG_PATH=${cfg}
+    cfg_path=${cfg}
+    value=$(wslconfig_wsl2_value "${cfg}" networkingmode) || read_rc=$?
+    if [[ "${read_rc}" -eq 2 ]]; then
+      cfg_state=unreadable
+    elif [[ "${read_rc}" -ne 0 ]]; then
+      cfg_state=nat
     else
-      cfg_path=${cfg}
-      wslconfig_sets_mirrored "${cfg}" || read_rc=$?
-      if [[ "${read_rc}" -eq 0 ]]; then
-        cfg_state=mirrored
-      elif [[ "${read_rc}" -eq 1 ]]; then
-        cfg_state=nat
-      else
-        cfg_state=unreadable
-      fi
+      value_lc=$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')
+      case "${value_lc}" in
+        mirrored) cfg_state=mirrored ;;
+        nat | "") cfg_state=nat ;;
+        *)
+          echo "refusing: .wslconfig networkingMode=${value} is not nat (tried ${cfg_path})" >&2
+          return 1
+          ;;
+      esac
     fi
   fi
-  if reason=$(networking_stop_reason "${inside}" "${have_wslinfo}" "${mode}" "${cfg_state}" "${cfg_path}"); then
+  if reason=$(networking_stop_reason no "${have_wslinfo}" "${mode}" "${cfg_state}" "${cfg_path}"); then
     echo "refusing: ${reason}" >&2
-    exit 1
+    return 1
   fi
+  if [[ "${cfg_state}" == absent ]]; then
+    AAP_NETWORKING_PROOF=absent
+  else
+    AAP_NETWORKING_PROOF=nat
+  fi
+}
+
+# Inside aap-runner. The only accepted proof is the literal nat or absent
+# from the operator distro. wslinfo is the live cross-check. This function
+# does not read .wslconfig and does not call powershell.
+require_passed_networking_proof() {
+  local proof="${1:-}" mode="" have_wslinfo=no reason=""
+  case "${proof}" in
+    nat | absent) ;;
+    *)
+      echo "refusing: networking proof '${proof}' is not nat or absent" >&2
+      return 1
+      ;;
+  esac
+  if command -v wslinfo >/dev/null 2>&1; then
+    have_wslinfo=yes
+    mode=$(wslinfo --networking-mode 2>/dev/null | tr -d '\r' | head -n 1 || true)
+  fi
+  if reason=$(networking_stop_reason yes "${have_wslinfo}" "${mode}" "${proof}"); then
+    echo "refusing: ${reason}" >&2
+    return 1
+  fi
+}
+
+refuse_mirrored_networking() {
+  prove_operator_networking || exit 1
 }
 
 assert_dockerd_ipv6_off() {
@@ -1701,13 +1867,457 @@ EOF
   fi
   bash "${SCRIPT_DIR}/stage-into-distro.sh" --self-check
   bash "${SCRIPT_DIR}/mount-work-disk.sh" --self-check
+  preflight_self_check
   echo "checksum self-check ok"
+}
+
+# Download the pinned artifacts into STAGE. The caller has already locked that directory.
+stage_downloads() {
+  mkdir -p "${STAGE}"
+  download "${UBUNTU_URL}" "${STAGE}/${UBUNTU_NAME}" "${UBUNTU_SHA256}"
+  download "${SYSBOX_URL}" "${STAGE}/${SYSBOX_NAME}" "${SYSBOX_SHA256}"
+  download "${RUNNER_URL}" "${STAGE}/${RUNNER_NAME}" "${RUNNER_SHA256}"
+}
+
+preflight_line() {
+  printf '%s %s %s\n' "$1" "$2" "$3"
+  if [[ "$1" == "FAIL" ]]; then
+    PREFLIGHT_FAILED=1
+  fi
+}
+
+# HEAD, then one range byte. Neither writes a file.
+url_reachable() {
+  if curl --fail --silent --show-error --location --head --output /dev/null --max-time 20 "$1"; then
+    return 0
+  fi
+  curl --fail --silent --show-error --location --range 0-0 --output /dev/null --max-time 20 "$1"
+}
+
+# owner=S-1-5-32-544 and every ace is SYSTEM or Administrators.
+acl_text_is_admin_only() {
+  local text="$1" line owner="" aces=0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line=${line//$'\r'/}
+    case "${line}" in
+      owner=*) owner=${line#owner=} ;;
+      ace=*)
+        aces=$((aces + 1))
+        case "${line#ace=}" in
+          S-1-5-18 | S-1-5-32-544) ;;
+          *) return 1 ;;
+        esac
+        ;;
+    esac
+  done <<< "${text}"
+  [[ "${owner}" == "S-1-5-32-544" && "${aces}" -ge 1 ]]
+}
+
+# Read-only ACL text. Does not call lock-acl.ps1.
+read_windows_acl() {
+  local win quoted script
+  win=$(wslpath -w "$1") || return 1
+  quoted=$(ps_single_quote "${win}")
+  script=$(cat << EOF
+\$acl = Get-Acl -LiteralPath ${quoted}
+Write-Output ('owner=' + \$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value)
+foreach (\$ace in @(\$acl.Access)) {
+  \$id = \$ace.IdentityReference
+  if (\$id -is [System.Security.Principal.SecurityIdentifier]) { \$sid = \$id.Value }
+  else { \$sid = \$id.Translate([System.Security.Principal.SecurityIdentifier]).Value }
+  Write-Output ('ace=' + \$sid)
+}
+EOF
+)
+  invoke_powershell_command "${script}"
+}
+
+# HKLM\Software\Policies\WSL\AllowDiskMount. WSL allows the mount unless the
+# DWORD is 0 (microsoft/WSL cf723c5, IsFeatureAllowed). Absent is allowed.
+preflight_allow_disk_mount() {
+  local raw="" rc=0
+  raw=$(invoke_powershell_command "\$k='HKLM:\\Software\\Policies\\WSL'; if (-not (Test-Path -LiteralPath \$k)) { Write-Output 'absent'; exit 0 }; \$item=Get-ItemProperty -Path \$k -Name AllowDiskMount -ErrorAction SilentlyContinue; if (\$null -eq \$item -or \$null -eq \$item.AllowDiskMount) { Write-Output 'absent'; exit 0 }; Write-Output ([int]\$item.AllowDiskMount)" | tr -d '\000\r') || rc=$?
+  raw=$(printf '%s\n' "${raw}" | awk 'NF { line=$0 } END { print line }')
+  if [[ "${rc}" -ne 0 || -z "${raw}" ]]; then
+    preflight_line WARN AllowDiskMount unreadable
+    return 0
+  fi
+  case "${raw}" in
+    absent) preflight_line PASS AllowDiskMount absent ;;
+    0) preflight_line FAIL AllowDiskMount 0 ;;
+    1) preflight_line PASS AllowDiskMount 1 ;;
+    *) preflight_line WARN AllowDiskMount "${raw}" ;;
+  esac
+}
+
+preflight_wsl_key() {
+  local file="$1" key="$2" label="$3" value="" rc=0
+  if [[ "${file}" == "absent" || -z "${file}" ]]; then
+    if [[ "${key}" == "automemoryreclaim" ]]; then
+      preflight_line WARN "${label}" missing
+    else
+      preflight_line PASS "${label}" missing
+    fi
+    return 0
+  fi
+  value=$(wslconfig_wsl2_value "${file}" "${key}") || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    preflight_line PASS "${label}" "${value}"
+  elif [[ "${rc}" -eq 1 && "${key}" == "automemoryreclaim" ]]; then
+    preflight_line WARN "${label}" missing
+  elif [[ "${rc}" -eq 1 ]]; then
+    preflight_line PASS "${label}" missing
+  else
+    preflight_line FAIL "${label}" unreadable
+  fi
+}
+
+# Prints one line per check. FAIL sets a non-zero return after every line.
+# Not-elevated is INFO: install-host.ps1 decides whether that blocks the run.
+# Does not import, mount, format, lock, or register a task.
+preflight() {
+  local user="" name="" text="" rc=0 dev="" bytes="" list="" foreign=""
+  local tool url label
+  PREFLIGHT_FAILED=0
+  AAP_NETWORKING_PROOF=""
+  AAP_WSLCONFIG_PATH=""
+  user=$(whoami)
+  name=${WSL_DISTRO_NAME:-}
+  if [[ -z "${name}" || "${name}" == "${DISTRO}" ]]; then
+    preflight_line FAIL operator "distro=${name:-missing} user=${user}"
+  else
+    preflight_line PASS operator "distro=${name} user=${user}"
+  fi
+  if command -v wsl.exe >/dev/null 2>&1; then
+    preflight_line PASS wsl.exe "$(command -v wsl.exe)"
+  else
+    preflight_line FAIL wsl.exe missing
+  fi
+  if drive_is_mounted /mnt/c; then
+    preflight_line PASS mount "/mnt/c"
+  else
+    preflight_line FAIL mount "/mnt/c is not a mount"
+  fi
+  text=$(cmd.exe /d /c echo INTEROP_OK 2>/dev/null | tr -d '\000\r' || true)
+  if printf '%s\n' "${text}" | grep -qx INTEROP_OK; then
+    preflight_line PASS interop INTEROP_OK
+  else
+    preflight_line FAIL interop "${text:-missing}"
+  fi
+  if powershell_exe_path >/dev/null 2>&1; then
+    preflight_line PASS powershell.exe "$(powershell_exe_path)"
+  else
+    preflight_line FAIL powershell.exe missing
+  fi
+  for tool in jq curl sha256sum; do
+    if command -v "${tool}" >/dev/null 2>&1; then
+      preflight_line PASS "${tool}" "$(command -v "${tool}")"
+    else
+      preflight_line FAIL "${tool}" missing
+    fi
+  done
+  rc=0
+  text=$(invoke_powershell_command 'if ((New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { "yes" } else { "no" }' | tr -d '\000\r') || rc=$?
+  text=$(printf '%s\n' "${text}" | awk 'NF { line=$0 } END { print line }')
+  if [[ "${rc}" -eq 0 && "${text}" == "yes" ]]; then
+    preflight_line PASS elevation admin
+  else
+    preflight_line INFO elevation "not-admin"
+  fi
+  rc=0
+  text=$(prove_operator_networking 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    preflight_line PASS networkingMode "${AAP_NETWORKING_PROOF}"
+    preflight_line PASS profile "${AAP_WSLCONFIG_PATH}"
+  else
+    preflight_line FAIL networkingMode "${text:-unproven}"
+  fi
+  preflight_wsl_key "${AAP_WSLCONFIG_PATH}" memory memory
+  preflight_wsl_key "${AAP_WSLCONFIG_PATH}" processors processors
+  preflight_wsl_key "${AAP_WSLCONFIG_PATH}" swap swap
+  preflight_wsl_key "${AAP_WSLCONFIG_PATH}" automemoryreclaim autoMemoryReclaim
+  preflight_allow_disk_mount
+  if [[ ! -e "${WORK_VHDX}" ]]; then
+    preflight_line PASS vhdx absent
+  elif [[ ! -f "${WORK_VHDX}" ]]; then
+    preflight_line FAIL vhdx "not-a-file"
+  else
+    bytes=$(stat -c '%s' "${WORK_VHDX}")
+    if [[ "${bytes}" -lt "${WORK_DISK_BYTES}" ]]; then
+      preflight_line FAIL vhdx "size=${bytes} smaller-than ${WORK_DISK_BYTES}"
+    else
+      preflight_line PASS vhdx "size=${bytes}"
+    fi
+  fi
+  rc=0
+  foreign=$(refuse_foreign_attached_disks 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    preflight_line FAIL attached-disks "${foreign#refusing: }"
+  elif dev=$(work_disk_device 2>/dev/null); then
+    preflight_line PASS attached-disks "work=${dev}"
+  else
+    preflight_line PASS attached-disks "work=absent"
+  fi
+  rc=0
+  list=$(wsl.exe -l -q 2>&1 | tr -d '\000') || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    preflight_line FAIL registration "wsl.exe -l -q exit ${rc}"
+  elif printf '%s' "${list}" | tr -d '\000\r' | grep -qx "${DISTRO}"; then
+    preflight_line PASS registration "distro ${DISTRO} is registered"
+  else
+    preflight_line PASS registration "distro ${DISTRO} is not registered"
+    if [[ -f "${INSTALL_DIR}/ext4.vhdx" ]]; then
+      preflight_line FAIL leftover "${INSTALL_DIR}/ext4.vhdx"
+    else
+      preflight_line PASS leftover absent
+    fi
+  fi
+  if [[ ! -e "${STAGE}" ]]; then
+    preflight_line PASS staging absent
+  else
+    rc=0
+    text=$(read_windows_acl "${STAGE}" 2>/dev/null | tr -d '\000') || rc=$?
+    if [[ "${rc}" -eq 0 ]] && acl_text_is_admin_only "${text}"; then
+      preflight_line PASS staging "acl=SYSTEM,Administrators"
+    else
+      preflight_line INFO staging "acl=not-locked"
+    fi
+  fi
+  label=rootfs
+  for url in "${UBUNTU_URL}" "${DOCKER_GPG_URL}" "${DOCKER_APT_URL}"; do
+    if url_reachable "${url}"; then
+      preflight_line PASS "url-${label}" reachable
+    else
+      preflight_line FAIL "url-${label}" unreachable
+    fi
+    case "${label}" in
+      rootfs) label=docker-gpg ;;
+      docker-gpg) label=docker-apt ;;
+    esac
+  done
+  if drive_is_mounted /mnt/c; then
+    bytes=$(avail_gb /mnt/c 2>/dev/null || true)
+    if [[ "${bytes}" =~ ^[0-9]+$ && "${bytes}" -ge "${PREFLIGHT_FREE_GB}" ]]; then
+      preflight_line PASS free-space "${bytes}G"
+    else
+      preflight_line FAIL free-space "${bytes:-unknown}G need ${PREFLIGHT_FREE_GB}G"
+    fi
+  fi
+  if [[ "${PREFLIGHT_FAILED}" -ne 0 ]]; then
+    return 1
+  fi
+  if [[ "${AAP_NETWORKING_PROOF}" == "nat" || "${AAP_NETWORKING_PROOF}" == "absent" ]]; then
+    printf 'PROOF %s\n' "${AAP_NETWORKING_PROOF}"
+  fi
+}
+
+# Parsers and the no-write rule. Does not call preflight against this machine.
+preflight_self_check() {
+  local body emptydir rc=0 err bin saved_path dev hide
+  emptydir=$(mktemp -d)
+  if drive_is_mounted "${emptydir}"; then
+    echo "an empty directory was treated as a Windows mount" >&2
+    exit 1
+  fi
+  rmdir "${emptydir}"
+  # The check line itself contains the needle. Ignore that line and the message.
+  if grep -F -n -- '-d /mnt/c' "${SCRIPT_DIR}/bootstrap.sh" "${SCRIPT_DIR}/evidence-host.sh" \
+    | grep -v 'Windows test remains' | grep -v 'grep -F -n' | grep -q .; then
+    echo "a -d /mnt/c Windows test remains" >&2
+    exit 1
+  fi
+  body=$(declare -f inside_runtime)
+  if printf '%s\n' "${body}" | grep -F -q 'powershell.exe' \
+    || printf '%s\n' "${body}" | grep -F -q 'windows_user_wslconfig' \
+    || printf '%s\n' "${body}" | grep -F -q 'wslconfig_'; then
+    echo "inside_runtime still reads .wslconfig" >&2
+    exit 1
+  fi
+  body=$(declare -f require_passed_networking_proof)
+  if printf '%s\n' "${body}" | grep -F -q 'powershell.exe' \
+    || printf '%s\n' "${body}" | grep -F -q '/mnt/c' \
+    || printf '%s\n' "${body}" | grep -F -q 'wslconfig_'; then
+    echo "the inside networking proof reads Windows" >&2
+    exit 1
+  fi
+  body=$(declare -f outside)
+  if [[ "${body%%ensure_work_vhdx*}" != *preflight* ]]; then
+    echo "preflight is not before the work VHDX step" >&2
+    exit 1
+  fi
+  if [[ "${body}" != *'--inside-runtime "${AAP_NETWORKING_PROOF}"'* ]]; then
+    echo "inside-runtime is not given the operator proof" >&2
+    exit 1
+  fi
+  body=$(declare -f preflight preflight_line preflight_allow_disk_mount preflight_wsl_key url_reachable read_windows_acl acl_text_is_admin_only)
+  if printf '%s\n' "${body}" | grep -F -e '--import' -e '--unregister' -e '--mount' -e 'schtasks' -e 'icacls' -e 'mkfs' -e 'Set-Acl' -e 'lock_windows_admin_only' >/dev/null; then
+    echo "preflight contains a write" >&2
+    exit 1
+  fi
+  if acl_text_is_admin_only $'owner=S-1-5-21-1-2-3-1001\nace=S-1-5-11'; then
+    echo "a user-owned ACL was accepted" >&2
+    exit 1
+  fi
+  if ! acl_text_is_admin_only $'owner=S-1-5-32-544\nace=S-1-5-18\nace=S-1-5-32-544'; then
+    echo "SYSTEM and Administrators was refused" >&2
+    exit 1
+  fi
+  bin=$(mktemp -d)
+  cat > "${bin}/wslinfo" << 'EOF'
+#!/bin/bash
+printf '%s\n' "${AAP_FAKE_WSLINFO:-}"
+EOF
+  cat > "${bin}/blkid" << 'EOF'
+#!/bin/bash
+if [[ "$*" != *-p* || "$*" != *export* ]]; then
+  echo "blkid missing -p or export" >&2
+  exit 9
+fi
+case "${AAP_FAKE_BLKID_MODE}" in
+  exit2) exit 2 ;;
+  gpt) printf '%s\n' 'PTTYPE=gpt'; exit 0 ;;
+  ntfs) printf '%s\n' 'TYPE=ntfs'; exit 0 ;;
+  ext4) printf '%s\n' 'TYPE=ext4'; exit 0 ;;
+  dosext4) printf '%s\n' 'PTTYPE=dos' 'TYPE=ext4'; exit 0 ;;
+  exit1) exit 1 ;;
+esac
+exit 9
+EOF
+  cat > "${bin}/findmnt" << 'EOF'
+#!/bin/bash
+printf '%s\n' /dev/sda1
+EOF
+  cat > "${bin}/lsblk" << 'EOF'
+#!/bin/bash
+if [[ "$*" == *PKNAME* ]]; then
+  printf '%s\n' sda
+  exit 0
+fi
+printf '%s\n' "sda 274877906944"
+if [[ "${AAP_FAKE_FOREIGN_DISK:-}" == 1 ]]; then
+  printf '%s\n' "sdd 697932185600"
+fi
+EOF
+  chmod +x "${bin}/wslinfo" "${bin}/blkid" "${bin}/findmnt" "${bin}/lsblk"
+  saved_path=${PATH}
+  PATH="${bin}:/usr/bin:/bin"
+  rc=0
+  err=$(AAP_FAKE_WSLINFO=nat require_passed_networking_proof nat 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "nat proof plus nat wslinfo was refused: ${err}" >&2
+    exit 1
+  fi
+  rc=0
+  err=$(AAP_FAKE_WSLINFO=nat require_passed_networking_proof absent 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    echo "absent proof plus nat wslinfo was refused: ${err}" >&2
+    exit 1
+  fi
+  for pair in "nat:" "nat:mirrored" ":nat" "mirrored:nat"; do
+    rc=0
+    AAP_FAKE_WSLINFO=${pair#*:} require_passed_networking_proof "${pair%%:*}" >/dev/null 2>&1 || rc=$?
+    if [[ "${rc}" -eq 0 ]]; then
+      echo "networking proof ${pair} was accepted" >&2
+      exit 1
+    fi
+  done
+  hide=$(mktemp -d)
+  ln -s "$(command -v grep)" "${hide}/grep"
+  rc=0
+  PATH="${hide}" require_passed_networking_proof nat >/dev/null 2>&1 || rc=$?
+  if [[ "${rc}" -eq 0 ]]; then
+    echo "a missing wslinfo inside aap-runner was accepted" >&2
+    exit 1
+  fi
+  rm -rf "${hide}"
+  PATH="${bin}:/usr/bin:/bin"
+  dev=/dev/sdx
+  [[ "$(AAP_FAKE_BLKID_MODE=exit2 work_disk_format_decision "${dev}")" == mkfs ]]
+  rc=0
+  err=$(AAP_FAKE_BLKID_MODE=gpt work_disk_format_decision "${dev}" 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *partition\ table* ]]; then
+    echo "a partition table was accepted for mkfs" >&2
+    exit 1
+  fi
+  rc=0
+  err=$(AAP_FAKE_BLKID_MODE=ntfs work_disk_format_decision "${dev}" 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *ntfs* ]]; then
+    echo "ntfs was accepted for mkfs" >&2
+    exit 1
+  fi
+  [[ "$(AAP_FAKE_BLKID_MODE=ext4 work_disk_format_decision "${dev}")" == keep ]]
+  rc=0
+  err=$(AAP_FAKE_BLKID_MODE=dosext4 work_disk_format_decision "${dev}" 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *partition\ table* ]]; then
+    echo "PTTYPE plus ext4 was accepted for mkfs" >&2
+    exit 1
+  fi
+  rc=0
+  err=$(AAP_FAKE_BLKID_MODE=exit1 work_disk_format_decision "${dev}" 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *exited\ 1* ]]; then
+    echo "blkid exit 1 was accepted for mkfs" >&2
+    exit 1
+  fi
+  apply_work_disk_size 100
+  rc=0
+  err=$(AAP_FAKE_FOREIGN_DISK=1 refuse_foreign_attached_disks 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *sdd* || "${err}" != *697932185600* ]]; then
+    echo "a 650G attached disk was not refused" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  if AAP_FAKE_FOREIGN_DISK=1 work_disk_device >/dev/null 2>&1; then
+    echo "a size-only lookup saw the 650G disk" >&2
+    exit 1
+  fi
+  PATH=${saved_path}
+  rm -rf "${bin}"
+  if [[ ! -f "${SCRIPT_DIR}/staging.sha256" ]]; then
+    echo "staging.sha256 is missing" >&2
+    exit 1
+  fi
+  while read -r hash name; do
+    [[ -n "${hash}" ]] || continue
+    dev=$(sha256sum "${SCRIPT_DIR}/${name}" | awk '{ print $1 }')
+    if [[ "${dev}" != "${hash}" ]]; then
+      echo "staging.sha256 does not match ${name}" >&2
+      exit 1
+    fi
+  done < "${SCRIPT_DIR}/staging.sha256"
+  if ! grep -q 'AllowDiskMount' "${SCRIPT_DIR}/install-host.ps1"; then
+    echo "install-host.ps1 does not check AllowDiskMount" >&2
+    exit 1
+  fi
+  if ! grep -q 'GetEnvironmentVariable('"'"'PSModulePath'"'"', '"'"'Machine'"'"')' "${SCRIPT_DIR}/install-host.ps1"; then
+    echo "install-host.ps1 does not reset PSModulePath" >&2
+    exit 1
+  fi
+  if ! grep -q -- '-DryRun' "${SCRIPT_DIR}/install-host.ps1" \
+    || ! grep -q -- '-TestMode' "${SCRIPT_DIR}/install-host.ps1" \
+    || ! grep -q -- '-DistroName' "${SCRIPT_DIR}/install-host.ps1" \
+    || ! grep -q -- '-WorkVhdx' "${SCRIPT_DIR}/install-host.ps1"; then
+    echo "install-host.ps1 is missing DryRun, TestMode, or the path overrides" >&2
+    exit 1
+  fi
+  local unit=aap-runner-manager
+  if grep -q -F -- "systemctl start ${unit}" "${SCRIPT_DIR}/install-host.ps1" "${SCRIPT_DIR}/bootstrap.sh"; then
+    echo "the install starts the manager" >&2
+    exit 1
+  fi
 }
 
 outside() {
   local win_install win_tar
   set -euo pipefail
-  require_operator_jq
+  # Read-only. A failure here has not imported, mounted, locked, or formatted.
+  preflight
+  case "${AAP_NETWORKING_PROOF}" in
+    nat | absent) ;;
+    *)
+      echo "refusing: networking proof was not recorded" >&2
+      exit 1
+      ;;
+  esac
   if [[ "${WSL_DISTRO_NAME:-}" == "${DISTRO}" ]]; then
     echo "run bootstrap from the operator distro, not from ${DISTRO}" >&2
     exit 1
@@ -1716,11 +2326,10 @@ outside() {
     echo "wsl.exe is required; run this inside the existing WSL distro" >&2
     exit 1
   fi
-  if [[ ! -d /mnt/c ]]; then
-    echo "/mnt/c is not mounted; this step has to run before aap-runner is locked down" >&2
+  if ! drive_is_mounted /mnt/c; then
+    echo "/mnt/c is not a mount; this step has to run from the operator distro" >&2
     exit 1
   fi
-  refuse_mirrored_networking
   ensure_work_vhdx
   attach_work_vhdx
   if distro_exists; then
@@ -1771,7 +2380,7 @@ outside() {
     wsl.exe --terminate "${DISTRO}"
   run_checked "wsl.exe --exec bootstrap.sh --inside-runtime" \
     wsl.exe -d "${DISTRO}" -u root --exec /bin/bash \
-    /opt/aap-runner/bootstrap.sh --inside-runtime
+    /opt/aap-runner/bootstrap.sh --inside-runtime "${AAP_NETWORKING_PROOF}"
   verify_install
 }
 
@@ -1999,6 +2608,8 @@ attached_disk_uuid() {
 # of that file is not treated as "absent".
 confirm_attached_work_disk() {
   local dev uuid="" expect="" status=0
+  # A different-sized disk, including another distro's, blocks the size-only path.
+  refuse_foreign_attached_disks || return 1
   dev=$(work_disk_device) || return 1
   expect=$(expected_work_disk_uuid) || status=$?
   if [[ "${status}" -eq 10 ]]; then
@@ -2149,6 +2760,18 @@ register_mount_task() {
   lock_windows_admin_only "${ps1_win}"
   lock_windows_admin_only "$(wslpath -w "${xml_dest}")"
   lock_windows_admin_only "$(wslpath -w "${WORK_VHDX}")"
+  # Re-run: the file just written matches the previous bytes and the task is already registered.
+  old_hash=""
+  if [[ -f "${xml_dest}.prev-hash" ]]; then
+    old_hash=$(tr -d '[:space:]' < "${xml_dest}.prev-hash")
+  fi
+  new_hash=$(sha256sum "${xml_dest}" | awk '{print $1}')
+  printf '%s\n' "${new_hash}" > "${xml_dest}.prev-hash"
+  if [[ -n "${old_hash}" && "${old_hash}" == "${new_hash}" ]] \
+    && schtasks.exe /Query /TN AAP-CRRR-Mount-Work-Disk >/dev/null 2>&1; then
+    echo "SKIP task xml hash matches"
+    return 0
+  fi
   delete_retired_mount_task
   rc=0
   schtasks.exe /Create /TN AAP-CRRR-Mount-Work-Disk /XML "$(wslpath -w "${xml_dest}")" /F || rc=$?
@@ -2182,12 +2805,22 @@ delete_retired_mount_task() {
 
 case "${1:-}" in
   --self-check) self_check ;;
+  --preflight) preflight ;;
+  --format-work-disk) format_work_disk_fs ;;
+  --stage-downloads) stage_downloads ;;
+  --register-task) register_mount_task ;;
   --inside-packages) inside_packages ;;
-  --inside-runtime) inside_runtime ;;
+  --inside-runtime)
+    shift
+    inside_runtime "${1:-}"
+    ;;
   --verify-install) verify_inside ;;
-  "") outside ;;
+  "")
+    echo "refusing: the install entry is install-host.ps1" >&2
+    exit 2
+    ;;
   *)
-    echo "usage: bootstrap.sh [--self-check]" >&2
+    echo "usage: bootstrap.sh [--self-check|--preflight]" >&2
     exit 1
     ;;
 esac

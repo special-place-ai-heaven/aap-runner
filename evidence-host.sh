@@ -163,7 +163,7 @@ if [[ "${1:-}" == "--self-check" ]]; then
   exit 0
 fi
 
-if [[ ! -d /mnt/c ]]; then
+if ! mountpoint -q /mnt/c; then
   echo "refusing: run this from the operator distro. aap-runner has automount off." >&2
   exit 1
 fi

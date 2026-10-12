@@ -12,7 +12,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Path,
     [Parameter(Mandatory = $true)]
-    [int]$SizeGiB
+    [int]$SizeGiB,
+    # install-host.ps1 -TestMode. The VHDX stays writable by this user. No ACL lock.
+    [switch]$SkipAcl
 )
 # powershell.exe 5.1 inherits pwsh 7's PSModulePath and then cannot autoload
 # Microsoft.PowerShell.Security (Get-Acl CouldNotAutoload).
@@ -32,9 +34,13 @@ if (-not (Test-Path -LiteralPath $dir)) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
 }
 $lock = Join-Path $PSScriptRoot 'lock-acl.ps1'
-& $lock -LiteralPath $dir
+if (-not $SkipAcl) {
+    & $lock -LiteralPath $dir
+}
 if (Test-Path -LiteralPath $Path) {
-    & $lock -LiteralPath $Path
+    if (-not $SkipAcl) {
+        & $lock -LiteralPath $Path
+    }
     Write-Output 'exists'
     exit 0
 }
@@ -70,5 +76,7 @@ if (-not $created) {
     }
     $created = 'diskpart'
 }
-& $lock -LiteralPath $Path
+if (-not $SkipAcl) {
+    & $lock -LiteralPath $Path
+}
 Write-Output $created
