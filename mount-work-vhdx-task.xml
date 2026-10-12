@@ -33,7 +33,7 @@
   <Actions Context="Author">
     <Exec>
       <Command>powershell.exe</Command>
-      <Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "__AAP_PS1__"</Arguments>
+      <Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$env:PSModulePath=[Environment]::GetEnvironmentVariable('PSModulePath','Machine'); if ([string]::IsNullOrEmpty($env:PSModulePath)) { Write-Error 'refusing: machine PSModulePath is empty'; exit 1 }; &amp; '__AAP_PS1__'"</Arguments>
     </Exec>
   </Actions>
 </Task>

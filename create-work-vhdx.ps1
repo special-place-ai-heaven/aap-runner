@@ -14,6 +14,13 @@ param(
     [Parameter(Mandatory = $true)]
     [int]$SizeGiB
 )
+# powershell.exe 5.1 inherits pwsh 7's PSModulePath and then cannot autoload
+# Microsoft.PowerShell.Security (Get-Acl CouldNotAutoload).
+$env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+if ([string]::IsNullOrEmpty($env:PSModulePath)) {
+    Write-Error 'refusing: machine PSModulePath is empty' -ErrorAction Continue
+    exit 1
+}
 # Before the directory, the lock, the marker, or the VHDX.
 if ($Path -notmatch '^[A-Za-z]:\\[A-Za-z0-9 _.\\-]+\.vhdx$') {
     Write-Error 'refusing: -Path must match ^[A-Za-z]:\\[A-Za-z0-9 _.\\-]+\.vhdx$' -ErrorAction Continue

@@ -124,8 +124,16 @@ verify_sha256() {
 }
 
 download() {
-  local url="$1" dest="$2" sha="$3"
-  curl --fail --silent --show-error --location --output "${dest}" "${url}"
+  local url="$1" dest="$2" sha="$3" headers="" expected=""
+  echo "downloading ${url}" >&2
+  headers=$(curl --fail --silent --show-error --location --head "${url}" 2>/dev/null) || headers=""
+  expected=$(printf '%s\n' "${headers}" | tr -d '\r' | awk 'tolower($1)=="content-length:" { size=$2 } END { print size }')
+  if [[ -n "${expected}" ]]; then
+    echo "expected ${expected} bytes" >&2
+  else
+    echo "expected size unknown" >&2
+  fi
+  curl --fail --location --progress-bar --output "${dest}" "${url}"
   verify_sha256 "${dest}" "${sha}"
 }
 
@@ -135,17 +143,22 @@ avail_gb() {
   df -BG --output=avail "$1" | awk 'NR==2 { gsub(/G/, "", $1); print $1 }'
 }
 
-format_work_disk() {
-  local name dev fstype uuid line
+# One whole disk whose byte size is the fixed VHDX. Two of that size is
+# ambiguous, and zero means the VHDX is not attached to this VM.
+work_disk_device() {
   local -a names
   mapfile -t names < <(lsblk -bn -d -o NAME,SIZE | awk -v bytes="${WORK_DISK_BYTES}" '$2 == bytes { print $1 }')
   if [[ "${#names[@]}" -ne 1 ]]; then
     echo "expected one ${WORK_DISK_GB}GiB disk (${WORK_DISK_BYTES} bytes); found ${#names[@]}" >&2
     lsblk -bn -d -o NAME,SIZE >&2 || true
-    exit 1
+    return 1
   fi
-  name=${names[0]}
-  dev="/dev/${name}"
+  printf '%s\n' "/dev/${names[0]}"
+}
+
+format_work_disk() {
+  local dev fstype uuid line
+  dev=$(work_disk_device) || exit 1
   fstype=$(blkid -o value -s TYPE "${dev}" || true)
   if [[ -n "${fstype}" && "${fstype}" != "ext4" ]]; then
     echo "refusing to format ${dev}: filesystem is ${fstype}" >&2
@@ -206,10 +219,58 @@ require_operator_jq() {
 
 # UTF-16 from wsl.exe is NUL-separated. Command substitution truncates at
 # the first NUL, so strip them in the pipe before the match.
+# WSL_E_USER_VHD_ALREADY_ATTACHED is uppercase. A case-sensitive
+# "[Aa]lready" glob does not match it.
 mount_text_is_already() {
-  local text
+  local text lower
   text=$(printf '%s' "$1" | tr -d '\000')
-  [[ "${text}" == *[Aa]lready* ]]
+  if [[ "${text}" == *WSL_E_USER_VHD_ALREADY_ATTACHED* ]]; then
+    return 0
+  fi
+  lower=$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]')
+  [[ "${lower}" == *already* ]]
+}
+
+# PowerShell single-quoted literal. An embedded quote is doubled.
+ps_single_quote() {
+  local s=$1
+  s=${s//\'/\'\'}
+  printf '%s' "'${s}'"
+}
+
+# First statement inside powershell.exe. A parent pwsh 7 exports its own
+# PSModulePath, and Windows PowerShell 5.1 then cannot autoload
+# Microsoft.PowerShell.Security (Get-Acl CouldNotAutoload).
+powershell_module_prefix() {
+  printf '%s' $'$env:PSModulePath=[Environment]::GetEnvironmentVariable(\'PSModulePath\',\'Machine\'); if ([string]::IsNullOrEmpty($env:PSModulePath)) { Write-Error \'refusing: machine PSModulePath is empty\'; exit 1 }'
+}
+
+powershell_file_command() {
+  local script="$1" cmd arg
+  shift
+  cmd="$(powershell_module_prefix); & $(ps_single_quote "${script}")"
+  for arg in "$@"; do
+    if [[ "${arg}" == -* ]]; then
+      cmd+=" ${arg}"
+    else
+      cmd+=" $(ps_single_quote "${arg}")"
+    fi
+  done
+  printf '%s\n' "${cmd}"
+}
+
+invoke_powershell_file() {
+  local script="$1"
+  shift
+  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+    -Command "$(powershell_file_command "${script}" "$@")"
+}
+
+invoke_powershell_command() {
+  local cmd
+  cmd="$(powershell_module_prefix); "
+  cmd+="$1"
+  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${cmd}"
 }
 
 distro_exists() {
@@ -627,7 +688,7 @@ refuse_mirrored_networking() {
     cfg_state=unreadable
     if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
       ps_rc=0
-      raw=$(powershell.exe -NoProfile -NonInteractive -Command '[Environment]::GetFolderPath("UserProfile")' | tr -d '\000\r') || ps_rc=$?
+      raw=$(invoke_powershell_command '[Environment]::GetFolderPath("UserProfile")' | tr -d '\000\r') || ps_rc=$?
       if [[ "${ps_rc}" -ne 0 ]]; then
         echo "refusing: powershell.exe could not read the Windows user profile (exit ${ps_rc})" >&2
         exit 1
@@ -670,8 +731,7 @@ assert_dockerd_ipv6_off() {
 
 lock_windows_admin_only() {
   local win="$1"
-  if ! powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-    -File "$(wslpath -w "${SCRIPT_DIR}/lock-acl.ps1")" \
+  if ! invoke_powershell_file "$(wslpath -w "${SCRIPT_DIR}/lock-acl.ps1")" \
     -LiteralPath "${win}"; then
     echo "refusing: ACL on ${win} is not limited to SYSTEM and Administrators" >&2
     exit 1
@@ -849,7 +909,11 @@ self_check() {
   [[ "${decoded}" == *'<RunLevel>HighestAvailable</RunLevel>'* ]]
   [[ "${decoded}" == *'<LogonTrigger>'* ]]
   [[ "${decoded}" == *"<UserId>${sid}</UserId>"* ]]
-  if ! grep -F -q -- "-File \"${ps1}\"" <<< "${decoded}"; then
+  if ! grep -F -q -- "GetEnvironmentVariable('PSModulePath','Machine')" <<< "${decoded}"; then
+    echo "rendered task xml does not reset PSModulePath" >&2
+    exit 1
+  fi
+  if ! grep -F -q -- "&amp; '${ps1}'" <<< "${decoded}"; then
     echo "rendered task xml is missing the script path" >&2
     exit 1
   fi
@@ -942,10 +1006,82 @@ self_check() {
     echo "UTF-16 'already' was not recognized after NUL stripping" >&2
     exit 1
   fi
+  upper=$(printf 'W\0S\0L\0_\0E\0_\0U\0S\0E\0R\0_\0V\0H\0D\0_\0A\0L\0R\0E\0A\0D\0Y\0_\0A\0T\0T\0A\0C\0H\0E\0D' | tr -d '\000')
+  if ! mount_text_is_already "${upper}"; then
+    echo "UTF-16 WSL_E_USER_VHD_ALREADY_ATTACHED was not recognized" >&2
+    exit 1
+  fi
+  if ! mount_text_is_already "Error: WSL_E_USER_VHD_ALREADY_ATTACHED"; then
+    echo "WSL_E_USER_VHD_ALREADY_ATTACHED was not treated as already attached" >&2
+    exit 1
+  fi
   if mount_text_is_already "The requested operation requires elevation."; then
     echo "an elevation error was treated as already mounted" >&2
     exit 1
   fi
+  apply_work_disk_size 100
+  bin=$(mktemp -d)
+  printf '#!/bin/bash\nprintf "%%s\\n" "sdx %s"\n' "${WORK_DISK_BYTES}" > "${bin}/lsblk"
+  printf '#!/bin/bash\nprintf "%%s\\n" "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"\n' > "${bin}/blkid"
+  chmod +x "${bin}/lsblk" "${bin}/blkid"
+  saved_path=${PATH}
+  PATH="${bin}:/usr/bin:/bin"
+  AAP_WORK_DISK_UUID_FILE=$(mktemp)
+  rm -f "${AAP_WORK_DISK_UUID_FILE}"
+  if ! confirm_attached_work_disk; then
+    echo "a size-matched attached disk was refused before a UUID was recorded" >&2
+    exit 1
+  fi
+  printf '%s\n' 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' > "${AAP_WORK_DISK_UUID_FILE}"
+  if ! confirm_attached_work_disk; then
+    echo "a matching work-disk uuid was refused" >&2
+    exit 1
+  fi
+  printf '%s\n' 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee' > "${AAP_WORK_DISK_UUID_FILE}"
+  if confirm_attached_work_disk; then
+    echo "a different work-disk uuid was accepted" >&2
+    exit 1
+  fi
+  printf '#!/bin/bash\nexit 0\n' > "${bin}/lsblk"
+  if confirm_attached_work_disk; then
+    echo "no attached disk was accepted" >&2
+    exit 1
+  fi
+  PATH=${saved_path}
+  rm -rf "${bin}" "${AAP_WORK_DISK_UUID_FILE}"
+  unset AAP_WORK_DISK_UUID_FILE
+  cmd=$(powershell_file_command 'C:\wsl\lock-acl.ps1' -LiteralPath 'C:\wsl')
+  [[ "${cmd}" == *"GetEnvironmentVariable('PSModulePath','Machine')"* ]]
+  [[ "${cmd}" == *"& 'C:\wsl\lock-acl.ps1' -LiteralPath 'C:\wsl'"* ]]
+  cmd=$(powershell_file_command "C:\wsl\aap's.ps1")
+  [[ "${cmd}" == *"& 'C:\wsl\aap''s.ps1'"* ]]
+  if [[ "$(grep -c 'powershell\.exe -NoProfile' "${SCRIPT_DIR}/bootstrap.sh")" -ne 2 ]]; then
+    echo "bootstrap calls powershell.exe outside the module-path wrapper" >&2
+    exit 1
+  fi
+  for fn in refuse_mirrored_networking lock_windows_admin_only ensure_work_vhdx installing_operator_sid; do
+    if [[ "$(declare -f "${fn}")" == *'powershell.exe -'* ]]; then
+      echo "${fn} calls powershell.exe directly" >&2
+      exit 1
+    fi
+  done
+  for ps1 in lock-acl.ps1 create-work-vhdx.ps1 mount-work-vhdx.ps1; do
+    if ! grep -q "GetEnvironmentVariable('PSModulePath', 'Machine')" "${SCRIPT_DIR}/${ps1}"; then
+      echo "${ps1} does not reset PSModulePath" >&2
+      exit 1
+    fi
+  done
+  payload=$(mktemp)
+  printf 'hello' > "${payload}"
+  dest=$(mktemp)
+  rc=0
+  err=$(download "file://${payload}" "${dest}" "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 || "${err}" != *"downloading file://${payload}"* || "${err}" != *"expected 5 bytes"* ]]; then
+    echo "download did not report the URL and the expected size" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  rm -f "${payload}" "${dest}"
   if ! gap=$(install_gaps no inactive inactive 1 1); then
     echo "a failed install was treated as complete" >&2
     exit 1
@@ -1193,13 +1329,51 @@ ensure_work_vhdx() {
     echo "refusing: ${avail}G free on C:; creating the fixed work disk needs ${WORK_DISK_GB}G" >&2
     exit 1
   fi
-  if ! powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
-    -File "$(wslpath -w "${SCRIPT_DIR}/create-work-vhdx.ps1")" \
+  if ! invoke_powershell_file "$(wslpath -w "${SCRIPT_DIR}/create-work-vhdx.ps1")" \
     -Path "${win}" -SizeGiB "${WORK_DISK_GB}"; then
     echo "failed to create ${win}. Run bootstrap from an elevated shell." >&2
     exit 1
   fi
   lock_work_disk_acl
+}
+
+# The UUID file is inside aap-runner. On the operator distro it is not
+# there yet, so a missing file is not a failure: the size check stands.
+expected_work_disk_uuid() {
+  local file="${AAP_WORK_DISK_UUID_FILE:-/etc/aap-runner/work-disk.uuid}" text rc=0
+  if [[ -r "${file}" ]]; then
+    tr -d '[:space:]' < "${file}"
+    return 0
+  fi
+  if ! command -v wsl.exe >/dev/null 2>&1; then
+    return 1
+  fi
+  text=$(wsl.exe -d "${DISTRO}" -u root --exec /bin/cat "${file}" 2>/dev/null | tr -d '\000\r\n') || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    return 1
+  fi
+  if [[ ! "${text}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    return 1
+  fi
+  printf '%s\n' "${text}"
+}
+
+# "already attached" is only success when lsblk shows this VHDX's size and,
+# once work-disk.uuid exists, blkid reports that UUID.
+confirm_attached_work_disk() {
+  local dev uuid="" expect=""
+  dev=$(work_disk_device) || return 1
+  uuid=$(blkid -o value -s UUID "${dev}" 2>/dev/null || true)
+  if expect=$(expected_work_disk_uuid); then
+    if [[ -z "${uuid}" || "${uuid}" != "${expect}" ]]; then
+      echo "refusing: ${dev} uuid=${uuid:-missing} is not work-disk.uuid ${expect}" >&2
+      return 1
+    fi
+    echo "work disk ${dev} uuid=${uuid} matches work-disk.uuid" >&2
+    return 0
+  fi
+  echo "work disk ${dev} (${WORK_DISK_BYTES} bytes) is attached; work-disk.uuid is not recorded yet" >&2
+  return 0
 }
 
 attach_work_vhdx() {
@@ -1212,7 +1386,12 @@ attach_work_vhdx() {
     return 0
   fi
   if mount_text_is_already "${err}"; then
-    return 0
+    if confirm_attached_work_disk; then
+      return 0
+    fi
+    printf '%s\n' "${err}" >&2
+    echo "refusing: wsl reported the VHDX already attached, but lsblk/blkid did not show this work disk" >&2
+    exit 1
   fi
   printf '%s\n' "${err}" >&2
   echo "refusing: wsl.exe --mount --bare failed (exit ${rc}). Run bootstrap from an elevated shell." >&2
@@ -1231,7 +1410,7 @@ installing_operator_sid() {
     echo "refusing: powershell.exe is required to resolve the operator SID" >&2
     return 1
   fi
-  text=$(powershell.exe -NoProfile -NonInteractive -Command '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value' | tr -d '\000\r') || rc=$?
+  text=$(invoke_powershell_command '[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value' | tr -d '\000\r') || rc=$?
   if [[ "${rc}" -ne 0 ]]; then
     echo "refusing: powershell.exe could not resolve the operator SID (exit ${rc})" >&2
     return 1
@@ -1281,6 +1460,10 @@ render_mount_task_xml() {
   xml=$(< "${SCRIPT_DIR}/mount-work-vhdx-task.xml")
   if [[ "${xml}" != *'encoding="UTF-16"'* || "${xml}" != *'InteractiveToken'* || "${xml}" != *'LogonTrigger'* ]]; then
     echo "refusing: task xml template is missing the operator logon principal" >&2
+    return 1
+  fi
+  if [[ "${xml}" != *"GetEnvironmentVariable('PSModulePath','Machine')"* || "${xml}" != *'&amp; '"'"'__AAP_PS1__'"'"* ]]; then
+    echo "refusing: task xml does not reset PSModulePath before the logon script" >&2
     return 1
   fi
   if [[ "${xml}" == *BootTrigger* || "${xml}" == *ServiceAccount* || "${xml}" == *S-1-5-18* ]]; then

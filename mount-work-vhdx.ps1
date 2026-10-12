@@ -2,6 +2,13 @@
 # Windows user, so this script runs in the operator's elevated session.
 # The only Windows path it operates on is the fixed VHDX.
 # __AAP_VHDX__ is replaced at install. wsl output is appended under C:\wsl.
+# powershell.exe 5.1 inherits pwsh 7's PSModulePath and then cannot autoload
+# Microsoft.PowerShell.Security. The logon task sets this before the script.
+$env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+if ([string]::IsNullOrEmpty($env:PSModulePath)) {
+    Write-Error 'refusing: machine PSModulePath is empty' -ErrorAction Continue
+    exit 1
+}
 $ErrorActionPreference = 'Stop'
 $path = '__AAP_VHDX__'
 $log = 'C:\wsl\mount-work-vhdx.log'

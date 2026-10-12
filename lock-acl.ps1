@@ -9,6 +9,13 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$LiteralPath
 )
+# powershell.exe 5.1 inherits pwsh 7's PSModulePath and then cannot autoload
+# Microsoft.PowerShell.Security (Get-Acl CouldNotAutoload).
+$env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+if ([string]::IsNullOrEmpty($env:PSModulePath)) {
+    Write-Error 'refusing: machine PSModulePath is empty'
+    exit 1
+}
 $ErrorActionPreference = 'Stop'
 if (-not (Test-Path -LiteralPath $LiteralPath)) {
     Write-Error "path does not exist: $LiteralPath"
