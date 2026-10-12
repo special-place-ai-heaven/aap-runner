@@ -6,6 +6,9 @@
 # --self-check only parses a route gateway and a memory limit. No Docker.
 set -euo pipefail
 
+# shellcheck source=labels.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.sh"
+
 route_gateway() {
   local gw_hex="$1"
   [[ "${gw_hex}" =~ ^[0-9A-Fa-f]{8}$ ]] || return 1
@@ -120,6 +123,8 @@ work_mount_matches() {
 # aap-runner has automount off, so wsl.exe and the Windows profile are
 # captured by evidence-host.sh and passed in as files. Printing them is
 # not a pass: the operator supplied the text and this distro did not verify it.
+# A missing version file or a missing .wslconfig capture is incomplete.
+# state=absent is a complete capture of a missing .wslconfig.
 host_bundle_ok() {
   local version_file="$1" state="$2" config_file="$3"
   [[ -n "${version_file}" && -f "${version_file}" && -r "${version_file}" ]] || return 1
@@ -134,78 +139,32 @@ print_host_bundle() {
   local version_file="${1:-${AAP_WSL_VERSION_FILE:-}}"
   local state="${2:-${AAP_WSLCONFIG_STATE:-}}"
   local config_file="${3:-${AAP_WSLCONFIG_FILE:-}}"
+  local runners_file="${4:-${AAP_GITHUB_RUNNERS_FILE:-}}"
   echo "HOST-REPORTED (operator-supplied, not verified)"
-  if host_bundle_ok "${version_file}" "${state}" "${config_file}"; then
-    echo "wsl --version:"
-    cat "${version_file}"
-    echo "wslconfig state=${state}"
-    if [[ "${state}" == "present" ]]; then
-      cat "${config_file}"
-    else
-      echo "wslconfig: absent"
-    fi
+  if ! host_bundle_ok "${version_file}" "${state}" "${config_file}"; then
+    bad "host P0 bundle is incomplete"
+    return 1
+  fi
+  echo "wsl --version:"
+  cat "${version_file}"
+  echo "wslconfig state=${state}"
+  if [[ "${state}" == "present" ]]; then
+    cat "${config_file}"
   else
-    echo "wsl --version: not supplied"
-    echo "wslconfig: not supplied"
+    echo "wslconfig: absent"
+  fi
+  if [[ -n "${runners_file}" && -f "${runners_file}" && -r "${runners_file}" ]]; then
+    echo "GitHub registered runners:"
+    cat "${runners_file}"
+  else
+    echo "GitHub registered runners: not supplied"
   fi
   return 0
 }
 
-# Same closed set as the manager. Base is required and is crrr or fresh.
-# An extra that is a base or a reserved label is refused.
-compose_runner_labels() {
-  local base="$1" extra="$2" part seen="" expect
-  local -a parts=()
-  if [[ -z "${base}" ]]; then
-    echo "refusing: AAP_RUNNER_BASE_LABEL is required" >&2
-    return 1
-  fi
-  case "${base}" in
-    crrr | fresh) ;;
-    *)
-      echo "refusing: AAP_RUNNER_BASE_LABEL=${base} is not crrr or fresh" >&2
-      return 1
-      ;;
-  esac
-  expect="self-hosted,linux,${base}"
-  if [[ -n "${extra}" ]]; then
-    IFS=',' read -ra parts <<< "${extra}"
-    if [[ "${#parts[@]}" -eq 0 ]]; then
-      echo "refusing: AAP_RUNNER_EXTRA_LABELS has no label" >&2
-      return 1
-    fi
-    for part in "${parts[@]}"; do
-      if [[ ! "${part}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-        echo "refusing: extra label '${part}'" >&2
-        return 1
-      fi
-      case "${part}" in
-        crrr | fresh | self-hosted | linux)
-          echo "refusing: extra label '${part}' is reserved" >&2
-          return 1
-          ;;
-      esac
-      case ",${seen}," in
-        *",${part},"*)
-          echo "refusing: extra label '${part}' duplicates a label already set" >&2
-          return 1
-          ;;
-      esac
-      seen="${seen:+${seen},}${part}"
-    done
-    expect="${expect},${seen}"
-  fi
-  printf '%s\n' "${expect}"
-}
-
-labels_line_ok() {
-  local line="$1" base="$2"
-  [[ "${line}" == "self-hosted,linux,${base}" || "${line}" == "self-hosted,linux,${base},"* ]] || return 1
-  [[ "${line}" =~ ^self-hosted,linux,(crrr|fresh)(,[A-Za-z0-9][A-Za-z0-9._-]*)*$ ]]
-}
-
 self_check() {
-  local got sample tmp version cfg out
+  local got sample tmp version cfg out rc runners
+  labels_self_check
   got=$(route_gateway 010011AC)
   [[ "${got}" == "172.17.0.1" ]]
   got=$(memory_bytes 12g)
@@ -305,13 +264,38 @@ EOF
     echo "an empty wslconfig state was accepted" >&2
     return 1
   fi
-  out=$(print_host_bundle "" "" "")
+  bad() {
+    printf 'FAIL %s\n' "$1" >&2
+  }
+  rc=0
+  out=$(print_host_bundle "" "" "" 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${out}" != *"host P0 bundle is incomplete"* ]]; then
+    echo "a missing host P0 bundle was accepted" >&2
+    return 1
+  fi
   [[ "${out}" == *"HOST-REPORTED (operator-supplied, not verified)"* ]]
-  [[ "${out}" == *"wsl --version: not supplied"* ]]
-  out=$(print_host_bundle "${version}" present "${cfg}")
+  rc=0
+  out=$(print_host_bundle "${version}" "" "" 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${out}" != *"host P0 bundle is incomplete"* ]]; then
+    echo "a missing .wslconfig capture was accepted" >&2
+    return 1
+  fi
+  rc=0
+  out=$(print_host_bundle "${version}" absent "${cfg}" 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 || "${out}" == *"host P0 bundle is incomplete"* ]]; then
+    echo "an absent .wslconfig was treated as an incomplete bundle" >&2
+    return 1
+  fi
+  [[ "${out}" == *"HOST-REPORTED (operator-supplied, not verified)"* ]]
+  [[ "${out}" == *"wslconfig: absent"* ]]
+  [[ "${out}" == *"GitHub registered runners: not supplied"* ]]
+  runners="${tmp}/runners"
+  printf 'GET /orgs/special-place-ai-heaven/actions/runners\naap-crrr\tonline\tself-hosted,linux,crrr\n' > "${runners}"
+  out=$(print_host_bundle "${version}" present "${cfg}" "${runners}")
   [[ "${out}" == *"HOST-REPORTED (operator-supplied, not verified)"* ]]
   [[ "${out}" == *"WSL version: 2.0.0"* ]]
   [[ "${out}" == *"memory=80GB"* ]]
+  [[ "${out}" == *"aap-crrr"*online*self-hosted,linux,crrr* ]]
   got=$(compose_runner_labels crrr "")
   [[ "${got}" == "self-hosted,linux,crrr" ]]
   labels_line_ok "${got}" crrr

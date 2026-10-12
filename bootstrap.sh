@@ -9,6 +9,8 @@ DISTRO=aap-runner
 INSTALL_DIR=${AAP_RUNNER_INSTALL_DIR:-/mnt/c/aap-runner}
 STAGE=${AAP_RUNNER_STAGE:-/mnt/c/aap-runner-staging}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=labels.sh
+source "${SCRIPT_DIR}/labels.sh"
 # AAP_WORK_DISK_GIB is this host's fixed VHDX size. Absent means 60 (CRRR).
 # diskpart maximum= is MiB (gib * 1024). PowerShell 1GB is 1024^3.
 WORK_VHDX=${AAP_WORK_VHDX:-/mnt/c/wsl/aap-runner-work.vhdx}
@@ -57,6 +59,8 @@ stamp_new_manager_conf() {
 }
 
 # crrr or fresh, written in the conf. An empty or missing key is refused.
+# A present value goes through labels.sh, so uppercase fails the charset
+# check before the crrr-or-fresh check.
 require_runner_base_label() {
   local path="$1" base="" line key val
   if [[ ! -f "${path}" ]]; then
@@ -73,17 +77,11 @@ require_runner_base_label() {
       base=${val}
     fi
   done < "${path}"
-  case "${base}" in
-    crrr | fresh) return 0 ;;
-    "")
-      echo "refusing: AAP_RUNNER_BASE_LABEL is required in ${path}" >&2
-      return 1
-      ;;
-    *)
-      echo "refusing: AAP_RUNNER_BASE_LABEL=${base} is not crrr or fresh" >&2
-      return 1
-      ;;
-  esac
+  if [[ -z "${base}" ]]; then
+    echo "refusing: AAP_RUNNER_BASE_LABEL is required in ${path}" >&2
+    return 1
+  fi
+  validate_base_label "${base}"
 }
 
 apply_work_disk_size || exit 1
@@ -308,6 +306,7 @@ inside_packages() {
   copy_staged Dockerfile /var/lib/aap-runner/image/Dockerfile
   copy_staged ephemeral-entry.sh /var/lib/aap-runner/image/ephemeral-entry.sh
   copy_staged manager.sh /usr/local/sbin/aap-runner-manager
+  copy_staged labels.sh /usr/local/sbin/labels.sh
   copy_staged evidence.sh /usr/local/sbin/aap-runner-evidence
   copy_staged mount-work-disk.sh /usr/local/sbin/aap-mount-work-disk
   copy_staged aap-runner-manager.service /etc/systemd/system/aap-runner-manager.service
@@ -335,7 +334,7 @@ inside_packages() {
     /usr/local/sbin/aap-mount-work-disk \
     /var/lib/aap-runner/image/ephemeral-entry.sh
   chmod 644 /etc/docker/daemon.json /etc/systemd/system/docker.service.d/workdisk.conf \
-    /etc/systemd/system/aap-workdisk.service
+    /etc/systemd/system/aap-workdisk.service /usr/local/sbin/labels.sh
   chmod 400 /etc/aap-runner/manager.conf
   chown root:root /etc/aap-runner/manager.conf /usr/local/sbin/aap-runner-manager \
     /etc/docker/daemon.json
@@ -635,7 +634,8 @@ lock_work_disk_acl() {
 }
 
 self_check() {
-  local tmp cfg reason
+  local tmp cfg reason rc err
+  labels_self_check
   tmp=$(mktemp)
   printf 'abc' > "${tmp}"
   verify_sha256 "${tmp}" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -692,6 +692,14 @@ self_check() {
   printf 'AAP_RUNNER_BASE_LABEL=heavy\n' > "${cfg}"
   if require_runner_base_label "${cfg}"; then
     echo "base label heavy was accepted" >&2
+    exit 1
+  fi
+  printf 'AAP_RUNNER_BASE_LABEL=CRRR\n' > "${cfg}"
+  rc=0
+  err=$(require_runner_base_label "${cfg}" 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 ]] || ! charset_refusal "${err}"; then
+    echo "base label CRRR was not refused by the charset check" >&2
+    printf '%s\n' "${err}" >&2
     exit 1
   fi
   rm -f "${cfg}"
@@ -892,10 +900,11 @@ outside() {
     "${SCRIPT_DIR}/daemon.json" "${SCRIPT_DIR}/docker-workdisk.conf" \
     "${SCRIPT_DIR}/aap-runner-manager.service" "${SCRIPT_DIR}/nftables.conf" \
     "${SCRIPT_DIR}/wsl.conf" "${SCRIPT_DIR}/manager.conf.example" \
-    "${SCRIPT_DIR}/evidence.sh" "${SCRIPT_DIR}/bootstrap.sh" "${STAGE}/"
+    "${SCRIPT_DIR}/evidence.sh" "${SCRIPT_DIR}/bootstrap.sh" \
+    "${SCRIPT_DIR}/labels.sh" "${STAGE}/"
 
   wsl.exe -d "${DISTRO}" -u root -- env "AAP_STAGE_BOOT=${STAGE}/bootstrap.sh" \
-    bash -lc "mkdir -p /opt/aap-runner && cp \"\$AAP_STAGE_BOOT\" /opt/aap-runner/bootstrap.sh && bash /opt/aap-runner/bootstrap.sh --inside-packages"
+    bash -lc "mkdir -p /opt/aap-runner && cp \"\$AAP_STAGE_BOOT\" /opt/aap-runner/bootstrap.sh && cp \"\$(dirname \"\$AAP_STAGE_BOOT\")/labels.sh\" /opt/aap-runner/labels.sh && bash /opt/aap-runner/bootstrap.sh --inside-packages"
   rm -rf "${STAGE}"
 
   register_mount_task

@@ -4,6 +4,9 @@
 # the container and never written to a second file.
 set -euo pipefail
 
+# shellcheck source=labels.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.sh"
+
 CONFIG_PATH=/etc/aap-runner/manager.conf
 WORK_MOUNT=/var/lib/ghrunner
 # df -BG of an ext4 is a few GiB under the VHDX. Accept configured size -10..+4.
@@ -194,33 +197,11 @@ valid_timeout_minutes() {
 }
 
 # AAP_RUNNER_BASE_LABEL is required. crrr or fresh only. There is no default.
-# An extra may not be a base label (crrr, fresh) or a reserved label
-# (self-hosted, linux). The final line is self-hosted,linux,<base>[,extras].
-base_label_ok() {
-  case "$1" in
-    crrr | fresh) return 0 ;;
-  esac
-  return 1
-}
-
-extra_label_reserved() {
-  case "$1" in
-    crrr | fresh | self-hosted | linux) return 0 ;;
-  esac
-  return 1
-}
-
+# labels.sh checks the lowercase charset before reserved labels and duplicates.
 finish_runner_labels() {
   local extra="${AAP_RUNNER_EXTRA_LABELS}" part seen="" expect
   local -a parts=()
-  if [[ -z "${AAP_RUNNER_BASE_LABEL}" ]]; then
-    echo "refusing: AAP_RUNNER_BASE_LABEL is required" >&2
-    return 1
-  fi
-  if ! base_label_ok "${AAP_RUNNER_BASE_LABEL}"; then
-    echo "refusing: AAP_RUNNER_BASE_LABEL=${AAP_RUNNER_BASE_LABEL} is not crrr or fresh" >&2
-    return 1
-  fi
+  validate_base_label "${AAP_RUNNER_BASE_LABEL}" || return 1
   expect="self-hosted,linux,${AAP_RUNNER_BASE_LABEL}"
   if [[ -z "${AAP_RUNNER_LABELS}" ]]; then
     AAP_RUNNER_LABELS="${expect}"
@@ -237,20 +218,7 @@ finish_runner_labels() {
     return 1
   fi
   for part in "${parts[@]}"; do
-    if [[ ! "${part}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-      echo "refusing: extra label '${part}'" >&2
-      return 1
-    fi
-    if extra_label_reserved "${part}"; then
-      echo "refusing: extra label '${part}' is reserved" >&2
-      return 1
-    fi
-    case ",${seen}," in
-      *",${part},"*)
-        echo "refusing: extra label '${part}' duplicates a label already set" >&2
-        return 1
-        ;;
-    esac
+    extra_label_ok "${part}" "${seen}" || return 1
     seen="${seen:+${seen},}${part}"
   done
   AAP_RUNNER_LABELS="${expect},${seen}"
@@ -465,6 +433,7 @@ run_one() {
 
 self_check() {
   local got killer="" sample
+  labels_self_check
   if ! below_floor 34 35; then
     echo "34G should be under a 35G floor" >&2
     return 1

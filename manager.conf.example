@@ -7,12 +7,13 @@ AAP_GITHUB_APP_ID=
 AAP_GITHUB_APP_INSTALLATION_ID=
 AAP_GITHUB_APP_PRIVATE_KEY_PATH=/etc/aap-runner/app.pem
 AAP_RUNNER_IMAGE=aap-crrr-runner:local
-# Required. crrr or fresh only. There is no default. An empty value is refused.
-# CRRR sets crrr. Fresh sets fresh and does not carry crrr.
+# Required. crrr or fresh only, already lowercase. There is no default.
+# An empty value is refused. CRRR sets crrr. Fresh sets fresh and does not carry crrr.
 AAP_RUNNER_BASE_LABEL=crrr
 # Must be self-hosted,linux plus the base above.
 AAP_RUNNER_LABELS=self-hosted,linux,crrr
 # Labels after the base. CRRR leaves this empty. Fresh sets heavy.
+# Each label matches ^[a-z0-9][a-z0-9._-]*$ (uppercase is refused).
 # crrr, fresh, self-hosted, and linux are refused here.
 AAP_RUNNER_EXTRA_LABELS=
 AAP_RUNNER_GROUP=aap-crrr
