@@ -1,6 +1,7 @@
 # Leave only SYSTEM (S-1-5-18) and Administrators (S-1-5-32-544) on a file
-# or directory. Bootstrap runs this from an elevated shell. Directories
-# pass the two ACEs down to children. A leftover writer fails the install.
+# or directory, and set the owner to Administrators. Bootstrap runs this
+# from an elevated shell. Directories pass the two ACEs down to children.
+# A leftover writer, or any other owner, fails the install.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
@@ -12,8 +13,11 @@ if (-not (Test-Path -LiteralPath $LiteralPath)) {
     exit 1
 }
 $allowed = @('S-1-5-18', 'S-1-5-32-544')
+$adminsSid = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-544'
 $item = Get-Item -LiteralPath $LiteralPath
-$acl = $item.GetAccessControl('Access')
+$sections = [System.Security.AccessControl.AccessControlSections]::Access -bor `
+    [System.Security.AccessControl.AccessControlSections]::Owner
+$acl = $item.GetAccessControl($sections)
 $acl.SetAccessRuleProtection($true, $false)
 for ($i = 0; $i -lt 10 -and @($acl.Access).Count -gt 0; $i++) {
     foreach ($rule in @($acl.Access)) {
@@ -40,9 +44,18 @@ foreach ($sidText in $allowed) {
         [System.Security.AccessControl.AccessControlType]::Allow)
     $acl.AddAccessRule($rule)
 }
+$acl.SetOwner($adminsSid)
 $item.SetAccessControl($acl)
 
-$check = (Get-Item -LiteralPath $LiteralPath).GetAccessControl('Access')
+$checkItem = Get-Item -LiteralPath $LiteralPath
+$ownerAcl = $checkItem.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Owner)
+$ownerSid = $ownerAcl.GetOwner([System.Security.Principal.SecurityIdentifier])
+if ($null -eq $ownerSid -or $ownerSid.Value -ne 'S-1-5-32-544') {
+    $shown = if ($null -eq $ownerSid) { 'missing' } else { $ownerSid.Value }
+    Write-Error "owner of $LiteralPath is $shown; expected S-1-5-32-544"
+    exit 1
+}
+$check = $checkItem.GetAccessControl('Access')
 $seen = @()
 foreach ($rule in @($check.Access)) {
     $id = $rule.IdentityReference
@@ -67,4 +80,4 @@ foreach ($need in $allowed) {
         exit 1
     }
 }
-Write-Output "acl ok $LiteralPath"
+Write-Output "acl ok $LiteralPath owner=S-1-5-32-544"

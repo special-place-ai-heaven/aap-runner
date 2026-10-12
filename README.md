@@ -24,9 +24,9 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `daemon.json` | dockerd `data-root` `/var/lib/ghrunner/docker`, `ipv6` false |
 | `docker-workdisk.conf` | docker.service drop-in: do not start unless that path is a mount |
 | `evidence.sh` | Prints the lockdown observations. Installed as `/usr/local/sbin/aap-runner-evidence` |
-| `lock-acl.ps1` | DACL for the boot-task folder, script, and VHDX: SYSTEM and Administrators only |
+| `lock-acl.ps1` | DACL for the boot-task folder, script, and VHDX: SYSTEM and Administrators only, owner Administrators |
 
-`bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, and `bash evidence.sh --self-check` check the checksum, disk-floor, limit, and route parsers. They do not touch WSL.
+`bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, and `bash evidence.sh --self-check` check the checksum, disk-floor, limit, and route parsers, and the cases where a missing `wslinfo` or an unreadable `.wslconfig` must stop the install. They do not touch WSL.
 
 ## What runs where
 
@@ -111,7 +111,7 @@ Outbound only. The distro does not listen: the nftables input policy is drop, wi
 
 except the distro's DNS resolver, which bootstrap writes into the set from `/etc/resolv.conf`. Those accept rules are above the drops, so a resolver at `127.0.0.53` still answers. Internet destinations are allowed. The packet's destination is filtered, not the bridge gateway, so normal outbound NAT still works.
 
-Bootstrap refuses the install when `wslinfo --networking-mode` prints `mirrored`, and when the Windows user's `.wslconfig` contains `networkingMode=mirrored`. Mirrored mode puts this distro on the Windows LAN. This table does not see that traffic. Leave WSL on NAT.
+Bootstrap refuses the install when `wslinfo --networking-mode` prints `mirrored`, and when the Windows user's `.wslconfig` contains `networkingMode=mirrored`. Inside `aap-runner` it also refuses when `wslinfo` is missing or prints nothing. On the operator distro it refuses when `.wslconfig` exists but cannot be read. An absent `.wslconfig` is the Windows NAT default. Mirrored mode puts this distro on the Windows LAN. This table does not see that traffic. Leave WSL on NAT.
 
 The distro `daemon.json` sets `"ipv6": false`. After dockerd starts, bootstrap reads `docker network inspect bridge` and stops unless `EnableIPv6` is `false`. Each job's inner dockerd writes the same file before it listens, and the entry script stops that job if the inner bridge is not `false`.
 
@@ -137,7 +137,7 @@ It then attaches the disk with `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --
 
 At every boot, task `AAP-CRRR-Mount-Work-Disk` runs as SYSTEM and runs only `wsl --mount --vhd <that path> --bare`. Inside `aap-runner`, `aap-mount-work-disk` mounts that UUID at `/var/lib/ghrunner`. `mountFsTab=false` stops WSL from processing fstab; the line is still there with `nofail` for systemd, and the service retries until the UUID appears. `mountpoint -q` failing exits the mount script, and docker.service has `ConditionPathIsMountPoint=/var/lib/ghrunner`, so dockerd does not start on the distro root.
 
-`lock-acl.ps1` clears inheritance and leaves only `S-1-5-18` (SYSTEM) and `S-1-5-32-544` (Administrators), full control, on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, `C:\wsl\mount-work-vhdx-task.xml`, and `C:\wsl\aap-runner-work.vhdx`. The directory ACEs inherit onto children. Bootstrap runs that script after it creates the VHDX and again after it writes the boot script. A non-admin ACE fails the install. Check with `icacls C:\wsl`, `icacls C:\wsl\mount-work-vhdx.ps1`, and `icacls C:\wsl\aap-runner-work.vhdx`. Each list should name only SYSTEM and Administrators.
+`lock-acl.ps1` clears inheritance and leaves only `S-1-5-18` (SYSTEM) and `S-1-5-32-544` (Administrators), full control, on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, `C:\wsl\mount-work-vhdx-task.xml`, and `C:\wsl\aap-runner-work.vhdx`. It sets the owner of each of those paths to Administrators (`S-1-5-32-544`) and reads the owner back. Any other owner, or a non-admin ACE, fails the install. The directory ACEs inherit onto children. Bootstrap runs that script after it creates the VHDX and again after it writes the boot script. Check with `icacls C:\wsl`, `icacls C:\wsl\mount-work-vhdx.ps1`, and `icacls C:\wsl\aap-runner-work.vhdx`. Each list should name only SYSTEM and Administrators, and the owner should be `BUILTIN\Administrators`.
 
 `/var/lib/ghrunner/docker` is dockerd's `data-root`. Job container layers, including the Actions workspace, live there. Sysbox's host state is `/var/lib/sysbox`, replaced with a symlink onto `/var/lib/ghrunner/sysbox` before Sysbox is started. The inner dockerd's data is inside the job container's writable layer, so it is on the same ext4. The distro root VHD still holds the OS packages. It does not hold images or job layers.
 
@@ -190,8 +190,8 @@ Do this in the org that owns the private AAP repos before starting the manager. 
 - [ ] `ghrunner` is not in `sudo` or `docker`. Bootstrap checks this and exits if it is.
 - [ ] Sysbox preflight printed `docker info` from inside `--runtime=sysbox-runc`. If it did not, the install stopped and stays stopped.
 - [ ] On `special-place-ai-heaven/symforge`, Settings > Actions > General > Access allows `Agent_Army_Professionals`. Then delete the `SYMFORGE_TOKEN` secret from this repo and from the org. The workflow does not read it.
-- [ ] `.wslconfig` does not set `networkingMode=mirrored`. `wslinfo --networking-mode` is not `mirrored`.
-- [ ] `icacls` on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, and `C:\wsl\aap-runner-work.vhdx` lists only SYSTEM and Administrators.
+- [ ] `.wslconfig` does not set `networkingMode=mirrored`. `wslinfo --networking-mode` is not `mirrored`. Inside `aap-runner`, a missing `wslinfo` is a failed install, and an unreadable `.wslconfig` is a failed install.
+- [ ] `icacls` on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, and `C:\wsl\aap-runner-work.vhdx` lists only SYSTEM and Administrators, and the owner of each path is `BUILTIN\Administrators`.
 - [ ] BRUCE has accepted this design. Do not `systemctl start aap-runner-manager` before that.
 
 ## Install
@@ -295,4 +295,4 @@ After the App key and `manager.conf` are in place:
 wsl.exe -d aap-runner -u root -- bash /usr/local/sbin/aap-runner-evidence
 ```
 
-The script prints, in order: whether `/mnt` is empty, whether `cmd.exe` can run, `nft list ruleset`, `wslinfo --networking-mode`, the bridge `EnableIPv6`, `id ghrunner`, and `stat` of `/etc/aap-runner/app.pem` and `/etc/aap-runner/manager.conf`. It then starts one Sysbox container with the job memory, cpu, and pids limits and, from inside that container, prints the container gateway, the Windows host IP (the distro default route), and the result of connecting to that gateway, that Windows host IP, `192.168.1.1`, and `fd00:aaaa::1` (those four must fail) plus `https://github.com/` (that must succeed). It exits non-zero when any of those observations is missing or wrong. It does not mint a registration token and it does not print the App key.
+The script prints `uname -r` and a line telling the operator to paste `wsl --version` from Windows alongside the log. Then: whether `/mnt` is empty, whether `cmd.exe` can run, `nft list ruleset`, `wslinfo --networking-mode`, the bridge `EnableIPv6`, `id ghrunner`, and `stat` of `/etc/aap-runner/app.pem` and `/etc/aap-runner/manager.conf`. It then starts one Sysbox container with the job memory, cpu, and pids limits and, from inside that container, prints the container gateway, `AAP_WINDOWS_HOST_IP` (the distro default route), and the result of connecting to that gateway, that Windows host IP, `192.168.1.1`, and `fd00:aaaa::1` (those four must fail) plus `https://github.com/` (that must succeed). It exits non-zero when any of those observations is missing or wrong. It does not mint a registration token and it does not print the App key.

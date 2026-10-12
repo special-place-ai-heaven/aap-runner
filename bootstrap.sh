@@ -335,34 +335,83 @@ wslconfig_sets_mirrored() {
   grep -Eiq '^[[:space:]]*networkingMode[[:space:]]*=[[:space:]]*mirrored[[:space:]]*(#.*)?$' "${file}"
 }
 
-# wslinfo is the live mode. .wslconfig is the next boot. Either one saying
-# mirrored stops the install: mirrored mode puts the distro on the Windows
-# LAN and the bridge filter does not see that traffic.
-refuse_mirrored_networking() {
-  local mode="" raw="" profile="" cfg=""
-  if command -v wslinfo >/dev/null 2>&1; then
-    mode=$(wslinfo --networking-mode 2>/dev/null | tr -d '\r' | head -n 1 || true)
-    if printf '%s\n' "${mode}" | grep -Eiq '^mirrored$'; then
-      echo "refusing: WSL networkingMode is mirrored (wslinfo). Use NAT." >&2
-      exit 1
-    fi
-  fi
-  if [[ ! -d /mnt/c ]]; then
+# Echoes a reason and returns 0 when bootstrap must stop.
+# Returns 1 when networkingMode is proven not mirrored.
+# inside=yes is the aap-runner distro. cfg_state is absent, nat, mirrored,
+# unreadable, or skipped (not looked at, because /mnt/c is gone).
+networking_stop_reason() {
+  local inside="$1" have_wslinfo="$2" mode="$3" cfg_state="$4"
+  if printf '%s\n' "${mode}" | grep -Eiq '^mirrored$'; then
+    echo "WSL networkingMode is mirrored (wslinfo). Use NAT."
     return 0
   fi
-  if ! command -v powershell.exe >/dev/null 2>&1 || ! command -v wslpath >/dev/null 2>&1; then
-    echo "refusing: cannot read .wslconfig to prove networkingMode is not mirrored" >&2
-    exit 1
+  if [[ "${have_wslinfo}" == "yes" && -z "${mode}" ]]; then
+    echo "wslinfo returned no networkingMode"
+    return 0
   fi
-  raw=$(powershell.exe -NoProfile -NonInteractive -Command '[Environment]::GetFolderPath("UserProfile")' | tr -d '\r')
-  if [[ -z "${raw}" ]]; then
-    echo "refusing: Windows user profile was empty; cannot check .wslconfig" >&2
-    exit 1
+  if [[ "${inside}" == "yes" && ( "${have_wslinfo}" != "yes" || -z "${mode}" ) ]]; then
+    echo "wslinfo is missing inside aap-runner; cannot prove networkingMode is not mirrored"
+    return 0
   fi
-  profile=$(wslpath -u "${raw}")
-  cfg="${profile}/.wslconfig"
-  if [[ -f "${cfg}" ]] && wslconfig_sets_mirrored "${cfg}"; then
-    echo "refusing: ${cfg} sets networkingMode=mirrored. Use NAT, then wsl --shutdown." >&2
+  case "${cfg_state}" in
+    unreadable)
+      echo ".wslconfig is unreadable; cannot prove networkingMode is not mirrored"
+      return 0
+      ;;
+    mirrored)
+      echo ".wslconfig sets networkingMode=mirrored. Use NAT, then wsl --shutdown."
+      return 0
+      ;;
+    absent | nat | skipped) ;;
+    *)
+      echo ".wslconfig state '${cfg_state}' is not a proof"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# wslinfo is the live mode. .wslconfig is the next boot. Either one saying
+# mirrored stops the install. Inside aap-runner a missing wslinfo stops it
+# too, and an unreadable .wslconfig stops it. Mirrored mode puts the distro
+# on the Windows LAN and the bridge filter does not see that traffic.
+refuse_mirrored_networking() {
+  local mode="" have_wslinfo=no inside=no cfg_state=skipped
+  local raw="" profile="" cfg="" reason="" grep_rc=0
+  if [[ "${WSL_DISTRO_NAME:-}" == "${DISTRO}" || ! -d /mnt/c ]]; then
+    inside=yes
+  fi
+  if command -v wslinfo >/dev/null 2>&1; then
+    have_wslinfo=yes
+    mode=$(wslinfo --networking-mode 2>/dev/null | tr -d '\r' | head -n 1 || true)
+  fi
+  if [[ -d /mnt/c ]]; then
+    cfg_state=unreadable
+    if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
+      raw=$(powershell.exe -NoProfile -NonInteractive -Command '[Environment]::GetFolderPath("UserProfile")' | tr -d '\r' || true)
+      if [[ -n "${raw}" ]]; then
+        profile=$(wslpath -u "${raw}" || true)
+      fi
+      if [[ -n "${profile}" ]]; then
+        cfg="${profile}/.wslconfig"
+        if [[ ! -e "${cfg}" ]]; then
+          cfg_state=absent
+        elif [[ -f "${cfg}" && -r "${cfg}" ]]; then
+          grep_rc=0
+          wslconfig_sets_mirrored "${cfg}" || grep_rc=$?
+          if [[ "${grep_rc}" -eq 0 ]]; then
+            cfg_state=mirrored
+          elif [[ "${grep_rc}" -eq 1 ]]; then
+            cfg_state=nat
+          else
+            cfg_state=unreadable
+          fi
+        fi
+      fi
+    fi
+  fi
+  if reason=$(networking_stop_reason "${inside}" "${have_wslinfo}" "${mode}" "${cfg_state}"); then
+    echo "refusing: ${reason}" >&2
     exit 1
   fi
 }
@@ -394,7 +443,7 @@ lock_work_disk_acl() {
 }
 
 self_check() {
-  local tmp cfg
+  local tmp cfg reason
   tmp=$(mktemp)
   printf 'abc' > "${tmp}"
   verify_sha256 "${tmp}" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -417,6 +466,34 @@ self_check() {
     exit 1
   fi
   rm -f "${cfg}"
+  if ! reason=$(networking_stop_reason yes no "" skipped); then
+    echo "missing wslinfo inside aap-runner was allowed" >&2
+    exit 1
+  fi
+  if ! reason=$(networking_stop_reason yes yes "" skipped); then
+    echo "empty wslinfo inside aap-runner was allowed" >&2
+    exit 1
+  fi
+  if ! reason=$(networking_stop_reason yes yes mirrored skipped); then
+    echo "mirrored wslinfo was allowed" >&2
+    exit 1
+  fi
+  if reason=$(networking_stop_reason yes yes nat skipped); then
+    echo "nat inside aap-runner was refused: ${reason}" >&2
+    exit 1
+  fi
+  if ! reason=$(networking_stop_reason no no "" unreadable); then
+    echo "unreadable .wslconfig was allowed" >&2
+    exit 1
+  fi
+  if ! reason=$(networking_stop_reason no yes nat unreadable); then
+    echo "unreadable .wslconfig was allowed beside a nat wslinfo" >&2
+    exit 1
+  fi
+  if reason=$(networking_stop_reason no no "" absent); then
+    echo "absent .wslconfig on the operator distro was refused: ${reason}" >&2
+    exit 1
+  fi
   echo "checksum self-check ok"
 }
 

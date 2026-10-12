@@ -77,6 +77,10 @@ section() {
   printf '\n== %s ==\n' "$1"
 }
 
+section "kernel"
+uname -r
+echo "Operator: from Windows, run wsl --version and paste that output alongside this log."
+
 section "/mnt"
 mnt_entries=$(find /mnt -mindepth 1 -print 2>/dev/null || true)
 if [[ -n "${mnt_entries}" ]]; then
@@ -168,7 +172,7 @@ win_ip=""
 if hex=$(default_route_hex); then
   win_ip=$(route_gateway "${hex}" || true)
 fi
-echo "windows_host_ip=${win_ip:-unknown}"
+echo "AAP_WINDOWS_HOST_IP=${win_ip}"
 if [[ -z "${win_ip}" ]]; then
   bad "could not read the Windows host IP from the default route"
 fi
@@ -222,7 +226,7 @@ if [[ -n "${hex}" ]]; then
   gw=$(route_gateway "${hex}" || true)
 fi
 echo "GATEWAY=${gw}"
-echo "WINDOWS_HOST=${AAP_WINDOWS_HOST_IP:-}"
+echo "AAP_WINDOWS_HOST_IP=${AAP_WINDOWS_HOST_IP:-}"
 probe_url() {
   local pname="$1" url="$2" expect="$3" max_time="$4" rc=0 err
   err=$(curl -g --silent --show-error --output /dev/null \
