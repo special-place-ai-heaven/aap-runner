@@ -7,11 +7,16 @@ AAP_GITHUB_APP_ID=
 AAP_GITHUB_APP_INSTALLATION_ID=
 AAP_GITHUB_APP_PRIVATE_KEY_PATH=/etc/aap-runner/app.pem
 AAP_RUNNER_IMAGE=aap-crrr-runner:local
+# Baseline. ci.yml runs on this set. Do not put a host-only label here.
 AAP_RUNNER_LABELS=self-hosted,linux,crrr
+# Optional labels for this host only, comma-separated. CRRR leaves this empty.
+# A second host can set fresh or heavy. Those jobs are not in ci.yml yet.
+AAP_RUNNER_EXTRA_LABELS=
 AAP_RUNNER_GROUP=aap-crrr
 # Free GiB required on /var/lib/ghrunner before a job starts. The disk is 60 GiB fixed.
 AAP_DISK_FLOOR_GB=35
-# docker create limits for one job. Absent keys use these same defaults.
+# Per-host docker create limits. CRRR65734 uses 12g and 6 cpus. Another host sets its own.
+# Absent keys use those same CRRR defaults.
 AAP_JOB_MEMORY=12g
 AAP_JOB_CPUS=6
 AAP_JOB_PIDS_LIMIT=4096

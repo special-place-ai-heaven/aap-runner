@@ -15,6 +15,7 @@ AAP_GITHUB_APP_INSTALLATION_ID=""
 AAP_GITHUB_APP_PRIVATE_KEY_PATH=""
 AAP_RUNNER_IMAGE=""
 AAP_RUNNER_LABELS=""
+AAP_RUNNER_EXTRA_LABELS=""
 AAP_RUNNER_GROUP=""
 AAP_DISK_FLOOR_GB=""
 AAP_JOB_MEMORY=""
@@ -59,6 +60,7 @@ apply_config_line() {
     AAP_GITHUB_APP_PRIVATE_KEY_PATH) AAP_GITHUB_APP_PRIVATE_KEY_PATH=${val} ;;
     AAP_RUNNER_IMAGE) AAP_RUNNER_IMAGE=${val} ;;
     AAP_RUNNER_LABELS) AAP_RUNNER_LABELS=${val} ;;
+    AAP_RUNNER_EXTRA_LABELS) AAP_RUNNER_EXTRA_LABELS=${val} ;;
     AAP_RUNNER_GROUP) AAP_RUNNER_GROUP=${val} ;;
     AAP_DISK_FLOOR_GB) AAP_DISK_FLOOR_GB=${val} ;;
     AAP_JOB_MEMORY) AAP_JOB_MEMORY=${val} ;;
@@ -92,10 +94,10 @@ load_config() {
     exit 1
   fi
   [[ "${AAP_RUNNER_IMAGE}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$ ]]
-  [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,crrr" ]]
   [[ "${AAP_RUNNER_GROUP}" == "aap-crrr" ]]
   [[ "${AAP_DISK_FLOOR_GB}" =~ ^[0-9]+$ ]]
   finish_job_limits
+  finish_runner_labels
 }
 
 # Absent keys use the defaults. A present value that is not this grammar is refused.
@@ -116,6 +118,39 @@ valid_pids() {
 valid_timeout_minutes() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 1
   [[ "$1" -le 1440 ]]
+}
+
+# Baseline stays self-hosted,linux,crrr so ci.yml keeps matching.
+# AAP_RUNNER_EXTRA_LABELS is this host only (fresh, heavy). Empty is the baseline.
+finish_runner_labels() {
+  local extra="${AAP_RUNNER_EXTRA_LABELS}" part seen=""
+  local -a parts=()
+  if [[ "${AAP_RUNNER_LABELS}" != "self-hosted,linux,crrr" ]]; then
+    echo "refusing: AAP_RUNNER_LABELS must stay self-hosted,linux,crrr" >&2
+    return 1
+  fi
+  if [[ -z "${extra}" ]]; then
+    return 0
+  fi
+  IFS=',' read -ra parts <<< "${extra}"
+  if [[ "${#parts[@]}" -eq 0 ]]; then
+    echo "refusing: AAP_RUNNER_EXTRA_LABELS has no label" >&2
+    return 1
+  fi
+  for part in "${parts[@]}"; do
+    if [[ ! "${part}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+      echo "refusing: extra label '${part}'" >&2
+      return 1
+    fi
+    case ",self-hosted,linux,crrr,${seen}," in
+      *",${part},"*)
+        echo "refusing: extra label '${part}' duplicates a label already set" >&2
+        return 1
+        ;;
+    esac
+    seen="${seen:+${seen},}${part}"
+  done
+  AAP_RUNNER_LABELS="self-hosted,linux,crrr,${seen}"
 }
 
 finish_job_limits() {
@@ -376,6 +411,36 @@ self_check() {
   AAP_JOB_TIMEOUT_MINUTES="1441"
   if finish_job_limits; then
     echo "timeout above 1440 minutes was accepted" >&2
+    return 1
+  fi
+  AAP_RUNNER_LABELS="self-hosted,linux,crrr"
+  AAP_RUNNER_EXTRA_LABELS=""
+  finish_runner_labels
+  [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,crrr" ]]
+  AAP_RUNNER_LABELS="self-hosted,linux,crrr"
+  AAP_RUNNER_EXTRA_LABELS="fresh"
+  finish_runner_labels
+  [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,crrr,fresh" ]]
+  AAP_RUNNER_LABELS="self-hosted,linux,crrr"
+  AAP_RUNNER_EXTRA_LABELS="heavy,fresh"
+  finish_runner_labels
+  [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,crrr,heavy,fresh" ]]
+  AAP_RUNNER_LABELS="self-hosted,linux,crrr"
+  AAP_RUNNER_EXTRA_LABELS="self-hosted"
+  if finish_runner_labels; then
+    echo "baseline label was accepted as an extra label" >&2
+    return 1
+  fi
+  AAP_RUNNER_LABELS="self-hosted,linux,crrr"
+  AAP_RUNNER_EXTRA_LABELS="fresh fresh"
+  if finish_runner_labels; then
+    echo "a label with a space was accepted" >&2
+    return 1
+  fi
+  AAP_RUNNER_LABELS="linux,crrr"
+  AAP_RUNNER_EXTRA_LABELS=""
+  if finish_runner_labels; then
+    echo "a baseline other than self-hosted,linux,crrr was accepted" >&2
     return 1
   fi
   killer=$(arm_wall_clock 30 "aap-self-check-no-such-container")

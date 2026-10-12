@@ -118,6 +118,54 @@ copy_staged() {
   cp "${STAGE}/${name}" "${dest}"
 }
 
+# sudo 1.9.15p5 exits 0 for `sudo -n -l -U user` even when the text is
+# "User <name> is not allowed to run sudo". The sentence is the check.
+# Returns 0 when the user may run commands, 1 when the denial sentence is
+# present, 2 when the listing is neither (fail closed).
+sudo_listing_grants() {
+  local text="$1"
+  if printf '%s\n' "${text}" | grep -q 'may run the following'; then
+    return 0
+  fi
+  if printf '%s\n' "${text}" | grep -q 'not allowed to run sudo'; then
+    return 1
+  fi
+  return 2
+}
+
+# Keep sysbox's runtimes object. The template only sets data-root and ipv6.
+# Replacing the file drops "sysbox-runc" and docker info no longer lists it.
+merge_daemon_json() {
+  local template="$1" dest=/etc/docker/daemon.json had="" merged
+  install -d -m 755 /etc/docker
+  if [[ ! -s "${template}" ]]; then
+    echo "refusing: daemon template ${template} is missing" >&2
+    exit 1
+  fi
+  if [[ ! -s "${dest}" ]]; then
+    cp "${template}" "${dest}"
+    chmod 644 "${dest}"
+    return 0
+  fi
+  if jq -e '.runtimes["sysbox-runc"]' "${dest}" >/dev/null 2>&1; then
+    had=yes
+  fi
+  if ! merged=$(jq -c -s '.[0] * .[1]' "${dest}" "${template}"); then
+    echo "refusing: ${dest} is not JSON; not replacing it" >&2
+    exit 1
+  fi
+  printf '%s\n' "${merged}" > "${dest}"
+  chmod 644 "${dest}"
+  if [[ "${had}" == "yes" ]] && ! jq -e '.runtimes["sysbox-runc"]' "${dest}" >/dev/null; then
+    echo "refusing: merge dropped sysbox-runc from ${dest}" >&2
+    exit 1
+  fi
+  if ! jq -e '.["data-root"] == "/var/lib/ghrunner/docker" and .ipv6 == false' "${dest}" >/dev/null; then
+    echo "refusing: ${dest} is missing the work-disk data-root or ipv6 false" >&2
+    exit 1
+  fi
+}
+
 inside_packages() {
   export DEBIAN_FRONTEND=noninteractive
   if [[ -e /usr/bin/docker ]]; then
@@ -191,9 +239,18 @@ inside_packages() {
   copy_staged mount-work-disk.sh /usr/local/sbin/aap-mount-work-disk
   copy_staged aap-runner-manager.service /etc/systemd/system/aap-runner-manager.service
   copy_staged aap-workdisk.service /etc/systemd/system/aap-workdisk.service
-  install -d -m 755 /etc/docker /etc/systemd/system/docker.service.d
-  copy_staged daemon.json /etc/docker/daemon.json
+  install -d -m 755 /etc/docker /etc/systemd/system/docker.service.d \
+    /etc/systemd/system/containerd.service.d \
+    /etc/systemd/system/sysbox.service.d \
+    /etc/systemd/system/sysbox-mgr.service.d \
+    /etc/systemd/system/sysbox-fs.service.d
+  copy_staged daemon.json /etc/aap-runner/daemon.json
+  merge_daemon_json /etc/aap-runner/daemon.json
   copy_staged docker-workdisk.conf /etc/systemd/system/docker.service.d/workdisk.conf
+  copy_staged docker-workdisk.conf /etc/systemd/system/containerd.service.d/workdisk.conf
+  copy_staged docker-workdisk.conf /etc/systemd/system/sysbox.service.d/workdisk.conf
+  copy_staged docker-workdisk.conf /etc/systemd/system/sysbox-mgr.service.d/workdisk.conf
+  copy_staged docker-workdisk.conf /etc/systemd/system/sysbox-fs.service.d/workdisk.conf
   copy_staged nftables.conf /etc/aap-runner/nftables.conf
   copy_staged wsl.conf /etc/wsl.conf
   if [[ ! -f /etc/aap-runner/manager.conf ]]; then
@@ -236,8 +293,55 @@ rewrite_dns_resolvers() {
   fi
 }
 
+assert_sysbox_runtime() {
+  local runtimes
+  runtimes=$(docker info --format '{{json .Runtimes}}' 2>&1 || true)
+  printf '%s\n' "${runtimes}"
+  if ! printf '%s\n' "${runtimes}" | grep -q 'sysbox-runc'; then
+    echo "refusing: sysbox-runc is not in docker info runtimes" >&2
+    exit 1
+  fi
+}
+
+assert_image_store_on_work_disk() {
+  local path dev work src
+  work=$(df -P /var/lib/ghrunner | awk 'NR==2 { print $1 }')
+  if [[ -z "${work}" ]]; then
+    echo "refusing: df of /var/lib/ghrunner was empty" >&2
+    exit 1
+  fi
+  for path in /var/lib/containerd /var/lib/ghrunner/docker /run/containerd /var/lib/sysbox; do
+    dev=$(df -P "${path}" | awk 'NR==2 { print $1 }')
+    if [[ "${dev}" != "${work}" ]]; then
+      echo "refusing: ${path} is on ${dev:-missing}; work disk is ${work}" >&2
+      exit 1
+    fi
+  done
+  for path in /var/lib/containerd /run/containerd /var/lib/sysbox; do
+    if ! mountpoint -q "${path}"; then
+      echo "refusing: ${path} is not a bind mount onto the work disk" >&2
+      exit 1
+    fi
+    src=$(findmnt -n -o SOURCE "${path}")
+    case "${path}" in
+      /var/lib/containerd) bind_source_expect "${src}" /var/lib/ghrunner/containerd ;;
+      /run/containerd) bind_source_expect "${src}" /var/lib/ghrunner/containerd-state ;;
+      /var/lib/sysbox) bind_source_expect "${src}" /var/lib/ghrunner/sysbox ;;
+    esac
+  done
+}
+
+bind_source_expect() {
+  local src="$1" expect="$2"
+  if [[ "${src}" == "${expect}" || "${src}" == *"[$expect]" ]]; then
+    return 0
+  fi
+  echo "refusing: bind source ${src} is not ${expect}" >&2
+  exit 1
+}
+
 inside_runtime() {
-  local state rootdir
+  local state rootdir listing grant_rc
   refuse_mirrored_networking
   state=""
   for _ in $(seq 1 30); do
@@ -257,17 +361,20 @@ inside_runtime() {
 
   systemctl daemon-reload
   systemctl enable aap-workdisk
+  systemctl stop docker containerd sysbox sysbox-mgr sysbox-fs >/dev/null 2>&1 || true
   /usr/local/sbin/aap-mount-work-disk
 
   apt-get install -y "/var/lib/aap-runner/${SYSBOX_NAME}"
-  systemctl stop sysbox sysbox-mgr sysbox-fs >/dev/null 2>&1 || true
+  systemctl stop docker containerd sysbox sysbox-mgr sysbox-fs >/dev/null 2>&1 || true
   /usr/local/sbin/aap-mount-work-disk
+  merge_daemon_json /etc/aap-runner/daemon.json
   if systemctl cat sysbox.service >/dev/null 2>&1; then
     systemctl enable --now sysbox
   else
     systemctl enable --now sysbox-mgr
     systemctl enable --now sysbox-fs
   fi
+  systemctl enable --now containerd
   systemctl enable --now docker
   systemctl restart docker
   rootdir=$(docker info -f '{{.DockerRootDir}}')
@@ -276,6 +383,8 @@ inside_runtime() {
     exit 1
   fi
   assert_dockerd_ipv6_off
+  assert_sysbox_runtime
+  assert_image_store_on_work_disk
 
   if ! docker build -t aap-crrr-runner:local /var/lib/aap-runner/image; then
     echo "runner image build failed; install stopped" >&2
@@ -319,8 +428,16 @@ inside_runtime() {
     echo "ghrunner is in the sudo group" >&2
     exit 1
   fi
-  if sudo -n -l -U ghrunner >/dev/null 2>&1; then
-    echo "ghrunner has sudo rights" >&2
+  if ! listing=$(sudo -n -l -U ghrunner 2>&1); then
+    echo "refusing: sudo -l -U ghrunner failed" >&2
+    printf '%s\n' "${listing}" >&2
+    exit 1
+  fi
+  grant_rc=0
+  sudo_listing_grants "${listing}" || grant_rc=$?
+  if [[ "${grant_rc}" -ne 1 ]]; then
+    echo "refusing: ghrunner sudo listing is not a denial" >&2
+    printf '%s\n' "${listing}" >&2
     exit 1
   fi
   if [[ -d /mnt/c ]]; then
@@ -506,7 +623,7 @@ self_check() {
     echo "a user SID was rejected" >&2
     exit 1
   fi
-  local task_xml decoded bom sid ps1 count
+  local task_xml decoded bom sid ps1 count grant_rc live merged
   sid="S-1-5-21-111-222-333-1001"
   ps1='C:\wsl\mount-work-vhdx.ps1'
   if ! task_xml=$(render_mount_task_xml "${sid}" "${ps1}"); then
@@ -547,6 +664,60 @@ self_check() {
     echo "mount script does not log under C:\\wsl" >&2
     exit 1
   fi
+  grant_rc=0
+  sudo_listing_grants "User ghrunner is not allowed to run sudo on CRRR65734." || grant_rc=$?
+  if [[ "${grant_rc}" -ne 1 ]]; then
+    echo "sudo denial text was not classified as a denial" >&2
+    exit 1
+  fi
+  grant_rc=0
+  sudo_listing_grants "User ghrunner may run the following commands on CRRR65734:" || grant_rc=$?
+  if [[ "${grant_rc}" -ne 0 ]]; then
+    echo "sudo grant text was not classified as a grant" >&2
+    exit 1
+  fi
+  grant_rc=0
+  sudo_listing_grants "sudo: a password is required" || grant_rc=$?
+  if [[ "${grant_rc}" -ne 2 ]]; then
+    echo "an unreadable sudo listing was classified" >&2
+    exit 1
+  fi
+  if live=$(sudo -n -l -U nobody 2>&1); then
+    grant_rc=0
+    sudo_listing_grants "${live}" || grant_rc=$?
+    if [[ "${grant_rc}" -ne 1 ]]; then
+      echo "live sudo denial for nobody was not a denial" >&2
+      printf '%s\n' "${live}" >&2
+      exit 1
+    fi
+  fi
+  if live=$(sudo -n -l -U root 2>&1); then
+    grant_rc=0
+    sudo_listing_grants "${live}" || grant_rc=$?
+    if [[ "${grant_rc}" -ne 0 ]]; then
+      echo "live sudo listing for root was not a grant" >&2
+      printf '%s\n' "${live}" >&2
+      exit 1
+    fi
+  fi
+  if grep -q 'sudo -n -l -U runner >/dev/null' "${SCRIPT_DIR}/Dockerfile"; then
+    echo "Dockerfile still treats sudo -l exit status as the check" >&2
+    exit 1
+  fi
+  if ! grep -q 'may run the following' "${SCRIPT_DIR}/Dockerfile"; then
+    echo "Dockerfile does not parse the sudo grant sentence" >&2
+    exit 1
+  fi
+  tmp=$(mktemp -d)
+  printf '%s\n' '{"runtimes":{"sysbox-runc":{"path":"/usr/bin/sysbox-runc"}},"ipv6":true,"data-root":"/var/lib/docker"}' > "${tmp}/live.json"
+  merged=$(jq -c -s '.[0] * .[1]' "${tmp}/live.json" "${SCRIPT_DIR}/daemon.json")
+  if ! printf '%s\n' "${merged}" | jq -e '.runtimes["sysbox-runc"].path == "/usr/bin/sysbox-runc" and .["data-root"] == "/var/lib/ghrunner/docker" and .ipv6 == false' >/dev/null; then
+    echo "daemon.json merge dropped sysbox-runc or missed data-root" >&2
+    printf '%s\n' "${merged}" >&2
+    exit 1
+  fi
+  rm -rf "${tmp}"
+  bash "${SCRIPT_DIR}/mount-work-disk.sh" --self-check
   echo "checksum self-check ok"
 }
 

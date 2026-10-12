@@ -14,19 +14,19 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `aap-runner-manager.service` | systemd unit for that loop |
 | `nftables.conf` | Best-effort egress drop for LAN, link-local, CGNAT, and the other non-global ranges |
 | `manager.conf.example` | Schema for `/etc/aap-runner/manager.conf`. No secrets |
-| `Dockerfile` | Job image: inner dockerd 27.3.1, mysql-client, no sudo |
+| `Dockerfile` | Job image: inner dockerd 27.3.1, build-essential, mysql-client, no sudo |
 | `ephemeral-entry.sh` | Starts inner dockerd, registers ephemeral, runs one job |
 | `create-work-vhdx.ps1` | One-time 60 GiB fixed VHDX: `New-VHD -Fixed`, or diskpart if that cmdlet is absent |
 | `mount-work-vhdx.ps1` | Operator logon task: `wsl --mount --vhd <path> --bare`, log appended under `C:\wsl` |
 | `mount-work-vhdx-task.xml` | That operator's SID, `InteractiveToken`, `HighestAvailable`, logon trigger. Installed as UTF-16 LE |
-| `mount-work-disk.sh` | Inside the distro: mount the ext4 by UUID at `/var/lib/ghrunner` |
-| `aap-workdisk.service` | Runs that mount before Docker and Sysbox |
-| `daemon.json` | dockerd `data-root` `/var/lib/ghrunner/docker`, `ipv6` false |
-| `docker-workdisk.conf` | docker.service drop-in: do not start unless that path is a mount |
+| `mount-work-disk.sh` | Mount the ext4 at `/var/lib/ghrunner`, then bind containerd and sysbox onto it |
+| `aap-workdisk.service` | Runs that mount before containerd, Docker, and Sysbox |
+| `daemon.json` | Keys merged into the live daemon.json: `data-root` and `ipv6`. Runtimes are kept |
+| `docker-workdisk.conf` | Drop-in for docker, containerd, and sysbox: start only after the work disk is mounted |
 | `evidence.sh` | Prints the lockdown observations. Installed as `/usr/local/sbin/aap-runner-evidence` |
 | `lock-acl.ps1` | DACL for the boot-task folder, script, and VHDX: SYSTEM and Administrators only, owner Administrators |
 
-`bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, and `bash evidence.sh --self-check` check the checksum, disk-floor, limit, and route parsers, the cases where a missing `wslinfo` or an unreadable `.wslconfig` must stop the install, and that the mount task is rendered for a user SID as UTF-16 LE. They do not touch WSL.
+`bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, `bash evidence.sh --self-check`, and `bash mount-work-disk.sh --self-check` check the checksum, disk-floor, limit, route, sudo-listing, daemon.json merge, extra-label, and bind-staging parsers, the cases where a missing `wslinfo` or an unreadable `.wslconfig` must stop the install, and that the mount task is rendered for a user SID as UTF-16 LE. They do not touch WSL.
 
 ## What runs where
 
@@ -56,7 +56,9 @@ Inside the distro: Docker CE `5:29.9.0-1~ubuntu.24.04~noble` and containerd.io `
 
 Each job is a new container started with `--runtime=sysbox-runc`. That container has no host mount and no host docker socket. The inner dockerd is 27.3.1 (`docker-ce=5:27.3.1-1~ubuntu.24.04~noble`, containerd.io `1.7.29-1~ubuntu.24.04~noble`). Phase 1 ran MySQL 8.4, which is 8.4.11, on `127.0.0.1:3306` from that inner daemon and reached it from the job container. Service containers stay on that inner dockerd.
 
-`ghrunner` is the distro login, uid 1002. It is not in `sudo` or `docker`, and `sudo -l` for it must fail. The manager is a root systemd service. The in-container user `runner` is a different account. It is in the container's `docker` group so it can talk to the inner socket, and it has no sudo. `mysql-client`, `libdbus-1-dev`, and `pkg-config` are in the image because the job cannot `apt-get`.
+Service images are pulled by that inner dockerd on every job. A pre-seeded tarball does not stop the pull. `ci.yml` pins the multi-arch index digest (`image@sha256:…`). `docker save` / `docker load` keeps the platform image and drops the index digest, so the inner daemon still fetches the digest the workflow names. A host mount of a cache would break the no-host-mount rule. A registry on the host is behind the bridge filter, which drops the gateway and RFC1918 on purpose. The pull is network time and bandwidth. The unpacked layers live in the job container's writable layer, which is on the work disk, and `docker rm -f` deletes them with the container. They do not accumulate on the distro root.
+
+`ghrunner` is the distro login, uid 1002. It is not in `sudo` or `docker`. `sudo -n -l -U ghrunner` must print `not allowed to run sudo`. sudo 1.9.15p5 exits 0 for that denial, so the exit status is not the check. The manager is a root systemd service. The in-container user `runner` is a different account. It is in the container's `docker` group so it can talk to the inner socket, and it has no sudo. The image includes `build-essential`, `pkg-config`, `libdbus-1-dev`, `mysql-client`, `tar`, `xz-utils`, and `unzip` because the job cannot `apt-get`. `scripts/check-workspace-lints.sh` is bash and awk, which the image already has.
 
 ## Registration
 
@@ -66,7 +68,9 @@ For each job the manager:
 
 1. Refuses to start unless `/var/lib/ghrunner` is a mountpoint, `df` reports that filesystem as the 60 GiB work disk, and at least 35 GB is free.
 2. Mints a short-lived registration token: App JWT, installation token, then `POST /orgs/{org}/actions/runners/registration-token`. The token stays in memory. It is passed to the container on stdin and unset before `run.sh`.
-3. Starts a container with no `-v`, no `--privileged`, and no `/var/run/docker.sock`. `docker create` passes `--memory`, `--cpus`, and `--pids-limit` from `manager.conf`. The defaults are `12g`, `6`, and `4096`. A wall clock (`AAP_JOB_TIMEOUT_MINUTES`, default 120, maximum 1440) then stops and removes the container if it is still there. 120 is longer than the longest job `timeout-minutes` (90), so a job that finishes is not cut off by the clock. The clock process does not receive the registration token.
+3. Starts a container with no `-v`, no `--privileged`, and no `/var/run/docker.sock`. `docker create` passes `--memory`, `--cpus`, and `--pids-limit` from this host's `manager.conf`. CRRR65734 sets `12g` and `6`. A missing key uses those same values. A second host writes its own numbers in its own `manager.conf`. A wall clock (`AAP_JOB_TIMEOUT_MINUTES`, default 120, maximum 1440) then stops and removes the container if it is still there. 120 is longer than the longest job `timeout-minutes` (90), so a job that finishes is not cut off by the clock. The clock process does not receive the registration token.
+
+Labels passed to `config.sh` are always `self-hosted,linux,crrr`, plus `AAP_RUNNER_EXTRA_LABELS` when that host sets it (`fresh`, `heavy`). `ci.yml` stays on `[self-hosted, linux, crrr]` and does not select the extra labels.
 
 ```text
 config.sh --unattended --ephemeral --disableupdate=false \
@@ -139,7 +143,11 @@ When the installing operator logs on, task `AAP-CRRR-Mount-Work-Disk` runs as th
 
 `lock-acl.ps1` clears inheritance and leaves only `S-1-5-18` (SYSTEM) and `S-1-5-32-544` (Administrators), full control, on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, `C:\wsl\mount-work-vhdx-task.xml`, and `C:\wsl\aap-runner-work.vhdx`. It sets the owner of each of those paths to Administrators (`S-1-5-32-544`) and reads the owner back. Any other owner, or a non-admin ACE, fails the install. The directory ACEs inherit onto children, including `C:\wsl\mount-work-vhdx.log`. The task principal is the installing operator, not SYSTEM. That account is not given its own ACE: the task runs elevated, so the Administrators ACE covers it. Bootstrap runs that script after it creates the VHDX and again after it writes the logon script. Check with `icacls C:\wsl`, `icacls C:\wsl\mount-work-vhdx.ps1`, and `icacls C:\wsl\aap-runner-work.vhdx`. Each list should name only SYSTEM and Administrators, and the owner should be `BUILTIN\Administrators`.
 
-`/var/lib/ghrunner/docker` is dockerd's `data-root`. Job container layers, including the Actions workspace, live there. Sysbox's host state is `/var/lib/sysbox`, replaced with a symlink onto `/var/lib/ghrunner/sysbox` before Sysbox is started. The inner dockerd's data is inside the job container's writable layer, so it is on the same ext4. The distro root VHD still holds the OS packages. It does not hold images or job layers.
+`/var/lib/ghrunner/docker` is dockerd's `data-root`. Docker 29 keeps images and container snapshots in containerd's root, `/var/lib/containerd`, and that path ignores `data-root`. The mount script bind-mounts `/var/lib/ghrunner/containerd` onto `/var/lib/containerd` and `/var/lib/ghrunner/containerd-state` onto `/run/containerd`, so the image store is on the work disk whichever snapshotter is active. A partial `/etc/containerd/config.toml` is not written: that file replaces containerd's compiled defaults. The bind covers the default path instead. Stale containerd sockets are removed only when containerd is not running.
+
+Sysbox's host state is a bind of `/var/lib/ghrunner/sysbox` onto `/var/lib/sysbox`. A symlink does not survive: `sysbox-mgr`'s postinst recreates `/var/lib/sysbox` as a directory. The boot unit runs the bind before containerd, Docker, and Sysbox start, and bootstrap runs it again after the package install. The inner dockerd's data is inside the job container's writable layer, so it is on the same ext4. The distro root VHD still holds the OS packages. It does not hold images or job layers.
+
+Bootstrap merges `daemon.json` into `/etc/docker/daemon.json` with jq. `data-root` and `ipv6` are set from the template. A `runtimes` object already in the file, including `sysbox-runc`, is kept. Replacing the file drops that runtime. After dockerd starts, bootstrap requires `sysbox-runc` in `docker info` runtimes and requires `df` of `/var/lib/containerd`, `/run/containerd`, `/var/lib/sysbox`, and the Docker root to be the work disk.
 
 The floor is **35 GB free** (`AAP_DISK_FLOOR_GB=35`). The manager runs `df -BG --output=avail /var/lib/ghrunner` and refuses a job below that. It also refuses when `mountpoint -q` fails, or when `df` size is outside 50–64 GB, which is how a glance at the 1 TB distro VHD fails closed. Each job's first step runs the same `df` on `$GITHUB_WORKSPACE`. That directory is on the container root, whose overlay upper dir is the docker data-root, so it is the same filesystem.
 
@@ -187,11 +195,12 @@ Do this in the org that owns the private AAP repos before starting the manager. 
 - [ ] Private key is `/etc/aap-runner/app.pem`, owner root, mode `0400`. `ls -l` is the check.
 - [ ] `manager.conf` is owner root, mode `0400`.
 - [ ] Docker Desktop → WSL integration does **not** include `aap-runner`.
-- [ ] `ghrunner` is not in `sudo` or `docker`. Bootstrap checks this and exits if it is.
+- [ ] `ghrunner` is not in `sudo` or `docker`. `sudo -n -l -U ghrunner` prints `not allowed to run sudo`. An exit status of 0 is not a pass.
 - [ ] Sysbox preflight printed `docker info` from inside `--runtime=sysbox-runc`. If it did not, the install stopped and stays stopped.
 - [ ] On `special-place-ai-heaven/symforge`, Settings > Actions > General > Access allows `Agent_Army_Professionals`. Then delete the `SYMFORGE_TOKEN` secret from this repo and from the org. The workflow does not read it.
 - [ ] `.wslconfig` does not set `networkingMode=mirrored`. `wslinfo --networking-mode` is not `mirrored`. Inside `aap-runner`, a missing `wslinfo` is a failed install, and an unreadable `.wslconfig` is a failed install.
 - [ ] `icacls` on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, and `C:\wsl\aap-runner-work.vhdx` lists only SYSTEM and Administrators, and the owner of each path is `BUILTIN\Administrators`.
+- [ ] `df` of `/var/lib/containerd`, `/run/containerd`, `/var/lib/sysbox`, and `/var/lib/ghrunner/docker` is the 60 GiB work disk. `/var/lib/sysbox` is a bind mount, not a symlink. `docker info` lists the `sysbox-runc` runtime.
 - [ ] Task `AAP-CRRR-Mount-Work-Disk` runs as the installing operator: UserId is that user's SID, `LogonType` is `InteractiveToken`, `RunLevel` is `HighestAvailable`, and the trigger is logon. It is not SYSTEM. The operator must be logged on before the disk is attached. `C:\wsl\mount-work-vhdx.log` contains the `wsl --mount` output.
 - [ ] BRUCE has accepted this design. Do not `systemctl start aap-runner-manager` before that.
 
@@ -296,4 +305,4 @@ After the App key and `manager.conf` are in place:
 wsl.exe -d aap-runner -u root -- bash /usr/local/sbin/aap-runner-evidence
 ```
 
-The script prints `uname -r` and a line telling the operator to paste `wsl --version` from Windows alongside the log. Then: whether `/mnt` is empty, whether `cmd.exe` can run, `nft list ruleset`, `wslinfo --networking-mode`, the bridge `EnableIPv6`, `id ghrunner`, and `stat` of `/etc/aap-runner/app.pem` and `/etc/aap-runner/manager.conf`. It then starts one Sysbox container with the job memory, cpu, and pids limits and, from inside that container, prints the container gateway, `AAP_WINDOWS_HOST_IP` (the distro default route), and the result of connecting to that gateway, that Windows host IP, `192.168.1.1`, and `fd00:aaaa::1` (those four must fail) plus `https://github.com/` (that must succeed). It exits non-zero when any of those observations is missing or wrong. It does not mint a registration token and it does not print the App key.
+The script prints `uname -r` and a line telling the operator to paste `wsl --version` from Windows alongside the log. On the distro it checks that no `drvfs` or `9p` Windows drive is mounted (`/mnt/wsl` and `/mnt/wslg` are WSL tmpfs and are not a failure), whether `cmd.exe` can run, `nft list ruleset`, `wslinfo --networking-mode`, the bridge `EnableIPv6`, `id ghrunner`, the `ghrunner` sudo listing, `df` of the containerd root, containerd state, sysbox bind, and Docker root (all must be the work disk), `sysbox-runc` in `docker info`, and `stat` of `/etc/aap-runner/app.pem` and `/etc/aap-runner/manager.conf`. It then starts one Sysbox container with the job memory, cpu, and pids limits and no host mounts. From inside that container it prints the container gateway, `AAP_WINDOWS_HOST_IP` (the distro default route), whether `/mnt` is empty, and the result of connecting to that gateway, that Windows host IP, `192.168.1.1`, and `fd00:aaaa::1` (those four must fail) plus `https://github.com/` (that must succeed). It exits non-zero when any of those observations is missing or wrong. It does not mint a registration token and it does not print the App key.

@@ -1,7 +1,9 @@
 # Same pinned WSL rootfs bootstrap imports, plus the pinned actions-runner
 # tarball. Inner dockerd is 27.3.1: that is the daemon phase 1 used to publish
-# mysql:8.4 (8.4.11) on 127.0.0.1:3306. The job user has no sudo. mysql-client,
-# libdbus-1-dev, and pkg-config are baked in so the job does not apt-get.
+# mysql:8.4 (8.4.11) on 127.0.0.1:3306. The job user has no sudo. The image
+# carries the host tools ci.yml and scripts/check-workspace-lints.sh need,
+# because a job cannot apt-get. RUSTFLAGS=-C linker-features=-lld needs cc
+# from build-essential. setup-node and cargo install unpack with tar, xz, unzip.
 FROM scratch
 ADD ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz /
 
@@ -14,6 +16,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       adduser \
       bash \
+      build-essential \
       ca-certificates \
       curl \
       git \
@@ -24,6 +27,9 @@ RUN apt-get update \
       openssl \
       passwd \
       pkg-config \
+      tar \
+      unzip \
+      xz-utils \
     && curl --fail --silent --show-error --location --output /tmp/docker.gpg \
       https://download.docker.com/linux/ubuntu/gpg \
     && echo '1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570  /tmp/docker.gpg' | sha256sum -c - \
@@ -44,8 +50,15 @@ RUN apt-get update \
     && usermod -aG docker runner \
     && if id -nG runner | tr ' ' '\n' | grep -qx sudo; then gpasswd -d runner sudo; fi \
     && rm -f /etc/sudoers.d/runner \
-    && if command -v sudo >/dev/null 2>&1 && sudo -n -l -U runner >/dev/null 2>&1; then \
-         echo 'runner has sudo; image build stopped' >&2; exit 1; \
+    && if command -v sudo >/dev/null 2>&1; then \
+         listing=$(sudo -n -l -U runner 2>&1 || true); \
+         printf '%s\n' "$listing"; \
+         if printf '%s\n' "$listing" | grep -q 'may run the following'; then \
+           echo 'runner has sudo; image build stopped' >&2; exit 1; \
+         fi; \
+         if ! printf '%s\n' "$listing" | grep -q 'not allowed to run sudo'; then \
+           echo 'runner sudo listing was not a denial; image build stopped' >&2; exit 1; \
+         fi; \
        fi
 
 COPY ephemeral-entry.sh /opt/aap-runner/ephemeral-entry.sh
@@ -60,8 +73,15 @@ RUN mkdir -p /opt/actions-runner \
     && if id -nG runner | tr ' ' '\n' | grep -qx sudo; then \
          echo 'runner gained sudo from installdependencies' >&2; exit 1; \
        fi \
-    && if command -v sudo >/dev/null 2>&1 && sudo -n -l -U runner >/dev/null 2>&1; then \
-         echo 'runner gained sudo from installdependencies' >&2; exit 1; \
+    && if command -v sudo >/dev/null 2>&1; then \
+         listing=$(sudo -n -l -U runner 2>&1 || true); \
+         printf '%s\n' "$listing"; \
+         if printf '%s\n' "$listing" | grep -q 'may run the following'; then \
+           echo 'runner gained sudo from installdependencies' >&2; exit 1; \
+         fi; \
+         if ! printf '%s\n' "$listing" | grep -q 'not allowed to run sudo'; then \
+           echo 'runner sudo listing was not a denial after installdependencies' >&2; exit 1; \
+         fi; \
        fi
 
 USER root
