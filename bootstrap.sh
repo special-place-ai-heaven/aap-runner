@@ -159,7 +159,9 @@ work_disk_device() {
 format_work_disk() {
   local dev fstype uuid line
   dev=$(work_disk_device) || exit 1
-  fstype=$(blkid -o value -s TYPE "${dev}" || true)
+  # -p reads the superblock. A cache entry from before mkfs has no TYPE.
+  fstype=$(blkid -p -o value -s TYPE "${dev}" 2>/dev/null || true)
+  fstype=$(printf '%s' "${fstype}" | tr -d '[:space:]')
   if [[ -n "${fstype}" && "${fstype}" != "ext4" ]]; then
     echo "refusing to format ${dev}: filesystem is ${fstype}" >&2
     exit 1
@@ -167,8 +169,7 @@ format_work_disk() {
   if [[ -z "${fstype}" ]]; then
     mkfs.ext4 -F -L aap-runner-work "${dev}"
   fi
-  uuid=$(blkid -o value -s UUID "${dev}")
-  if [[ ! "${uuid}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  if ! uuid=$(probe_disk_uuid_here "${dev}"); then
     echo "refusing: blkid did not return a UUID for ${dev}" >&2
     exit 1
   fi
@@ -316,7 +317,9 @@ sanitize_windows_path() {
 
 distro_exists() {
   local list rc=0
-  list=$(wsl.exe -l -q 2>&1) || rc=$?
+  # UTF-16 NULs must be stripped in the pipe. Command substitution warns
+  # and drops them only after the value is already being read.
+  list=$(wsl.exe -l -q 2>&1 | tr -d '\000') || rc=$?
   if [[ "${rc}" -ne 0 ]]; then
     printf '%s\n' "${list}" | tr -d '\000' >&2
     echo "refusing: wsl.exe -l -q failed (exit ${rc})" >&2
@@ -938,7 +941,7 @@ vhdx_windows_path_ok() {
 
 self_check() {
   local tmp cfg reason rc err body msg gap nulled
-  local got script saved_path bin profile wrappers
+  local got script saved_path bin profile wrappers pbin
   require_operator_jq
   labels_self_check
   tmp=$(mktemp)
@@ -1332,8 +1335,19 @@ if [[ "$1" == "-l" ]]; then
   case "${AAP_FAKE_WSL_MODE}" in
     noreg) exit 0 ;;
     lfail) exit 1 ;;
-    *) printf '%s\n' aap-runner; exit 0 ;;
+    *)
+      if [[ "${AAP_FAKE_WSL_NUL:-}" == 1 ]]; then
+        printf 'a\0a\0p\0-\0r\0u\0n\0n\0e\0r\n'
+      else
+        printf '%s\n' aap-runner
+      fi
+      exit 0
+      ;;
   esac
+fi
+if [[ -n "${AAP_FAKE_PROBE_UUID:-}" ]]; then
+  printf '\0%s\n' "${AAP_FAKE_PROBE_UUID}"
+  exit 0
 fi
 case "${AAP_FAKE_WSL_MODE}" in
   absent) exit 10 ;;
@@ -1370,6 +1384,90 @@ EOF
     echo "a matching uuid from wsl.exe was refused" >&2
     exit 1
   fi
+  rc=0
+  err=$(AAP_FAKE_WSL_NUL=1 AAP_FAKE_WSL_MODE=ok expected_work_disk_uuid 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 || "${err}" != *aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee* || "${err}" == *"ignored null byte"* ]]; then
+    echo "UTF-16 wsl -l NUL corrupted the work-disk uuid read" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  pbin=$(mktemp -d)
+  cat > "${pbin}/lsblk" << EOF
+#!/bin/bash
+if [[ "\$*" == *UUID* ]]; then
+  printf '%s\n' "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  exit 0
+fi
+printf '%s\n' "sdd ${WORK_DISK_BYTES}"
+EOF
+  cat > "${pbin}/blkid" << 'EOF'
+#!/bin/bash
+if [[ "$*" != *-p* ]]; then
+  echo "probe called blkid without -p" >&2
+  exit 3
+fi
+if [[ "${AAP_FAKE_BLKID_EMPTY:-}" == 1 ]]; then
+  exit 0
+fi
+printf '%s\n' 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+EOF
+  cat > "${pbin}/udevadm" << 'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "${pbin}/lsblk" "${pbin}/blkid" "${pbin}/udevadm"
+  rc=0
+  err=$(PATH="${pbin}:/usr/bin:/bin" sh -c "$(work_disk_probe_script)" sh "${WORK_DISK_BYTES}" 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 || "${err}" != 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' ]]; then
+    echo "root probe did not read blkid -p" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  rc=0
+  err=$(AAP_FAKE_BLKID_EMPTY=1 PATH="${pbin}:/usr/bin:/bin" sh -c "$(work_disk_probe_script)" sh "${WORK_DISK_BYTES}" 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 || "${err}" != 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' ]]; then
+    echo "root probe did not fall back to lsblk UUID" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  rm -rf "${pbin}"
+  cat > "${bin}/blkid" << 'EOF'
+#!/bin/bash
+if [[ "$*" != *-p* ]]; then
+  exit 0
+fi
+printf '%s\n' "${AAP_FAKE_BLKID_UUID:-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}"
+EOF
+  chmod +x "${bin}/blkid"
+  printf '%s\n' 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' > "${AAP_WORK_DISK_UUID_FILE}"
+  if ! confirm_attached_work_disk; then
+    echo "a stale blkid cache hid a matching work-disk uuid" >&2
+    exit 1
+  fi
+  rc=0
+  err=$(AAP_FAKE_BLKID_UUID=bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee confirm_attached_work_disk 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *"bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"* ]]; then
+    echo "a probed uuid mismatch was accepted" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  printf '#!/bin/bash\nexit 0\n' > "${bin}/blkid"
+  chmod +x "${bin}/blkid"
+  rc=0
+  err=$(AAP_FAKE_PROBE_UUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee confirm_attached_work_disk 2>&1) || rc=$?
+  if [[ "${rc}" -ne 0 || "${err}" == *"ignored null byte"* || "${err}" != *"uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee matches"* ]]; then
+    echo "an already-attached disk probed as root was refused" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  rc=0
+  err=$(AAP_FAKE_PROBE_UUID=bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee confirm_attached_work_disk 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *"uuid=bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"* || "${err}" != *"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"* ]]; then
+    echo "a root-probed uuid mismatch was accepted" >&2
+    printf '%s\n' "${err}" >&2
+    exit 1
+  fi
+  unset AAP_FAKE_BLKID_UUID AAP_FAKE_PROBE_UUID AAP_FAKE_WSL_NUL
   printf '#!/bin/bash\nexit 0\n' > "${bin}/lsblk"
   if confirm_attached_work_disk; then
     echo "no attached disk was accepted" >&2
@@ -1803,7 +1901,7 @@ expected_work_disk_uuid() {
   if ! command -v wsl.exe >/dev/null 2>&1; then
     return 10
   fi
-  list=$(wsl.exe -l -q 2>&1) || lrc=$?
+  list=$(wsl.exe -l -q 2>&1 | tr -d '\000') || lrc=$?
   if [[ "${lrc}" -ne 0 ]]; then
     if [[ -n "${list}" ]]; then
       printf '%s\n' "${list}" | tr -d '\000' >&2
@@ -1817,13 +1915,91 @@ expected_work_disk_uuid() {
   read_distro_work_disk_uuid "${file}"
 }
 
+# A UUID, or empty. Shared by the local probe and the mismatch check.
+uuid_text_ok() {
+  [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+}
+
+# Runs as root inside the distro that has the disk. blkid -p bypasses the
+# cache (a blank-disk entry stays empty after mkfs in the other distro).
+# lsblk -dn -o UUID is the udev value after settle.
+work_disk_probe_script() {
+  cat << 'EOF'
+bytes=$1
+if command -v udevadm >/dev/null 2>&1; then
+  udevadm settle --timeout=10 || true
+fi
+found=$(lsblk -bn -d -o NAME,SIZE | awk -v bytes="$bytes" '$2 == bytes { print $1 }')
+set -- $found
+if [ "$#" -ne 1 ]; then
+  exit 2
+fi
+dev=/dev/$1
+uuid=$(blkid -p -o value -s UUID "$dev" 2>/dev/null || true)
+uuid=$(printf '%s' "$uuid" | tr -d '[:space:]')
+if printf '%s' "$uuid" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; then
+  printf '%s\n' "$uuid"
+  exit 0
+fi
+uuid=$(lsblk -dn -o UUID "$dev" 2>/dev/null | tr -d '[:space:]' || true)
+if printf '%s' "$uuid" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'; then
+  printf '%s\n' "$uuid"
+  exit 0
+fi
+exit 1
+EOF
+}
+
+# Live superblock UUID for one device visible in this distro.
+# Return 1 when the probe cannot read one. An empty cache is not a UUID.
+probe_disk_uuid_here() {
+  local dev="$1" uuid=""
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle --timeout=10 || true
+  fi
+  if command -v blkid >/dev/null 2>&1; then
+    uuid=$(blkid -p -o value -s UUID "${dev}" 2>/dev/null || true)
+    uuid=$(printf '%s' "${uuid}" | tr -d '[:space:]')
+  fi
+  if ! uuid_text_ok "${uuid}" && command -v lsblk >/dev/null 2>&1; then
+    uuid=$(lsblk -dn -o UUID "${dev}" 2>/dev/null | tr -d '[:space:]' || true)
+  fi
+  if ! uuid_text_ok "${uuid}"; then
+    return 1
+  fi
+  printf '%s\n' "${uuid}"
+}
+
+# outside() sees the disk via lsblk, but blkid there is often unprivileged
+# and its cache still describes the disk from before mkfs. The filesystem
+# was created as root inside aap-runner, so that is where the probe runs
+# when this shell cannot read the superblock.
+attached_disk_uuid() {
+  local dev="$1" uuid="" rc=0
+  if uuid=$(probe_disk_uuid_here "${dev}"); then
+    printf '%s\n' "${uuid}"
+    return 0
+  fi
+  if [[ "${WSL_DISTRO_NAME:-}" == "${DISTRO}" ]]; then
+    return 1
+  fi
+  if ! command -v wsl.exe >/dev/null 2>&1; then
+    return 1
+  fi
+  uuid=$(wsl.exe -d "${DISTRO}" -u root --exec /bin/sh -c "$(work_disk_probe_script)" sh "${WORK_DISK_BYTES}" 2>/dev/null | tr -d '\000') || rc=$?
+  uuid=$(printf '%s' "${uuid}" | tr -d '[:space:]')
+  if [[ "${rc}" -ne 0 ]] || ! uuid_text_ok "${uuid}"; then
+    return 1
+  fi
+  printf '%s\n' "${uuid}"
+}
+
 # "already attached" is only success when lsblk shows this VHDX's size and,
-# once work-disk.uuid exists, blkid reports that UUID. A failed read of
-# that file is not treated as "absent".
+# once work-disk.uuid exists, a live probe reports that UUID. A failed read
+# of that file is not treated as "absent".
 confirm_attached_work_disk() {
   local dev uuid="" expect="" status=0
   dev=$(work_disk_device) || return 1
-  uuid=$(blkid -o value -s UUID "${dev}" 2>/dev/null || true)
   expect=$(expected_work_disk_uuid) || status=$?
   if [[ "${status}" -eq 10 ]]; then
     echo "work disk ${dev} (${WORK_DISK_BYTES} bytes) is attached; work-disk.uuid is absent" >&2
@@ -1833,6 +2009,7 @@ confirm_attached_work_disk() {
     echo "refusing: work-disk.uuid could not be read; not accepting a size-only match" >&2
     return 1
   fi
+  uuid=$(attached_disk_uuid "${dev}" || true)
   if [[ -z "${uuid}" || "${uuid}" != "${expect}" ]]; then
     echo "refusing: ${dev} uuid=${uuid:-missing} is not work-disk.uuid ${expect}" >&2
     return 1
