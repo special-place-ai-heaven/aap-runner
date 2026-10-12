@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-16"?>
 <!-- Source file is UTF-8 so it can be reviewed. install-supervisor.ps1
      writes the installed copy as UTF-16 LE with a BOM. schtasks /XML
-     rejects UTF-8. Logon trigger only: WSL sessions belong to the logon
+     rejects UTF-8. Absolute powershell.exe path: %SystemRoot% would come
+     from the operator's environment. Logon trigger only: WSL sessions belong to the logon
      session, so logoff stops the runner by design. -->
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -38,7 +39,7 @@
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>powershell.exe</Command>
+      <Command>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Command>
       <Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command "$env:PSModulePath=[Environment]::GetEnvironmentVariable('PSModulePath','Machine'); if ([string]::IsNullOrEmpty($env:PSModulePath)) { Write-Error 'refusing: machine PSModulePath is empty'; exit 1 }; &amp; '__AAP_PS1__'"</Arguments>
     </Exec>
   </Actions>

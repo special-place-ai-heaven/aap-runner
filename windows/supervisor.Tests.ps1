@@ -24,11 +24,11 @@ Describe 'aap-runner host supervisor' {
         }
 
         function Write-AapStateFile([string]$Text) {
-            [IO.File]::WriteAllText((Join-Path $AapCfg.DataDir 'state.json'), $Text)
+            [IO.File]::WriteAllText((Join-Path $AapCfg.DataDir 'inbox\state.json'), $Text)
         }
 
         function Write-AapSettingsFile([string]$Text) {
-            [IO.File]::WriteAllText((Join-Path $AapCfg.DataDir 'settings.json'), $Text)
+            [IO.File]::WriteAllText((Join-Path $AapCfg.DataDir 'inbox\settings.json'), $Text)
         }
 
         function Get-AapStatusFile {
@@ -55,7 +55,7 @@ Describe 'aap-runner host supervisor' {
 
     BeforeEach {
         $AapCfg.DataDir = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
-        New-Item -ItemType Directory -Force -Path $AapCfg.DataDir | Out-Null
+        New-Item -ItemType Directory -Force -Path (Join-Path $AapCfg.DataDir 'inbox') | Out-Null
         $AapCfg.DryRun = $false
         $AapCfg.DrainTimeoutSeconds = 21600
         $AapCfg.LogMaxBytes = 5MB
@@ -105,6 +105,19 @@ Describe 'aap-runner host supervisor' {
         It 'treats a missing file as off' {
             Read-AapDesired | Should -Be 'off'
             Get-AapLogText | Should -Match 'WARN state.json is missing'
+        }
+
+        It 'reads exactly 4096 bytes and refuses <size> bytes' -TestCases @(
+            @{ size = 4097 }
+            @{ size = 4098 }
+        ) {
+            $head = '{"desired":"on"}'
+            Write-AapStateFile ($head + (' ' * (4096 - $head.Length)))
+            (Get-Item -LiteralPath (Join-Path $AapCfg.DataDir 'inbox\state.json')).Length | Should -Be 4096
+            Read-AapDesired | Should -Be 'on'
+            Write-AapStateFile ($head + (' ' * ($size - $head.Length)))
+            Read-AapDesired | Should -Be 'off'
+            Get-AapLogText | Should -Match 'WARN state.json is larger than 4 KB'
         }
 
         It 'treats a file over 4 KB as off' {
@@ -615,6 +628,53 @@ Describe 'aap-runner host supervisor' {
         }
     }
 
+    Describe 'trust split in the supervisor' {
+        It 'never writes under inbox across a full On and Off cycle' {
+            $inbox = Join-Path $AapCfg.DataDir 'inbox'
+            Write-AapStateFile '{"desired":"on"}'
+            Write-AapSettingsFile '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}'
+            $snap = { @(Get-ChildItem -LiteralPath $inbox -Force | ForEach-Object { '{0}|{1}|{2}' -f $_.Name, $_.Length, $_.LastWriteTimeUtc.Ticks }) -join ';' }
+            $before = & $snap
+            $script:writes = New-Object System.Collections.Generic.List[string]
+            # Record every bound argument of the cmdlets that can write. The
+            # inbox snapshot covers the [IO.File] writes.
+            $rec = { $script:writes.Add(((@($Path) + @($LiteralPath) + @($Destination) | Where-Object { $_ }) -join '|')) }
+            Mock Move-Item $rec
+            Mock Add-Content $rec
+            Mock New-Item $rec
+            Mock Set-Content $rec
+            Mock Remove-Item $rec
+            $script:activeLeft = 0
+            $script:responder = {
+                param($line)
+                if ($line -like '*is-active aap-runner-manager') { return (Get-AapFakeResult 3 'inactive') }
+                return (& $script:healthy $line)
+            }
+            Invoke-AapCycle
+            $AapRt.Mode | Should -Be 'on'
+            $AapRt.Applied | Should -Be '2,8,32'
+            $script:clock.Now = $script:clock.Now.AddMinutes(5)
+            Invoke-AapCycle
+            (& $snap) | Should -Be $before
+            Write-AapStateFile '{"desired":"off"}'
+            $before = & $snap
+            Invoke-AapCycle
+            $AapRt.Mode | Should -Be 'off'
+            (& $snap) | Should -Be $before
+            $script:writes.Count | Should -BeGreaterThan 0
+            @($script:writes | Where-Object { $_ -and $_.StartsWith($inbox, [StringComparison]::OrdinalIgnoreCase) }).Count | Should -Be 0
+            ($script:writes -join "`n") | Should -Match ([regex]::Escape((Join-Path $AapCfg.DataDir 'status.json')))
+            ($script:writes -join "`n") | Should -Match ([regex]::Escape((Join-Path $AapCfg.DataDir 'logs\supervisor.log')))
+        }
+
+        It 'reads state and settings from inbox only' {
+            [IO.File]::WriteAllText((Join-Path $AapCfg.DataDir 'state.json'), '{"desired":"on"}')
+            Read-AapDesired | Should -Be 'off'
+            Write-AapStateFile '{"desired":"on"}'
+            Read-AapDesired | Should -Be 'on'
+        }
+    }
+
     Describe 'Invoke-AapWsl guard' {
         It 'refuses an argument outside the allow-list before starting wsl.exe' {
             $f = Get-Command Invoke-AapWsl -CommandType Function
@@ -624,7 +684,8 @@ Describe 'aap-runner host supervisor' {
 
         It 'is the only place wsl.exe is started' {
             $src = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'aap-runner-supervisor.ps1')
-            ([regex]::Matches($src, "FileName = 'wsl.exe'")).Count | Should -Be 1
+            ([regex]::Matches($src, "FileName = 'C:\\Windows\\System32\\wsl.exe'")).Count | Should -Be 1
+            ([regex]::Matches($src, "FileName = ")).Count | Should -Be 1
             $src | Should -Not -Match '&\s*wsl(\.exe)?\s'
         }
     }
@@ -634,14 +695,15 @@ Describe 'aap-runner host supervisor' {
             . (Join-Path $PSScriptRoot 'install-supervisor.ps1')
             $script:template = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'aap-runner-supervisor-task.xml')
             $script:sid = 'S-1-5-21-111-222-333-1001'
-            $script:ps1 = 'C:\aap-runner\windows\aap-runner-supervisor.ps1'
+            $script:ps1 = 'C:\wsl\aap-runner-supervisor\aap-runner-supervisor.ps1'
         }
 
         It 'replaces every placeholder for the logon task' {
             $xml = Get-AapSupervisorTaskXml -Template $script:template -UserSid $script:sid -Ps1 $script:ps1
             $xml | Should -Not -Match '__AAP_'
             $xml | Should -Match '<UserId>S-1-5-21-111-222-333-1001</UserId>'
-            $xml | Should -Match ([regex]::Escape("&amp; 'C:\aap-runner\windows\aap-runner-supervisor.ps1'"))
+            $xml | Should -Match ([regex]::Escape("&amp; 'C:\wsl\aap-runner-supervisor\aap-runner-supervisor.ps1'"))
+            $xml | Should -Match ([regex]::Escape('<Command>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Command>'))
             $xml | Should -Match '<LogonTrigger>'
             $xml | Should -Match '<LogonType>InteractiveToken</LogonType>'
             $xml | Should -Match '<RunLevel>HighestAvailable</RunLevel>'
@@ -670,7 +732,7 @@ Describe 'aap-runner host supervisor' {
         It 'refuses a non-elevated real run before any change' {
             Mock Test-AapElevated { return $false }
             Mock Protect-AapDataDir { throw 'must not be reached' }
-            Mock schtasks.exe { throw 'must not be reached' }
+            Mock Register-AapTask { throw 'must not be reached' }
             $DryRun = $false
             $DataDir = Join-Path $TestDrive 'pd-refuse'
             $ScriptDir = Join-Path $TestDrive 'sd-refuse'
@@ -679,6 +741,129 @@ Describe 'aap-runner host supervisor' {
             Test-Path -LiteralPath $DataDir | Should -BeFalse
             Test-Path -LiteralPath $ScriptDir | Should -BeFalse
             Should -Invoke Protect-AapDataDir -Times 0 -Exactly
+        }
+    }
+
+    Describe 'installer trust checks' {
+        BeforeAll {
+            . (Join-Path $PSScriptRoot 'install-supervisor.ps1')
+            $script:admins = New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'
+            $script:op = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $script:mkAcl = {
+                param([string]$Owner, [object[]]$Rules)
+                $a = New-Object System.Security.AccessControl.DirectorySecurity
+                $a.SetOwner((New-Object Security.Principal.SecurityIdentifier $Owner))
+                foreach ($r in @($Rules)) { if ($r) { $a.AddAccessRule($r) } }
+                return $a
+            }
+            $script:junctions = New-Object System.Collections.Generic.List[string]
+            $script:mkJunction = {
+                param([string]$Link, [string]$Target)
+                New-Item -ItemType Directory -Force -Path $Target | Out-Null
+                & C:\Windows\System32\cmd.exe /d /c mklink /J "$Link" "$Target" | Out-Null
+                $LASTEXITCODE | Should -Be 0
+                $script:junctions.Add($Link)
+            }
+        }
+
+        AfterEach {
+            # rmdir removes a junction without touching its target.
+            foreach ($j in $script:junctions) { & C:\Windows\System32\cmd.exe /d /c rmdir "$j" | Out-Null }
+            $script:junctions.Clear()
+        }
+
+        It 'refuses a junction at the data folder' {
+            $link = Join-Path $TestDrive 'pd-junction'
+            & $script:mkJunction $link (Join-Path $TestDrive 'elsewhere')
+            $r = Get-AapDataDirProblem $link
+            @($r.Problems) -join "`n" | Should -Match ([regex]::Escape("reparse point $link"))
+            @($r.Problems) -join "`n" | Should -Match 'cmd /c rmdir'
+        }
+
+        It 'refuses a junction inside the data folder without following it' {
+            $pd = Join-Path $TestDrive 'pd-child'
+            New-Item -ItemType Directory -Force -Path $pd | Out-Null
+            $target = Join-Path $TestDrive 'elsewhere2'
+            & $script:mkJunction (Join-Path $pd 'inbox') $target
+            Set-Content -LiteralPath (Join-Path $target 'secret.txt') -Value 'x'
+            $r = Get-AapDataDirProblem $pd
+            @($r.Problems) -join "`n" | Should -Match 'reparse point .*inbox'
+            @($r.Problems) -join "`n" | Should -Not -Match 'secret'
+        }
+
+        It 'install -DryRun exits 1 on a junction at the data folder' {
+            $link = Join-Path $TestDrive 'pd-junction-dry'
+            & $script:mkJunction $link (Join-Path $TestDrive 'elsewhere3')
+            $exe = (Get-Process -Id $PID).Path
+            $out = & $exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-supervisor.ps1') -DryRun -DataDir $link -TaskName 'AAP-Test-NotRegistered' 2>&1 | Out-String
+            $LASTEXITCODE | Should -Be 1
+            $out | Should -Match 'FAIL reparse point'
+            $out | Should -Not -Match 'WOULD acl'
+        }
+
+        It 'refuses a non-admin owner outside inbox' {
+            $pd = Join-Path $TestDrive 'pd-owner'
+            New-Item -ItemType Directory -Force -Path (Join-Path $pd 'logs') | Out-Null
+            Mock Get-Acl { & $script:mkAcl $script:op @() }
+            $r = Get-AapDataDirProblem $pd
+            @($r.Problems) -join "`n" | Should -Match ([regex]::Escape("owner $($script:op) on $pd is not an admin"))
+            @($r.Problems) -join "`n" | Should -Match 'logs is not an admin'
+        }
+
+        It 'accepts user-owned files inside inbox when everything else is admin-owned' {
+            $pd = Join-Path $TestDrive 'pd-inbox'
+            New-Item -ItemType Directory -Force -Path (Join-Path $pd 'inbox') | Out-Null
+            Set-Content -LiteralPath (Join-Path $pd 'inbox\state.json') -Value '{"desired":"on"}'
+            Mock Get-Acl { & $script:mkAcl 'S-1-5-32-544' @() }
+            Mock Get-Acl { & $script:mkAcl $script:op @() } -ParameterFilter { $LiteralPath -like '*\inbox\*' }
+            $r = Get-AapDataDirProblem $pd
+            @($r.Problems).Count | Should -Be 0
+        }
+
+        It 'refuses an ancestor that lets <who> <rights>' -TestCases @(
+            @{ who = 'Users'; sid = 'S-1-5-32-545'; rights = 'Modify' }
+            @{ who = 'Everyone'; sid = 'S-1-1-0'; rights = 'ChangePermissions' }
+            @{ who = 'Authenticated Users'; sid = 'S-1-5-11'; rights = 'DeleteSubdirectoriesAndFiles' }
+            @{ who = 'the operator'; sid = 'OP'; rights = 'TakeOwnership' }
+        ) {
+            if ($sid -eq 'OP') { $sid = $script:op }
+            $none = [Security.AccessControl.InheritanceFlags]::None
+            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $sid), $rights, $none, 'None', 'Allow')
+            Mock Get-Acl { & $script:mkAcl 'S-1-5-32-544' @() }
+            Mock Get-Acl { & $script:mkAcl 'S-1-5-32-544' @($rule) } -ParameterFilter { $LiteralPath -eq 'C:\wsl' }
+            $r = Get-AapAncestorProblem 'C:\wsl\aap-runner-supervisor'
+            @($r.Problems).Count | Should -Be 1
+            $r.Problems[0] | Should -Match ([regex]::Escape("C:\wsl grants $sid"))
+        }
+
+        It 'accepts the default drive-root entries (create folders, inherit-only Modify)' {
+            $all = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+            $au = New-Object Security.Principal.SecurityIdentifier 'S-1-5-11'
+            $create = New-Object System.Security.AccessControl.FileSystemAccessRule($au, 'AppendData', 'None', 'None', 'Allow')
+            $sub = New-Object System.Security.AccessControl.FileSystemAccessRule($au, 'Modify', $all, 'InheritOnly', 'Allow')
+            $users = New-Object System.Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-545'), 'ReadAndExecute', $all, 'None', 'Allow')
+            Mock Get-Acl { & $script:mkAcl 'S-1-5-32-544' @($create, $sub, $users) }
+            $r = Get-AapAncestorProblem 'C:\wsl\aap-runner-supervisor'
+            @($r.Problems).Count | Should -Be 0
+            Should -Invoke Get-Acl -Times 2 -Exactly
+        }
+
+        It 'gives the user read only on the root and no folder creation in inbox' {
+            $op = $script:op
+            $rootRules = @((Get-AapDataDirAcl $op).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq $op })
+            $rootRules.Count | Should -Be 1
+            $rootRules[0].FileSystemRights | Should -Be ([Security.AccessControl.FileSystemRights]'ReadAndExecute, Synchronize')
+            $inboxRules = @((Get-AapInboxAcl $op).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq $op })
+            $folder = @($inboxRules | Where-Object { $_.PropagationFlags -eq 'None' -and $_.InheritanceFlags -eq 'None' })
+            $folder.Count | Should -Be 1
+            ($folder[0].FileSystemRights -band [Security.AccessControl.FileSystemRights]::CreateFiles) | Should -Not -Be 0
+            ([int]$folder[0].FileSystemRights -band [int][Security.AccessControl.FileSystemRights]::CreateDirectories) | Should -Be 0
+            $files = @($inboxRules | Where-Object { $_.PropagationFlags -eq 'InheritOnly' })
+            $files.Count | Should -Be 1
+            $files[0].InheritanceFlags | Should -Be 'ObjectInherit'
+            $files[0].FileSystemRights | Should -Be ([Security.AccessControl.FileSystemRights]'Modify, Synchronize')
+            (Get-AapInboxAcl $op).AreAccessRulesProtected | Should -BeTrue
+            (Get-AapDataDirAcl $op).GetOwner([Security.Principal.SecurityIdentifier]).Value | Should -Be 'S-1-5-32-544'
         }
     }
 
@@ -724,11 +909,10 @@ Describe 'aap-runner host supervisor' {
                 Mock Stop-ScheduledTask { throw 'must not be reached' }
                 Mock Unregister-ScheduledTask { throw 'must not be reached' }
                 Mock Get-ScheduledTask { return $null }
-                $script:schtasks = New-Object System.Collections.Generic.List[string]
-                Mock schtasks.exe { $script:schtasks.Add(($args -join ' ')); $global:LASTEXITCODE = 0 }
-                # Proves the schtasks mock is live before an install run.
-                schtasks.exe /Probe
-                $script:schtasks.Count | Should -Be 1
+                Mock Register-AapTask { }
+                $empty = { [pscustomobject]@{ Problems = @(); Unreadable = @() } }
+                Mock Get-AapDataDirProblem $empty
+                Mock Get-AapAncestorProblem $empty
                 $DryRun = $false
                 $DataDir = Join-Path $TestDrive ('pd-' + [guid]::NewGuid().ToString('n'))
                 $ScriptDir = Join-Path $TestDrive ('sd-' + [guid]::NewGuid().ToString('n'))
@@ -750,14 +934,18 @@ Describe 'aap-runner host supervisor' {
                 $code = @(Invoke-AapInstallSupervisor | Where-Object { $_ -is [int] })[-1]
                 $code | Should -Be 0
                 Should -Invoke Write-AapTrayRunValue -Times 0 -Exactly
+                Get-Content -Raw -LiteralPath (Join-Path $DataDir 'inbox\state.json') | Should -Be '{"desired":"off"}'
+                Should -Invoke Register-AapTask -Times 1 -Exactly
             }
 
-            It 'uninstall removes the Run value of the installing SID' {
+            It 'uninstall removes the Run value of the installing SID and writes nothing in the data folder' {
+                New-Item -ItemType Directory -Force -Path (Join-Path $DataDir 'inbox') | Out-Null
                 $code = @(Invoke-AapUninstallSupervisor | Where-Object { $_ -is [int] })[-1]
                 $code | Should -Be 0
                 Should -Invoke Clear-AapTrayRunValue -Times 1 -Exactly -ParameterFilter {
                     $RunKey -eq "Registry::HKEY_USERS\$($script:sid)\Software\Microsoft\Windows\CurrentVersion\Run"
                 }
+                @(Get-ChildItem -LiteralPath $DataDir -Recurse -File -Force).Count | Should -Be 0
             }
         }
     }
@@ -769,7 +957,7 @@ Describe 'aap-runner host supervisor' {
 
         It 'install-supervisor.ps1 -DryRun exits 0' {
             $pd = Join-Path $TestDrive 'pd'
-            $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-supervisor.ps1') -DryRun -DataDir $pd -ScriptDir (Join-Path $TestDrive 'sd') -TaskName 'AAP-Test-NotRegistered' -TrayExe (Join-Path $TestDrive 'missing-tray.exe') 2>&1 | Out-String
+            $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-supervisor.ps1') -DryRun -DataDir $pd -TaskName 'AAP-Test-NotRegistered' -TrayExe (Join-Path $TestDrive 'missing-tray.exe') 2>&1 | Out-String
             $LASTEXITCODE | Should -Be 0
             $out | Should -Match 'WOULD task AAP-Test-NotRegistered logon trigger'
             $out | Should -Match 'INFO tray .*missing-tray.exe not found; Run value skipped'
@@ -780,7 +968,7 @@ Describe 'aap-runner host supervisor' {
         It 'install-supervisor.ps1 -DryRun prints the Run value for an existing tray exe' {
             $tray = Join-Path $TestDrive 'aap-runner-tray.exe'
             Set-Content -LiteralPath $tray -Value 'x'
-            $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-supervisor.ps1') -DryRun -DataDir (Join-Path $TestDrive 'pd') -ScriptDir (Join-Path $TestDrive 'sd') -TaskName 'AAP-Test-NotRegistered' -TrayExe $tray 2>&1 | Out-String
+            $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-supervisor.ps1') -DryRun -DataDir (Join-Path $TestDrive 'pd') -TaskName 'AAP-Test-NotRegistered' -TrayExe $tray 2>&1 | Out-String
             $LASTEXITCODE | Should -Be 0
             $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             $out | Should -Match ([regex]::Escape("WOULD run-key Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Run AAP-Runner-Tray = `"$tray`""))
@@ -790,13 +978,16 @@ Describe 'aap-runner host supervisor' {
             $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'uninstall-supervisor.ps1') -DryRun -DataDir (Join-Path $TestDrive 'pd') -ScriptDir (Join-Path $TestDrive 'sd') -TaskName 'AAP-Test-NotRegistered' 2>&1 | Out-String
             $LASTEXITCODE | Should -Be 0
             $out | Should -Match 'KEEP'
+            $out | Should -Not -Match 'state.json'
+            $out | Should -Match 'distro keeps running until logoff'
             $out | Should -Match 'WOULD remove Run value AAP-Runner-Tray from Registry::HKEY_USERS'
         }
 
         It 'aap-runner-supervisor.ps1 -Once -DryRun exits 0 without calling wsl.exe' {
             $pd = Join-Path $TestDrive 'pd-sup'
             New-Item -ItemType Directory -Force -Path $pd | Out-Null
-            [IO.File]::WriteAllText((Join-Path $pd 'state.json'), '{"desired":"on"}')
+            New-Item -ItemType Directory -Force -Path (Join-Path $pd 'inbox') | Out-Null
+            [IO.File]::WriteAllText((Join-Path $pd 'inbox\state.json'), '{"desired":"on"}')
             $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'aap-runner-supervisor.ps1') -Once -DryRun -DataDir $pd 2>&1 | Out-String
             $LASTEXITCODE | Should -Be 0
             $out | Should -Match 'DRYRUN would Start-ScheduledTask AAP-CRRR-Mount-Work-Disk'

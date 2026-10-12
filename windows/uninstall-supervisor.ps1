@@ -1,19 +1,20 @@
 # Removes the aap-runner host supervisor. Elevated. Windows PowerShell 5.1
 # and PowerShell 7.
 #
-# Writes {"desired":"off"}, stops and unregisters AAP-CRRR-Supervisor, and
-# removes the copied script and task XML from C:\aap-runner\windows, and
-# removes the installing user's Run value AAP-Runner-Tray (HKEY_USERS\<SID>,
-# see install-supervisor.ps1). A running tray is not stopped.
-# C:\ProgramData\aap-runner (state.json, status.json, logs) stays in place.
-# Stopping the task kills the supervisor without a drain, so the distro is
-# left as it is: stop it with wsl.exe --terminate aap-runner when idle.
+# Stops and unregisters AAP-CRRR-Supervisor, removes the copied script and
+# task XML from C:\wsl\aap-runner-supervisor, and removes the installing
+# user's Run value AAP-Runner-Tray (HKEY_USERS\<SID>, see
+# install-supervisor.ps1). A running tray is not stopped.
+# Nothing is written under C:\ProgramData\aap-runner: inbox\ is
+# user-writable, and this script runs elevated. The folder stays in place.
+# Stopping the task kills the supervisor without a drain, so the distro keeps
+# running until logoff or wsl.exe --terminate aap-runner.
 # -DryRun prints the plan and changes nothing.
 [CmdletBinding()]
 param(
     [switch]$DryRun,
     [string]$DataDir = 'C:\ProgramData\aap-runner',
-    [string]$ScriptDir = 'C:\aap-runner\windows',
+    [string]$ScriptDir = 'C:\wsl\aap-runner-supervisor',
     [string]$TaskName = 'AAP-CRRR-Supervisor'
 )
 
@@ -51,21 +52,16 @@ function Invoke-AapUninstallSupervisor {
         return 1
     }
     $files = @((Join-Path $ScriptDir 'aap-runner-supervisor.ps1'), (Join-Path $ScriptDir 'aap-runner-supervisor-task.xml'))
-    $stateFile = Join-Path $DataDir 'state.json'
     $runKey = Get-AapRunKey ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+    $note = 'NOTE the distro keeps running until logoff or: wsl.exe --terminate aap-runner'
     if ($DryRun) {
         if (-not $elevated) { [Console]::Out.WriteLine('INFO elevation not-admin (dry run)') }
-        [Console]::Out.WriteLine("WOULD write {`"desired`":`"off`"} to $stateFile")
         [Console]::Out.WriteLine("WOULD stop and unregister task $TaskName")
         foreach ($f in $files) { [Console]::Out.WriteLine("WOULD remove $f") }
         [Console]::Out.WriteLine("WOULD remove Run value AAP-Runner-Tray from $runKey")
-        [Console]::Out.WriteLine("KEEP $DataDir (state.json, status.json, logs)")
+        [Console]::Out.WriteLine("KEEP $DataDir (inbox, status.json, logs)")
+        [Console]::Out.WriteLine($note)
         return 0
-    }
-    if (Test-Path -LiteralPath $DataDir) {
-        $tmp = "$stateFile.tmp"
-        [IO.File]::WriteAllText($tmp, '{"desired":"off"}', (New-Object Text.UTF8Encoding($false)))
-        Move-Item -LiteralPath $tmp -Destination $stateFile -Force
     }
     $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     if ($task) {
@@ -76,8 +72,8 @@ function Invoke-AapUninstallSupervisor {
         if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
     }
     Clear-AapTrayRunValue $runKey
-    [Console]::Out.WriteLine("DONE $TaskName removed. Left in place: $DataDir (state.json, status.json, logs).")
-    [Console]::Out.WriteLine('NOTE the distro was not stopped. When it is idle: wsl.exe --terminate aap-runner')
+    [Console]::Out.WriteLine("DONE $TaskName removed. Left in place: $DataDir (inbox, status.json, logs).")
+    [Console]::Out.WriteLine($note)
     return 0
 }
 

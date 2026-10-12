@@ -1,15 +1,28 @@
 # Installs the aap-runner host supervisor. Elevated, idempotent.
 # Windows PowerShell 5.1 and PowerShell 7.
 #
-# - C:\ProgramData\aap-runner and logs: Administrators and SYSTEM full
-#   control, the installing user Modify (the non-elevated tray writes
-#   state.json and logs\tray.log), nothing for anyone else. Inheritance from
-#   ProgramData is cut, because ProgramData grants Users create rights.
-# - state.json {"desired":"off"} only if absent.
-# - aap-runner-supervisor.ps1 is copied to C:\aap-runner\windows. The task
-#   runs elevated, so it must only run code that only admins can change; the
-#   copy is refused unless that folder is owned by Administrators and only
-#   SYSTEM and Administrators have entries (lock-acl.ps1 set C:\aap-runner).
+# Trust split (the task runs elevated, the tray does not):
+# - C:\ProgramData\aap-runner: owner Administrators, SYSTEM and
+#   Administrators full control, the installing user read and execute only,
+#   inheritance from ProgramData cut (ProgramData lets Users create). The
+#   supervisor writes status.json and logs\ here.
+# - C:\ProgramData\aap-runner\inbox: the only place the installing user can
+#   write. On the folder itself the user can create and delete files but not
+#   folders, so no junction can be made in it; files get Modify. The tray
+#   writes state.json, settings.json and tray.log there; the supervisor only
+#   reads them.
+# - Before any ACL or write the data folder and everything in it are
+#   checked: no reparse point (junction, symlink) anywhere, and an
+#   Administrators, SYSTEM or TrustedInstaller owner on everything outside
+#   inbox\. A failed check refuses the install and says how to fix it.
+# - inbox\state.json {"desired":"off"} is created only if absent, after the
+#   checks and the ACLs.
+# - aap-runner-supervisor.ps1 is copied to C:\wsl\aap-runner-supervisor.
+#   C:\wsl is SYSTEM and Administrators only on Fresh (install-host.ps1 locks
+#   it with lock-acl.ps1). The copy is refused unless the folder is owned by
+#   Administrators with only SYSTEM and Administrators entries, and no
+#   ancestor up to the drive root lets anyone else delete, re-permission or
+#   take ownership of it.
 # - Task AAP-CRRR-Supervisor from aap-runner-supervisor-task.xml: logon
 #   trigger, this user's SID, InteractiveToken, the same verified path as
 #   AAP-CRRR-Mount-Work-Disk. Logoff stops the runner by design: WSL
@@ -18,17 +31,22 @@
 #   exists: Run value AAP-Runner-Tray = "<path>" for the installing user, so
 #   the tray starts at logon. Missing exe = skipped with an INFO line. The
 #   tray is not started.
-# The task is not started. -DryRun prints the plan and changes nothing.
+# The task is not started. -DryRun prints the plan, runs the same checks,
+# and changes nothing.
 [CmdletBinding()]
 param(
     [switch]$DryRun,
     [string]$DataDir = 'C:\ProgramData\aap-runner',
-    [string]$ScriptDir = 'C:\aap-runner\windows',
+    [string]$ScriptDir = 'C:\wsl\aap-runner-supervisor',
     [string]$TaskName = 'AAP-CRRR-Supervisor',
     [string]$TrayExe = 'C:\TOOLS\git_runner\aap-runner-tray.exe'
 )
 
 $ErrorActionPreference = 'Stop'
+
+# SYSTEM, Administrators, TrustedInstaller.
+$AapAdminSids = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+$AapPathPattern = '^[A-Za-z]:\\[A-Za-z0-9 _.\\-]+'
 
 function Initialize-AapModulePath {
     $machine = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
@@ -48,6 +66,10 @@ function Test-AapElevated {
     }
 }
 
+function Get-AapAccessRule($Acl) {
+    return @($Acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+}
+
 # Same rule as install-host.ps1: owner Administrators, every entry SYSTEM or
 # Administrators.
 function Test-AapAdminAcl([string]$Path) {
@@ -55,26 +77,92 @@ function Test-AapAdminAcl([string]$Path) {
     $acl = Get-Acl -LiteralPath $Path
     $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier])
     if ($null -eq $owner -or $owner.Value -ne 'S-1-5-32-544') { return $false }
-    $any = $false
-    foreach ($ace in @($acl.Access)) {
-        $any = $true
-        $id = $ace.IdentityReference
-        if ($id -is [Security.Principal.SecurityIdentifier]) {
-            $sid = $id.Value
-        } else {
-            $sid = $id.Translate([Security.Principal.SecurityIdentifier]).Value
-        }
-        if ($sid -ne 'S-1-5-18' -and $sid -ne 'S-1-5-32-544') { return $false }
+    $rules = Get-AapAccessRule $acl
+    foreach ($ace in $rules) {
+        if ($ace.IdentityReference.Value -ne 'S-1-5-18' -and $ace.IdentityReference.Value -ne 'S-1-5-32-544') { return $false }
     }
-    return $any
+    return ($rules.Count -gt 0)
+}
+
+# Rights that let a non-admin replace or re-permission a folder below: delete
+# it, delete children, change its DACL, take ownership. Create rights are not
+# counted; C:\ grants Authenticated Users "create folders" by default and that
+# cannot replace an existing child. Inherit-only entries do not apply to the
+# folder itself (they show up on the child, which the leaf check covers).
+function Get-AapAncestorProblem([string]$Path) {
+    $bad = [int]([Security.AccessControl.FileSystemRights]'Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership') -bor 0x10000000
+    $problems = New-Object System.Collections.Generic.List[string]
+    $unreadable = New-Object System.Collections.Generic.List[string]
+    $dir = Split-Path -Parent $Path
+    while ($dir) {
+        $acl = $null
+        try { $acl = Get-Acl -LiteralPath $dir } catch { $unreadable.Add($dir) }
+        if ($acl) {
+            foreach ($ace in (Get-AapAccessRule $acl)) {
+                if ($ace.AccessControlType -ne 'Allow') { continue }
+                if (($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+                $sid = $ace.IdentityReference.Value
+                if ($AapAdminSids -contains $sid) { continue }
+                if (([int]$ace.FileSystemRights -band $bad) -ne 0) {
+                    $problems.Add("$dir grants $sid $($ace.FileSystemRights)")
+                }
+            }
+        }
+        $dir = Split-Path -Parent $dir
+    }
+    return [pscustomobject]@{ Problems = $problems; Unreadable = $unreadable }
+}
+
+# Walks the data folder without following any reparse point. Everything
+# outside inbox\ must have an admin owner; inbox\ children are the tray's own
+# files and may be owned by the user.
+function Get-AapDataDirProblem([string]$Path) {
+    $problems = New-Object System.Collections.Generic.List[string]
+    $unreadable = New-Object System.Collections.Generic.List[string]
+    $inbox = Join-Path $Path 'inbox'
+    $stack = New-Object System.Collections.Stack
+    $stack.Push(@($Path, $true))
+    while ($stack.Count -gt 0) {
+        $item = $stack.Pop()
+        $p = $item[0]
+        $checkOwner = $item[1]
+        # Attributes are -1 for a missing path and keep ReparsePoint even for
+        # a dangling junction.
+        $attr = [int](New-Object IO.FileInfo $p).Attributes
+        if ($attr -eq -1) { continue }
+        if (($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $problems.Add("reparse point $p; remove it without following it: cmd /c rmdir `"$p`" (folder) or cmd /c del `"$p`" (file), then rerun")
+            continue
+        }
+        if ($checkOwner) {
+            try {
+                $owner = (Get-Acl -LiteralPath $p).GetOwner([Security.Principal.SecurityIdentifier])
+                if ($null -eq $owner -or $AapAdminSids -notcontains $owner.Value) {
+                    $problems.Add("owner $($owner.Value) on $p is not an admin; delete it or run: icacls `"$p`" /setowner *S-1-5-32-544")
+                }
+            } catch {
+                $unreadable.Add($p)
+                continue
+            }
+        }
+        if (($attr -band [int][IO.FileAttributes]::Directory) -ne 0) {
+            $children = $null
+            try { $children = @(Get-ChildItem -LiteralPath $p -Force -ErrorAction Stop) } catch { $unreadable.Add($p) }
+            foreach ($c in @($children)) {
+                if ($null -eq $c) { continue }
+                $stack.Push(@($c.FullName, ($p -ne $inbox -and $checkOwner)))
+            }
+        }
+    }
+    return [pscustomobject]@{ Problems = $problems; Unreadable = $unreadable }
 }
 
 # The SID and path are checked before they go into XML and into the
 # single-quoted -Command string of the task.
 function Get-AapSupervisorTaskXml {
     param([string]$Template, [string]$UserSid, [string]$Ps1)
-    if ($UserSid -notmatch '^S-1-5-21(-\d+){4}$') { throw "refusing: user SID $UserSid" }
-    if ($Ps1 -notmatch '^[A-Za-z]:\\[A-Za-z0-9 _.\\-]+\.ps1$') { throw "refusing: script path $Ps1" }
+    if ($UserSid -notmatch '^S-1-5-21(-\d+){4}\z') { throw "refusing: user SID $UserSid" }
+    if ($Ps1 -notmatch ($AapPathPattern + '\.ps1\z')) { throw "refusing: script path $Ps1" }
     $xml = $Template.Replace('__AAP_USER_SID__', $UserSid).Replace('__AAP_PS1__', $Ps1)
     if ($xml.Contains('__AAP_')) { throw 'task template still has a placeholder' }
     return $xml
@@ -91,9 +179,48 @@ function Get-AapRunKey([string]$UserSid) {
 
 # Quoted, so a path with spaces starts the exe and not a prefix of it.
 function Write-AapTrayRunValue([string]$RunKey, [string]$Exe) {
-    if ($Exe -notmatch '^[A-Za-z]:\\[A-Za-z0-9 _.\\-]+\.exe$') { throw "refusing: tray path $Exe" }
+    if ($Exe -notmatch ($AapPathPattern + '\.exe\z')) { throw "refusing: tray path $Exe" }
     if (-not (Test-Path -LiteralPath $RunKey)) { New-Item -Path $RunKey -Force | Out-Null }
     New-ItemProperty -LiteralPath $RunKey -Name 'AAP-Runner-Tray' -Value ('"' + $Exe + '"') -PropertyType String -Force | Out-Null
+}
+
+function Get-AapAllowRule([string]$Sid, $Rights, $Inherit, $Propagate) {
+    return New-Object System.Security.AccessControl.FileSystemAccessRule(
+        (New-Object Security.Principal.SecurityIdentifier $Sid), $Rights, $Inherit, $Propagate, 'Allow')
+}
+
+# Root: admins full, the user read and execute, everything inheriting.
+function Get-AapDataDirAcl([string]$UserSid) {
+    $all = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    $none = [Security.AccessControl.PropagationFlags]::None
+    $acl = New-Object System.Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'))
+    $acl.AddAccessRule((Get-AapAllowRule 'S-1-5-18' 'FullControl' $all $none))
+    $acl.AddAccessRule((Get-AapAllowRule 'S-1-5-32-544' 'FullControl' $all $none))
+    $acl.AddAccessRule((Get-AapAllowRule $UserSid 'ReadAndExecute' $all $none))
+    return $acl
+}
+
+# Inbox: as the root, plus for the user create files and delete children on
+# the folder itself (no CreateDirectories, so no subfolder or junction), and
+# Modify on the files inside (inherit-only, files only).
+function Get-AapInboxAcl([string]$UserSid) {
+    $acl = Get-AapDataDirAcl $UserSid
+    $folder = [Security.AccessControl.FileSystemRights]'ReadAndExecute, CreateFiles, DeleteSubdirectoriesAndFiles'
+    $acl.AddAccessRule((Get-AapAllowRule $UserSid $folder ([Security.AccessControl.InheritanceFlags]::None) ([Security.AccessControl.PropagationFlags]::None)))
+    $acl.AddAccessRule((Get-AapAllowRule $UserSid 'Modify' ([Security.AccessControl.InheritanceFlags]::ObjectInherit) ([Security.AccessControl.PropagationFlags]::InheritOnly)))
+    return $acl
+}
+
+function Protect-AapDataDir([string]$Path, [string]$UserSid) {
+    Set-Acl -LiteralPath $Path -AclObject (Get-AapDataDirAcl $UserSid)
+    Set-Acl -LiteralPath (Join-Path $Path 'inbox') -AclObject (Get-AapInboxAcl $UserSid)
+}
+
+function Register-AapTask([string]$Name, [string]$XmlFile) {
+    & C:\Windows\System32\schtasks.exe /Create /TN $Name /XML $XmlFile /F
+    if ($LASTEXITCODE -ne 0) { throw "schtasks /Create /TN $Name failed (exit $LASTEXITCODE)" }
 }
 
 function Get-AapSupervisorPlan {
@@ -108,12 +235,28 @@ function Get-AapSupervisorPlan {
         $lines.Add('FAIL elevation required: run from an elevated PowerShell')
         $failed = $true
     }
-    if (-not $failed) {
-        $lines.Add("WOULD acl $($Facts.DataDir) and logs: Administrators, SYSTEM full; $($Facts.UserSid) Modify; no inheritance")
-        if ($Facts.StateExists) {
-            $lines.Add('SKIP state.json already present')
+    foreach ($p in @($Facts.DataProblems) + @($Facts.ScriptProblems)) {
+        if (-not $p) { continue }
+        $lines.Add("FAIL $p")
+        $failed = $true
+    }
+    foreach ($u in @($Facts.Unreadable)) {
+        if (-not $u) { continue }
+        if ($Facts.DryRun) {
+            $lines.Add("INFO cannot inspect $u without elevation")
         } else {
-            $lines.Add('WOULD state.json {"desired":"off"}')
+            $lines.Add("FAIL cannot inspect $u")
+            $failed = $true
+        }
+    }
+    if (-not $failed) {
+        $lines.Add("PASS no reparse point or non-admin owner under $($Facts.DataDir)")
+        $lines.Add("WOULD acl $($Facts.DataDir) and logs: owner Administrators; Administrators, SYSTEM full; $($Facts.UserSid) read; no inheritance")
+        $lines.Add("WOULD acl $($Facts.DataDir)\inbox: as above plus $($Facts.UserSid) create and delete files (no folders), Modify on files")
+        if ($Facts.StateExists) {
+            $lines.Add('SKIP inbox\state.json already present')
+        } else {
+            $lines.Add('WOULD inbox\state.json {"desired":"off"}')
         }
         $lines.Add("WOULD copy aap-runner-supervisor.ps1 to $($Facts.ScriptDir) (refused unless admin-only ACL)")
         $lines.Add("WOULD task $($Facts.TaskName) logon trigger, InteractiveToken")
@@ -124,44 +267,36 @@ function Get-AapSupervisorPlan {
         }
         $lines.Add("UNDO: uninstall-supervisor.ps1")
         $lines.Add("NOTE the task is not started. Start it with: Start-ScheduledTask $($Facts.TaskName)")
-        $lines.Add('NOTE desired is off by default. A running aap-runner distro is drained and terminated on first start unless state.json says on.')
+        $lines.Add('NOTE desired is off by default. A running aap-runner distro is drained and terminated on first start unless inbox\state.json says on.')
     }
     $code = 0
     if ($failed) { $code = 1 }
     return [pscustomobject]@{ ExitCode = $code; Lines = $lines }
 }
 
-function Protect-AapDataDir([string]$Path, [string]$UserSid) {
-    $acl = New-Object System.Security.AccessControl.DirectorySecurity
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'))
-    $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-    $none = [System.Security.AccessControl.PropagationFlags]::None
-    foreach ($pair in @(@('S-1-5-18', 'FullControl'), @('S-1-5-32-544', 'FullControl'), @($UserSid, 'Modify'))) {
-        $sid = New-Object Security.Principal.SecurityIdentifier $pair[0]
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, $pair[1], $inherit, $none, 'Allow')
-        $acl.AddAccessRule($rule)
-    }
-    Set-Acl -LiteralPath $Path -AclObject $acl
-}
-
 function Invoke-AapInstallSupervisor {
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $stateFile = Join-Path $DataDir 'state.json'
+    $inbox = Join-Path $DataDir 'inbox'
+    $stateFile = Join-Path $inbox 'state.json'
     $stateExists = $false
     try { $stateExists = [bool](Test-Path -LiteralPath $stateFile -ErrorAction Stop) } catch { $stateExists = $false }
     $trayExists = [bool](Test-Path -LiteralPath $TrayExe -PathType Leaf)
-    if ($trayExists -and $TrayExe -notmatch '^[A-Za-z]:\\[A-Za-z0-9 _.\\-]+\.exe$') { throw "refusing: tray path $TrayExe" }
+    if ($trayExists -and $TrayExe -notmatch ($AapPathPattern + '\.exe\z')) { throw "refusing: tray path $TrayExe" }
+    $data = Get-AapDataDirProblem $DataDir
+    $anc = Get-AapAncestorProblem $ScriptDir
     $plan = Get-AapSupervisorPlan @{
-        Elevated    = (Test-AapElevated)
-        DryRun      = [bool]$DryRun
-        DataDir     = $DataDir
-        ScriptDir   = $ScriptDir
-        TaskName    = $TaskName
-        UserSid     = $userSid
-        StateExists = $stateExists
-        TrayExe     = $TrayExe
-        TrayExists  = $trayExists
+        Elevated       = (Test-AapElevated)
+        DryRun         = [bool]$DryRun
+        DataDir        = $DataDir
+        ScriptDir      = $ScriptDir
+        TaskName       = $TaskName
+        UserSid        = $userSid
+        StateExists    = $stateExists
+        TrayExe        = $TrayExe
+        TrayExists     = $trayExists
+        DataProblems   = @($data.Problems)
+        ScriptProblems = @($anc.Problems)
+        Unreadable     = @($data.Unreadable) + @($anc.Unreadable)
     }
     $template = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'aap-runner-supervisor-task.xml')
     $ps1 = Join-Path $ScriptDir 'aap-runner-supervisor.ps1'
@@ -170,12 +305,21 @@ function Invoke-AapInstallSupervisor {
     foreach ($line in $plan.Lines) { [Console]::Out.WriteLine($line) }
     if ($DryRun -or $plan.ExitCode -ne 0) { return [int]$plan.ExitCode }
 
-    foreach ($dir in @($DataDir, (Join-Path $DataDir 'logs'))) {
+    foreach ($dir in @($DataDir, (Join-Path $DataDir 'logs'), $inbox)) {
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
     }
+    # Again right before Set-Acl, which would follow a junction made since the
+    # first check.
+    $again = Get-AapDataDirProblem $DataDir
+    if ($again.Problems.Count -or $again.Unreadable.Count) { throw "refusing: $DataDir changed during install: $(@($again.Problems) + @($again.Unreadable) -join '; ')" }
     Protect-AapDataDir $DataDir $userSid
+    $again = Get-AapDataDirProblem $DataDir
+    if ($again.Problems.Count -or $again.Unreadable.Count) { throw "refusing: $DataDir changed during install: $(@($again.Problems) + @($again.Unreadable) -join '; ')" }
+    # CreateNew never opens an existing file or link.
     if (-not (Test-Path -LiteralPath $stateFile)) {
-        [IO.File]::WriteAllText($stateFile, '{"desired":"off"}', (New-Object Text.UTF8Encoding($false)))
+        $bytes = [Text.Encoding]::ASCII.GetBytes('{"desired":"off"}')
+        $fs = [IO.File]::Open($stateFile, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
     }
 
     if (-not (Test-Path -LiteralPath $ScriptDir)) { New-Item -ItemType Directory -Force -Path $ScriptDir | Out-Null }
@@ -187,8 +331,7 @@ function Invoke-AapInstallSupervisor {
     $xmlFile = Join-Path $ScriptDir 'aap-runner-supervisor-task.xml'
     # UTF-16 LE with BOM: schtasks /XML rejects UTF-8.
     [IO.File]::WriteAllText($xmlFile, $xml, [Text.Encoding]::Unicode)
-    & schtasks.exe /Create /TN $TaskName /XML $xmlFile /F
-    if ($LASTEXITCODE -ne 0) { throw "schtasks /Create /TN $TaskName failed (exit $LASTEXITCODE)" }
+    Register-AapTask $TaskName $xmlFile
     if ($trayExists) {
         Write-AapTrayRunValue (Get-AapRunKey $userSid) $TrayExe
         [Console]::Out.WriteLine("DONE Run value AAP-Runner-Tray for $userSid (the tray starts at the next logon)")

@@ -14,17 +14,25 @@
 #   (instanceIdleTimeout). The keep-alive child below holds it while On.
 # Logoff and shutdown stop the runner by design; the next logon resumes it.
 #
-# Contracts (C:\ProgramData\aap-runner):
-# - state.json    {"desired":"on"|"off"}, written by the non-elevated tray.
-# - settings.json {"runner_count":1..4,"job_cpus":1..28,"job_memory_gib":1..80,
-#   "paused":true|false}, written by the tray. Missing = no override, not
+# Contracts. C:\ProgramData\aap-runner is admin-owned; the operator can
+# only read it. Its inbox\ subfolder is the one place the operator (the
+# non-elevated tray) can write. This elevated script only READS inbox\, with
+# one bounded open per file, and never creates, renames or deletes anything
+# there, so a junction or link planted in inbox\ cannot redirect a write.
+# - inbox\state.json    {"desired":"on"|"off"}.
+# - inbox\settings.json {"runner_count":1..4,"job_cpus":1..28,
+#   "job_memory_gib":1..80,"paused":true|false}. Missing = no override, not
 #   paused. Invalid = one logged warning, the last valid content stays.
 #   Both files are parsed strictly. Only validated integers ever reach a
 #   command or the limits file.
 # - status.json   {"state","job","updated","detail","runner_count",
-#   "job_cpus","job_memory_gib"}, rewritten atomically. The tray treats it as
-#   stale after 180 s, so it is rewritten at least every 60 s, also while Off.
-# - logs\supervisor.log, one line per event, rotated to .1 at 5 MB.
+#   "job_cpus","job_memory_gib"} in the admin-owned root, rewritten
+#   atomically. The tray treats it as stale after 180 s, so it is rewritten
+#   at least every 60 s, also while Off.
+# - logs\supervisor.log (admin-owned), one line per event, rotated to .1 at
+#   5 MB.
+# wsl.exe is started by its absolute path; $env:SystemRoot comes from the
+# operator's environment block and is not trusted.
 #
 # -Once runs one loop iteration. -DryRun logs decisions to the console and
 # never calls wsl.exe, never starts a task, and writes no file.
@@ -98,7 +106,7 @@ function Get-AapNow { return [DateTimeOffset]::Now }
 function Wait-AapInterval([int]$Seconds) { Start-Sleep -Seconds $Seconds }
 
 function Test-AapName([string]$Name) {
-    return $Name -match '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+    return $Name -match '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z'
 }
 
 function Get-AapBackoffDelay([int]$Failures) {
@@ -145,11 +153,32 @@ function Write-AapLog([string]$Text) {
 # Reads a tray-written JSON file: size-capped, must be one JSON object.
 # Returns the object, or a warning string, or $null when the file is missing.
 function Read-AapJsonFile([string]$Name) {
-    $path = Join-Path $AapCfg.DataDir $Name
+    $path = Join-Path (Join-Path $AapCfg.DataDir 'inbox') $Name
     try {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-        if ((Get-Item -LiteralPath $path).Length -gt 4096) { return "$Name is larger than 4 KB" }
-        $raw = [IO.File]::ReadAllText($path).TrimStart([char]0xFEFF)
+        # One open, at most 4097 bytes read: a file swapped between a size
+        # check and a read cannot slip past the cap. More than 4096 = refused.
+        try {
+            $fs = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        } catch [IO.FileNotFoundException] {
+            return $null
+        } catch [IO.DirectoryNotFoundException] {
+            return $null
+        }
+        $buf = New-Object byte[] 4097
+        $n = 0
+        try {
+            while ($n -lt $buf.Length) {
+                $got = $fs.Read($buf, $n, $buf.Length - $n)
+                if ($got -le 0) { break }
+                $n += $got
+            }
+        } finally {
+            $fs.Dispose()
+        }
+        if ($n -gt 4096) { return "$Name is larger than 4 KB" }
+        # Honours a UTF-8 or UTF-16 BOM, like the earlier ReadAllText.
+        $reader = New-Object IO.StreamReader((New-Object IO.MemoryStream($buf, 0, $n)), (New-Object Text.UTF8Encoding($false)), $true)
+        try { $raw = $reader.ReadToEnd().TrimStart([char]0xFEFF) } finally { $reader.Dispose() }
         try { $obj = ConvertFrom-Json -InputObject $raw } catch { return "$Name is not valid JSON" }
         if (-not ($obj -is [pscustomobject])) { return "$Name is not a JSON object" }
         return $obj
@@ -265,12 +294,12 @@ function Invoke-AapWsl {
     param([Parameter(Mandatory = $true)][string[]]$Arguments, [int]$TimeoutSeconds = 0, [switch]$Background, $StdIn = $null)
     $quoted = foreach ($a in $Arguments) {
         if ($a -ceq $AapWriteLimits) { '"' + $a + '"'; continue }
-        if ($a -notmatch '^[A-Za-z0-9_./:-]+$') { throw "refusing wsl.exe argument: $a" }
+        if ($a -notmatch '^[A-Za-z0-9_./:-]+\z') { throw "refusing wsl.exe argument: $a" }
         $a
     }
     if ($TimeoutSeconds -le 0) { $TimeoutSeconds = $AapCfg.WslTimeoutSeconds }
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = 'wsl.exe'
+    $psi.FileName = 'C:\Windows\System32\wsl.exe'
     $psi.Arguments = @($quoted) -join ' '
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
@@ -323,7 +352,7 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
     $count = [string]$obj.runner_count
     $cpus = [string]$obj.job_cpus
     $mem = [string]$obj.job_memory
-    if ($count -match '^\d{1,4}$' -and $cpus -match '^\d{1,4}$' -and $mem -match '^(\d{1,5})[gG]$') {
+    if ($count -match '^\d{1,4}\z' -and $cpus -match '^\d{1,4}\z' -and $mem -match '^(\d{1,5})[gG]\z') {
         $limits = @{ RunnerCount = [int]$count; JobCpus = [int]$cpus; JobMemoryGib = [int]$Matches[1] }
     }
     return @{ State = $state; Job = [string]$obj.job; Limits = $limits }
