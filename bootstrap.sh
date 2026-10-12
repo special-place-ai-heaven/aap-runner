@@ -260,18 +260,58 @@ powershell_file_command() {
   printf '%s\n' "${cmd}"
 }
 
+# Root inside the distro often has no powershell.exe on PATH. The binary
+# is still on the Windows drive while automount is up.
+powershell_exe_path() {
+  local found candidate
+  if found=$(command -v powershell.exe 2>/dev/null); then
+    printf '%s\n' "${found}"
+    return 0
+  fi
+  candidate=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+  if [[ -x "${candidate}" ]]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  return 1
+}
+
 invoke_powershell_file() {
-  local script="$1"
+  local script="$1" exe
   shift
-  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+  exe=$(powershell_exe_path) || return 127
+  "${exe}" -NoProfile -NonInteractive -ExecutionPolicy Bypass \
     -Command "$(powershell_file_command "${script}" "$@")"
 }
 
 invoke_powershell_command() {
-  local cmd
+  local cmd exe
+  exe=$(powershell_exe_path) || return 127
   cmd="$(powershell_module_prefix); "
   cmd+="$1"
-  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${cmd}"
+  "${exe}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "${cmd}"
+}
+
+# powershell.exe writes UTF-16. After the NULs are stripped, a BOM can
+# remain in front of the drive letter and wslpath then fails.
+sanitize_windows_path() {
+  local text line found=""
+  text=$(printf '%s' "$1" | tr -d '\000\r')
+  text=${text#$'\xff\xfe'}
+  text=${text#$'\xef\xbb\xbf'}
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line=${line#$'\xff\xfe'}
+    line=${line#$'\xef\xbb\xbf'}
+    line=${line#"${line%%[![:space:]]*}"}
+    line=${line%"${line##*[![:space:]]}"}
+    if [[ "${line}" =~ ^[A-Za-z]:\\ ]]; then
+      found=${line}
+    fi
+  done <<< "${text}"
+  if [[ -z "${found}" ]]; then
+    return 1
+  fi
+  printf '%s\n' "${found}"
 }
 
 distro_exists() {
@@ -672,9 +712,63 @@ inside_runtime() {
   echo "aap-runner install finished. Place the GitHub App key at /etc/aap-runner/app.pem mode 0400, fill /etc/aap-runner/manager.conf, then systemctl start aap-runner-manager."
 }
 
+# Return 0 when an uncommented networkingMode under [wsl2] is mirrored.
+# Return 1 when the file was read and that key is not mirrored.
+# Return 2 when the file cannot be read. Bytes are not decoded as UTF-8:
+# a CP1252 comment must not make the file unreadable. CR is stripped.
+# A commented key is not a setting.
 wslconfig_sets_mirrored() {
-  local file="$1"
-  grep -Eiq '^[[:space:]]*networkingMode[[:space:]]*=[[:space:]]*mirrored[[:space:]]*(#.*)?$' "${file}"
+  local file="$1" rc=0 saved_locale="" had_locale=0
+  if [[ ! -f "${file}" || ! -r "${file}" ]]; then
+    return 2
+  fi
+  if [[ -n "${LC_ALL+x}" ]]; then
+    had_locale=1
+    saved_locale=${LC_ALL}
+  fi
+  # C locale so a CP1252 byte is one character, not a broken UTF-8 sequence.
+  export LC_ALL=C
+  wslconfig_sets_mirrored_bytes "${file}" || rc=$?
+  if [[ "${had_locale}" -eq 1 ]]; then
+    export LC_ALL="${saved_locale}"
+  else
+    unset LC_ALL
+  fi
+  return "${rc}"
+}
+
+wslconfig_sets_mirrored_bytes() {
+  local file="$1" line section="" key value first=1 body
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${first}" -eq 1 ]]; then
+      line=${line#$'\xef\xbb\xbf'}
+      first=0
+    fi
+    if [[ "${line}" =~ ^[[:space:]]*\[([^]]+)\][[:space:]]*$ ]]; then
+      section=$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')
+      section=${section#"${section%%[![:space:]]*}"}
+      section=${section%"${section##*[![:space:]]}"}
+      continue
+    fi
+    if [[ "${line}" =~ ^[[:space:]]*$ || "${line}" =~ ^[[:space:]]*# ]]; then
+      continue
+    fi
+    [[ "${section}" == "wsl2" ]] || continue
+    # An inline '#' is a comment. The value is the text before it.
+    body=${line%%#*}
+    if [[ ! "${body}" =~ ^[[:space:]]*([^=[:space:]]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+      continue
+    fi
+    key=$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')
+    value=${BASH_REMATCH[2]}
+    value=${value#"${value%%[![:space:]]*}"}
+    value=${value%"${value##*[![:space:]]}"}
+    value=$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')
+    if [[ "${key}" == "networkingmode" && "${value}" == "mirrored" ]]; then
+      return 0
+    fi
+  done < <(tr -d '\r' < "${file}")
+  return 1
 }
 
 # Echoes a reason and returns 0 when bootstrap must stop.
@@ -697,7 +791,11 @@ networking_stop_reason() {
   fi
   case "${cfg_state}" in
     unreadable)
-      echo ".wslconfig is unreadable; cannot prove networkingMode is not mirrored"
+      if [[ -n "${5:-}" ]]; then
+        echo ".wslconfig is unreadable; cannot prove networkingMode is not mirrored (tried ${5})"
+      else
+        echo ".wslconfig is unreadable; cannot prove networkingMode is not mirrored"
+      fi
       return 0
       ;;
     mirrored)
@@ -717,9 +815,57 @@ networking_stop_reason() {
 # mirrored stops the install. Inside aap-runner a missing wslinfo stops it
 # too, and an unreadable .wslconfig stops it. Mirrored mode puts the distro
 # on the Windows LAN and the bridge filter does not see that traffic.
+# Inside aap-runner this runs as root. GetFolderPath("UserProfile") is
+# then often empty: the Windows profile is not loaded for that interop
+# process. cmd.exe %USERPROFILE% is the wrong directory (System32). The
+# profile path is ProfileImagePath for the Windows identity's SID.
+windows_profile_command() {
+  # Quoted so bash does not expand $sid. PowerShell concatenates it.
+  # A backslash before $sid inside double quotes is easy to misread; the
+  # profile directory is a single-quoted prefix plus the SID.
+  cat << 'EOF'
+$p = [Environment]::GetFolderPath("UserProfile")
+if ([string]::IsNullOrWhiteSpace($p)) {
+  $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\' + $sid
+  $p = (Get-ItemProperty -Path $k -Name ProfileImagePath -ErrorAction Stop).ProfileImagePath
+}
+if ([string]::IsNullOrWhiteSpace($p)) { exit 1 }
+Write-Output $p
+EOF
+}
+
+# Prints the Linux path of .wslconfig, or the word absent.
+# On failure prints the path that was tried and returns 2.
+windows_user_wslconfig() {
+  local raw="" profile="" win="" ps_rc=0
+  if ! powershell_exe_path >/dev/null; then
+    printf '%s\n' "powershell.exe"
+    return 2
+  fi
+  if ! command -v wslpath >/dev/null 2>&1; then
+    printf '%s\n' "wslpath"
+    return 2
+  fi
+  raw=$(invoke_powershell_command "$(windows_profile_command)" | tr -d '\000') || ps_rc=$?
+  if [[ "${ps_rc}" -ne 0 ]] || ! win=$(sanitize_windows_path "${raw}"); then
+    printf '%s\n' "${win:-${raw:-powershell.exe}}"
+    return 2
+  fi
+  if ! profile=$(wslpath -u "${win}" 2>/dev/null) || [[ -z "${profile}" ]]; then
+    printf '%s\n' "${win}"
+    return 2
+  fi
+  if [[ ! -e "${profile}/.wslconfig" ]]; then
+    printf '%s\n' absent
+    return 0
+  fi
+  printf '%s\n' "${profile}/.wslconfig"
+}
+
 refuse_mirrored_networking() {
   local mode="" have_wslinfo=no inside=no cfg_state=skipped
-  local raw="" profile="" cfg="" reason="" grep_rc=0 ps_rc=0
+  local cfg="" reason="" read_rc=0 ws_rc=0 cfg_path=""
   if [[ "${WSL_DISTRO_NAME:-}" == "${DISTRO}" || ! -d /mnt/c ]]; then
     inside=yes
   fi
@@ -729,35 +875,24 @@ refuse_mirrored_networking() {
   fi
   if [[ -d /mnt/c ]]; then
     cfg_state=unreadable
-    if command -v powershell.exe >/dev/null 2>&1 && command -v wslpath >/dev/null 2>&1; then
-      ps_rc=0
-      raw=$(invoke_powershell_command '[Environment]::GetFolderPath("UserProfile")' | tr -d '\000\r') || ps_rc=$?
-      if [[ "${ps_rc}" -ne 0 ]]; then
-        echo "refusing: powershell.exe could not read the Windows user profile (exit ${ps_rc})" >&2
-        exit 1
-      fi
-      if [[ -n "${raw}" ]]; then
-        profile=$(wslpath -u "${raw}" || true)
-      fi
-      if [[ -n "${profile}" ]]; then
-        cfg="${profile}/.wslconfig"
-        if [[ ! -e "${cfg}" ]]; then
-          cfg_state=absent
-        elif [[ -f "${cfg}" && -r "${cfg}" ]]; then
-          grep_rc=0
-          wslconfig_sets_mirrored "${cfg}" || grep_rc=$?
-          if [[ "${grep_rc}" -eq 0 ]]; then
-            cfg_state=mirrored
-          elif [[ "${grep_rc}" -eq 1 ]]; then
-            cfg_state=nat
-          else
-            cfg_state=unreadable
-          fi
-        fi
+    cfg=$(windows_user_wslconfig) || ws_rc=$?
+    if [[ "${ws_rc}" -ne 0 ]]; then
+      cfg_path=${cfg:-powershell.exe}
+    elif [[ "${cfg}" == absent ]]; then
+      cfg_state=absent
+    else
+      cfg_path=${cfg}
+      wslconfig_sets_mirrored "${cfg}" || read_rc=$?
+      if [[ "${read_rc}" -eq 0 ]]; then
+        cfg_state=mirrored
+      elif [[ "${read_rc}" -eq 1 ]]; then
+        cfg_state=nat
+      else
+        cfg_state=unreadable
       fi
     fi
   fi
-  if reason=$(networking_stop_reason "${inside}" "${have_wslinfo}" "${mode}" "${cfg_state}"); then
+  if reason=$(networking_stop_reason "${inside}" "${have_wslinfo}" "${mode}" "${cfg_state}" "${cfg_path}"); then
     echo "refusing: ${reason}" >&2
     exit 1
   fi
@@ -803,6 +938,7 @@ vhdx_windows_path_ok() {
 
 self_check() {
   local tmp cfg reason rc err body msg gap nulled
+  local got script saved_path bin profile wrappers
   require_operator_jq
   labels_self_check
   tmp=$(mktemp)
@@ -887,7 +1023,52 @@ self_check() {
     echo "a comment was treated as mirrored" >&2
     exit 1
   fi
+  printf '[wsl2]\n# networkingMode=mirrored\n' > "${cfg}"
+  rc=0
+  wslconfig_sets_mirrored "${cfg}" || rc=$?
+  if [[ "${rc}" -ne 1 ]]; then
+    echo "a commented networkingMode under [wsl2] was not read as unset (rc=${rc})" >&2
+    exit 1
+  fi
+  python3 -c 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b"[wsl2]\r\n# note \xd7\r\n# networkingMode=mirrored\r\nmemory=80GB\r\n")' "${cfg}"
+  rc=0
+  wslconfig_sets_mirrored "${cfg}" || rc=$?
+  if [[ "${rc}" -ne 1 ]]; then
+    echo "a CP1252 comment made .wslconfig unreadable or mirrored (rc=${rc})" >&2
+    exit 1
+  fi
+  python3 -c 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b"[wsl2]\r\nnetworkingMode=mirrored\r\n")' "${cfg}"
+  if ! wslconfig_sets_mirrored "${cfg}"; then
+    echo "CRLF networkingMode=mirrored was not mirrored" >&2
+    exit 1
+  fi
+  printf '[WSL2]\nNetworkingMode = Mirrored\n' > "${cfg}"
+  if ! wslconfig_sets_mirrored "${cfg}"; then
+    echo "case-insensitive networkingMode was not mirrored" >&2
+    exit 1
+  fi
+  printf '[experimental]\nnetworkingMode=mirrored\n[wsl2]\nmemory=1GB\n' > "${cfg}"
+  rc=0
+  wslconfig_sets_mirrored "${cfg}" || rc=$?
+  if [[ "${rc}" -ne 1 ]]; then
+    echo "networkingMode outside [wsl2] was treated as mirrored (rc=${rc})" >&2
+    exit 1
+  fi
   rm -f "${cfg}"
+  rc=0
+  wslconfig_sets_mirrored "${cfg}.missing" || rc=$?
+  if [[ "${rc}" -ne 2 ]]; then
+    echo "a missing .wslconfig was not a read failure (rc=${rc})" >&2
+    exit 1
+  fi
+  gap=$(mktemp -d)
+  rc=0
+  wslconfig_sets_mirrored "${gap}" || rc=$?
+  if [[ "${rc}" -ne 2 ]]; then
+    echo "a directory .wslconfig was not a read failure (rc=${rc})" >&2
+    exit 1
+  fi
+  rm -rf "${gap}"
   if ! reason=$(networking_stop_reason yes no "" skipped); then
     echo "missing wslinfo inside aap-runner was allowed" >&2
     exit 1
@@ -906,6 +1087,15 @@ self_check() {
   fi
   if ! reason=$(networking_stop_reason no no "" unreadable); then
     echo "unreadable .wslconfig was allowed" >&2
+    exit 1
+  fi
+  if ! reason=$(networking_stop_reason no no "" unreadable "/mnt/c/Users/poslj/.wslconfig"); then
+    echo "unreadable .wslconfig with a path was allowed" >&2
+    exit 1
+  fi
+  if [[ "${reason}" != *"(tried /mnt/c/Users/poslj/.wslconfig)"* ]]; then
+    echo "unreadable refusal did not name the path" >&2
+    printf '%s\n' "${reason}" >&2
     exit 1
   fi
   if ! reason=$(networking_stop_reason no yes nat unreadable); then
@@ -1203,10 +1393,90 @@ EOF
   [[ "${cmd}" == *"-LiteralPath 'C:\wsl\o''brien'"* ]]
   cmd=$(powershell_file_command "C:\wsl\aap's.ps1")
   [[ "${cmd}" == *"& 'C:\wsl\aap''s.ps1'"* ]]
-  if [[ "$(grep -c 'powershell\.exe -NoProfile' "${SCRIPT_DIR}/bootstrap.sh")" -ne 2 ]]; then
+  if [[ "$(grep -c 'powershell\.exe -NoProfile' "${SCRIPT_DIR}/bootstrap.sh")" -ne 0 ]]; then
     echo "bootstrap calls powershell.exe outside the module-path wrapper" >&2
     exit 1
   fi
+  wrappers=$(declare -f invoke_powershell_file invoke_powershell_command)
+  if [[ "$(printf '%s\n' "${wrappers}" | grep -F -c '"${exe}" -NoProfile')" -ne 2 ]]; then
+    echo "powershell wrapper count changed" >&2
+    exit 1
+  fi
+  script=$(windows_profile_command)
+  if [[ "${script}" != *'GetFolderPath("UserProfile")'* || "${script}" != *ProfileImagePath* ]]; then
+    echo "profile lookup does not fall back to ProfileImagePath" >&2
+    exit 1
+  fi
+  if printf '%s\n' "${script}" | grep -F '%USERPROFILE%' >/dev/null; then
+    echo "profile lookup uses %USERPROFILE%" >&2
+    exit 1
+  fi
+  if ! printf '%s\n' "${script}" | grep -F '+ $sid' >/dev/null; then
+    echo "profile lookup dropped the SID" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$(declare -f windows_user_wslconfig)" | grep -F '%USERPROFILE%' >/dev/null; then
+    echo "wslconfig path lookup uses %USERPROFILE%" >&2
+    exit 1
+  fi
+  got=$(sanitize_windows_path $'\xff\xfeC:\\Users\\poslj\r\n')
+  if [[ "${got}" != 'C:\Users\poslj' ]]; then
+    echo "UTF-16 BOM was left on the profile path: ${got}" >&2
+    exit 1
+  fi
+  got=$(sanitize_windows_path $'warning: profile\nC:\\Users\\poslj\r')
+  if [[ "${got}" != 'C:\Users\poslj' ]]; then
+    echo "profile path was not taken from the drive line: ${got}" >&2
+    exit 1
+  fi
+  bin=$(mktemp -d)
+  profile=$(mktemp -d)
+  cat > "${bin}/powershell.exe" << 'EOF'
+#!/bin/bash
+if [[ "${AAP_FAKE_POWERSHELL_MODE:-ok}" == fail ]]; then
+  exit 1
+fi
+printf '\xff\xfeC:\\Users\\poslj\n'
+EOF
+  cat > "${bin}/wslpath" << 'EOF'
+#!/bin/bash
+if [[ "${!#}" == 'C:\Users\poslj' ]]; then
+  printf '%s\n' "${AAP_FAKE_PROFILE}"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "${bin}/powershell.exe" "${bin}/wslpath"
+  saved_path=${PATH}
+  PATH="${bin}:${PATH}"
+  export AAP_FAKE_PROFILE="${profile}"
+  got=$(windows_user_wslconfig)
+  if [[ "${got}" != absent ]]; then
+    echo "missing .wslconfig was not absent: ${got}" >&2
+    exit 1
+  fi
+  python3 -c 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b"[wsl2]\r\n# note \xd7\r\n# networkingMode=mirrored\r\nmemory=80GB\r\n")' "${profile}/.wslconfig"
+  got=$(windows_user_wslconfig)
+  if [[ "${got}" != "${profile}/.wslconfig" ]]; then
+    echo "resolved .wslconfig path was ${got}" >&2
+    exit 1
+  fi
+  rc=0
+  wslconfig_sets_mirrored "${got}" || rc=$?
+  if [[ "${rc}" -ne 1 ]]; then
+    echo "resolved CP1252 .wslconfig was not nat (rc=${rc})" >&2
+    exit 1
+  fi
+  export AAP_FAKE_POWERSHELL_MODE=fail
+  rc=0
+  got=$(windows_user_wslconfig) || rc=$?
+  if [[ "${rc}" -eq 0 || "${got}" != powershell.exe ]]; then
+    echo "failed profile lookup did not report powershell.exe (rc=${rc} out=${got})" >&2
+    exit 1
+  fi
+  unset AAP_FAKE_POWERSHELL_MODE AAP_FAKE_PROFILE
+  PATH=${saved_path}
+  rm -rf "${bin}" "${profile}"
   for fn in refuse_mirrored_networking lock_windows_admin_only ensure_work_vhdx installing_operator_sid; do
     if [[ "$(declare -f "${fn}")" == *'powershell.exe -'* ]]; then
       echo "${fn} calls powershell.exe directly" >&2
