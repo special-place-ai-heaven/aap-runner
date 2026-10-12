@@ -193,20 +193,32 @@ valid_timeout_minutes() {
   [[ "$1" -le 1440 ]]
 }
 
-# Prefix stays self-hosted,linux. The third label is this host's base.
-# Absent base is crrr, which is what ci.yml selects. Fresh sets fresh and
-# does not carry crrr, so those jobs run only when a workflow names fresh.
-# Extras append after the base. The label grammar and duplicate rule stay.
+# AAP_RUNNER_BASE_LABEL is required. crrr or fresh only. There is no default.
+# An extra may not be a base label (crrr, fresh) or a reserved label
+# (self-hosted, linux). The final line is self-hosted,linux,<base>[,extras].
+base_label_ok() {
+  case "$1" in
+    crrr | fresh) return 0 ;;
+  esac
+  return 1
+}
+
+extra_label_reserved() {
+  case "$1" in
+    crrr | fresh | self-hosted | linux) return 0 ;;
+  esac
+  return 1
+}
+
 finish_runner_labels() {
   local extra="${AAP_RUNNER_EXTRA_LABELS}" part seen="" expect
   local -a parts=()
-  [[ -z "${AAP_RUNNER_BASE_LABEL}" ]] && AAP_RUNNER_BASE_LABEL=crrr
-  if [[ ! "${AAP_RUNNER_BASE_LABEL}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-    echo "refusing: AAP_RUNNER_BASE_LABEL=${AAP_RUNNER_BASE_LABEL}" >&2
+  if [[ -z "${AAP_RUNNER_BASE_LABEL}" ]]; then
+    echo "refusing: AAP_RUNNER_BASE_LABEL is required" >&2
     return 1
   fi
-  if [[ "${AAP_RUNNER_BASE_LABEL}" == "self-hosted" || "${AAP_RUNNER_BASE_LABEL}" == "linux" ]]; then
-    echo "refusing: AAP_RUNNER_BASE_LABEL=${AAP_RUNNER_BASE_LABEL} repeats the prefix" >&2
+  if ! base_label_ok "${AAP_RUNNER_BASE_LABEL}"; then
+    echo "refusing: AAP_RUNNER_BASE_LABEL=${AAP_RUNNER_BASE_LABEL} is not crrr or fresh" >&2
     return 1
   fi
   expect="self-hosted,linux,${AAP_RUNNER_BASE_LABEL}"
@@ -229,7 +241,11 @@ finish_runner_labels() {
       echo "refusing: extra label '${part}'" >&2
       return 1
     fi
-    case ",self-hosted,linux,${AAP_RUNNER_BASE_LABEL},${seen}," in
+    if extra_label_reserved "${part}"; then
+      echo "refusing: extra label '${part}' is reserved" >&2
+      return 1
+    fi
+    case ",${seen}," in
       *",${part},"*)
         echo "refusing: extra label '${part}' duplicates a label already set" >&2
         return 1
@@ -238,6 +254,10 @@ finish_runner_labels() {
     seen="${seen:+${seen},}${part}"
   done
   AAP_RUNNER_LABELS="${expect},${seen}"
+}
+
+log_runner_labels() {
+  echo "runner labels: ${AAP_RUNNER_LABELS}"
 }
 
 finish_job_limits() {
@@ -420,6 +440,7 @@ run_one() {
     cleanup_job "${name}" "${net}"
     return 1
   fi
+  log_runner_labels
   if ! token="$(mint_registration_token)"; then
     cleanup_job "${name}" "${net}"
     return 1
@@ -569,14 +590,31 @@ self_check() {
   AAP_RUNNER_BASE_LABEL=""
   AAP_RUNNER_LABELS="self-hosted,linux,crrr"
   AAP_RUNNER_EXTRA_LABELS=""
+  if finish_runner_labels; then
+    echo "an empty base label was accepted" >&2
+    return 1
+  fi
+  AAP_RUNNER_BASE_LABEL="crrr"
+  AAP_RUNNER_LABELS="self-hosted,linux,crrr"
+  AAP_RUNNER_EXTRA_LABELS=""
   finish_runner_labels
-  [[ "${AAP_RUNNER_BASE_LABEL}" == "crrr" ]]
   [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,crrr" ]]
+  got=$(log_runner_labels)
+  [[ "${got}" == "runner labels: self-hosted,linux,crrr" ]]
   AAP_RUNNER_BASE_LABEL="fresh"
   AAP_RUNNER_LABELS="self-hosted,linux,fresh"
   AAP_RUNNER_EXTRA_LABELS="heavy"
   finish_runner_labels
   [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,fresh,heavy" ]]
+  got=$(log_runner_labels)
+  [[ "${got}" == "runner labels: self-hosted,linux,fresh,heavy" ]]
+  AAP_RUNNER_BASE_LABEL="fresh"
+  AAP_RUNNER_LABELS="self-hosted,linux,fresh"
+  AAP_RUNNER_EXTRA_LABELS="heavy,crrr"
+  if finish_runner_labels; then
+    echo "extra label crrr was accepted on base fresh" >&2
+    return 1
+  fi
   AAP_RUNNER_BASE_LABEL="fresh"
   AAP_RUNNER_LABELS=""
   AAP_RUNNER_EXTRA_LABELS="heavy"

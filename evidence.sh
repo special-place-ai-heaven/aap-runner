@@ -118,7 +118,8 @@ work_mount_matches() {
 }
 
 # aap-runner has automount off, so wsl.exe and the Windows profile are
-# captured by evidence-host.sh and passed in as files.
+# captured by evidence-host.sh and passed in as files. Printing them is
+# not a pass: the operator supplied the text and this distro did not verify it.
 host_bundle_ok() {
   local version_file="$1" state="$2" config_file="$3"
   [[ -n "${version_file}" && -f "${version_file}" && -r "${version_file}" ]] || return 1
@@ -129,8 +130,82 @@ host_bundle_ok() {
   esac
 }
 
+print_host_bundle() {
+  local version_file="${1:-${AAP_WSL_VERSION_FILE:-}}"
+  local state="${2:-${AAP_WSLCONFIG_STATE:-}}"
+  local config_file="${3:-${AAP_WSLCONFIG_FILE:-}}"
+  echo "HOST-REPORTED (operator-supplied, not verified)"
+  if host_bundle_ok "${version_file}" "${state}" "${config_file}"; then
+    echo "wsl --version:"
+    cat "${version_file}"
+    echo "wslconfig state=${state}"
+    if [[ "${state}" == "present" ]]; then
+      cat "${config_file}"
+    else
+      echo "wslconfig: absent"
+    fi
+  else
+    echo "wsl --version: not supplied"
+    echo "wslconfig: not supplied"
+  fi
+  return 0
+}
+
+# Same closed set as the manager. Base is required and is crrr or fresh.
+# An extra that is a base or a reserved label is refused.
+compose_runner_labels() {
+  local base="$1" extra="$2" part seen="" expect
+  local -a parts=()
+  if [[ -z "${base}" ]]; then
+    echo "refusing: AAP_RUNNER_BASE_LABEL is required" >&2
+    return 1
+  fi
+  case "${base}" in
+    crrr | fresh) ;;
+    *)
+      echo "refusing: AAP_RUNNER_BASE_LABEL=${base} is not crrr or fresh" >&2
+      return 1
+      ;;
+  esac
+  expect="self-hosted,linux,${base}"
+  if [[ -n "${extra}" ]]; then
+    IFS=',' read -ra parts <<< "${extra}"
+    if [[ "${#parts[@]}" -eq 0 ]]; then
+      echo "refusing: AAP_RUNNER_EXTRA_LABELS has no label" >&2
+      return 1
+    fi
+    for part in "${parts[@]}"; do
+      if [[ ! "${part}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+        echo "refusing: extra label '${part}'" >&2
+        return 1
+      fi
+      case "${part}" in
+        crrr | fresh | self-hosted | linux)
+          echo "refusing: extra label '${part}' is reserved" >&2
+          return 1
+          ;;
+      esac
+      case ",${seen}," in
+        *",${part},"*)
+          echo "refusing: extra label '${part}' duplicates a label already set" >&2
+          return 1
+          ;;
+      esac
+      seen="${seen:+${seen},}${part}"
+    done
+    expect="${expect},${seen}"
+  fi
+  printf '%s\n' "${expect}"
+}
+
+labels_line_ok() {
+  local line="$1" base="$2"
+  [[ "${line}" == "self-hosted,linux,${base}" || "${line}" == "self-hosted,linux,${base},"* ]] || return 1
+  [[ "${line}" =~ ^self-hosted,linux,(crrr|fresh)(,[A-Za-z0-9][A-Za-z0-9._-]*)*$ ]]
+}
+
 self_check() {
-  local got sample tmp version cfg
+  local got sample tmp version cfg out
   got=$(route_gateway 010011AC)
   [[ "${got}" == "172.17.0.1" ]]
   got=$(memory_bytes 12g)
@@ -230,6 +305,27 @@ EOF
     echo "an empty wslconfig state was accepted" >&2
     return 1
   fi
+  out=$(print_host_bundle "" "" "")
+  [[ "${out}" == *"HOST-REPORTED (operator-supplied, not verified)"* ]]
+  [[ "${out}" == *"wsl --version: not supplied"* ]]
+  out=$(print_host_bundle "${version}" present "${cfg}")
+  [[ "${out}" == *"HOST-REPORTED (operator-supplied, not verified)"* ]]
+  [[ "${out}" == *"WSL version: 2.0.0"* ]]
+  [[ "${out}" == *"memory=80GB"* ]]
+  got=$(compose_runner_labels crrr "")
+  [[ "${got}" == "self-hosted,linux,crrr" ]]
+  labels_line_ok "${got}" crrr
+  got=$(compose_runner_labels fresh heavy)
+  [[ "${got}" == "self-hosted,linux,fresh,heavy" ]]
+  labels_line_ok "${got}" fresh
+  if compose_runner_labels "" ""; then
+    echo "an empty base label was accepted" >&2
+    return 1
+  fi
+  if compose_runner_labels fresh "heavy,crrr"; then
+    echo "extra label crrr was accepted on base fresh" >&2
+    return 1
+  fi
   rm -rf "${tmp}"
   echo "evidence self-check ok"
 }
@@ -258,18 +354,7 @@ section "kernel"
 uname -r
 
 section "host wsl bundle"
-if host_bundle_ok "${AAP_WSL_VERSION_FILE:-}" "${AAP_WSLCONFIG_STATE:-}" "${AAP_WSLCONFIG_FILE:-}"; then
-  echo "wsl --version:"
-  cat "${AAP_WSL_VERSION_FILE}"
-  echo "wslconfig state=${AAP_WSLCONFIG_STATE}"
-  if [[ "${AAP_WSLCONFIG_STATE}" == "present" ]]; then
-    cat "${AAP_WSLCONFIG_FILE}"
-  else
-    echo "wslconfig: absent"
-  fi
-else
-  bad "host P0 bundle is incomplete (wsl --version and .wslconfig). aap-runner has automount off, so run bash ops/self-hosted-runner/evidence-host.sh from the operator distro"
-fi
+print_host_bundle
 
 section "windows drives"
 # WSL injects /mnt/wsl and /mnt/wslg on every distro. A Windows drive is
@@ -364,6 +449,35 @@ stat_mode_ok() {
 }
 stat_mode_ok /etc/aap-runner/app.pem
 stat_mode_ok /etc/aap-runner/manager.conf
+
+section "runner labels"
+runner_base=""
+runner_extra=""
+runner_configured=""
+if [[ -r /etc/aap-runner/manager.conf ]]; then
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    case "${line}" in
+      '' | \#*) continue ;;
+    esac
+    key=${line%%=*}
+    val=${line#*=}
+    case "${key}" in
+      AAP_RUNNER_BASE_LABEL) runner_base=${val} ;;
+      AAP_RUNNER_EXTRA_LABELS) runner_extra=${val} ;;
+      AAP_RUNNER_LABELS) runner_configured=${val} ;;
+    esac
+  done < /etc/aap-runner/manager.conf
+fi
+runner_final=""
+if ! runner_final=$(compose_runner_labels "${runner_base}" "${runner_extra}"); then
+  bad "AAP_RUNNER_BASE_LABEL is missing or the label line is not self-hosted,linux,<base>[,extras]"
+elif [[ -n "${runner_configured}" && "${runner_configured}" != "self-hosted,linux,${runner_base}" ]]; then
+  bad "AAP_RUNNER_LABELS=${runner_configured} is not self-hosted,linux,${runner_base}"
+elif ! labels_line_ok "${runner_final}" "${runner_base}"; then
+  bad "runner labels ${runner_final} are not self-hosted,linux,<base>[,extras]"
+else
+  echo "runner labels: ${runner_final}"
+fi
 
 section "image storage"
 work_dev=$(df -P /var/lib/ghrunner 2>/dev/null | awk 'NR==2 { print $1 }' || true)

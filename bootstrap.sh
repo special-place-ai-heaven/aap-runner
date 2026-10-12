@@ -56,6 +56,36 @@ stamp_new_manager_conf() {
   fi
 }
 
+# crrr or fresh, written in the conf. An empty or missing key is refused.
+require_runner_base_label() {
+  local path="$1" base="" line key val
+  if [[ ! -f "${path}" ]]; then
+    echo "refusing: ${path} is missing" >&2
+    return 1
+  fi
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    case "${line}" in
+      '' | \#*) continue ;;
+    esac
+    key=${line%%=*}
+    val=${line#*=}
+    if [[ "${key}" == "AAP_RUNNER_BASE_LABEL" ]]; then
+      base=${val}
+    fi
+  done < "${path}"
+  case "${base}" in
+    crrr | fresh) return 0 ;;
+    "")
+      echo "refusing: AAP_RUNNER_BASE_LABEL is required in ${path}" >&2
+      return 1
+      ;;
+    *)
+      echo "refusing: AAP_RUNNER_BASE_LABEL=${base} is not crrr or fresh" >&2
+      return 1
+      ;;
+  esac
+}
+
 apply_work_disk_size || exit 1
 
 # noble/current has no separate rootfs tarball. This is the WSL image at that
@@ -300,6 +330,7 @@ inside_packages() {
     copy_staged manager.conf.example /etc/aap-runner/manager.conf
     stamp_new_manager_conf /etc/aap-runner/manager.conf
   fi
+  require_runner_base_label /etc/aap-runner/manager.conf
   chmod 755 /usr/local/sbin/aap-runner-manager /usr/local/sbin/aap-runner-evidence \
     /usr/local/sbin/aap-mount-work-disk \
     /var/lib/aap-runner/image/ephemeral-entry.sh
@@ -643,6 +674,27 @@ self_check() {
   grep -qx 'AAP_DISK_FLOOR_GB=60' "${cfg}"
   rm -f "${cfg}"
   apply_work_disk_size 60
+  cfg=$(mktemp)
+  printf 'AAP_RUNNER_BASE_LABEL=crrr\n' > "${cfg}"
+  require_runner_base_label "${cfg}"
+  printf 'AAP_RUNNER_BASE_LABEL=fresh\n' > "${cfg}"
+  require_runner_base_label "${cfg}"
+  printf 'AAP_GITHUB_ORG=special-place-ai-heaven\n' > "${cfg}"
+  if require_runner_base_label "${cfg}"; then
+    echo "a missing base label was accepted" >&2
+    exit 1
+  fi
+  printf 'AAP_RUNNER_BASE_LABEL=\n' > "${cfg}"
+  if require_runner_base_label "${cfg}"; then
+    echo "an empty base label was accepted" >&2
+    exit 1
+  fi
+  printf 'AAP_RUNNER_BASE_LABEL=heavy\n' > "${cfg}"
+  if require_runner_base_label "${cfg}"; then
+    echo "base label heavy was accepted" >&2
+    exit 1
+  fi
+  rm -f "${cfg}"
   cfg=$(mktemp)
   printf '[wsl2]\nnetworkingMode=mirrored\n' > "${cfg}"
   wslconfig_sets_mirrored "${cfg}"

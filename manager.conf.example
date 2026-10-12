@@ -7,13 +7,13 @@ AAP_GITHUB_APP_ID=
 AAP_GITHUB_APP_INSTALLATION_ID=
 AAP_GITHUB_APP_PRIVATE_KEY_PATH=/etc/aap-runner/app.pem
 AAP_RUNNER_IMAGE=aap-crrr-runner:local
-# Third label. Default crrr, which is what ci.yml selects. Fresh sets fresh
-# and does not carry crrr, so it runs a job only when the workflow names fresh.
+# Required. crrr or fresh only. There is no default. An empty value is refused.
+# CRRR sets crrr. Fresh sets fresh and does not carry crrr.
 AAP_RUNNER_BASE_LABEL=crrr
-# Must be self-hosted,linux plus the base above. CRRR stays on crrr.
+# Must be self-hosted,linux plus the base above.
 AAP_RUNNER_LABELS=self-hosted,linux,crrr
 # Labels after the base. CRRR leaves this empty. Fresh sets heavy.
-# Do not repeat self-hosted, linux, or the base label.
+# crrr, fresh, self-hosted, and linux are refused here.
 AAP_RUNNER_EXTRA_LABELS=
 AAP_RUNNER_GROUP=aap-crrr
 # Fixed VHDX size in GiB. CRRR is 60. Fresh sets 100; see the Fresh profile in README.md.
