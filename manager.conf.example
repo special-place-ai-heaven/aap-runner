@@ -1,0 +1,12 @@
+# Installed to /etc/aap-runner/manager.conf, mode 0400, owner root.
+# The GitHub App private key is a separate file. Neither file is committed
+# with a secret in it. Empty values below are rejected by the manager.
+
+AAP_GITHUB_ORG=special-place-ai-heaven
+AAP_GITHUB_APP_ID=
+AAP_GITHUB_APP_INSTALLATION_ID=
+AAP_GITHUB_APP_PRIVATE_KEY_PATH=/etc/aap-runner/app.pem
+AAP_RUNNER_IMAGE=aap-crrr-runner:local
+AAP_RUNNER_LABELS=self-hosted,linux,crrr
+AAP_RUNNER_GROUP=aap-crrr
+AAP_DISK_FLOOR_GB=40

@@ -1,0 +1,19 @@
+[Unit]
+Description=AAP ephemeral CRRR runner manager
+After=docker.service network-online.target
+Requires=docker.service
+ConditionPathExists=/etc/aap-runner/manager.conf
+ConditionPathExists=/etc/aap-runner/app.pem
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/aap-runner-manager
+Restart=on-failure
+RestartSec=15
+User=root
+Group=root
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
