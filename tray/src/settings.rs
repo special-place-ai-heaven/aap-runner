@@ -1,8 +1,8 @@
-//! `settings.json`: pool size and per-job limits, written by the tray, applied by the supervisor.
+//! `inbox\settings.json`: pool size and per-job limits, written by the tray, applied by the
+//! supervisor.
 
-use crate::state::write_atomic;
+use crate::state::{inbox, read_bounded, write_atomic};
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::io;
 use std::ops::RangeInclusive;
 use std::path::Path;
@@ -67,8 +67,7 @@ impl Settings {
 
 /// Missing, unparseable or invalid file = defaults. Missing fields take their defaults.
 pub fn read_settings(base: &Path) -> Settings {
-    fs::read_to_string(base.join("settings.json"))
-        .ok()
+    read_bounded(&inbox(base).join("settings.json"))
         .and_then(|s| serde_json::from_str::<Settings>(s.trim_start_matches('\u{feff}')).ok())
         .filter(|s| s.validate().is_ok())
         .unwrap_or_default()
@@ -78,13 +77,14 @@ pub fn read_settings(base: &Path) -> Settings {
 pub fn write_settings(base: &Path, s: &Settings) -> io::Result<()> {
     s.validate()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    write_atomic(&base.join("settings.json"), &serde_json::to_vec(s)?)
+    write_atomic(&inbox(base).join("settings.json"), &serde_json::to_vec(s)?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::temp_base;
+    use std::fs;
 
     fn with(f: impl FnOnce(&mut Settings)) -> Settings {
         let mut s = Settings::default();
@@ -123,11 +123,11 @@ mod tests {
             r#"{"runner_count":-1}"#,
             r#"{"runner_count":9}"#,
         ] {
-            fs::write(base.join("settings.json"), garbage).unwrap();
+            fs::write(inbox(&base).join("settings.json"), garbage).unwrap();
             assert_eq!(read_settings(&base), Settings::default(), "{garbage}");
         }
         fs::write(
-            base.join("settings.json"),
+            inbox(&base).join("settings.json"),
             "\u{feff}{\"runner_count\":2,\"paused\":true}",
         )
         .unwrap();
@@ -149,9 +149,10 @@ mod tests {
         };
         write_settings(&base, &s).unwrap();
         assert_eq!(read_settings(&base), s);
-        assert!(!base.join("settings.json.tmp").exists());
+        assert!(!inbox(&base).join("settings.json.tmp").exists());
         let raw: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(base.join("settings.json")).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(inbox(&base).join("settings.json")).unwrap())
+                .unwrap();
         assert_eq!(raw["job_memory_gib"], 36);
         assert!(write_settings(&base, &with(|s| s.job_cpus = 0)).is_err());
         assert_eq!(

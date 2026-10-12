@@ -1,14 +1,35 @@
-//! Pure file contract: read `status.json`, write `state.json`. No UI here.
+//! Pure file contract. Trust split: the tray writes only under `<base>\inbox\`
+//! (`state.json`, `settings.json`, `tray.log`); it reads the admin-written `<base>\status.json`.
+//! No UI here.
 
 use serde::Deserialize;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
-use std::path::Path;
+use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_BASE: &str = r"C:\ProgramData\aap-runner";
 pub const STALE_AFTER: Duration = Duration::from_secs(180);
+/// A larger `status.json` is treated as Unknown without reading it.
+pub const MAX_STATUS_BYTES: u64 = 64 * 1024;
+
+/// The only folder the tray writes to. Its absence means "not installed".
+pub fn inbox(base: &Path) -> PathBuf {
+    base.join("inbox")
+}
+
+/// Read at most `MAX_STATUS_BYTES`; `None` if missing, unreadable, not UTF-8 or larger.
+pub fn read_bounded(path: &Path) -> Option<String> {
+    let f = File::open(path).ok()?;
+    if f.metadata().ok()?.len() > MAX_STATUS_BYTES {
+        return None;
+    }
+    let mut s = String::new();
+    // The file can grow between metadata() and read: the take() bound still holds.
+    f.take(MAX_STATUS_BYTES + 1).read_to_string(&mut s).ok()?;
+    (s.len() as u64 <= MAX_STATUS_BYTES).then_some(s)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
@@ -92,14 +113,14 @@ struct RawStatus {
     job_memory_gib: Option<u32>,
 }
 
-/// Missing base dir = not installed; missing/bad/stale status.json = unknown.
+/// Missing inbox = not installed; missing/bad/stale/oversized status.json = unknown.
 pub fn read_status(base: &Path, now: SystemTime) -> Snapshot {
-    if !base.is_dir() {
+    if !inbox(base).is_dir() {
         return Snapshot::bare(Status::NotInstalled);
     }
-    match fs::read_to_string(base.join("status.json")) {
-        Ok(json) => parse_status(&json, now),
-        Err(_) => Snapshot::bare(Status::Unknown),
+    match read_bounded(&base.join("status.json")) {
+        Some(json) => parse_status(&json, now),
+        None => Snapshot::bare(Status::Unknown),
     }
 }
 
@@ -161,7 +182,7 @@ pub fn write_desired(base: &Path, desired: Desired) -> io::Result<()> {
         Desired::On => br#"{"desired":"on"}"#,
         Desired::Off => br#"{"desired":"off"}"#,
     };
-    write_atomic(&base.join("state.json"), body)
+    write_atomic(&inbox(base).join("state.json"), body)
 }
 
 /// Write off, wait until the supervisor reports `off`, then write on.
@@ -181,10 +202,10 @@ pub fn restart(base: &Path, poll: Duration, timeout: Duration) -> io::Result<boo
     }
 }
 
-/// Append a line to `logs/tray.log` if that folder exists; otherwise silent.
+/// Append a line to `inbox/tray.log` if that folder exists; otherwise silent.
 pub fn log(base: &Path, msg: &str) {
-    let logs = base.join("logs");
-    if !logs.is_dir() {
+    let dir = inbox(base);
+    if !dir.is_dir() {
         return;
     }
     let secs = SystemTime::now()
@@ -193,7 +214,7 @@ pub fn log(base: &Path, msg: &str) {
     if let Ok(mut f) = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(logs.join("tray.log"))
+        .open(dir.join("tray.log"))
     {
         let _ = writeln!(f, "{secs} {msg}");
     }
@@ -266,7 +287,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 pub(crate) fn temp_base(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("aap-tray-test-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(inbox(&dir)).unwrap();
     dir
 }
 
@@ -390,6 +411,28 @@ mod tests {
             read_status(&base.join("nope"), SystemTime::now()).status,
             Status::NotInstalled
         );
+        fs::remove_dir(inbox(&base)).unwrap();
+        assert_eq!(
+            read_status(&base, SystemTime::now()).status,
+            Status::NotInstalled,
+            "base without inbox"
+        );
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn oversized_status_is_unknown() {
+        let base = temp_base("oversized");
+        let body = json("idle", "2099-01-01T00:00:00Z");
+        let padded = |len: usize| format!("{body}{}", " ".repeat(len - body.len()));
+        let limit = MAX_STATUS_BYTES as usize;
+        fs::write(base.join("status.json"), padded(limit)).unwrap();
+        assert_eq!(read_status(&base, SystemTime::now()).status, Status::Idle);
+        fs::write(base.join("status.json"), padded(limit + 1)).unwrap();
+        assert_eq!(
+            read_status(&base, SystemTime::now()).status,
+            Status::Unknown
+        );
         fs::remove_dir_all(&base).unwrap();
     }
 
@@ -411,13 +454,18 @@ mod tests {
     fn atomic_write_replaces_and_leaves_no_tmp() {
         let base = temp_base("write");
         let read = || -> serde_json::Value {
-            serde_json::from_str(&fs::read_to_string(base.join("state.json")).unwrap()).unwrap()
+            serde_json::from_str(&fs::read_to_string(inbox(&base).join("state.json")).unwrap())
+                .unwrap()
         };
         write_desired(&base, Desired::On).unwrap();
         assert_eq!(read()["desired"], "on");
         write_desired(&base, Desired::Off).unwrap();
         assert_eq!(read()["desired"], "off");
-        assert!(!base.join("state.json.tmp").exists());
+        assert!(!inbox(&base).join("state.json.tmp").exists());
+        assert!(
+            !base.join("state.json").exists(),
+            "writes stay in the inbox"
+        );
         assert!(write_desired(&base.join("nope"), Desired::On).is_err());
         fs::remove_dir_all(&base).unwrap();
     }
@@ -425,7 +473,7 @@ mod tests {
     #[test]
     fn restart_writes_on_after_off_or_times_out() {
         let base = temp_base("restart");
-        let read = || fs::read_to_string(base.join("state.json")).unwrap();
+        let read = || fs::read_to_string(inbox(&base).join("state.json")).unwrap();
         // A future timestamp counts as fresh, so the test needs no clock formatting.
         fs::write(
             base.join("status.json"),

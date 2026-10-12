@@ -1,7 +1,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-//! Tray front-end for the AAP self-hosted runner. Reads `status.json`, writes `state.json`
-//! and `settings.json`, opens the logs folder and its own `--settings` window. Nothing else.
+//! Tray front-end for the AAP self-hosted runner. Reads `status.json`, writes only under
+//! `inbox\` (`state.json`, `settings.json`, `tray.log`), opens the logs folder and its own
+//! `--settings` window (via `current_exe`). Nothing else.
 //!
 //! Like Fathom: a raw Win32 message pump on the main thread drives `tray-icon` directly.
 
@@ -29,6 +30,8 @@ const POLL: Duration = Duration::from_secs(5);
 /// ponytail: theme poll like Fathom; RegNotifyChangeKeyValue if 2 s ever matters.
 const THEME_POLL: Duration = Duration::from_secs(2);
 const RESTART_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Absolute: a bare `explorer.exe` would be found in the tray's own folder first.
+const EXPLORER: &str = r"C:\Windows\explorer.exe";
 const TICK: Duration = Duration::from_millis(16);
 
 fn badge(s: &Status) -> Badge {
@@ -172,7 +175,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
             } else if id == settings_item.id() {
                 open_settings(base);
             } else if id == logs.id() {
-                if let Err(e) = Command::new("explorer.exe").arg(base.join("logs")).spawn() {
+                if let Err(e) = Command::new(EXPLORER).arg(base.join("logs")).spawn() {
                     state::log(base, &format!("open logs failed: {e}"));
                 }
             } else if id == quit.id() {
