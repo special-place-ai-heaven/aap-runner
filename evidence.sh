@@ -70,7 +70,7 @@ host_mounts_empty() {
 }
 
 # Same window as the manager: configured size -10..+4. Default 60 is CRRR.
-# Default shares are 1024. Half weight leaves the Windows session responsive.
+# Default shares are 1024. This only weights containers inside the WSL VM.
 CPU_SHARES=512
 WORK_DISK_GIB=""
 WORK_DISK_MIN_GB=""
@@ -78,8 +78,8 @@ WORK_DISK_MAX_GB=""
 
 apply_disk_window() {
   local gib="${1:-60}"
-  if [[ ! "${gib}" =~ ^[1-9][0-9]*$ ]] || [[ "${gib}" -lt 20 || "${gib}" -gt 2048 ]]; then
-    echo "refusing: AAP_WORK_DISK_GIB=${gib}" >&2
+  if [[ ! "${gib}" =~ ^[1-9][0-9]*$ ]] || [[ "${gib}" -lt 20 || "${gib}" -gt 512 ]]; then
+    echo "refusing: AAP_WORK_DISK_GIB=${gib} is not 20..512" >&2
     return 1
   fi
   WORK_DISK_GIB=${gib}
@@ -108,8 +108,29 @@ read_work_disk_gib() {
   apply_disk_window "${gib}"
 }
 
+# Size is not identity. The mount's device must differ from / and its UUID
+# must be the work disk written at install.
+work_mount_matches() {
+  local dev="$1" root_dev="$2" mount_uuid="$3" expect_uuid="$4"
+  [[ -n "${dev}" && -n "${root_dev}" && "${dev}" != "${root_dev}" ]] || return 1
+  [[ "${expect_uuid}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || return 1
+  [[ "${mount_uuid}" == "${expect_uuid}" ]]
+}
+
+# aap-runner has automount off, so wsl.exe and the Windows profile are
+# captured by evidence-host.sh and passed in as files.
+host_bundle_ok() {
+  local version_file="$1" state="$2" config_file="$3"
+  [[ -n "${version_file}" && -f "${version_file}" && -r "${version_file}" ]] || return 1
+  case "${state}" in
+    absent) return 0 ;;
+    present) [[ -n "${config_file}" && -f "${config_file}" && -r "${config_file}" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
 self_check() {
-  local got
+  local got sample tmp version cfg
   got=$(route_gateway 010011AC)
   [[ "${got}" == "172.17.0.1" ]]
   got=$(memory_bytes 12g)
@@ -165,6 +186,51 @@ EOF
     echo "a 9 GiB work disk was accepted" >&2
     return 1
   fi
+  if apply_disk_window 513; then
+    echo "a 513 GiB work disk was accepted" >&2
+    return 1
+  fi
+  apply_disk_window 512
+  [[ "${WORK_DISK_MIN_GB}" == "502" && "${WORK_DISK_MAX_GB}" == "516" ]]
+  sample=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+  if ! work_mount_matches /dev/sdb1 /dev/sda "${sample}" "${sample}"; then
+    echo "a distinct work-disk device was rejected" >&2
+    return 1
+  fi
+  if work_mount_matches /dev/sda /dev/sda "${sample}" "${sample}"; then
+    echo "the distro root device was accepted as the work disk" >&2
+    return 1
+  fi
+  if work_mount_matches /dev/sdb1 /dev/sda "${sample}" bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee; then
+    echo "a different filesystem UUID was accepted" >&2
+    return 1
+  fi
+  tmp=$(mktemp -d)
+  version="${tmp}/version"
+  cfg="${tmp}/wslconfig"
+  printf 'WSL version: 2.0.0\n' > "${version}"
+  if ! host_bundle_ok "${version}" absent "${cfg}"; then
+    echo "an absent .wslconfig with a version file was rejected" >&2
+    return 1
+  fi
+  printf '[wsl2]\nmemory=80GB\n' > "${cfg}"
+  if ! host_bundle_ok "${version}" present "${cfg}"; then
+    echo "a present .wslconfig was rejected" >&2
+    return 1
+  fi
+  if host_bundle_ok "" present "${cfg}"; then
+    echo "a missing wsl --version file was accepted" >&2
+    return 1
+  fi
+  if host_bundle_ok "${version}" present "${tmp}/missing"; then
+    echo "a missing .wslconfig was accepted as present" >&2
+    return 1
+  fi
+  if host_bundle_ok "${version}" "" "${cfg}"; then
+    echo "an empty wslconfig state was accepted" >&2
+    return 1
+  fi
+  rm -rf "${tmp}"
   echo "evidence self-check ok"
 }
 
@@ -190,7 +256,20 @@ section() {
 
 section "kernel"
 uname -r
-echo "Operator: from Windows, run wsl --version and paste that output alongside this log."
+
+section "host wsl bundle"
+if host_bundle_ok "${AAP_WSL_VERSION_FILE:-}" "${AAP_WSLCONFIG_STATE:-}" "${AAP_WSLCONFIG_FILE:-}"; then
+  echo "wsl --version:"
+  cat "${AAP_WSL_VERSION_FILE}"
+  echo "wslconfig state=${AAP_WSLCONFIG_STATE}"
+  if [[ "${AAP_WSLCONFIG_STATE}" == "present" ]]; then
+    cat "${AAP_WSLCONFIG_FILE}"
+  else
+    echo "wslconfig: absent"
+  fi
+else
+  bad "host P0 bundle is incomplete (wsl --version and .wslconfig). aap-runner has automount off, so run bash ops/self-hosted-runner/evidence-host.sh from the operator distro"
+fi
 
 section "windows drives"
 # WSL injects /mnt/wsl and /mnt/wslg on every distro. A Windows drive is
@@ -290,9 +369,18 @@ section "image storage"
 work_dev=$(df -P /var/lib/ghrunner 2>/dev/null | awk 'NR==2 { print $1 }' || true)
 work_size=$(df -BG --output=size /var/lib/ghrunner 2>/dev/null | awk 'NR==2 { gsub(/G/, "", $1); print $1 }' || true)
 if ! read_work_disk_gib; then
-  bad "AAP_WORK_DISK_GIB in manager.conf is not 20..2048"
+  bad "AAP_WORK_DISK_GIB in manager.conf is not 20..512"
 fi
-echo "work disk dev=${work_dev:-missing} size=${work_size:-missing}G expect=${WORK_DISK_GIB:-unset}G (${WORK_DISK_MIN_GB:-?}-${WORK_DISK_MAX_GB:-?})"
+root_dev=$(df -P / 2>/dev/null | awk 'NR==2 { print $1 }' || true)
+work_uuid=$(findmnt -n -o UUID --target /var/lib/ghrunner 2>/dev/null | tr -d '[:space:]' || true)
+expect_uuid=""
+if [[ -r /etc/aap-runner/work-disk.uuid ]]; then
+  expect_uuid=$(tr -d '[:space:]' < /etc/aap-runner/work-disk.uuid)
+fi
+echo "work disk dev=${work_dev:-missing} uuid=${work_uuid:-missing} root=${root_dev:-missing} expect_uuid=${expect_uuid:-missing} size=${work_size:-missing}G expect=${WORK_DISK_GIB:-unset}G (${WORK_DISK_MIN_GB:-?}-${WORK_DISK_MAX_GB:-?})"
+if ! work_mount_matches "${work_dev}" "${root_dev}" "${work_uuid}" "${expect_uuid}"; then
+  bad "/var/lib/ghrunner dev=${work_dev:-missing} uuid=${work_uuid:-missing} is not work-disk.uuid (${expect_uuid:-missing}) distinct from / (${root_dev:-missing})"
+fi
 if [[ ! "${work_size}" =~ ^[0-9]+$ || -z "${WORK_DISK_MIN_GB}" || "${work_size}" -lt "${WORK_DISK_MIN_GB}" || "${work_size}" -gt "${WORK_DISK_MAX_GB}" ]]; then
   bad "/var/lib/ghrunner is ${work_size:-missing}G; the work disk is ${WORK_DISK_GIB:-unset}G (${WORK_DISK_MIN_GB:-?}-${WORK_DISK_MAX_GB:-?})"
 fi

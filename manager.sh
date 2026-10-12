@@ -7,10 +7,12 @@ set -euo pipefail
 CONFIG_PATH=/etc/aap-runner/manager.conf
 WORK_MOUNT=/var/lib/ghrunner
 # df -BG of an ext4 is a few GiB under the VHDX. Accept configured size -10..+4.
-# The distro VHD reports about 1000G and falls outside that window.
+# AAP_WORK_DISK_GIB is 20..512, so a ~1000G distro VHD is outside the window.
+# The mount must also be work-disk.uuid and not the device behind /.
 WORK_DISK_MIN_GB=""
 WORK_DISK_MAX_GB=""
-# Default shares are 1024. Half weight leaves the Windows session responsive.
+WORK_DISK_UUID_FILE=/etc/aap-runner/work-disk.uuid
+# Default shares are 1024. This only weights containers inside the WSL VM.
 CPU_SHARES=512
 AAP_GITHUB_ORG=""
 AAP_GITHUB_APP_ID=""
@@ -18,6 +20,7 @@ AAP_GITHUB_APP_INSTALLATION_ID=""
 AAP_GITHUB_APP_PRIVATE_KEY_PATH=""
 AAP_RUNNER_IMAGE=""
 AAP_RUNNER_LABELS=""
+AAP_RUNNER_BASE_LABEL=""
 AAP_RUNNER_EXTRA_LABELS=""
 AAP_RUNNER_GROUP=""
 AAP_WORK_DISK_GIB=""
@@ -41,6 +44,31 @@ size_is_work_disk() {
   [[ "${size}" =~ ^[0-9]+$ ]] || return 1
   [[ "${WORK_DISK_MIN_GB}" =~ ^[0-9]+$ && "${WORK_DISK_MAX_GB}" =~ ^[0-9]+$ ]] || return 1
   [[ "${size}" -ge "${WORK_DISK_MIN_GB}" && "${size}" -le "${WORK_DISK_MAX_GB}" ]]
+}
+
+# Size is not enough. The mount's device must differ from / and its UUID
+# must be the one written at install. A ~1000G system disk fails this.
+work_mount_matches() {
+  local dev="$1" root_dev="$2" mount_uuid="$3" expect_uuid="$4"
+  [[ -n "${dev}" && -n "${root_dev}" && "${dev}" != "${root_dev}" ]] || return 1
+  [[ "${expect_uuid}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || return 1
+  [[ "${mount_uuid}" == "${expect_uuid}" ]]
+}
+
+assert_work_mount_device() {
+  local mount="$1" uuid dev root_dev mount_uuid
+  if [[ ! -r "${WORK_DISK_UUID_FILE}" ]]; then
+    echo "refusing: ${WORK_DISK_UUID_FILE} is unreadable" >&2
+    return 1
+  fi
+  uuid=$(tr -d '[:space:]' < "${WORK_DISK_UUID_FILE}")
+  dev=$(df -P "${mount}" | awk 'NR==2 { print $1 }')
+  root_dev=$(df -P / | awk 'NR==2 { print $1 }')
+  mount_uuid=$(findmnt -n -o UUID --target "${mount}" 2>/dev/null | tr -d '[:space:]' || true)
+  if ! work_mount_matches "${dev}" "${root_dev}" "${mount_uuid}" "${uuid}"; then
+    echo "refusing: ${mount} dev=${dev:-missing} uuid=${mount_uuid:-missing}; / is ${root_dev:-missing}; work-disk.uuid=${uuid:-missing}" >&2
+    return 1
+  fi
 }
 
 # At least 55% of the disk. ceil(60 * 55%) is 33, and the 60 GiB disk stays at 35.
@@ -75,6 +103,7 @@ apply_config_line() {
     AAP_GITHUB_APP_PRIVATE_KEY_PATH) AAP_GITHUB_APP_PRIVATE_KEY_PATH=${val} ;;
     AAP_RUNNER_IMAGE) AAP_RUNNER_IMAGE=${val} ;;
     AAP_RUNNER_LABELS) AAP_RUNNER_LABELS=${val} ;;
+    AAP_RUNNER_BASE_LABEL) AAP_RUNNER_BASE_LABEL=${val} ;;
     AAP_RUNNER_EXTRA_LABELS) AAP_RUNNER_EXTRA_LABELS=${val} ;;
     AAP_RUNNER_GROUP) AAP_RUNNER_GROUP=${val} ;;
     AAP_WORK_DISK_GIB) AAP_WORK_DISK_GIB=${val} ;;
@@ -121,8 +150,8 @@ load_config() {
 finish_disk_bounds() {
   local min_floor
   [[ -z "${AAP_WORK_DISK_GIB}" ]] && AAP_WORK_DISK_GIB=60
-  if [[ ! "${AAP_WORK_DISK_GIB}" =~ ^[1-9][0-9]*$ ]] || [[ "${AAP_WORK_DISK_GIB}" -lt 20 || "${AAP_WORK_DISK_GIB}" -gt 2048 ]]; then
-    echo "refusing: AAP_WORK_DISK_GIB=${AAP_WORK_DISK_GIB}" >&2
+  if [[ ! "${AAP_WORK_DISK_GIB}" =~ ^[1-9][0-9]*$ ]] || [[ "${AAP_WORK_DISK_GIB}" -lt 20 || "${AAP_WORK_DISK_GIB}" -gt 512 ]]; then
+    echo "refusing: AAP_WORK_DISK_GIB=${AAP_WORK_DISK_GIB} is not 20..512" >&2
     return 1
   fi
   min_floor=$(disk_floor_gb "${AAP_WORK_DISK_GIB}")
@@ -164,13 +193,27 @@ valid_timeout_minutes() {
   [[ "$1" -le 1440 ]]
 }
 
-# Baseline stays self-hosted,linux,crrr so ci.yml keeps matching.
-# AAP_RUNNER_EXTRA_LABELS is this host only (fresh, heavy). Empty is the baseline.
+# Prefix stays self-hosted,linux. The third label is this host's base.
+# Absent base is crrr, which is what ci.yml selects. Fresh sets fresh and
+# does not carry crrr, so those jobs run only when a workflow names fresh.
+# Extras append after the base. The label grammar and duplicate rule stay.
 finish_runner_labels() {
-  local extra="${AAP_RUNNER_EXTRA_LABELS}" part seen=""
+  local extra="${AAP_RUNNER_EXTRA_LABELS}" part seen="" expect
   local -a parts=()
-  if [[ "${AAP_RUNNER_LABELS}" != "self-hosted,linux,crrr" ]]; then
-    echo "refusing: AAP_RUNNER_LABELS must stay self-hosted,linux,crrr" >&2
+  [[ -z "${AAP_RUNNER_BASE_LABEL}" ]] && AAP_RUNNER_BASE_LABEL=crrr
+  if [[ ! "${AAP_RUNNER_BASE_LABEL}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "refusing: AAP_RUNNER_BASE_LABEL=${AAP_RUNNER_BASE_LABEL}" >&2
+    return 1
+  fi
+  if [[ "${AAP_RUNNER_BASE_LABEL}" == "self-hosted" || "${AAP_RUNNER_BASE_LABEL}" == "linux" ]]; then
+    echo "refusing: AAP_RUNNER_BASE_LABEL=${AAP_RUNNER_BASE_LABEL} repeats the prefix" >&2
+    return 1
+  fi
+  expect="self-hosted,linux,${AAP_RUNNER_BASE_LABEL}"
+  if [[ -z "${AAP_RUNNER_LABELS}" ]]; then
+    AAP_RUNNER_LABELS="${expect}"
+  elif [[ "${AAP_RUNNER_LABELS}" != "${expect}" ]]; then
+    echo "refusing: AAP_RUNNER_LABELS must be ${expect}" >&2
     return 1
   fi
   if [[ -z "${extra}" ]]; then
@@ -186,7 +229,7 @@ finish_runner_labels() {
       echo "refusing: extra label '${part}'" >&2
       return 1
     fi
-    case ",self-hosted,linux,crrr,${seen}," in
+    case ",self-hosted,linux,${AAP_RUNNER_BASE_LABEL},${seen}," in
       *",${part},"*)
         echo "refusing: extra label '${part}' duplicates a label already set" >&2
         return 1
@@ -194,7 +237,7 @@ finish_runner_labels() {
     esac
     seen="${seen:+${seen},}${part}"
   done
-  AAP_RUNNER_LABELS="self-hosted,linux,crrr,${seen}"
+  AAP_RUNNER_LABELS="${expect},${seen}"
 }
 
 finish_job_limits() {
@@ -288,6 +331,9 @@ disk_ok() {
   local avail size
   if ! mountpoint -q "${WORK_MOUNT}"; then
     echo "refusing to start a job: ${WORK_MOUNT} is not a mountpoint" >&2
+    return 1
+  fi
+  if ! assert_work_mount_device "${WORK_MOUNT}"; then
     return 1
   fi
   avail=$(df -BG --output=avail "${WORK_MOUNT}" | parse_df_gb)
@@ -397,7 +443,7 @@ run_one() {
 }
 
 self_check() {
-  local got killer=""
+  local got killer="" sample
   if ! below_floor 34 35; then
     echo "34G should be under a 35G floor" >&2
     return 1
@@ -451,6 +497,29 @@ self_check() {
     echo "a 9 GiB work disk was accepted" >&2
     return 1
   fi
+  AAP_WORK_DISK_GIB=513
+  if finish_disk_bounds; then
+    echo "a 513 GiB work disk was accepted" >&2
+    return 1
+  fi
+  AAP_WORK_DISK_GIB=512
+  AAP_DISK_FLOOR_GB=""
+  finish_disk_bounds
+  [[ "${WORK_DISK_MIN_GB}" == "502" && "${WORK_DISK_MAX_GB}" == "516" ]]
+  [[ "${AAP_DISK_FLOOR_GB}" == "282" ]]
+  sample=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+  if ! work_mount_matches /dev/sdb1 /dev/sda "${sample}" "${sample}"; then
+    echo "a distinct work-disk device was rejected" >&2
+    return 1
+  fi
+  if work_mount_matches /dev/sda /dev/sda "${sample}" "${sample}"; then
+    echo "the distro root device was accepted as the work disk" >&2
+    return 1
+  fi
+  if work_mount_matches /dev/sdb1 /dev/sda "${sample}" bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee; then
+    echo "a different filesystem UUID was accepted" >&2
+    return 1
+  fi
   AAP_WORK_DISK_GIB=60
   AAP_DISK_FLOOR_GB=35
   finish_disk_bounds
@@ -497,34 +566,69 @@ self_check() {
     echo "timeout above 1440 minutes was accepted" >&2
     return 1
   fi
+  AAP_RUNNER_BASE_LABEL=""
   AAP_RUNNER_LABELS="self-hosted,linux,crrr"
   AAP_RUNNER_EXTRA_LABELS=""
   finish_runner_labels
+  [[ "${AAP_RUNNER_BASE_LABEL}" == "crrr" ]]
   [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,crrr" ]]
+  AAP_RUNNER_BASE_LABEL="fresh"
+  AAP_RUNNER_LABELS="self-hosted,linux,fresh"
+  AAP_RUNNER_EXTRA_LABELS="heavy"
+  finish_runner_labels
+  [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,fresh,heavy" ]]
+  AAP_RUNNER_BASE_LABEL="fresh"
+  AAP_RUNNER_LABELS=""
+  AAP_RUNNER_EXTRA_LABELS="heavy"
+  finish_runner_labels
+  [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,fresh,heavy" ]]
+  AAP_RUNNER_BASE_LABEL="fresh"
   AAP_RUNNER_LABELS="self-hosted,linux,crrr"
+  AAP_RUNNER_EXTRA_LABELS="heavy"
+  if finish_runner_labels; then
+    echo "crrr labels were accepted for base fresh" >&2
+    return 1
+  fi
+  AAP_RUNNER_BASE_LABEL="fresh"
+  AAP_RUNNER_LABELS="self-hosted,linux,fresh"
   AAP_RUNNER_EXTRA_LABELS="fresh"
-  finish_runner_labels
-  [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,crrr,fresh" ]]
-  AAP_RUNNER_LABELS="self-hosted,linux,crrr"
-  AAP_RUNNER_EXTRA_LABELS="heavy,fresh"
-  finish_runner_labels
-  [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,crrr,heavy,fresh" ]]
+  if finish_runner_labels; then
+    echo "the base label was accepted again as an extra" >&2
+    return 1
+  fi
+  AAP_RUNNER_BASE_LABEL="self-hosted"
+  AAP_RUNNER_LABELS=""
+  AAP_RUNNER_EXTRA_LABELS=""
+  if finish_runner_labels; then
+    echo "base label self-hosted was accepted" >&2
+    return 1
+  fi
+  AAP_RUNNER_BASE_LABEL="crrr"
   AAP_RUNNER_LABELS="self-hosted,linux,crrr"
   AAP_RUNNER_EXTRA_LABELS="self-hosted"
   if finish_runner_labels; then
     echo "baseline label was accepted as an extra label" >&2
     return 1
   fi
+  AAP_RUNNER_BASE_LABEL="crrr"
   AAP_RUNNER_LABELS="self-hosted,linux,crrr"
   AAP_RUNNER_EXTRA_LABELS="fresh fresh"
   if finish_runner_labels; then
     echo "a label with a space was accepted" >&2
     return 1
   fi
+  AAP_RUNNER_BASE_LABEL="not a label"
+  AAP_RUNNER_LABELS=""
+  AAP_RUNNER_EXTRA_LABELS=""
+  if finish_runner_labels; then
+    echo "a base label with a space was accepted" >&2
+    return 1
+  fi
+  AAP_RUNNER_BASE_LABEL="crrr"
   AAP_RUNNER_LABELS="linux,crrr"
   AAP_RUNNER_EXTRA_LABELS=""
   if finish_runner_labels; then
-    echo "a baseline other than self-hosted,linux,crrr was accepted" >&2
+    echo "a label line other than self-hosted,linux,crrr was accepted" >&2
     return 1
   fi
   killer=$(arm_wall_clock 30 "aap-self-check-no-such-container")

@@ -18,8 +18,8 @@ WORK_DISK_PART_MB=""
 
 apply_work_disk_size() {
   local gib="${1:-${AAP_WORK_DISK_GIB:-60}}"
-  if [[ ! "${gib}" =~ ^[1-9][0-9]*$ ]] || [[ "${gib}" -lt 20 || "${gib}" -gt 2048 ]]; then
-    echo "refusing: AAP_WORK_DISK_GIB=${gib} is not 20..2048" >&2
+  if [[ ! "${gib}" =~ ^[1-9][0-9]*$ ]] || [[ "${gib}" -lt 20 || "${gib}" -gt 512 ]]; then
+    echo "refusing: AAP_WORK_DISK_GIB=${gib} is not 20..512" >&2
     return 1
   fi
   WORK_DISK_GB=${gib}
@@ -623,6 +623,14 @@ self_check() {
     echo "a 9 GiB work disk was accepted" >&2
     exit 1
   fi
+  if apply_work_disk_size 513; then
+    echo "a 513 GiB work disk was accepted" >&2
+    exit 1
+  fi
+  apply_work_disk_size 512
+  [[ "${WORK_DISK_GB}" == "512" ]]
+  [[ "${WORK_DISK_BYTES}" -eq 549755813888 ]]
+  [[ "${WORK_DISK_PART_MB}" -eq 524288 ]]
   cfg=$(mktemp)
   printf 'AAP_WORK_DISK_GIB=60\nAAP_DISK_FLOOR_GB=35\n' > "${cfg}"
   apply_work_disk_size 100

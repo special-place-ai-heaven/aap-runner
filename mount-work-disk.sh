@@ -9,15 +9,15 @@ UUID_FILE=/etc/aap-runner/work-disk.uuid
 CONFIG_PATH=/etc/aap-runner/manager.conf
 MOUNT=/var/lib/ghrunner
 # df -BG of an ext4 is a few GiB under the VHDX. Accept configured size -10..+4.
-# The distro VHD reports about 1000G and falls outside that window.
+# AAP_WORK_DISK_GIB is 20..512, and the mount UUID must not be the distro root.
 WORK_DISK_GIB=""
 WORK_DISK_MIN_GB=""
 WORK_DISK_MAX_GB=""
 
 apply_disk_window() {
   local gib="${1:-60}"
-  if [[ ! "${gib}" =~ ^[1-9][0-9]*$ ]] || [[ "${gib}" -lt 20 || "${gib}" -gt 2048 ]]; then
-    echo "refusing: AAP_WORK_DISK_GIB=${gib}" >&2
+  if [[ ! "${gib}" =~ ^[1-9][0-9]*$ ]] || [[ "${gib}" -lt 20 || "${gib}" -gt 512 ]]; then
+    echo "refusing: AAP_WORK_DISK_GIB=${gib} is not 20..512" >&2
     return 1
   fi
   WORK_DISK_GIB=${gib}
@@ -50,6 +50,26 @@ read_work_disk_gib() {
 
 uuid_ok() {
   [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+}
+
+# The size window is not identity. The mount's device must differ from /
+# and its UUID must be the work disk written at install.
+work_mount_matches() {
+  local dev="$1" root_dev="$2" mount_uuid="$3" expect_uuid="$4"
+  [[ -n "${dev}" && -n "${root_dev}" && "${dev}" != "${root_dev}" ]] || return 1
+  uuid_ok "${expect_uuid}" || return 1
+  [[ "${mount_uuid}" == "${expect_uuid}" ]]
+}
+
+assert_work_mount_device() {
+  local mount="$1" expect="$2" dev root_dev mount_uuid
+  dev=$(df -P "${mount}" | awk 'NR==2 { print $1 }')
+  root_dev=$(df -P / | awk 'NR==2 { print $1 }')
+  mount_uuid=$(findmnt -n -o UUID --target "${mount}" 2>/dev/null | tr -d '[:space:]' || true)
+  if ! work_mount_matches "${dev}" "${root_dev}" "${mount_uuid}" "${expect}"; then
+    echo "refusing: ${mount} dev=${dev:-missing} uuid=${mount_uuid:-missing}; / is ${root_dev:-missing}; work-disk.uuid=${expect:-missing}" >&2
+    return 1
+  fi
 }
 
 size_is_work_disk() {
@@ -130,9 +150,13 @@ place_state_mounts() {
 }
 
 assert_mounted() {
-  local size
+  local size expect
   if ! mountpoint -q "${MOUNT}"; then
     echo "refusing: ${MOUNT} is not a mountpoint" >&2
+    exit 1
+  fi
+  expect=$(tr -d '[:space:]' < "${UUID_FILE}")
+  if ! assert_work_mount_device "${MOUNT}" "${expect}"; then
     exit 1
   fi
   size=$(df -BG --output=size "${MOUNT}" | awk 'NR==2 { gsub(/G/, "", $1); print $1 }')
@@ -160,7 +184,7 @@ mount_by_uuid() {
 }
 
 self_check() {
-  local tmp link dest
+  local tmp link dest sample
   tmp=$(mktemp -d)
   link="${tmp}/link"
   dest="${tmp}/dest"
@@ -210,6 +234,25 @@ self_check() {
   fi
   if apply_disk_window 9; then
     echo "a 9 GiB work disk was accepted" >&2
+    exit 1
+  fi
+  if apply_disk_window 513; then
+    echo "a 513 GiB work disk was accepted" >&2
+    exit 1
+  fi
+  apply_disk_window 512
+  [[ "${WORK_DISK_MIN_GB}" == "502" && "${WORK_DISK_MAX_GB}" == "516" ]]
+  sample=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+  if ! work_mount_matches /dev/sdb1 /dev/sda "${sample}" "${sample}"; then
+    echo "a distinct work-disk device was rejected" >&2
+    exit 1
+  fi
+  if work_mount_matches /dev/sda /dev/sda "${sample}" "${sample}"; then
+    echo "the distro root device was accepted as the work disk" >&2
+    exit 1
+  fi
+  if work_mount_matches /dev/sdb1 /dev/sda "${sample}" bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee; then
+    echo "a different filesystem UUID was accepted" >&2
     exit 1
   fi
   echo "mount self-check ok"

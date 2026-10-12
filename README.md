@@ -24,9 +24,10 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `daemon.json` | Keys merged into the live daemon.json: `data-root` and `ipv6`. Runtimes are kept |
 | `docker-workdisk.conf` | Drop-in for docker, containerd, and sysbox: start only after the work disk is mounted |
 | `evidence.sh` | Prints the lockdown observations. Installed as `/usr/local/sbin/aap-runner-evidence` |
+| `evidence-host.sh` | From the operator distro, passes `wsl --version` and `.wslconfig` into that script |
 | `lock-acl.ps1` | DACL for the boot-task folder, script, and VHDX: SYSTEM and Administrators only, owner Administrators |
 
-`bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, `bash evidence.sh --self-check`, and `bash mount-work-disk.sh --self-check` check the checksum, disk-floor, limit, route, sudo-listing, daemon.json merge, extra-label, and bind-staging parsers, the cases where a missing `wslinfo` or an unreadable `.wslconfig` must stop the install, and that the mount task is rendered for a user SID as UTF-16 LE. They do not touch WSL.
+`bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, `bash evidence.sh --self-check`, `bash mount-work-disk.sh --self-check`, and `bash evidence-host.sh --self-check` check the checksum, disk-floor, limit, route, sudo-listing, daemon.json merge, base-label, and bind-staging parsers, the cases where a missing `wslinfo` or an unreadable `.wslconfig` must stop the install, and that the mount task is rendered for a user SID as UTF-16 LE. They do not touch WSL.
 
 ## What runs where
 
@@ -66,11 +67,11 @@ The manager reads `/etc/aap-runner/manager.conf` (mode `0400`, root) and the App
 
 For each job the manager:
 
-1. Refuses to start unless `/var/lib/ghrunner` is a mountpoint, `df` size is within `AAP_WORK_DISK_GIB` minus 10 GiB through plus 4 GiB (default 60, so 50–64), and free space is at least `AAP_DISK_FLOOR_GB`. That floor defaults to 35 GB on a 60 GiB disk. A configured floor below 55% of the disk size is raised (100 GiB becomes 55). 60 GiB stays at 35.
+1. Refuses to start unless `/var/lib/ghrunner` is a mountpoint, its source device is not the device behind `/`, and its filesystem UUID equals `/etc/aap-runner/work-disk.uuid`. `df` size must also sit within `AAP_WORK_DISK_GIB` minus 10 GiB through plus 4 GiB. That size is an integer from 20 to 512 (default 60, so 50–64). Free space must be at least `AAP_DISK_FLOOR_GB`. That floor defaults to 35 GB on a 60 GiB disk. A configured floor below 55% of the disk size is raised (100 GiB becomes 55). 60 GiB stays at 35. A ~1000G distro VHD fails the UUID check and the 512 cap.
 2. Mints a short-lived registration token: App JWT, installation token, then `POST /orgs/{org}/actions/runners/registration-token`. The token stays in memory. It is passed to the container on stdin and unset before `run.sh`.
-3. Starts a container with no `-v`, no `--privileged`, and no `/var/run/docker.sock`. `docker create` passes `--memory`, `--memory-swap` equal to that memory, `--cpus`, `--cpu-shares 512`, and `--pids-limit` from this host's `manager.conf`. Swap equal to memory means the job gets no extra swap, so it cannot spill into swap and freeze the host. `--cpu-shares 512` is half the default weight on every host, so a build yields to interactive Windows and WSL work. CRRR65734 sets `12g` and `6`. A missing key uses those same values. A second host writes its own memory, cpu, and pid numbers in its own `manager.conf`. The same `docker create` passes `AAP_WORK_DISK_GIB` and `AAP_DISK_FLOOR_GB` into the container, and the entry script keeps those two names for `run.sh`, so the workflow's `df` uses this host's disk. A wall clock (`AAP_JOB_TIMEOUT_MINUTES`, default 120, maximum 1440) then stops and removes the container if it is still there. 120 is longer than the longest job `timeout-minutes` (90), so a job that finishes is not cut off by the clock. The clock process does not receive the registration token.
+3. Starts a container with no `-v`, no `--privileged`, and no `/var/run/docker.sock`. `docker create` passes `--memory`, `--memory-swap` equal to that memory, `--cpus`, `--cpu-shares 512`, and `--pids-limit` from this host's `manager.conf`. Swap equal to memory means the job gets no extra swap, so it cannot spill into swap and freeze the host. `--cpu-shares 512` is half the default weight. It only orders containers against each other inside this WSL VM. The `.wslconfig` `memory` and `processors` caps are what keep Windows responsive. CRRR65734 sets `12g` and `6`. A missing key uses those same values. A second host writes its own memory, cpu, and pid numbers in its own `manager.conf`. The same `docker create` passes `AAP_WORK_DISK_GIB` and `AAP_DISK_FLOOR_GB` into the container, and the entry script keeps those two names for `run.sh`, so the workflow's `df` uses this host's disk. A wall clock (`AAP_JOB_TIMEOUT_MINUTES`, default 120, maximum 1440) then stops and removes the container if it is still there. 120 is longer than the longest job `timeout-minutes` (90), so a job that finishes is not cut off by the clock. The clock process does not receive the registration token.
 
-Labels passed to `config.sh` are always `self-hosted,linux,crrr`, plus `AAP_RUNNER_EXTRA_LABELS` when that host sets it (`fresh`, `heavy`). `ci.yml` stays on `[self-hosted, linux, crrr]` and does not select the extra labels.
+Labels passed to `config.sh` are `self-hosted,linux` plus `AAP_RUNNER_BASE_LABEL` (default `crrr`), plus `AAP_RUNNER_EXTRA_LABELS` when that host sets it. CRRR registers `self-hosted,linux,crrr`. Fresh registers `self-hosted,linux,fresh,heavy` and does not carry `crrr`. `ci.yml` stays on `[self-hosted, linux, crrr]`, so Fresh does not take those jobs. A later heavy job will target `fresh`.
 
 ```text
 config.sh --unattended --ephemeral --disableupdate=false \
@@ -149,7 +150,7 @@ Sysbox's host state is a bind of `/var/lib/ghrunner/sysbox` onto `/var/lib/sysbo
 
 Bootstrap merges `daemon.json` into `/etc/docker/daemon.json` with jq. `data-root` and `ipv6` are set from the template. A `runtimes` object already in the file, including `sysbox-runc`, is kept. Replacing the file drops that runtime. After dockerd starts, bootstrap requires `sysbox-runc` in `docker info` runtimes and requires `df` of `/var/lib/containerd`, `/run/containerd`, `/var/lib/sysbox`, and the Docker root to be the work disk.
 
-`AAP_WORK_DISK_GIB` is the expected size. `df -BG` of the ext4 is a few GiB under the VHDX, so the manager, the mount script, evidence, and each job accept size minus 10 through plus 4. 60 accepts 50–64. 100 accepts 90–104. The ~1000G distro VHD falls outside both windows. The manager runs `df -BG --output=avail /var/lib/ghrunner` and refuses a job below `AAP_DISK_FLOOR_GB`. That floor is at least 55% of the disk, rounded up. 60 GiB stays at **35 GB free**, because 55% of 60 is 33 and the CRRR budget is already 35. 100 GiB is **55 GB free**. A configured floor below that minimum is raised (a copied `35` on a 100 GiB disk becomes 55). A higher explicit floor is kept. It also refuses when `mountpoint -q` fails. Each job's first step runs the same `df` on `$GITHUB_WORKSPACE`, using `AAP_WORK_DISK_GIB` and `AAP_DISK_FLOOR_GB` from the job environment. Absent values are 60 and 35, which is CRRR. That directory is on the container root, whose overlay upper dir is the docker data-root, so it is the same filesystem.
+`AAP_WORK_DISK_GIB` is an integer from 20 to 512. `df -BG` of the ext4 is a few GiB under the VHDX, so the manager, the mount script, evidence, and each job accept size minus 10 through plus 4. 60 accepts 50–64. 100 accepts 90–104. 513 is refused, so a ~1000G filesystem cannot fall in the window. The size window is not the only guard: the manager, the mount script, and evidence require the source device of `/var/lib/ghrunner` to differ from `/` and its filesystem UUID to equal `/etc/aap-runner/work-disk.uuid`. The manager runs `df -BG --output=avail /var/lib/ghrunner` and refuses a job below `AAP_DISK_FLOOR_GB`. That floor is at least 55% of the disk, rounded up. 60 GiB stays at **35 GB free**, because 55% of 60 is 33 and the CRRR budget is already 35. 100 GiB is **55 GB free**. A configured floor below that minimum is raised (a copied `35` on a 100 GiB disk becomes 55). A higher explicit floor is kept. It also refuses when `mountpoint -q` fails. Each job's first step runs the same `df` on `$GITHUB_WORKSPACE`, using `AAP_WORK_DISK_GIB` and `AAP_DISK_FLOOR_GB` from the job environment. Absent values are 60 and 35, which is CRRR. That directory is on the container root, whose overlay upper dir is the docker data-root, so it is the same filesystem.
 
 35 GB is the free-space budget for one job on the 60 GiB disk after the runner image and Sysbox state are on the disk. Full debuginfo on a hosted runner failed at about 140 GB (`ld: No space left on device` in the workflow comment). This CI uses line-tables-only and `CARGO_INCREMENTAL=0`. Campaign `cargo clean` notes in the repo removed 15.9 GiB, 36.6 GiB, and 41.5 GiB of warm incremental trees. Those trees are larger than one fresh job. 35 GB free is enough for the smaller trees on CRRR and is the point where a new job is refused. A job that needs more than what remains fills this disk and stops. It does not extend `C:`.
 
@@ -177,10 +178,12 @@ AAP_DISK_FLOOR_GB=55
 AAP_JOB_MEMORY=72g
 AAP_JOB_CPUS=24
 AAP_JOB_PIDS_LIMIT=8192
-AAP_RUNNER_EXTRA_LABELS=fresh,heavy
+AAP_RUNNER_BASE_LABEL=fresh
+AAP_RUNNER_LABELS=self-hosted,linux,fresh
+AAP_RUNNER_EXTRA_LABELS=heavy
 ```
 
-`AAP_RUNNER_LABELS` stays `self-hosted,linux,crrr`. `ci.yml` still matches that set. The extra labels do not change which workflow runs here.
+Those labels are `self-hosted,linux,fresh,heavy`. There is no `crrr` label, so `runs-on: [self-hosted, linux, crrr]` does not select this host. Fresh runs a job only when the workflow names `fresh`. Heavy jobs will later target `fresh`.
 
 The manager starts each job with `--memory 72g --memory-swap 72g --cpus 24 --cpu-shares 512 --pids-limit 8192`. 72g leaves headroom inside the WSL VM for dockerd and sysbox. WSL on this PC may use 80 GB total, which leaves 16 GB for Windows. In the Windows user's `.wslconfig`:
 
@@ -274,9 +277,9 @@ The unit does not start while `app.pem` is absent.
 
 Every job:
 
-- `runs-on: [self-hosted, linux, crrr]`
+- `runs-on: [self-hosted, linux, crrr]`, which selects CRRR only. Fresh is `self-hosted,linux,fresh,heavy` and is not selected. Heavy jobs will later target `fresh`
 - skips a `pull_request` whose head repo is not this repo
-- starts by refusing unless `df` of the workspace is within `AAP_WORK_DISK_GIB` minus 10 through plus 4 (default 60, so 50–64) and at least `AAP_DISK_FLOOR_GB` is free (default 35; raised to 55% of a larger disk). That is the same filesystem the manager checks with `df -BG --output=avail /var/lib/ghrunner`
+- starts by refusing unless `AAP_WORK_DISK_GIB` is an integer from 20 to 512 and `df` of the workspace is within that size minus 10 through plus 4 (default 60, so 50–64) with at least `AAP_DISK_FLOOR_GB` free (default 35; raised to 55% of a larger disk). On the distro, `/var/lib/ghrunner` must also be `work-disk.uuid` and not the device behind `/`
 - pins every `uses:` to a 40-character commit SHA, with the version in a comment
 
 Workflow permissions are `{}`. Each job sets `contents: read` and nothing else. No new secret and no new trigger. The SymForge checkout uses the job `GITHUB_TOKEN`. See below.
@@ -337,8 +340,12 @@ The build runs `apt full-upgrade` for the unpinned packages (`curl`, `git`, `ope
 
 After the App key and `manager.conf` are in place:
 
+`aap-runner` has automount off, so it cannot read the Windows profile or run `wsl.exe`. From the operator distro:
+
 ```bash
-wsl.exe -d aap-runner -u root -- bash /usr/local/sbin/aap-runner-evidence
+bash ops/self-hosted-runner/evidence-host.sh
 ```
 
-The script prints `uname -r` and a line telling the operator to paste `wsl --version` from Windows alongside the log. On the distro it checks that no `drvfs` or `9p` Windows drive is mounted (`/mnt/wsl` and `/mnt/wslg` are WSL tmpfs and are not a failure), whether `cmd.exe` can run, `nft list ruleset`, `wslinfo --networking-mode`, the bridge `EnableIPv6`, `id ghrunner`, the `ghrunner` sudo listing, `df` of the containerd root, containerd state, sysbox bind, and Docker root (all must be the work disk), `sysbox-runc` in `docker info`, and `stat` of `/etc/aap-runner/app.pem` and `/etc/aap-runner/manager.conf`. It then starts one Sysbox container with the job memory, cpu, and pids limits and no host mounts. From inside that container it prints the container gateway, `AAP_WINDOWS_HOST_IP` (the distro default route), whether `/mnt` is empty, and the result of connecting to that gateway, that Windows host IP, `192.168.1.1`, and `fd00:aaaa::1` (those four must fail) plus `https://github.com/` (that must succeed). It exits non-zero when any of those observations is missing or wrong. It does not mint a registration token and it does not print the App key.
+That script runs `wsl.exe --version`, reads `%USERPROFILE%\.wslconfig` (or records that the file is absent), copies both into the distro, and runs `aap-runner-evidence`. An absent `.wslconfig` is the Windows NAT default and is printed as `wslconfig: absent`. A direct `wsl.exe -d aap-runner` invocation of evidence without those files fails the host bundle.
+
+The script prints `uname -r`, the captured `wsl --version` output, and the `.wslconfig` text. On the distro it checks that no `drvfs` or `9p` Windows drive is mounted (`/mnt/wsl` and `/mnt/wslg` are WSL tmpfs and are not a failure), whether `cmd.exe` can run, `nft list ruleset`, `wslinfo --networking-mode`, the bridge `EnableIPv6`, `id ghrunner`, the `ghrunner` sudo listing, `df` of the containerd root, containerd state, sysbox bind, and Docker root (all must be the work disk), `sysbox-runc` in `docker info`, and `stat` of `/etc/aap-runner/app.pem` and `/etc/aap-runner/manager.conf`. It then starts one Sysbox container with the job memory, cpu, and pids limits and no host mounts. From inside that container it prints the container gateway, `AAP_WINDOWS_HOST_IP` (the distro default route), whether `/mnt` is empty, and the result of connecting to that gateway, that Windows host IP, `192.168.1.1`, and `fd00:aaaa::1` (those four must fail) plus `https://github.com/` (that must succeed). It exits non-zero when any of those observations is missing or wrong. It does not mint a registration token and it does not print the App key.
