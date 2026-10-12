@@ -11,3 +11,9 @@ AAP_RUNNER_LABELS=self-hosted,linux,crrr
 AAP_RUNNER_GROUP=aap-crrr
 # Free GiB required on /var/lib/ghrunner before a job starts. The disk is 60 GiB fixed.
 AAP_DISK_FLOOR_GB=35
+# docker create limits for one job. Absent keys use these same defaults.
+AAP_JOB_MEMORY=12g
+AAP_JOB_CPUS=6
+AAP_JOB_PIDS_LIMIT=4096
+# Stop and remove the container after this many minutes. 1..1440. Jobs time out at 90.
+AAP_JOB_TIMEOUT_MINUTES=120

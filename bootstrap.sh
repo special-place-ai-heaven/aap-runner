@@ -187,6 +187,7 @@ inside_packages() {
   copy_staged Dockerfile /var/lib/aap-runner/image/Dockerfile
   copy_staged ephemeral-entry.sh /var/lib/aap-runner/image/ephemeral-entry.sh
   copy_staged manager.sh /usr/local/sbin/aap-runner-manager
+  copy_staged evidence.sh /usr/local/sbin/aap-runner-evidence
   copy_staged mount-work-disk.sh /usr/local/sbin/aap-mount-work-disk
   copy_staged aap-runner-manager.service /etc/systemd/system/aap-runner-manager.service
   copy_staged aap-workdisk.service /etc/systemd/system/aap-workdisk.service
@@ -198,7 +199,8 @@ inside_packages() {
   if [[ ! -f /etc/aap-runner/manager.conf ]]; then
     copy_staged manager.conf.example /etc/aap-runner/manager.conf
   fi
-  chmod 755 /usr/local/sbin/aap-runner-manager /usr/local/sbin/aap-mount-work-disk \
+  chmod 755 /usr/local/sbin/aap-runner-manager /usr/local/sbin/aap-runner-evidence \
+    /usr/local/sbin/aap-mount-work-disk \
     /var/lib/aap-runner/image/ephemeral-entry.sh
   chmod 644 /etc/docker/daemon.json /etc/systemd/system/docker.service.d/workdisk.conf \
     /etc/systemd/system/aap-workdisk.service
@@ -236,6 +238,7 @@ rewrite_dns_resolvers() {
 
 inside_runtime() {
   local state rootdir
+  refuse_mirrored_networking
   state=""
   for _ in $(seq 1 30); do
     state=$(systemctl is-system-running || true)
@@ -272,6 +275,7 @@ inside_runtime() {
     echo "dockerd data-root is ${rootdir}; expected /var/lib/ghrunner/docker" >&2
     exit 1
   fi
+  assert_dockerd_ipv6_off
 
   if ! docker build -t aap-crrr-runner:local /var/lib/aap-runner/image; then
     echo "runner image build failed; install stopped" >&2
@@ -326,14 +330,93 @@ inside_runtime() {
   echo "aap-runner install finished. Place the GitHub App key at /etc/aap-runner/app.pem mode 0400, fill /etc/aap-runner/manager.conf, then systemctl start aap-runner-manager."
 }
 
+wslconfig_sets_mirrored() {
+  local file="$1"
+  grep -Eiq '^[[:space:]]*networkingMode[[:space:]]*=[[:space:]]*mirrored[[:space:]]*(#.*)?$' "${file}"
+}
+
+# wslinfo is the live mode. .wslconfig is the next boot. Either one saying
+# mirrored stops the install: mirrored mode puts the distro on the Windows
+# LAN and the bridge filter does not see that traffic.
+refuse_mirrored_networking() {
+  local mode="" raw="" profile="" cfg=""
+  if command -v wslinfo >/dev/null 2>&1; then
+    mode=$(wslinfo --networking-mode 2>/dev/null | tr -d '\r' | head -n 1 || true)
+    if printf '%s\n' "${mode}" | grep -Eiq '^mirrored$'; then
+      echo "refusing: WSL networkingMode is mirrored (wslinfo). Use NAT." >&2
+      exit 1
+    fi
+  fi
+  if [[ ! -d /mnt/c ]]; then
+    return 0
+  fi
+  if ! command -v powershell.exe >/dev/null 2>&1 || ! command -v wslpath >/dev/null 2>&1; then
+    echo "refusing: cannot read .wslconfig to prove networkingMode is not mirrored" >&2
+    exit 1
+  fi
+  raw=$(powershell.exe -NoProfile -NonInteractive -Command '[Environment]::GetFolderPath("UserProfile")' | tr -d '\r')
+  if [[ -z "${raw}" ]]; then
+    echo "refusing: Windows user profile was empty; cannot check .wslconfig" >&2
+    exit 1
+  fi
+  profile=$(wslpath -u "${raw}")
+  cfg="${profile}/.wslconfig"
+  if [[ -f "${cfg}" ]] && wslconfig_sets_mirrored "${cfg}"; then
+    echo "refusing: ${cfg} sets networkingMode=mirrored. Use NAT, then wsl --shutdown." >&2
+    exit 1
+  fi
+}
+
+assert_dockerd_ipv6_off() {
+  local enabled
+  enabled=$(docker network inspect bridge --format '{{.EnableIPv6}}')
+  if [[ "${enabled}" != "false" ]]; then
+    echo "refusing: dockerd IPv6 is '${enabled}'; expected false" >&2
+    exit 1
+  fi
+}
+
+lock_windows_admin_only() {
+  local win="$1"
+  if ! powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+    -File "$(wslpath -w "${SCRIPT_DIR}/lock-acl.ps1")" \
+    -LiteralPath "${win}"; then
+    echo "refusing: ACL on ${win} is not limited to SYSTEM and Administrators" >&2
+    exit 1
+  fi
+}
+
+lock_work_disk_acl() {
+  local dir
+  dir=$(dirname "${WORK_VHDX}")
+  lock_windows_admin_only "$(wslpath -w "${dir}")"
+  lock_windows_admin_only "$(wslpath -w "${WORK_VHDX}")"
+}
+
 self_check() {
-  local tmp
+  local tmp cfg
   tmp=$(mktemp)
   printf 'abc' > "${tmp}"
   verify_sha256 "${tmp}" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
   rm -f "${tmp}"
   [[ "${WORK_DISK_BYTES}" -eq $((WORK_DISK_GB * 1024 * 1024 * 1024)) ]]
   [[ "${WORK_DISK_PART_MB}" -eq $((WORK_DISK_GB * 1024)) ]]
+  cfg=$(mktemp)
+  printf '[wsl2]\nnetworkingMode=mirrored\n' > "${cfg}"
+  wslconfig_sets_mirrored "${cfg}"
+  printf '[wsl2]\nnetworkingMode = mirrored # note\n' > "${cfg}"
+  wslconfig_sets_mirrored "${cfg}"
+  printf '[wsl2]\nnetworkingMode=nat\n' > "${cfg}"
+  if wslconfig_sets_mirrored "${cfg}"; then
+    echo "nat was treated as mirrored" >&2
+    exit 1
+  fi
+  printf '# networkingMode=mirrored\n' > "${cfg}"
+  if wslconfig_sets_mirrored "${cfg}"; then
+    echo "a comment was treated as mirrored" >&2
+    exit 1
+  fi
+  rm -f "${cfg}"
   echo "checksum self-check ok"
 }
 
@@ -351,6 +434,7 @@ outside() {
     echo "/mnt/c is not mounted; this step has to run before aap-runner is locked down" >&2
     exit 1
   fi
+  refuse_mirrored_networking
   ensure_work_vhdx
   attach_work_vhdx
   if distro_exists; then
@@ -379,7 +463,7 @@ outside() {
     "${SCRIPT_DIR}/daemon.json" "${SCRIPT_DIR}/docker-workdisk.conf" \
     "${SCRIPT_DIR}/aap-runner-manager.service" "${SCRIPT_DIR}/nftables.conf" \
     "${SCRIPT_DIR}/wsl.conf" "${SCRIPT_DIR}/manager.conf.example" \
-    "${SCRIPT_DIR}/bootstrap.sh" "${STAGE}/"
+    "${SCRIPT_DIR}/evidence.sh" "${SCRIPT_DIR}/bootstrap.sh" "${STAGE}/"
 
   wsl.exe -d "${DISTRO}" -u root -- env "AAP_STAGE_BOOT=${STAGE}/bootstrap.sh" \
     bash -lc "mkdir -p /opt/aap-runner && cp \"\$AAP_STAGE_BOOT\" /opt/aap-runner/bootstrap.sh && bash /opt/aap-runner/bootstrap.sh --inside-packages"
@@ -400,6 +484,7 @@ ensure_work_vhdx() {
       echo "refusing: ${WORK_VHDX} is ${bytes} bytes, not a ${WORK_DISK_GB}GiB fixed VHDX" >&2
       exit 1
     fi
+    lock_work_disk_acl
     return 0
   fi
   avail=$(avail_gb /mnt/c)
@@ -413,6 +498,7 @@ ensure_work_vhdx() {
     echo "failed to create ${win}. Run bootstrap from an elevated shell." >&2
     exit 1
   fi
+  lock_work_disk_acl
 }
 
 attach_work_vhdx() {
@@ -443,7 +529,11 @@ register_mount_task() {
   xml=${xml//__AAP_PS1__/${ps1_win}}
   xml_dest="${task_dir}/mount-work-vhdx-task.xml"
   printf '%s\n' "${xml}" > "${xml_dest}"
-  icacls.exe "${ps1_win}" /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F'
+  # Folder, boot script, task xml, and VHDX: SYSTEM and Administrators only.
+  lock_windows_admin_only "$(wslpath -w "${task_dir}")"
+  lock_windows_admin_only "${ps1_win}"
+  lock_windows_admin_only "$(wslpath -w "${xml_dest}")"
+  lock_windows_admin_only "$(wslpath -w "${WORK_VHDX}")"
   schtasks.exe /Delete /TN AAP-CRRR-C-Free-GB /F >/dev/null 2>&1 || true
   if ! schtasks.exe /Create /TN AAP-CRRR-Mount-Work-Disk /XML "$(wslpath -w "${xml_dest}")" /F; then
     echo "failed to register scheduled task AAP-CRRR-Mount-Work-Disk as SYSTEM." >&2

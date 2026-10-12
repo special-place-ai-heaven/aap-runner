@@ -5,14 +5,22 @@
 set -euo pipefail
 
 start_inner_dockerd() {
+  local enabled
   if [[ -S /var/run/docker.sock ]]; then
     rm -f /var/run/docker.sock
   fi
+  install -d -m 0755 /etc/docker
+  printf '%s\n' '{"ipv6":false}' > /etc/docker/daemon.json
   dockerd --host unix:///var/run/docker.sock >/var/log/aap-inner-dockerd.log 2>&1 &
   for _ in $(seq 1 60); do
     if docker info >/dev/null 2>&1; then
       chown root:docker /var/run/docker.sock
       chmod 660 /var/run/docker.sock
+      enabled=$(docker network inspect bridge --format '{{.EnableIPv6}}')
+      if [[ "${enabled}" != "false" ]]; then
+        echo "refusing: inner dockerd IPv6 is '${enabled}'; expected false" >&2
+        return 1
+      fi
       return 0
     fi
     sleep 1

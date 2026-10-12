@@ -17,6 +17,10 @@ AAP_RUNNER_IMAGE=""
 AAP_RUNNER_LABELS=""
 AAP_RUNNER_GROUP=""
 AAP_DISK_FLOOR_GB=""
+AAP_JOB_MEMORY=""
+AAP_JOB_CPUS=""
+AAP_JOB_PIDS_LIMIT=""
+AAP_JOB_TIMEOUT_MINUTES=""
 
 below_floor() {
   local avail="$1" floor="$2"
@@ -57,6 +61,10 @@ apply_config_line() {
     AAP_RUNNER_LABELS) AAP_RUNNER_LABELS=${val} ;;
     AAP_RUNNER_GROUP) AAP_RUNNER_GROUP=${val} ;;
     AAP_DISK_FLOOR_GB) AAP_DISK_FLOOR_GB=${val} ;;
+    AAP_JOB_MEMORY) AAP_JOB_MEMORY=${val} ;;
+    AAP_JOB_CPUS) AAP_JOB_CPUS=${val} ;;
+    AAP_JOB_PIDS_LIMIT) AAP_JOB_PIDS_LIMIT=${val} ;;
+    AAP_JOB_TIMEOUT_MINUTES) AAP_JOB_TIMEOUT_MINUTES=${val} ;;
     *)
       echo "unknown config key: ${key}" >&2
       return 1
@@ -87,6 +95,79 @@ load_config() {
   [[ "${AAP_RUNNER_LABELS}" == "self-hosted,linux,crrr" ]]
   [[ "${AAP_RUNNER_GROUP}" == "aap-crrr" ]]
   [[ "${AAP_DISK_FLOOR_GB}" =~ ^[0-9]+$ ]]
+  finish_job_limits
+}
+
+# Absent keys use the defaults. A present value that is not this grammar is refused.
+# Memory is an integer plus one docker suffix. Timeout is 1..1440 minutes.
+valid_memory() {
+  [[ "$1" =~ ^[1-9][0-9]*[bBkKmMgG]?$ ]]
+}
+
+valid_cpus() {
+  [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+  awk -v n="$1" 'BEGIN { exit (n > 0 ? 0 : 1) }'
+}
+
+valid_pids() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+valid_timeout_minutes() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$1" -le 1440 ]]
+}
+
+finish_job_limits() {
+  [[ -z "${AAP_JOB_MEMORY}" ]] && AAP_JOB_MEMORY=12g
+  [[ -z "${AAP_JOB_CPUS}" ]] && AAP_JOB_CPUS=6
+  [[ -z "${AAP_JOB_PIDS_LIMIT}" ]] && AAP_JOB_PIDS_LIMIT=4096
+  [[ -z "${AAP_JOB_TIMEOUT_MINUTES}" ]] && AAP_JOB_TIMEOUT_MINUTES=120
+  if ! valid_memory "${AAP_JOB_MEMORY}"; then
+    echo "refusing: AAP_JOB_MEMORY=${AAP_JOB_MEMORY}" >&2
+    return 1
+  fi
+  if ! valid_cpus "${AAP_JOB_CPUS}"; then
+    echo "refusing: AAP_JOB_CPUS=${AAP_JOB_CPUS}" >&2
+    return 1
+  fi
+  if ! valid_pids "${AAP_JOB_PIDS_LIMIT}"; then
+    echo "refusing: AAP_JOB_PIDS_LIMIT=${AAP_JOB_PIDS_LIMIT}" >&2
+    return 1
+  fi
+  if ! valid_timeout_minutes "${AAP_JOB_TIMEOUT_MINUTES}"; then
+    echo "refusing: AAP_JOB_TIMEOUT_MINUTES=${AAP_JOB_TIMEOUT_MINUTES}" >&2
+    return 1
+  fi
+}
+
+# Child is a new session with a clean command, so the registration token
+# (an unexported local) is not in its environment. disarm kills the sleep
+# before it can stop the container.
+arm_wall_clock() {
+  local seconds="$1" name="$2"
+  if ! command -v setsid >/dev/null 2>&1; then
+    echo "refusing: setsid is required for the job wall clock" >&2
+    return 1
+  fi
+  # Single quotes on purpose: this shell must not expand the clock's $1/$2.
+  # shellcheck disable=SC2016
+  setsid bash -c '
+    sleep "$1"
+    echo "wall clock ${1}s elapsed; stopping $2" >&2
+    docker stop -t 20 "$2" || true
+    docker rm -f "$2" || true
+  ' _ "${seconds}" "${name}" >/dev/null &
+  echo $!
+}
+
+disarm_wall_clock() {
+  local pid="$1"
+  if [[ -z "${pid}" ]]; then
+    return 0
+  fi
+  kill -- "-${pid}" 2>/dev/null || kill "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
 }
 
 check_key() {
@@ -181,7 +262,7 @@ cleanup_job() {
 }
 
 run_one() {
-  local token="" name net rc=1
+  local token="" name net rc=1 killer="" seconds=0
   name="aap-crrr-$(date +%s)-$$"
   net="${name}"
   # set -e does not apply inside this function: the loop calls it from `if`.
@@ -195,6 +276,9 @@ run_one() {
     --interactive \
     --name "${name}" \
     --network "${net}" \
+    --memory "${AAP_JOB_MEMORY}" \
+    --cpus "${AAP_JOB_CPUS}" \
+    --pids-limit "${AAP_JOB_PIDS_LIMIT}" \
     --label aap-crrr-job=1 \
     --env "AAP_GITHUB_ORG=${AAP_GITHUB_ORG}" \
     --env "AAP_RUNNER_LABELS=${AAP_RUNNER_LABELS}" \
@@ -211,18 +295,26 @@ run_one() {
     cleanup_job "${name}" "${net}"
     return 1
   fi
+  seconds=$((AAP_JOB_TIMEOUT_MINUTES * 60))
+  if ! killer=$(arm_wall_clock "${seconds}" "${name}") || ! kill -0 "${killer}" 2>/dev/null; then
+    token=""
+    unset token
+    cleanup_job "${name}" "${net}"
+    return 1
+  fi
   set +e
   printf '%s\n' "${token}" | docker start --attach --interactive "${name}"
   rc=$?
   set -e
   token=""
   unset token
+  disarm_wall_clock "${killer}"
   cleanup_job "${name}" "${net}"
   return "${rc}"
 }
 
 self_check() {
-  local got
+  local got killer=""
   if ! below_floor 34 35; then
     echo "34G should be under a 35G floor" >&2
     return 1
@@ -256,6 +348,51 @@ self_check() {
   [[ "${AAP_GITHUB_ORG}" == "special-place-ai-heaven" ]]
   if apply_config_line "NOT_A_KEY=1"; then
     echo "unknown config key was accepted" >&2
+    return 1
+  fi
+  AAP_JOB_MEMORY=""
+  AAP_JOB_CPUS=""
+  AAP_JOB_PIDS_LIMIT=""
+  AAP_JOB_TIMEOUT_MINUTES=""
+  finish_job_limits
+  [[ "${AAP_JOB_MEMORY}" == "12g" ]]
+  [[ "${AAP_JOB_CPUS}" == "6" ]]
+  [[ "${AAP_JOB_PIDS_LIMIT}" == "4096" ]]
+  [[ "${AAP_JOB_TIMEOUT_MINUTES}" == "120" ]]
+  [[ $((AAP_JOB_TIMEOUT_MINUTES * 60)) -eq 7200 ]]
+  AAP_JOB_MEMORY="12gb"
+  if finish_job_limits; then
+    echo "bad memory limit was accepted" >&2
+    return 1
+  fi
+  AAP_JOB_MEMORY="12g"
+  AAP_JOB_CPUS="0"
+  if finish_job_limits; then
+    echo "zero cpus was accepted" >&2
+    return 1
+  fi
+  AAP_JOB_CPUS="6"
+  AAP_JOB_PIDS_LIMIT="4096"
+  AAP_JOB_TIMEOUT_MINUTES="1441"
+  if finish_job_limits; then
+    echo "timeout above 1440 minutes was accepted" >&2
+    return 1
+  fi
+  killer=$(arm_wall_clock 30 "aap-self-check-no-such-container")
+  if ! kill -0 "${killer}" 2>/dev/null; then
+    disarm_wall_clock "${killer}"
+    echo "wall clock did not stay up" >&2
+    return 1
+  fi
+  disarm_wall_clock "${killer}"
+  # The signal is asynchronous, and the sleeper is not this shell's child
+  # (arm runs inside a command substitution), so wait cannot reap it.
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "${killer}" 2>/dev/null || break
+    sleep 0.05
+  done
+  if kill -0 "${killer}" 2>/dev/null; then
+    echo "wall clock was still running after disarm" >&2
     return 1
   fi
   echo "disk floor self-check ok"

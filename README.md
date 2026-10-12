@@ -12,7 +12,7 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `bootstrap.sh` | Import Ubuntu 24.04, install Docker Engine and Sysbox, stop if Sysbox fails |
 | `manager.sh` | Root loop: one fresh container, one job, then remove it |
 | `aap-runner-manager.service` | systemd unit for that loop |
-| `nftables.conf` | Best-effort egress drop for LAN, link-local, and CGNAT |
+| `nftables.conf` | Best-effort egress drop for LAN, link-local, CGNAT, and the other non-global ranges |
 | `manager.conf.example` | Schema for `/etc/aap-runner/manager.conf`. No secrets |
 | `Dockerfile` | Job image: inner dockerd 27.3.1, mysql-client, no sudo |
 | `ephemeral-entry.sh` | Starts inner dockerd, registers ephemeral, runs one job |
@@ -21,10 +21,12 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `mount-work-vhdx-task.xml` | SYSTEM at startup, for that one command |
 | `mount-work-disk.sh` | Inside the distro: mount the ext4 by UUID at `/var/lib/ghrunner` |
 | `aap-workdisk.service` | Runs that mount before Docker and Sysbox |
-| `daemon.json` | dockerd `data-root` `/var/lib/ghrunner/docker` |
+| `daemon.json` | dockerd `data-root` `/var/lib/ghrunner/docker`, `ipv6` false |
 | `docker-workdisk.conf` | docker.service drop-in: do not start unless that path is a mount |
+| `evidence.sh` | Prints the lockdown observations. Installed as `/usr/local/sbin/aap-runner-evidence` |
+| `lock-acl.ps1` | DACL for the boot-task folder, script, and VHDX: SYSTEM and Administrators only |
 
-`bash bootstrap.sh --self-check` and `bash manager.sh --self-check` check the checksum and disk-floor parsers. They do not touch WSL.
+`bash bootstrap.sh --self-check`, `bash manager.sh --self-check`, and `bash evidence.sh --self-check` check the checksum, disk-floor, limit, and route parsers. They do not touch WSL.
 
 ## What runs where
 
@@ -64,7 +66,7 @@ For each job the manager:
 
 1. Refuses to start unless `/var/lib/ghrunner` is a mountpoint, `df` reports that filesystem as the 60 GiB work disk, and at least 35 GB is free.
 2. Mints a short-lived registration token: App JWT, installation token, then `POST /orgs/{org}/actions/runners/registration-token`. The token stays in memory. It is passed to the container on stdin and unset before `run.sh`.
-3. Starts a container with no `-v`, no `--privileged`, and no `/var/run/docker.sock`:
+3. Starts a container with no `-v`, no `--privileged`, and no `/var/run/docker.sock`. `docker create` passes `--memory`, `--cpus`, and `--pids-limit` from `manager.conf`. The defaults are `12g`, `6`, and `4096`. A wall clock (`AAP_JOB_TIMEOUT_MINUTES`, default 120, maximum 1440) then stops and removes the container if it is still there. 120 is longer than the longest job `timeout-minutes` (90), so a job that finishes is not cut off by the clock. The clock process does not receive the registration token.
 
 ```text
 config.sh --unattended --ephemeral --disableupdate=false \
@@ -102,10 +104,18 @@ Outbound only. The distro does not listen: the nftables input policy is drop, wi
 - RFC1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
 - link-local (`169.254.0.0/16`, IPv6 `fe80::/10`)
 - CGNAT / Tailscale (`100.64.0.0/10`, plus IPv6 ULA `fc00::/7`)
+- this-network and loopback (`0.0.0.0/8`, `127.0.0.0/8`)
+- IETF protocol assignments (`192.0.0.0/24`) and benchmarking (`198.18.0.0/15`)
+- multicast and reserved (`224.0.0.0/4`, `240.0.0.0/4`)
+- IPv4-mapped IPv6 (`::ffff:0:0/96`), NAT64 (`64:ff9b::/96`), and IPv6 multicast (`ff00::/8`)
 
-except the distro's DNS resolver, which bootstrap writes into the set from `/etc/resolv.conf`. Internet destinations are allowed. The packet's destination is filtered, not the bridge gateway, so normal outbound NAT still works.
+except the distro's DNS resolver, which bootstrap writes into the set from `/etc/resolv.conf`. Those accept rules are above the drops, so a resolver at `127.0.0.53` still answers. Internet destinations are allowed. The packet's destination is filtered, not the bridge gateway, so normal outbound NAT still works.
 
-This is best-effort LAN isolation. It covers bridge egress from this distro. It does not cover the WSL2 virtual switch on the Windows host, and a process inside the Sysbox container that can reconfigure its own network namespace is outside the host table. Do not open RFC1918 because a job cannot reach GitHub: GitHub's addresses are public, so a drop here is not the cause.
+Bootstrap refuses the install when `wslinfo --networking-mode` prints `mirrored`, and when the Windows user's `.wslconfig` contains `networkingMode=mirrored`. Mirrored mode puts this distro on the Windows LAN. This table does not see that traffic. Leave WSL on NAT.
+
+The distro `daemon.json` sets `"ipv6": false`. After dockerd starts, bootstrap reads `docker network inspect bridge` and stops unless `EnableIPv6` is `false`. Each job's inner dockerd writes the same file before it listens, and the entry script stops that job if the inner bridge is not `false`.
+
+This is best-effort LAN isolation. It covers bridge egress from this distro. It does not cover the WSL2 virtual switch on the Windows host, and a process inside the Sysbox container that can reconfigure its own network namespace is outside the host table. Do not open these prefixes because a job cannot reach GitHub: GitHub's addresses are public, so a drop here is not the cause.
 
 ## Disk floor
 
@@ -126,6 +136,8 @@ create vdisk file="C:\wsl\aap-runner-work.vhdx" maximum=61440 type=fixed
 It then attaches the disk with `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --bare` and formats the whole disk ext4. The UUID is stored at `/etc/aap-runner/work-disk.uuid`.
 
 At every boot, task `AAP-CRRR-Mount-Work-Disk` runs as SYSTEM and runs only `wsl --mount --vhd <that path> --bare`. Inside `aap-runner`, `aap-mount-work-disk` mounts that UUID at `/var/lib/ghrunner`. `mountFsTab=false` stops WSL from processing fstab; the line is still there with `nofail` for systemd, and the service retries until the UUID appears. `mountpoint -q` failing exits the mount script, and docker.service has `ConditionPathIsMountPoint=/var/lib/ghrunner`, so dockerd does not start on the distro root.
+
+`lock-acl.ps1` clears inheritance and leaves only `S-1-5-18` (SYSTEM) and `S-1-5-32-544` (Administrators), full control, on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, `C:\wsl\mount-work-vhdx-task.xml`, and `C:\wsl\aap-runner-work.vhdx`. The directory ACEs inherit onto children. Bootstrap runs that script after it creates the VHDX and again after it writes the boot script. A non-admin ACE fails the install. Check with `icacls C:\wsl`, `icacls C:\wsl\mount-work-vhdx.ps1`, and `icacls C:\wsl\aap-runner-work.vhdx`. Each list should name only SYSTEM and Administrators.
 
 `/var/lib/ghrunner/docker` is dockerd's `data-root`. Job container layers, including the Actions workspace, live there. Sysbox's host state is `/var/lib/sysbox`, replaced with a symlink onto `/var/lib/ghrunner/sysbox` before Sysbox is started. The inner dockerd's data is inside the job container's writable layer, so it is on the same ext4. The distro root VHD still holds the OS packages. It does not hold images or job layers.
 
@@ -148,7 +160,7 @@ The hosted-runner toolchain-delete step is gone. `CARGO_INCREMENTAL=0` and line-
 | WSLInterop binfmt | Registered VM-wide, including inside this distro | With `interop` off, vsock accept fails, so the binfmt cannot launch a Windows exe. It is left registered because it is not per-distro. It is not a way out |
 | `/mnt/wsl` | tmpfs shared by every distro; holds docker-desktop sockets | The manager never bind-mounts `/mnt` or `/mnt/wsl`. It inspects the container and refuses a mount source under `/mnt`. Phase 1's job container had an empty `/mnt` |
 | Windows admin | Rob can `wsl -d aap-runner -u root` | That is the operator. The lockdown is for the distro and the job, not for a local admin who already owns the PC |
-| Boot mount task | The only Windows-side component. SYSTEM runs it at startup | It runs `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --bare` and touches only that VHDX path. It does not read `C:` free space, the user profile, or write into the distro |
+| Boot mount task | The only Windows-side component. SYSTEM runs it at startup | It runs `wsl --mount --vhd C:\wsl\aap-runner-work.vhdx --bare` and touches only that VHDX path. The script, its folder, and the VHDX are writable by SYSTEM and Administrators only. It does not read `C:` free space, the user profile, or write into the distro |
 
 No long-lived runner credential is stored. The registration token is one job. The runner credential file the Actions service writes lives in the container filesystem and is deleted with `docker rm -f`. The App key never enters the job.
 
@@ -177,6 +189,9 @@ Do this in the org that owns the private AAP repos before starting the manager. 
 - [ ] Docker Desktop → WSL integration does **not** include `aap-runner`.
 - [ ] `ghrunner` is not in `sudo` or `docker`. Bootstrap checks this and exits if it is.
 - [ ] Sysbox preflight printed `docker info` from inside `--runtime=sysbox-runc`. If it did not, the install stopped and stays stopped.
+- [ ] On `special-place-ai-heaven/symforge`, Settings > Actions > General > Access allows `Agent_Army_Professionals`. Then delete the `SYMFORGE_TOKEN` secret from this repo and from the org. The workflow does not read it.
+- [ ] `.wslconfig` does not set `networkingMode=mirrored`. `wslinfo --networking-mode` is not `mirrored`.
+- [ ] `icacls` on `C:\wsl`, `C:\wsl\mount-work-vhdx.ps1`, and `C:\wsl\aap-runner-work.vhdx` lists only SYSTEM and Administrators.
 - [ ] BRUCE has accepted this design. Do not `systemctl start aap-runner-manager` before that.
 
 ## Install
@@ -218,14 +233,14 @@ Every job:
 - starts by refusing unless `df` of the workspace shows the 60 GiB work disk with at least 35 GB free. That is the same filesystem the manager checks with `df -BG --output=avail /var/lib/ghrunner`
 - pins every `uses:` to a 40-character commit SHA, with the version in a comment
 
-Workflow permissions are `{}`. Each job sets `contents: read` plus `actions: write`, because `Swatinem/rust-cache` and `actions/setup-node` cache saves need the Actions cache API. No other permission is granted. No new secret and no new trigger. `secrets.SYMFORGE_TOKEN` was already the public-to-private fallback for the sibling checkout.
+Workflow permissions are `{}`. Each job sets `contents: read` and nothing else. No new secret and no new trigger. The SymForge checkout uses the job `GITHUB_TOKEN`. See below.
 
 DB Integration (`timeout-minutes: 45`) runs two service containers on the inner dockerd:
 
-- Oracle MySQL `8.4.11` on port 3306, database `aap`. The existing harness uses this and is not pointed at SingleStore.
-- SingleStore dev image on port 3307, database `aap_singlestore`, health `start-period` 90s (the image's own check is 90s; the floor is 60s).
+- Oracle MySQL `8.4.11` on port 3306, database `aap`, digest `sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242` (the `8.4.11` manifest list, resolved 2026-10-12). The existing harness uses this and is not pointed at SingleStore.
+- SingleStore dev image on port 3307, database `aap_singlestore`, health `start-period` 90s (the image's own check is 90s; the floor is 60s). The tag `latest` resolved on 2026-10-12 to image version `0.2.85` (created 2026-09-22, revision `39175f0b42c96b726eccb9a3b11e2f18dd24305f`), digest `sha256:23c0c5fd0381dae403234437f89b0b5454bd78d385d6201359acfb98d109291f`.
 
-Image digests are **not** in the workflow. Both images are marked `TODO(MARGARET, CODD, §15b)`. Do not invent a digest to clear that TODO.
+Both `image:` lines carry the tag in a comment and the digest in the reference. A later bump replaces the digest on purpose. It does not float back to `:latest`.
 
 PR #39's known-failure inventory is the workspace, agents, and backend test commands (`--no-fail-fast`, every integration binary, the closing step that fails the job if either step failed) and the DB job's eight harnesses plus the `migration_v2_unit::` skip. Those commands are unchanged. A green DB job still does not count the three isolated migration proofs as passes.
 
@@ -239,3 +254,45 @@ PR #39's known-failure inventory is the workspace, agents, and backend test comm
 | `dtolnay/rust-toolchain` | `e2a55d2ffb04f378e9626c28d38b36d230d1e12f` | master 2026-10-09, `toolchain: stable` |
 
 `dtolnay/rust-toolchain` selects the toolchain from the ref when you write `@stable`. A SHA pin does not, so every job sets `toolchain: stable` itself.
+
+## SymForge checkout
+
+`special-place-ai-heaven/symforge` is a public repository. An unauthenticated request for it returns HTTP 200. Every job that needs the sibling checks it out with `token: ${{ github.token }}`, the job `GITHUB_TOKEN`. The workflow does not reference `secrets.SYMFORGE_TOKEN`, so that secret is not sent to the runner.
+
+Owner steps, in this order:
+
+1. Open `special-place-ai-heaven/symforge` → Settings → Actions → General → Access, and allow `Agent_Army_Professionals` (the organization choice that includes that repository).
+2. Delete the `SYMFORGE_TOKEN` secret from `Agent_Army_Professionals` and from the `special-place-ai-heaven` organization.
+
+If symforge is made private and the job token still cannot read it after that Access change, stop. Do not put a PAT back into the workflow. `actions/checkout` documents that `github.token` is scoped to the calling repository; the Access setting is what GitHub documents for letting other repositories in the organization reach this repository's actions. A 404 after step 1 is the stop condition, not a reason to restore the secret.
+
+## Actions cache
+
+Jobs do not grant `actions: write`. `Swatinem/rust-cache` and `actions/setup-node` save and restore through the runner runtime token (`ACTIONS_RUNTIME_TOKEN` and `ACTIONS_CACHE_URL`), which the Actions service injects for the cache API. That is not the `GITHUB_TOKEN` `actions` scope and it is not a repository secret.
+
+A job log proves a save in the post-step `Post Cache cargo artifacts` or `Post Setup Node.js`. A save prints `Cache saved with key:`. The next run that hits the same key prints a cache hit in the main step. A line `cache write denied` means the runtime token was read-only for that event. Adding `actions: write` is not the fix.
+
+## Runner image rebuild
+
+`aap-crrr-runner:local` is built once, during bootstrap. It does not rebuild itself. Rebuild it at least every 30 days, and again in the same week `Dockerfile`, `ephemeral-entry.sh`, the actions-runner pin, or the inner dockerd pin changes.
+
+The locked distro cannot see the checkout. From the operator distro, copy the current files into the image context (the two tarballs are already there unless their pins changed), then build:
+
+```bash
+img=/var/lib/aap-runner/image
+wsl.exe -d aap-runner -u root -- tee "${img}/Dockerfile" < ops/self-hosted-runner/Dockerfile >/dev/null
+wsl.exe -d aap-runner -u root -- tee "${img}/ephemeral-entry.sh" < ops/self-hosted-runner/ephemeral-entry.sh >/dev/null
+wsl.exe -d aap-runner -u root -- docker build -t aap-crrr-runner:local "${img}"
+```
+
+The build runs `apt full-upgrade` for the unpinned packages (`curl`, `git`, `openssl`, `mysql-client`, `ca-certificates`). `docker-ce` stays at the Dockerfile pin `5:27.3.1` until that pin is changed on purpose. The actions-runner tarball is pinned too; `--disableupdate=false` still lets the runner binary update when a job starts. After the build, run the Sysbox preflight above before the manager takes another job. Rebuilding the image does not recreate the VHDX and does not unregister the distro.
+
+## Evidence
+
+After the App key and `manager.conf` are in place:
+
+```bash
+wsl.exe -d aap-runner -u root -- bash /usr/local/sbin/aap-runner-evidence
+```
+
+The script prints, in order: whether `/mnt` is empty, whether `cmd.exe` can run, `nft list ruleset`, `wslinfo --networking-mode`, the bridge `EnableIPv6`, `id ghrunner`, and `stat` of `/etc/aap-runner/app.pem` and `/etc/aap-runner/manager.conf`. It then starts one Sysbox container with the job memory, cpu, and pids limits and, from inside that container, prints the container gateway, the Windows host IP (the distro default route), and the result of connecting to that gateway, that Windows host IP, `192.168.1.1`, and `fd00:aaaa::1` (those four must fail) plus `https://github.com/` (that must succeed). It exits non-zero when any of those observations is missing or wrong. It does not mint a registration token and it does not print the App key.

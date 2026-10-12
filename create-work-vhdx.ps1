@@ -10,18 +10,22 @@ param(
     [int]$SizeGiB
 )
 $ErrorActionPreference = 'Stop'
-if (Test-Path -LiteralPath $Path) {
-    Write-Output 'exists'
-    exit 0
-}
 $dir = Split-Path -Parent $Path
 if (-not (Test-Path -LiteralPath $dir)) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
+}
+$lock = Join-Path $PSScriptRoot 'lock-acl.ps1'
+& $lock -LiteralPath $dir
+if (Test-Path -LiteralPath $Path) {
+    & $lock -LiteralPath $Path
+    Write-Output 'exists'
+    exit 0
 }
 $bytes = [int64]$SizeGiB * 1GB
 $maximumMb = $SizeGiB * 1024
 if (Get-Command New-VHD -ErrorAction SilentlyContinue) {
     New-VHD -Path $Path -SizeBytes $bytes -Fixed | Out-Null
+    & $lock -LiteralPath $Path
     Write-Output 'New-VHD'
     exit 0
 }
@@ -32,4 +36,5 @@ $p = Start-Process -FilePath diskpart.exe -ArgumentList @('/s', $dp) -Wait -Pass
 if ($p.ExitCode -ne 0) {
     exit $p.ExitCode
 }
+& $lock -LiteralPath $Path
 Write-Output 'diskpart'
