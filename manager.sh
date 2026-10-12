@@ -6,9 +6,12 @@ set -euo pipefail
 
 CONFIG_PATH=/etc/aap-runner/manager.conf
 WORK_MOUNT=/var/lib/ghrunner
-# df -BG of the 60 GiB ext4. The distro VHD reports about 1000G.
-WORK_DISK_MIN_GB=50
-WORK_DISK_MAX_GB=64
+# df -BG of an ext4 is a few GiB under the VHDX. Accept configured size -10..+4.
+# The distro VHD reports about 1000G and falls outside that window.
+WORK_DISK_MIN_GB=""
+WORK_DISK_MAX_GB=""
+# Default shares are 1024. Half weight leaves the Windows session responsive.
+CPU_SHARES=512
 AAP_GITHUB_ORG=""
 AAP_GITHUB_APP_ID=""
 AAP_GITHUB_APP_INSTALLATION_ID=""
@@ -17,6 +20,7 @@ AAP_RUNNER_IMAGE=""
 AAP_RUNNER_LABELS=""
 AAP_RUNNER_EXTRA_LABELS=""
 AAP_RUNNER_GROUP=""
+AAP_WORK_DISK_GIB=""
 AAP_DISK_FLOOR_GB=""
 AAP_JOB_MEMORY=""
 AAP_JOB_CPUS=""
@@ -35,7 +39,18 @@ parse_df_gb() {
 size_is_work_disk() {
   local size="$1"
   [[ "${size}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${WORK_DISK_MIN_GB}" =~ ^[0-9]+$ && "${WORK_DISK_MAX_GB}" =~ ^[0-9]+$ ]] || return 1
   [[ "${size}" -ge "${WORK_DISK_MIN_GB}" && "${size}" -le "${WORK_DISK_MAX_GB}" ]]
+}
+
+# At least 55% of the disk. ceil(60 * 55%) is 33, and the 60 GiB disk stays at 35.
+disk_floor_gb() {
+  local gib="$1" floor
+  floor=$(( (gib * 55 + 99) / 100 ))
+  if [[ "${gib}" -eq 60 && "${floor}" -lt 35 ]]; then
+    floor=35
+  fi
+  printf '%s\n' "${floor}"
 }
 
 b64url() {
@@ -62,6 +77,7 @@ apply_config_line() {
     AAP_RUNNER_LABELS) AAP_RUNNER_LABELS=${val} ;;
     AAP_RUNNER_EXTRA_LABELS) AAP_RUNNER_EXTRA_LABELS=${val} ;;
     AAP_RUNNER_GROUP) AAP_RUNNER_GROUP=${val} ;;
+    AAP_WORK_DISK_GIB) AAP_WORK_DISK_GIB=${val} ;;
     AAP_DISK_FLOOR_GB) AAP_DISK_FLOOR_GB=${val} ;;
     AAP_JOB_MEMORY) AAP_JOB_MEMORY=${val} ;;
     AAP_JOB_CPUS) AAP_JOB_CPUS=${val} ;;
@@ -95,9 +111,37 @@ load_config() {
   fi
   [[ "${AAP_RUNNER_IMAGE}" =~ ^[A-Za-z0-9][A-Za-z0-9_.:/@-]*$ ]]
   [[ "${AAP_RUNNER_GROUP}" == "aap-crrr" ]]
-  [[ "${AAP_DISK_FLOOR_GB}" =~ ^[0-9]+$ ]]
+  finish_disk_bounds
   finish_job_limits
   finish_runner_labels
+}
+
+# AAP_WORK_DISK_GIB is this host's VHDX size. Absent means 60, which is CRRR.
+# A floor below 55% of that size is raised. 60 GiB stays at 35 GB free.
+finish_disk_bounds() {
+  local min_floor
+  [[ -z "${AAP_WORK_DISK_GIB}" ]] && AAP_WORK_DISK_GIB=60
+  if [[ ! "${AAP_WORK_DISK_GIB}" =~ ^[1-9][0-9]*$ ]] || [[ "${AAP_WORK_DISK_GIB}" -lt 20 || "${AAP_WORK_DISK_GIB}" -gt 2048 ]]; then
+    echo "refusing: AAP_WORK_DISK_GIB=${AAP_WORK_DISK_GIB}" >&2
+    return 1
+  fi
+  min_floor=$(disk_floor_gb "${AAP_WORK_DISK_GIB}")
+  if [[ -z "${AAP_DISK_FLOOR_GB}" ]]; then
+    AAP_DISK_FLOOR_GB=${min_floor}
+  fi
+  if [[ ! "${AAP_DISK_FLOOR_GB}" =~ ^[0-9]+$ ]]; then
+    echo "refusing: AAP_DISK_FLOOR_GB=${AAP_DISK_FLOOR_GB}" >&2
+    return 1
+  fi
+  if [[ "${AAP_DISK_FLOOR_GB}" -lt "${min_floor}" ]]; then
+    echo "raising AAP_DISK_FLOOR_GB from ${AAP_DISK_FLOOR_GB} to ${min_floor} (55% of ${AAP_WORK_DISK_GIB} GiB; 60 GiB stays 35)" >&2
+    AAP_DISK_FLOOR_GB=${min_floor}
+  fi
+  WORK_DISK_MIN_GB=$((AAP_WORK_DISK_GIB - 10))
+  if [[ "${WORK_DISK_MIN_GB}" -lt 1 ]]; then
+    WORK_DISK_MIN_GB=1
+  fi
+  WORK_DISK_MAX_GB=$((AAP_WORK_DISK_GIB + 4))
 }
 
 # Absent keys use the defaults. A present value that is not this grammar is refused.
@@ -253,7 +297,7 @@ disk_ok() {
     return 1
   fi
   if ! size_is_work_disk "${size}"; then
-    echo "refusing to start a job: ${WORK_MOUNT} is ${size:-unknown}G; the work disk is 60G" >&2
+    echo "refusing to start a job: ${WORK_MOUNT} is ${size:-unknown}G; the work disk is ${AAP_WORK_DISK_GIB}G (${WORK_DISK_MIN_GB}-${WORK_DISK_MAX_GB})" >&2
     return 1
   fi
   if below_floor "${avail}" "${AAP_DISK_FLOOR_GB}"; then
@@ -312,12 +356,16 @@ run_one() {
     --name "${name}" \
     --network "${net}" \
     --memory "${AAP_JOB_MEMORY}" \
+    --memory-swap "${AAP_JOB_MEMORY}" \
     --cpus "${AAP_JOB_CPUS}" \
+    --cpu-shares "${CPU_SHARES}" \
     --pids-limit "${AAP_JOB_PIDS_LIMIT}" \
     --label aap-crrr-job=1 \
     --env "AAP_GITHUB_ORG=${AAP_GITHUB_ORG}" \
     --env "AAP_RUNNER_LABELS=${AAP_RUNNER_LABELS}" \
     --env "AAP_RUNNER_GROUP=${AAP_RUNNER_GROUP}" \
+    --env "AAP_WORK_DISK_GIB=${AAP_WORK_DISK_GIB}" \
+    --env "AAP_DISK_FLOOR_GB=${AAP_DISK_FLOOR_GB}" \
     "${AAP_RUNNER_IMAGE}"; then
     docker network rm "${net}" || true
     return 1
@@ -362,7 +410,14 @@ self_check() {
   [[ "${got}" == "35" ]]
   got=$(printf '1G-blocks\n     60G\n' | parse_df_gb)
   [[ "${got}" == "60" ]]
-  if ! size_is_work_disk 60 || ! size_is_work_disk 59; then
+  [[ "$(disk_floor_gb 60)" == "35" ]]
+  [[ "$(disk_floor_gb 100)" == "55" ]]
+  AAP_WORK_DISK_GIB=""
+  AAP_DISK_FLOOR_GB=""
+  finish_disk_bounds
+  [[ "${AAP_WORK_DISK_GIB}" == "60" && "${AAP_DISK_FLOOR_GB}" == "35" ]]
+  [[ "${WORK_DISK_MIN_GB}" == "50" && "${WORK_DISK_MAX_GB}" == "64" ]]
+  if ! size_is_work_disk 60 || ! size_is_work_disk 50 || ! size_is_work_disk 64; then
     echo "60G work disk was rejected" >&2
     return 1
   fi
@@ -370,6 +425,35 @@ self_check() {
     echo "a filesystem that is not the 60G work disk was accepted" >&2
     return 1
   fi
+  AAP_WORK_DISK_GIB=100
+  AAP_DISK_FLOOR_GB=""
+  finish_disk_bounds
+  [[ "${AAP_DISK_FLOOR_GB}" == "55" ]]
+  [[ "${WORK_DISK_MIN_GB}" == "90" && "${WORK_DISK_MAX_GB}" == "104" ]]
+  if ! size_is_work_disk 100 || ! size_is_work_disk 90 || ! size_is_work_disk 104; then
+    echo "100G work disk was rejected" >&2
+    return 1
+  fi
+  if size_is_work_disk 89 || size_is_work_disk 105 || size_is_work_disk 1000; then
+    echo "a filesystem that is not the 100G work disk was accepted" >&2
+    return 1
+  fi
+  AAP_WORK_DISK_GIB=100
+  AAP_DISK_FLOOR_GB=35
+  finish_disk_bounds
+  [[ "${AAP_DISK_FLOOR_GB}" == "55" ]]
+  AAP_WORK_DISK_GIB=100
+  AAP_DISK_FLOOR_GB=60
+  finish_disk_bounds
+  [[ "${AAP_DISK_FLOOR_GB}" == "60" ]]
+  AAP_WORK_DISK_GIB=9
+  if finish_disk_bounds; then
+    echo "a 9 GiB work disk was accepted" >&2
+    return 1
+  fi
+  AAP_WORK_DISK_GIB=60
+  AAP_DISK_FLOOR_GB=35
+  finish_disk_bounds
   if ! mount_source_forbidden /mnt || ! mount_source_forbidden /mnt/ || ! mount_source_forbidden /mnt/wsl; then
     echo "mounts under /mnt were allowed" >&2
     return 1

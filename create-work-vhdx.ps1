@@ -1,4 +1,5 @@
 # Create a fixed work VHDX. Bootstrap calls this once, from an elevated shell.
+# SizeGiB is AAP_WORK_DISK_GIB (default 60; Fresh passes 100).
 # A fixed VHDX cannot grow into C:.
 # Prefer Hyper-V New-VHD -Fixed. If that cmdlet is absent, diskpart creates
 # the same disk. diskpart maximum= is MiB, so SizeGiB * 1024. PowerShell's

@@ -9,11 +9,54 @@ DISTRO=aap-runner
 INSTALL_DIR=${AAP_RUNNER_INSTALL_DIR:-/mnt/c/aap-runner}
 STAGE=${AAP_RUNNER_STAGE:-/mnt/c/aap-runner-staging}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# 60 GiB fixed. diskpart maximum= is MiB; 60*1024=61440. PowerShell 60GB matches.
+# AAP_WORK_DISK_GIB is this host's fixed VHDX size. Absent means 60 (CRRR).
+# diskpart maximum= is MiB (gib * 1024). PowerShell 1GB is 1024^3.
 WORK_VHDX=${AAP_WORK_VHDX:-/mnt/c/wsl/aap-runner-work.vhdx}
-WORK_DISK_GB=60
-WORK_DISK_BYTES=64424509440
-WORK_DISK_PART_MB=61440
+WORK_DISK_GB=""
+WORK_DISK_BYTES=""
+WORK_DISK_PART_MB=""
+
+apply_work_disk_size() {
+  local gib="${1:-${AAP_WORK_DISK_GIB:-60}}"
+  if [[ ! "${gib}" =~ ^[1-9][0-9]*$ ]] || [[ "${gib}" -lt 20 || "${gib}" -gt 2048 ]]; then
+    echo "refusing: AAP_WORK_DISK_GIB=${gib} is not 20..2048" >&2
+    return 1
+  fi
+  WORK_DISK_GB=${gib}
+  WORK_DISK_BYTES=$((gib * 1024 * 1024 * 1024))
+  WORK_DISK_PART_MB=$((gib * 1024))
+}
+
+# Same floor as the manager. ceil(60 * 55%) is 33, and the 60 GiB disk stays at 35.
+disk_floor_gb() {
+  local gib="$1" floor
+  floor=$(( (gib * 55 + 99) / 100 ))
+  if [[ "${gib}" -eq 60 && "${floor}" -lt 35 ]]; then
+    floor=35
+  fi
+  printf '%s\n' "${floor}"
+}
+
+# First install only. An existing manager.conf is left alone.
+# A floor below 55% of this disk is raised so a copied 35 does not under-protect 100 GiB.
+stamp_new_manager_conf() {
+  local path="$1" floor min_floor
+  if ! grep -q '^AAP_WORK_DISK_GIB=' "${path}"; then
+    printf 'AAP_WORK_DISK_GIB=%s\n' "${WORK_DISK_GB}" >> "${path}"
+  else
+    sed -i "s/^AAP_WORK_DISK_GIB=.*/AAP_WORK_DISK_GIB=${WORK_DISK_GB}/" "${path}"
+  fi
+  min_floor=$(disk_floor_gb "${WORK_DISK_GB}")
+  floor=$(awk -F= '/^AAP_DISK_FLOOR_GB=/ { print $2; exit }' "${path}")
+  if [[ -z "${floor}" ]]; then
+    printf 'AAP_DISK_FLOOR_GB=%s\n' "${min_floor}" >> "${path}"
+  elif [[ "${floor}" =~ ^[0-9]+$ ]] && [[ "${floor}" -lt "${min_floor}" ]]; then
+    echo "raising AAP_DISK_FLOOR_GB from ${floor} to ${min_floor} in ${path}" >&2
+    sed -i "s/^AAP_DISK_FLOOR_GB=.*/AAP_DISK_FLOOR_GB=${min_floor}/" "${path}"
+  fi
+}
+
+apply_work_disk_size || exit 1
 
 # noble/current has no separate rootfs tarball. This is the WSL image at that
 # path. The sha256 is the pin; if the "current" file moves, the check stops
@@ -255,6 +298,7 @@ inside_packages() {
   copy_staged wsl.conf /etc/wsl.conf
   if [[ ! -f /etc/aap-runner/manager.conf ]]; then
     copy_staged manager.conf.example /etc/aap-runner/manager.conf
+    stamp_new_manager_conf /etc/aap-runner/manager.conf
   fi
   chmod 755 /usr/local/sbin/aap-runner-manager /usr/local/sbin/aap-runner-evidence \
     /usr/local/sbin/aap-mount-work-disk \
@@ -565,8 +609,32 @@ self_check() {
   printf 'abc' > "${tmp}"
   verify_sha256 "${tmp}" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
   rm -f "${tmp}"
-  [[ "${WORK_DISK_BYTES}" -eq $((WORK_DISK_GB * 1024 * 1024 * 1024)) ]]
-  [[ "${WORK_DISK_PART_MB}" -eq $((WORK_DISK_GB * 1024)) ]]
+  apply_work_disk_size 60
+  [[ "${WORK_DISK_GB}" == "60" ]]
+  [[ "${WORK_DISK_BYTES}" -eq 64424509440 ]]
+  [[ "${WORK_DISK_PART_MB}" -eq 61440 ]]
+  [[ "$(disk_floor_gb 60)" == "35" ]]
+  apply_work_disk_size 100
+  [[ "${WORK_DISK_GB}" == "100" ]]
+  [[ "${WORK_DISK_BYTES}" -eq 107374182400 ]]
+  [[ "${WORK_DISK_PART_MB}" -eq 102400 ]]
+  [[ "$(disk_floor_gb 100)" == "55" ]]
+  if apply_work_disk_size 9; then
+    echo "a 9 GiB work disk was accepted" >&2
+    exit 1
+  fi
+  cfg=$(mktemp)
+  printf 'AAP_WORK_DISK_GIB=60\nAAP_DISK_FLOOR_GB=35\n' > "${cfg}"
+  apply_work_disk_size 100
+  stamp_new_manager_conf "${cfg}"
+  grep -qx 'AAP_WORK_DISK_GIB=100' "${cfg}"
+  grep -qx 'AAP_DISK_FLOOR_GB=55' "${cfg}"
+  printf 'AAP_WORK_DISK_GIB=60\nAAP_DISK_FLOOR_GB=60\n' > "${cfg}"
+  stamp_new_manager_conf "${cfg}"
+  grep -qx 'AAP_WORK_DISK_GIB=100' "${cfg}"
+  grep -qx 'AAP_DISK_FLOOR_GB=60' "${cfg}"
+  rm -f "${cfg}"
+  apply_work_disk_size 60
   cfg=$(mktemp)
   printf '[wsl2]\nnetworkingMode=mirrored\n' > "${cfg}"
   wslconfig_sets_mirrored "${cfg}"

@@ -6,10 +6,47 @@
 set -euo pipefail
 
 UUID_FILE=/etc/aap-runner/work-disk.uuid
+CONFIG_PATH=/etc/aap-runner/manager.conf
 MOUNT=/var/lib/ghrunner
-# df -BG of a 60 GiB ext4 is a few GB under 60. The distro VHD reports ~1000.
-WORK_DISK_MIN_GB=50
-WORK_DISK_MAX_GB=64
+# df -BG of an ext4 is a few GiB under the VHDX. Accept configured size -10..+4.
+# The distro VHD reports about 1000G and falls outside that window.
+WORK_DISK_GIB=""
+WORK_DISK_MIN_GB=""
+WORK_DISK_MAX_GB=""
+
+apply_disk_window() {
+  local gib="${1:-60}"
+  if [[ ! "${gib}" =~ ^[1-9][0-9]*$ ]] || [[ "${gib}" -lt 20 || "${gib}" -gt 2048 ]]; then
+    echo "refusing: AAP_WORK_DISK_GIB=${gib}" >&2
+    return 1
+  fi
+  WORK_DISK_GIB=${gib}
+  WORK_DISK_MIN_GB=$((gib - 10))
+  if [[ "${WORK_DISK_MIN_GB}" -lt 1 ]]; then
+    WORK_DISK_MIN_GB=1
+  fi
+  WORK_DISK_MAX_GB=$((gib + 4))
+}
+
+# Read only the size key. The manager parser also requires App ids, which
+# this unit does not have when it runs before the first job.
+read_work_disk_gib() {
+  local line key val gib=""
+  if [[ -r "${CONFIG_PATH}" ]]; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      case "${line}" in
+        '' | \#*) continue ;;
+      esac
+      key=${line%%=*}
+      val=${line#*=}
+      if [[ "${key}" == "AAP_WORK_DISK_GIB" && -n "${val}" ]]; then
+        gib=${val}
+      fi
+    done < "${CONFIG_PATH}"
+  fi
+  [[ -z "${gib}" ]] && gib=60
+  apply_disk_window "${gib}"
+}
 
 uuid_ok() {
   [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
@@ -100,7 +137,7 @@ assert_mounted() {
   fi
   size=$(df -BG --output=size "${MOUNT}" | awk 'NR==2 { gsub(/G/, "", $1); print $1 }')
   if ! size_is_work_disk "${size}"; then
-    echo "refusing: ${MOUNT} is ${size:-unknown}G; the work disk is 60G" >&2
+    echo "refusing: ${MOUNT} is ${size:-unknown}G; the work disk is ${WORK_DISK_GIB}G (${WORK_DISK_MIN_GB}-${WORK_DISK_MAX_GB})" >&2
     exit 1
   fi
 }
@@ -150,6 +187,31 @@ self_check() {
     exit 1
   fi
   rm -rf "${tmp}"
+  apply_disk_window 60
+  [[ "${WORK_DISK_MIN_GB}" == "50" && "${WORK_DISK_MAX_GB}" == "64" ]]
+  if ! size_is_work_disk 60 || ! size_is_work_disk 50 || ! size_is_work_disk 64; then
+    echo "60G work disk was rejected" >&2
+    exit 1
+  fi
+  if size_is_work_disk 49 || size_is_work_disk 65 || size_is_work_disk 1000; then
+    echo "a filesystem that is not the 60G work disk was accepted" >&2
+    exit 1
+  fi
+  apply_disk_window 100
+  [[ "${WORK_DISK_GIB}" == "100" ]]
+  [[ "${WORK_DISK_MIN_GB}" == "90" && "${WORK_DISK_MAX_GB}" == "104" ]]
+  if ! size_is_work_disk 100 || ! size_is_work_disk 90 || ! size_is_work_disk 104; then
+    echo "100G work disk was rejected" >&2
+    exit 1
+  fi
+  if size_is_work_disk 89 || size_is_work_disk 105 || size_is_work_disk 1000; then
+    echo "a filesystem that is not the 100G work disk was accepted" >&2
+    exit 1
+  fi
+  if apply_disk_window 9; then
+    echo "a 9 GiB work disk was accepted" >&2
+    exit 1
+  fi
   echo "mount self-check ok"
 }
 
@@ -158,6 +220,7 @@ if [[ "${1:-}" == "--self-check" ]]; then
   exit 0
 fi
 
+read_work_disk_gib
 uuid=$(tr -d '[:space:]' < "${UUID_FILE}")
 if ! uuid_ok "${uuid}"; then
   echo "refusing: ${UUID_FILE} is not a filesystem UUID" >&2

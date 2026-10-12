@@ -66,9 +66,9 @@ The manager reads `/etc/aap-runner/manager.conf` (mode `0400`, root) and the App
 
 For each job the manager:
 
-1. Refuses to start unless `/var/lib/ghrunner` is a mountpoint, `df` reports that filesystem as the 60 GiB work disk, and at least 35 GB is free.
+1. Refuses to start unless `/var/lib/ghrunner` is a mountpoint, `df` size is within `AAP_WORK_DISK_GIB` minus 10 GiB through plus 4 GiB (default 60, so 50–64), and free space is at least `AAP_DISK_FLOOR_GB`. That floor defaults to 35 GB on a 60 GiB disk. A configured floor below 55% of the disk size is raised (100 GiB becomes 55). 60 GiB stays at 35.
 2. Mints a short-lived registration token: App JWT, installation token, then `POST /orgs/{org}/actions/runners/registration-token`. The token stays in memory. It is passed to the container on stdin and unset before `run.sh`.
-3. Starts a container with no `-v`, no `--privileged`, and no `/var/run/docker.sock`. `docker create` passes `--memory`, `--cpus`, and `--pids-limit` from this host's `manager.conf`. CRRR65734 sets `12g` and `6`. A missing key uses those same values. A second host writes its own numbers in its own `manager.conf`. A wall clock (`AAP_JOB_TIMEOUT_MINUTES`, default 120, maximum 1440) then stops and removes the container if it is still there. 120 is longer than the longest job `timeout-minutes` (90), so a job that finishes is not cut off by the clock. The clock process does not receive the registration token.
+3. Starts a container with no `-v`, no `--privileged`, and no `/var/run/docker.sock`. `docker create` passes `--memory`, `--memory-swap` equal to that memory, `--cpus`, `--cpu-shares 512`, and `--pids-limit` from this host's `manager.conf`. Swap equal to memory means the job gets no extra swap, so it cannot spill into swap and freeze the host. `--cpu-shares 512` is half the default weight on every host, so a build yields to interactive Windows and WSL work. CRRR65734 sets `12g` and `6`. A missing key uses those same values. A second host writes its own memory, cpu, and pid numbers in its own `manager.conf`. The same `docker create` passes `AAP_WORK_DISK_GIB` and `AAP_DISK_FLOOR_GB` into the container, and the entry script keeps those two names for `run.sh`, so the workflow's `df` uses this host's disk. A wall clock (`AAP_JOB_TIMEOUT_MINUTES`, default 120, maximum 1440) then stops and removes the container if it is still there. 120 is longer than the longest job `timeout-minutes` (90), so a job that finishes is not cut off by the clock. The clock process does not receive the registration token.
 
 Labels passed to `config.sh` are always `self-hosted,linux,crrr`, plus `AAP_RUNNER_EXTRA_LABELS` when that host sets it (`fresh`, `heavy`). `ci.yml` stays on `[self-hosted, linux, crrr]` and does not select the extra labels.
 
@@ -123,7 +123,7 @@ This is best-effort LAN isolation. It covers bridge egress from this distro. It 
 
 ## Disk floor
 
-The work disk is a **60 GiB fixed VHDX** at `C:\wsl\aap-runner-work.vhdx`. Fixed means the file cannot grow, so job layers cannot grow into `C:`. `df` of that ext4 is the free space. `df /` on the distro root is still the distro VHD's maximum (1 TB on this PC) and is not a guard.
+The work disk is a **fixed VHDX** at `C:\wsl\aap-runner-work.vhdx`. CRRR is 60 GiB (`AAP_WORK_DISK_GIB=60`). Fresh is 100 GiB. Fixed means the file cannot grow, so job layers cannot grow into `C:`. `df` of that ext4 is the free space. `df /` on the distro root is still the distro VHD's maximum (1 TB on this PC) and is not a guard.
 
 Bootstrap creates the file once, from an elevated shell:
 
@@ -131,7 +131,7 @@ Bootstrap creates the file once, from an elevated shell:
 New-VHD -Path C:\wsl\aap-runner-work.vhdx -SizeBytes 60GB -Fixed
 ```
 
-`New-VHD` is a Hyper-V cmdlet. When it is absent, the same script uses diskpart. `maximum=61440` is 61440 MiB, which is 60 GiB, the same size as PowerShell's `60GB`:
+`New-VHD` is a Hyper-V cmdlet. When it is absent, the same script uses diskpart. `maximum=` is MiB (`AAP_WORK_DISK_GIB * 1024`). For the 60 GiB default that is `61440`, the same size as PowerShell's `60GB`. A 100 GiB disk is `102400` MiB. Bootstrap passes `-SizeGiB` from `AAP_WORK_DISK_GIB` (default 60):
 
 ```text
 create vdisk file="C:\wsl\aap-runner-work.vhdx" maximum=61440 type=fixed
@@ -149,13 +149,49 @@ Sysbox's host state is a bind of `/var/lib/ghrunner/sysbox` onto `/var/lib/sysbo
 
 Bootstrap merges `daemon.json` into `/etc/docker/daemon.json` with jq. `data-root` and `ipv6` are set from the template. A `runtimes` object already in the file, including `sysbox-runc`, is kept. Replacing the file drops that runtime. After dockerd starts, bootstrap requires `sysbox-runc` in `docker info` runtimes and requires `df` of `/var/lib/containerd`, `/run/containerd`, `/var/lib/sysbox`, and the Docker root to be the work disk.
 
-The floor is **35 GB free** (`AAP_DISK_FLOOR_GB=35`). The manager runs `df -BG --output=avail /var/lib/ghrunner` and refuses a job below that. It also refuses when `mountpoint -q` fails, or when `df` size is outside 50–64 GB, which is how a glance at the 1 TB distro VHD fails closed. Each job's first step runs the same `df` on `$GITHUB_WORKSPACE`. That directory is on the container root, whose overlay upper dir is the docker data-root, so it is the same filesystem.
+`AAP_WORK_DISK_GIB` is the expected size. `df -BG` of the ext4 is a few GiB under the VHDX, so the manager, the mount script, evidence, and each job accept size minus 10 through plus 4. 60 accepts 50–64. 100 accepts 90–104. The ~1000G distro VHD falls outside both windows. The manager runs `df -BG --output=avail /var/lib/ghrunner` and refuses a job below `AAP_DISK_FLOOR_GB`. That floor is at least 55% of the disk, rounded up. 60 GiB stays at **35 GB free**, because 55% of 60 is 33 and the CRRR budget is already 35. 100 GiB is **55 GB free**. A configured floor below that minimum is raised (a copied `35` on a 100 GiB disk becomes 55). A higher explicit floor is kept. It also refuses when `mountpoint -q` fails. Each job's first step runs the same `df` on `$GITHUB_WORKSPACE`, using `AAP_WORK_DISK_GIB` and `AAP_DISK_FLOOR_GB` from the job environment. Absent values are 60 and 35, which is CRRR. That directory is on the container root, whose overlay upper dir is the docker data-root, so it is the same filesystem.
 
-35 GB is the free-space budget for one job after the runner image and Sysbox state are on the disk. Full debuginfo on a hosted runner failed at about 140 GB (`ld: No space left on device` in the workflow comment). This CI uses line-tables-only and `CARGO_INCREMENTAL=0`. Campaign `cargo clean` notes in the repo removed 15.9 GiB, 36.6 GiB, and 41.5 GiB of warm incremental trees. Those trees are larger than one fresh job. 35 GB free is enough for the smaller trees and is the point where a new job is refused. A job that needs more than what remains fills this disk and stops. It does not extend `C:`.
+35 GB is the free-space budget for one job on the 60 GiB disk after the runner image and Sysbox state are on the disk. Full debuginfo on a hosted runner failed at about 140 GB (`ld: No space left on device` in the workflow comment). This CI uses line-tables-only and `CARGO_INCREMENTAL=0`. Campaign `cargo clean` notes in the repo removed 15.9 GiB, 36.6 GiB, and 41.5 GiB of warm incremental trees. Those trees are larger than one fresh job. 35 GB free is enough for the smaller trees on CRRR and is the point where a new job is refused. A job that needs more than what remains fills this disk and stops. It does not extend `C:`.
 
-Creating the VHDX needs 60 GB free on `C:` at that moment, measured from the operator distro's `/mnt/c`. That check allocates the file. It is not the per-job floor.
+Creating the VHDX needs `AAP_WORK_DISK_GIB` gigabytes free on `C:` at that moment, measured from the operator distro's `/mnt/c`. The default is 60. That check allocates the file. It is not the per-job floor.
 
 The hosted-runner toolchain-delete step is gone. `CARGO_INCREMENTAL=0` and line-tables-only debug stay.
+
+## Fresh profile
+
+Fresh has 93 GB of RAM and 32 threads. CRRR stays at the defaults in `manager.conf.example`: 60 GiB disk, 35 GB free, `12g`, 6 cpus, 4096 pids, and no extra labels. Fresh is a second `manager.conf`, not a change to those defaults. Both hosts still get `--memory-swap` equal to their own `--memory`, and `--cpu-shares 512`.
+
+Install the work disk at 100 GiB from the operator distro:
+
+```bash
+AAP_WORK_DISK_GIB=100 bash ops/self-hosted-runner/bootstrap.sh
+```
+
+That writes `AAP_WORK_DISK_GIB=100` into a new `/etc/aap-runner/manager.conf` and raises `AAP_DISK_FLOOR_GB` from 35 to 55. An existing conf is left as it is. `df` then accepts 90–104 GB.
+
+After install, set the job limits and labels in that conf:
+
+```text
+AAP_WORK_DISK_GIB=100
+AAP_DISK_FLOOR_GB=55
+AAP_JOB_MEMORY=72g
+AAP_JOB_CPUS=24
+AAP_JOB_PIDS_LIMIT=8192
+AAP_RUNNER_EXTRA_LABELS=fresh,heavy
+```
+
+`AAP_RUNNER_LABELS` stays `self-hosted,linux,crrr`. `ci.yml` still matches that set. The extra labels do not change which workflow runs here.
+
+The manager starts each job with `--memory 72g --memory-swap 72g --cpus 24 --cpu-shares 512 --pids-limit 8192`. 72g leaves headroom inside the WSL VM for dockerd and sysbox. WSL on this PC may use 80 GB total, which leaves 16 GB for Windows. In the Windows user's `.wslconfig`:
+
+```ini
+[wsl2]
+memory=80GB
+processors=28
+autoMemoryReclaim=gradual
+```
+
+Leave `networkingMode` unset, or set `nat`. `mirrored` is refused. `processors=28` leaves four threads for Windows on a 32-thread host. `autoMemoryReclaim=gradual` returns idle WSL memory to Windows. The manager runs `docker rm -f` when the job exits, so the container does not stay resident.
 
 ## Threat model
 
@@ -222,7 +258,7 @@ The script downloads three pinned artifacts and checks sha256 before it uses the
 
 The VHDX is imported at `C:\aap-runner` (override with `AAP_RUNNER_INSTALL_DIR`). That path is outside the Windows user profile. After import the distro cannot mount it back.
 
-Bootstrap creates the 60 GiB fixed VHDX, formats it, and registers `AAP-CRRR-Mount-Work-Disk` for the installing operator. The task xml is written as UTF-16 LE with a BOM, because `schtasks /XML` rejects a UTF-8 file. Registering that task needs an elevated shell. If Task Scheduler rejects it, the install stops. An earlier `AAP-CRRR-C-Free-GB` task is deleted if it is present. The task runs at the operator's next logon. This session is already mounted by bootstrap itself. After a reboot the disk stays unmounted until that operator logs on.
+Bootstrap creates the fixed VHDX at `AAP_WORK_DISK_GIB` (default 60), formats it, and registers `AAP-CRRR-Mount-Work-Disk` for the installing operator. The task xml is written as UTF-16 LE with a BOM, because `schtasks /XML` rejects a UTF-8 file. Registering that task needs an elevated shell. If Task Scheduler rejects it, the install stops. An earlier `AAP-CRRR-C-Free-GB` task is deleted if it is present. The task runs at the operator's next logon. This session is already mounted by bootstrap itself. After a reboot the disk stays unmounted until that operator logs on.
 
 Bootstrap will refuse to start if `aap-runner` already exists. Unregister is a human decision: `wsl.exe --unregister aap-runner`.
 
@@ -240,7 +276,7 @@ Every job:
 
 - `runs-on: [self-hosted, linux, crrr]`
 - skips a `pull_request` whose head repo is not this repo
-- starts by refusing unless `df` of the workspace shows the 60 GiB work disk with at least 35 GB free. That is the same filesystem the manager checks with `df -BG --output=avail /var/lib/ghrunner`
+- starts by refusing unless `df` of the workspace is within `AAP_WORK_DISK_GIB` minus 10 through plus 4 (default 60, so 50–64) and at least `AAP_DISK_FLOOR_GB` is free (default 35; raised to 55% of a larger disk). That is the same filesystem the manager checks with `df -BG --output=avail /var/lib/ghrunner`
 - pins every `uses:` to a 40-character commit SHA, with the version in a comment
 
 Workflow permissions are `{}`. Each job sets `contents: read` and nothing else. No new secret and no new trigger. The SymForge checkout uses the job `GITHUB_TOKEN`. See below.

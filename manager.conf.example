@@ -13,10 +13,15 @@ AAP_RUNNER_LABELS=self-hosted,linux,crrr
 # A second host can set fresh or heavy. Those jobs are not in ci.yml yet.
 AAP_RUNNER_EXTRA_LABELS=
 AAP_RUNNER_GROUP=aap-crrr
-# Free GiB required on /var/lib/ghrunner before a job starts. The disk is 60 GiB fixed.
+# Fixed VHDX size in GiB. CRRR is 60. Fresh sets 100; see the Fresh profile in README.md.
+# df size must fall in this value minus 10 through plus 4. The example stays at 60.
+AAP_WORK_DISK_GIB=60
+# Free GiB required on /var/lib/ghrunner before a job starts.
+# A value below 55% of AAP_WORK_DISK_GIB is raised. 60 GiB stays at 35.
 AAP_DISK_FLOOR_GB=35
 # Per-host docker create limits. CRRR65734 uses 12g and 6 cpus. Another host sets its own.
 # Absent keys use those same CRRR defaults.
+# docker create also sets --memory-swap to this same value and --cpu-shares 512.
 AAP_JOB_MEMORY=12g
 AAP_JOB_CPUS=6
 AAP_JOB_PIDS_LIMIT=4096

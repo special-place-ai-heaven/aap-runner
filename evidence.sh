@@ -69,6 +69,45 @@ host_mounts_empty() {
   [[ "${binds}" == "[]" || "${binds}" == "null" || -z "${binds}" ]] || return 1
 }
 
+# Same window as the manager: configured size -10..+4. Default 60 is CRRR.
+# Default shares are 1024. Half weight leaves the Windows session responsive.
+CPU_SHARES=512
+WORK_DISK_GIB=""
+WORK_DISK_MIN_GB=""
+WORK_DISK_MAX_GB=""
+
+apply_disk_window() {
+  local gib="${1:-60}"
+  if [[ ! "${gib}" =~ ^[1-9][0-9]*$ ]] || [[ "${gib}" -lt 20 || "${gib}" -gt 2048 ]]; then
+    echo "refusing: AAP_WORK_DISK_GIB=${gib}" >&2
+    return 1
+  fi
+  WORK_DISK_GIB=${gib}
+  WORK_DISK_MIN_GB=$((gib - 10))
+  if [[ "${WORK_DISK_MIN_GB}" -lt 1 ]]; then
+    WORK_DISK_MIN_GB=1
+  fi
+  WORK_DISK_MAX_GB=$((gib + 4))
+}
+
+read_work_disk_gib() {
+  local line key val gib=""
+  if [[ -r /etc/aap-runner/manager.conf ]]; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      case "${line}" in
+        '' | \#*) continue ;;
+      esac
+      key=${line%%=*}
+      val=${line#*=}
+      if [[ "${key}" == "AAP_WORK_DISK_GIB" && -n "${val}" ]]; then
+        gib=${val}
+      fi
+    done < /etc/aap-runner/manager.conf
+  fi
+  [[ -z "${gib}" ]] && gib=60
+  apply_disk_window "${gib}"
+}
+
 self_check() {
   local got
   got=$(route_gateway 010011AC)
@@ -116,6 +155,14 @@ EOF
   host_mounts_empty '[]' 'null'
   if host_mounts_empty '[{"Source":"/mnt/wsl"}]' 'null'; then
     echo "a host mount was accepted" >&2
+    return 1
+  fi
+  apply_disk_window 60
+  [[ "${WORK_DISK_MIN_GB}" == "50" && "${WORK_DISK_MAX_GB}" == "64" ]]
+  apply_disk_window 100
+  [[ "${WORK_DISK_GIB}" == "100" && "${WORK_DISK_MIN_GB}" == "90" && "${WORK_DISK_MAX_GB}" == "104" ]]
+  if apply_disk_window 9; then
+    echo "a 9 GiB work disk was accepted" >&2
     return 1
   fi
   echo "evidence self-check ok"
@@ -242,9 +289,12 @@ stat_mode_ok /etc/aap-runner/manager.conf
 section "image storage"
 work_dev=$(df -P /var/lib/ghrunner 2>/dev/null | awk 'NR==2 { print $1 }' || true)
 work_size=$(df -BG --output=size /var/lib/ghrunner 2>/dev/null | awk 'NR==2 { gsub(/G/, "", $1); print $1 }' || true)
-echo "work disk dev=${work_dev:-missing} size=${work_size:-missing}G"
-if [[ ! "${work_size}" =~ ^[0-9]+$ || "${work_size}" -lt 50 || "${work_size}" -gt 64 ]]; then
-  bad "/var/lib/ghrunner is ${work_size:-missing}G; the work disk is 60G"
+if ! read_work_disk_gib; then
+  bad "AAP_WORK_DISK_GIB in manager.conf is not 20..2048"
+fi
+echo "work disk dev=${work_dev:-missing} size=${work_size:-missing}G expect=${WORK_DISK_GIB:-unset}G (${WORK_DISK_MIN_GB:-?}-${WORK_DISK_MAX_GB:-?})"
+if [[ ! "${work_size}" =~ ^[0-9]+$ || -z "${WORK_DISK_MIN_GB}" || "${work_size}" -lt "${WORK_DISK_MIN_GB}" || "${work_size}" -gt "${WORK_DISK_MAX_GB}" ]]; then
+  bad "/var/lib/ghrunner is ${work_size:-missing}G; the work disk is ${WORK_DISK_GIB:-unset}G (${WORK_DISK_MIN_GB:-?}-${WORK_DISK_MAX_GB:-?})"
 fi
 check_on_work() {
   local path="$1" dev
@@ -402,7 +452,9 @@ EOF
     --name "${name}" \
     --network "${net}" \
     --memory "${memory}" \
+    --memory-swap "${memory}" \
     --cpus "${cpus}" \
+    --cpu-shares "${CPU_SHARES}" \
     --pids-limit "${pids}" \
     --label aap-crrr-evidence=1 \
     --env "AAP_WINDOWS_HOST_IP=${win_ip}" \
@@ -410,7 +462,7 @@ EOF
     "${image}" -s; then
     bad "docker create of the evidence container failed"
   else
-    inspect=$(docker inspect --format 'memory={{.HostConfig.Memory}} nano_cpus={{.HostConfig.NanoCpus}} pids={{.HostConfig.PidsLimit}}' "${name}")
+    inspect=$(docker inspect --format 'memory={{.HostConfig.Memory}} memory_swap={{.HostConfig.MemorySwap}} cpu_shares={{.HostConfig.CpuShares}} nano_cpus={{.HostConfig.NanoCpus}} pids={{.HostConfig.PidsLimit}}' "${name}")
     mounts=$(docker inspect --format '{{json .Mounts}}' "${name}")
     binds=$(docker inspect --format '{{json .HostConfig.Binds}}' "${name}")
     echo "Mounts=${mounts}"
@@ -421,11 +473,15 @@ EOF
     echo "${inspect}"
     got_mem=${inspect#memory=}
     got_mem=${got_mem%% *}
+    got_swap=${inspect#*memory_swap=}
+    got_swap=${got_swap%% *}
+    got_shares=${inspect#*cpu_shares=}
+    got_shares=${got_shares%% *}
     got_cpu=${inspect#*nano_cpus=}
     got_cpu=${got_cpu%% *}
     got_pids=${inspect#*pids=}
-    if [[ "${got_mem}" != "${expect_mem}" || "${got_cpu}" != "${expect_cpu}" || "${got_pids}" != "${pids}" ]]; then
-      bad "container limits are ${inspect}; expected memory=${expect_mem} nano_cpus=${expect_cpu} pids=${pids}"
+    if [[ "${got_mem}" != "${expect_mem}" || "${got_swap}" != "${expect_mem}" || "${got_shares}" != "${CPU_SHARES}" || "${got_cpu}" != "${expect_cpu}" || "${got_pids}" != "${pids}" ]]; then
+      bad "container limits are ${inspect}; expected memory=${expect_mem} memory_swap=${expect_mem} cpu_shares=${CPU_SHARES} nano_cpus=${expect_cpu} pids=${pids}"
     fi
     probe_rc=0
     printf '%s\n' "${inner}" | docker start --attach --interactive "${name}" || probe_rc=$?

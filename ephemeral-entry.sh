@@ -72,4 +72,8 @@ runuser -u runner \
 reg_token=""
 unset reg_token AAP_RUNNER_REG_TOKEN
 
-exec runuser -u runner -- bash -c 'cd /opt/actions-runner && exec ./run.sh'
+# run.sh is a second runuser, so the disk bounds docker passed in are dropped
+# unless they are named here. config.sh above keeps its own four names.
+exec runuser -u runner \
+  --whitelist-environment=AAP_WORK_DISK_GIB,AAP_DISK_FLOOR_GB \
+  -- bash -c 'cd /opt/actions-runner && exec ./run.sh'
