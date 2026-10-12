@@ -766,6 +766,9 @@ inside_packages() {
   copy_staged docker-workdisk.conf /etc/systemd/system/sysbox.service.d/workdisk.conf
   copy_staged docker-workdisk.conf /etc/systemd/system/sysbox-mgr.service.d/workdisk.conf
   copy_staged docker-workdisk.conf /etc/systemd/system/sysbox-fs.service.d/workdisk.conf
+  copy_staged sysbox-restart.conf /etc/systemd/system/sysbox.service.d/restart.conf
+  copy_staged sysbox-restart.conf /etc/systemd/system/sysbox-mgr.service.d/restart.conf
+  copy_staged sysbox-restart.conf /etc/systemd/system/sysbox-fs.service.d/restart.conf
   copy_staged nftables.conf /etc/aap-runner/nftables.conf
   copy_staged wsl.conf /etc/wsl.conf
   if [[ ! -f /etc/aap-runner/manager.conf ]]; then
@@ -776,8 +779,19 @@ inside_packages() {
   chmod 755 /usr/local/sbin/aap-runner-manager /usr/local/sbin/aap-runner-evidence \
     /usr/local/sbin/aap-mount-work-disk \
     /var/lib/aap-runner/image/ephemeral-entry.sh
-  chmod 644 /etc/docker/daemon.json /etc/systemd/system/docker.service.d/workdisk.conf \
-    /etc/systemd/system/aap-workdisk.service /usr/local/sbin/labels.sh
+  # cp keeps the stage's mode, and a /mnt/c stage can mark files executable.
+  # systemd warns on an executable unit file. Every unit and drop-in is 0644.
+  chmod 644 /etc/docker/daemon.json /usr/local/sbin/labels.sh \
+    /etc/systemd/system/aap-runner-manager.service \
+    /etc/systemd/system/aap-workdisk.service \
+    /etc/systemd/system/docker.service.d/workdisk.conf \
+    /etc/systemd/system/containerd.service.d/workdisk.conf \
+    /etc/systemd/system/sysbox.service.d/workdisk.conf \
+    /etc/systemd/system/sysbox-mgr.service.d/workdisk.conf \
+    /etc/systemd/system/sysbox-fs.service.d/workdisk.conf \
+    /etc/systemd/system/sysbox.service.d/restart.conf \
+    /etc/systemd/system/sysbox-mgr.service.d/restart.conf \
+    /etc/systemd/system/sysbox-fs.service.d/restart.conf
   chmod 400 /etc/aap-runner/manager.conf
   chown root:root /etc/aap-runner/manager.conf /usr/local/sbin/aap-runner-manager \
     /etc/docker/daemon.json
@@ -2585,6 +2599,7 @@ outside() {
   cp "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}/ephemeral-entry.sh" "${SCRIPT_DIR}/manager.sh" \
     "${SCRIPT_DIR}/mount-work-disk.sh" "${SCRIPT_DIR}/aap-workdisk.service" \
     "${SCRIPT_DIR}/daemon.json" "${SCRIPT_DIR}/docker-workdisk.conf" \
+    "${SCRIPT_DIR}/sysbox-restart.conf" \
     "${SCRIPT_DIR}/aap-runner-manager.service" "${SCRIPT_DIR}/nftables.conf" \
     "${SCRIPT_DIR}/wsl.conf" "${SCRIPT_DIR}/manager.conf.example" \
     "${SCRIPT_DIR}/evidence.sh" "${SCRIPT_DIR}/bootstrap.sh" \

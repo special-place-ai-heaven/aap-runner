@@ -11,6 +11,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.sh"
 require_labels_version 1 || exit 1
 
 CONFIG_PATH=/etc/aap-runner/manager.conf
+# Optional. The Windows supervisor writes the tray's settings here.
+LIMITS_PATH=/etc/aap-runner/limits.conf
 WORK_MOUNT=/var/lib/ghrunner
 # df -BG of an ext4 is a few GiB under the VHDX. Accept configured size -10..+4.
 # AAP_WORK_DISK_GIB is 20..512, so a ~1000G distro VHD is outside the window.
@@ -59,6 +61,20 @@ SCCACHE_CACHE_SIZE=10G
 # Before each job the whole tree is measured; over this cap it is wiped.
 SCCACHE_TREE_MAX_MB=20480
 RUNNER_UID=""
+# Interface for the Windows-side supervisor (wsl -d aap-runner -u root --).
+# ${RUN_DIR}/drain stops new jobs; ${RUN_DIR}/status.json reports the pool.
+# /run is a tmpfs. Not a systemd RuntimeDirectory, which is deleted when the
+# unit stops and would take the drain file with it.
+RUN_DIR=/run/aap-runner
+# The pool loop wakes this often to rewrite status.json and act on a drain.
+STATUS_TICK_SECONDS=5
+TICK_PID=""
+# A runner that is stopped while it has no job stays registered with GitHub
+# until deregister_runner deletes it. One retry after this many seconds.
+DEREGISTER_RETRY_SECONDS=5
+# All deregistrations of one drain or stop together take at most this long,
+# well inside the unit's TimeoutStopSec=90.
+DEREGISTER_BUDGET_SECONDS=25
 
 below_floor() {
   local avail="$1" floor="$2"
@@ -161,6 +177,7 @@ load_config() {
   while IFS= read -r line || [[ -n "${line}" ]]; do
     apply_config_line "${line}"
   done < "${CONFIG_PATH}"
+  load_limits
   [[ "${AAP_GITHUB_ORG}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
   [[ "${AAP_GITHUB_APP_ID}" =~ ^[0-9]+$ ]]
   [[ "${AAP_GITHUB_APP_INSTALLATION_ID}" =~ ^[0-9]+$ ]]
@@ -175,6 +192,46 @@ load_config() {
   finish_job_limits
   finish_runner_count
   finish_runner_labels
+}
+
+# limits.conf overrides three manager.conf keys, then the same checks run on
+# the result (count 1..4, the per-slot split, the memory and cpu grammar).
+# It holds no App ids and no secrets. Any other key, an empty value, a file
+# that is not root's, or a group or world writable mode is refused.
+load_limits() {
+  local perms owner line key
+  [[ -e "${LIMITS_PATH}" ]] || return 0
+  if [[ ! -f "${LIMITS_PATH}" ]]; then
+    echo "refusing: ${LIMITS_PATH} is not a regular file" >&2
+    exit 1
+  fi
+  perms=$(stat -c '%a' "${LIMITS_PATH}")
+  owner=$(stat -c '%u' "${LIMITS_PATH}")
+  if [[ "${owner}" != "0" || ! "${perms}" =~ ^[0-7]+$ ]] || ((8#${perms} & 8#022)); then
+    echo "refusing: ${LIMITS_PATH} must be root-owned and not group or world writable (found mode ${perms} uid ${owner})" >&2
+    exit 1
+  fi
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    case "${line}" in
+      '' | \#*) continue ;;
+    esac
+    key=${line%%=*}
+    case "${key}" in
+      AAP_RUNNER_COUNT | AAP_JOB_CPUS | AAP_JOB_MEMORY) ;;
+      *)
+        echo "refusing: ${LIMITS_PATH} key ${key} is not AAP_RUNNER_COUNT, AAP_JOB_CPUS, or AAP_JOB_MEMORY" >&2
+        exit 1
+        ;;
+    esac
+    if [[ "${line}" != "${key}="?* ]]; then
+      echo "refusing: ${LIMITS_PATH} has no value for ${key}" >&2
+      exit 1
+    fi
+    if ! apply_config_line "${line}"; then
+      echo "refusing: ${LIMITS_PATH} line for ${key}" >&2
+      exit 1
+    fi
+  done < "${LIMITS_PATH}"
 }
 
 # AAP_WORK_DISK_GIB is this host's VHDX size. Absent means 60, which is CRRR.
@@ -413,8 +470,11 @@ disk_ok() {
   echo "disk floor ok: ${avail}G free on ${WORK_MOUNT} (${size}G filesystem)"
 }
 
-mint_registration_token() {
-  local now iat exp header payload sig jwt installation_token
+# App JWT, then an installation token. The App's
+# organization_self_hosted_runners permission covers the registration token,
+# the runner list, and runner delete.
+mint_installation_token() {
+  local now iat exp header payload sig jwt
   now=$(date +%s)
   iat=$((now - 30))
   exp=$((now + 480))
@@ -422,20 +482,111 @@ mint_registration_token() {
   payload=$(printf '{"iat":%s,"exp":%s,"iss":"%s"}' "${iat}" "${exp}" "${AAP_GITHUB_APP_ID}" | b64url)
   sig=$(printf '%s' "${header}.${payload}" | openssl dgst -binary -sha256 -sign "${AAP_GITHUB_APP_PRIVATE_KEY_PATH}" | b64url)
   jwt="${header}.${payload}.${sig}"
-  installation_token=$(
-    curl --silent --show-error --fail \
-      -X POST \
-      -H "Authorization: Bearer ${jwt}" \
-      -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/app/installations/${AAP_GITHUB_APP_INSTALLATION_ID}/access_tokens" \
-      | jq -er '.token'
-  )
+  curl --silent --show-error --fail \
+    -X POST \
+    -H "Authorization: Bearer ${jwt}" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/app/installations/${AAP_GITHUB_APP_INSTALLATION_ID}/access_tokens" \
+    | jq -er '.token'
+}
+
+mint_registration_token() {
+  local installation_token
+  installation_token=$(mint_installation_token) || return 1
   curl --silent --show-error --fail \
     -X POST \
     -H "Authorization: Bearer ${installation_token}" \
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/orgs/${AAP_GITHUB_ORG}/actions/runners/registration-token" \
     | jq -er '.token'
+}
+
+# ephemeral-entry.sh registers the runner as aap-crrr-${HOSTNAME}. docker
+# create sets no --hostname, so that is docker's default, the first 12 hex
+# of the container id: the runner name is not the container name. Read it
+# before the container is removed.
+runner_name_of() {
+  local host
+  [[ -n "${1:-}" ]] || return 1
+  host=$(docker inspect --format '{{.Config.Hostname}}' "$1" 2>/dev/null) || return 1
+  [[ "${host}" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || return 1
+  printf 'aap-crrr-%s\n' "${host}"
+}
+
+# One attempt. A runner that is not listed, or a DELETE that returns 404, is
+# already gone. The token is only in curl's argv, as for the registration token.
+deregister_runner_once() {
+  local name="$1" token id code
+  token=$(mint_installation_token) || return 1
+  id=$(curl --silent --show-error --fail --max-time 10 -G \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/vnd.github+json" \
+    --data-urlencode "name=${name}" \
+    --data-urlencode "per_page=1" \
+    "https://api.github.com/orgs/${AAP_GITHUB_ORG}/actions/runners" \
+    | jq -r --arg n "${name}" '[.runners[]? | select(.name == $n) | .id][0] // empty') || return 1
+  if [[ -z "${id}" ]]; then
+    echo "runner ${name} is not registered"
+    return 0
+  fi
+  [[ "${id}" =~ ^[0-9]+$ ]] || return 1
+  code=$(curl --silent --show-error --max-time 10 -o /dev/null -w '%{http_code}' \
+    -X DELETE \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/orgs/${AAP_GITHUB_ORG}/actions/runners/${id}") || code=""
+  case "${code}" in
+    204 | 404)
+      echo "deregistered runner ${name} (id ${id}, HTTP ${code})"
+      return 0
+      ;;
+  esac
+  echo "warning: DELETE of runner ${name} (id ${id}) returned HTTP ${code:-none}" >&2
+  return 1
+}
+
+# Deletes a runner registration by name. Never fails the caller: a failure
+# after one retry is logged and the runner stays registered, offline.
+deregister_runner() {
+  if deregister_runner_once "$1"; then
+    return 0
+  fi
+  sleep "${DEREGISTER_RETRY_SECONDS}"
+  if deregister_runner_once "$1"; then
+    return 0
+  fi
+  echo "warning: could not deregister runner $1; it stays registered, offline" >&2
+  return 0
+}
+
+# Every name in parallel. Whatever is still running after
+# DEREGISTER_BUDGET_SECONDS is killed and logged.
+deregister_runners() {
+  local pid alive deadline name
+  local -a pids=()
+  [[ "$#" -gt 0 ]] || return 0
+  for name in "$@"; do
+    deregister_runner "${name}" &
+    pids+=("$!")
+  done
+  deadline=$((SECONDS + DEREGISTER_BUDGET_SECONDS))
+  while ((SECONDS < deadline)); do
+    alive=0
+    for pid in "${pids[@]}"; do
+      if kill -0 "${pid}" 2>/dev/null; then
+        alive=1
+      fi
+    done
+    ((alive)) || break
+    sleep 0.2
+  done
+  for pid in "${pids[@]}"; do
+    if kill -0 "${pid}" 2>/dev/null; then
+      echo "warning: deregistration took over ${DEREGISTER_BUDGET_SECONDS}s; stopped it" >&2
+      kill "${pid}" 2>/dev/null || true
+    fi
+  done
+  wait "${pids[@]}" 2>/dev/null || true
 }
 
 # Removes only this job's container, its anonymous volumes, and its network.
@@ -466,7 +617,7 @@ job_name() {
 }
 
 run_one() {
-  local slot="$1" token="" name net rc=1 killer="" seconds=0
+  local slot="$1" token="" name net rc=1 killer="" seconds=0 runner=""
   name=$(job_name "${slot}")
   net="${name}"
   # set -e does not apply inside this function: the loop calls it from `if`.
@@ -512,6 +663,11 @@ run_one() {
     return 1
   fi
   log_runner_labels
+  # Drain: the container is created but not started, so nothing registered.
+  if draining; then
+    cleanup_job "${name}" "${net}"
+    return 0
+  fi
   if ! token="$(mint_registration_token)"; then
     cleanup_job "${name}" "${net}"
     return 1
@@ -523,15 +679,136 @@ run_one() {
     cleanup_job "${name}" "${net}"
     return 1
   fi
+  set_slot_state "${slot}" starting "${name}"
   set +e
-  printf '%s\n' "${token}" | docker start --attach --interactive "${name}"
-  rc=$?
+  printf '%s\n' "${token}" | docker start --attach --interactive "${name}" \
+    | watch_runner_output "${slot}" "${name}"
+  rc=${PIPESTATUS[1]}
   set -e
   token=""
   unset token
   disarm_wall_clock "${killer}"
+  # A runner that ended without a job (the wall clock, or a listener that
+  # exited) is still registered. GitHub removes it only after a job.
+  runner=""
+  case "$(slot_state "${slot}")" in
+    starting | listening) runner=$(runner_name_of "${name}") || runner="" ;;
+  esac
   cleanup_job "${name}" "${net}"
+  if [[ -n "${runner}" ]]; then
+    deregister_runner "${runner}"
+  fi
+  # A container that died mid-job never printed its completed line.
+  case "$(slot_state "${slot}")" in
+    running | listening) set_slot_state "${slot}" idle ;;
+  esac
   return "${rc}"
+}
+
+# The listener's own terminal lines, from actions/runner v2.338.0 (the
+# version the Dockerfile installs), each after a "{DateTime.UtcNow:u}: "
+# prefix. No GitHub API call and no token:
+#   src/Runner.Listener/Runner.cs:491         Listening for Jobs
+#   src/Runner.Listener/JobDispatcher.cs:378  Running job: {JobDisplayName}
+#   src/Runner.Listener/JobDispatcher.cs:591  Job {JobDisplayName} completed with result: {result}
+# Every line is passed through, so the journal keeps the runner output.
+watch_runner_output() {
+  local slot="$1" container="${2:-}" line
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    printf '%s\n' "${line}"
+    case "${line}" in
+      *': Running job: '*) set_slot_state "${slot}" running "${container}" "${line#*: Running job: }" ;;
+      *': Listening for Jobs'*) set_slot_state "${slot}" listening "${container}" ;;
+      *' completed with result: '*) set_slot_state "${slot}" idle ;;
+    esac
+  done
+}
+
+draining() {
+  [[ -e "${RUN_DIR}/drain" ]]
+}
+
+# ${RUN_DIR}/slot-N is one line: state, the time it was set in ns, the
+# container name (- for none), and the job name. state is starting (no
+# runner listening yet), listening (registered, no job), running, or idle
+# (between containers). Written to a temp file and renamed. Status is
+# observability: no write here may fail a job. Without ${RUN_DIR} (tests
+# that do not set it) nothing is written.
+# set_slot_state SLOT STATE [CONTAINER] [JOB]
+set_slot_state() {
+  local f="${RUN_DIR}/slot-$1"
+  [[ -d "${RUN_DIR}" ]] || return 0
+  if ! { printf '%s %s %s %s\n' "$2" "$(date +%s%N)" "${3:--}" "${4:-}" > "${f}.tmp.${BASHPID}" \
+    && mv -f "${f}.tmp.${BASHPID}" "${f}"; } 2>/dev/null; then
+    rm -f "${f}.tmp.${BASHPID}" 2>/dev/null || true
+  fi
+  write_status
+}
+
+slot_state() {
+  local st=""
+  { read -r st _ < "${RUN_DIR}/slot-$1"; } 2>/dev/null || true
+  printf '%s\n' "${st}"
+}
+
+slot_container() {
+  local c=""
+  { read -r _ _ c _ < "${RUN_DIR}/slot-$1"; } 2>/dev/null || true
+  [[ "${c}" == - ]] && c=""
+  printf '%s\n' "${c}"
+}
+
+# state: draining while the drain file exists, else running while a slot has
+# a job, else idle once a slot listens, else starting. job: the most
+# recently started running job, or "". slots and runner_count:
+# AAP_RUNNER_COUNT. job_cpus and job_memory: the pool totals as configured,
+# after limits.conf. Paused is a Windows-side state and never appears here.
+status_json() {
+  local f st ns name busy=0 idle=0 best=-1 job="" state=starting
+  for f in "${RUN_DIR}"/slot-[1-9]; do
+    [[ -f "${f}" ]] || continue
+    st="" ns="" name=""
+    { read -r st ns _ name < "${f}"; } 2>/dev/null || true
+    [[ "${ns}" =~ ^[0-9]+$ ]] || ns=0
+    case "${st}" in
+      running)
+        busy=$((busy + 1))
+        if ((ns > best)); then
+          best=${ns}
+          job=${name}
+        fi
+        ;;
+      listening | idle) idle=$((idle + 1)) ;;
+    esac
+  done
+  if draining; then
+    state=draining
+  elif ((busy > 0)); then
+    state=running
+  elif ((idle > 0)); then
+    state=idle
+  fi
+  jq -cn --arg state "${state}" --arg job "${job}" --argjson slots "${AAP_RUNNER_COUNT:-1}" \
+    --argjson busy "${busy}" --argjson updated "$(date +%s)" \
+    --arg cpus "${AAP_JOB_CPUS}" --arg memory "${AAP_JOB_MEMORY}" \
+    '{state: $state, job: $job, slots: $slots, busy: $busy, updated: $updated,
+      runner_count: $slots, job_cpus: ($cpus | tonumber? // null), job_memory: $memory}'
+}
+
+# status.json, mode 0644, replaced by rename so a reader never sees half a
+# file. Slots and the pool loop all write it; the flock orders them so the
+# last rename carries the newest slot states.
+write_status() {
+  local tmp="${RUN_DIR}/status.json.tmp.${BASHPID}"
+  [[ -d "${RUN_DIR}" ]] || return 0
+  if ! (
+    flock -w 5 9 || exit 1
+    status_json > "${tmp}" && chmod 0644 "${tmp}" && mv -f "${tmp}" "${RUN_DIR}/status.json"
+  ) 2>/dev/null 9> "${RUN_DIR}/status.lock"; then
+    rm -f "${tmp}" 2>/dev/null || true
+    echo "warning: could not write ${RUN_DIR}/status.json" >&2
+  fi
+  return 0
 }
 
 self_check() {
@@ -817,7 +1094,14 @@ remove_job_containers() {
 slot_loop() {
   local slot="$1"
   trap - EXIT TERM INT
+  set_slot_state "${slot}" starting
   while true; do
+    # Drain: exit 0 before another runner starts. run_pool does not restart
+    # it. A listening runner is removed by drain_listening_slots instead.
+    if draining; then
+      echo "slot ${slot}: drain requested; not starting another job" >&2
+      exit 0
+    fi
     if ! disk_ok; then
       sleep 60
       continue
@@ -848,36 +1132,108 @@ start_slot() {
   SLOT_PIDS[slot]=$!
 }
 
+# Ends the pool loop's wait every STATUS_TICK_SECONDS.
+start_tick() {
+  sleep "${STATUS_TICK_SECONDS}" &
+  TICK_PID=$!
+}
+
+# docker rm -f does not deregister a runner. On SIGTERM the actions/runner
+# v2.338.0 listener only deletes its session (Runner.cs, DeleteSessionAsync),
+# and GitHub removes an ephemeral runner only after its job. So a runner
+# stopped without a job is deregistered here, after its container is gone.
+
+# Draining: a slot whose runner is listening (no job) is stopped now and its
+# registration deleted. A busy slot finishes its job, GitHub removes that
+# ephemeral runner, and the slot exits 0 in slot_loop.
+drain_listening_slots() {
+  local slot runner
+  local -a runners=()
+  for slot in "${!SLOT_PIDS[@]}"; do
+    if [[ "$(slot_state "${slot}")" != listening ]]; then
+      continue
+    fi
+    runner=$(runner_name_of "$(slot_container "${slot}")") || runner=""
+    echo "slot ${slot}: draining; removing runner ${runner:-unknown}, which has no job" >&2
+    kill "${SLOT_PIDS[slot]}" 2>/dev/null || true
+    wait "${SLOT_PIDS[slot]}" 2>/dev/null || true
+    remove_slot_containers "${slot}"
+    unset "SLOT_PIDS[${slot}]"
+    rm -f "${RUN_DIR}/slot-${slot}"
+    if [[ -n "${runner}" ]]; then
+      runners+=("${runner}")
+    else
+      echo "warning: slot ${slot}: no runner name; it may stay registered, offline" >&2
+    fi
+  done
+  deregister_runners "${runners[@]}"
+}
+
 # SIGTERM, SIGINT, or exit: stop every slot, remove every job container by
-# label, prune job networks, and reap the slots.
+# label, prune job networks, reap the slots, then deregister the runners
+# that had no job (bounded by DEREGISTER_BUDGET_SECONDS). A runner killed
+# mid-job is left to GitHub. The drain file stays; the status files go, so
+# a missing status.json means no manager.
 stop_pool() {
-  local pid
+  local pid slot runner
+  local -a runners=()
   trap - EXIT TERM INT
-  for pid in "${SLOT_PIDS[@]}"; do
-    kill "${pid}" 2>/dev/null || true
+  # Names first: they come from the containers, which are removed below.
+  for slot in "${!SLOT_PIDS[@]}"; do
+    case "$(slot_state "${slot}")" in
+      starting | listening)
+        if runner=$(runner_name_of "$(slot_container "${slot}")"); then
+          runners+=("${runner}")
+        fi
+        ;;
+    esac
+  done
+  for pid in "${SLOT_PIDS[@]}" "${TICK_PID}"; do
+    if [[ -n "${pid}" ]]; then
+      kill "${pid}" 2>/dev/null || true
+    fi
   done
   remove_job_containers
   wait 2>/dev/null || true
+  deregister_runners "${runners[@]}"
+  rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9]
 }
 
 # A dead slot is restarted alone; the other slots' jobs keep running. A
 # retired slot leaves SLOT_PIDS, so wait only sees live slots and never
 # matches a retired PID again. wait -n -p needs bash 5.1. Ubuntu 24.04 ships 5.2.
 run_pool() {
-  local slot i died now
+  local slot i died now rc
   trap 'stop_pool; exit 143' TERM INT
   trap stop_pool EXIT
+  rm -f "${RUN_DIR}"/slot-[1-9]
+  write_status
   for ((slot = 1; slot <= AAP_RUNNER_COUNT; slot++)); do
     SLOT_FAILS[slot]=0
     start_slot "${slot}" 0
   done
+  start_tick
   while true; do
     if [[ "${#SLOT_PIDS[@]}" -eq 0 ]]; then
+      # Exit 0 so Restart=on-failure leaves a drained manager stopped.
+      if draining; then
+        echo "drained: no slot has a job; stopping the manager" >&2
+        exit 0
+      fi
       echo "all ${AAP_RUNNER_COUNT} slots retired; stopping the manager" >&2
       exit 1
     fi
     died=""
-    wait -n -p died "${SLOT_PIDS[@]}" || true
+    rc=0
+    wait -n -p died "${SLOT_PIDS[@]}" "${TICK_PID}" || rc=$?
+    if [[ -n "${died}" && "${died}" == "${TICK_PID}" ]]; then
+      if draining; then
+        drain_listening_slots
+      fi
+      write_status
+      start_tick
+      continue
+    fi
     slot=""
     for i in "${!SLOT_PIDS[@]}"; do
       if [[ "${SLOT_PIDS[i]}" == "${died}" ]]; then
@@ -886,6 +1242,13 @@ run_pool() {
     done
     if [[ -z "${slot}" ]]; then
       sleep 1
+      continue
+    fi
+    rm -f "${RUN_DIR}/slot-${slot}"
+    if [[ "${rc}" -eq 0 ]] && draining; then
+      echo "slot ${slot} drained" >&2
+      unset "SLOT_PIDS[${slot}]"
+      write_status
       continue
     fi
     now=$(date +%s)
@@ -925,6 +1288,28 @@ main() {
     echo "aap-runner-manager must run as root" >&2
     exit 1
   fi
+
+  # For the supervisor before a restart: both files parsed and checked, the
+  # effective limits printed, nothing started and no docker call.
+  if [[ "${1:-}" == "--check-limits" ]]; then
+    load_config
+    printf 'AAP_RUNNER_COUNT=%s\nAAP_JOB_CPUS=%s\nAAP_JOB_MEMORY=%s\n' \
+      "${AAP_RUNNER_COUNT}" "${AAP_JOB_CPUS}" "${AAP_JOB_MEMORY}"
+    exit 0
+  fi
+
+  install -d -m 0755 -o root -g root "${RUN_DIR}"
+  case "${1:-}" in
+    --drain)
+      : > "${RUN_DIR}/drain"
+      echo "drain requested: running jobs finish, no new job starts, and the manager exits 0 when no slot has a job"
+      exit 0
+      ;;
+    --undrain)
+      rm -f "${RUN_DIR}/drain"
+      exit 0
+      ;;
+  esac
 
   load_config
   check_key

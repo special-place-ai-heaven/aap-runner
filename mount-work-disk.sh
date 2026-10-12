@@ -8,6 +8,7 @@ set -euo pipefail
 UUID_FILE=/etc/aap-runner/work-disk.uuid
 CONFIG_PATH=/etc/aap-runner/manager.conf
 MOUNT=/var/lib/ghrunner
+BY_UUID_DIR=/dev/disk/by-uuid
 # df -BG of an ext4 is a few GiB under the VHDX. Accept configured size -10..+4.
 # AAP_WORK_DISK_GIB is 20..512, and the mount UUID must not be the distro root.
 WORK_DISK_GIB=""
@@ -174,6 +175,11 @@ assert_mounted() {
   fi
 }
 
+# bootstrap also writes an fstab line for ${MOUNT}, so systemd has a
+# var-lib-ghrunner.mount unit, and installed hosts keep that line. That unit
+# mounts the disk at boot and again when the device appears late, so either
+# mounter may win. An existing mount is accepted here; assert_mounted then
+# requires work-disk.uuid, a device that is not /, and the size window.
 mount_by_uuid() {
   local uuid="$1" _
   install -d -m 755 -o root -g root "${MOUNT}"
@@ -181,14 +187,66 @@ mount_by_uuid() {
     return 0
   fi
   for _ in $(seq 1 60); do
-    if [[ -e "/dev/disk/by-uuid/${uuid}" ]]; then
-      mount -U "${uuid}" "${MOUNT}"
-      return 0
+    if [[ -e "${BY_UUID_DIR}/${uuid}" ]]; then
+      if mount -U "${uuid}" "${MOUNT}"; then
+        return 0
+      fi
+      # The fstab unit mounted it between mountpoint and mount -U, so mount -U
+      # failed with "already mounted". Seen on Fresh, 2026-10-12.
+      if mountpoint -q "${MOUNT}"; then
+        echo "${MOUNT} was mounted by another unit during mount -U; checking it" >&2
+        return 0
+      fi
+      echo "mount -U ${uuid} ${MOUNT} failed" >&2
+      exit 1
     fi
     sleep 2
   done
   echo "work disk UUID ${uuid} did not appear" >&2
   exit 1
+}
+
+# mount_by_uuid then assert_mounted, as the unit runs them, against mocks.
+# before: yes (the fstab unit mounted first), race (it mounts while mount -U
+# runs), fail (mount -U fails and nothing is mounted). found: findmnt's UUID.
+# A new bash, so set -e acts as in the unit. Inside `if` it would be ignored.
+mount_case() {
+  local dir rc=0
+  dir=$(mktemp -d)
+  # shellcheck disable=SC2016
+  bash -c "set -euo pipefail
+$(declare -f apply_disk_window uuid_ok work_mount_matches assert_work_mount_device size_is_work_disk assert_mounted mount_by_uuid)"'
+    before=$1 found=$2 want=$3 dir=$4
+    MOUNT="${dir}/mnt"
+    UUID_FILE="${dir}/work-disk.uuid"
+    BY_UUID_DIR="${dir}/by-uuid"
+    mkdir -p "${BY_UUID_DIR}"
+    printf "%s\n" "${want}" > "${UUID_FILE}"
+    : > "${BY_UUID_DIR}/${want}"
+    install() { :; }
+    sleep() { :; }
+    mountpoint() { [[ "${before}" == yes || -e "${dir}/mounted" ]]; }
+    mount() {
+      if [[ "${before}" == race ]]; then
+        : > "${dir}/mounted"
+      fi
+      echo "mount: ${MOUNT}: already mounted" >&2
+      return 32
+    }
+    findmnt() { printf "%s\n" "${found}"; }
+    df() {
+      case "$*" in
+        "-P /") printf "Filesystem 1K-blocks Used Available Use%% Mounted on\n/dev/sdc 1 1 1 1%% /\n" ;;
+        -P*) printf "Filesystem 1K-blocks Used Available Use%% Mounted on\n/dev/sde 1 1 1 1%% /x\n" ;;
+        *) printf "1G-blocks\n      98G\n" ;;
+      esac
+    }
+    apply_disk_window 100
+    mount_by_uuid "${want}"
+    assert_mounted
+  ' _ "$1" "$2" "$3" "${dir}" >/dev/null 2>&1 || rc=$?
+  rm -rf "${dir}"
+  return "${rc}"
 }
 
 self_check() {
@@ -274,6 +332,26 @@ self_check() {
   fi
   if work_mount_matches /dev/sdb1 /dev/sda "${sample}" bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee; then
     echo "a different filesystem UUID was accepted" >&2
+    exit 1
+  fi
+  if ! mount_case yes "${sample}" "${sample}"; then
+    echo "an existing mount of the work-disk UUID was refused" >&2
+    exit 1
+  fi
+  if ! mount_case race "${sample}" "${sample}"; then
+    echo "the fstab unit winning the mount race failed the unit" >&2
+    exit 1
+  fi
+  if mount_case yes bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee "${sample}"; then
+    echo "an existing mount of another UUID was accepted" >&2
+    exit 1
+  fi
+  if mount_case race bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee "${sample}"; then
+    echo "another UUID mounted during the race was accepted" >&2
+    exit 1
+  fi
+  if mount_case fail "${sample}" "${sample}"; then
+    echo "a failed mount with nothing mounted was accepted" >&2
     exit 1
   fi
   echo "mount self-check ok"

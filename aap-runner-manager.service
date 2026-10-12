@@ -1,7 +1,10 @@
 [Unit]
 Description=AAP ephemeral CRRR runner manager
-After=docker.service network-online.target
-Requires=docker.service
+# sysbox.service is the unit sysbox-ce 0.7.1 installs; Fresh runs it as
+# `systemctl start sysbox`. Requires= keeps the manager down until the work
+# disk is mounted and docker and sysbox started.
+After=docker.service sysbox.service aap-workdisk.service network-online.target
+Requires=docker.service sysbox.service aap-workdisk.service
 ConditionPathExists=/etc/aap-runner/manager.conf
 ConditionPathExists=/etc/aap-runner/app.pem
 
@@ -10,6 +13,8 @@ Type=simple
 ExecStart=/usr/local/sbin/aap-runner-manager
 Restart=on-failure
 RestartSec=15
+# Stopping deregisters runners that had no job, at most 25 s.
+TimeoutStopSec=90
 User=root
 Group=root
 ProtectHome=true
