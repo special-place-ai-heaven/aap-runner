@@ -44,9 +44,27 @@ fn badge(s: &Status) -> Badge {
     }
 }
 
+fn version_string(version: &str, commit: &str) -> String {
+    format!("AAP Runner v{version} ({commit})")
+}
+
+/// `AAP Runner v0.2.0 (abcdef12)`: menu, tooltip, settings title and `--version`.
+pub fn version() -> String {
+    version_string(env!("CARGO_PKG_VERSION"), env!("AAP_TRAY_COMMIT"))
+}
+
 fn tooltip(line: &str) -> String {
-    // Windows caps tooltips at 127 UTF-16 units.
-    format!("AAP Runner: {line}").chars().take(120).collect()
+    // Windows caps tooltips at 127 UTF-16 units; the line is cut, never the version suffix.
+    let suffix = format!(
+        " \u{b7} v{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        env!("AAP_TRAY_COMMIT")
+    );
+    let head: String = format!("AAP Runner: {line}")
+        .chars()
+        .take(120 - suffix.chars().count())
+        .collect();
+    head + &suffix
 }
 
 /// Per-user single instance via an OS file lock held for the process lifetime.
@@ -93,6 +111,11 @@ fn open_settings(base: &Path) {
 
 fn main() {
     let base = PathBuf::from(DEFAULT_BASE);
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        // GUI subsystem: visible when stdout is redirected or piped (scripts), silent otherwise.
+        println!("{}", version());
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("--settings") {
         let Some(_lock) = single_instance("aap-runner-tray-settings.lock") else {
             return;
@@ -118,6 +141,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let pause = MenuItem::new("Pause", true, None);
     let settings_item = MenuItem::new("Settings\u{2026}", true, None);
     let logs = MenuItem::new("Open logs", true, None);
+    let version_item = MenuItem::new(version(), false, None);
     let quit = MenuItem::new("Quit", true, None);
     let menu = Menu::with_items(&[
         &status_item,
@@ -131,12 +155,13 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
         &PredefinedMenuItem::separator(),
         &logs,
         &PredefinedMenuItem::separator(),
+        &version_item,
         &quit,
     ])?;
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
-        .with_tooltip("AAP Runner")
+        .with_tooltip(tooltip("starting"))
         .build()?;
 
     let menu_rx = MenuEvent::receiver();
@@ -244,8 +269,37 @@ mod tests {
     }
 
     #[test]
-    fn tooltip_is_prefixed_and_capped() {
-        assert_eq!(tooltip("Idle"), "AAP Runner: Idle");
-        assert_eq!(tooltip(&"x".repeat(300)).chars().count(), 120);
+    fn tooltip_is_prefixed_capped_and_versioned() {
+        let suffix = format!(
+            " \u{b7} v{} ({})",
+            env!("CARGO_PKG_VERSION"),
+            env!("AAP_TRAY_COMMIT")
+        );
+        assert_eq!(tooltip("Idle"), format!("AAP Runner: Idle{suffix}"));
+        let long = tooltip(&"x".repeat(300));
+        assert_eq!(long.chars().count(), 120);
+        assert!(long.ends_with(&suffix));
+    }
+
+    #[test]
+    fn version_string_names_version_and_commit() {
+        assert_eq!(
+            version_string("0.2.0", "abcdef12"),
+            "AAP Runner v0.2.0 (abcdef12)"
+        );
+        assert_eq!(
+            version_string("0.2.0", "local"),
+            "AAP Runner v0.2.0 (local)"
+        );
+        assert_eq!(
+            version(),
+            format!(
+                "AAP Runner v{} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("AAP_TRAY_COMMIT")
+            )
+        );
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.0");
+        assert!(!env!("AAP_TRAY_COMMIT").is_empty());
     }
 }

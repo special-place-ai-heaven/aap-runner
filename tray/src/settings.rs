@@ -1,5 +1,6 @@
 //! `inbox\settings.json`: pool size and pool-total limits, written by the tray, applied by the
-//! supervisor. The dialog edits per-runner values; the file keeps totals (per-runner x runners).
+//! supervisor. The dialog edits only the runner count and derives CPUs and memory per runner from
+//! the caps; the file keeps totals (per-runner x runners).
 
 use crate::state::{inbox, read_bounded, write_atomic};
 use serde::{Deserialize, Serialize};
@@ -28,7 +29,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             runner_count: 1,
-            job_cpus: 24,
+            job_cpus: 26,
             job_memory_gib: 72,
             paused: false,
         }
@@ -44,6 +45,12 @@ impl Settings {
             job_memory_gib: gib.saturating_mul(runners),
             paused,
         }
+    }
+
+    /// What the dialog writes: each runner gets its share of the caps, `floor(cap / runners)`.
+    pub fn derived(runners: u32, paused: bool, vm: &VmLimit) -> Settings {
+        let (cpus, gib) = vm.per_runner_max(runners);
+        Settings::from_per_runner(runners, cpus, gib, paused)
     }
 
     /// What each runner gets: the manager floor-divides the pool totals by the runner count.
@@ -139,6 +146,13 @@ impl VmLimit {
             .map_or(Self::ASSUMED, |t| Self::from_wslconfig(&t))
     }
 
+    /// Each runner's share of the caps: `(cap_cpus / runners, cap_gib / runners)`.
+    pub fn per_runner_max(&self, runners: u32) -> (u32, u32) {
+        let n = runners.max(1);
+        let (cpus, gib) = self.cap();
+        (cpus / n, gib / n)
+    }
+
     /// Hard caps for the totals: `(cpus - HOST_CPUS, gib - HOST_GIB)`.
     pub fn cap(&self) -> (u32, u32) {
         (
@@ -225,9 +239,42 @@ mod tests {
             }
         }
         assert_eq!(
-            Settings::from_per_runner(1, 24, 72, false),
+            Settings::from_per_runner(1, 26, 72, false),
             Settings::default()
         );
+    }
+
+    #[test]
+    fn cpus_and_memory_derive_from_the_caps() {
+        let d = |r, vm: &VmLimit| {
+            let s = Settings::derived(r, false, vm);
+            (
+                s.per_runner(),
+                (s.job_cpus, s.job_memory_gib),
+                s.validate(vm).is_ok(),
+            )
+        };
+        assert_eq!(d(1, &VM), ((26, 72), (26, 72), true));
+        assert_eq!(d(2, &VM), ((13, 36), (26, 72), true));
+        assert_eq!(d(3, &VM), ((8, 24), (24, 72), true));
+        assert_eq!(Settings::derived(1, false, &VM), Settings::default());
+        assert!(Settings::derived(2, true, &VM).paused);
+        let small = VmLimit {
+            cpus: 16,
+            gib: 32,
+            assumed: false,
+        };
+        assert_eq!(small.per_runner_max(1), (14, 24));
+        assert_eq!(d(1, &small), ((14, 24), (14, 24), true));
+        assert_eq!(d(2, &small), ((7, 12), (14, 24), true));
+        assert_eq!(d(3, &small), ((4, 8), (12, 24), true));
+        let tiny = VmLimit {
+            cpus: 4,
+            gib: 10,
+            assumed: false,
+        };
+        assert_eq!(d(1, &tiny), ((2, 2), (2, 2), true));
+        assert!(!d(3, &tiny).2, "2 CPUs cannot feed 3 runners");
     }
 
     #[test]

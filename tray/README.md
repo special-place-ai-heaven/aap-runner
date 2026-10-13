@@ -21,9 +21,11 @@ admin-written.
 - `status.json` missing, unparseable, larger than 64 KiB (not read), or `updated` older than
   3 minutes: `Unknown (supervisor not running)`.
 - `settings.json` missing, unparseable, out of range, or with fewer than 1 CPU / 1 GiB per runner:
-  defaults `1 runner x 24 CPUs x 72 GiB / not paused`.
+  defaults `1 runner x 26 CPUs x 72 GiB / not paused`.
 - 1 to 3 runners. `job_cpus` and `job_memory_gib` are pool totals, not per job: the manager divides
-  them by `runner_count`. The dialog edits per-runner values and writes per-runner x runners, so the
+  them by `runner_count`. The dialog's only input is Runners. CPUs and memory per runner are derived:
+  `floor(cpu_cap / runners)` and `floor(mem_cap / runners)` (26 / 13 / 8 CPUs and 72 / 36 / 24 GiB for
+  1 / 2 / 3 runners on a 28 / 80 VM). It writes per-runner x runners (26/72, 26/72, 24/72), so the
   totals always divide evenly.
 - Host caps: the VM size comes from `[wsl2]` `processors=` / `memory=` in `%USERPROFILE%\.wslconfig`
   (`GB`/`G`/`MB`/`M`; missing file or key: 28 CPUs / 80 GiB, shown as "assumed"). Totals may use at
@@ -40,12 +42,17 @@ as the tooltip), Start, Stop, Restart, Pause/Resume, Settings…, Open logs, Qui
 - Polls `status.json` every 5 s. Restart writes `off`, waits up to 15 min for `state: off`, then writes `on`.
 - Pause/Resume flips `paused` in `settings.json`; the label follows the file.
 - Settings… starts its own exe (`current_exe()`) with `--settings`: a small egui window in its own process (one at a
-  time) with Runners, CPUs per runner, Memory GiB per runner and Paused; the applied values from
-  `status.json` (per runner, total in parentheses); a "Total: N CPUs, M GiB of cap 26 / 72" line and
-  the cap line; and OK/Cancel. OK is disabled with an inline error above a cap. Stored totals that do
-  not divide by the runner count load floored, with a note that OK rewrites them.
+  time) with Runners and Paused as inputs and the derived CPUs and memory per runner (read-only); a "running now" column from
+  `status.json` (`running now: 4 per runner (8 total)`, or `running now: not running` when the
+  state is off, paused, error, unknown or not installed); "Each runner: 8 CPUs, 24 GiB" and "Total: 24 CPUs, 72 GiB (cap 26 / 72 ÷ 3)"
+  lines and the cap line; and OK/Cancel. OK is disabled with an inline error above a cap. A stored file that differs
+  from what OK would write (not divisible, or not derived) loads floored, with a note that OK
+  rewrites it.
 - Quit closes the tray only; it does not touch any file. Single instance per user (file locks in `%TEMP%`).
-- Tooltip: `AAP Runner: <state line>`.
+- Tooltip: `AAP Runner: <state line> · v<version> (<commit>)`.
+- Version: `AAP Runner v0.2.0 (abcdef12)` (Cargo version, short HEAD stamped by `build.rs`, `local`
+  without git) as a disabled item above Quit, in the tooltip and the Settings title. `--version`
+  prints it to stdout and exits 0 (GUI-subsystem exe: capture it, e.g. `& .\aap-runner-tray.exe --version | Write-Output`).
 
 ## Icon (after Fathom's `mark.rs`)
 

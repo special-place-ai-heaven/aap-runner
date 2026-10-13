@@ -1,43 +1,40 @@
 //! `--settings` mode: a small egui window in its own process, so it never shares the
-//! tray's tao event loop. It edits per-runner values; the file stores per-runner x runners.
+//! tray's tao event loop. Its one input is the runner count; CPUs and memory per runner derive
+//! from the caps. The file stores per-runner x runners.
 
 use crate::settings::{self, HOST_CPUS, HOST_GIB, RUNNERS, Settings, VmLimit};
-use crate::state::{self, Applied};
+use crate::state::{self, Applied, Status};
 use eframe::egui;
-use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 struct Dialog {
     base: PathBuf,
     runners: u32,
-    cpus: u32,
-    gib: u32,
     paused: bool,
-    /// The loaded totals did not divide by the runner count.
-    not_divisible: bool,
-    applied: Applied,
+    /// The stored file differs from what OK would write (not divisible, or not derived).
+    rewrites: bool,
+    /// What the manager runs right now; `None` when it has no runner slots.
+    running: Option<Applied>,
     vm: VmLimit,
     write_error: Option<String>,
 }
 
 pub fn run(base: PathBuf) -> eframe::Result {
     let stored = settings::read_settings(&base);
-    let (cpus, gib) = stored.per_runner();
+    let vm = VmLimit::read();
     let dialog = Dialog {
         runners: stored.runner_count,
-        cpus,
-        gib,
         paused: stored.paused,
-        not_divisible: !stored.is_divisible(),
-        applied: state::read_status(&base, SystemTime::now()).applied,
-        vm: VmLimit::read(),
+        rewrites: stored != Settings::derived(stored.runner_count, stored.paused, &vm),
+        running: running_now(state::read_status(&base, SystemTime::now())),
+        vm,
         write_error: None,
         base,
     };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("AAP runner settings")
+            .with_title(format!("Settings \u{b7} {}", crate::version()))
             .with_inner_size([560.0, 300.0])
             .with_resizable(false)
             .with_minimize_button(false)
@@ -53,58 +50,84 @@ pub fn run(base: PathBuf) -> eframe::Result {
     )
 }
 
-fn row(ui: &mut egui::Ui, label: &str, v: &mut u32, r: RangeInclusive<u32>, applied: String) {
+fn derived_row(ui: &mut egui::Ui, label: &str, value: u32, now: String) {
     ui.label(label);
-    ui.add(egui::DragValue::new(v).range(r));
-    ui.label(applied);
+    ui.label(format!("{value} (derived)"));
+    ui.label(now);
     ui.end_row();
 }
 
-/// `applied: <per runner> (<total>)` from the supervisor's reported totals.
-fn applied_per_runner(total: Option<u32>, runners: Option<u32>) -> String {
-    match (total, runners) {
-        (Some(t), Some(r)) if r > 0 => format!("applied: {} ({t})", t / r),
-        (Some(t), _) => format!("applied: n/a ({t})"),
-        _ => "applied: n/a".into(),
+/// The applied limits while the manager has runner slots (starting, idle, running, draining).
+fn running_now(snap: state::Snapshot) -> Option<Applied> {
+    matches!(
+        snap.status,
+        Status::Starting | Status::Idle | Status::Running(_) | Status::Draining
+    )
+    .then_some(snap.applied)
+}
+
+const NOT_RUNNING: &str = "running now: not running";
+
+fn running_runners(running: Option<Applied>) -> String {
+    match running {
+        None => NOT_RUNNING.into(),
+        Some(a) => a.runner_count.map_or("running now: unknown".into(), |n| {
+            format!("running now: {n}")
+        }),
+    }
+}
+
+/// `running now: <per runner> per runner (<total> total)` from the supervisor's reported totals.
+fn running_per_runner(running: Option<Applied>, total: fn(&Applied) -> Option<u32>) -> String {
+    let Some(a) = running else {
+        return NOT_RUNNING.into();
+    };
+    match (total(&a), a.runner_count) {
+        (Some(t), Some(r)) if r > 0 => format!("running now: {} per runner ({t} total)", t / r),
+        (Some(t), _) => format!("running now: {t} total"),
+        _ => "running now: unknown".into(),
     }
 }
 
 impl eframe::App for Dialog {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ui, |ui| {
-            let a = self.applied;
+            let running = self.running;
             let vm = self.vm;
             let (cap_cpus, cap_gib) = vm.cap();
+            let edit = Settings::derived(self.runners, self.paused, &vm);
+            let (each_cpus, each_gib) = edit.per_runner();
             egui::Grid::new("settings")
                 .num_columns(3)
                 .spacing([16.0, 8.0])
                 .show(ui, |ui| {
-                    let runners_applied =
-                        a.runner_count.map_or("applied: n/a".into(), |n| format!("applied: {n}"));
-                    row(ui, "Runners", &mut self.runners, RUNNERS, runners_applied);
-                    row(
+                    ui.label("Runners");
+                    ui.add(egui::DragValue::new(&mut self.runners).range(RUNNERS));
+                    ui.label(running_runners(running));
+                    ui.end_row();
+                    derived_row(
                         ui,
                         "CPUs per runner",
-                        &mut self.cpus,
-                        1..=cap_cpus.max(1),
-                        applied_per_runner(a.job_cpus, a.runner_count),
+                        each_cpus,
+                        running_per_runner(running, |a| a.job_cpus),
                     );
-                    row(
+                    derived_row(
                         ui,
                         "Memory GiB per runner",
-                        &mut self.gib,
-                        1..=cap_gib.max(1),
-                        applied_per_runner(a.job_memory_gib, a.runner_count),
+                        each_gib,
+                        running_per_runner(running, |a| a.job_memory_gib),
                     );
                     ui.label("Paused");
                     ui.checkbox(&mut self.paused, "");
                     ui.end_row();
                 });
             ui.add_space(6.0);
-            let edit = Settings::from_per_runner(self.runners, self.cpus, self.gib, self.paused);
+            // `edit` is from before the grid: a change shows on the next frame, which egui
+            // paints right after the input event.
+            ui.label(format!("Each runner: {each_cpus} CPUs, {each_gib} GiB"));
             ui.label(format!(
-                "Total: {} CPUs, {} GiB of cap {cap_cpus} / {cap_gib}",
-                edit.job_cpus, edit.job_memory_gib
+                "Total: {} CPUs, {} GiB (cap {cap_cpus} / {cap_gib} \u{f7} {})",
+                edit.job_cpus, edit.job_memory_gib, edit.runner_count
             ));
             ui.label(format!(
                 "Cap: {cap_cpus} CPUs, {cap_gib} GiB (VM {}/{}{} minus {HOST_CPUS} CPUs and {HOST_GIB} GiB for the host)",
@@ -112,10 +135,12 @@ impl eframe::App for Dialog {
                 vm.gib,
                 if vm.assumed { " assumed," } else { "" }
             ));
-            if self.not_divisible {
-                ui.label("Stored totals were not divisible; OK rewrites them.");
+            if self.rewrites {
+                ui.label("Stored totals differ from these values; OK rewrites them.");
             }
-            ui.label("Applied after running jobs finish.");
+            ui.label(
+                "Your values apply when the runner restarts (after running jobs finish, or on Resume).",
+            );
             let invalid = edit.validate(&vm).err();
             if let Some(e) = invalid.as_ref().or(self.write_error.as_ref()) {
                 ui.colored_label(ui.visuals().error_fg_color, e);
@@ -141,14 +166,62 @@ impl eframe::App for Dialog {
 
 #[cfg(test)]
 mod tests {
-    use super::applied_per_runner;
+    use super::*;
+
+    fn applied(runners: Option<u32>, cpus: Option<u32>) -> Applied {
+        Applied {
+            runner_count: runners,
+            job_cpus: cpus,
+            job_memory_gib: None,
+        }
+    }
 
     #[test]
-    fn applied_shows_per_runner_and_total() {
-        assert_eq!(applied_per_runner(Some(24), Some(2)), "applied: 12 (24)");
-        assert_eq!(applied_per_runner(Some(25), Some(3)), "applied: 8 (25)");
-        assert_eq!(applied_per_runner(Some(24), None), "applied: n/a (24)");
-        assert_eq!(applied_per_runner(Some(24), Some(0)), "applied: n/a (24)");
-        assert_eq!(applied_per_runner(None, Some(2)), "applied: n/a");
+    fn running_now_shows_per_runner_and_total() {
+        let cpus = |a| running_per_runner(Some(a), |a| a.job_cpus);
+        assert_eq!(
+            cpus(applied(Some(2), Some(8))),
+            "running now: 4 per runner (8 total)"
+        );
+        assert_eq!(
+            cpus(applied(Some(3), Some(25))),
+            "running now: 8 per runner (25 total)"
+        );
+        assert_eq!(cpus(applied(None, Some(24))), "running now: 24 total");
+        assert_eq!(cpus(applied(Some(0), Some(24))), "running now: 24 total");
+        assert_eq!(cpus(applied(Some(2), None)), "running now: unknown");
+        assert_eq!(running_per_runner(None, |a| a.job_cpus), NOT_RUNNING);
+        assert_eq!(
+            running_runners(Some(applied(Some(2), None))),
+            "running now: 2"
+        );
+        assert_eq!(
+            running_runners(Some(applied(None, None))),
+            "running now: unknown"
+        );
+        assert_eq!(running_runners(None), NOT_RUNNING);
+    }
+
+    #[test]
+    fn not_running_unless_the_manager_has_slots() {
+        let a = applied(Some(2), Some(8));
+        let snap = |status| state::Snapshot { status, applied: a };
+        for live in [
+            Status::Starting,
+            Status::Idle,
+            Status::Running("job".into()),
+            Status::Draining,
+        ] {
+            assert_eq!(running_now(snap(live)), Some(a));
+        }
+        for idle in [
+            Status::NotInstalled,
+            Status::Unknown,
+            Status::Off,
+            Status::Paused,
+            Status::Error("x".into()),
+        ] {
+            assert_eq!(running_now(snap(idle)), None);
+        }
     }
 }
