@@ -28,8 +28,11 @@ Write-MountLog "${stamp} start user=${user} path=${path}"
 # terminating error and exit 1, even when the mount succeeded. On Fresh the
 # task attached the disk and still returned Last Result 1 while wsl.exe was
 # printing "Unknown key 'wsl2.autoMemoryReclaim'" to stderr.
+# wsl.exe prints UTF-16 to a pipe, so 'already' never matched its spaced-out
+# text and an already-attached disk returned 1. WSL_UTF8 makes it print UTF-8.
+$env:WSL_UTF8 = '1'
 $ErrorActionPreference = 'Continue'
-$output = & wsl.exe --mount --vhd $path --bare 2>&1 | ForEach-Object { "$_" } | Out-String
+$output = & wsl.exe --mount --vhd $path --bare 2>&1 | ForEach-Object { "$_" -replace "`0", '' } | Out-String
 $code = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
 if ($null -eq $code) {
@@ -46,7 +49,7 @@ if ($text) {
 if ($code -eq 0) {
     exit 0
 }
-if ($text -match 'already') {
+if ($text -match '(?i)already|WSL_E_USER_VHD_ALREADY_ATTACHED') {
     Write-MountLog "${stamp} already mounted; treating as success"
     exit 0
 }
