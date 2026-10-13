@@ -138,7 +138,7 @@ Describe 'aap-runner host supervisor' {
             Write-AapStatus 'idle' '' 'second write replaces the first'
             $path = Join-Path $AapCfg.DataDir 'status.json'
             $s = Get-AapStatusFile
-            @($s.PSObject.Properties.Name) -join ',' | Should -Be 'state,job,updated,detail,runner_count,job_cpus,job_memory_gib'
+            @($s.PSObject.Properties.Name) -join ',' | Should -Be 'state,job,updated,detail,runner_count,job_cpus,job_memory_gib,repo,run_url'
             $s.runner_count | Should -BeNullOrEmpty
             $s.state | Should -Be 'idle'
             $s.detail | Should -Be 'second write replaces the first'
@@ -212,6 +212,51 @@ Describe 'aap-runner host supervisor' {
             $s = Get-AapStatusFile
             $s.state | Should -Be 'running'
             $s.job | Should -Be 'ci-123'
+        }
+
+        It 'mirrors <name>' -TestCases @(
+            @{ name = 'a valid repo and run_url'; extra = ',"repo":"Org-1/my.repo_x","run_url":"https://github.com/Org-1/my.repo_x/actions/runs/123"'; repo = 'Org-1/my.repo_x'; url = 'https://github.com/Org-1/my.repo_x/actions/runs/123' }
+            @{ name = 'absent fields as empty'; extra = ''; repo = ''; url = '' }
+            @{ name = 'another host as empty'; extra = ',"repo":"o/r","run_url":"https://evil.example/o/r/actions/runs/1"'; repo = 'o/r'; url = '' }
+            @{ name = 'http as empty'; extra = ',"repo":"o/r","run_url":"http://github.com/o/r/actions/runs/1"'; repo = 'o/r'; url = '' }
+            @{ name = 'an upper-case host as empty'; extra = ',"repo":"o/r","run_url":"https://GITHUB.com/o/r/actions/runs/1"'; repo = 'o/r'; url = '' }
+            @{ name = 'a trailing newline as empty'; extra = ',"repo":"o/r\n","run_url":"https://github.com/o/r/actions/runs/1\n"'; repo = ''; url = '' }
+            @{ name = 'a query string as empty'; extra = ',"repo":"o/r","run_url":"https://github.com/o/r/actions/runs/1?x=javascript:1"'; repo = 'o/r'; url = '' }
+            @{ name = 'a non-string as empty'; extra = ',"repo":["o/r"],"run_url":{"u":"https://github.com/o/r/actions/runs/1"}'; repo = ''; url = '' }
+            @{ name = 'an invalid repo as empty'; extra = ',"repo":"o/r/x","run_url":""'; repo = ''; url = '' }
+        ) {
+            $script:extra = $extra
+            $script:responder = {
+                param($line)
+                if ($line -like '*cat /run/aap-runner/status.json') { return (Get-AapFakeResult 0 ('{"state":"running","job":"ci-123","slots":3,"busy":1' + $script:extra + '}')) }
+                return (& $script:healthy $line)
+            }
+            Write-AapStateFile '{"desired":"on"}'
+            Invoke-AapCycle
+            $s = Get-AapStatusFile
+            $s.state | Should -Be 'running'
+            $s.repo | Should -BeExactly $repo
+            $s.run_url | Should -BeExactly $url
+        }
+
+        It 'keeps repo and run_url on the heartbeat and clears them on Off' {
+            $script:responder = {
+                param($line)
+                if ($line -like '*cat /run/aap-runner/status.json') { return (Get-AapFakeResult 0 '{"state":"running","job":"ci-1","repo":"o/r","run_url":"https://github.com/o/r/actions/runs/9"}') }
+                return (& $script:healthy $line)
+            }
+            Write-AapStateFile '{"desired":"on"}'
+            Invoke-AapCycle
+            $script:clock.Now = $AapRt.StatusAt.AddSeconds($AapCfg.HeartbeatSeconds)
+            $AapRt.NextHealth = $script:clock.Now.AddHours(1)
+            Invoke-AapCycle
+            (Get-AapStatusFile).run_url | Should -Be 'https://github.com/o/r/actions/runs/9'
+            Write-AapStateFile '{"desired":"off"}'
+            Invoke-AapCycle
+            $s = Get-AapStatusFile
+            $s.state | Should -Be 'off'
+            $s.repo | Should -BeExactly ''
+            $s.run_url | Should -BeExactly ''
         }
 
         It 'stops at a failed mount task, sets error, and retries after backoff' {

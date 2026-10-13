@@ -14,7 +14,7 @@ admin-written.
 | `inbox\state.json` | tray (atomic: `.tmp` then rename) | `{"desired":"on"}` or `{"desired":"off"}` |
 | `inbox\settings.json` | tray (atomic) | `{"runner_count":1..3,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` |
 | `inbox\tray.log` | tray, appended if `inbox\` exists | one line per failed write/spawn |
-| `status.json` | supervisor, never the tray | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"…","updated":"<RFC3339>","detail":"…","runner_count":N,"job_cpus":N,"job_memory_gib":N}` (the last three optional) |
+| `status.json` | supervisor, never the tray | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"…","updated":"<RFC3339>","detail":"…","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/…/actions/runs/N"}` (the last five optional; `repo` and `run_url` may be `""`) |
 | `logs\` | supervisor | opened by "Open logs" via `C:\Windows\explorer.exe` (absolute path) |
 
 - `inbox\` missing: `Not installed`; Start/Stop/Restart, Pause/Resume and Settings are disabled.
@@ -37,7 +37,7 @@ admin-written.
 ## Menu
 
 State line (with applied limits when reported, e.g. `Idle · 2 runners · 24 cpu · 72 GiB total`; same text
-as the tooltip), Start, Stop, Restart, Pause/Resume, Settings…, Open logs, Quit.
+as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, Open logs, version, Quit.
 
 - Polls `status.json` every 5 s. Restart writes `off`, waits up to 15 min for `state: off`, then writes `on`.
 - Pause/Resume flips `paused` in `settings.json`; the label follows the file.
@@ -50,7 +50,13 @@ as the tooltip), Start, Stop, Restart, Pause/Resume, Settings…, Open logs, Qui
   rewrites it.
 - Quit closes the tray only; it does not touch any file. Single instance per user (file locks in `%TEMP%`).
 - Tooltip: `AAP Runner: <state line> · v<version> (<commit>)`.
-- Version: `AAP Runner v0.2.0 (abcdef12)` (Cargo version, short HEAD stamped by `build.rs`, `local`
+- While a job runs the state line reads `Running <repo short name> · <job>` (the part of `repo` after
+  the slash), or `Running job <job>` when `repo` is empty. The Settings window adds
+  `Running now: <owner/name> · <job>`.
+- Open job (directly under the state line) is enabled only when `run_url` matches
+  `^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$`, checked again on click;
+  it opens the URL in the default browser via `C:\Windows\explorer.exe <url>`. Nothing else is opened.
+- Version: `AAP Runner v0.3.0 (abcdef12)` (Cargo version, short HEAD stamped by `build.rs`, `local`
   without git) as a disabled item above Quit, in the tooltip and the Settings title. `--version`
   prints it to stdout and exits 0 (GUI-subsystem exe: capture it, e.g. `& .\aap-runner-tray.exe --version | Write-Output`).
 

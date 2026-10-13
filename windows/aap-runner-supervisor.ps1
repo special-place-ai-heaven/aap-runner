@@ -26,7 +26,9 @@
 #   Both files are parsed strictly. Only validated integers ever reach a
 #   command or the limits file.
 # - status.json   {"state","job","updated","detail","runner_count",
-#   "job_cpus","job_memory_gib"} in the admin-owned root, rewritten
+#   "job_cpus","job_memory_gib","repo","run_url"} in the admin-owned root.
+#   repo and run_url are copied from the manager only when they match a
+#   strict pattern (the tray opens run_url), else empty. Rewritten
 #   atomically. The tray treats it as stale after 180 s, so it is rewritten
 #   at least every 60 s, also while Off.
 # - logs\supervisor.log (admin-owned), one line per event, rotated to .1 at
@@ -255,7 +257,7 @@ function Read-AapSettingsFile {
 }
 
 function Write-AapStatus {
-    param([string]$State, [string]$Job = '', [string]$Detail = '')
+    param([string]$State, [string]$Job = '', [string]$Detail = '', [string]$Repo = '', [string]$RunUrl = '')
     if ($AapStates -notcontains $State) { throw "unknown status state $State" }
     $Job = Format-AapText $Job 128
     $now = Get-AapNow
@@ -268,6 +270,8 @@ function Write-AapStatus {
         runner_count   = $null
         job_cpus       = $null
         job_memory_gib = $null
+        repo           = $Repo
+        run_url        = $RunUrl
     }
     if ($eff) {
         $obj.runner_count = $eff.RunnerCount
@@ -275,7 +279,7 @@ function Write-AapStatus {
         $obj.job_memory_gib = $eff.JobMemoryGib
     }
     $prev = $AapRt.Status
-    $AapRt.Status = @{ State = $State; Job = $Job; Detail = $Detail }
+    $AapRt.Status = @{ State = $State; Job = $Job; Detail = $Detail; Repo = $Repo; RunUrl = $RunUrl }
     $AapRt.StatusAt = $now
     if ($null -eq $prev -or $prev.State -ne $State -or $prev.Job -ne $Job -or $prev.Detail -ne $Detail) {
         Write-AapLog "status $State job=$Job $Detail"
@@ -349,6 +353,7 @@ function Invoke-AapRoot([string[]]$Argv, $StdIn = $null) {
 
 # /run/aap-runner/status.json from the manager. State is $null unless the
 # Windows contract knows it. Limits are $null unless all three parse.
+# Repo and RunUrl are '' unless they match exactly; the tray opens RunUrl.
 function ConvertFrom-AapManagerStatus([string]$Text) {
     try { $obj = ConvertFrom-Json -InputObject $Text } catch { return $null }
     if (-not ($obj -is [pscustomobject])) { return $null }
@@ -361,7 +366,11 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
     if ($count -match '^\d{1,4}\z' -and $cpus -match '^\d{1,4}\z' -and $mem -match '^(\d{1,5})[gG]\z') {
         $limits = @{ RunnerCount = [int]$count; JobCpus = [int]$cpus; JobMemoryGib = [int]$Matches[1] }
     }
-    return @{ State = $state; Job = [string]$obj.job; Limits = $limits }
+    $repo = $obj.repo
+    if (-not ($repo -is [string]) -or $repo -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z') { $repo = '' }
+    $url = $obj.run_url
+    if (-not ($url -is [string]) -or $url -cnotmatch '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+\z') { $url = '' }
+    return @{ State = $state; Job = [string]$obj.job; Limits = $limits; Repo = $repo; RunUrl = $url }
 }
 
 # Runs the existing mount task (no second copy of the mount logic). Returns
@@ -541,7 +550,7 @@ function Invoke-AapHealth {
         } elseif ($AapRt.Paused) {
             Write-AapStatus 'paused' '' $detail
         } elseif ($m -and $m.State) {
-            Write-AapStatus $m.State $m.Job $detail
+            Write-AapStatus $m.State $m.Job $detail $m.Repo $m.RunUrl
         } else {
             Write-AapStatus 'starting' '' 'manager status unavailable'
         }
@@ -727,7 +736,7 @@ function Invoke-AapCycle {
     if ($null -eq $AapRt.Status) {
         Write-AapStatus 'off' '' ''
     } elseif (((Get-AapNow) - $AapRt.StatusAt).TotalSeconds -ge $AapCfg.HeartbeatSeconds) {
-        Write-AapStatus $AapRt.Status.State $AapRt.Status.Job $AapRt.Status.Detail
+        Write-AapStatus $AapRt.Status.State $AapRt.Status.Job $AapRt.Status.Detail $AapRt.Status.Repo $AapRt.Status.RunUrl
     }
 }
 

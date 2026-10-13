@@ -16,18 +16,22 @@ struct Dialog {
     rewrites: bool,
     /// What the manager runs right now; `None` when it has no runner slots.
     running: Option<Applied>,
+    /// `owner/name · job` while a job runs.
+    running_job: Option<String>,
     vm: VmLimit,
     write_error: Option<String>,
 }
 
 pub fn run(base: PathBuf) -> eframe::Result {
     let stored = settings::read_settings(&base);
+    let snap = state::read_status(&base, SystemTime::now());
     let vm = VmLimit::read();
     let dialog = Dialog {
         runners: stored.runner_count,
         paused: stored.paused,
         rewrites: stored != Settings::derived(stored.runner_count, stored.paused, &vm),
-        running: running_now(state::read_status(&base, SystemTime::now())),
+        running: running_now(snap.clone()),
+        running_job: snap.running_job(),
         vm,
         write_error: None,
         base,
@@ -121,6 +125,9 @@ impl eframe::App for Dialog {
                     ui.checkbox(&mut self.paused, "");
                     ui.end_row();
                 });
+            if let Some(job) = &self.running_job {
+                ui.label(format!("Running now: {job}"));
+            }
             ui.add_space(6.0);
             // `edit` is from before the grid: a change shows on the next frame, which egui
             // paints right after the input event.
@@ -205,7 +212,12 @@ mod tests {
     #[test]
     fn not_running_unless_the_manager_has_slots() {
         let a = applied(Some(2), Some(8));
-        let snap = |status| state::Snapshot { status, applied: a };
+        let snap = |status| state::Snapshot {
+            status,
+            applied: a,
+            repo: String::new(),
+            run_url: String::new(),
+        };
         for live in [
             Status::Starting,
             Status::Idle,

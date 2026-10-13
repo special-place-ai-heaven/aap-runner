@@ -54,7 +54,7 @@ split by trust:
 |---|---|---|
 | `inbox\state.json` | tray or you | `{"desired":"on"}` or `{"desired":"off"}`. Anything else counts as off and logs one warning. |
 | `inbox\settings.json` | tray or you | `{"runner_count":1-3,"job_cpus":1-28,"job_memory_gib":1-80,"paused":true\|false}`. All four keys, whole numbers, a real boolean. Anything else logs one warning and the last valid settings stay. Missing means no override and not paused. |
-| `status.json` | supervisor | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"","updated":"<RFC3339>","detail":"","runner_count":N,"job_cpus":N,"job_memory_gib":N}`. The three numbers are what the manager reports as applied, or null. Rewritten at least every 60 s. The tray calls it stale after 180 s. |
+| `status.json` | supervisor | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"","updated":"<RFC3339>","detail":"","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/owner/name/actions/runs/ID"}`. The three numbers are what the manager reports as applied, or null. `repo` and `run_url` are the running job's, copied from the manager only when they match `owner/name` and `https://github.com/owner/name/actions/runs/<digits>` exactly, else empty. Both are empty while off or paused. Rewritten at least every 60 s. The tray calls it stale after 180 s. |
 | `logs\supervisor.log` | supervisor | One line per event, rotated to `.1` at 5 MB. |
 
 While On, `inbox\settings.json` is read every 5 s:

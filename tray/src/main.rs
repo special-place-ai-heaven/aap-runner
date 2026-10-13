@@ -48,7 +48,7 @@ fn version_string(version: &str, commit: &str) -> String {
     format!("AAP Runner v{version} ({commit})")
 }
 
-/// `AAP Runner v0.2.0 (abcdef12)`: menu, tooltip, settings title and `--version`.
+/// `AAP Runner v0.3.0 (abcdef12)`: menu, tooltip, settings title and `--version`.
 pub fn version() -> String {
     version_string(env!("CARGO_PKG_VERSION"), env!("AAP_TRAY_COMMIT"))
 }
@@ -135,6 +135,7 @@ fn main() {
 
 fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let status_item = MenuItem::new("", false, None);
+    let open_job = MenuItem::new("Open job", false, None);
     let start = MenuItem::new("Start", true, None);
     let stop = MenuItem::new("Stop", true, None);
     let restart = MenuItem::new("Restart", true, None);
@@ -145,6 +146,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let quit = MenuItem::new("Quit", true, None);
     let menu = Menu::with_items(&[
         &status_item,
+        &open_job,
         &PredefinedMenuItem::separator(),
         &start,
         &stop,
@@ -174,6 +176,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut current = Badge::Hollow;
     let mut shown_icon = None;
     let mut shown_text = None;
+    // Only ever a `valid_run_url`, set from the last poll.
+    let mut job_url: Option<String> = None;
 
     loop {
         if !win::pump_messages() {
@@ -199,6 +203,12 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 toggle_pause(base);
             } else if id == settings_item.id() {
                 open_settings(base);
+            } else if id == open_job.id() {
+                if let Some(url) = job_url.as_deref().filter(|u| state::valid_run_url(u))
+                    && let Err(e) = Command::new(EXPLORER).arg(url).spawn()
+                {
+                    state::log(base, &format!("open job failed: {e}"));
+                }
             } else if id == logs.id() {
                 if let Err(e) = Command::new(EXPLORER).arg(base.join("logs")).spawn() {
                     state::log(base, &format!("open logs failed: {e}"));
@@ -230,6 +240,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = tray.set_tooltip(Some(tooltip(&text)));
                 shown_text = Some(text);
             }
+            job_url = snap.job_url().map(str::to_owned);
+            open_job.set_enabled(job_url.is_some());
             let installed = snap.status != Status::NotInstalled;
             pause.set_text(settings::read_settings(base).toggle_label());
             pause.set_enabled(installed);
@@ -299,7 +311,7 @@ mod tests {
                 env!("AAP_TRAY_COMMIT")
             )
         );
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.2.0");
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.3.0");
         assert!(!env!("AAP_TRAY_COMMIT").is_empty());
     }
 }

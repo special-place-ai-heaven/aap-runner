@@ -73,6 +73,29 @@ pub struct Applied {
 pub struct Snapshot {
     pub status: Status,
     pub applied: Applied,
+    /// `owner/name` of the running job's repository, or empty.
+    pub repo: String,
+    /// The running job's Actions URL as reported; use `job_url()`, never this, to open it.
+    pub run_url: String,
+}
+
+/// `https://github.com/<owner>/<repo>/actions/runs/<digits>` and nothing else, the same as
+/// `^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$`.
+pub fn valid_run_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://github.com/") else {
+        return false;
+    };
+    let name = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    matches!(
+        parts.as_slice(),
+        [owner, repo, "actions", "runs", id]
+            if name(owner) && name(repo) && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
+    )
 }
 
 impl Snapshot {
@@ -80,13 +103,47 @@ impl Snapshot {
         Snapshot {
             status,
             applied: Applied::default(),
+            repo: String::new(),
+            run_url: String::new(),
+        }
+    }
+
+    /// The URL "Open job" may open: only a valid GitHub Actions run URL.
+    pub fn job_url(&self) -> Option<&str> {
+        valid_run_url(&self.run_url).then_some(self.run_url.as_str())
+    }
+
+    /// `owner/name · job` for the dialog while a job runs.
+    pub fn running_job(&self) -> Option<String> {
+        let Status::Running(job) = &self.status else {
+            return None;
+        };
+        Some(match (self.repo.is_empty(), job.is_empty()) {
+            (true, _) => format!("job {job}").trim_end().to_string(),
+            (false, true) => self.repo.clone(),
+            (false, false) => format!("{} \u{b7} {job}", self.repo),
+        })
+    }
+
+    fn status_text(&self) -> String {
+        match &self.status {
+            Status::Running(job) if !self.repo.is_empty() => {
+                let short = self.repo.rsplit('/').next().unwrap_or(&self.repo);
+                if job.is_empty() {
+                    format!("Running {short}")
+                } else {
+                    format!("Running {short} \u{b7} {job}")
+                }
+            }
+            status => status.text(),
         }
     }
 
     /// Menu state line / tooltip, e.g. `Idle · 2 runners · 24 cpu · 72 GiB total`
-    /// (cpu and memory are pool totals split across the runners).
+    /// (cpu and memory are pool totals split across the runners), or
+    /// `Running Agent_Army_Professionals · Workspace · …` while a job runs.
     pub fn line(&self) -> String {
-        let mut line = self.status.text();
+        let mut line = self.status_text();
         let a = &self.applied;
         if let Some(n) = a.runner_count {
             line += &format!(" \u{b7} {n} runner{}", if n == 1 { "" } else { "s" });
@@ -112,6 +169,8 @@ struct RawStatus {
     runner_count: Option<u32>,
     job_cpus: Option<u32>,
     job_memory_gib: Option<u32>,
+    repo: Option<String>,
+    run_url: Option<String>,
 }
 
 /// Missing inbox = not installed; missing/bad/stale/oversized status.json = unknown.
@@ -156,7 +215,12 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
         job_cpus: raw.job_cpus,
         job_memory_gib: raw.job_memory_gib,
     };
-    Snapshot { status, applied }
+    Snapshot {
+        status,
+        applied,
+        repo: raw.repo.unwrap_or_default(),
+        run_url: raw.run_url.unwrap_or_default(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -491,5 +555,97 @@ mod tests {
         assert!(restart(&base, Duration::ZERO, Duration::ZERO).unwrap());
         assert_eq!(read(), r#"{"desired":"on"}"#);
         fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn running_line_names_repo_and_job() {
+        let now = at("2026-10-12T08:01:00Z");
+        let running = |extra: &str| {
+            parse_status(
+                &format!(
+                    r#"{{"state":"running","job":"Workspace","updated":"2026-10-12T08:00:00Z"{extra}}}"#
+                ),
+                now,
+            )
+        };
+        let with_repo = running(r#","repo":"robagentic/Agent_Army_Professionals""#);
+        assert_eq!(
+            with_repo.line(),
+            "Running Agent_Army_Professionals \u{b7} Workspace"
+        );
+        assert_eq!(
+            with_repo.running_job().as_deref(),
+            Some("robagentic/Agent_Army_Professionals \u{b7} Workspace")
+        );
+        for no_repo in [
+            running(""),
+            running(r#","repo":"""#),
+            running(r#","repo":null"#),
+        ] {
+            assert_eq!(no_repo.line(), "Running job Workspace");
+            assert_eq!(no_repo.running_job().as_deref(), Some("job Workspace"));
+        }
+        let idle = parse_status(
+            r#"{"state":"idle","updated":"2026-10-12T08:00:00Z","repo":"a/b"}"#,
+            now,
+        );
+        assert_eq!(idle.line(), "Idle");
+        assert_eq!(idle.running_job(), None);
+    }
+
+    #[test]
+    fn run_url_validation() {
+        for good in [
+            "https://github.com/robagentic/Agent_Army_Professionals/actions/runs/123456789",
+            "https://github.com/a-b/c.d_e/actions/runs/1",
+        ] {
+            assert!(valid_run_url(good), "{good}");
+        }
+        for bad in [
+            "",
+            "javascript:alert(1)",
+            "file:///C:/Windows/System32/calc.exe",
+            "http://github.com/a/b/actions/runs/1",
+            "https://github.com.evil.com/a/b/actions/runs/1",
+            "https://evil.com/a/b/actions/runs/1",
+            "https://gist.github.com/a/b/actions/runs/1",
+            "https://github.com/a/b/actions/runs/1/",
+            "https://github.com/a/b/actions/runs/1?x=1",
+            "https://github.com/a/b/actions/runs/1#x",
+            "https://github.com/a/b/actions/runs/1 & calc",
+            "https://github.com/a/b/actions/runs/12a",
+            "https://github.com/a/b/actions/runs/",
+            "https://github.com//b/actions/runs/1",
+            "https://github.com/a/b/c/actions/runs/1",
+            "https://github.com/a/b%2Fc/actions/runs/1",
+            " https://github.com/a/b/actions/runs/1",
+        ] {
+            assert!(!valid_run_url(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn open_job_enabled_only_for_a_valid_url() {
+        let now = at("2026-10-12T08:01:00Z");
+        let snap = |url: &str| {
+            parse_status(
+                &format!(
+                    r#"{{"state":"running","job":"j","updated":"2026-10-12T08:00:00Z","run_url":"{url}"}}"#
+                ),
+                now,
+            )
+        };
+        let good = "https://github.com/a/b/actions/runs/7";
+        assert_eq!(snap(good).job_url(), Some(good));
+        assert_eq!(snap("").job_url(), None);
+        assert_eq!(snap("javascript:alert(1)").job_url(), None);
+        assert_eq!(
+            parse_status(
+                r#"{"state":"running","updated":"2026-10-12T08:00:00Z"}"#,
+                now
+            )
+            .job_url(),
+            None
+        );
     }
 }

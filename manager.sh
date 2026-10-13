@@ -842,7 +842,12 @@ watch_runner_output() {
   while IFS= read -r line || [[ -n "${line}" ]]; do
     printf '%s\n' "${line}"
     case "${line}" in
-      *': Running job: '*) set_slot_state "${slot}" running "${container}" "${line#*: Running job: }" ;;
+      *': Running job: '*)
+        set_slot_state "${slot}" running "${container}" "${line#*: Running job: }"
+        if [[ -n "${container}" ]]; then
+          discover_job_run "${slot}" "${container}" "$(slot_ns "${slot}")" > /dev/null 2>&1 &
+        fi
+        ;;
       *': Listening for Jobs'*) set_slot_state "${slot}" listening "${container}" ;;
       *' completed with result: '*) set_slot_state "${slot}" idle ;;
     esac
@@ -863,6 +868,7 @@ draining() {
 set_slot_state() {
   local f="${RUN_DIR}/slot-$1"
   [[ -d "${RUN_DIR}" ]] || return 0
+  [[ "$2" == running ]] || rm -f "${f}.run" 2>/dev/null || true
   if ! { printf '%s %s %s %s\n' "$2" "$(date +%s%N)" "${3:--}" "${4:-}" > "${f}.tmp.${BASHPID}" \
     && mv -f "${f}.tmp.${BASHPID}" "${f}"; } 2>/dev/null; then
     rm -f "${f}.tmp.${BASHPID}" 2>/dev/null || true
@@ -883,15 +889,85 @@ slot_container() {
   printf '%s\n' "${c}"
 }
 
+# The ns stamp of the slot's current state: one job start has one stamp.
+slot_ns() {
+  local ns=""
+  { read -r _ ns _ < "${RUN_DIR}/slot-$1"; } 2>/dev/null || true
+  printf '%s\n' "${ns}"
+}
+
+# KEY=value lines (the job processes' environment) on stdin. Exit 1 when
+# there is no GITHUB_RUN_ID yet. Otherwise exit 0 and print "REPO RUN_URL"
+# only when the server is https://github.com, the repo is owner/name, the
+# run id is digits, and no key has two different values; else print nothing.
+job_run_from_env() {
+  local line key val server="" repo="" run="" bad=0 seen=0
+  while IFS= read -r line; do
+    key=${line%%=*}
+    val=${line#*=}
+    case "${key}" in
+      GITHUB_SERVER_URL)
+        [[ -z "${server}" || "${server}" == "${val}" ]] || bad=1
+        server=${val}
+        ;;
+      GITHUB_REPOSITORY)
+        [[ -z "${repo}" || "${repo}" == "${val}" ]] || bad=1
+        repo=${val}
+        ;;
+      GITHUB_RUN_ID)
+        [[ -z "${run}" || "${run}" == "${val}" ]] || bad=1
+        run=${val}
+        seen=1
+        ;;
+    esac
+  done
+  ((seen)) || return 1
+  if ((bad == 0)) && [[ "${server}" == https://github.com \
+    && "${repo}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ \
+    && "/${repo}/" != *"/./"* && "/${repo}/" != *"/../"* \
+    && "${run}" =~ ^[0-9]+$ ]]; then
+    printf '%s https://github.com/%s/actions/runs/%s\n' "${repo}" "${repo}" "${run}"
+  fi
+  return 0
+}
+
+# The job's repository and run URL, from the Runner.Worker and step
+# processes' environment inside the container (the Listener has none). No
+# GitHub token. Up to 6 tries 5 s apart, each bounded by timeout 10. Written
+# to slot-N.run as "NS REPO RUN_URL"; NS ties it to this job start, so a
+# result that lands after the job ended is never published. Never fails.
+discover_job_run() {
+  local slot="$1" container="$2" ns="$3" env out i
+  [[ -n "${ns}" ]] || return 0
+  for ((i = 1; i <= 6; i++)); do
+    [[ "$(slot_ns "${slot}")" == "${ns}" ]] || return 0
+    # The container's sh expands $p, not this shell.
+    # shellcheck disable=SC2016
+    env=$(timeout 10 docker exec "${container}" sh -c 'for p in /proc/[0-9]*; do tr "\0" "\n" < "$p/environ" 2>/dev/null | grep -E "^(GITHUB_REPOSITORY|GITHUB_RUN_ID|GITHUB_SERVER_URL|GITHUB_JOB)=" ; done | sort -u' 2>/dev/null) || env=""
+    if out=$(job_run_from_env <<< "${env}"); then
+      [[ "$(slot_ns "${slot}")" == "${ns}" ]] || return 0
+      if printf '%s %s\n' "${ns}" "${out}" > "${RUN_DIR}/slot-${slot}.run.tmp.${BASHPID}" 2>/dev/null; then
+        mv -f "${RUN_DIR}/slot-${slot}.run.tmp.${BASHPID}" "${RUN_DIR}/slot-${slot}.run" 2>/dev/null || true
+      fi
+      write_status
+      return 0
+    fi
+    ((i < 6)) && sleep 5
+  done
+  return 0
+}
+
 # state: draining while the drain file exists, else running while a slot has
 # a job, else idle once a slot listens, else starting. job: the most
-# recently started running job, or "". slots and runner_count:
+# recently started running job, or "". repo and run_url: that job's, once
+# discover_job_run found them, else "". slots and runner_count:
 # AAP_RUNNER_COUNT. job_cpus and job_memory: the pool totals as configured,
 # after limits.conf. job_cpus is a JSON number and may be fractional (2.5)
 # when manager.conf says so; the supervisor treats a non-integer as unknown.
 # Paused is a Windows-side state and never appears here.
 status_json() {
   local f st ns name busy=0 idle=0 best=-1 job="" state=starting
+  local rns rrepo rurl repo="" run_url="" 
   for f in "${RUN_DIR}"/slot-[1-9]; do
     [[ -f "${f}" ]] || continue
     st="" ns="" name=""
@@ -903,6 +979,15 @@ status_json() {
         if ((ns > best)); then
           best=${ns}
           job=${name}
+          rns="" rrepo="" rurl=""
+          { read -r rns rrepo rurl _ < "${f}.run"; } 2>/dev/null || true
+          if [[ "${rns}" == "${ns}" ]]; then
+            repo=${rrepo}
+            run_url=${rurl}
+          else
+            repo=""
+            run_url=""
+          fi
         fi
         ;;
       listening | idle) idle=$((idle + 1)) ;;
@@ -915,10 +1000,10 @@ status_json() {
   elif ((idle > 0)); then
     state=idle
   fi
-  jq -cn --arg state "${state}" --arg job "${job}" --argjson slots "${AAP_RUNNER_COUNT:-1}" \
+  jq -cn --arg state "${state}" --arg job "${job}" --arg repo "${repo}" --arg run_url "${run_url}" --argjson slots "${AAP_RUNNER_COUNT:-1}" \
     --argjson busy "${busy}" --argjson updated "$(date +%s)" \
     --arg cpus "${AAP_JOB_CPUS}" --arg memory "${AAP_JOB_MEMORY}" \
-    '{state: $state, job: $job, slots: $slots, busy: $busy, updated: $updated,
+    '{state: $state, job: $job, repo: $repo, run_url: $run_url, slots: $slots, busy: $busy, updated: $updated,
       runner_count: $slots, job_cpus: ($cpus | tonumber? // null), job_memory: $memory}'
 }
 
@@ -1333,7 +1418,7 @@ stop_pool() {
   DEREG_PIDS=()
   DEREG_NAMES=()
   deregister_runners "${runners[@]}"
-  rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9]
+  rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run
 }
 
 # A dead slot is restarted alone; the other slots' jobs keep running. A
@@ -1343,7 +1428,7 @@ run_pool() {
   local slot i died now rc
   trap 'stop_pool; exit 143' TERM INT
   trap stop_pool EXIT
-  rm -f "${RUN_DIR}"/slot-[1-9]
+  rm -f "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run
   write_status
   for ((slot = 1; slot <= AAP_RUNNER_COUNT; slot++)); do
     SLOT_FAILS[slot]=0
