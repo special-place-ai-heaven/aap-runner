@@ -83,7 +83,8 @@ impl Snapshot {
         }
     }
 
-    /// Menu state line / tooltip, e.g. `Idle · 2 runners · 24 cpu · 72 GiB`.
+    /// Menu state line / tooltip, e.g. `Idle · 2 runners · 24 cpu · 72 GiB total`
+    /// (cpu and memory are pool totals split across the runners).
     pub fn line(&self) -> String {
         let mut line = self.status.text();
         let a = &self.applied;
@@ -94,7 +95,7 @@ impl Snapshot {
             line += &format!(" \u{b7} {n} cpu");
         }
         if let Some(n) = a.job_memory_gib {
-            line += &format!(" \u{b7} {n} GiB");
+            line += &format!(" \u{b7} {n} GiB total");
         }
         line
     }
@@ -384,7 +385,7 @@ mod tests {
         assert_eq!(snap.applied.runner_count, Some(2));
         assert_eq!(
             snap.line(),
-            "Idle \u{b7} 2 runners \u{b7} 24 cpu \u{b7} 72 GiB"
+            "Idle \u{b7} 2 runners \u{b7} 24 cpu \u{b7} 72 GiB total"
         );
         let one = r#"{"state":"paused","updated":"2026-10-12T08:00:00Z","runner_count":1}"#;
         assert_eq!(parse_status(one, now).line(), "Paused \u{b7} 1 runner");

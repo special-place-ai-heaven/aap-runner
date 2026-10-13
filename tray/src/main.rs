@@ -77,7 +77,7 @@ fn set_desired(base: &Path, d: Desired) {
 fn toggle_pause(base: &Path) {
     let mut s = settings::read_settings(base);
     s.paused = !s.paused;
-    if let Err(e) = settings::write_settings(base, &s) {
+    if let Err(e) = settings::write_settings(base, &s, &settings::VmLimit::read()) {
         state::log(base, &format!("write settings failed: {e}"));
     }
 }
