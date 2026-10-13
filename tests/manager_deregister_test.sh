@@ -115,7 +115,7 @@ dereg aap-crrr-0123456789ab
 [[ "${out}" == *'could not deregister'* ]] || fail "the failed lookup was not logged: ${out}"
 LIST_RC=0
 echo "500 and lookup failure retried once, logged, rc 0 ok"
-[[ "$(grep -c 'per_page' "${here}/../manager.sh" || true)" -eq 0 ]] || fail "the runners GET still sets per_page"
+[[ "$(declare -f deregister_runner_once | grep -c 'per_page' || true)" -eq 0 ]] || fail "the runners GET still sets per_page"
 
 # Both token POSTs: the JWT and the installation token go on stdin, with
 # timeouts. A throwaway key signs the JWT.
@@ -173,6 +173,11 @@ docker() {
 # shellcheck disable=SC2317,SC2329
 remove_job_containers() {
   echo removed >> "${log}"
+}
+# The ghost reap has its own test; here it would reach the network.
+# shellcheck disable=SC2317
+reap_ghost_runners() {
+  :
 }
 # Each deregistration hangs, so only the budget ends it.
 # shellcheck disable=SC2317

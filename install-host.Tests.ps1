@@ -25,6 +25,7 @@ function Get-AapBaseFacts([hashtable]$Extra) {
         DiskAttached      = $false
         DistroRegistered  = $false
         InsideDone        = $false
+        StageCurrent      = $true
         AppPem            = 'absent'
         ManagerEnabled    = $false
         KeyPath           = ''
@@ -125,6 +126,37 @@ Assert-Aap ($plan.Actions -contains 'p1') 'key install skipped P1'
 Assert-Aap ($plan.Actions -notcontains 'disable-manager') 'a disabled manager was started'
 Assert-Aap (($plan.Lines -join "`n") -notmatch 'systemctl start') 'key plan starts the manager'
 
+$installed = @{
+    DryRun           = $false
+    Elevated         = $true
+    DistroRegistered = $true
+    VhdxExists       = $true
+    AclLocked        = $true
+    TaskCurrent      = $true
+    DiskAttached     = $true
+    InsideDone       = $true
+    AppPem           = 'ok'
+}
+$plan = Get-AapInstallPlan (Get-AapBaseFacts $installed)
+$text = $plan.Lines -join "`n"
+Assert-Aap ($plan.Actions -notcontains 'upgrade') 'a current stage planned an upgrade'
+Assert-Aap ($plan.Actions -notcontains 'stage') 'a current stage was staged again'
+Assert-Aap ($text -match 'SKIP stage current') 'missing SKIP stage current'
+$installed.StageCurrent = $false
+$plan = Get-AapInstallPlan (Get-AapBaseFacts $installed)
+$text = $plan.Lines -join "`n"
+Assert-Aap ($plan.ExitCode -eq 0) "upgrade exit $($plan.ExitCode)"
+Assert-Aap ($plan.Actions[0] -eq 'stage') 'upgrade did not stage first'
+Assert-Aap ($plan.Actions -contains 'upgrade') 'a changed stage did not plan an upgrade'
+Assert-Aap ($plan.Actions -notcontains 'inside') 'upgrade re-ran the first-install inside step'
+Assert-Aap ($plan.Undo.Count -eq 2 -and $plan.Undo[1] -match 'no automatic undo') 'upgrade undo is not aligned or not explained'
+Assert-Aap ($text -match 'WOULD upgrade staging.sha256 differs') 'missing WOULD upgrade line'
+Assert-Aap ($text -match 'UNDO upgrade: no automatic undo.*previous commit') 'missing upgrade UNDO line'
+Assert-Aap ($text -notmatch 'systemctl start') 'upgrade plan starts the manager'
+$plan = Get-AapInstallPlan (Get-AapBaseFacts @{ StageCurrent = $false })
+Assert-Aap ($plan.Actions -notcontains 'upgrade') 'a fresh install planned an upgrade'
+Assert-Aap ($plan.Actions -contains 'inside') 'a fresh install skipped inside'
+
 Assert-Aap ((Get-AapAllowDiskMountLine 'absent') -eq 'PASS AllowDiskMount absent') 'absent policy'
 Assert-Aap ((Get-AapAllowDiskMountLine '0') -eq 'FAIL AllowDiskMount 0') 'zero policy'
 Assert-Aap ((Get-AapAllowDiskMountLine '1') -eq 'PASS AllowDiskMount 1') 'one policy'
@@ -148,6 +180,8 @@ $src = Get-Content -Raw (Join-Path $PSScriptRoot 'install-host.ps1')
 $dryAt = $src.IndexOf('if ($DryRun -or $plan.ExitCode -ne 0)')
 $undoAt = $src.LastIndexOf('Write-AapUndo')
 Assert-Aap ($dryAt -ge 0 -and $undoAt -gt $dryAt) 'DryRun can reach Write-AapUndo'
+$upgradeAt = $src.IndexOf('disable --now aap-runner-manager')
+Assert-Aap ($upgradeAt -gt $dryAt) 'DryRun can reach the upgrade step'
 Assert-Aap ($src.Contains("GetEnvironmentVariable('PSModulePath', 'Machine')")) 'PSModulePath reset is missing'
 $tail = $src.Substring($src.LastIndexOf('InvocationName'))
 Assert-Aap ($tail.Contains('Initialize-AapModulePath') -and $tail.IndexOf('Initialize-AapModulePath') -lt $tail.IndexOf('Invoke-AapInstallHost')) 'module path is reset after the install starts'

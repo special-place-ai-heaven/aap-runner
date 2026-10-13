@@ -116,6 +116,7 @@ function Get-AapInstallPlan {
     $undoTask = 'schtasks.exe /Delete /TN AAP-CRRR-Mount-Work-Disk /F'
     $undoKey = "wsl.exe -d $distro -u root -- rm -f /etc/aap-runner/app.pem"
     $undoDisable = "wsl.exe -d $distro -u root -- systemctl enable aap-runner-manager"
+    $undoUpgrade = 'no automatic undo, the previous files are overwritten. Re-run install-host.ps1 from the previous commit'
 
     if (-not $failed) {
         $needStage = $false
@@ -179,6 +180,13 @@ function Get-AapInstallPlan {
         }
         if ($Facts.InsideDone) {
             Add-AapLine $lines 'SKIP inside install.done'
+            if (-not $Facts.StageCurrent) {
+                $actions.Add('upgrade')
+                $undo.Add($undoUpgrade)
+                Add-AapLine $lines 'WOULD upgrade staging.sha256 differs'
+                Add-AapLine $lines "UNDO upgrade: $undoUpgrade"
+                $needStage = $true
+            }
         } else {
             $actions.Add('inside')
             $undo.Add($undoImport)
@@ -194,7 +202,7 @@ function Get-AapInstallPlan {
             Add-AapLine $lines 'WOULD stage sha256'
             Add-AapLine $lines "UNDO stage: $undoStage"
         } else {
-            Add-AapLine $lines 'SKIP stage already installed'
+            Add-AapLine $lines 'SKIP stage current'
         }
         if ($Facts.ManagerEnabled) {
             $actions.Add('disable-manager')
@@ -313,6 +321,8 @@ function Copy-AapLockedStaging {
         if ($got -ne $want) { throw "source hash mismatch for $name" }
         Copy-Item -LiteralPath $src -Destination (Join-Path $DestDir $name) -Force
     }
+    # inside_packages records it as /etc/aap-runner/staging.sha256.
+    Copy-Item -LiteralPath $HashFile -Destination (Join-Path $DestDir 'staging.sha256') -Force
     foreach ($line in Get-Content -LiteralPath $HashFile) {
         if ($line -notmatch '^([0-9a-f]{64}) [ ]*(\S+)$') { continue }
         $want = $Matches[1]
@@ -485,11 +495,19 @@ function Invoke-AapInstallHost {
         } catch { $denied.Add($xmlFile) }
     }
     $insideDone = $false
+    # A distro without install.done gets the inside step, which stages anyway.
+    $stageCurrent = $true
     $pem = 'absent'
     $managerOn = $false
     if ($registered) {
         & wsl.exe -d $DistroName -u root -- /bin/test -f /etc/aap-runner/install.done 1>$null 2>$null
         if ($LASTEXITCODE -eq 0) { $insideDone = $true }
+        if ($insideDone) {
+            # A missing record (installed before it existed) counts as differs.
+            $want = Get-Content -Raw -LiteralPath (Join-Path $repo 'staging.sha256')
+            $have = Invoke-AapQuiet { & wsl.exe -d $DistroName -u root -- /bin/cat /etc/aap-runner/staging.sha256 }
+            $stageCurrent = ($LASTEXITCODE -eq 0) -and (($have -replace '\s', '') -eq ($want -replace '\s', ''))
+        }
         $mode = Invoke-AapQuiet { & wsl.exe -d $DistroName -u root -- /usr/bin/stat -c '%a:%u' /etc/aap-runner/app.pem }
         if ($LASTEXITCODE -eq 0 -and $mode.Trim() -eq '400:0') { $pem = 'ok' }
         $en = Invoke-AapQuiet { & wsl.exe -d $DistroName -u root -- /bin/systemctl is-enabled aap-runner-manager }
@@ -514,6 +532,7 @@ function Invoke-AapInstallHost {
         DiskAttached      = [bool]$attached
         DistroRegistered  = $registered
         InsideDone        = $insideDone
+        StageCurrent      = $stageCurrent
         AppPem            = $pem
         ManagerEnabled    = $managerOn
         KeyPath           = $KeyPath
@@ -523,7 +542,9 @@ function Invoke-AapInstallHost {
     $plan = Get-AapInstallPlan -Facts $facts
     foreach ($line in $plan.Lines) { [Console]::Out.WriteLine($line) }
     if ($DryRun -or $plan.ExitCode -ne 0) { return [int]$plan.ExitCode }
-    if (-not $proof -and -not $insideDone) { throw 'refusing: networking proof was not recorded' }
+    if (-not $proof -and ($plan.Actions -contains 'inside' -or $plan.Actions -contains 'upgrade')) {
+        throw 'refusing: networking proof was not recorded'
+    }
 
     $undoPath = Join-Path $parent 'UNDO.md'
     $hostExe = (Get-Process -Id $PID).Path
@@ -585,7 +606,13 @@ function Invoke-AapInstallHost {
                 & wsl.exe --import $DistroName $InstallDir $tar.FullName --version 2
                 if ($LASTEXITCODE -ne 0) { throw "wsl --import failed ($LASTEXITCODE)" }
             }
-            'inside' {
+            { $_ -eq 'inside' -or $_ -eq 'upgrade' } {
+                if ($action -eq 'upgrade') {
+                    # Stopped and disabled like a first install; the boot after
+                    # --terminate must not start it under --inside-runtime.
+                    & wsl.exe -d $DistroName -u root -- /bin/systemctl disable --now aap-runner-manager
+                    if ($LASTEXITCODE -ne 0) { throw 'could not stop the manager before the upgrade' }
+                }
                 & wsl.exe -d $DistroName -u root -- /bin/mkdir -p /var/lib/aap-runner/stage
                 if ($LASTEXITCODE -ne 0) { throw 'mkdir stage inside the distro failed' }
                 & wsl.exe -d $OperatorDistro -- /bin/tar -C $linuxStage -cf - . |
@@ -624,7 +651,7 @@ function Invoke-AapInstallHost {
         if ($undoLine -and $action -ne 'p0' -and $action -ne 'p1') {
             Write-AapUndo $undoPath "$action : $undoLine"
         }
-        if ($action -eq 'stage' -or $action -eq 'lock' -or $action -eq 'create-vhdx' -or $action -eq 'task' -or $action -eq 'attach' -or $action -eq 'format' -or $action -eq 'import' -or $action -eq 'inside' -or $action -eq 'disable-manager' -or $action -eq 'key') {
+        if ($action -eq 'stage' -or $action -eq 'lock' -or $action -eq 'create-vhdx' -or $action -eq 'task' -or $action -eq 'attach' -or $action -eq 'format' -or $action -eq 'import' -or $action -eq 'inside' -or $action -eq 'upgrade' -or $action -eq 'disable-manager' -or $action -eq 'key') {
             $i++
         }
     }

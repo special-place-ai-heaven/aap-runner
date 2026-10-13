@@ -76,8 +76,8 @@ done
 # Join continuation lines, then every systemd file bootstrap copies must be
 # in a chmod 644 and in no chmod 755.
 joined=$(sed -e ':a' -e '/\\$/N; s/\\\n//; ta' "${boot}")
-mode644=$(grep -E '^ *chmod 644 ' <<< "${joined}")
-mode755=$(grep -E '^ *chmod 755 ' <<< "${joined}")
+mode644=$(grep -E "^ *chmod 644 " <<< "${joined}" | tr -s "[:space:]" " ")
+mode755=$(grep -E "^ *chmod 755 " <<< "${joined}" | tr -s "[:space:]" " ")
 n=0
 while read -r dest; do
   n=$((n + 1))

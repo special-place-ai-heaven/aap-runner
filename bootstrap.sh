@@ -680,6 +680,26 @@ merge_daemon_json() {
   fi
 }
 
+# The Ubuntu 24.04 rootfs ships account ubuntu at uid 1000. The runner
+# image's runner user is uid 1000 too, and the manager refuses a runner uid
+# that a distro account has. Only ubuntu is removed; any other name stops.
+remove_stock_uid_1000() {
+  local entry
+  entry=$(getent passwd 1000 || true)
+  [[ -n "${entry}" ]] || return 0
+  if [[ "${entry%%:*}" != ubuntu ]]; then
+    echo "refusing: uid 1000 is ${entry%%:*}, not the stock ubuntu account" >&2
+    exit 1
+  fi
+  # userdel -r exits non-zero when the mail spool is absent; the check
+  # below is what counts.
+  userdel -r ubuntu || true
+  if getent passwd 1000 >/dev/null; then
+    echo "refusing: uid 1000 is still assigned after userdel ubuntu" >&2
+    exit 1
+  fi
+}
+
 inside_packages() {
   export DEBIAN_FRONTEND=noninteractive
   if [[ -e /usr/bin/docker ]]; then
@@ -741,6 +761,7 @@ inside_packages() {
     exit 1
   fi
   passwd -l ghrunner
+  remove_stock_uid_1000
 
   install -d -m 700 -o root -g root /etc/aap-runner /opt/aap-runner /var/lib/aap-runner/image /usr/local/sbin
   copy_staged "${UBUNTU_NAME}" "/var/lib/aap-runner/image/${UBUNTU_NAME}"
@@ -800,6 +821,9 @@ inside_packages() {
   verify_sha256 "/var/lib/aap-runner/image/${UBUNTU_NAME}" "${UBUNTU_SHA256}"
   verify_sha256 "/var/lib/aap-runner/image/${RUNNER_NAME}" "${RUNNER_SHA256}"
   verify_sha256 "/var/lib/aap-runner/${SYSBOX_NAME}" "${SYSBOX_SHA256}"
+  # install-host.ps1 compares this with the repo's copy to plan an upgrade.
+  copy_staged staging.sha256 /etc/aap-runner/staging.sha256
+  chmod 644 /etc/aap-runner/staging.sha256
 }
 
 rewrite_dns_resolvers() {
@@ -1311,6 +1335,56 @@ lock_created_windows_dir() {
 # reaches diskpart.
 vhdx_windows_path_ok() {
   [[ "$1" =~ ^[A-Za-z]:\\[A-Za-z0-9\ _.\\-]+\.vhdx$ ]]
+}
+
+# Stubs getent and userdel. The file holds the name at uid 1000 or is
+# empty; the userdel stub logs its argv, empties it, and fails like a
+# missing mail spool does.
+uid_1000_self_check() {
+  local bin saved_path rc err
+  bin=$(mktemp -d)
+  cat > "${bin}/getent" << 'EOF'
+#!/bin/bash
+name=$(cat "${AAP_FAKE_UID1000_FILE}")
+[[ -n "${name}" ]] || exit 2
+printf '%s:x:1000:1000::/home/%s:/bin/bash
+' "${name}" "${name}"
+EOF
+  cat > "${bin}/userdel" << 'EOF'
+#!/bin/bash
+printf '%s
+' "$*" >> "${AAP_FAKE_UID1000_FILE}.log"
+: > "${AAP_FAKE_UID1000_FILE}"
+echo "userdel: ubuntu mail spool (/var/mail/ubuntu) not found" >&2
+exit 12
+EOF
+  chmod +x "${bin}/getent" "${bin}/userdel"
+  saved_path=${PATH}
+  PATH="${bin}:${PATH}"
+  export AAP_FAKE_UID1000_FILE="${bin}/uid1000"
+  printf 'ubuntu' > "${AAP_FAKE_UID1000_FILE}"
+  ( remove_stock_uid_1000 ) 2>/dev/null
+  if [[ "$(cat "${AAP_FAKE_UID1000_FILE}.log")" != "-r ubuntu" ]]; then
+    echo "stock ubuntu at uid 1000 was not removed with userdel -r" >&2
+    exit 1
+  fi
+  rm -f "${AAP_FAKE_UID1000_FILE}.log"
+  : > "${AAP_FAKE_UID1000_FILE}"
+  ( remove_stock_uid_1000 )
+  if [[ -e "${AAP_FAKE_UID1000_FILE}.log" ]]; then
+    echo "userdel ran with no account at uid 1000" >&2
+    exit 1
+  fi
+  printf 'runner' > "${AAP_FAKE_UID1000_FILE}"
+  rc=0
+  err=$( (remove_stock_uid_1000) 2>&1) || rc=$?
+  if [[ "${rc}" -eq 0 || "${err}" != *"uid 1000 is runner"* || -e "${AAP_FAKE_UID1000_FILE}.log" ]]; then
+    echo "a non-ubuntu account at uid 1000 was not refused" >&2
+    exit 1
+  fi
+  unset AAP_FAKE_UID1000_FILE
+  PATH=${saved_path}
+  rm -rf "${bin}"
 }
 
 self_check() {
@@ -2509,6 +2583,7 @@ EOF
   fresh_disk_self_check
   PATH=${saved_path}
   rm -rf "${bin}"
+  uid_1000_self_check
   if [[ ! -f "${SCRIPT_DIR}/staging.sha256" ]]; then
     echo "staging.sha256 is missing" >&2
     exit 1
@@ -2603,7 +2678,7 @@ outside() {
     "${SCRIPT_DIR}/aap-runner-manager.service" "${SCRIPT_DIR}/nftables.conf" \
     "${SCRIPT_DIR}/wsl.conf" "${SCRIPT_DIR}/manager.conf.example" \
     "${SCRIPT_DIR}/evidence.sh" "${SCRIPT_DIR}/bootstrap.sh" \
-    "${SCRIPT_DIR}/labels.sh" "${SCRIPT_DIR}/stage-into-distro.sh" "${STAGE}/"
+    "${SCRIPT_DIR}/labels.sh" "${SCRIPT_DIR}/stage-into-distro.sh"     "${SCRIPT_DIR}/staging.sha256" "${STAGE}/"
 
   # --exec does not join the command into the distro shell. The stage path
   # and the disk size are positional arguments of stage-into-distro.sh.

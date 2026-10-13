@@ -84,6 +84,15 @@ DEREGISTER_RETRY_SECONDS=5
 # All deregistrations of one drain or stop together take at most this long,
 # well inside the unit's TimeoutStopSec=90.
 DEREGISTER_BUDGET_SECONDS=25
+# ephemeral-entry.sh registers every runner as aap-crrr-${HOSTNAME}.
+RUNNER_NAME_PREFIX=aap-crrr-
+# The pool removes ghost runners (offline, idle, aap-crrr-*, no container
+# here) at start and then this often, in the background. One pass in flight
+# at a time, stopped after DEREGISTER_BUDGET_SECONDS.
+REAP_INTERVAL_SECONDS=600
+REAP_PID=""
+REAP_NEXT=0
+REAP_STARTED=0
 
 below_floor() {
   local avail="$1" floor="$2"
@@ -527,13 +536,13 @@ runner_name_of() {
   [[ -n "${1:-}" ]] || return 1
   host=$(docker inspect --format '{{.Config.Hostname}}' "$1" 2>/dev/null) || return 1
   [[ "${host}" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] || return 1
-  printf 'aap-crrr-%s\n' "${host}"
+  printf '%s%s\n' "${RUNNER_NAME_PREFIX}" "${host}"
 }
 
 # One attempt. A runner that is not listed, or a DELETE that returns 404, is
 # already gone. The token goes to curl on stdin (auth_header).
 deregister_runner_once() {
-  local name="$1" token id code
+  local name="$1" token id
   token=$(mint_installation_token) || return 1
   id=$(auth_header "${token}" | curl --silent --show-error --fail \
     --connect-timeout 5 --max-time 10 -G \
@@ -547,6 +556,12 @@ deregister_runner_once() {
     return 0
   fi
   [[ "${id}" =~ ^[0-9]+$ ]] || return 1
+  delete_runner_id "${token}" "${name}" "${id}"
+}
+
+# DELETE TOKEN NAME ID. 204 and 404 mean the runner is gone.
+delete_runner_id() {
+  local token="$1" name="$2" id="$3" code
   code=$(auth_header "${token}" | curl --silent --show-error \
     --connect-timeout 5 --max-time 10 -o /dev/null -w '%{http_code}' \
     -X DELETE \
@@ -561,6 +576,95 @@ deregister_runner_once() {
   esac
   echo "warning: DELETE of runner ${name} (id ${id}) returned HTTP ${code:-none}" >&2
   return 1
+}
+
+# Ghost runners: offline, not busy, named aap-crrr-*, labelled with this
+# host's AAP_RUNNER_BASE_LABEL (another host in the org shares the prefix,
+# not the base label), and no container here
+# (docker ps -a, plus the slot files) has that hostname. A listener killed
+# without deregistering leaves one: older managers, or a SIGTERM mid-job.
+# The list is read before the containers, so a runner that registered after
+# the docker snapshot is not in it. docker failing means no snapshot, and
+# nothing is deleted. Never fails the caller.
+reap_ghost_runners() {
+  local token body n page=1 line id name reaped=0 f
+  local -a cands=()
+  local -A live=()
+  if [[ -z "${AAP_RUNNER_BASE_LABEL}" ]]; then
+    echo "warning: ghost reap: no base label; reaping nothing" >&2
+    return 0
+  fi
+  if ! token=$(mint_installation_token); then
+    echo "warning: ghost reap: no installation token; reaping nothing" >&2
+    return 0
+  fi
+  while ((page <= 10)); do
+    if ! body=$(auth_header "${token}" | curl --silent --show-error --fail \
+      --connect-timeout 5 --max-time 15 -G \
+      -H @- \
+      -H "Accept: application/vnd.github+json" \
+      --data-urlencode "per_page=100" \
+      --data-urlencode "page=${page}" \
+      "https://api.github.com/orgs/${AAP_GITHUB_ORG}/actions/runners") \
+      || ! n=$(jq -er '.runners | length' <<< "${body}"); then
+      echo "warning: ghost reap: could not list runners (page ${page}); reaping nothing" >&2
+      return 0
+    fi
+    mapfile -t -O "${#cands[@]}" cands < <(jq -r --arg p "${RUNNER_NAME_PREFIX}" --arg l "${AAP_RUNNER_BASE_LABEL}" \
+      '.runners[] | select((.name | startswith($p)) and .status == "offline" and .busy == false
+        and any((.labels // [])[]; .name == $l))
+        | "\(.id) \(.name)"' <<< "${body}")
+    ((n >= 100)) || break
+    page=$((page + 1))
+  done
+  if ! body=$(docker ps -aq); then
+    echo "warning: ghost reap: docker ps failed; reaping nothing" >&2
+    return 0
+  fi
+  for f in "${RUN_DIR}"/slot-[1-9]; do
+    [[ -f "${f}" ]] && body+=$'\n'$(slot_container "${f##*slot-}")
+  done
+  while IFS= read -r id; do
+    [[ -n "${id}" ]] || continue
+    name=$(runner_name_of "${id}") && live["${name}"]=1
+  done <<< "${body}"
+  for line in "${cands[@]}"; do
+    id=${line%% *}
+    name=${line#* }
+    [[ "${id}" =~ ^[0-9]+$ && "${name}" =~ ^${RUNNER_NAME_PREFIX}[A-Za-z0-9.-]+$ ]] || continue
+    [[ -z "${live[${name}]:-}" ]] || continue
+    delete_runner_id "${token}" "${name}" "${id}" && reaped=$((reaped + 1))
+  done
+  echo "reaped ${reaped} ghost runners"
+}
+
+# From the pool loop: starts a reap pass every REAP_INTERVAL_SECONDS, in the
+# background so a slow API never holds the tick. A pass still running after
+# DEREGISTER_BUDGET_SECONDS, or when a drain starts, is stopped. Skipped
+# without an installation id (tests that source this file make no API call).
+tick_reap() {
+  if [[ -n "${REAP_PID}" ]]; then
+    if kill -0 "${REAP_PID}" 2>/dev/null; then
+      if ! draining && ((SECONDS - REAP_STARTED < DEREGISTER_BUDGET_SECONDS)); then
+        return 0
+      fi
+      echo "warning: ghost reap stopped (drain, or over ${DEREGISTER_BUDGET_SECONDS}s)" >&2
+      kill "${REAP_PID}" 2>/dev/null || true
+    fi
+    wait "${REAP_PID}" 2>/dev/null || true
+    REAP_PID=""
+  fi
+  [[ "${AAP_GITHUB_APP_INSTALLATION_ID}" =~ ^[0-9]+$ ]] || return 0
+  if draining || ((SECONDS < REAP_NEXT)); then
+    return 0
+  fi
+  REAP_NEXT=$((SECONDS + REAP_INTERVAL_SECONDS))
+  REAP_STARTED=${SECONDS}
+  {
+    trap - EXIT TERM INT
+    reap_ghost_runners
+  } &
+  REAP_PID=$!
 }
 
 # Deletes a runner registration by name. Never fails the caller: a failure
@@ -1196,7 +1300,8 @@ drain_listening_slots() {
 # SIGTERM, SIGINT, or exit: stop every slot, remove every job container by
 # label, prune job networks, reap the slots, then deregister the runners
 # that had no job (bounded by DEREGISTER_BUDGET_SECONDS). A runner killed
-# mid-job is left to GitHub. The drain file stays; the status files go, so
+# mid-job is left to GitHub, then to the next ghost reap. A reap in flight
+# is stopped; none starts here. The drain file stays; the status files go, so
 # a missing status.json means no manager.
 stop_pool() {
   local pid slot runner
@@ -1216,7 +1321,7 @@ stop_pool() {
   # processes too, so stop them and run their names again in this batch. A
   # repeat is harmless: a runner that is gone is not listed, or is a 404.
   runners+=("${DEREG_NAMES[@]}")
-  for pid in "${SLOT_PIDS[@]}" "${TICK_PID}" "${DEREG_PIDS[@]}"; do
+  for pid in "${SLOT_PIDS[@]}" "${TICK_PID}" "${REAP_PID}" "${DEREG_PIDS[@]}"; do
     if [[ -n "${pid}" ]]; then
       kill "${pid}" 2>/dev/null || true
     fi
@@ -1224,7 +1329,7 @@ stop_pool() {
   remove_job_containers
   # Only these children. A bare wait would also wait on anything else this
   # shell started, without a bound.
-  wait "${SLOT_PIDS[@]}" "${TICK_PID}" "${DEREG_PIDS[@]}" 2>/dev/null || true
+  wait "${SLOT_PIDS[@]}" "${TICK_PID}" ${REAP_PID:+"${REAP_PID}"} "${DEREG_PIDS[@]}" 2>/dev/null || true
   DEREG_PIDS=()
   DEREG_NAMES=()
   deregister_runners "${runners[@]}"
@@ -1245,6 +1350,8 @@ run_pool() {
     start_slot "${slot}" 0
   done
   start_tick
+  # After the slots start, so the first runner is not held up by the API.
+  tick_reap
   while true; do
     # Undrain: the drain file is gone, so drained slots (not retired ones)
     # start again and the pool is back to AAP_RUNNER_COUNT.
@@ -1272,6 +1379,7 @@ run_pool() {
       if draining; then
         drain_listening_slots
       fi
+      tick_reap
       write_status
       start_tick
       continue
@@ -1315,7 +1423,7 @@ main() {
   # Only no argument starts the pool, which first removes every job
   # container. Anything unknown stops here, before any docker call.
   case "${1-}" in
-    '' | --self-check | --assert-mounts | --check-limits | --drain | --undrain) ;;
+    '' | --self-check | --assert-mounts | --check-limits | --drain | --undrain | --reap) ;;
     --version)
       echo "${MANAGER_VERSION}"
       exit 0
@@ -1352,6 +1460,15 @@ main() {
     load_config
     printf 'AAP_RUNNER_COUNT=%s\nAAP_JOB_CPUS=%s\nAAP_JOB_MEMORY=%s\n' \
       "${AAP_RUNNER_COUNT}" "${AAP_JOB_CPUS}" "${AAP_JOB_MEMORY}"
+    exit 0
+  fi
+
+  # One ghost reap in the foreground, beside a running pool or none. No pool
+  # start, no container removed. Always exit 0.
+  if [[ "${1:-}" == "--reap" ]]; then
+    load_config
+    check_key
+    reap_ghost_runners
     exit 0
   fi
 
