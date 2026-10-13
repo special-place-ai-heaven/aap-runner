@@ -20,7 +20,7 @@
 # one bounded open per file, and never creates, renames or deletes anything
 # there, so a junction or link planted in inbox\ cannot redirect a write.
 # - inbox\state.json    {"desired":"on"|"off"}.
-# - inbox\settings.json {"runner_count":1..4,"job_cpus":1..28,
+# - inbox\settings.json {"runner_count":1..3,"job_cpus":1..28,
 #   "job_memory_gib":1..80,"paused":true|false}. Missing = no override, not
 #   paused. Invalid = one logged warning, the last valid content stays.
 #   Both files are parsed strictly. Only validated integers ever reach a
@@ -79,11 +79,14 @@ $AapLimitsFile = '/etc/aap-runner/limits.conf'
 # only data channel into it. Same /bin/sh -c "..." form as install-host.ps1's
 # key install, which is verified on Fresh.
 $AapWriteLimits = 'umask 022; cat > /etc/aap-runner/limits.conf.tmp && mv /etc/aap-runner/limits.conf.tmp /etc/aap-runner/limits.conf'
-$AapSettingRanges = [ordered]@{ runner_count = 4; job_cpus = 28; job_memory_gib = 80 }
+$AapSettingRanges = [ordered]@{ runner_count = 3; job_cpus = 28; job_memory_gib = 80 }
 
 function Initialize-AapRuntime {
     $AapRt.Mode = 'off'
     $AapRt.KeepAlive = $null
+    # Two independent backoffs: OnFailures for the On sequence (mount task),
+    # Failures for unit restarts in the health loop.
+    $AapRt.OnFailures = 0
     $AapRt.Failures = 0
     $AapRt.HealthySince = $null
     $AapRt.NextHealth = [DateTimeOffset]::MinValue
@@ -486,8 +489,8 @@ function Invoke-AapOn {
     Write-AapStatus 'starting' '' 'attaching work disk'
     $err = Invoke-AapMountTask
     if ($err) {
-        $AapRt.Failures++
-        $delay = Get-AapBackoffDelay $AapRt.Failures
+        $AapRt.OnFailures++
+        $delay = Get-AapBackoffDelay $AapRt.OnFailures
         $AapRt.RetryAt = (Get-AapNow).AddSeconds($delay)
         Write-AapStatus 'error' '' "$err; retry in $delay s"
         return
@@ -499,6 +502,7 @@ function Invoke-AapOn {
     }
     # systemctl is safe on the old manager too.
     [void](Invoke-AapUnitStart @('sysbox', 'aap-runner-manager'))
+    $AapRt.OnFailures = 0
     $AapRt.Mode = 'on'
     Invoke-AapHealth
 }
@@ -668,6 +672,7 @@ function Invoke-AapOff {
     if ($r.Code -ne 0) { Write-AapLog "terminate exit $($r.Code): $(Format-AapText $r.Err)" }
     Invoke-AapKeepAliveStop
     $AapRt.Mode = 'off'
+    $AapRt.OnFailures = 0
     $AapRt.Failures = 0
     $AapRt.HealthySince = $null
     $AapRt.RetryAt = [DateTimeOffset]::MinValue

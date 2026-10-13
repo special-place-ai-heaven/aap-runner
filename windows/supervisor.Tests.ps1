@@ -46,7 +46,7 @@ Describe 'aap-runner host supervisor' {
             param($line)
             switch -Wildcard ($line) {
                 '*is-active sysbox aap-runner-manager' { return (Get-AapFakeResult 0 "active`nactive") }
-                '*cat /run/aap-runner/status.json' { return (Get-AapFakeResult 0 '{"state":"idle","job":"","slots":4,"busy":0,"updated":1,"runner_count":4,"job_cpus":28,"job_memory":"72g"}') }
+                '*cat /run/aap-runner/status.json' { return (Get-AapFakeResult 0 '{"state":"idle","job":"","slots":3,"busy":0,"updated":1,"runner_count":3,"job_cpus":28,"job_memory":"72g"}') }
                 '*is-active aap-runner-manager' { return (Get-AapFakeResult 3 'inactive') }
                 default { return (Get-AapFakeResult 0 '') }
             }
@@ -184,7 +184,7 @@ Describe 'aap-runner host supervisor' {
             $AapRt.Mode | Should -Be 'on'
             $s = Get-AapStatusFile
             $s.state | Should -Be 'idle'
-            $s.runner_count | Should -Be 4
+            $s.runner_count | Should -Be 3
             $s.job_cpus | Should -Be 28
             $s.job_memory_gib | Should -Be 72
         }
@@ -228,6 +228,30 @@ Describe 'aap-runner host supervisor' {
             $script:clock.Now = $script:clock.Now.AddSeconds(10)
             Invoke-AapCycle
             $script:calls[0] | Should -Be 'task AAP-CRRR-Mount-Work-Disk'
+        }
+
+        It 'keeps mount failures out of the restart counter' {
+            # Live on Fresh 2026-10-14: three mount failures made the first
+            # manager restart log "restart 4" and the fifth go to error.
+            $script:mountResult = 1
+            Write-AapStateFile '{"desired":"on"}'
+            foreach ($want in 10, 30, 60) {
+                Invoke-AapCycle
+                (Get-AapStatusFile).detail | Should -Match "LastTaskResult 1; retry in $want s"
+                $script:clock.Now = $AapRt.RetryAt
+            }
+            $AapRt.Failures | Should -Be 0
+            $script:mountResult = 0
+            $script:responder = {
+                param($line)
+                if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 3 "active`nfailed") }
+                return (& $script:healthy $line)
+            }
+            Invoke-AapCycle
+            $AapRt.OnFailures | Should -Be 0
+            Get-AapLogText | Should -Match 'manager=failed; restart 1; next check in 10 s'
+            Get-AapLogText | Should -Not -Match 'restart [2-9]'
+            (Get-AapStatusFile).state | Should -Be 'starting'
         }
     }
 
@@ -433,7 +457,7 @@ Describe 'aap-runner host supervisor' {
 
         It 'ignores <name> and keeps the last valid settings' -TestCases @(
             @{ name = 'runner_count 0'; text = '{"runner_count":0,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
-            @{ name = 'runner_count 5'; text = '{"runner_count":5,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
+            @{ name = 'runner_count 4'; text = '{"runner_count":4,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
             @{ name = 'job_cpus 0'; text = '{"runner_count":2,"job_cpus":0,"job_memory_gib":32,"paused":false}' }
             @{ name = 'job_cpus 29'; text = '{"runner_count":2,"job_cpus":29,"job_memory_gib":32,"paused":false}' }
             @{ name = 'job_memory_gib 0'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":0,"paused":false}' }
@@ -560,9 +584,9 @@ Describe 'aap-runner host supervisor' {
             $AapRt.KeepAlive = Get-AapFakeProcess
             $script:keep = $AapRt.KeepAlive
             $AapRt.NextHealth = $script:clock.Now.AddHours(1)
-            $AapRt.Effective = @{ RunnerCount = 4; JobCpus = 28; JobMemoryGib = 72 }
+            $AapRt.Effective = @{ RunnerCount = 3; JobCpus = 28; JobMemoryGib = 72 }
             Write-AapStateFile '{"desired":"on"}'
-            Write-AapSettingsFile '{"runner_count":4,"job_cpus":28,"job_memory_gib":72,"paused":true}'
+            Write-AapSettingsFile '{"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":true}'
             $script:W = 'wsl -d aap-runner -u root -- '
             $script:activeLeft = 1
             $script:responder = {
@@ -591,7 +615,7 @@ Describe 'aap-runner host supervisor' {
 
         It 'resume undrains and starts the manager' {
             $AapRt.Paused = $true
-            Write-AapSettingsFile '{"runner_count":4,"job_cpus":28,"job_memory_gib":72,"paused":false}'
+            Write-AapSettingsFile '{"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":false}'
             Invoke-AapCycle
             $script:calls[0] | Should -Be ($script:W + '/usr/local/sbin/aap-runner-manager --undrain')
             $script:calls[1] | Should -Be ($script:W + '/bin/systemctl start aap-runner-manager')
@@ -716,7 +740,7 @@ Describe 'aap-runner host supervisor' {
         }
 
         It 'probes once and keeps the normal sequence when the probe passes' {
-            Write-AapSettingsFile '{"runner_count":4,"job_cpus":28,"job_memory_gib":72,"paused":false}'
+            Write-AapSettingsFile '{"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":false}'
             Write-AapStateFile '{"desired":"on"}'
             Invoke-AapCycle
             foreach ($i in 1..5) {
