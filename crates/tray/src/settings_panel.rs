@@ -93,6 +93,12 @@ impl SettingsPanel {
         .count()
     }
 
+    /// Apply/Revert show while the edits (or the derived totals) differ from the file, or a save
+    /// failed.
+    fn pending(&self) -> bool {
+        self.edit() != self.stored || self.write_error.is_some()
+    }
+
     fn apply(&mut self, base: &Path) -> bool {
         let edit = self.edit();
         match settings::write_settings(base, &edit, &self.vm) {
@@ -186,11 +192,9 @@ impl SettingsPanel {
         focus: &mut Focus,
     ) {
         let vm = self.vm;
-        let (cap_cpus, cap_gib) = vm.cap();
         // From before the inputs: a change shows on the next frame, which egui paints right
         // after the input event.
         let edit = self.edit();
-        let (each_cpus, each_gib) = edit.per_runner();
         ui.horizontal(|ui| {
             label(ui, "Runners");
             segmented(
@@ -205,15 +209,12 @@ impl SettingsPanel {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             label(ui, "Each");
-            ui.label(format!("{each_cpus} CPU {each_gib} GiB"));
+            ui.label(each_line(&edit));
         });
         now(ui, p, now_each(running));
         ui.horizontal(|ui| {
             label(ui, "Total");
-            ui.label(format!(
-                "{}/{cap_cpus} CPU \u{b7} {}/{cap_gib} GiB",
-                edit.job_cpus, edit.job_memory_gib
-            ));
+            ui.label(total_line(&edit, &vm));
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -243,7 +244,7 @@ impl SettingsPanel {
             p,
             now_sharing(running.is_some(), snap.sharing.as_deref()),
         );
-        if self.edit() == self.stored && self.write_error.is_none() {
+        if !self.pending() {
             return;
         }
         ui.add_space(12.0);
@@ -369,6 +370,21 @@ fn segmented<T: Copy + PartialEq>(
     .response
 }
 
+/// `8 CPU 24 GiB`: what each runner gets.
+fn each_line(edit: &Settings) -> String {
+    let (cpus, gib) = edit.per_runner();
+    format!("{cpus} CPU {gib} GiB")
+}
+
+/// `24/26 CPU · 72/72 GiB`: the totals against the caps.
+fn total_line(edit: &Settings, vm: &VmLimit) -> String {
+    let (cap_cpus, cap_gib) = vm.cap();
+    format!(
+        "{}/{cap_cpus} CPU \u{b7} {}/{cap_gib} GiB",
+        edit.job_cpus, edit.job_memory_gib
+    )
+}
+
 /// IO cap moves in steps of 5.
 fn step5(v: u32) -> u32 {
     ((v + 2) / 5 * 5).min(*IO_PERCENT.end())
@@ -464,6 +480,50 @@ mod tests {
         assert_eq!(now_sharing(true, Some("slice")), "now Slice");
         assert_eq!(now_sharing(true, Some("")), NONE);
         assert_eq!(now_sharing(false, Some("fixed")), NONE);
+    }
+
+    #[test]
+    fn derived_lines() {
+        let vm = VmLimit::ASSUMED;
+        let line = |runners| {
+            let e = edited(&Settings::default(), runners, false, &vm);
+            (each_line(&e), total_line(&e, &vm))
+        };
+        assert_eq!(
+            line(1),
+            ("26 CPU 72 GiB".into(), "26/26 CPU \u{b7} 72/72 GiB".into())
+        );
+        assert_eq!(
+            line(2),
+            ("13 CPU 36 GiB".into(), "26/26 CPU \u{b7} 72/72 GiB".into())
+        );
+        assert_eq!(
+            line(3),
+            ("8 CPU 24 GiB".into(), "24/26 CPU \u{b7} 72/72 GiB".into())
+        );
+    }
+
+    #[test]
+    fn apply_and_revert_show_only_while_something_differs() {
+        let base = crate::state::temp_base("settings-pending");
+        let mut panel = SettingsPanel::load(&base);
+        panel.vm = VmLimit::ASSUMED;
+        panel.stored = panel.edit();
+        assert!(!panel.pending(), "inputs as stored");
+        panel.sharing = Sharing::Fixed;
+        assert!(panel.pending());
+        panel.revert();
+        assert!(!panel.pending(), "Revert hides them");
+        panel.stored.job_cpus = 25;
+        assert_eq!(panel.changes(), 0);
+        assert!(
+            panel.pending(),
+            "stored totals not derived: Apply rewrites them"
+        );
+        panel.stored = panel.edit();
+        panel.write_error = Some("x".into());
+        assert!(panel.pending(), "a failed save stays visible");
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
