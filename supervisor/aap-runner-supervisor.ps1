@@ -19,18 +19,23 @@
 # non-elevated tray) can write. This elevated script only READS inbox\, with
 # one bounded open per file, and never creates, renames or deletes anything
 # there, so a junction or link planted in inbox\ cannot redirect a write.
-# - inbox\state.json    {"desired":"on"|"off"}.
+# - inbox\state.json    {"desired":"on"|"off"} plus optional "retry":<unix s>.
+#   A retry newer than the last one seen resets both backoffs and runs the
+#   next attempt now; nothing else is taken from it.
 # - inbox\settings.json {"runner_count":1..3,"job_cpus":1..28,
-#   "job_memory_gib":1..80,"paused":true|false}. Missing = no override, not
-#   paused. Invalid = one logged warning, the last valid content stays.
-#   Both files are parsed strictly. Only validated integers ever reach a
-#   command or the limits file.
+#   "job_memory_gib":1..80,"paused":true|false} plus optional "schema":2,
+#   "io_percent":0..100 and "sharing":"slice"|"fixed" (schema 2). Missing =
+#   no override, not paused. Invalid = one logged warning, the last valid
+#   content stays. Both files are parsed strictly. Only validated values
+#   ever reach a command or the limits file.
 # - status.json   {"state","job","updated","detail","runner_count",
-#   "job_cpus","job_memory_gib","repo","run_url"} in the admin-owned root.
-#   repo and run_url are copied from the manager only when they match a
-#   strict pattern (the tray opens run_url), else empty. Rewritten
-#   atomically. The tray treats it as stale after 180 s, so it is rewritten
-#   at least every 60 s, also while Off.
+#   "job_cpus","job_memory_gib","repo","run_url","schema":3,"sampled_at",
+#   "pool","slots","job_io_mbps","sharing"} in the admin-owned root. Every
+#   manager value is re-validated: URLs and repos match a strict pattern
+#   (the tray opens them), numbers are in range, else empty or null. pool,
+#   slots and the rest are mirrored only while the manager reports idle,
+#   running or draining. Rewritten atomically. The tray treats it as stale
+#   after 180 s, so it is rewritten at least every 60 s, also while Off.
 # - logs\supervisor.log (admin-owned), one line per event, rotated to .1 at
 #   5 MB.
 # wsl.exe is started by its absolute path; $env:SystemRoot comes from the
@@ -82,6 +87,10 @@ $AapLimitsFile = '/etc/aap-runner/limits.conf'
 # key install, which is verified on Fresh.
 $AapWriteLimits = 'umask 022; cat > /etc/aap-runner/limits.conf.tmp && mv /etc/aap-runner/limits.conf.tmp /etc/aap-runner/limits.conf'
 $AapSettingRanges = [ordered]@{ runner_count = 3; job_cpus = 28; job_memory_gib = 80 }
+$AapRepoPattern = '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z'
+$AapRunUrlPattern = '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+\z'
+$AapJobUrlPattern = '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+/job/[0-9]+\z'
+$AapSlotStates = @('idle', 'running', 'draining', 'starting', 'error')
 
 function Initialize-AapRuntime {
     $AapRt.Mode = 'off'
@@ -95,6 +104,7 @@ function Initialize-AapRuntime {
     $AapRt.RetryAt = [DateTimeOffset]::MinValue
     $AapRt.LastWarn = $null
     $AapRt.LastSettingsWarn = $null
+    $AapRt.LastRetry = 0
     $AapRt.Settings = @{ Limits = $null; Paused = $false }
     $AapRt.Paused = $false
     $AapRt.Applied = $null
@@ -136,7 +146,45 @@ function Format-AapText([string]$Text, [int]$Max = 160) {
 
 function Get-AapLimitsKey($Limits) {
     if ($null -eq $Limits) { return $null }
-    return '{0},{1},{2}' -f $Limits.RunnerCount, $Limits.JobCpus, $Limits.JobMemoryGib
+    $key = '{0},{1},{2}' -f $Limits.RunnerCount, $Limits.JobCpus, $Limits.JobMemoryGib
+    if ($null -ne $Limits.IoPercent) { $key += ",io=$($Limits.IoPercent)" }
+    if ($null -ne $Limits.Sharing) { $key += ",sharing=$($Limits.Sharing)" }
+    return $key
+}
+
+# limits.conf text. The two schema 2 keys only when the settings set them.
+function Get-AapLimitsContent($Limits) {
+    $c = "AAP_RUNNER_COUNT=$([int]$Limits.RunnerCount)`nAAP_JOB_CPUS=$([int]$Limits.JobCpus)`nAAP_JOB_MEMORY=$([int]$Limits.JobMemoryGib)g`n"
+    if ($null -ne $Limits.IoPercent) { $c += "AAP_JOB_IO_PERCENT=$([int]$Limits.IoPercent)`n" }
+    if ($Limits.Sharing -ceq 'slice' -or $Limits.Sharing -ceq 'fixed') { $c += "AAP_POOL_SHARING=$($Limits.Sharing)`n" }
+    return $c
+}
+
+# Manager values for status.json: a string matching Pattern else '', a JSON
+# number 0..Max else $null (booleans and strings are not numbers), a time
+# as RFC 3339 else $null. The manager writes times as unix seconds; those
+# and pwsh 7's DateTime (its ConvertFrom-Json parses date strings) come out
+# as UTC. An RFC 3339 string passes through.
+function Get-AapMatch($Value, [string]$Pattern) {
+    if ($Value -is [string] -and $Value -cmatch $Pattern) { return $Value }
+    return ''
+}
+
+function Get-AapNumber($Value, [double]$Max) {
+    if (($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal]) -and $Value -ge 0 -and $Value -le $Max) { return [double]$Value }
+    return $null
+}
+
+function Get-AapTime($Value) {
+    if (($Value -is [int] -or $Value -is [long]) -and $Value -gt 0 -and $Value -lt 8589934592) {
+        return [DateTimeOffset]::FromUnixTimeSeconds($Value).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($Value -is [datetime]) {
+        if ($Value.Kind -eq [DateTimeKind]::Unspecified) { return $null }
+        return $Value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($Value -is [string] -and $Value -cmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})\z') { return $Value }
+    return $null
 }
 
 function Write-AapLog([string]$Text) {
@@ -213,15 +261,27 @@ function Read-AapDesired {
         } else {
             $warn = 'state.json is not {"desired":"on"|"off"}'
         }
+        $retry = $null
+        if ($obj.PSObject.Properties['retry']) { $retry = $obj.retry }
+        if (($retry -is [int] -or $retry -is [long]) -and $retry -gt $AapRt.LastRetry) {
+            $AapRt.LastRetry = $retry
+            Write-AapLog "retry requested ($retry); backoff reset"
+            $AapRt.OnFailures = 0
+            $AapRt.Failures = 0
+            $AapRt.RetryAt = [DateTimeOffset]::MinValue
+            $AapRt.NextHealth = [DateTimeOffset]::MinValue
+        }
     }
     if ($warn -and $warn -ne $AapRt.LastWarn) { Write-AapLog "WARN $warn; treating as off" }
     $AapRt.LastWarn = $warn
     return $desired
 }
 
-# Returns @{ Limits = $null | @{RunnerCount;JobCpus;JobMemoryGib}; Paused }.
-# Exactly the four keys; integers (not 1.0, not "1") inside their ranges;
-# paused a JSON boolean. Anything else keeps the last valid settings.
+# Returns @{ Limits = $null | @{RunnerCount;JobCpus;JobMemoryGib;IoPercent;
+# Sharing}; Paused }. The four keys, plus optionally schema (2), io_percent
+# and sharing; integers (not 1.0, not "1") inside their ranges; paused a JSON
+# boolean. Anything else keeps the last valid settings. IoPercent and Sharing
+# are $null when absent.
 function Read-AapSettingsFile {
     $obj = Read-AapJsonFile 'settings.json'
     $warn = $null
@@ -230,10 +290,12 @@ function Read-AapSettingsFile {
     } elseif ($obj -is [string]) {
         $warn = $obj
     } else {
-        $names = @($obj.PSObject.Properties.Name | Sort-Object)
-        $want = @(@($AapSettingRanges.Keys) + 'paused' | Sort-Object)
-        if (($names -join ',') -cne ($want -join ',')) {
-            $warn = 'settings.json must have exactly runner_count, job_cpus, job_memory_gib, paused'
+        $names = @($obj.PSObject.Properties.Name)
+        $want = @(@($AapSettingRanges.Keys) + 'paused')
+        $optional = @('schema', 'io_percent', 'sharing')
+        if (@($want | Where-Object { $names -cnotcontains $_ }).Count -gt 0 -or
+            @($names | Where-Object { $want -cnotcontains $_ -and $optional -cnotcontains $_ }).Count -gt 0) {
+            $warn = 'settings.json must have runner_count, job_cpus, job_memory_gib, paused and only optionally schema, io_percent, sharing'
         } else {
             foreach ($key in $AapSettingRanges.Keys) {
                 $v = $obj.$key
@@ -243,10 +305,22 @@ function Read-AapSettingsFile {
                 }
             }
             if (-not $warn -and -not ($obj.paused -is [bool])) { $warn = 'settings.json paused must be true or false' }
+            $io = $null
+            $sharing = $null
+            if (-not $warn -and $names -ccontains 'schema' -and -not (($obj.schema -is [int] -or $obj.schema -is [long]) -and $obj.schema -eq 2)) { $warn = 'settings.json schema must be 2' }
+            if (-not $warn -and $names -ccontains 'io_percent') {
+                $io = $obj.io_percent
+                if (-not ($io -is [int] -or $io -is [long]) -or $io -lt 0 -or $io -gt 100) { $warn = 'settings.json io_percent must be an integer 0..100' }
+            }
+            if (-not $warn -and $names -ccontains 'sharing') {
+                $sharing = $obj.sharing
+                if (-not ($sharing -is [string] -and ($sharing -ceq 'slice' -or $sharing -ceq 'fixed'))) { $warn = 'settings.json sharing must be "slice" or "fixed"' }
+            }
         }
         if (-not $warn) {
+            if ($null -ne $io) { $io = [int]$io }
             $AapRt.Settings = @{
-                Limits = @{ RunnerCount = [int]$obj.runner_count; JobCpus = [int]$obj.job_cpus; JobMemoryGib = [int]$obj.job_memory_gib }
+                Limits = @{ RunnerCount = [int]$obj.runner_count; JobCpus = [int]$obj.job_cpus; JobMemoryGib = [int]$obj.job_memory_gib; IoPercent = $io; Sharing = $sharing }
                 Paused = [bool]$obj.paused
             }
         }
@@ -257,7 +331,7 @@ function Read-AapSettingsFile {
 }
 
 function Write-AapStatus {
-    param([string]$State, [string]$Job = '', [string]$Detail = '', [string]$Repo = '', [string]$RunUrl = '')
+    param([string]$State, [string]$Job = '', [string]$Detail = '', [string]$Repo = '', [string]$RunUrl = '', $Mirror = $null)
     if ($AapStates -notcontains $State) { throw "unknown status state $State" }
     $Job = Format-AapText $Job 128
     $now = Get-AapNow
@@ -272,6 +346,21 @@ function Write-AapStatus {
         job_memory_gib = $null
         repo           = $Repo
         run_url        = $RunUrl
+        schema         = 3
+        sampled_at     = $null
+        pool           = [ordered]@{ cpu_cores = $null; mem_gib = $null; io_mbps = $null }
+        slots          = @()
+        job_io_mbps    = $null
+        sharing        = $null
+    }
+    # Pool and slots only while the manager reports them; never while off,
+    # paused, starting or in error.
+    if ($Mirror -and @('idle', 'running', 'draining') -contains $State) {
+        $obj.sampled_at = $Mirror.SampledAt
+        $obj.pool = $Mirror.Pool
+        $obj.slots = $Mirror.Slots
+        $obj.job_io_mbps = $Mirror.JobIoMbps
+        $obj.sharing = $Mirror.Sharing
     }
     if ($eff) {
         $obj.runner_count = $eff.RunnerCount
@@ -279,7 +368,7 @@ function Write-AapStatus {
         $obj.job_memory_gib = $eff.JobMemoryGib
     }
     $prev = $AapRt.Status
-    $AapRt.Status = @{ State = $State; Job = $Job; Detail = $Detail; Repo = $Repo; RunUrl = $RunUrl }
+    $AapRt.Status = @{ State = $State; Job = $Job; Detail = $Detail; Repo = $Repo; RunUrl = $RunUrl; Mirror = $Mirror }
     $AapRt.StatusAt = $now
     if ($null -eq $prev -or $prev.State -ne $State -or $prev.Job -ne $Job -or $prev.Detail -ne $Detail) {
         Write-AapLog "status $State job=$Job $Detail"
@@ -287,7 +376,7 @@ function Write-AapStatus {
     if ($AapCfg.DryRun) { return }
     $path = Join-Path $AapCfg.DataDir 'status.json'
     $tmp = "$path.tmp"
-    [IO.File]::WriteAllText($tmp, (ConvertTo-Json -InputObject $obj -Compress), (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($tmp, (ConvertTo-Json -InputObject $obj -Compress -Depth 5), (New-Object Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $tmp -Destination $path -Force
 }
 
@@ -354,6 +443,8 @@ function Invoke-AapRoot([string[]]$Argv, $StdIn = $null) {
 # /run/aap-runner/status.json from the manager. State is $null unless the
 # Windows contract knows it. Limits are $null unless all three parse.
 # Repo and RunUrl are '' unless they match exactly; the tray opens RunUrl.
+# Schema 3 adds sampled_at, pool, slots (an array; at most 4 objects are
+# kept), job_io_mbps and sharing; an older manager's slots count gives [].
 function ConvertFrom-AapManagerStatus([string]$Text) {
     try { $obj = ConvertFrom-Json -InputObject $Text } catch { return $null }
     if (-not ($obj -is [pscustomobject])) { return $null }
@@ -366,11 +457,48 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
     if ($count -match '^\d{1,4}\z' -and $cpus -match '^\d{1,4}\z' -and $mem -match '^(\d{1,5})[gG]\z') {
         $limits = @{ RunnerCount = [int]$count; JobCpus = [int]$cpus; JobMemoryGib = [int]$Matches[1] }
     }
-    $repo = $obj.repo
-    if (-not ($repo -is [string]) -or $repo -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z') { $repo = '' }
-    $url = $obj.run_url
-    if (-not ($url -is [string]) -or $url -cnotmatch '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+\z') { $url = '' }
-    return @{ State = $state; Job = [string]$obj.job; Limits = $limits; Repo = $repo; RunUrl = $url }
+    $pool = $obj.pool
+    if (-not ($pool -is [Management.Automation.PSCustomObject])) { $pool = [pscustomobject]@{} }
+    $slots = @()
+    if ($obj.slots -is [array]) {
+        $slots = @(@($obj.slots | Where-Object { $_ -is [Management.Automation.PSCustomObject] } | Select-Object -First 4) | ForEach-Object {
+                $n = $_.slot
+                if (-not ($n -is [int] -or $n -is [long]) -or $n -lt 0 -or $n -gt 64) { $n = $null }
+                $st = $_.state
+                if (-not ($st -is [string] -and $AapSlotStates -ccontains $st)) { $st = '' }
+                $job = ''
+                if ($_.job -is [string]) { $job = Format-AapText $_.job 128 }
+                [ordered]@{
+                    slot       = $n
+                    state      = $st
+                    job        = $job
+                    repo       = Get-AapMatch $_.repo $AapRepoPattern
+                    run_url    = Get-AapMatch $_.run_url $AapRunUrlPattern
+                    job_url    = Get-AapMatch $_.job_url $AapJobUrlPattern
+                    started_at = Get-AapTime $_.started_at
+                    cpu_cores  = Get-AapNumber $_.cpu_cores 1024
+                    mem_gib    = Get-AapNumber $_.mem_gib 4096
+                }
+            })
+    }
+    $sharing = $obj.sharing
+    if (-not ($sharing -is [string] -and ($sharing -ceq 'slice' -or $sharing -ceq 'fixed'))) { $sharing = $null }
+    return @{
+        State     = $state
+        Job       = [string]$obj.job
+        Limits    = $limits
+        Repo      = Get-AapMatch $obj.repo $AapRepoPattern
+        RunUrl    = Get-AapMatch $obj.run_url $AapRunUrlPattern
+        SampledAt = Get-AapTime $obj.sampled_at
+        Pool      = [ordered]@{
+            cpu_cores = Get-AapNumber $pool.cpu_cores 1024
+            mem_gib   = Get-AapNumber $pool.mem_gib 4096
+            io_mbps   = Get-AapNumber $pool.io_mbps 1048576
+        }
+        Slots     = $slots
+        JobIoMbps = Get-AapNumber $obj.job_io_mbps 1048576
+        Sharing   = $sharing
+    }
 }
 
 # Runs the existing mount task (no second copy of the mount logic). Returns
@@ -550,7 +678,7 @@ function Invoke-AapHealth {
         } elseif ($AapRt.Paused) {
             Write-AapStatus 'paused' '' $detail
         } elseif ($m -and $m.State) {
-            Write-AapStatus $m.State $m.Job $detail $m.Repo $m.RunUrl
+            Write-AapStatus $m.State $m.Job $detail $m.Repo $m.RunUrl $m
         } else {
             Write-AapStatus 'starting' '' 'manager status unavailable'
         }
@@ -595,12 +723,19 @@ function Invoke-AapResume {
 # Write limits.conf, let the manager validate it, then restart the manager
 # between jobs (drain, wait, undrain, start). A refused file is replaced by
 # the previous content (or removed if there was none) and not retried until
-# settings.json changes.
+# settings.json changes. After a supervisor start (nothing applied yet) a
+# limits.conf that already holds exactly this content counts as applied: the
+# manager the On sequence started has read it.
 function Invoke-AapLimitChange($Limits) {
     $key = Get-AapLimitsKey $Limits
-    $content = "AAP_RUNNER_COUNT=$([int]$Limits.RunnerCount)`nAAP_JOB_CPUS=$([int]$Limits.JobCpus)`nAAP_JOB_MEMORY=$([int]$Limits.JobMemoryGib)g`n"
-    Write-AapLog "applying limits $key"
+    $content = Get-AapLimitsContent $Limits
     $prev = Invoke-AapRoot @('/bin/cat', $AapLimitsFile)
+    if ($null -eq $AapRt.Applied -and $prev.Code -eq 0 -and $prev.Out -ceq $content) {
+        $AapRt.Applied = $key
+        Write-AapLog "limits.conf already has $key"
+        return
+    }
+    Write-AapLog "applying limits $key"
     $w = Invoke-AapRoot @('/bin/sh', '-c', $AapWriteLimits) $content
     $check = $null
     if ($w.Code -eq 0) { $check = Invoke-AapRoot @($AapManager, '--check-limits') }
@@ -736,7 +871,7 @@ function Invoke-AapCycle {
     if ($null -eq $AapRt.Status) {
         Write-AapStatus 'off' '' ''
     } elseif (((Get-AapNow) - $AapRt.StatusAt).TotalSeconds -ge $AapCfg.HeartbeatSeconds) {
-        Write-AapStatus $AapRt.Status.State $AapRt.Status.Job $AapRt.Status.Detail $AapRt.Status.Repo $AapRt.Status.RunUrl
+        Write-AapStatus $AapRt.Status.State $AapRt.Status.Job $AapRt.Status.Detail $AapRt.Status.Repo $AapRt.Status.RunUrl $AapRt.Status.Mirror
     }
 }
 

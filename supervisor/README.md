@@ -18,6 +18,8 @@ it.** The only reason is that WSL sessions belong to the logon session
 - **Health, every 60 s while On:** checks both units. If one is down it
   restarts them with backoff 10, 30, 60, 120, then 300 s. After 5 restarts
   without 10 healthy minutes the status is `error`, and it keeps retrying.
+  A failed On sequence (mount task) has its own backoff with the same steps.
+  A new `retry` in `inbox\state.json` resets both and tries again at once.
   Each tick also sets the `vmmemWSL` process to BelowNormal priority, so games
   and other interactive apps win CPU contention against CI jobs.
 - **Off:** runs `aap-runner-manager --drain`, waits up to 6 h for the manager
@@ -52,18 +54,22 @@ split by trust:
 
 | File | Writer | Content |
 |---|---|---|
-| `inbox\state.json` | tray or you | `{"desired":"on"}` or `{"desired":"off"}`. Anything else counts as off and logs one warning. |
-| `inbox\settings.json` | tray or you | `{"runner_count":1-3,"job_cpus":1-28,"job_memory_gib":1-80,"paused":true\|false}`. All four keys, whole numbers, a real boolean. Anything else logs one warning and the last valid settings stay. Missing means no override and not paused. |
-| `status.json` | supervisor | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"","updated":"<RFC3339>","detail":"","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/owner/name/actions/runs/ID"}`. The three numbers are what the manager reports as applied, or null. `repo` and `run_url` are the running job's, copied from the manager only when they match `owner/name` and `https://github.com/owner/name/actions/runs/<digits>` exactly, else empty. Both are empty while off or paused. Rewritten at least every 60 s. The tray calls it stale after 180 s. |
+| `inbox\state.json` | tray or you | `{"desired":"on"}` or `{"desired":"off"}`, optionally with `"retry":<unix seconds>`. Anything else in `desired` counts as off and logs one warning. A `retry` larger than the last one seen (a whole number) resets the On and restart backoffs and runs the next attempt now. It logs `retry requested`. Nothing else is read from it. |
+| `inbox\settings.json` | tray or you | `{"runner_count":1-3,"job_cpus":1-28,"job_memory_gib":1-80,"paused":true\|false}`. All four keys, whole numbers, a real boolean. Schema 2 adds optional `"schema":2`, `"io_percent":0-100` (whole number) and `"sharing":"slice"\|"fixed"`; a file without them (schema 1) is still read. Anything else logs one warning and the last valid settings stay. Missing means no override and not paused. |
+| `status.json` | supervisor | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"","updated":"<RFC3339>","detail":"","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/owner/name/actions/runs/ID"}`. The three numbers are what the manager reports as applied, or null. `repo` and `run_url` are the running job's, copied from the manager only when they match `owner/name` and `https://github.com/owner/name/actions/runs/<digits>` exactly, else empty. Both are empty while off or paused. Schema 3 adds `"schema":3`, `"sampled_at":"<RFC3339>"\|null`, `"pool":{"cpu_cores","mem_gib","io_mbps"}`, `"slots":[{"slot","state","job","repo","run_url","job_url","started_at","cpu_cores","mem_gib"}]`, `"job_io_mbps"` and `"sharing":"slice"\|"fixed"\|null`. They are copied from the manager only while it reports idle, running or draining; otherwise `slots` is `[]` and the rest null. Every value is re-checked: numbers in range (cores 0-1024, GiB 0-4096) else null, `repo` and `run_url` as above, `job_url` as `https://github.com/owner/name/actions/runs/<digits>/job/<digits>`, slot `state` one of idle, running, draining, starting, error, else empty. At most 4 slots. The manager's unix-second times are written as RFC 3339 UTC. An older manager without a `slots` list gives `[]`. Rewritten at least every 60 s. The tray calls it stale after 180 s. |
 | `logs\supervisor.log` | supervisor | One line per event, rotated to `.1` at 5 MB. |
 
 While On, `inbox\settings.json` is read every 5 s:
 
 - **Limits change:** the supervisor writes `/etc/aap-runner/limits.conf` in
-  the distro and runs `aap-runner-manager --check-limits`. If the check
+  the distro (`AAP_RUNNER_COUNT`, `AAP_JOB_CPUS`, `AAP_JOB_MEMORY`, plus
+  `AAP_JOB_IO_PERCENT` and `AAP_POOL_SHARING` when settings.json sets them)
+  and runs `aap-runner-manager --check-limits`. A change to any of the five
+  counts. If the check
   refuses, the previous file is put back and the status shows the reason
   until the settings change. If it passes, the manager drains, finishes its
-  running jobs, and restarts with the new limits.
+  running jobs, and restarts with the new limits. After a supervisor start, a
+  limits.conf that already has exactly this content counts as applied.
 - **`paused: true`:** the manager drains and stops after its jobs. The distro
   and sysbox stay up and the status is `paused`. `paused: false` starts it
   again. Off wins over paused.

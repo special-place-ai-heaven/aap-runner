@@ -138,8 +138,12 @@ Describe 'aap-runner host supervisor' {
             Write-AapStatus 'idle' '' 'second write replaces the first'
             $path = Join-Path $AapCfg.DataDir 'status.json'
             $s = Get-AapStatusFile
-            @($s.PSObject.Properties.Name) -join ',' | Should -Be 'state,job,updated,detail,runner_count,job_cpus,job_memory_gib,repo,run_url'
+            @($s.PSObject.Properties.Name) -join ',' | Should -Be 'state,job,updated,detail,runner_count,job_cpus,job_memory_gib,repo,run_url,schema,sampled_at,pool,slots,job_io_mbps,sharing'
             $s.runner_count | Should -BeNullOrEmpty
+            $s.schema | Should -Be 3
+            @($s.slots).Count | Should -Be 0
+            @($s.pool.PSObject.Properties.Name) -join ',' | Should -Be 'cpu_cores,mem_gib,io_mbps'
+            $s.pool.cpu_cores | Should -BeNullOrEmpty
             $s.state | Should -Be 'idle'
             $s.detail | Should -Be 'second write replaces the first'
             [string](Get-Content -Raw -LiteralPath $path) | Should -Match '"updated":"2026-10-12T12:00:00\+02:00"'
@@ -300,6 +304,166 @@ Describe 'aap-runner host supervisor' {
         }
     }
 
+    Describe 'status mirror schema 3' {
+        BeforeAll {
+            # 1760436000 = 2025-10-14T10:00:00Z. The manager writes unix seconds.
+            $script:slot1 = '{"slot":1,"state":"running","job":"ci-1","repo":"o/r","run_url":"https://github.com/o/r/actions/runs/9","job_url":"https://github.com/o/r/actions/runs/9/job/77","started_at":1760436000,"cpu_cores":6.2,"mem_gib":12.5}'
+            $script:slot2 = '{"slot":2,"state":"idle","job":"","repo":"","run_url":"","job_url":null,"started_at":null,"cpu_cores":null,"mem_gib":null}'
+            $script:full = '{"schema":3,"state":"running","job":"ci-1","runner_count":2,"job_cpus":16,"job_memory":"32g","job_io_mbps":120,"sharing":"slice","sampled_at":1760436000,"pool":{"cpu_cores":6.2,"mem_gib":12.5,"io_mbps":240},"slots":[' + $script:slot1 + ',' + $script:slot2 + ']}'
+
+            function Invoke-AapMirror([string]$Text) {
+                $script:managerJson = $Text
+                $script:responder = {
+                    param($line)
+                    if ($line -like '*cat /run/aap-runner/status.json') { return (Get-AapFakeResult 0 $script:managerJson) }
+                    return (& $script:healthy $line)
+                }
+                Write-AapStateFile '{"desired":"on"}'
+                Invoke-AapCycle
+                return Get-AapStatusFile
+            }
+
+            # pwsh 7's ConvertFrom-Json turns times into DateTime; check them as text.
+            function Get-AapStatusText {
+                return [IO.File]::ReadAllText((Join-Path $AapCfg.DataDir 'status.json'))
+            }
+        }
+
+        It 'mirrors pool, slots, job_io_mbps and sharing from a schema 3 manager' {
+            $s = Invoke-AapMirror $script:full
+            $s.schema | Should -Be 3
+            $s.state | Should -Be 'running'
+            $s.pool.cpu_cores | Should -Be 6.2
+            $s.pool.mem_gib | Should -Be 12.5
+            $s.pool.io_mbps | Should -Be 240
+            $s.job_io_mbps | Should -Be 120
+            $s.sharing | Should -BeExactly 'slice'
+            @($s.slots).Count | Should -Be 2
+            @($s.slots[0].PSObject.Properties.Name) -join ',' | Should -Be 'slot,state,job,repo,run_url,job_url,started_at,cpu_cores,mem_gib'
+            $s.slots[0].slot | Should -Be 1
+            $s.slots[0].state | Should -BeExactly 'running'
+            $s.slots[0].job | Should -BeExactly 'ci-1'
+            $s.slots[0].repo | Should -BeExactly 'o/r'
+            $s.slots[0].run_url | Should -BeExactly 'https://github.com/o/r/actions/runs/9'
+            $s.slots[0].job_url | Should -BeExactly 'https://github.com/o/r/actions/runs/9/job/77'
+            $s.slots[0].cpu_cores | Should -Be 6.2
+            $s.slots[0].mem_gib | Should -Be 12.5
+            $s.slots[1].state | Should -BeExactly 'idle'
+            $s.slots[1].job_url | Should -BeExactly ''
+            $s.slots[1].cpu_cores | Should -BeNullOrEmpty
+            $t = Get-AapStatusText
+            $t | Should -Match '"sampled_at":"2025-10-14T10:00:00Z"'
+            $t | Should -Match '"started_at":"2025-10-14T10:00:00Z"'
+            $t | Should -Match '"started_at":null'
+        }
+
+        It 'passes an RFC 3339 sampled_at through' {
+            [void](Invoke-AapMirror '{"state":"idle","job":"","sampled_at":"2026-10-14T10:00:00Z","slots":[]}')
+            Get-AapStatusText | Should -Match '"sampled_at":"2026-10-14T10:00:00Z"'
+        }
+
+        It 'mirrors job_url <name>' -TestCases @(
+            @{ name = 'a valid job link'; url = 'https://github.com/Org-1/my.repo_x/actions/runs/123/job/456'; want = 'https://github.com/Org-1/my.repo_x/actions/runs/123/job/456' }
+            @{ name = 'a run link as empty'; url = 'https://github.com/o/r/actions/runs/1'; want = '' }
+            @{ name = 'another host as empty'; url = 'https://evil.example/o/r/actions/runs/1/job/2'; want = '' }
+            @{ name = 'http as empty'; url = 'http://github.com/o/r/actions/runs/1/job/2'; want = '' }
+            @{ name = 'a query string as empty'; url = 'https://github.com/o/r/actions/runs/1/job/2?x=1'; want = '' }
+            @{ name = 'a trailing newline as empty'; url = "https://github.com/o/r/actions/runs/1/job/2`n"; want = '' }
+            @{ name = 'a non-numeric job as empty'; url = 'https://github.com/o/r/actions/runs/1/job/x'; want = '' }
+        ) {
+            $slot = [ordered]@{ slot = 1; state = 'running'; job_url = $url }
+            $text = '{"state":"running","job":"j","slots":[' + (ConvertTo-Json -InputObject $slot -Compress) + ']}'
+            $s = Invoke-AapMirror $text
+            $s.slots[0].job_url | Should -BeExactly $want
+        }
+
+        It 'nulls or empties out-of-range and mistyped values and drops non-object slots' {
+            $bad = '{"slot":"1","state":"busy","job":["x"],"repo":"o/r/x","run_url":"http://github.com/o/r/actions/runs/1","job_url":"https://github.com/o/r/actions/runs/1","started_at":"yesterday","cpu_cores":2000,"mem_gib":true}'
+            $s = Invoke-AapMirror ('{"state":"running","job":"j","job_io_mbps":true,"sharing":"Slice","sampled_at":"2026-10-14","pool":{"cpu_cores":-1,"mem_gib":5000,"io_mbps":"240"},"slots":[42,"x",null,' + $bad + ']}')
+            $s.pool.cpu_cores | Should -BeNullOrEmpty
+            $s.pool.mem_gib | Should -BeNullOrEmpty
+            $s.pool.io_mbps | Should -BeNullOrEmpty
+            $s.job_io_mbps | Should -BeNullOrEmpty
+            $s.sharing | Should -BeNullOrEmpty
+            @($s.slots).Count | Should -Be 1
+            $s.slots[0].slot | Should -BeNullOrEmpty
+            $s.slots[0].state | Should -BeExactly ''
+            $s.slots[0].job | Should -BeExactly ''
+            $s.slots[0].repo | Should -BeExactly ''
+            $s.slots[0].run_url | Should -BeExactly ''
+            $s.slots[0].job_url | Should -BeExactly ''
+            $s.slots[0].cpu_cores | Should -BeNullOrEmpty
+            $s.slots[0].mem_gib | Should -BeNullOrEmpty
+            $t = Get-AapStatusText
+            $t | Should -Match '"sampled_at":null'
+            $t | Should -Match '"started_at":null'
+        }
+
+        It 'nulls a pool that is not an object' {
+            $s = Invoke-AapMirror '{"state":"idle","job":"","pool":[1,2,3],"slots":[]}'
+            $s.pool.cpu_cores | Should -BeNullOrEmpty
+            @($s.pool.PSObject.Properties.Name) -join ',' | Should -Be 'cpu_cores,mem_gib,io_mbps'
+        }
+
+        It 'keeps at most 4 slots' {
+            $six = (1..6 | ForEach-Object { '{"slot":' + $_ + ',"state":"idle"}' }) -join ','
+            $s = Invoke-AapMirror ('{"state":"idle","job":"","slots":[' + $six + ']}')
+            @($s.slots).Count | Should -Be 4
+            $s.slots[3].slot | Should -Be 4
+        }
+
+        It 'mirrors an older manager <name> with slots [] and schema 3' -TestCases @(
+            @{ name = 'with a slots count'; text = '{"state":"running","job":"ci-9","slots":3,"busy":1,"runner_count":3,"job_cpus":28,"job_memory":"72g","repo":"o/r"}' }
+            @{ name = 'without slots'; text = '{"state":"running","job":"ci-9","repo":"o/r"}' }
+        ) {
+            $s = Invoke-AapMirror $text
+            $s.schema | Should -Be 3
+            $s.state | Should -Be 'running'
+            $s.job | Should -Be 'ci-9'
+            $s.repo | Should -Be 'o/r'
+            @($s.slots).Count | Should -Be 0
+            $s.pool.cpu_cores | Should -BeNullOrEmpty
+            $t = Get-AapStatusText
+            $t | Should -Match '"slots":\[\]'
+            $t | Should -Match '"sampled_at":null'
+        }
+
+        It 'writes no pool or slots while <state>' -TestCases @(
+            @{ state = 'off' }
+            @{ state = 'paused' }
+            @{ state = 'starting' }
+            @{ state = 'error' }
+        ) {
+            $m = ConvertFrom-AapManagerStatus $script:full
+            Write-AapStatus 'running' 'ci-1' '' '' '' $m
+            @((Get-AapStatusFile).slots).Count | Should -Be 2
+            Write-AapStatus $state '' '' '' '' $m
+            $s = Get-AapStatusFile
+            @($s.slots).Count | Should -Be 0
+            $s.pool.cpu_cores | Should -BeNullOrEmpty
+            $s.job_io_mbps | Should -BeNullOrEmpty
+            $s.sharing | Should -BeNullOrEmpty
+            Get-AapStatusText | Should -Match '"sampled_at":null'
+        }
+
+        It 'keeps slots on the heartbeat and clears them on Off' {
+            [void](Invoke-AapMirror $script:full)
+            $script:clock.Now = $AapRt.StatusAt.AddSeconds($AapCfg.HeartbeatSeconds)
+            $AapRt.NextHealth = $script:clock.Now.AddHours(1)
+            $script:calls.Clear()
+            Invoke-AapCycle
+            $script:calls.Count | Should -Be 0
+            @((Get-AapStatusFile).slots).Count | Should -Be 2
+            (Get-AapStatusFile).updated | Should -Not -BeNullOrEmpty
+            Write-AapStateFile '{"desired":"off"}'
+            Invoke-AapCycle
+            $s = Get-AapStatusFile
+            $s.state | Should -Be 'off'
+            @($s.slots).Count | Should -Be 0
+            $s.pool.cpu_cores | Should -BeNullOrEmpty
+        }
+    }
+
     Describe 'Off sequence' {
         BeforeEach {
             $AapRt.Mode = 'on'
@@ -414,6 +578,63 @@ Describe 'aap-runner host supervisor' {
         }
     }
 
+    Describe 'retry from state.json' {
+        It 'resets the On backoff and runs the mount task now' {
+            $script:mountResult = 1
+            Write-AapStateFile '{"desired":"on"}'
+            Invoke-AapCycle
+            $script:clock.Now = $AapRt.RetryAt
+            Invoke-AapCycle
+            (Get-AapStatusFile).detail | Should -Match 'retry in 30 s'
+            $script:calls.Clear()
+            Write-AapStateFile '{"desired":"on","retry":1760436000}'
+            Invoke-AapCycle
+            $script:calls[0] | Should -Be 'task AAP-CRRR-Mount-Work-Disk'
+            (Get-AapStatusFile).detail | Should -Match 'retry in 10 s'
+            Get-AapLogText | Should -Match 'retry requested \(1760436000\); backoff reset'
+            $script:calls.Clear()
+            Invoke-AapCycle
+            $script:calls.Count | Should -Be 0
+        }
+
+        It 'resets the restart counter and checks health now' {
+            $AapRt.Mode = 'on'
+            $AapRt.KeepAlive = Get-AapFakeProcess
+            $AapRt.Failures = 5
+            $AapRt.OnFailures = 2
+            $AapRt.NextHealth = $script:clock.Now.AddSeconds(300)
+            $script:responder = {
+                param($line)
+                if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 3 "active`nfailed") }
+                return (Get-AapFakeResult 0 '')
+            }
+            Write-AapStateFile '{"desired":"on","retry":1760436000}'
+            Invoke-AapCycle
+            $script:calls | Should -Contain 'wsl -d aap-runner -u root -- /bin/systemctl is-active sysbox aap-runner-manager'
+            $AapRt.Failures | Should -Be 1
+            $AapRt.OnFailures | Should -Be 0
+            Get-AapLogText | Should -Match 'manager=failed; restart 1; next check in 10 s'
+            (Get-AapStatusFile).state | Should -Be 'starting'
+        }
+
+        It 'ignores retry <name>' -TestCases @(
+            @{ name = 'equal to the last one'; value = '100' }
+            @{ name = 'older than the last one'; value = '50' }
+            @{ name = 'as a string'; value = '"200"' }
+            @{ name = 'as a fraction'; value = '200.5' }
+            @{ name = 'as a boolean'; value = 'true' }
+            @{ name = 'as a command'; value = '"200; wsl --shutdown"' }
+        ) {
+            $AapRt.LastRetry = 100
+            $AapRt.Failures = 3
+            Write-AapStateFile ('{"desired":"off","retry":' + $value + '}')
+            Read-AapDesired | Should -Be 'off'
+            $AapRt.Failures | Should -Be 3
+            $AapRt.LastRetry | Should -Be 100
+            Get-AapLogText | Should -Not -Match 'retry requested'
+        }
+    }
+
     Describe 'Off mode and DryRun' {
         It 'makes zero wsl calls while off and keeps status fresh' {
             Write-AapStateFile '{"desired":"off"}'
@@ -493,6 +714,25 @@ Describe 'aap-runner host supervisor' {
             $s.Paused | Should -BeTrue
         }
 
+        It 'reads a schema-less v1 file with no IO or sharing keys' {
+            Write-AapSettingsFile '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}'
+            $s = Read-AapSettingsFile
+            $s.Limits.IoPercent | Should -BeNullOrEmpty
+            $s.Limits.Sharing | Should -BeNullOrEmpty
+            Get-AapLimitsContent $s.Limits | Should -BeExactly "AAP_RUNNER_COUNT=2`nAAP_JOB_CPUS=8`nAAP_JOB_MEMORY=32g`n"
+        }
+
+        It 'reads a schema 2 file with <name>' -TestCases @(
+            @{ name = 'io_percent and sharing'; text = '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":50,"sharing":"fixed"}'; key = '2,8,32,io=50,sharing=fixed' }
+            @{ name = 'io_percent 0 only'; text = '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":0}'; key = '2,8,32,io=0' }
+            @{ name = 'sharing slice only, no schema'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"sharing":"slice"}'; key = '2,8,32,sharing=slice' }
+            @{ name = 'schema only'; text = '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}'; key = '2,8,32' }
+        ) {
+            Write-AapSettingsFile $text
+            Get-AapLimitsKey (Read-AapSettingsFile).Limits | Should -Be $key
+            Get-AapLogText | Should -Not -Match 'WARN'
+        }
+
         It 'treats a missing file as no override and not paused' {
             $s = Read-AapSettingsFile
             $s.Limits | Should -BeNullOrEmpty
@@ -515,6 +755,17 @@ Describe 'aap-runner host supervisor' {
             @{ name = 'a missing key'; text = '{"runner_count":2,"job_cpus":8,"paused":false}' }
             @{ name = 'garbage'; text = 'garbage' }
             @{ name = 'an array'; text = '[1,2,3]' }
+            @{ name = 'io_percent 101'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":101}' }
+            @{ name = 'io_percent -1'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":-1}' }
+            @{ name = 'io_percent a string'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":"50"}' }
+            @{ name = 'io_percent a fraction'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":50.5}' }
+            @{ name = 'io_percent null'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":null}' }
+            @{ name = 'sharing Slice'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"sharing":"Slice"}' }
+            @{ name = 'sharing with a newline'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"sharing":"fixed\nAAP_X=1"}' }
+            @{ name = 'sharing a number'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"sharing":1}' }
+            @{ name = 'schema 3'; text = '{"schema":3,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
+            @{ name = 'schema a string'; text = '{"schema":"2","runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
+            @{ name = 'Schema in another case'; text = '{"Schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
         ) {
             Write-AapSettingsFile '{"runner_count":3,"job_cpus":12,"job_memory_gib":48,"paused":true}'
             [void](Read-AapSettingsFile)
@@ -575,6 +826,42 @@ Describe 'aap-runner host supervisor' {
             $AapRt.NextHealth = $script:clock.Now.AddHours(1)
             Invoke-AapCycle
             $script:calls.Count | Should -Be 0
+        }
+
+        It 'writes io_percent and sharing into limits.conf and restarts the manager' {
+            Write-AapSettingsFile '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":50,"sharing":"fixed"}'
+            Invoke-AapCycle
+            $script:stdin[0] | Should -BeExactly "AAP_RUNNER_COUNT=2`nAAP_JOB_CPUS=8`nAAP_JOB_MEMORY=32g`nAAP_JOB_IO_PERCENT=50`nAAP_POOL_SHARING=fixed`n"
+            $script:calls | Should -Contain ($script:W + '/usr/local/sbin/aap-runner-manager --drain')
+            $script:calls | Should -Contain ($script:W + '/bin/systemctl start aap-runner-manager')
+            $AapRt.Applied | Should -Be '2,8,32,io=50,sharing=fixed'
+        }
+
+        It 'drains and restarts when only <name> changes' -TestCases @(
+            @{ name = 'io_percent'; text = '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":30}'; line = 'AAP_JOB_IO_PERCENT=30' }
+            @{ name = 'sharing'; text = '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"sharing":"fixed"}'; line = 'AAP_POOL_SHARING=fixed' }
+        ) {
+            Invoke-AapCycle
+            $AapRt.Applied | Should -Be '2,8,32'
+            $script:calls.Clear()
+            $script:activeLeft = 1
+            $AapRt.NextHealth = $script:clock.Now.AddHours(1)
+            Write-AapSettingsFile $text
+            Invoke-AapCycle
+            $script:calls | Should -Contain $script:writeLine
+            $script:calls | Should -Contain ($script:W + '/usr/local/sbin/aap-runner-manager --drain')
+            $script:calls | Should -Contain ($script:W + '/usr/local/sbin/aap-runner-manager --undrain')
+            $script:calls | Should -Contain ($script:W + '/bin/systemctl start aap-runner-manager')
+            $script:stdin[-1] | Should -Match $line
+        }
+
+        It 'counts an identical limits.conf as applied after a supervisor start' {
+            Write-AapSettingsFile '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":50}'
+            $script:old = "AAP_RUNNER_COUNT=2`nAAP_JOB_CPUS=8`nAAP_JOB_MEMORY=32g`nAAP_JOB_IO_PERCENT=50`n"
+            Invoke-AapCycle
+            @($script:calls) | Should -Be @(($script:W + '/bin/cat /etc/aap-runner/limits.conf'))
+            $AapRt.Applied | Should -Be '2,8,32,io=50'
+            Get-AapLogText | Should -Match 'limits.conf already has 2,8,32,io=50'
         }
 
         It 'puts the previous limits.conf back when check-limits refuses' {

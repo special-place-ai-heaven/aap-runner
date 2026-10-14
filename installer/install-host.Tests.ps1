@@ -15,7 +15,7 @@ function Get-AapBaseFacts([hashtable]$Extra) {
         Elevated          = $false
         AllowDiskMount    = 'absent'
         BashPreflightExit = 0
-        BashPreflightText = "PASS operator distro=Ubuntu-24.04 user=poslj`nPROOF nat"
+        BashPreflightText = "PASS operator distro=Ubuntu-24.04 user=operator`nPROOF nat"
         DistroName        = 'aap-runner'
         WorkVhdx          = 'C:\wsl\aap-runner-work.vhdx'
         InstallDir        = 'C:\aap-runner'
@@ -57,8 +57,8 @@ $plan = Get-AapInstallPlan (Get-AapBaseFacts @{
         DryRun     = $true
         Elevated   = $false
         DistroName = 'aap-runner-test'
-        WorkVhdx   = 'C:\Users\poslj\aap-runner-test\aap-runner-work.vhdx'
-        InstallDir = 'C:\Users\poslj\aap-runner-test\aap-runner-test'
+        WorkVhdx   = 'C:\Users\operator\aap-runner-test\aap-runner-work.vhdx'
+        InstallDir = 'C:\Users\operator\aap-runner-test\aap-runner-test'
     })
 $text = $plan.Lines -join "`n"
 Assert-Aap ($plan.ExitCode -eq 0) "TestMode dry-run exit $($plan.ExitCode)"
