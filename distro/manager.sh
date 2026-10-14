@@ -62,8 +62,7 @@ IO_IOPS_PER_MB=8
 # Slice mode: every job container sits in this runtime systemd slice, which
 # holds the pool totals. Dashes nest it: aap.slice/aap-runner.slice/<this>.
 POOL_SLICE=aap-runner-pool.slice
-# Equal io weight per container. It only acts under the BFQ scheduler; the
-# slice's bandwidth cap is the real limiter.
+POOL_SLICE_CGROUP=/sys/fs/cgroup/aap.slice/aap-runner.slice/${POOL_SLICE}
 # No --blkio-weight: runc writes io.bfq.weight, which exists only under the
 # BFQ scheduler; on the VHDX (mq-deadline/none) the container fails at
 # creation ("io.bfq.weight: no such file or directory", seen live 2026-10-14).
@@ -494,6 +493,9 @@ slice_properties() {
   mem=${mem%B}
   printf 'CPUQuota=%s%%\n' "$(awk -v n="${AAP_JOB_CPUS}" 'BEGIN { printf "%d", n * 100 }')"
   printf 'MemoryMax=%s\n' "${mem}"
+  # An empty assignment clears the list, so a cap from an earlier pool or
+  # another device never survives. The values that follow are set fresh.
+  printf '%s=\n' IOReadBandwidthMax IOWriteBandwidthMax IOReadIOPSMax IOWriteIOPSMax
   if ((POOL_IO_MBPS > 0)) && [[ -n "${IO_DEVICE}" ]]; then
     bytes=$((POOL_IO_MBPS * 1048576))
     iops=$((POOL_IO_MBPS * IO_IOPS_PER_MB))
@@ -505,10 +507,13 @@ slice_properties() {
 }
 
 # At pool start, slice mode only. docker must use the systemd cgroup driver
-# for --cgroup-parent to name a slice. The slice's runtime properties are
-# reverted, then set fresh, so a smaller pool never keeps old limits. The
-# slice is never stopped: it is runtime-only and empties with its jobs. Any
-# failure logs and falls back to fixed; it never fails the pool.
+# for --cgroup-parent to name a slice. set-property overwrites every
+# property it names, and slice_properties clears the IO lists first, so a
+# smaller pool never keeps old limits. No systemctl revert: it drops the
+# drop-ins and systemd re-realizes the slice, and job containers started in
+# that window failed at docker start (io.bfq.weight, seen live 2026-10-14).
+# The slice is never stopped: it is runtime-only and empties with its jobs.
+# Any failure logs and falls back to fixed; it never fails the pool.
 setup_pool_sharing() {
   local driver
   local -a props=()
@@ -520,13 +525,33 @@ setup_pool_sharing() {
     return 0
   fi
   mapfile -t props < <(slice_properties)
-  systemctl revert "${POOL_SLICE}" >/dev/null 2>&1 || true
   if ! systemctl set-property --runtime "${POOL_SLICE}" "${props[@]}"; then
     echo "pool sharing: could not set ${POOL_SLICE}; using fixed per-slot limits" >&2
     AAP_POOL_SHARING=fixed
     return 0
   fi
   echo "pool sharing: ${POOL_SLICE} ${props[*]}"
+  wait_pool_slice
+}
+
+# set-property does not start an empty slice, and the slice's cgroup dir can
+# outlive an inactive slice, so a probe unit always starts it.
+# Then up to 5 s for the slice cgroup to show cpu.max, and io.max with the
+# cap when there is one, before any slot starts. A timeout only logs.
+wait_pool_slice() {
+  local i want=cpu.max
+  ((POOL_IO_MBPS > 0)) && [[ -n "${IO_DEVICE}" ]] && want=io.max
+  if ! systemd-run --quiet --collect --wait --slice="${POOL_SLICE}" --unit=aap-runner-pool-probe /bin/true; then
+    echo "pool sharing: probe unit could not start ${POOL_SLICE}" >&2
+  fi
+  for ((i = 0; i < 50; i++)); do
+    if [[ -f "${POOL_SLICE_CGROUP}/cpu.max" ]]; then
+      [[ "${want}" == cpu.max ]] && return 0
+      grep -qs 'rbps=' "${POOL_SLICE_CGROUP}/io.max" && return 0
+    fi
+    sleep 0.1
+  done
+  echo "pool sharing: ${POOL_SLICE} has no ${want} after 5 s; starting slots anyway" >&2
 }
 
 # The whole block device behind the work mount: docker's --device-*-bps
@@ -1007,7 +1032,7 @@ job_name() {
 }
 
 run_one() {
-  local slot="$1" token="" name net rc=1 killer="" seconds=0 runner=""
+  local slot="$1" token="" name net rc=1 killer="" seconds=0 runner="" errf="" try
   local -a lim=()
   name=$(job_name "${slot}")
   net="${name}"
@@ -1086,11 +1111,27 @@ run_one() {
     return 1
   fi
   set_slot_state "${slot}" starting "${name}"
-  set +e
-  printf '%s\n' "${token}" | docker start --attach --interactive "${name}" \
-    | watch_runner_output "${slot}" "${name}"
-  rc=${PIPESTATUS[1]}
-  set -e
+  # docker start's stderr is also kept in errf; the subshell waits for tee, so
+  # errf is complete when the pipeline returns. One retry, only for the slice
+  # start race: runc found the new scope's io files missing and nothing ran.
+  errf=$(mktemp)
+  for try in 1 2; do
+    set +e
+    printf '%s\n' "${token}" | (
+      docker start --attach --interactive "${name}" 2> >(tee "${errf}" >&2)
+      r=$?
+      wait "$!"
+      exit "${r}"
+    ) | watch_runner_output "${slot}" "${name}"
+    rc=${PIPESTATUS[1]}
+    set -e
+    if ((rc == 0 || try == 2)) || ! grep -q 'io.bfq.weight' "${errf}"; then
+      break
+    fi
+    echo "slot ${slot}: slice start race, retrying" >&2
+    sleep 2
+  done
+  rm -f "${errf}"
   token=""
   unset token
   disarm_wall_clock "${killer}"
