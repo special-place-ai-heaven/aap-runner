@@ -76,11 +76,11 @@ count() {
 # already gone (21, 404), the runner of slot 1's container (22), another
 # host's runner labelled crrr65734 (23), and one with no labels (24). All
 # but 23 and 24 carry this host's base label, fresh.
-PAGE_1=$(jq -cn --argjson l '[{"name":"self-hosted"},{"name":"fresh"}]' '{runners: ([range(0; 96)] | map({id: (1000 + .), name: ("aap-crrr-on" + tostring), status: "online", busy: false}))
+PAGE_1=$(jq -cn --argjson l '[{"name":"self-hosted"},{"name":"fresh"}]' '{runners: (([range(0; 96)] | map({id: (1000 + .), name: ("aap-crrr-on" + tostring), status: "online", busy: false}))
   + [{id: 11, name: "aap-crrr-ghost1", status: "offline", busy: false, labels: $l},
      {id: 12, name: "aap-crrr-busy1", status: "offline", busy: true, labels: $l},
      {id: 13, name: "other-runner", status: "offline", busy: false, labels: $l},
-     {id: 14, name: "aap-crrr-livehost1", status: "offline", busy: false, labels: $l}]}')
+     {id: 14, name: "aap-crrr-livehost1", status: "offline", busy: false, labels: $l}])}')
 # curl reads it as ${!var}.
 # shellcheck disable=SC2034
 PAGE_2='{"runners":[{"id":21,"name":"aap-crrr-ghost2","status":"offline","busy":false,"labels":[{"name":"self-hosted"},{"name":"fresh"}]},{"id":22,"name":"aap-crrr-slothost","status":"offline","busy":false,"labels":[{"name":"self-hosted"},{"name":"fresh"}]},{"id":23,"name":"aap-crrr-otherhost","status":"offline","busy":false,"labels":[{"name":"self-hosted"},{"name":"crrr65734"}]},{"id":24,"name":"aap-crrr-nolabels","status":"offline","busy":false}]}'
