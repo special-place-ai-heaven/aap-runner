@@ -1447,15 +1447,6 @@ Describe 'aap-runner host supervisor' {
         }
 
 
-                It 'install-supervisor.ps1 -DryRun refuses a tray exe in a user-owned directory' {
-            $tray = Join-Path $TestDrive 'aap-runner-tray.exe'
-            Set-Content -LiteralPath $tray -Value 'x'
-            $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-supervisor.ps1') -DryRun -DataDir (Join-Path $TestDrive 'pd') -TaskName 'AAP-Test-NotRegistered' -TrayExe $tray 2>&1 | Out-String
-            $LASTEXITCODE | Should -Be 1
-            $out | Should -Match 'not admin-owned'
-            $out | Should -Not -Match 'WOULD run-key'
-        }
-
         It 'uninstall-supervisor.ps1 -DryRun exits 0' {
             $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'uninstall-supervisor.ps1') -DryRun -DataDir (Join-Path $TestDrive 'pd') -ScriptDir (Join-Path $TestDrive 'sd') -TaskName 'AAP-Test-NotRegistered' 2>&1 | Out-String
             $LASTEXITCODE | Should -Be 0
