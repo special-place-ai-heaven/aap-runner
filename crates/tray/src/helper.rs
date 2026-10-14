@@ -34,33 +34,92 @@ const REQUEST_WAIT: Duration = Duration::from_secs(180);
 const POWERSHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
 const SYSTEM32: &str = r"C:\Windows\System32";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-/// Shown instead of a UAC prompt when the exe directory is writable by a non-admin.
+/// Shown instead of a UAC prompt when the exe or its directory is not admin-only.
 pub const USER_WRITABLE_EXE_DIR: &str =
     "tray exe is in a user-writable folder; move it to an admin-only folder";
-const USERS_SID: &str = "S-1-5-32-545";
-const AUTHENTICATED_USERS_SID: &str = "S-1-5-11";
-/// Write data, append/create, write EA, write attributes, generic write, generic all.
-const WRITE_OR_CREATE: u32 = 0x0002 | 0x0004 | 0x0010 | 0x0100 | 0x4000_0000 | 0x1000_0000;
+/// SYSTEM, Administrators, TrustedInstaller.
+const ADMIN_SIDS: [&str; 3] = [
+    "S-1-5-18",
+    "S-1-5-32-544",
+    "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+];
+/// Write-data, append, delete-child, delete, write-DAC, write-owner, generic write, generic all.
+const REPLACE_RIGHTS: u32 =
+    0x0002 | 0x0004 | 0x0040 | 0x0001_0000 | 0x0004_0000 | 0x0008_0000 | 0x4000_0000 | 0x1000_0000;
 
-/// One allow or deny entry on the tray exe's directory. `inherit_only` does not apply to the
-/// directory itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AceKind {
+    Allow,
+    Deny,
+    Other,
+}
+
+/// One DACL entry. An inherit-only allow does not apply to the object itself.
 #[derive(Clone, Debug)]
 pub struct DirAce {
     pub sid: String,
-    pub allow: bool,
+    pub kind: AceKind,
     pub rights: u32,
     pub inherit_only: bool,
 }
 
-/// Users or Authenticated Users can replace the exe when an allow ACE on the directory itself
-/// includes write, modify, or create.
-pub fn user_can_replace_exe(aces: &[DirAce]) -> bool {
-    aces.iter().any(|ace| {
-        ace.allow
-            && !ace.inherit_only
-            && (ace.sid == USERS_SID || ace.sid == AUTHENTICATED_USERS_SID)
-            && ace.rights & WRITE_OR_CREATE != 0
+/// Owner plus DACL, as read from the exe or its directory.
+#[derive(Clone, Debug)]
+pub struct AclView {
+    pub owner: String,
+    pub aces: Vec<DirAce>,
+}
+
+/// Elevation is allowed only for an admin owner, and only when every non-inherit-only allow
+/// ACE for any other SID carries none of [`REPLACE_RIGHTS`]. Any other ACE type refuses.
+pub fn elevation_allowed(object: &AclView) -> bool {
+    if !ADMIN_SIDS.contains(&object.owner.as_str()) {
+        return false;
+    }
+    object.aces.iter().all(|ace| match ace.kind {
+        AceKind::Other => false,
+        AceKind::Deny => true,
+        AceKind::Allow => {
+            ace.inherit_only
+                || ADMIN_SIDS.contains(&ace.sid.as_str())
+                || ace.rights & REPLACE_RIGHTS == 0
+        }
     })
+}
+
+fn acl_view(sec: win::ObjectAcl) -> AclView {
+    AclView {
+        owner: sec.owner,
+        aces: sec
+            .aces
+            .into_iter()
+            .map(|ace| DirAce {
+                sid: ace.sid,
+                kind: if ace.other {
+                    AceKind::Other
+                } else if ace.allow {
+                    AceKind::Allow
+                } else {
+                    AceKind::Deny
+                },
+                rights: ace.rights,
+                inherit_only: ace.inherit_only,
+            })
+            .collect(),
+    }
+}
+
+fn require_admin_only(path: &Path, what: &str) -> Result<(), String> {
+    match win::object_acl(path) {
+        Ok(sec) => {
+            if elevation_allowed(&acl_view(sec)) {
+                Ok(())
+            } else {
+                Err(USER_WRITABLE_EXE_DIR.to_string())
+            }
+        }
+        Err(e) => Err(format!("could not read the {what} ACL: {e}")),
+    }
 }
 
 const REPARSE: u32 = 0x400;
@@ -522,27 +581,11 @@ pub fn launch(base: &Path, verb: Verb) -> Result<(), String> {
     let Some(dir) = exe.parent() else {
         return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
     };
-    match win::directory_aces(dir) {
-        Ok(aces) => {
-            let view: Vec<DirAce> = aces
-                .into_iter()
-                .map(|ace| DirAce {
-                    sid: ace.sid,
-                    allow: ace.allow,
-                    rights: ace.rights,
-                    inherit_only: ace.inherit_only,
-                })
-                .collect();
-            if user_can_replace_exe(&view) {
-                return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
-            }
-        }
-        Err(e) => {
-            return refuse_elevation(
-                verb,
-                &format!("could not read the tray exe folder ACL: {e}"),
-            );
-        }
+    if let Err(e) = require_admin_only(dir, "tray exe folder") {
+        return refuse_elevation(verb, &e);
+    }
+    if let Err(e) = require_admin_only(&exe, "tray exe") {
+        return refuse_elevation(verb, &e);
     }
     let id = win::random_id().map_err(|e| e.to_string())?;
     write_pointer(&id, verb, "")?;
@@ -1018,69 +1061,82 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
-    fn ace(sid: &str, allow: bool, rights: u32, inherit_only: bool) -> DirAce {
+    fn ace(sid: &str, kind: AceKind, rights: u32, inherit_only: bool) -> DirAce {
         DirAce {
             sid: sid.to_string(),
-            allow,
+            kind,
             rights,
             inherit_only,
         }
     }
 
+    fn view(owner: &str, aces: Vec<DirAce>) -> AclView {
+        AclView {
+            owner: owner.to_string(),
+            aces,
+        }
+    }
+
     #[test]
-    fn a_user_writable_exe_directory_is_not_elevated() {
-        const READ_AND_EXECUTE: u32 = 0x200A9;
+    fn program_files_allows_elevation_and_a_user_write_does_not() {
+        const TI: &str = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+        const ADMINS: &str = "S-1-5-32-544";
+        const SYSTEM: &str = "S-1-5-18";
+        const USERS: &str = "S-1-5-32-545";
+        const USER: &str = "S-1-5-21-1-2-3-1001";
+        const RX: u32 = 0x1200A9;
         const MODIFY: u32 = 0x301BF;
-        assert!(!user_can_replace_exe(&[ace(
-            USERS_SID,
-            true,
-            READ_AND_EXECUTE,
-            false
-        )]));
-        assert!(user_can_replace_exe(&[ace(USERS_SID, true, 0x0002, false)]));
-        assert!(user_can_replace_exe(&[ace(
-            AUTHENTICATED_USERS_SID,
-            true,
-            MODIFY,
-            false
-        )]));
-        assert!(
-            !user_can_replace_exe(&[ace(USERS_SID, true, 0x0002, true)]),
-            "inherit-only create does not apply to the directory"
+        let program_files = view(
+            TI,
+            vec![
+                ace(ADMINS, AceKind::Allow, 0x1000_0000, false),
+                ace(SYSTEM, AceKind::Allow, 0x1000_0000, false),
+                ace(USERS, AceKind::Allow, RX, false),
+                ace(USER, AceKind::Allow, MODIFY, true),
+            ],
         );
-        assert!(!user_can_replace_exe(&[ace(
-            "S-1-5-32-544",
-            true,
-            0x1000_0000,
-            false
-        )]));
+        assert!(elevation_allowed(&program_files), "Program Files shape");
+        let live = acl_view(crate::win::object_acl(Path::new(r"C:\Program Files")).unwrap());
         assert!(
-            !user_can_replace_exe(&[ace(USERS_SID, false, 0x0002, false)]),
-            "a deny is not an allow"
+            elevation_allowed(&live),
+            "C:\\Program Files owner={} aces={:?}",
+            live.owner,
+            live.aces
         );
+        let notepad = acl_view(
+            crate::win::object_acl(Path::new(r"C:\Windows\System32\notepad.exe")).unwrap(),
+        );
+        assert!(elevation_allowed(&notepad), "notepad.exe {notepad:?}");
+        assert!(
+            !elevation_allowed(&view(USER, vec![ace(ADMINS, AceKind::Allow, RX, false)])),
+            "a user-owned folder"
+        );
+        assert!(
+            !elevation_allowed(&view(TI, vec![ace(USER, AceKind::Allow, MODIFY, false)])),
+            "only the user's SID has Modify"
+        );
+        assert!(
+            !elevation_allowed(&view(
+                ADMINS,
+                vec![ace(USER, AceKind::Allow, 0x40000, false)]
+            )),
+            "write-DAC alone"
+        );
+        assert!(
+            !elevation_allowed(&view(
+                TI,
+                vec![ace(String::new().as_str(), AceKind::Other, 0, false)]
+            )),
+            "an ACE that is neither allow nor deny"
+        );
+        assert!(elevation_allowed(&view(
+            TI,
+            vec![ace(USER, AceKind::Deny, MODIFY, false)]
+        )));
         assert_eq!(
             USER_WRITABLE_EXE_DIR,
             "tray exe is in a user-writable folder; move it to an admin-only folder"
         );
-    }
-
-    #[test]
-    fn system32_is_not_treated_as_user_writable() {
-        let raw = crate::win::directory_aces(Path::new(r"C:\Windows\System32")).unwrap();
-        let view: Vec<DirAce> = raw
-            .into_iter()
-            .map(|ace| DirAce {
-                sid: ace.sid,
-                allow: ace.allow,
-                rights: ace.rights,
-                inherit_only: ace.inherit_only,
-            })
-            .collect();
-        assert!(
-            !user_can_replace_exe(&view),
-            "System32 looked writable: {view:?}"
-        );
-        let modules = crate::win::machine_ps_module_path().unwrap();
-        assert!(!modules.is_empty());
+        assert!(!crate::win::machine_ps_module_path().unwrap().is_empty());
     }
 }

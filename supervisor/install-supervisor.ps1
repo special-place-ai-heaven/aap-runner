@@ -87,19 +87,40 @@ function Test-AapAdminAcl([string]$Path) {
     return ($rules.Count -gt 0)
 }
 
-# Owner is SYSTEM, Administrators, or TrustedInstaller. A user-owned folder
-# can be replaced before runas elevates the tray.
+# Same rule as the tray: owner is SYSTEM, Administrators, or TrustedInstaller,
+# and no other SID has write, append, delete, delete-child, write-DAC,
+# write-owner, or generic write/all on the object itself. Inherit-only allows
+# do not apply. Any ACE that is not plain allow or deny refuses. A null DACL
+# grants everyone, so it refuses.
+function Test-AapAdminDescriptor($Raw) {
+    if ($null -eq $Raw -or $null -eq $Raw.Owner) { return $false }
+    if ($AapAdminSids -notcontains $Raw.Owner.Value) { return $false }
+    if ($null -eq $Raw.DiscretionaryAcl) { return $false }
+    $bad = 0x2 -bor 0x4 -bor 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
+    foreach ($ace in $Raw.DiscretionaryAcl) {
+        $type = [int]$ace.AceType
+        if ($type -ne 0 -and $type -ne 1) { return $false }
+        if ($type -ne 0) { continue }
+        if (([int]$ace.AceFlags -band 8) -ne 0) { continue }
+        $sid = $ace.SecurityIdentifier.Value
+        if ($AapAdminSids -contains $sid) { continue }
+        if (([int]$ace.AccessMask -band $bad) -ne 0) { return $false }
+    }
+    return $true
+}
+
 function Test-AapAdminOwned([string]$Path) {
     if ([string]::IsNullOrEmpty($Path)) { return $false }
     if (-not (Test-Path -LiteralPath $Path)) { return $false }
     $attr = [int](New-Object IO.FileInfo $Path).Attributes
     if ($attr -eq -1 -or ($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
     try {
-        $owner = (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier])
+        $acl = Get-Acl -LiteralPath $Path
+        $raw = New-Object System.Security.AccessControl.RawSecurityDescriptor($acl.GetSecurityDescriptorBinaryForm(), 0)
     } catch {
         return $false
     }
-    return ($null -ne $owner -and $AapAdminSids -contains $owner.Value)
+    return (Test-AapAdminDescriptor $raw)
 }
 
 # Rights that let a non-admin replace or re-permission a folder below: delete
@@ -337,7 +358,10 @@ function Invoke-AapInstallSupervisor {
         if ($TrayExe -notmatch ($AapPathPattern + '\.exe\z')) { throw "refusing: tray path $TrayExe" }
         $trayDir = Split-Path -Parent $TrayExe
         if (-not (Test-AapAdminOwned $trayDir)) {
-            $trayProblems = @("tray directory $trayDir is not admin-owned")
+            $trayProblems += @("tray directory $trayDir is not admin-owned")
+        }
+        if (-not (Test-AapAdminOwned $TrayExe)) {
+            $trayProblems += @("tray exe $TrayExe is not admin-owned")
         }
     }
     $data = Get-AapDataDirProblem $DataDir

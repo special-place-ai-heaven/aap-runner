@@ -1324,6 +1324,26 @@ Describe 'aap-runner host supervisor' {
             (Get-AapDataDirAcl $op).GetOwner([Security.Principal.SecurityIdentifier]).Value | Should -Be 'S-1-5-32-544'
         }
 
+        It 'uses the tray allowlist for the exe directory' {
+            Test-AapAdminOwned 'C:\Program Files' | Should -BeTrue
+            $users = New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-545'
+            $rx = New-Object System.Security.AccessControl.FileSystemAccessRule($users, 'ReadAndExecute', 'None', 'None', 'Allow')
+            $ti = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+            $files = New-Object System.Security.AccessControl.RawSecurityDescriptor((& $script:mkAcl $ti @($rx)).GetSecurityDescriptorBinaryForm(), 0)
+            Test-AapAdminDescriptor $files | Should -BeTrue
+            $owned = New-Object System.Security.AccessControl.RawSecurityDescriptor((& $script:mkAcl $script:op @()).GetSecurityDescriptorBinaryForm(), 0)
+            Test-AapAdminDescriptor $owned | Should -BeFalse
+            $me = New-Object Security.Principal.SecurityIdentifier $script:op
+            $modify = New-Object System.Security.AccessControl.FileSystemAccessRule($me, 'Modify', 'None', 'None', 'Allow')
+            $modRaw = New-Object System.Security.AccessControl.RawSecurityDescriptor((& $script:mkAcl 'S-1-5-32-544' @($modify)).GetSecurityDescriptorBinaryForm(), 0)
+            Test-AapAdminDescriptor $modRaw | Should -BeFalse
+            $wdac = New-Object System.Security.AccessControl.FileSystemAccessRule($me, 'ChangePermissions', 'None', 'None', 'Allow')
+            $wdacRaw = New-Object System.Security.AccessControl.RawSecurityDescriptor((& $script:mkAcl 'S-1-5-32-544' @($wdac)).GetSecurityDescriptorBinaryForm(), 0)
+            Test-AapAdminDescriptor $wdacRaw | Should -BeFalse
+            $objectAce = New-Object System.Security.AccessControl.RawSecurityDescriptor 'O:BA D:(OA;;RPWP;c9651a32-5a0b-4e8c-9a55-6b9a0a0a0a0a;;BU)'
+            Test-AapAdminDescriptor $objectAce | Should -BeFalse
+        }
+
         It 'accepts an admin owner for the tray directory and refuses the operator' {
             $dir = Join-Path $TestDrive 'tray-owner'
             New-Item -ItemType Directory -Force -Path $dir | Out-Null
@@ -1446,6 +1466,14 @@ Describe 'aap-runner host supervisor' {
             Test-Path -LiteralPath $pd | Should -BeFalse
         }
 
+
+        It 'install-supervisor.ps1 -DryRun prints the Run value for an existing tray exe' {
+            $tray = 'C:\Windows\System32\notepad.exe'
+            $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-supervisor.ps1') -DryRun -DataDir (Join-Path $TestDrive 'pd') -TaskName 'AAP-Test-NotRegistered' -TrayExe $tray 2>&1 | Out-String
+            $LASTEXITCODE | Should -Be 0
+            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $out | Should -Match ([regex]::Escape("WOULD run-key Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Run AAP-Runner-Tray = `"$tray`""))
+        }
 
         It 'uninstall-supervisor.ps1 -DryRun exits 0' {
             $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'uninstall-supervisor.ps1') -DryRun -DataDir (Join-Path $TestDrive 'pd') -ScriptDir (Join-Path $TestDrive 'sd') -TaskName 'AAP-Test-NotRegistered' 2>&1 | Out-String

@@ -105,7 +105,7 @@ The helper accepts only schema 1 plus that verb and id. A path in the file is re
 under `C:\ProgramData\aap-runner` or a fixed install path (`C:\wsl`, the work VHDX, the two task names). A junction
 on the way is refused. `AAP_FAKE_BASE` is not consulted.
 
-The tray exe has to live in an admin-owned folder. If Users or Authenticated Users can write or create in that directory, the window refuses to elevate and says to move the exe. The first-run wizard (M4) must install it to an admin-only folder. Repair reads `status.json` first and refuses while `state` is `running` or `draining`.
+The tray exe and its folder must be owned by SYSTEM, Administrators, or TrustedInstaller. Any other SID is refused if an allow ACE on the exe or the folder itself grants write-data, append, delete, delete-child, write-DAC, write-owner, GENERIC_WRITE, or GENERIC_ALL, and any ACE that is not a plain allow or deny is refused. The window then says to move the exe. The first-run wizard (M4) must install it to an admin-only folder. Repair reads `status.json` before it starts, again before the VHDX remount, and again before `schtasks /End`. It refuses `starting`, `running`, and `draining`. A missing, unreadable, or unparseable `status.json` also refuses unless the `AAP-CRRR-Supervisor` task does not exist. An `updated` timestamp older than 180 s is not trusted; the task state is used instead.
 
 `verify` runs `install-host.ps1 -DryRun`, `install-supervisor.ps1 -DryRun`, the two scheduled-task queries, and
 `systemctl is-active` for sysbox and the manager. `repair` runs `lock-acl.ps1` on `C:\wsl` and the work-disk files,
