@@ -1420,6 +1420,21 @@ Describe 'aap-runner host supervisor' {
                 Should -Invoke Write-AapTrayRunValue -Times 0 -Exactly
             }
 
+            It 'refuses a tray exe under a parent a non-admin can rename' {
+                Mock Get-AapAncestorProblem {
+                    param($Path)
+                    if ($Path -eq $TrayExe) {
+                        return [pscustomobject]@{ Problems = @('C:\writable grants S-1-5-32-545 Delete'); Unreadable = @() }
+                    }
+                    return [pscustomobject]@{ Problems = @(); Unreadable = @() }
+                }
+                $TrayExe = Join-Path $TestDrive 'aap-runner-tray.exe'
+                Set-Content -LiteralPath $TrayExe -Value 'x'
+                $code = @(Invoke-AapInstallSupervisor | Where-Object { $_ -is [int] })[-1]
+                $code | Should -Be 1
+                Should -Invoke Write-AapTrayRunValue -Times 0 -Exactly
+            }
+
             It 'writes the Run value when the tray exe exists' {
                 $TrayExe = Join-Path $TestDrive 'aap-runner-tray.exe'
                 Set-Content -LiteralPath $TrayExe -Value 'x'

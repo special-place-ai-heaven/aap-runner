@@ -43,9 +43,20 @@ const ADMIN_SIDS: [&str; 3] = [
     "S-1-5-32-544",
     "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
 ];
-/// Write-data, append, delete-child, delete, write-DAC, write-owner, generic write, generic all.
-const REPLACE_RIGHTS: u32 =
-    0x0002 | 0x0004 | 0x0040 | 0x0001_0000 | 0x0004_0000 | 0x0008_0000 | 0x4000_0000 | 0x1000_0000;
+/// Write-data, append, write-attributes, delete-child, delete, write-DAC, write-owner,
+/// generic write, generic all.
+const REPLACE_RIGHTS: u32 = 0x0002
+    | 0x0004
+    | 0x0100
+    | 0x0040
+    | 0x0001_0000
+    | 0x0004_0000
+    | 0x0008_0000
+    | 0x4000_0000
+    | 0x1000_0000;
+/// Same mask as install-supervisor.ps1 Get-AapAncestorProblem. Create rights are absent:
+/// the drive root grants Authenticated Users "create folders", which cannot replace a child.
+const ANCESTOR_RIGHTS: u32 = 0x0040 | 0x0001_0000 | 0x0004_0000 | 0x0008_0000 | 0x1000_0000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AceKind {
@@ -72,6 +83,17 @@ pub struct AclView {
 
 /// Elevation is allowed only for an admin owner, and only when every non-inherit-only allow
 /// ACE for any other SID carries none of [`REPLACE_RIGHTS`]. Any other ACE type refuses.
+/// A parent folder lets another account rename or replace the tree when a non-admin allow
+/// ACE on the folder itself carries [`ANCESTOR_RIGHTS`].
+pub fn ancestor_lets_non_admin_replace(aces: &[DirAce]) -> bool {
+    aces.iter().any(|ace| {
+        ace.kind == AceKind::Allow
+            && !ace.inherit_only
+            && !ADMIN_SIDS.contains(&ace.sid.as_str())
+            && ace.rights & ANCESTOR_RIGHTS != 0
+    })
+}
+
 pub fn elevation_allowed(object: &AclView) -> bool {
     if !ADMIN_SIDS.contains(&object.owner.as_str()) {
         return false;
@@ -109,8 +131,27 @@ fn acl_view(sec: win::ObjectAcl) -> AclView {
     }
 }
 
+fn require_ancestors(dir: &Path) -> Result<(), String> {
+    let mut current = dir.to_path_buf();
+    while let Some(parent) = current.parent() {
+        if parent == current {
+            break;
+        }
+        match win::acl_of_path(parent, true) {
+            Ok(sec) => {
+                if ancestor_lets_non_admin_replace(&acl_view(sec).aces) {
+                    return Err(USER_WRITABLE_EXE_DIR.to_string());
+                }
+            }
+            Err(e) => return Err(format!("could not read an ancestor ACL: {e}")),
+        }
+        current = parent.to_path_buf();
+    }
+    Ok(())
+}
+
 fn require_admin_only(path: &Path, what: &str) -> Result<(), String> {
-    match win::object_acl(path) {
+    match win::acl_of_path(path, true) {
         Ok(sec) => {
             if elevation_allowed(&acl_view(sec)) {
                 Ok(())
@@ -578,19 +619,30 @@ fn refuse_elevation(verb: Verb, message: &str) -> Result<(), String> {
 
 pub fn launch(base: &Path, verb: Verb) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let Some(dir) = exe.parent() else {
+    let resolved = match win::resolve_exe(&exe) {
+        Ok(opened) => opened,
+        Err(e) => {
+            return refuse_elevation(verb, &format!("could not read the tray exe ACL: {e}"));
+        }
+    };
+    let Some(dir) = resolved.path.parent().map(std::path::Path::to_path_buf) else {
         return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
     };
-    if let Err(e) = require_admin_only(dir, "tray exe folder") {
+    if !elevation_allowed(&acl_view(resolved.acl)) {
+        return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
+    }
+    if let Err(e) = require_admin_only(&dir, "tray exe folder") {
         return refuse_elevation(verb, &e);
     }
-    if let Err(e) = require_admin_only(&exe, "tray exe") {
+    if let Err(e) = require_ancestors(&dir) {
         return refuse_elevation(verb, &e);
     }
     let id = win::random_id().map_err(|e| e.to_string())?;
     write_pointer(&id, verb, "")?;
     let wrote = write_request(base, &id, verb).is_ok();
-    if let Err(e) = win::shell_execute_runas(&exe, &format!("--helper {} {id}", verb.as_str())) {
+    if let Err(e) =
+        win::shell_execute_runas(&resolved.path, &format!("--helper {} {id}", verb.as_str()))
+    {
         let _ = write_pointer(&id, verb, &e);
         return Err(e);
     }
@@ -1096,17 +1148,30 @@ mod tests {
             ],
         );
         assert!(elevation_allowed(&program_files), "Program Files shape");
-        let live = acl_view(crate::win::object_acl(Path::new(r"C:\Program Files")).unwrap());
+        let live = acl_view(crate::win::acl_of_path(Path::new(r"C:\Program Files"), true).unwrap());
         assert!(
             elevation_allowed(&live),
             "C:\\Program Files owner={} aces={:?}",
             live.owner,
             live.aces
         );
-        let notepad = acl_view(
-            crate::win::object_acl(Path::new(r"C:\Windows\System32\notepad.exe")).unwrap(),
+        let notepad =
+            crate::win::resolve_exe(Path::new(r"C:\Windows\System32\notepad.exe")).unwrap();
+        assert!(
+            notepad.path.ends_with(r"System32\notepad.exe"),
+            "{}",
+            notepad.path.display()
         );
-        assert!(elevation_allowed(&notepad), "notepad.exe {notepad:?}");
+        assert!(elevation_allowed(&acl_view(notepad.acl)), "notepad.exe");
+        assert!(!ancestor_lets_non_admin_replace(
+            &acl_view(crate::win::acl_of_path(Path::new(r"C:\Program Files"), true).unwrap()).aces
+        ));
+        assert!(
+            !ancestor_lets_non_admin_replace(
+                &acl_view(crate::win::acl_of_path(Path::new(r"C:\"), true).unwrap()).aces
+            ),
+            "drive root looked like it could rename Program Files"
+        );
         assert!(
             !elevation_allowed(&view(USER, vec![ace(ADMINS, AceKind::Allow, RX, false)])),
             "a user-owned folder"
@@ -1122,6 +1187,26 @@ mod tests {
             )),
             "write-DAC alone"
         );
+        assert!(
+            !elevation_allowed(&view(ADMINS, vec![ace(USER, AceKind::Allow, 0x100, false)])),
+            "write-attributes alone"
+        );
+        assert!(ancestor_lets_non_admin_replace(&[ace(
+            USER,
+            AceKind::Allow,
+            0x10000,
+            false
+        )]));
+        assert!(
+            !ancestor_lets_non_admin_replace(&[ace(USERS, AceKind::Allow, 0x4, false)]),
+            "create-folder on a parent is not enough to swap the tree"
+        );
+        assert!(!ancestor_lets_non_admin_replace(&[ace(
+            ADMINS,
+            AceKind::Allow,
+            0x10000,
+            false
+        )]));
         assert!(
             !elevation_allowed(&view(
                 TI,

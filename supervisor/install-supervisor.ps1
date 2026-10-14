@@ -354,6 +354,7 @@ function Invoke-AapInstallSupervisor {
     try { $stateExists = [bool](Test-Path -LiteralPath $stateFile -ErrorAction Stop) } catch { $stateExists = $false }
     $trayExists = [bool](Test-Path -LiteralPath $TrayExe -PathType Leaf)
     $trayProblems = @()
+    $script:trayAnc = [pscustomobject]@{ Problems = @(); Unreadable = @() }
     if ($trayExists) {
         if ($TrayExe -notmatch ($AapPathPattern + '\.exe\z')) { throw "refusing: tray path $TrayExe" }
         $trayDir = Split-Path -Parent $TrayExe
@@ -363,6 +364,7 @@ function Invoke-AapInstallSupervisor {
         if (-not (Test-AapAdminOwned $TrayExe)) {
             $trayProblems += @("tray exe $TrayExe is not admin-owned")
         }
+        $script:trayAnc = Get-AapAncestorProblem $TrayExe
     }
     $data = Get-AapDataDirProblem $DataDir
     $anc = Get-AapAncestorProblem $ScriptDir
@@ -377,8 +379,8 @@ function Invoke-AapInstallSupervisor {
         TrayExe        = $TrayExe
         TrayExists     = $trayExists
         DataProblems   = @($data.Problems) + @($trayProblems)
-        ScriptProblems = @($anc.Problems)
-        Unreadable     = @($data.Unreadable) + @($anc.Unreadable)
+        ScriptProblems = @($anc.Problems) + @($script:trayAnc.Problems)
+        Unreadable     = @($data.Unreadable) + @($anc.Unreadable) + @($script:trayAnc.Unreadable)
     }
     $template = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'aap-runner-supervisor-task.xml')
     $ps1 = Join-Path $ScriptDir 'aap-runner-supervisor.ps1'
