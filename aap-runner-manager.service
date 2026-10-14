@@ -1,0 +1,31 @@
+[Unit]
+Description=AAP ephemeral CRRR runner manager
+# Requires= keeps the manager down until the work disk is mounted and
+# docker started. sysbox.service (the unit sysbox-ce 0.7.1 installs) is only
+# Wants= and After=: it BindsTo= sysbox-mgr, so a sysbox-mgr crash stops
+# sysbox.service cleanly, and Requires= would then stop the manager cleanly
+# too, where Restart=on-failure never fires. With Wants= the jobs fail fast,
+# the slots retire, the manager exits 1, and systemd restarts it.
+After=docker.service sysbox.service aap-workdisk.service network-online.target
+Requires=docker.service aap-workdisk.service
+Wants=sysbox.service
+ConditionPathExists=/etc/aap-runner/manager.conf
+ConditionPathExists=/etc/aap-runner/app.pem
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/aap-runner-manager
+Restart=on-failure
+RestartSec=15
+# Stopping deregisters runners that had no job, at most 25 s.
+TimeoutStopSec=90
+# SIGTERM ends the manager with 143 (stop_pool, then exit 143). That is a
+# clean stop, not a failure.
+SuccessExitStatus=143
+User=root
+Group=root
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

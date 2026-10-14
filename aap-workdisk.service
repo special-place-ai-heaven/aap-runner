@@ -1,0 +1,23 @@
+[Unit]
+Description=Mount the fixed AAP work disk by filesystem UUID
+DefaultDependencies=no
+# var-lib-ghrunner.mount comes from bootstrap's fstab line. When both are
+# queued at boot this runs after it, finds the mount, and checks its UUID.
+# A device that appears later pulls that mount unit in again while this
+# script waits, so the script also accepts a mount made during mount -U.
+# The fstab line stays: installed hosts already have it, and removing it
+# from bootstrap would not change them.
+After=local-fs-pre.target var-lib-ghrunner.mount
+Before=docker.service containerd.service sysbox.service sysbox-mgr.service sysbox-fs.service
+ConditionPathExists=/etc/aap-runner/work-disk.uuid
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/aap-mount-work-disk
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

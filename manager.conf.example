@@ -1,0 +1,55 @@
+# Installed to /etc/aap-runner/manager.conf, mode 0400, owner root.
+# The GitHub App private key is a separate file. Neither file is committed
+# with a secret in it. Empty values below are rejected by the manager.
+
+AAP_GITHUB_ORG=special-place-ai-heaven
+AAP_GITHUB_APP_ID=
+AAP_GITHUB_APP_INSTALLATION_ID=
+AAP_GITHUB_APP_PRIVATE_KEY_PATH=/etc/aap-runner/app.pem
+AAP_RUNNER_IMAGE=aap-crrr-runner:local
+# Required. crrr or fresh only, already lowercase. There is no default.
+# An empty value is refused. CRRR sets crrr. Fresh sets fresh and does not carry crrr.
+AAP_RUNNER_BASE_LABEL=crrr
+# Must be self-hosted,linux plus the base above.
+AAP_RUNNER_LABELS=self-hosted,linux,crrr
+# Labels after the base. CRRR leaves this empty. Fresh sets heavy.
+# Each label matches ^[a-z0-9][a-z0-9._-]*$ (uppercase is refused).
+# crrr, fresh, self-hosted, and linux are refused here.
+AAP_RUNNER_EXTRA_LABELS=
+AAP_RUNNER_GROUP=aap-crrr
+# Fixed VHDX size in GiB. CRRR is 60. Fresh sets 100; see the Fresh profile in README.md.
+# df size must fall in this value minus 10 through plus 4. The example stays at 60.
+AAP_WORK_DISK_GIB=60
+# Free GiB required on /var/lib/ghrunner before a job starts.
+# A value below 55% of AAP_WORK_DISK_GIB is raised. 60 GiB stays at 35.
+AAP_DISK_FLOOR_GB=35
+# Per-host docker create limits. CRRR65734 uses 12g and 6 cpus. Another host sets its own.
+# Absent keys use those same CRRR defaults.
+# docker create also sets --memory-swap to this same value and --cpu-shares 512.
+AAP_JOB_MEMORY=12g
+AAP_JOB_CPUS=6
+AAP_JOB_PIDS_LIMIT=4096
+# Stop and remove the container after this many minutes. 1..1440. Jobs time out at 90.
+AAP_JOB_TIMEOUT_MINUTES=120
+# Parallel job containers, 1..4. Absent means 1. An empty value is refused.
+# AAP_JOB_CPUS and AAP_JOB_MEMORY above are the pool total. Each container gets
+# total / count, rounded down to whole cpus and whole MiB: Fresh 24 cpus and 72g
+# over 3 is 8 cpus and 24g each. A split under 1 cpu or 1g is refused.
+# AAP_JOB_PIDS_LIMIT is per container. One container keeps the values verbatim.
+AAP_RUNNER_COUNT=1
+# Disk IO cap, 0..100 percent of /etc/aap-runner/work-disk.mbps (written by
+# aap-runner-manager --measure-io). Absent means 90. 0 means no cap. The pool
+# share is split evenly over AAP_RUNNER_COUNT; under 10 MiB/s per slot is
+# refused. No work-disk.mbps means no cap. Not yet verified live under sysbox-runc.
+AAP_JOB_IO_PERCENT=90
+# slice (default): jobs share one systemd slice capped at the pool totals, so
+# an idle or light job leaves its share to the others. fixed: each container
+# gets a hard 1/count share. Slice falls back to fixed unless docker uses the
+# systemd cgroup driver. See Pool sharing in README.md.
+AAP_POOL_SHARING=slice
+# Every job mounts /var/lib/ghrunner/sccache (owner the image's runner uid,
+# mode 0700) at /var/cache/aap-sccache, with RUSTC_WRAPPER=sccache and
+# SCCACHE_CACHE_SIZE=10G. ci.yml sets SCCACHE_DIR to one subdirectory per
+# repository; that is a convention, not an isolation boundary. Each directory
+# counts against AAP_DISK_FLOOR_GB. Before each job the whole cache is wiped
+# when it is over 20480 MiB (SCCACHE_TREE_MAX_MB in manager.sh).
