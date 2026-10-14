@@ -2,13 +2,15 @@
 
 //! Tray front-end for the AAP self-hosted runner. Reads `status.json` and `logs\supervisor.log`,
 //! writes only under `inbox\` (`state.json`, `settings.json`, `tray.log`, `jobs\<id>.json`) plus
-//! its own history mirror, view request, and helper pointer in `%TEMP%`. Opens the logs folder and
-//! its own window (`--dashboard`, `--settings`). `--helper` is the elevated mode: it writes
-//! `jobs\<id>\` and runs the embedded install scripts. The window never starts `wsl.exe`.
+//! its own history mirror, view request, helper pointer, and GitHub setup cache in `%TEMP%`.
+//! Opens the logs folder and its own window (`--dashboard`, `--settings`, `--github`). `--helper`
+//! is the elevated mode: it writes `jobs\<id>\` and runs the embedded install scripts. GitHub setup
+//! calls the public API with no token. The window never starts `wsl.exe`.
 //!
 //! Like Fathom: a raw Win32 message pump on the main thread drives `tray-icon` directly.
 
 mod dashboard;
+mod github_setup;
 mod helper;
 mod history;
 #[cfg(test)]
@@ -285,6 +287,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let restart = MenuItem::new("Restart", true, None);
     let pause = MenuItem::new("Pause", true, None);
     let settings_item = MenuItem::new("Settings\u{2026}", true, None);
+    let github_item = MenuItem::new("GitHub setup\u{2026}", true, None);
     let verify_item = MenuItem::new("Verify install", true, None);
     let repair_item = MenuItem::new("Repair install", true, None);
     let logs = MenuItem::new("Open logs", true, None);
@@ -300,6 +303,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
         &PredefinedMenuItem::separator(),
         &pause,
         &settings_item,
+        &github_item,
         &verify_item,
         &repair_item,
         &PredefinedMenuItem::separator(),
@@ -384,6 +388,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 toggle_pause(base);
             } else if id == settings_item.id() {
                 track_window(&mut window, show_window(base, Some(View::Settings), None));
+            } else if id == github_item.id() {
+                track_window(&mut window, show_window(base, Some(View::Github), None));
             } else if id == verify_item.id() {
                 if let Err(e) = helper::launch(base, helper::Verb::Verify) {
                     state::log(base, &e);

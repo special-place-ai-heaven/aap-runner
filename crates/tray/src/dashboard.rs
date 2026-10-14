@@ -29,10 +29,17 @@ pub enum View {
     Settings,
     /// The error panel, while there is a problem.
     Diagnostics,
+    /// The GitHub setup checklist, in place of the runner cards.
+    Github,
 }
 
 impl View {
-    const ALL: [View; 3] = [View::Status, View::Settings, View::Diagnostics];
+    const ALL: [View; 4] = [
+        View::Status,
+        View::Settings,
+        View::Diagnostics,
+        View::Github,
+    ];
 
     /// The command line that opens the window this way.
     pub fn args(self) -> &'static [&'static str] {
@@ -40,6 +47,7 @@ impl View {
             View::Status => &["--dashboard"],
             View::Settings => &["--settings"],
             View::Diagnostics => &["--dashboard", "--problem"],
+            View::Github => &["--github"],
         }
     }
 
@@ -47,6 +55,7 @@ impl View {
     pub fn from_args(args: &[String]) -> Option<View> {
         match args.first()?.as_str() {
             "--settings" => Some(View::Settings),
+            "--github" => Some(View::Github),
             "--dashboard" if args.iter().any(|a| a == "--problem") => Some(View::Diagnostics),
             "--dashboard" => Some(View::Status),
             _ => None,
@@ -58,6 +67,7 @@ impl View {
             View::Status => "status",
             View::Settings => "settings",
             View::Diagnostics => "diagnostics",
+            View::Github => "github",
         }
     }
 }
@@ -332,6 +342,12 @@ struct Dash {
     /// Latest elevated Verify/Repair, polled from the temp pointer and `jobs\<id>\`.
     job: Option<crate::helper::JobUi>,
     job_at: Instant,
+    /// The GitHub setup checklist replaces the right column's cards.
+    github: bool,
+    setup: crate::github_setup::Store,
+    /// Saw an unmet row this visit, so a later all-met state may advance.
+    github_arm: bool,
+    github_met_at: Option<Instant>,
 }
 
 pub fn run(base: PathBuf, view: View) -> eframe::Result {
@@ -383,6 +399,10 @@ pub fn run(base: PathBuf, view: View) -> eframe::Result {
                 want_focus: None,
                 job: None,
                 job_at: Instant::now(),
+                github: false,
+                setup: crate::github_setup::Store::load(crate::github_setup::path()),
+                github_arm: false,
+                github_met_at: None,
             };
             d.job = crate::helper::load_job(&d.base);
             d.refresh(&cc.egui_ctx);
@@ -447,9 +467,22 @@ impl Dash {
     /// Show what `view` asks for: the cards, focus in the left column, or the error panel.
     fn open(&mut self, view: View) {
         match view {
-            View::Status => self.panel = false,
+            View::Status => {
+                self.panel = false;
+                self.github = false;
+            }
             View::Settings => self.want_focus = Some(true),
-            View::Diagnostics => self.show_panel(),
+            View::Diagnostics => {
+                self.github = false;
+                self.show_panel();
+            }
+            View::Github => {
+                self.panel = false;
+                self.github = true;
+                self.github_arm = false;
+                self.github_met_at = None;
+                self.setup.retry();
+            }
         }
     }
 
@@ -1389,6 +1422,96 @@ impl Dash {
         ui.add_space(24.0);
     }
 
+    fn github_page(&mut self, ui: &mut egui::Ui) {
+        let p = self.pal();
+        if ui
+            .add(egui::Button::new(RichText::new("< Back to runners").color(p.accent)).frame(false))
+            .clicked()
+        {
+            self.github = false;
+            return;
+        }
+        ui.label(RichText::new("GitHub setup").strong());
+        ui.label(
+            RichText::new("No token. The public API only checks that the account exists.")
+                .color(p.muted)
+                .small(),
+        );
+        let mut input = self.setup.input().to_string();
+        let edit = ui.text_edit_singleline(&mut input);
+        if self.right_first.is_none() {
+            self.right_first = Some(edit.id);
+        }
+        if edit.changed() {
+            self.setup.set_input(input);
+        }
+        ui.add_space(8.0);
+        let rows = self.setup.rows();
+        let start = crate::github_setup::first_open(&rows);
+        for row in &rows {
+            let mark = match row.phase {
+                crate::github_setup::Phase::Checking => "\u{2026}",
+                crate::github_setup::Phase::Met => "\u{2713}",
+                crate::github_setup::Phase::Unmet => "\u{2715}",
+                crate::github_setup::Phase::Blocked => "\u{2013}",
+            };
+            let color = if row.phase == crate::github_setup::Phase::Blocked {
+                p.muted
+            } else {
+                p.text
+            };
+            ui.label(RichText::new(format!("{mark}  {}", row.title)).color(color));
+            if row.phase == crate::github_setup::Phase::Blocked {
+                continue;
+            }
+            if row.show_group {
+                let mut group = self.setup.group().to_string();
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Group").color(p.muted));
+                    if ui.text_edit_singleline(&mut group).changed() {
+                        self.setup.set_group(group);
+                    }
+                });
+            }
+            let active = Some(row.id) == start;
+            if active && !row.missing.is_empty() {
+                ui.label(RichText::new(&row.missing).color(p.over));
+            }
+            if active && !row.action.is_empty() {
+                ui.label(RichText::new(&row.action).color(p.muted).small());
+            }
+            if let Some(link) = &row.link {
+                ui.hyperlink_to(link, link);
+            }
+            if let Some(copy) = &row.copy {
+                let mut shown = copy.clone();
+                ui.add(
+                    egui::TextEdit::multiline(&mut shown)
+                        .code_editor()
+                        .desired_width(f32::INFINITY)
+                        .interactive(false),
+                );
+                if ui.button("Copy").clicked() {
+                    ui.ctx().copy_text(copy.clone());
+                }
+            }
+            if row.manual {
+                let mut on = row.phase == crate::github_setup::Phase::Met;
+                if ui.checkbox(&mut on, "Done").changed() {
+                    self.setup.toggle(row.id, on);
+                }
+            }
+            ui.add_space(6.0);
+        }
+        let met = rows
+            .iter()
+            .all(|r| r.phase == crate::github_setup::Phase::Met);
+        ui.add_space(4.0);
+        if ui.add_enabled(met, egui::Button::new("Next")).clicked() {
+            self.github = false;
+        }
+    }
+
     /// Everything under the pinned header row; it scrolls at small sizes.
     fn job_banner(&self, ui: &mut egui::Ui) {
         let Some(job) = &self.job else {
@@ -1421,6 +1544,10 @@ impl Dash {
     }
 
     fn right(&mut self, ui: &mut egui::Ui) {
+        if self.github {
+            self.github_page(ui);
+            return;
+        }
         self.job_banner(ui);
         let p = self.pal();
         match self.snap.status.clone() {
@@ -1486,9 +1613,13 @@ fn copy_button(ui: &mut egui::Ui, p: &Palette, copied: bool) -> egui::Response {
 impl eframe::App for Dash {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.setup.pump();
         if self.read_at.elapsed() >= REFRESH {
             if crate::window_exits_without_tray(crate::probe_tray_lock()) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            if self.github {
+                self.setup.retry();
             }
             self.refresh(&ctx);
         }
@@ -1507,9 +1638,29 @@ impl eframe::App for Dash {
         }
         let (esc, f6) = ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::F6)));
         // Esc first leaves the error panel, then closes the window.
+        if self.github {
+            let met = self
+                .setup
+                .rows()
+                .iter()
+                .all(|r| r.phase == crate::github_setup::Phase::Met);
+            if !met {
+                self.github_arm = true;
+                self.github_met_at = None;
+            } else if self.github_arm {
+                let at = *self.github_met_at.get_or_insert_with(Instant::now);
+                if crate::github_setup::ready_to_advance(true, true, at.elapsed()) {
+                    self.github = false;
+                    self.github_arm = false;
+                    self.github_met_at = None;
+                }
+            }
+        }
         if esc {
             if self.panel {
                 self.panel = false;
+            } else if self.github {
+                self.github = false;
             } else {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
