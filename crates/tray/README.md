@@ -2,7 +2,7 @@
 
 Windows tray front-end for the self-hosted runner. The window only reads and writes JSON files in
 `C:\ProgramData\aap-runner` (writes only under
-`inbox\`, including `inbox\jobs\`) and opens the logs folder. It never runs `wsl.exe`, never talks to GitHub, and needs no token.
+`inbox\`, including `inbox\jobs\`) and opens the logs folder. It never runs `wsl.exe`. GitHub setup is the one place that calls the public GitHub API, and it sends no credentials.
 The same exe has an elevated `--helper` mode (below) that shells out to the existing PowerShell install scripts.
 
 ## Files (under `C:\ProgramData\aap-runner`, created by the install script)
@@ -41,7 +41,7 @@ admin-written.
 ## Menu
 
 State line (with applied limits when reported, e.g. `Idle · 2 runners · 24 cpu · 72 GiB total`; same text
-as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, Verify install, Repair install, Open logs, version, Quit.
+as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, GitHub setup…, Verify install, Repair install, Open logs, version, Quit.
 Left click on the icon opens the same window.
 
 - Dark menu: the menu follows the Windows app theme (HKCU `...\Themes\Personalize` `AppsUseLightTheme`).
@@ -55,6 +55,7 @@ Left click on the icon opens the same window.
 - Polls `status.json` every 5 s. Restart writes `off`, waits up to 15 min for `state: off`, then writes `on`.
 - Pause/Resume flips `paused` in `settings.json`; the label follows the file.
 - Settings… opens the window (or focuses it) with the focus on the settings column (see Window).
+- GitHub setup… opens the same window with the checklist in place of the runner cards (`--github`).
 - Quit closes the tray and the window it opened. It does not touch any file. If the tray process is gone without that (a crash), the window sees `aap-runner-tray.lock` free on its 5 s poll and closes. Single instance per user (file locks in `%TEMP%`).
 - Tooltip: `AAP Runner: <state line> · v<version> (<commit>)`.
 - While a job runs the state line reads `Running <repo short name> · <job>` (the part of `repo` after
@@ -96,6 +97,19 @@ addendum of the design doc.
 - A second request (menu item, icon click, another `--settings`) writes `status`, `settings` or
   `diagnostics` to `%TEMP%\aap-runner-tray\view.request` and focuses the open window, which takes the file.
 
+## GitHub setup
+
+The menu item and `--github` swap the right column for a checklist. The left column stays the settings column. The input is an org slug or `owner/repo` (a `https://github.com/` prefix is stripped). The tray calls the public API (`GET /users/<owner>`, and `GET /repos/<owner>/<repo>` when a repo was given) with no token. The answer is cached in `%TEMP%\aap-runner-tray\github-setup.json` (schema 1: the text, the group name, the manual ticks, and the resolved account).
+
+Rows are `checking`, met, unmet, or blocked. The page re-checks every 5 s while it is open. A row the app cannot see yet has a Done box. `rows` checks that row itself once an App id, installation id, or key file is supplied; this page passes those empty until the identity page (M3). An organization with public repositories is told to tick Allow public repositories. A user account is told that runner groups do not exist. Next stays disabled until every row is met, then the page returns to the runners after 2 s.
+
+The workflow box is:
+
+```
+runs-on: {group: aap-crrr, labels: [self-hosted, linux]}
+```
+
+For a user account the box is `runs-on: [self-hosted, linux]`.
 
 ## Elevated helper
 

@@ -55,6 +55,12 @@ underneath only works because the owner ran the scripts by hand.
   Embed the scripts in the exe with `include_str!` and write them to the admin-owned
   folder before running, so the single exe stays the only artifact.
 
+### M3a: GitHub setup checklist
+- A page in the tray window, also the menu item GitHub setup. One field: an org slug or `owner/repo`. Resolved with the unauthenticated public API and cached. No token.
+- Ordered rows: create the GitHub App, install it, download the private key, runner group (or the user-account note), fork policy, workflow snippet. Links are derived from the owner. A user account has no runner groups and no organization fork-policy page.
+- Row states are checking, met, unmet, or blocked. The app checks a row when it can. Until the identity page exists, create/install/key (and, for an org, the group and fork policy) are manual Done ticks. They become app-checked when `Identity` or `Verify` is passed into `github_setup::rows` (M3). The page re-checks every 5 s. Next is enabled only when every row is met, then the page leaves itself after 2 s. State is `%TEMP%\aap-runner-tray\github-setup.json` (schema 1).
+- Verify against the distro's App token is not in this PR. M3 fills `Verify` (app authenticates, installation id matches, runner group exists) and the same rows show pass or fail. The checklist works with those fields empty.
+
 ### M3: identity from the tray
 - Settings panel gets: org slug, App id, installation id, runner group, labels, and a
   key file picker. The tray writes a `identity` request; the helper copies the key into
@@ -69,7 +75,7 @@ underneath only works because the owner ran the scripts by hand.
      enabled, WSL2 installed and version, free disk on the install drive, admin
      available, network to github.com. Each failing row has a "Fix" button where a fix
      exists (`wsl --install --no-distribution`, enable features, reboot notice).
-  2. Identity page (reuse M3).
+  2. GitHub setup checklist (reuse M3a), then the identity page (reuse M3).
   3. Sizing page (work disk GiB, runner count, reuse the existing settings panel).
   4. Install: one UAC prompt, live progress from the helper job folder, log tail, and
      on failure the error class plus the primary action from
@@ -134,6 +140,7 @@ fleet management, silent auto-update, autologon, a heavy/light runner distinctio
 - M2: `cargo test` covers request parsing, id validation and job-folder state
   transitions. A Pester test runs `verify` against a fixture `ProgramData` tree.
   Manual proof is the owner's job; put exact steps in the PR description.
+- M3a: unit tests for link derivation, org versus user with injected API responses, row blocking, and the manual-to-app-checked switch. No network in the tests.
 - M3: unit tests for validation; Pester test that the identity verb rewrites
   `manager.conf` in a fixture and refuses a key path outside the request's allowed
   picker result.
