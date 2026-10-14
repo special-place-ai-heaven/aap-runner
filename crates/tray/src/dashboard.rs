@@ -1464,6 +1464,9 @@ impl eframe::App for Dash {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.read_at.elapsed() >= REFRESH {
+            if crate::window_exits_without_tray(crate::probe_tray_lock()) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             self.refresh(&ctx);
         }
         let job_every = if self.job.as_ref().is_some_and(|j| j.active()) {
