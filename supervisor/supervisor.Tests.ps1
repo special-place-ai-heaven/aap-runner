@@ -1215,6 +1215,29 @@ Describe 'aap-runner host supervisor' {
             @($r.Problems) -join "`n" | Should -Match 'cmd /c rmdir'
         }
 
+        It 'refuses a junction at inbox\jobs without reading the target' {
+            $pd = Join-Path $TestDrive 'pd-jobs-link'
+            New-Item -ItemType Directory -Force -Path (Join-Path $pd 'inbox') | Out-Null
+            $target = Join-Path $TestDrive 'jobs-target'
+            New-Item -ItemType Directory -Force -Path $target | Out-Null
+            Set-Content -LiteralPath (Join-Path $target 'secret.txt') -Value 'super-secret-key-material'
+            $link = Join-Path $pd 'inbox\jobs'
+            & $script:mkJunction $link $target
+            $r = Get-AapDataDirProblem $pd
+            @($r.Problems) -join "`n" | Should -Match 'reparse point .*jobs'
+            @($r.Problems) -join "`n" | Should -Not -Match 'super-secret'
+        }
+
+        It 'accepts a user-owned request file inside inbox\jobs' {
+            $pd = Join-Path $TestDrive 'pd-jobs-file'
+            New-Item -ItemType Directory -Force -Path (Join-Path $pd 'inbox\jobs') | Out-Null
+            Set-Content -LiteralPath (Join-Path $pd 'inbox\jobs\0123456789abcdef.json') -Value '{"schema":1}'
+            Mock Get-Acl { & $script:mkAcl 'S-1-5-32-544' @() }
+            Mock Get-Acl { & $script:mkAcl $script:op @() } -ParameterFilter { $LiteralPath -like '*\inbox\*' }
+            $r = Get-AapDataDirProblem $pd
+            @($r.Problems).Count | Should -Be 0
+        }
+
         It 'refuses a junction inside the data folder without following it' {
             $pd = Join-Path $TestDrive 'pd-child'
             New-Item -ItemType Directory -Force -Path $pd | Out-Null
@@ -1395,6 +1418,7 @@ Describe 'aap-runner host supervisor' {
             $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-supervisor.ps1') -DryRun -DataDir $pd -TaskName 'AAP-Test-NotRegistered' -TrayExe (Join-Path $TestDrive 'missing-tray.exe') 2>&1 | Out-String
             $LASTEXITCODE | Should -Be 0
             $out | Should -Match 'WOULD task AAP-Test-NotRegistered logon trigger'
+            $out | Should -Match 'inbox\\jobs'
             $out | Should -Match 'INFO tray .*missing-tray.exe not found; Run value skipped'
             Test-Path -LiteralPath $pd | Should -BeFalse
         }

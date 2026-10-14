@@ -1,13 +1,15 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 //! Tray front-end for the AAP self-hosted runner. Reads `status.json` and `logs\supervisor.log`,
-//! writes only under `inbox\` (`state.json`, `settings.json`, `tray.log`) plus its own history
-//! mirror and view request in `%TEMP%`, opens the logs folder and its own window (`--dashboard`,
-//! `--settings`, via `current_exe`). Nothing else.
+//! writes only under `inbox\` (`state.json`, `settings.json`, `tray.log`, `jobs\<id>.json`) plus
+//! its own history mirror, view request, and helper pointer in `%TEMP%`. Opens the logs folder and
+//! its own window (`--dashboard`, `--settings`). `--helper` is the elevated mode: it writes
+//! `jobs\<id>\` and runs the embedded install scripts. The window never starts `wsl.exe`.
 //!
 //! Like Fathom: a raw Win32 message pump on the main thread drives `tray-icon` directly.
 
 mod dashboard;
+mod helper;
 mod history;
 #[cfg(test)]
 mod ico;
@@ -199,6 +201,14 @@ fn main() {
         println!("{}", version());
         return;
     }
+    if args.first().is_some_and(|a| a == "--helper") {
+        // Elevated mode. Paths come from the constant data directory, never from AAP_FAKE_BASE.
+        let code = match args.get(1).zip(args.get(2)) {
+            Some((verb, id)) if args.len() == 3 => helper::run_elevated(verb, id),
+            _ => 2,
+        };
+        std::process::exit(code);
+    }
     if let Some(view) = View::from_args(&args) {
         // One window: a second request passes its view to the open one and focuses it.
         let Some(_lock) = single_instance("aap-runner-tray-dashboard.lock") else {
@@ -233,6 +243,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let restart = MenuItem::new("Restart", true, None);
     let pause = MenuItem::new("Pause", true, None);
     let settings_item = MenuItem::new("Settings\u{2026}", true, None);
+    let verify_item = MenuItem::new("Verify install", true, None);
+    let repair_item = MenuItem::new("Repair install", true, None);
     let logs = MenuItem::new("Open logs", true, None);
     let version_item = MenuItem::new(version(), false, None);
     let quit = MenuItem::new("Quit", true, None);
@@ -248,6 +260,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
         &PredefinedMenuItem::separator(),
         &pause,
         &settings_item,
+        &verify_item,
+        &repair_item,
         &PredefinedMenuItem::separator(),
         &logs,
         &PredefinedMenuItem::separator(),
@@ -325,6 +339,16 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 toggle_pause(base);
             } else if id == settings_item.id() {
                 show_window(base, Some(View::Settings), None);
+            } else if id == verify_item.id() {
+                if let Err(e) = helper::launch(base, helper::Verb::Verify) {
+                    state::log(base, &e);
+                }
+                show_window(base, Some(View::Status), None);
+            } else if id == repair_item.id() {
+                if let Err(e) = helper::launch(base, helper::Verb::Repair) {
+                    state::log(base, &e);
+                }
+                show_window(base, Some(View::Status), None);
             } else if id == open_job.id() {
                 if let Some(url) = job_url.as_deref().filter(|u| state::valid_run_url(u))
                     && let Err(e) = Command::new(EXPLORER).arg(url).spawn()

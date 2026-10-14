@@ -1,8 +1,9 @@
 # aap-runner-tray
 
-Windows tray front-end for the self-hosted runner. It only reads and writes JSON files in
+Windows tray front-end for the self-hosted runner. The window only reads and writes JSON files in
 `C:\ProgramData\aap-runner` (writes only under
-`inbox\`) and opens the logs folder. It never runs `wsl.exe`, never talks to GitHub, needs no token and no elevation.
+`inbox\`, including `inbox\jobs\`) and opens the logs folder. It never runs `wsl.exe`, never talks to GitHub, and needs no token.
+The same exe has an elevated `--helper` mode (below) that shells out to the existing PowerShell install scripts.
 
 ## Files (under `C:\ProgramData\aap-runner`, created by the install script)
 
@@ -14,6 +15,9 @@ admin-written.
 | `inbox\state.json` | tray (atomic: `.tmp` then rename) | `{"desired":"on"}` or `{"desired":"off"}` |
 | `inbox\settings.json` | tray (atomic) | `{"runner_count":1..3,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` |
 | `inbox\tray.log` | tray, appended if `inbox\` exists | one line per failed write/spawn |
+| `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`. The elevated helper reads it. |
+| `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code` |
+| `jobs\<id>\log.txt`, `exit.txt` | elevated helper | live log and the process exit code |
 | `status.json` | supervisor, never the tray | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"…","updated":"<RFC3339>","detail":"…","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/…/actions/runs/N"}` (the last five optional; `repo` and `run_url` may be `""`) |
 | `logs\` | supervisor | opened by "Open logs" via `C:\Windows\explorer.exe` (absolute path) |
 
@@ -37,7 +41,7 @@ admin-written.
 ## Menu
 
 Open dashboard, state line (with applied limits when reported, e.g. `Idle · 2 runners · 24 cpu · 72 GiB total`; same text
-as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, Open logs, version, Quit.
+as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, Verify install, Repair install, Open logs, version, Quit.
 
 - Dark menu: the menu follows the Windows app theme (HKCU `...\Themes\Personalize` `AppsUseLightTheme`).
   Before the menu is built the tray calls uxtheme's `SetPreferredAppMode(AllowDark)` (ordinal 135),
@@ -83,13 +87,30 @@ addendum of the design doc.
 - **Error panel:** replaces the right column's cards, with `< Back to runners` on top. It opens by itself
   when the state enters an error class; the `1 problem` button, an error symbol, `--dashboard --problem`
   and a left click in an error state reopen it. It holds the one-liner, raw detail and since, the class's
-  primary action and Copy diagnostics, the last 20 log lines, the last 10 problems, and version, paths and
-  a disabled Verify button (M2).
+  primary action and Copy diagnostics, the last 20 log lines, the last 10 problems, and version, paths,
+  Verify install, and Repair install. An old manager's primary action is Repair install.
 - **Keyboard:** Tab runs down the left column, then the right. F6 jumps to the first control of the other
   column. Esc leaves the error panel, then closes the window. `--settings` puts the focus on Start/Stop;
   with a problem the initial focus is the problem button.
 - A second request (menu item, icon click, another `--settings`) writes `status`, `settings` or
   `diagnostics` to `%TEMP%\aap-runner-tray\view.request` and focuses the open window, which takes the file.
+
+
+## Elevated helper
+
+`aap-runner-tray.exe --helper <verb> <id>` with `<verb>` `verify` or `repair` and `<id>` 16 lowercase hex digits.
+The menu items write `inbox\jobs\<id>.json` and start that command through ShellExecute `runas` (one UAC prompt).
+The helper accepts only schema 1 plus that verb and id. A path in the file is rejected. Every directory it uses is
+under `C:\ProgramData\aap-runner` or a fixed install path (`C:\wsl`, the work VHDX, the two task names). A junction
+on the way is refused. `AAP_FAKE_BASE` is not consulted.
+
+`verify` runs `install-host.ps1 -DryRun`, `install-supervisor.ps1 -DryRun`, the two scheduled-task queries, and
+`systemctl is-active` for sysbox and the manager. `repair` runs `lock-acl.ps1` on `C:\wsl` and the work-disk files,
+reinstalls the supervisor task, remounts the VHDX, and restarts `AAP-CRRR-Supervisor`. The scripts are compiled into
+the exe and written under `jobs\<id>\scripts` before they run. The window tails `log.txt`.
+
+The window finds the current job from `%TEMP%\aap-runner-tray\helper.json` (schema 1, id, verb, optional error).
+The helper does not read that file. The supervisor does not read it either.
 
 ## Icon (after Fathom's `mark.rs`)
 
