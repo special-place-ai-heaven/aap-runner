@@ -87,13 +87,13 @@ set_slot_state 1 idle
   || fail "repo and run_url were not cleared when the slot finished: $(cat "${RUN_DIR}/status.json")"
 echo "cleared on finish ok"
 
-# Never found: 6 tries, 5 sleeps, nothing published, rc 0.
+# Never found: 120 tries, 119 sleeps, nothing published, rc 0.
 : > "${calls}"
-EMPTY_TRIES=99
+EMPTY_TRIES=999
 set_slot_state 1 running c1 build
 discover_job_run 1 c1 "$(slot_ns 1)" || fail "discovery failed the caller"
-[[ "$(grep -c '^docker exec' "${calls}")" -eq 6 && "$(grep -c '^sleep 5' "${calls}")" -eq 5 ]] \
-  || fail "did not stop after 6 tries: $(cat "${calls}")"
+[[ "$(grep -c '^docker exec' "${calls}")" -eq 120 && "$(grep -c '^sleep 5' "${calls}")" -eq 119 ]] \
+  || fail "did not stop after 120 tries: $(cat "${calls}")"
 [[ -z "$(field repo)" && -z "$(field run_url)" ]] || fail "published without a run id"
 # A wrong server url publishes empty strings.
 EMPTY_TRIES=0
