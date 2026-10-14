@@ -354,9 +354,28 @@ function Get-AapSupervisorTaskState {
     }
 }
 
+function Test-AapWslListHasDistro([string]$Text, [string]$Name) {
+    $clean = $Text -replace [char]0, ''
+    foreach ($line in ($clean -split "\r?\n")) {
+        if ($line.Trim() -eq $Name) { return $true }
+    }
+    return $false
+}
+
+# 'running' when `wsl --list --running --quiet` names aap-runner. Listing only;
+# this does not start the distro.
+function Test-AapDistroListed {
+    if (-not (Test-Path -LiteralPath $AapWsl)) { return 'unknown' }
+    $out = & $AapWsl --list --running --quiet 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) { return 'unknown' }
+    if (Test-AapWslListHasDistro $out 'aap-runner') { return 'running' }
+    return 'stopped'
+}
+
 # Missing, unreadable, or unparseable status refuses unless the supervisor task
-# does not exist. A parsed "updated" older than 180 s is not trusted: the task
+# does not exist. A missing or older-than-180s "updated" is not trusted: the task
 # state decides. starting, running, and draining refuse when the timestamp is fresh.
+# A running aap-runner distro refuses even when the file says idle.
 function Get-AapRepairRefusal([string]$DataDir, [datetime]$Now = ([datetime]::UtcNow)) {
     $busy = 'job running, repair refused; retry when idle or pause the runners first'
     $unread = 'status unreadable, repair refused; retry when idle or pause the runners first'
@@ -376,24 +395,29 @@ function Get-AapRepairRefusal([string]$DataDir, [datetime]$Now = ([datetime]::Ut
     }
     $state = $null
     if ($text -and ($text -match '"state"\s*:\s*"([^"]+)"')) { $state = $Matches[1] }
+    $distro = Test-AapDistroListed
+    if ($distro -eq 'running') { return $busy }
+    if ($distro -eq 'unknown') { return $unread }
     if ([string]::IsNullOrEmpty($state)) {
         if ((Get-AapSupervisorTaskState) -eq 'missing') { return $null }
         return $unread
     }
+    $fresh = $false
+    $sawUpdated = $false
     if ($text -match '"updated"\s*:\s*"([^"]+)"') {
+        $sawUpdated = $true
         $updated = ConvertFrom-AapRfc3339 $Matches[1]
-        $fresh = $false
         if ($null -ne $updated) {
             $age = ($Now.ToUniversalTime() - $updated).TotalSeconds
             if ($age -ge 0 -and $age -le 180) { $fresh = $true }
         }
-        if (-not $fresh) {
-            switch (Get-AapSupervisorTaskState) {
-                'missing' { return $null }
-                'ready' { return $null }
-                'running' { return $busy }
-                default { return $unread }
-            }
+    }
+    if (-not $sawUpdated -or -not $fresh) {
+        switch (Get-AapSupervisorTaskState) {
+            'missing' { return $null }
+            'ready' { return $null }
+            'running' { return $busy }
+            default { return $unread }
         }
     }
     if ($state -eq 'running' -or $state -eq 'draining' -or $state -eq 'starting') { return $busy }

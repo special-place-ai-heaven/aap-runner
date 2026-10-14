@@ -6,7 +6,7 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    ConvertSidToStringSidW, GetSecurityInfo, SE_FILE_OBJECT,
 };
 use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows::Win32::Security::{
@@ -382,30 +382,7 @@ pub fn machine_ps_module_path() -> std::io::Result<String> {
     Ok(text)
 }
 
-/// Owner and DACL of a file or directory. A null DACL is reported as Authenticated Users
-/// with generic-all, because that DACL grants everyone every right. An ACE that is neither
-/// allow nor deny is returned with `other` set so the caller can refuse it.
-pub fn object_acl(path: &std::path::Path) -> std::io::Result<ObjectAcl> {
-    let wide_name = wide(path.as_os_str());
-    let mut owner = PSID(std::ptr::null_mut());
-    let mut dacl: *mut ACL = std::ptr::null_mut();
-    let mut sd = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
-    // SAFETY: `wide_name` is null-terminated for this call. The out-pointers are live locals.
-    let status = unsafe {
-        GetNamedSecurityInfoW(
-            PCWSTR::from_raw(wide_name.as_ptr()),
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            Some(&mut owner),
-            None,
-            Some(std::ptr::addr_of_mut!(dacl)),
-            None,
-            std::ptr::addr_of_mut!(sd),
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return Err(std::io::Error::from_raw_os_error(status.0 as i32));
-    }
+fn owned_acl(owner: PSID, dacl: *mut ACL, sd: PSECURITY_DESCRIPTOR) -> std::io::Result<ObjectAcl> {
     let owner_sid = if owner.0.is_null() {
         String::new()
     } else {
@@ -424,7 +401,7 @@ pub fn object_acl(path: &std::path::Path) -> std::io::Result<ObjectAcl> {
     };
     let aces = read_dacl(dacl);
     if !sd.0.is_null() {
-        // SAFETY: this is the descriptor GetNamedSecurityInfo allocated.
+        // SAFETY: this is the descriptor the security call allocated.
         unsafe {
             let _ = LocalFree(Some(HLOCAL(sd.0)));
         }
@@ -433,6 +410,110 @@ pub fn object_acl(path: &std::path::Path) -> std::io::Result<ObjectAcl> {
         owner: owner_sid,
         aces: aces?,
     })
+}
+
+/// `\\?\C:\...` from `GetFinalPathNameByHandleW` back to a DOS path.
+pub fn strip_extended_path(raw: &str) -> String {
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    raw.strip_prefix(r"\\?\").unwrap_or(raw).to_string()
+}
+
+/// Open `path`, follow links, and return the final DOS path plus the security of that handle.
+pub fn resolve_exe(path: &std::path::Path) -> std::io::Result<ResolvedExe> {
+    let handle = open_read_control(path, false)?;
+    let final_path = final_dos_path(&handle)?;
+    let acl = acl_of_handle(&handle)?;
+    Ok(ResolvedExe {
+        path: std::path::PathBuf::from(final_path),
+        acl,
+    })
+}
+
+/// Security of `path` read from a handle, not from the path string.
+pub fn acl_of_path(path: &std::path::Path, directory: bool) -> std::io::Result<ObjectAcl> {
+    let handle = open_read_control(path, directory)?;
+    acl_of_handle(&handle)
+}
+
+pub struct ResolvedExe {
+    pub path: std::path::PathBuf,
+    pub acl: ObjectAcl,
+}
+
+struct Opened(windows::Win32::Foundation::HANDLE);
+
+impl Drop for Opened {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+fn open_read_control(path: &std::path::Path, directory: bool) -> std::io::Result<Opened> {
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
+    };
+    let wide_name = wide(path.as_os_str());
+    let flags = if directory {
+        FILE_FLAG_BACKUP_SEMANTICS
+    } else {
+        windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL
+    };
+    // SAFETY: `wide_name` is null-terminated. READ_CONTROL is what GetSecurityInfo requires.
+    let handle = unsafe {
+        CreateFileW(
+            PCWSTR::from_raw(wide_name.as_ptr()),
+            READ_CONTROL.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            flags,
+            None,
+        )
+    }
+    .map_err(|e| std::io::Error::from_raw_os_error(e.code().0))?;
+    Ok(Opened(handle))
+}
+
+fn final_dos_path(handle: &Opened) -> std::io::Result<String> {
+    use windows::Win32::Storage::FileSystem::{GetFinalPathNameByHandleW, VOLUME_NAME_DOS};
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: `handle` is open and `buf` is writable for this call.
+    let n = unsafe { GetFinalPathNameByHandleW(handle.0, &mut buf, VOLUME_NAME_DOS) };
+    if n == 0 || n as usize >= buf.len() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let text = String::from_utf16_lossy(&buf[..n as usize]);
+    Ok(strip_extended_path(&text))
+}
+
+fn acl_of_handle(handle: &Opened) -> std::io::Result<ObjectAcl> {
+    let mut owner = PSID(std::ptr::null_mut());
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut sd = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
+    // SAFETY: `handle` is open with READ_CONTROL. The out-pointers are live locals.
+    let status = unsafe {
+        GetSecurityInfo(
+            handle.0,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            Some(&mut owner),
+            None,
+            Some(std::ptr::addr_of_mut!(dacl)),
+            None,
+            Some(std::ptr::addr_of_mut!(sd)),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(status.0 as i32));
+    }
+    owned_acl(owner, dacl, sd)
 }
 
 fn read_dacl(dacl: *mut ACL) -> std::io::Result<Vec<DirectoryAce>> {
@@ -562,5 +643,48 @@ mod tests {
         assert_eq!(MODE.load(Ordering::SeqCst), ALLOW_DARK);
         assert_eq!(REFRESHES.load(Ordering::SeqCst), 1);
         assert_eq!(FLUSHES.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_file_opened_through_a_junction_resolves_to_the_target() {
+        let root = std::env::temp_dir().join(format!("aap-final-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let target = root.join("target");
+        let link = root.join("link");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("tray.exe"), b"x").unwrap();
+        let status = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
+            .args([
+                "/d",
+                "/c",
+                "mklink",
+                "/J",
+                &link.display().to_string(),
+                &target.display().to_string(),
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success(), "mklink failed");
+        let resolved = resolve_exe(&link.join("tray.exe")).unwrap();
+        let text = resolved.path.to_string_lossy().to_ascii_lowercase();
+        assert!(text.contains(r"\target\tray.exe"), "{text}");
+        assert!(!text.contains(r"\link\"), "{text}");
+        let _ = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
+            .args(["/d", "/c", "rmdir", &link.display().to_string()])
+            .status();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extended_dos_prefixes_come_off() {
+        assert_eq!(
+            strip_extended_path(r"\\?\C:\Program Files\tray.exe"),
+            r"C:\Program Files\tray.exe"
+        );
+        assert_eq!(
+            strip_extended_path(r"\\?\UNC\server\share\tray.exe"),
+            r"\\server\share\tray.exe"
+        );
+        assert_eq!(strip_extended_path(r"C:\plain.exe"), r"C:\plain.exe");
     }
 }

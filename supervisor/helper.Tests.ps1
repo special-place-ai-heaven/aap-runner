@@ -4,6 +4,7 @@
 Describe 'helper verify' {
     BeforeAll {
         . (Join-Path $PSScriptRoot '..\installer\helper-run.ps1')
+        Mock Test-AapDistroListed { return 'stopped' }
         $script:junctions = New-Object System.Collections.Generic.List[string]
         function New-AapFixture {
             param([string]$Root, [string]$Updated, [string]$Desired = 'on', [string]$State = 'idle')
@@ -150,6 +151,27 @@ Describe 'helper verify' {
         Get-AapRepairRefusal $root | Should -BeNullOrEmpty
         $script:taskState = 'unknown'
         Get-AapRepairRefusal $root | Should -Be $unread
+    }
+
+    It 'treats a missing updated timestamp as stale and refuses a running distro' {
+        $busy = 'job running, repair refused; retry when idle or pause the runners first'
+        $root = Join-Path $TestDrive 'repair-no-stamp'
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        $enc = New-Object System.Text.UTF8Encoding $false
+        [IO.File]::WriteAllText((Join-Path $root 'status.json'), '{"state":"running"}', $enc)
+        $script:taskState = 'ready'
+        Mock Get-AapSupervisorTaskState { return $script:taskState }
+        Mock Test-AapDistroListed { return 'stopped' }
+        Get-AapRepairRefusal $root | Should -BeNullOrEmpty
+        Mock Test-AapDistroListed { return 'running' }
+        Get-AapRepairRefusal $root | Should -Be $busy
+        $idle = Join-Path $TestDrive 'repair-idle-live-distro'
+        New-Item -ItemType Directory -Force -Path $idle | Out-Null
+        $updated = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        [IO.File]::WriteAllText((Join-Path $idle 'status.json'), ('{"state":"idle","updated":"' + $updated + '"}'), $enc)
+        Get-AapRepairRefusal $idle | Should -Be $busy
+        Test-AapWslListHasDistro "Ubuntu`0`r`naap-runner`0`r`n" 'aap-runner' | Should -BeTrue
+        Test-AapWslListHasDistro "Ubuntu-24.04`r`n" 'aap-runner' | Should -BeFalse
     }
 
     It 'reads status again before the remount and before the restart' {
