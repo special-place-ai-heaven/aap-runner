@@ -1,12 +1,14 @@
-//! `--dashboard` mode: the status window, in its own process like `--settings` (the tray's
-//! Win32 pump cannot host an eframe loop). Re-reads `status.json` every 5 s, repaints every
-//! second for elapsed times, and reads the tray's history mirror for the 60-minute strips and
-//! Recent problems. Bars, strips and symbols are plain `Painter` calls.
+//! `--dashboard` / `--settings` mode: the one window, in its own process (the tray's Win32 pump
+//! cannot host an eframe loop). The fixed left column holds Power and the settings
+//! (`settings_panel`); the right column shows only observed values: the header row, pool bars,
+//! compact runner cards and the 60-minute strips, or the error panel in their place. Re-reads
+//! `status.json` every 5 s and repaints every second. Bars, strips and symbols are plain
+//! `Painter` calls. A second request (tray menu, a second `--settings`) arrives as a request file.
 
 use crate::history::{History, Sample, secs};
 use crate::mark::Sym;
 use crate::problem::{self, Action, Class};
-use crate::settings;
+use crate::settings_panel::SettingsPanel;
 use crate::state::{self, Desired, Slot, Snapshot, Status};
 use eframe::egui::{
     self, Align, Align2, Color32, FontFamily, FontId, Key, Layout, Rect, RichText, Sense, Shape,
@@ -18,7 +20,73 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-const WIDTH: f32 = 440.0;
+/// What the window shows when it opens or is asked again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// The runner cards.
+    Status,
+    /// Focus on the left column's first control (`--settings`, Settings…).
+    Settings,
+    /// The error panel, while there is a problem.
+    Diagnostics,
+}
+
+impl View {
+    const ALL: [View; 3] = [View::Status, View::Settings, View::Diagnostics];
+
+    /// The command line that opens the window this way.
+    pub fn args(self) -> &'static [&'static str] {
+        match self {
+            View::Status => &["--dashboard"],
+            View::Settings => &["--settings"],
+            View::Diagnostics => &["--dashboard", "--problem"],
+        }
+    }
+
+    /// The view a command line (without the exe) asks for; `None` = not a window command.
+    pub fn from_args(args: &[String]) -> Option<View> {
+        match args.first()?.as_str() {
+            "--settings" => Some(View::Settings),
+            "--dashboard" if args.iter().any(|a| a == "--problem") => Some(View::Diagnostics),
+            "--dashboard" => Some(View::Status),
+            _ => None,
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            View::Status => "status",
+            View::Settings => "settings",
+            View::Diagnostics => "diagnostics",
+        }
+    }
+}
+
+/// `%TEMP%\aap-runner-tray\tab.request`: one word, written by whoever wants the open window to
+/// show another view, taken (read and deleted) by the window.
+pub fn request_path() -> PathBuf {
+    History::path().with_file_name("view.request")
+}
+
+pub fn write_request(path: &Path, view: View) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    state::write_atomic(path, view.word().as_bytes())
+}
+
+/// The pending request, if any; it is removed either way.
+fn take_request(path: &Path) -> Option<View> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let _ = std::fs::remove_file(path);
+    View::ALL.into_iter().find(|v| v.word() == text.trim())
+}
+
+/// Default and minimum inner size; resizable, no maximum.
+const SIZE: [f32; 2] = [760.0, 520.0];
+const MIN_SIZE: [f32; 2] = [680.0, 460.0];
+/// The fixed settings column.
+const LEFT_W: f32 = 260.0;
 const PAD: f32 = 12.0;
 const REFRESH: Duration = Duration::from_secs(5);
 /// A sample older than this draws as "no sample".
@@ -32,20 +100,20 @@ const SUPERVISOR_TASK: &str = "AAP-CRRR-Supervisor";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Clone, Copy)]
-struct Palette {
-    dark: bool,
-    bg: Color32,
-    card: Color32,
-    border: Color32,
-    text: Color32,
-    muted: Color32,
+pub struct Palette {
+    pub dark: bool,
+    pub bg: Color32,
+    pub card: Color32,
+    pub border: Color32,
+    pub text: Color32,
+    pub muted: Color32,
     /// Link, focus ring and used fill.
-    accent: Color32,
-    track: Color32,
-    over: Color32,
+    pub accent: Color32,
+    pub track: Color32,
+    pub over: Color32,
 }
 
-const fn hex(v: u32) -> Color32 {
+pub const fn hex(v: u32) -> Color32 {
     Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
 }
 
@@ -74,7 +142,7 @@ const LIGHT: Palette = Palette {
 };
 
 impl Palette {
-    fn state(&self, s: Sym) -> Color32 {
+    pub fn state(&self, s: Sym) -> Color32 {
         let (dark, light) = match s {
             Sym::Off | Sym::NotInstalled | Sym::Paused => (0x9A9CA2, 0x6B6E75),
             Sym::Down | Sym::Error => (0xFF7070, 0xC62828),
@@ -87,7 +155,7 @@ impl Palette {
     }
 }
 
-fn semibold() -> FontFamily {
+pub fn semibold() -> FontFamily {
     FontFamily::Name("semibold".into())
 }
 
@@ -205,40 +273,57 @@ fn checked(url: &str) -> Option<&str> {
     (state::valid_job_url(url) || state::valid_run_url(url)).then_some(url)
 }
 
+/// `6.2/8`, `20/24`: a compact card's numbers, and whether the use is over the share.
+fn compact_numbers(used: f64, share: Option<f64>, cores: bool) -> (String, bool) {
+    let u = if cores {
+        format!("{used:.1}")
+    } else {
+        format!("{used:.0}")
+    };
+    match share {
+        Some(s) => (format!("{u}/{}", whole(s)), used > s + 1e-9),
+        None => (u, false),
+    }
+}
+
 struct Dash {
     base: PathBuf,
     snap: Snapshot,
     /// `status.json` verbatim, for Copy diagnostics.
     raw: Option<String>,
     history: History,
-    paused_setting: bool,
+    /// `inbox\state.json`: what was asked for. The right column shows what is.
+    desired: Desired,
     read_at: Instant,
     light: bool,
     animate: bool,
     offset: i64,
-    /// The error panel replaces the cards.
+    /// The error panel replaces the right column's cards.
     panel: bool,
+    settings: SettingsPanel,
     problem: Option<Class>,
-    /// Log tail (`None` = not readable), read while the panel is open.
+    /// Log tail (`None` = not readable), read while the error panel is shown.
     log: Option<Vec<String>>,
     note: Option<(String, Instant)>,
     copied: Option<(String, Instant)>,
-    /// Content height last sent to the window.
-    sized: f32,
-    work_area: Option<[f32; 4]>,
+    /// The right column's first focusable control this frame (the F6 target).
+    right_first: Option<egui::Id>,
+    /// Move focus to the first control of the left (`true`) or right column.
+    want_focus: Option<bool>,
 }
 
-pub fn run(base: PathBuf, open_problem: bool) -> eframe::Result {
-    let work_area = crate::win::work_area_points();
-    let start_h = 400.0;
+pub fn run(base: PathBuf, view: View) -> eframe::Result {
+    // A request left by a window that closed before taking it would act on this one later.
+    let _ = std::fs::remove_file(request_path());
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(crate::dashboard_title())
-        .with_inner_size([WIDTH, start_h])
-        .with_resizable(false)
-        .with_maximize_button(false);
-    if let Some([_, _, right, bottom]) = work_area {
-        // ponytail: 32 pt assumed title bar until the first frame measures the real one.
-        viewport = viewport.with_position(pos2(right - PAD - WIDTH, bottom - PAD - start_h - 32.0));
+        .with_inner_size(SIZE)
+        .with_min_inner_size(MIN_SIZE)
+        .with_resizable(true);
+    if let Some([_, _, right, bottom]) = crate::win::work_area_points() {
+        // ponytail: 32 pt assumed title bar; the position is not remembered.
+        viewport =
+            viewport.with_position(pos2(right - PAD - SIZE[0], bottom - PAD - SIZE[1] - 32.0));
     }
     let options = eframe::NativeOptions {
         viewport,
@@ -252,25 +337,32 @@ pub fn run(base: PathBuf, open_problem: bool) -> eframe::Result {
             cc.egui_ctx.set_visuals_of(Theme::Dark, visuals(&DARK));
             cc.egui_ctx.set_visuals_of(Theme::Light, visuals(&LIGHT));
             cc.egui_ctx.all_styles_mut(style);
+            let settings = SettingsPanel::load(&base);
             let mut d = Dash {
                 base,
                 snap: Snapshot::bare(Status::Unknown),
                 raw: None,
                 history: History::default(),
-                paused_setting: false,
+                desired: Desired::Off,
                 read_at: Instant::now(),
                 light: false,
                 animate: true,
                 offset: 0,
-                panel: open_problem,
+                panel: false,
+                settings,
                 problem: None,
                 log: None,
                 note: None,
                 copied: None,
-                sized: 0.0,
-                work_area,
+                right_first: None,
+                want_focus: None,
             };
             d.refresh(&cc.egui_ctx);
+            // Initial focus: the problem button when there is an error, otherwise none.
+            if d.problem.is_some() {
+                d.want_focus = Some(false);
+            }
+            d.open(view);
             Ok(Box::new(d))
         }),
     )
@@ -288,7 +380,8 @@ impl Dash {
         self.snap = state::read_status(&self.base, now);
         self.raw = state::read_bounded(&self.base.join("status.json"));
         self.history = History::load(&History::path());
-        self.paused_setting = settings::read_settings(&self.base).paused;
+        self.desired = state::read_desired(&self.base);
+        self.settings.reload(&self.base);
         self.light = crate::win::apps_use_light_theme();
         ctx.set_theme(if self.light {
             Theme::Light
@@ -300,23 +393,47 @@ impl Dash {
         let needs_log = self.panel
             || matches!(&self.snap.status, Status::Error(d) if d == problem::OLD_MANAGER);
         self.log = if needs_log || before.is_none() {
-            problem::read_tail(
-                &self.base.join("logs").join("supervisor.log"),
-                problem::LOG_TAIL_BYTES,
-            )
-            .ok()
+            self.read_log()
         } else {
             self.log.take()
         };
         let probe = self.log.as_deref().and_then(problem::last_probe_exit);
         self.problem = problem::current(&self.snap, probe);
-        // Entering a problem shows the panel; leaving it shows the cards again.
+        // Entering a problem shows the error panel; leaving it shows the cards again.
         if self.problem.is_some() && before.is_none() && self.snap.status != Status::Paused {
             self.panel = true;
         }
         if self.problem.is_none() {
             self.panel = false;
         }
+    }
+
+    fn read_log(&self) -> Option<Vec<String>> {
+        problem::read_tail(
+            &self.base.join("logs").join("supervisor.log"),
+            problem::LOG_TAIL_BYTES,
+        )
+        .ok()
+    }
+
+    /// Show what `view` asks for: the cards, focus in the left column, or the error panel.
+    fn open(&mut self, view: View) {
+        match view {
+            View::Status => self.panel = false,
+            View::Settings => self.want_focus = Some(true),
+            View::Diagnostics => self.show_panel(),
+        }
+    }
+
+    /// The error panel with a fresh log tail; only while there is a problem.
+    fn show_panel(&mut self) {
+        if self.problem.is_none() {
+            return;
+        }
+        if !self.panel {
+            self.log = self.read_log();
+        }
+        self.panel = true;
     }
 
     fn detail(&self) -> &str {
@@ -347,7 +464,7 @@ impl Dash {
                 .map(|()| "Retry requested.".to_string())
                 .map_err(|e| format!("Could not request a retry: {e}")),
             Action::Settings => {
-                crate::open_settings(&self.base);
+                self.want_focus = Some(true);
                 return;
             }
             Action::OpenLogs => {
@@ -402,9 +519,10 @@ impl Dash {
     }
 
     fn log_lines(&self) -> Vec<String> {
-        match &self.log {
-            Some(lines) => problem::relevant(lines, self.problem.unwrap_or(Class::Other), LOG_ROWS),
-            None => Vec::new(),
+        match (&self.log, self.problem) {
+            (Some(lines), Some(class)) => problem::relevant(lines, class, LOG_ROWS),
+            (Some(lines), None) => lines[lines.len().saturating_sub(LOG_ROWS)..].to_vec(),
+            (None, _) => Vec::new(),
         }
     }
 
@@ -437,7 +555,7 @@ impl Dash {
 }
 
 /// The 2 px focus ring, 2 px out, in the accent colour. Never removed.
-fn ring(ui: &egui::Ui, r: &egui::Response, p: &Palette) {
+pub fn ring(ui: &egui::Ui, r: &egui::Response, p: &Palette) {
     if r.has_focus() {
         ui.painter().rect_stroke(
             r.rect.expand(2.0),
@@ -448,16 +566,40 @@ fn ring(ui: &egui::Ui, r: &egui::Response, p: &Palette) {
     }
 }
 
+/// A plain button with the focus ring.
+pub fn button(ui: &mut egui::Ui, p: &Palette, label: &str) -> egui::Response {
+    let r = ui.button(label);
+    ring(ui, &r, p);
+    r
+}
+
+/// The filled accent button: one per view, the action that helps most.
+pub fn primary_button(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    label: &str,
+    enabled: bool,
+) -> egui::Response {
+    let on = if p.dark { hex(0x1E1F22) } else { hex(0xFFFFFF) };
+    let r = ui.add_enabled(
+        enabled,
+        egui::Button::new(RichText::new(label).color(on)).fill(p.accent),
+    );
+    ring(ui, &r, p);
+    r
+}
+
 /// A left-aligned label in the fixed 56 px label column.
 fn fixed_label(ui: &mut egui::Ui, text: &str, h: f32) {
-    ui.allocate_ui_with_layout(
-        vec2(LABEL_W, h),
-        Layout::left_to_right(Align::Center),
-        |ui| {
-            ui.set_min_size(vec2(LABEL_W, h));
-            ui.label(text);
-        },
-    );
+    fixed_label_w(ui, text, LABEL_W, h);
+}
+
+/// A left-aligned label in a fixed `w` column.
+fn fixed_label_w(ui: &mut egui::Ui, text: &str, w: f32, h: f32) {
+    ui.allocate_ui_with_layout(vec2(w, h), Layout::left_to_right(Align::Center), |ui| {
+        ui.set_min_size(vec2(w, h));
+        ui.label(text);
+    });
 }
 
 fn a11y(r: &egui::Response, label: String) {
@@ -589,8 +731,48 @@ fn sym_widget(
 }
 
 impl Dash {
-    /// `Label  [track]  numbers`: track = share, fill = min(used, share), a 6 px over-share
-    /// segment at the right end. No (fresh) sample: the track only and "no sample".
+    /// The track (the share), the fill `min(used, share)` and a 6 px over-share segment at the
+    /// right end; `w` wide. No (fresh) sample: the track only.
+    fn track(
+        &self,
+        ui: &mut egui::Ui,
+        id: egui::Id,
+        used: Option<f64>,
+        share: Option<f64>,
+        over: bool,
+        w: f32,
+    ) -> egui::Response {
+        let p = self.pal();
+        let (row, r) = ui.allocate_exact_size(vec2(w, 18.0), Sense::hover());
+        let track = Rect::from_center_size(row.center(), vec2(w, BAR_H));
+        ui.painter().rect_filled(track, 2.0, p.track);
+        if let Some(u) = used {
+            let frac = share.map_or(0.0, |s| if s > 0.0 { (u / s).min(1.0) } else { 0.0 });
+            let frac = self.anim(ui.ctx(), id, frac as f32);
+            if frac > 0.0 {
+                let fill = Rect::from_min_size(track.min, vec2(w * frac, BAR_H));
+                ui.painter().rect_filled(fill, 2.0, p.accent);
+            }
+            if over {
+                let seg = Rect::from_min_max(pos2(track.max.x - 6.0, track.min.y), track.max);
+                ui.painter().rect_filled(seg, 2.0, p.over);
+            }
+        }
+        r
+    }
+
+    fn number_color(&self, used: Option<f64>, over: bool) -> Color32 {
+        let p = self.pal();
+        if over {
+            p.over
+        } else if used.is_none() {
+            p.muted
+        } else {
+            p.text
+        }
+    }
+
+    /// `Label  [track]  numbers`, the pool bars.
     #[allow(clippy::too_many_arguments)]
     fn bar(
         &self,
@@ -603,43 +785,61 @@ impl Dash {
         track_w: f32,
         name: String,
     ) {
-        let p = self.pal();
         ui.horizontal(|ui| {
             fixed_label(ui, label, 18.0);
-            let (row, r) = ui.allocate_exact_size(vec2(track_w, 18.0), Sense::hover());
-            let track = Rect::from_center_size(row.center(), vec2(track_w, BAR_H));
-            ui.painter().rect_filled(track, 2.0, p.track);
             let (text, over) = match used {
                 Some(u) => bar_numbers(u, share, cores),
                 None => ("no sample".into(), false),
             };
-            if let Some(u) = used {
-                let frac = share.map_or(0.0, |s| if s > 0.0 { (u / s).min(1.0) } else { 0.0 });
-                let frac = self.anim(ui.ctx(), id, frac as f32);
-                if frac > 0.0 {
-                    let fill = Rect::from_min_size(track.min, vec2(track_w * frac, BAR_H));
-                    ui.painter().rect_filled(fill, 2.0, p.accent);
-                }
-                if over {
-                    let seg = Rect::from_min_max(pos2(track.max.x - 6.0, track.min.y), track.max);
-                    ui.painter().rect_filled(seg, 2.0, p.over);
-                }
-            }
+            let r = self.track(ui, id, used, share, over, track_w);
             a11y(&r, format!("{name} {}", text.replace(" / ", " of ")));
+            let color = self.number_color(used, over);
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let color = if over {
-                    p.over
-                } else if used.is_none() {
-                    p.muted
-                } else {
-                    p.text
-                };
                 ui.label(RichText::new(text).color(color));
             });
         });
     }
 
-    fn header(&mut self, ui: &mut egui::Ui) {
+    /// Half of a compact card's bar row: `CPU [track] 6.2/8`, `w` wide in all.
+    #[allow(clippy::too_many_arguments)]
+    fn mini_bar(
+        &self,
+        ui: &mut egui::Ui,
+        id: egui::Id,
+        label: &str,
+        used: Option<f64>,
+        share: Option<f64>,
+        cores: bool,
+        w: f32,
+        name: String,
+    ) {
+        ui.allocate_ui_with_layout(vec2(w, 18.0), Layout::left_to_right(Align::Center), |ui| {
+            ui.set_min_width(w);
+            fixed_label_w(ui, label, 32.0, 18.0);
+            let (text, over) = match used {
+                Some(u) => compact_numbers(u, share, cores),
+                None => ("no sample".into(), false),
+            };
+            let track_w = (ui.available_width() - 64.0).max(16.0);
+            let r = self.track(ui, id, used, share, over, track_w);
+            let spoken = text.replace('/', " of ");
+            a11y(
+                &r,
+                if over {
+                    format!("{name} {spoken} over share")
+                } else {
+                    format!("{name} {spoken}")
+                },
+            );
+            let color = self.number_color(used, over);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(RichText::new(text).color(color).small());
+            });
+        });
+    }
+
+    /// The pinned row: symbol, state, `N/M busy`, then `All OK` or the `1 problem` button.
+    fn header_row(&mut self, ui: &mut egui::Ui) {
         let p = self.pal();
         let sym = self.snap.status.sym();
         let problem = self.problem;
@@ -654,7 +854,7 @@ impl Dash {
                 format!("State, {}", sym.label()),
             );
             if r.clicked() && problem.is_some() {
-                self.panel = true;
+                self.show_panel();
             }
             ui.label(
                 RichText::new(sym.label())
@@ -669,20 +869,24 @@ impl Dash {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if problem.is_some() {
-                    if self.problem_button(ui).clicked() {
-                        self.panel = true;
+                    let r = self.problem_button(ui);
+                    self.right_first.get_or_insert(r.id);
+                    if r.clicked() {
+                        self.show_panel();
                     }
                 } else {
                     ui.label(RichText::new("All OK").color(p.muted));
                 }
             });
         });
-        if matches!(self.snap.status, Status::NotInstalled | Status::Off) {
-            return;
-        }
+    }
+
+    /// Pool bars and the `IO …` / `sampled N s ago` line.
+    fn pool(&mut self, ui: &mut egui::Ui) {
+        let p = self.pal();
         let fresh = self.fresh();
         let a = self.snap.applied;
-        let track_w = 240.0;
+        let track_w = (ui.available_width() - LABEL_W - 130.0).clamp(80.0, 240.0);
         self.bar(
             ui,
             egui::Id::new("pool-cores"),
@@ -763,6 +967,8 @@ impl Dash {
         r.on_hover_cursor(egui::CursorIcon::PointingHand)
     }
 
+    /// Three rows: name, symbol, state and elapsed; `title · repo` on one line with the copy
+    /// button; Cores and Memory side by side against this slot's share.
     fn card(&mut self, ui: &mut egui::Ui, slot: &Slot, share: (Option<f64>, Option<f64>)) {
         let p = self.pal();
         let fresh = self.fresh();
@@ -788,7 +994,7 @@ impl Dash {
                         format!("{name}, {}", slot.state.label()),
                     );
                     if r.clicked() && error {
-                        self.panel = true;
+                        self.show_panel();
                     }
                     ui.label(RichText::new(slot.state.label()).color(p.state(slot.state)));
                     if let Some(start) = slot.started_at.filter(|_| slot.busy()) {
@@ -800,78 +1006,91 @@ impl Dash {
                 });
                 if slot.busy() || !slot.job.is_empty() {
                     self.title_row(ui, slot);
-                    if !slot.repo.is_empty() {
-                        let short = slot.repo.rsplit('/').next().unwrap_or(&slot.repo);
-                        ui.label(RichText::new(short).color(p.muted));
-                    }
                 } else {
                     ui.label(RichText::new("Waiting for a job").color(p.muted));
                 }
-                let track_w = (ui.available_width() - LABEL_W - 130.0).max(80.0);
                 let idle = !slot.busy();
                 let used = |v: Option<f64>| if idle { Some(0.0) } else { v.filter(|_| fresh) };
-                self.bar(
-                    ui,
-                    egui::Id::new(("slot-cores", slot.slot)),
-                    "Cores",
-                    used(slot.cpu_cores),
-                    share.0,
-                    true,
-                    track_w,
-                    format!("{name} cores"),
-                );
-                self.bar(
-                    ui,
-                    egui::Id::new(("slot-mem", slot.slot)),
-                    "Memory",
-                    used(slot.mem_gib),
-                    share.1,
-                    false,
-                    track_w,
-                    format!("{name} memory"),
-                );
+                let gap = 12.0;
+                let half = (ui.available_width() - gap) / 2.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    self.mini_bar(
+                        ui,
+                        egui::Id::new(("slot-cores", slot.slot)),
+                        "CPU",
+                        used(slot.cpu_cores),
+                        share.0,
+                        true,
+                        half,
+                        format!("{name} cores"),
+                    );
+                    self.mini_bar(
+                        ui,
+                        egui::Id::new(("slot-mem", slot.slot)),
+                        "Mem",
+                        used(slot.mem_gib),
+                        share.1,
+                        false,
+                        half,
+                        format!("{name} memory"),
+                    );
+                });
             });
     }
 
-    /// The job title as a link (two lines, then an ellipsis) and the 24 x 24 copy button.
+    /// `title · repo` on one line with an ellipsis and the full text in a tooltip, a link when
+    /// the URL checks out, then the 24 x 24 copy button.
     fn title_row(&mut self, ui: &mut egui::Ui, slot: &Slot) {
         let p = self.pal();
         let title = if slot.job.is_empty() {
-            "Job".to_string()
+            "Job"
         } else {
-            slot.job.clone()
+            slot.job.as_str()
+        };
+        let short = slot.repo.rsplit('/').next().unwrap_or("");
+        let text = if short.is_empty() {
+            title.to_owned()
+        } else {
+            format!("{title} \u{b7} {short}")
         };
         let link = slot.link().map(str::to_owned);
-        ui.horizontal_top(|ui| {
-            let wrap = ui.available_width() - 24.0 - 8.0;
+        ui.horizontal(|ui| {
+            let w = ui.available_width() - if link.is_some() { 24.0 + 8.0 } else { 0.0 };
             let color = if link.is_some() { p.accent } else { p.text };
-            let mut job =
-                egui::text::LayoutJob::simple(title, FontId::proportional(13.0), color, wrap);
-            job.wrap.max_rows = 2;
-            job.wrap.break_anywhere = false;
-            job.wrap.overflow_character = Some('\u{2026}');
-            ui.allocate_ui(vec2(wrap, 0.0), |ui| {
-                let sense = if link.is_some() {
-                    Sense::click()
-                } else {
-                    Sense::hover()
-                };
-                let r = ui.add(egui::Label::new(job).wrap().sense(sense));
-                ring(ui, &r, &p);
-                if let Some(url) = link.as_deref() {
-                    let r = r
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(url);
-                    if r.clicked()
-                        && let Some(url) = checked(url)
-                        && let Err(e) = Command::new(crate::EXPLORER).arg(url).spawn()
-                    {
-                        state::log(&self.base, &format!("open job failed: {e}"));
-                    }
+            let sense = if link.is_some() {
+                Sense::click()
+            } else {
+                Sense::hover()
+            };
+            let r = ui
+                .allocate_ui(vec2(w, 24.0), |ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(&text).color(color))
+                            .truncate()
+                            .show_tooltip_when_elided(false)
+                            .sense(sense),
+                    )
+                })
+                .inner;
+            ring(ui, &r, &p);
+            let tip = match &link {
+                Some(url) => format!("{text}\n{url}"),
+                None => text.clone(),
+            };
+            let r = r.on_hover_text(tip);
+            if let Some(url) = link.as_deref() {
+                self.right_first.get_or_insert(r.id);
+                let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+                if r.clicked()
+                    && let Some(url) = checked(url)
+                    && let Err(e) = Command::new(crate::EXPLORER).arg(url).spawn()
+                {
+                    state::log(&self.base, &format!("open job failed: {e}"));
                 }
-            });
+            }
             if let Some(url) = link {
-                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let copied = self.copied.as_ref().is_some_and(|(u, at)| {
                         *u == url && at.elapsed() < Duration::from_millis(1500)
                     });
@@ -964,12 +1183,21 @@ impl Dash {
         ui.label(RichText::new(line).color(p.muted).small());
     }
 
+    /// The error panel (section 5) in place of the cards, with `< Back to runners` on top.
     fn error_panel(&mut self, ui: &mut egui::Ui) {
         let p = self.pal();
+        let r = ui.add(
+            egui::Button::new(RichText::new("< Back to runners").color(p.accent)).frame(false),
+        );
+        ring(ui, &r, &p);
+        self.right_first.get_or_insert(r.id);
+        if r.clicked() {
+            self.panel = false;
+            return;
+        }
         let Some(class) = self.problem else { return };
         let sym = self.snap.status.sym();
         let color = p.state(if sym == Sym::Paused { Sym::Error } else { sym });
-        ui.separator();
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
             paint_sym(
@@ -992,47 +1220,14 @@ impl Dash {
                 .wrap(),
             );
         });
-        let detail = self.detail().to_owned();
-        if !detail.is_empty() {
-            ui.add(
-                egui::Label::new(RichText::new(&detail).monospace())
-                    .selectable(true)
-                    .wrap(),
-            );
-        }
-        let since = self
-            .log
-            .as_deref()
-            .and_then(|l| problem::error_since(l, &detail))
-            .map(|(t, hm)| (secs(t), hm.to_owned()))
-            .or_else(|| {
-                self.history
-                    .problems
-                    .back()
-                    .filter(|p| p.until.is_none())
-                    .map(|p| (p.since, clock(p.since, self.offset)))
-            });
-        if let Some((t, hm)) = since {
-            let mins = secs(SystemTime::now()).saturating_sub(t) / 60;
-            ui.label(format!("Since {hm} ({mins} min)"));
-        }
+        self.problem_detail(ui);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let action = class.action();
-            let primary = egui::Button::new(RichText::new(action.label()).color(if p.dark {
-                hex(0x1E1F22)
-            } else {
-                hex(0xFFFFFF)
-            }))
-            .fill(p.accent);
-            let r = ui.add(primary);
-            ring(ui, &r, &p);
-            if r.clicked() {
+            if primary_button(ui, &p, action.label(), true).clicked() {
                 self.act(action);
             }
-            let r = ui.button("Copy diagnostics");
-            ring(ui, &r, &p);
-            if r.clicked() {
+            if button(ui, &p, "Copy diagnostics").clicked() {
                 ui.ctx().copy_text(self.diagnostics());
                 self.copied = Some(("diagnostics".into(), Instant::now()));
             }
@@ -1040,15 +1235,6 @@ impl Dash {
                 u == "diagnostics" && at.elapsed() < Duration::from_millis(1500)
             }) {
                 ui.label(RichText::new("Copied").color(p.muted));
-            }
-            if action != Action::OpenLogs {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let r = ui.button("Open logs");
-                    ring(ui, &r, &p);
-                    if r.clicked() {
-                        self.act(Action::OpenLogs);
-                    }
-                });
             }
         });
         self.note_line(ui);
@@ -1086,6 +1272,62 @@ impl Dash {
         for (since, until, line) in recent {
             ui.label(RichText::new(format!("{since}  {until:<5}  {line}")).small());
         }
+        ui.add_space(4.0);
+        ui.label(RichText::new("About").font(FontId::new(13.0, semibold())));
+        let base = &self.base;
+        for (label, value) in [
+            ("Version", crate::version()),
+            ("Data", base.display().to_string()),
+            (
+                "Log",
+                base.join("logs")
+                    .join("supervisor.log")
+                    .display()
+                    .to_string(),
+            ),
+            ("Inbox", state::inbox(base).display().to_string()),
+            ("History", History::path().display().to_string()),
+        ] {
+            ui.horizontal(|ui| {
+                fixed_label(ui, label, 18.0);
+                ui.add(
+                    egui::Label::new(RichText::new(value).color(p.muted).small())
+                        .selectable(true)
+                        .truncate(),
+                );
+            });
+        }
+        ui.add_space(4.0);
+        ui.add_enabled(false, egui::Button::new("Verify"))
+            .on_disabled_hover_text("coming in M2");
+    }
+
+    /// The raw `detail` and since when.
+    fn problem_detail(&self, ui: &mut egui::Ui) {
+        let detail = self.detail().to_owned();
+        if !detail.is_empty() {
+            ui.add(
+                egui::Label::new(RichText::new(&detail).monospace())
+                    .selectable(true)
+                    .wrap(),
+            );
+        }
+        let since = self
+            .log
+            .as_deref()
+            .and_then(|l| problem::error_since(l, &detail))
+            .map(|(t, hm)| (secs(t), hm.to_owned()))
+            .or_else(|| {
+                self.history
+                    .problems
+                    .back()
+                    .filter(|p| p.until.is_none())
+                    .map(|p| (p.since, clock(p.since, self.offset)))
+            });
+        if let Some((t, hm)) = since {
+            let mins = secs(SystemTime::now()).saturating_sub(t) / 60;
+            ui.label(format!("Since {hm} ({mins} min)"));
+        }
     }
 
     fn note_line(&self, ui: &mut egui::Ui) {
@@ -1096,89 +1338,51 @@ impl Dash {
         }
     }
 
-    fn actions(&mut self, ui: &mut egui::Ui) {
-        let p = self.pal();
-        let installed = self.snap.status != Status::NotInstalled;
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.add_enabled_ui(installed, |ui| {
-                let label = if self.paused_setting {
-                    "Resume"
-                } else {
-                    "Pause"
-                };
-                let r = ui.button(label);
-                ring(ui, &r, &p);
-                if r.clicked() {
-                    crate::toggle_pause(&self.base);
-                    self.paused_setting = !self.paused_setting;
-                }
-                let off = self.snap.status == Status::Off;
-                let r = ui.button(if off { "Start" } else { "Stop" });
-                ring(ui, &r, &p);
-                let r = if off {
-                    r
-                } else {
-                    r.on_hover_text("Stops after running jobs finish")
-                };
-                if r.clicked() {
-                    crate::set_desired(&self.base, if off { Desired::On } else { Desired::Off });
-                }
-                let r = ui.button("Settings\u{2026}");
-                ring(ui, &r, &p);
-                if r.clicked() {
-                    crate::open_settings(&self.base);
-                }
-            });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let r = ui.add_enabled(
-                    self.base.join("logs").is_dir(),
-                    egui::Button::new("Open logs"),
-                );
-                ring(ui, &r, &p);
-                if r.clicked() {
-                    crate::open_logs(&self.base);
-                }
-            });
-        });
-    }
-
-    fn empty(&mut self, ui: &mut egui::Ui, text: &str, button: Option<&str>) -> bool {
-        let p = self.pal();
-        let mut clicked = false;
+    fn empty(&self, ui: &mut egui::Ui, text: &str) {
         ui.add_space(24.0);
         ui.vertical_centered(|ui| {
             ui.label(text);
-            if let Some(b) = button {
-                ui.add_space(12.0);
-                let r = ui.button(b);
-                ring(ui, &r, &p);
-                clicked = r.clicked();
-            }
         });
         ui.add_space(24.0);
-        clicked
     }
 
-    /// Fit the window to its content and keep it bottom-right in the work area.
-    fn fit(&mut self, ctx: &egui::Context, content_h: f32) {
-        let h = content_h.ceil();
-        if (h - self.sized).abs() < 1.0 {
-            return;
-        }
-        self.sized = h;
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(vec2(WIDTH, h)));
-        let (outer, inner) = ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect));
-        if let Some([_, _, right, bottom]) = self.work_area {
-            let chrome = match (outer, inner) {
-                (Some(o), Some(i)) => o.height() - i.height(),
-                _ => 32.0,
-            };
-            let w = outer.map_or(WIDTH, |o| o.width());
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos2(
-                right - PAD - w,
-                bottom - PAD - h - chrome,
-            )));
+    /// Everything under the pinned header row; it scrolls at small sizes.
+    fn right(&mut self, ui: &mut egui::Ui) {
+        let p = self.pal();
+        match self.snap.status.clone() {
+            _ if self.panel && self.problem.is_some() => self.error_panel(ui),
+            Status::NotInstalled => self.empty(ui, "AAP Runner is not installed on this PC."),
+            Status::Off => self.empty(ui, "Runners are off. No jobs are taken."),
+            status => {
+                self.pool(ui);
+                ui.add_space(8.0);
+                if status == Status::Paused {
+                    ui.label(match self.snap.busy() {
+                        0 => "Paused \u{b7} no jobs".to_string(),
+                        1 => "Paused \u{b7} 1 job finishing".to_string(),
+                        n => format!("Paused \u{b7} {n} jobs finishing"),
+                    });
+                    ui.add_space(4.0);
+                }
+                let runners = self.snap.runners().max(1) as f64;
+                let a = self.snap.applied;
+                let share = (
+                    a.job_cpus.map(|c| f64::from(c) / runners),
+                    a.job_memory_gib.map(|g| f64::from(g) / runners),
+                );
+                let slots = self.snap.slots.clone();
+                for (i, slot) in slots.iter().take(3).enumerate() {
+                    if i > 0 {
+                        ui.add_space(8.0);
+                    }
+                    self.card(ui, slot, share);
+                }
+                if slots.is_empty() && self.problem.is_none() {
+                    ui.label(RichText::new("No runner slots reported.").color(p.muted));
+                }
+                self.history(ui);
+                self.note_line(ui);
+            }
         }
     }
 }
@@ -1211,7 +1415,12 @@ impl eframe::App for Dash {
             self.refresh(&ctx);
         }
         ctx.request_repaint_after(Duration::from_secs(1));
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if let Some(view) = take_request(&request_path()) {
+            self.open(view);
+        }
+        let (esc, f6) = ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::F6)));
+        // Esc first leaves the error panel, then closes the window.
+        if esc {
             if self.panel {
                 self.panel = false;
             } else {
@@ -1220,76 +1429,82 @@ impl eframe::App for Dash {
         }
         let p = self.pal();
         let frame = egui::Frame::new().fill(p.bg).inner_margin(PAD as i8);
-        let content_h = egui::CentralPanel::default()
+        let left = egui::Panel::left("settings")
+            .exact_size(LEFT_W)
+            .resizable(false)
             .frame(frame)
             .show(ui, |ui| {
-                self.header(ui);
-                ui.add_space(8.0);
-                match self.snap.status.clone() {
-                    Status::NotInstalled => {
-                        self.empty(ui, "AAP Runner is not installed on this PC.", None);
-                    }
-                    Status::Off => {
-                        if self.empty(
-                            ui,
-                            "Runners are off. No jobs are taken.",
-                            Some("Start runners"),
-                        ) {
-                            crate::set_desired(&self.base, Desired::On);
-                        }
-                    }
-                    _ if self.panel && self.problem.is_some() => self.error_panel(ui),
-                    status => {
-                        if status == Status::Paused {
-                            let line = match self.snap.busy() {
-                                0 => "Paused \u{b7} no jobs".to_string(),
-                                1 => "Paused \u{b7} 1 job finishing".to_string(),
-                                n => format!("Paused \u{b7} {n} jobs finishing"),
-                            };
-                            ui.horizontal(|ui| {
-                                ui.label(line);
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let r = ui.button("Resume");
-                                    ring(ui, &r, &p);
-                                    if r.clicked() {
-                                        crate::toggle_pause(&self.base);
-                                        self.paused_setting = false;
-                                    }
-                                });
-                            });
-                            ui.add_space(4.0);
-                        }
-                        let runners = self.snap.runners().max(1) as f64;
-                        let a = self.snap.applied;
-                        let share = (
-                            a.job_cpus.map(|c| f64::from(c) / runners),
-                            a.job_memory_gib.map(|g| f64::from(g) / runners),
-                        );
-                        let slots = self.snap.slots.clone();
-                        for (i, slot) in slots.iter().take(3).enumerate() {
-                            if i > 0 {
-                                ui.add_space(8.0);
-                            }
-                            self.card(ui, slot, share);
-                        }
-                        if slots.is_empty() && self.problem.is_none() {
-                            ui.label(RichText::new("No runner slots reported.").color(p.muted));
-                        }
-                        self.history(ui);
-                        self.note_line(ui);
-                    }
-                }
-                self.actions(ui);
-                ui.min_rect().height()
+                self.settings
+                    .show(ui, &p, &self.base, &self.snap, &mut self.desired)
             })
             .inner;
-        self.fit(&ctx, content_h + 2.0 * PAD);
+        self.right_first = None;
+        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+            self.header_row(ui);
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| self.right(ui));
+        });
+        // F6: the first control of the other column.
+        if f6 {
+            self.want_focus = Some(!left.has);
+        }
+        if let Some(to_left) = self.want_focus.take()
+            && let Some(id) = if to_left {
+                left.first
+            } else {
+                self.right_first
+            }
+        {
+            ctx.memory_mut(|m| m.request_focus(id));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn args(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn views_route_from_the_command_line() {
+        for view in View::ALL {
+            assert_eq!(View::from_args(&args(view.args())), Some(view), "{view:?}");
+        }
+        assert_eq!(
+            View::from_args(&args(&["--settings"])),
+            Some(View::Settings)
+        );
+        assert_eq!(View::from_args(&args(&["--dashboard"])), Some(View::Status));
+        assert_eq!(
+            View::from_args(&args(&["--dashboard", "--problem"])),
+            Some(View::Diagnostics)
+        );
+        assert_eq!(View::from_args(&args(&[])), None, "the tray itself");
+        assert_eq!(View::from_args(&args(&["--version"])), None);
+        assert_eq!(View::from_args(&args(&["--problem"])), None);
+    }
+
+    #[test]
+    fn views_route_through_the_request_file() {
+        let base = state::temp_base("view-request");
+        let path = base.join("sub").join("view.request");
+        assert_eq!(take_request(&path), None, "no request");
+        for view in View::ALL {
+            write_request(&path, view).unwrap();
+            assert_eq!(take_request(&path), Some(view));
+            assert_eq!(take_request(&path), None, "taken once");
+        }
+        std::fs::write(&path, "nonsense").unwrap();
+        assert_eq!(take_request(&path), None);
+        assert!(!path.exists(), "a bad request is removed too");
+        assert_eq!(request_path().file_name().unwrap(), "view.request");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     #[test]
     fn elapsed_formats() {
@@ -1326,6 +1541,27 @@ mod tests {
             ("2.0 / 8.7".into(), false)
         );
         assert_eq!(bar_numbers(3.0, None, false), ("3.0 GiB".into(), false));
+    }
+
+    #[test]
+    fn compact_numbers_read_like_the_mockup() {
+        assert_eq!(
+            compact_numbers(6.2, Some(8.0), true),
+            ("6.2/8".into(), false)
+        );
+        assert_eq!(
+            compact_numbers(9.4, Some(8.0), true),
+            ("9.4/8".into(), true)
+        );
+        assert_eq!(
+            compact_numbers(20.0, Some(24.0), false),
+            ("20/24".into(), false)
+        );
+        assert_eq!(
+            compact_numbers(2.0, Some(26.0 / 3.0), true),
+            ("2.0/8.7".into(), false)
+        );
+        assert_eq!(compact_numbers(3.0, None, false), ("3".into(), false));
     }
 
     #[test]

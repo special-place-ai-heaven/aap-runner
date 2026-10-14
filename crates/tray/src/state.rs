@@ -212,18 +212,6 @@ impl Snapshot {
         valid_run_url(&self.run_url).then_some(self.run_url.as_str())
     }
 
-    /// `owner/name · job` for the dialog while a job runs.
-    pub fn running_job(&self) -> Option<String> {
-        let Status::Running(job) = &self.status else {
-            return None;
-        };
-        Some(match (self.repo.is_empty(), job.is_empty()) {
-            (true, _) => format!("job {job}").trim_end().to_string(),
-            (false, true) => self.repo.clone(),
-            (false, false) => format!("{} \u{b7} {job}", self.repo),
-        })
-    }
-
     fn status_text(&self) -> String {
         match &self.status {
             Status::Running(job) if !self.repo.is_empty() => {
@@ -436,6 +424,17 @@ pub fn write_retry(base: &Path, now: SystemTime) -> io::Result<()> {
         &inbox(base).join("state.json"),
         format!(r#"{{"desired":"on","retry":{secs}}}"#).as_bytes(),
     )
+}
+
+/// `inbox\state.json` as the supervisor reads it: exactly `"on"` is On; anything else, a missing
+/// or unreadable file included, is Off.
+pub fn read_desired(base: &Path) -> Desired {
+    let on = read_bounded(&inbox(base).join("state.json"))
+        .and_then(|s| {
+            serde_json::from_str::<serde_json::Value>(s.trim_start_matches('\u{feff}')).ok()
+        })
+        .is_some_and(|v| v["desired"] == "on");
+    if on { Desired::On } else { Desired::Off }
 }
 
 pub fn write_desired(base: &Path, desired: Desired) -> io::Result<()> {
@@ -718,10 +717,17 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(inbox(&base).join("state.json")).unwrap())
                 .unwrap()
         };
+        assert_eq!(read_desired(&base), Desired::Off, "missing file");
         write_desired(&base, Desired::On).unwrap();
         assert_eq!(read()["desired"], "on");
+        assert_eq!(read_desired(&base), Desired::On);
+        write_retry(&base, SystemTime::now()).unwrap();
+        assert_eq!(read_desired(&base), Desired::On, "retry keeps on");
         write_desired(&base, Desired::Off).unwrap();
         assert_eq!(read()["desired"], "off");
+        assert_eq!(read_desired(&base), Desired::Off);
+        fs::write(inbox(&base).join("state.json"), r#"{"desired":"ON"}"#).unwrap();
+        assert_eq!(read_desired(&base), Desired::Off, "exactly on");
         assert!(!inbox(&base).join("state.json.tmp").exists());
         assert!(
             !base.join("state.json").exists(),
@@ -769,24 +775,18 @@ mod tests {
             with_repo.line(),
             "Running Agent_Army_Professionals \u{b7} Workspace"
         );
-        assert_eq!(
-            with_repo.running_job().as_deref(),
-            Some("robagentic/Agent_Army_Professionals \u{b7} Workspace")
-        );
         for no_repo in [
             running(""),
             running(r#","repo":"""#),
             running(r#","repo":null"#),
         ] {
             assert_eq!(no_repo.line(), "Running job Workspace");
-            assert_eq!(no_repo.running_job().as_deref(), Some("job Workspace"));
         }
         let idle = parse_status(
             r#"{"state":"idle","updated":"2026-10-12T08:00:00Z","repo":"a/b"}"#,
             now,
         );
         assert_eq!(idle.line(), "Idle");
-        assert_eq!(idle.running_job(), None);
     }
 
     #[test]

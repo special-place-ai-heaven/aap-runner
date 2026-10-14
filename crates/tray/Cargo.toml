@@ -1,6 +1,6 @@
 [package]
 name = "aap-runner-tray"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
@@ -13,7 +13,7 @@ tray-icon = "=0.26.1"
 
 # Already in the tree through eframe (accesskit_windows); same features as Fathom's tray.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "=0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 # Compiles assets/aap-runner-tray.rc so the exe carries the R icon. Pinned like Fathom's.
 [target.'cfg(windows)'.build-dependencies]

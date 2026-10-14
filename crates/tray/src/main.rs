@@ -2,22 +2,23 @@
 
 //! Tray front-end for the AAP self-hosted runner. Reads `status.json` and `logs\supervisor.log`,
 //! writes only under `inbox\` (`state.json`, `settings.json`, `tray.log`) plus its own history
-//! mirror in `%TEMP%`, opens the logs folder and its own `--settings` and `--dashboard` windows
-//! (via `current_exe`). Nothing else.
+//! mirror and view request in `%TEMP%`, opens the logs folder and its own window (`--dashboard`,
+//! `--settings`, via `current_exe`). Nothing else.
 //!
 //! Like Fathom: a raw Win32 message pump on the main thread drives `tray-icon` directly.
 
 mod dashboard;
-mod dialog;
 mod history;
 #[cfg(test)]
 mod ico;
 mod mark;
 mod problem;
 mod settings;
+mod settings_panel;
 mod state;
 mod win;
 
+use dashboard::View;
 use history::History;
 use mark::Sym;
 use state::{DEFAULT_BASE, Desired, Snapshot, Status};
@@ -45,12 +46,12 @@ fn version_string(version: &str, commit: &str) -> String {
     format!("AAP Runner v{version} ({commit})")
 }
 
-/// `AAP Runner v0.4.0 (abcdef12)`: menu, settings title and `--version`.
+/// `AAP Runner v0.5.0 (abcdef12)`: menu, error panel and `--version`.
 pub fn version() -> String {
     version_string(env!("CARGO_PKG_VERSION"), env!("AAP_TRAY_COMMIT"))
 }
 
-/// `AAP Runner · v0.4.0 (abcdef12)`: the dashboard's title, which is also how the tray finds it.
+/// `AAP Runner · v0.5.0 (abcdef12)`: the window's title, which is also how the tray finds it.
 pub fn dashboard_title() -> String {
     format!(
         "AAP Runner \u{b7} v{} ({})",
@@ -161,67 +162,69 @@ fn spawn_self(base: &Path, args: &[&str]) {
     }
 }
 
-fn open_settings(base: &Path) {
-    spawn_self(base, &["--settings"]);
-}
-
 fn open_logs(base: &Path) {
     if let Err(e) = Command::new(EXPLORER).arg(base.join("logs")).spawn() {
         state::log(base, &format!("open logs failed: {e}"));
     }
 }
 
-/// Open the dashboard, or focus it if it is open. `toggle`: a left click on the icon closes it
-/// when it was the last active window. `problem`: open with the error panel shown.
-fn show_dashboard(base: &Path, toggle: Option<Option<isize>>, problem: bool) {
+/// Ask the open window to show `view`.
+fn request_view(base: &Path, view: View) {
+    if let Err(e) = dashboard::write_request(&dashboard::request_path(), view) {
+        state::log(base, &format!("write view request failed: {e}"));
+    }
+}
+
+/// Open the window as `view` asks (`None`: Status), or focus it if it is open and pass `view`
+/// on (`None`: no change). `toggle`: a left click on the icon closes it when it was the last
+/// active window.
+fn show_window(base: &Path, view: Option<View>, toggle: Option<Option<isize>>) {
     match (win::find_window(&dashboard_title()), toggle) {
         (Some(h), Some(last)) if last == Some(h) => win::close(h),
-        (Some(h), _) => win::focus(h),
-        (None, _) if problem => spawn_self(base, &["--dashboard", "--problem"]),
-        (None, _) => spawn_self(base, &["--dashboard"]),
+        (Some(h), _) => {
+            if let Some(view) = view {
+                request_view(base, view);
+            }
+            win::focus(h);
+        }
+        (None, _) => spawn_self(base, view.unwrap_or(View::Status).args()),
     }
 }
 
 fn main() {
     let base = std::env::var_os("AAP_FAKE_BASE").map_or(PathBuf::from(DEFAULT_BASE), PathBuf::from);
-    let arg = std::env::args().nth(1);
-    match arg.as_deref() {
-        Some("--version") => {
-            // GUI subsystem: visible when stdout is redirected or piped (scripts), silent otherwise.
-            println!("{}", version());
-        }
-        Some("--settings") => {
-            let Some(_lock) = single_instance("aap-runner-tray-settings.lock") else {
-                return;
-            };
-            if let Err(e) = dialog::run(base.clone()) {
-                state::log(&base, &format!("settings window failed: {e}"));
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--version") {
+        // GUI subsystem: visible when stdout is redirected or piped (scripts), silent otherwise.
+        println!("{}", version());
+        return;
+    }
+    if let Some(view) = View::from_args(&args) {
+        // One window: a second request passes its view to the open one and focuses it.
+        let Some(_lock) = single_instance("aap-runner-tray-dashboard.lock") else {
+            request_view(&base, view);
+            if let Some(h) = win::find_window(&dashboard_title()) {
+                win::focus(h);
             }
+            return;
+        };
+        if let Err(e) = dashboard::run(base.clone(), view) {
+            state::log(&base, &format!("window failed: {e}"));
         }
-        Some("--dashboard") => {
-            let Some(_lock) = single_instance("aap-runner-tray-dashboard.lock") else {
-                if let Some(h) = win::find_window(&dashboard_title()) {
-                    win::focus(h);
-                }
-                return;
-            };
-            let problem = std::env::args().any(|a| a == "--problem");
-            if let Err(e) = dashboard::run(base.clone(), problem) {
-                state::log(&base, &format!("dashboard window failed: {e}"));
-            }
-        }
-        _ => {
-            let Some(_lock) = single_instance("aap-runner-tray.lock") else {
-                return;
-            };
-            if let Err(e) = run_tray(&base) {
-                state::log(&base, &format!("tray failed: {e}"));
-            }
-        }
+        return;
+    }
+    let Some(_lock) = single_instance("aap-runner-tray.lock") else {
+        return;
+    };
+    if let Err(e) = run_tray(&base) {
+        state::log(&base, &format!("tray failed: {e}"));
     }
 }
 
 fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let dark_menus = win::DarkMenus::load();
+    let mut apps_light = win::apps_use_light_theme();
+    win::apply_dark_menus(dark_menus, None, !apps_light);
     let dashboard = MenuItem::new("Open dashboard", true, None);
     let status_item = MenuItem::new("", false, None);
     let open_job = MenuItem::new("Open job", false, None);
@@ -256,6 +259,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .with_menu_on_left_click(false)
         .with_tooltip("AAP Runner")
         .build()?;
+    let tray_window = Some(tray.window_handle() as isize).filter(|&h| h != 0);
+    win::apply_dark_menus(dark_menus, tray_window, !apps_light);
 
     let menu_rx = MenuEvent::receiver();
     let click_rx = TrayIconEvent::receiver();
@@ -291,13 +296,17 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 ..
             } = e
             {
-                show_dashboard(base, Some(last_app), in_problem);
+                show_window(
+                    base,
+                    in_problem.then_some(View::Diagnostics),
+                    Some(last_app),
+                );
             }
         }
         while let Ok(e) = menu_rx.try_recv() {
             let id = e.id();
             if id == dashboard.id() {
-                show_dashboard(base, None, false);
+                show_window(base, Some(View::Status), None);
             } else if id == start.id() {
                 set_desired(base, Desired::On);
             } else if id == stop.id() {
@@ -315,7 +324,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
             } else if id == pause.id() {
                 toggle_pause(base);
             } else if id == settings_item.id() {
-                open_settings(base);
+                show_window(base, Some(View::Settings), None);
             } else if id == open_job.id() {
                 if let Some(url) = job_url.as_deref().filter(|u| state::valid_run_url(u))
                     && let Err(e) = Command::new(EXPLORER).arg(url).spawn()
@@ -334,6 +343,13 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
             theme_read = Instant::now();
             light = win::taskbar_uses_light_theme();
             size = mark::tuned_size_for_dpi(win::system_dpi());
+            // The menu follows the app theme; uxtheme re-reads it and drops its cached menu
+            // theme, so the next popup draws in the new mode without rebuilding the menu.
+            let now_light = win::apps_use_light_theme();
+            if now_light != apps_light {
+                apps_light = now_light;
+                win::apply_dark_menus(dark_menus, tray_window, !apps_light);
+            }
         }
 
         let busy = restarting.load(Ordering::SeqCst);
@@ -540,11 +556,11 @@ mod tests {
                 env!("AAP_TRAY_COMMIT")
             )
         );
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.4.0");
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.5.0");
         assert!(!env!("AAP_TRAY_COMMIT").is_empty());
         assert_eq!(
             dashboard_title(),
-            format!("AAP Runner \u{b7} v0.4.0 ({})", env!("AAP_TRAY_COMMIT"))
+            format!("AAP Runner \u{b7} v0.5.0 ({})", env!("AAP_TRAY_COMMIT"))
         );
     }
 }

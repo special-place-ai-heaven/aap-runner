@@ -1,5 +1,5 @@
 //! `inbox\settings.json`: pool size and pool-total limits, written by the tray, applied by the
-//! supervisor. The dialog edits the runner count, the IO cap and the sharing mode, and derives CPUs
+//! supervisor. The window edits the runner count, the IO cap and the sharing mode, and derives CPUs
 //! and memory per runner from the caps; the file keeps totals (per-runner x runners).
 //! Schema 2 adds `schema`, `io_percent` and `sharing`; a schema 1 file reads with their defaults.
 
@@ -25,15 +25,6 @@ pub enum Sharing {
     Slice,
     /// Each runner is held to its fixed share.
     Fixed,
-}
-
-impl Sharing {
-    pub fn word(self) -> &'static str {
-        match self {
-            Sharing::Slice => "slice",
-            Sharing::Fixed => "fixed",
-        }
-    }
 }
 
 /// Kept for Windows and WSL itself: the totals may use at most VM minus this.
@@ -79,7 +70,7 @@ impl Settings {
         }
     }
 
-    /// What the dialog writes: each runner gets its share of the caps, `floor(cap / runners)`.
+    /// What the window writes: each runner gets its share of the caps, `floor(cap / runners)`.
     pub fn derived(runners: u32, paused: bool, vm: &VmLimit) -> Settings {
         let (cpus, gib) = vm.per_runner_max(runners);
         Settings::from_per_runner(runners, cpus, gib, paused)
@@ -232,7 +223,7 @@ fn parse_wslconfig(text: &str) -> (Option<u32>, Option<u32>) {
 }
 
 /// Missing, unparseable or misshapen file = defaults. Missing fields take their defaults.
-/// Caps and divisibility are not checked here, so the dialog can show and fix such a file.
+/// Caps and divisibility are not checked here, so the window can show and fix such a file.
 pub fn read_settings(base: &Path) -> Settings {
     read_bounded(&inbox(base).join("settings.json"))
         .and_then(|s| serde_json::from_str::<Settings>(s.trim_start_matches('\u{feff}')).ok())
