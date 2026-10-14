@@ -64,7 +64,10 @@ IO_IOPS_PER_MB=8
 POOL_SLICE=aap-runner-pool.slice
 # Equal io weight per container. It only acts under the BFQ scheduler; the
 # slice's bandwidth cap is the real limiter.
-BLKIO_WEIGHT=500
+# No --blkio-weight: runc writes io.bfq.weight, which exists only under the
+# BFQ scheduler; on the VHDX (mq-deadline/none) the container fails at
+# creation ("io.bfq.weight: no such file or directory", seen live 2026-10-14).
+# The slice bandwidth cap is the IO limiter.
 SLOT_PIDS=()
 SLOT_STARTED=()
 SLOT_FAILS=()
@@ -1025,8 +1028,7 @@ run_one() {
       --memory "${AAP_JOB_MEMORY}"
       --memory-swap "${AAP_JOB_MEMORY}"
       --memory-reservation "${SLOT_MEMORY}"
-      --cpus "${AAP_JOB_CPUS}"
-      --blkio-weight "${BLKIO_WEIGHT}")
+      --cpus "${AAP_JOB_CPUS}")
   else
     lim=(--memory "${SLOT_MEMORY}" --memory-swap "${SLOT_MEMORY}" --cpus "${SLOT_CPUS}")
     if ((SLOT_IO_MBPS > 0)) && [[ -n "${IO_DEVICE}" ]]; then

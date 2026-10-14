@@ -116,7 +116,7 @@ for pair_ in 1:72g 2:36g 3:24g; do
   pair --memory 72g
   pair --memory-swap 72g
   pair --memory-reservation "${pair_#*:}"
-  pair --blkio-weight 500
+  lacks --blkio-weight
   pair --cpu-shares 512
   pair --pids-limit 4096
   lacks --device-
