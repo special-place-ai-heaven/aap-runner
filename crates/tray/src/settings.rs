@@ -1,6 +1,7 @@
 //! `inbox\settings.json`: pool size and pool-total limits, written by the tray, applied by the
-//! supervisor. The dialog edits only the runner count and derives CPUs and memory per runner from
-//! the caps; the file keeps totals (per-runner x runners).
+//! supervisor. The dialog edits the runner count, the IO cap and the sharing mode, and derives CPUs
+//! and memory per runner from the caps; the file keeps totals (per-runner x runners).
+//! Schema 2 adds `schema`, `io_percent` and `sharing`; a schema 1 file reads with their defaults.
 
 use crate::state::{inbox, read_bounded, write_atomic};
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,29 @@ use std::path::Path;
 pub const RUNNERS: RangeInclusive<u32> = 1..=3;
 pub const CPUS: RangeInclusive<u32> = 1..=28;
 pub const MEMORY_GIB: RangeInclusive<u32> = 1..=80;
+pub const IO_PERCENT: RangeInclusive<u32> = 0..=100;
+/// What this tray writes.
+pub const SETTINGS_SCHEMA: u32 = 2;
+
+/// How the pool is shared between the runners.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Sharing {
+    /// Each runner may use its slice, and idle slices are lent out.
+    #[default]
+    Slice,
+    /// Each runner is held to its fixed share.
+    Fixed,
+}
+
+impl Sharing {
+    pub fn word(self) -> &'static str {
+        match self {
+            Sharing::Slice => "slice",
+            Sharing::Fixed => "fixed",
+        }
+    }
+}
 
 /// Kept for Windows and WSL itself: the totals may use at most VM minus this.
 pub const HOST_CPUS: u32 = 2;
@@ -19,19 +43,26 @@ pub const HOST_GIB: u32 = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    pub schema: u32,
     pub runner_count: u32,
     pub job_cpus: u32,
     pub job_memory_gib: u32,
     pub paused: bool,
+    /// Per-job IO cap as a percentage of the work disk's measured throughput.
+    pub io_percent: u32,
+    pub sharing: Sharing,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            schema: SETTINGS_SCHEMA,
             runner_count: 1,
             job_cpus: 26,
             job_memory_gib: 72,
             paused: false,
+            io_percent: 90,
+            sharing: Sharing::Slice,
         }
     }
 }
@@ -44,6 +75,7 @@ impl Settings {
             job_cpus: cpus.saturating_mul(runners),
             job_memory_gib: gib.saturating_mul(runners),
             paused,
+            ..Settings::default()
         }
     }
 
@@ -76,6 +108,7 @@ impl Settings {
         check("Runners", self.runner_count, &RUNNERS)?;
         check("Total CPUs", self.job_cpus, &CPUS)?;
         check("Total memory GiB", self.job_memory_gib, &MEMORY_GIB)?;
+        check("IO cap percent", self.io_percent, &IO_PERCENT)?;
         let (cpus, gib) = self.per_runner();
         if cpus < 1 || gib < 1 {
             return Err("Each runner needs at least 1 CPU and 1 GiB".into());
@@ -207,11 +240,15 @@ pub fn read_settings(base: &Path) -> Settings {
         .unwrap_or_default()
 }
 
-/// Refuses to write a file that fails `validate`.
+/// Refuses to write a file that fails `validate`. Always writes schema 2.
 pub fn write_settings(base: &Path, s: &Settings, vm: &VmLimit) -> io::Result<()> {
     s.validate(vm)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    write_atomic(&inbox(base).join("settings.json"), &serde_json::to_vec(s)?)
+    let s = Settings {
+        schema: SETTINGS_SCHEMA,
+        ..*s
+    };
+    write_atomic(&inbox(base).join("settings.json"), &serde_json::to_vec(&s)?)
 }
 
 #[cfg(test)]
@@ -376,6 +413,9 @@ mod tests {
             (with(|s| (s.runner_count, s.job_cpus) = (3, 3)), true),
             (with(|s| (s.runner_count, s.job_memory_gib) = (3, 2)), false),
             (with(|s| (s.runner_count, s.job_memory_gib) = (3, 3)), true),
+            (with(|s| s.io_percent = 0), true),
+            (with(|s| s.io_percent = 100), true),
+            (with(|s| s.io_percent = 101), false),
         ] {
             assert_eq!(s.check_shape().is_ok(), ok, "{s:?}");
         }
@@ -392,6 +432,8 @@ mod tests {
         for garbage in [
             "not json",
             r#"{"runner_count":-1}"#,
+            r#"{"runner_count":1,"io_percent":101}"#,
+            r#"{"runner_count":1,"sharing":"shared"}"#,
             r#"{"runner_count":9}"#,
             r#"{"runner_count":4}"#,
         ] {
@@ -422,6 +464,22 @@ mod tests {
                 .unwrap();
         assert_eq!(raw["job_cpus"], 24);
         assert_eq!(raw["job_memory_gib"], 72);
+        assert_eq!(raw["schema"], 2);
+        assert_eq!(raw["io_percent"], 90);
+        assert_eq!(raw["sharing"], "slice");
+        assert_eq!(
+            raw.as_object().unwrap().len(),
+            7,
+            "exactly the schema 2 keys"
+        );
+        let fixed = Settings {
+            io_percent: 40,
+            sharing: Sharing::Fixed,
+            ..s
+        };
+        write_settings(&base, &fixed, &VM).unwrap();
+        assert_eq!(read_settings(&base), fixed);
+        write_settings(&base, &s, &VM).unwrap();
         assert!(write_settings(&base, &with(|s| s.job_cpus = 0), &VM).is_err());
         assert!(write_settings(&base, &with(|s| s.job_cpus = 27), &VM).is_err());
         assert_eq!(
@@ -465,6 +523,20 @@ mod tests {
         let half = VmLimit::from_wslconfig("[wsl2]\nprocessors=16");
         assert_eq!((half.cpus, half.gib, half.assumed), (16, 80, true));
         assert_eq!(VmLimit::from_wslconfig(""), VmLimit::ASSUMED);
+    }
+
+    #[test]
+    fn schema_one_file_reads_with_schema_two_defaults() {
+        let base = temp_base("settings-v1");
+        fs::write(
+            inbox(&base).join("settings.json"),
+            r#"{"runner_count":3,"job_cpus":24,"job_memory_gib":72,"paused":false}"#,
+        )
+        .unwrap();
+        let s = read_settings(&base);
+        assert_eq!((s.io_percent, s.sharing, s.schema), (90, Sharing::Slice, 2));
+        assert_eq!(s.per_runner(), (8, 24));
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

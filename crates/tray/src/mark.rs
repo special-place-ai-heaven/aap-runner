@@ -14,29 +14,57 @@ pub const INK_ON_LIGHT: [u8; 3] = [0x1a, 0x1a, 0x1a];
 /// The sizes tuned by hand.
 pub const TUNED_SIZES: [u32; 4] = [16, 20, 24, 32];
 
-/// State overlay on the R. Each stays readable at 16 px.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Badge {
-    /// Off / unknown / not installed: outlined R.
-    Hollow,
-    /// Starting / idle / draining: solid R.
-    Solid,
-    /// Solid R, dot bottom-right.
+/// One symbol per state, the same in the tray, the window header and the cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Sym {
+    Off,
+    NotInstalled,
+    /// Supervisor down: status.json missing or stale.
+    Down,
+    Starting,
+    Idle,
     Running,
-    /// Solid R, short bar on the right.
+    Draining,
     Paused,
-    /// Solid R, dot top-right.
     Error,
 }
 
 #[cfg(test)]
-pub const BADGES: [Badge; 5] = [
-    Badge::Hollow,
-    Badge::Solid,
-    Badge::Running,
-    Badge::Paused,
-    Badge::Error,
+pub const SYMS: [Sym; 9] = [
+    Sym::Off,
+    Sym::NotInstalled,
+    Sym::Down,
+    Sym::Starting,
+    Sym::Idle,
+    Sym::Running,
+    Sym::Draining,
+    Sym::Paused,
+    Sym::Error,
 ];
+
+impl Sym {
+    /// A hollow R means the system is not up.
+    pub fn hollow(self) -> bool {
+        matches!(self, Sym::Off | Sym::NotInstalled | Sym::Down)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Sym::Off => "Off",
+            Sym::NotInstalled => "Not installed",
+            Sym::Down => "Service not running",
+            Sym::Starting => "Starting",
+            Sym::Idle => "Idle",
+            Sym::Running => "Running",
+            Sym::Draining => "Draining",
+            Sym::Paused => "Paused",
+            Sym::Error => "Error",
+        }
+    }
+}
+
+/// At most this many busy bars.
+pub const MAX_BUSY: usize = 3;
 
 pub fn ink(system_uses_light_theme: bool) -> [u8; 3] {
     if system_uses_light_theme {
@@ -62,60 +90,132 @@ pub fn tuned_size_for_dpi(dpi: u32) -> u32 {
 
 /// Straight (not premultiplied) RGBA rows, transparent wherever there is no ink.
 /// `size` must be one of [`TUNED_SIZES`].
-pub fn tray_rgba(size: u32, badge: Badge, system_uses_light_theme: bool) -> Vec<u8> {
+pub fn tray_rgba(size: u32, sym: Sym, busy: usize, system_uses_light_theme: bool) -> Vec<u8> {
     let [r, g, b] = ink(system_uses_light_theme);
-    mask(size, badge)
+    mask(size, sym, busy)
         .into_iter()
         .flat_map(|on| if on { [r, g, b, 0xff] } else { [0; 4] })
         .collect()
 }
 
-/// Inked pixels of the R plus its overlay, row-major.
-pub fn mask(size: u32, badge: Badge) -> Vec<bool> {
+/// Inked pixels of the R (hollow or solid) plus the badge strip, row-major.
+pub fn mask(size: u32, sym: Sym, busy: usize) -> Vec<bool> {
     let n = size as usize;
     let solid = glyph(size);
-    let mut m = match badge {
-        Badge::Hollow => {
-            // Keep only the edge: `t` px thick (2 at 32, like Fathom's outline).
-            let t = (n / 16) as isize;
-            let at = |x: isize, y: isize| {
-                (0..n as isize).contains(&x)
-                    && (0..n as isize).contains(&y)
-                    && solid[y as usize * n + x as usize]
-            };
-            (0..n * n)
-                .map(|i| {
-                    let (x, y) = ((i % n) as isize, (i / n) as isize);
-                    solid[i] && (-t..=t).any(|dy| (-t..=t).any(|dx| !at(x + dx, y + dy)))
-                })
-                .collect()
-        }
-        _ => solid,
+    let mut m = if sym.hollow() {
+        // Keep only the edge: `t` px thick (2 at 32, like Fathom's outline).
+        let t = (n / 16) as isize;
+        let at = |x: isize, y: isize| {
+            (0..n as isize).contains(&x)
+                && (0..n as isize).contains(&y)
+                && solid[y as usize * n + x as usize]
+        };
+        (0..n * n)
+            .map(|i| {
+                let (x, y) = ((i % n) as isize, (i / n) as isize);
+                solid[i] && (-t..=t).any(|dy| (-t..=t).any(|dx| !at(x + dx, y + dy)))
+            })
+            .collect()
+    } else {
+        solid
     };
-    let (d, w) = overlay_dims(size);
-    let mut fill = |x0: usize, y0: usize, x1: usize, y1: usize| {
-        for y in y0..y1 {
-            for x in x0..x1 {
-                m[y * n + x] = true;
-            }
-        }
-    };
-    match badge {
-        Badge::Hollow | Badge::Solid => {}
-        Badge::Running => fill(n - d, n - d, n, n),
-        Badge::Error => fill(n - d, 0, n, d),
-        Badge::Paused => fill(n - d, n * 5 / 16, n - d + w, n * 11 / 16),
+    for (o, s) in m.iter_mut().zip(strip(size, sym, busy)) {
+        *o |= s;
     }
     m
 }
 
-/// (dot side, bar width) per size.
-fn overlay_dims(size: u32) -> (usize, usize) {
-    match size {
-        16 => (3, 2),
-        20 => (4, 3),
-        24 => (5, 4),
-        _ => (6, 4),
+/// The badge strip right of the R: the symbol on top, busy bars filled bottom-up.
+fn strip(size: u32, sym: Sym, busy: usize) -> Vec<bool> {
+    if size == 32 {
+        let src = strip(16, sym, busy);
+        return (0..32 * 32)
+            .map(|i| src[(i / 32 / 2) * 16 + (i % 32) / 2])
+            .collect();
+    }
+    let n = size as usize;
+    // (first strip column, bar height, bottom row of each bar, bottom-up)
+    let (x0, bar_h, bars): (usize, usize, [usize; 3]) = match size {
+        16 => (12, 2, [15, 12, 9]),
+        20 => (15, 2, [19, 16, 13]),
+        24 => (18, 3, [23, 19, 15]),
+        other => panic!("untuned tray size {other}"),
+    };
+    let mut m = vec![false; n * n];
+    for (y, row) in symbol_rows(size, sym).iter().enumerate() {
+        for (x, c) in row.bytes().enumerate() {
+            m[y * n + x0 + x] = c == b'#';
+        }
+    }
+    for &bottom in bars.iter().take(busy.min(MAX_BUSY)) {
+        for y in bottom + 1 - bar_h..=bottom {
+            for x in x0..n {
+                m[y * n + x] = true;
+            }
+        }
+    }
+    m
+}
+
+/// Hand-tuned symbol bitmaps: 4 x 7 at 16 (from the design's sketches), 5 x 9 at 20, 6 x 11 at 24.
+fn symbol_rows(size: u32, sym: Sym) -> &'static [&'static str] {
+    match (size, sym) {
+        (16, Sym::Off) => &["....", ".##.", "#..#", "#..#", ".##."],
+        (16, Sym::NotInstalled) => &["....", "....", "####", "####"],
+        (16, Sym::Down) => &[".##.", "#..#", "...#", "..#.", ".#..", "....", ".#.."],
+        (16, Sym::Starting) => &[".##.", "....", ".##.", "....", ".##."],
+        (16, Sym::Idle) => &["....", ".##.", "####", "####", ".##."],
+        (16, Sym::Running) => &["#...", "##..", "###.", "####", "###.", "##..", "#..."],
+        (16, Sym::Draining) => &["####", "#..#", ".##.", ".##.", "#..#", "####"],
+        (16, Sym::Paused) => &["#..#"; 7],
+        (16, Sym::Error) => &[".##.", ".##.", ".##.", ".##.", "....", ".##.", ".##."],
+        (20, Sym::Off) => &[".....", ".###.", "#...#", "#...#", "#...#", ".###."],
+        (20, Sym::NotInstalled) => &[".....", ".....", ".....", "#####", "#####"],
+        (20, Sym::Down) => &[
+            ".###.", "#...#", "....#", "...#.", "..#..", "..#..", ".....", "..#..", "..#..",
+        ],
+        (20, Sym::Starting) => &[
+            ".###.", ".###.", ".....", ".###.", ".###.", ".....", ".###.", ".###.",
+        ],
+        (20, Sym::Idle) => &[".....", ".###.", "#####", "#####", "#####", ".###."],
+        (20, Sym::Running) => &[
+            "#....", "##...", "###..", "####.", "#####", "####.", "###..", "##...", "#....",
+        ],
+        (20, Sym::Draining) => &[
+            "#####", "#...#", ".#.#.", "..#..", ".#.#.", "#...#", "#####",
+        ],
+        (20, Sym::Paused) => &["##.##"; 9],
+        (20, Sym::Error) => &[
+            ".###.", ".###.", ".###.", ".###.", ".###.", ".....", ".###.", ".###.",
+        ],
+        (24, Sym::Off) => &[
+            "......", ".####.", "##..##", "#....#", "#....#", "##..##", ".####.",
+        ],
+        (24, Sym::NotInstalled) => &["......", "......", "......", "######", "######"],
+        (24, Sym::Down) => &[
+            ".####.", "##..##", "....##", "...##.", "..##..", "..##..", "......", "..##..",
+            "..##..",
+        ],
+        (24, Sym::Starting) => &[
+            ".####.", ".####.", "......", "......", ".####.", ".####.", "......", "......",
+            ".####.", ".####.",
+        ],
+        (24, Sym::Idle) => &[
+            "......", ".####.", "######", "######", "######", "######", ".####.",
+        ],
+        (24, Sym::Running) => &[
+            "#.....", "##....", "###...", "####..", "#####.", "######", "#####.", "####..",
+            "###...", "##....", "#.....",
+        ],
+        (24, Sym::Draining) => &[
+            "######", "#....#", ".#..#.", "..##..", "..##..", ".#..#.", "#....#", "######",
+        ],
+        (24, Sym::Paused) => &["##..##"; 11],
+        (24, Sym::Error) => &[
+            "..##..", "..##..", "..##..", "..##..", "..##..", "..##..", "......", "..##..",
+            "..##..",
+        ],
+        (other, _) => panic!("untuned tray size {other}"),
     }
 }
 
@@ -235,12 +335,17 @@ mod tests {
         }
     }
 
+    fn combos() -> impl Iterator<Item = (Sym, usize)> {
+        SYMS.into_iter()
+            .flat_map(|s| (0..=MAX_BUSY).map(move |b| (s, b)))
+    }
+
     #[test]
-    fn every_size_and_badge_renders_in_the_two_inks_only() {
+    fn every_size_symbol_and_busy_count_renders_in_the_two_inks_only() {
         for size in TUNED_SIZES {
-            for badge in BADGES {
+            for (sym, busy) in combos() {
                 for (light, want) in [(false, INK_ON_DARK), (true, INK_ON_LIGHT)] {
-                    let rgba = tray_rgba(size, badge, light);
+                    let rgba = tray_rgba(size, sym, busy, light);
                     assert_eq!(rgba.len(), (size * size * 4) as usize);
                     let mut inked = 0;
                     for p in rgba.chunks(4) {
@@ -248,60 +353,79 @@ mod tests {
                             0 => assert_eq!(&p[..3], &[0, 0, 0]),
                             0xff => {
                                 inked += 1;
-                                assert_eq!(&p[..3], &want, "{size} {badge:?}");
+                                assert_eq!(&p[..3], &want, "{size} {sym:?} {busy}");
                             }
                             a => panic!("part-transparent pixel {a}"),
                         }
                     }
-                    assert!(inked > 0 && inked < size * size, "{size} {badge:?}");
+                    assert!(inked > 0 && inked < size * size, "{size} {sym:?} {busy}");
                 }
             }
         }
     }
 
     #[test]
-    fn every_badge_differs_and_overlays_never_touch_the_r() {
+    fn every_pair_differs_and_the_strip_never_touches_the_r() {
         for size in TUNED_SIZES {
             let n = size as usize;
-            let masks: Vec<_> = BADGES.iter().map(|&b| mask(size, b)).collect();
-            for i in 0..masks.len() {
-                for j in i + 1..masks.len() {
+            let all: Vec<_> = combos().map(|(s, b)| ((s, b), mask(size, s, b))).collect();
+            for i in 0..all.len() {
+                for j in i + 1..all.len() {
                     assert_ne!(
-                        masks[i], masks[j],
+                        all[i].1, all[j].1,
                         "{size}: {:?} == {:?}",
-                        BADGES[i], BADGES[j]
+                        all[i].0, all[j].0
                     );
                 }
             }
             let r = glyph(size);
-            for badge in [Badge::Running, Badge::Paused, Badge::Error] {
-                let m = mask(size, badge);
-                for i in (0..n * n).filter(|&i| m[i] && !r[i]) {
+            for ((sym, busy), _) in &all {
+                let m = strip(size, *sym, *busy);
+                assert!(m.iter().any(|p| *p), "{size} {sym:?} has a symbol");
+                for i in (0..n * n).filter(|&i| m[i]) {
                     let (x, y) = ((i % n) as isize, (i / n) as isize);
-                    for (dx, dy) in [
-                        (-1, 0),
-                        (1, 0),
-                        (0, -1),
-                        (0, 1),
-                        (-1, -1),
-                        (-1, 1),
-                        (1, -1),
-                        (1, 1),
-                    ] {
-                        let (nx, ny) = (x + dx, y + dy);
-                        if (0..n as isize).contains(&nx) && (0..n as isize).contains(&ny) {
-                            assert!(
-                                !r[ny as usize * n + nx as usize],
-                                "{size} {badge:?} touches the R"
-                            );
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let (nx, ny) = (x + dx, y + dy);
+                            if (0..n as isize).contains(&nx) && (0..n as isize).contains(&ny) {
+                                assert!(
+                                    !r[ny as usize * n + nx as usize],
+                                    "{size} {sym:?} {busy} touches the R"
+                                );
+                            }
                         }
                     }
                 }
             }
             // Hollow is a strict subset of solid with a real hole.
-            let hollow = mask(size, Badge::Hollow);
-            assert!(hollow.iter().zip(&r).all(|(h, s)| !h || *s));
-            assert!(hollow.iter().filter(|h| **h).count() < r.iter().filter(|s| **s).count());
+            let hollow = mask(size, Sym::Off, 0);
+            let off = strip(size, Sym::Off, 0);
+            assert!(
+                hollow
+                    .iter()
+                    .zip(&r)
+                    .zip(&off)
+                    .all(|((h, s), o)| !h || *s || *o)
+            );
+            let r_ink = |m: &[bool]| m.iter().zip(&off).filter(|(p, o)| **p && !**o).count();
+            assert!(r_ink(&hollow) < r.iter().filter(|s| **s).count());
+        }
+    }
+
+    #[test]
+    fn hollow_only_when_not_up() {
+        let down: Vec<_> = SYMS.into_iter().filter(|s| s.hollow()).collect();
+        assert_eq!(down, [Sym::Off, Sym::NotInstalled, Sym::Down]);
+    }
+
+    #[test]
+    fn symbol_bitmaps_fit_their_strip() {
+        for (size, w, h) in [(16, 4, 7), (20, 5, 9), (24, 6, 11)] {
+            for sym in SYMS {
+                let rows = symbol_rows(size, sym);
+                assert!(rows.len() <= h, "{size} {sym:?}");
+                assert!(rows.iter().all(|r| r.len() == w), "{size} {sym:?}");
+            }
         }
     }
 

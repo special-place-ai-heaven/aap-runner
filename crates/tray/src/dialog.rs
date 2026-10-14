@@ -1,8 +1,8 @@
 //! `--settings` mode: a small egui window in its own process, so it never shares the
-//! tray's tao event loop. Its one input is the runner count; CPUs and memory per runner derive
-//! from the caps. The file stores per-runner x runners.
+//! tray's tao event loop. Its inputs are the runner count, the IO cap and the sharing mode;
+//! CPUs and memory per runner derive from the caps. The file stores per-runner x runners.
 
-use crate::settings::{self, HOST_CPUS, HOST_GIB, RUNNERS, Settings, VmLimit};
+use crate::settings::{self, HOST_CPUS, HOST_GIB, IO_PERCENT, RUNNERS, Settings, Sharing, VmLimit};
 use crate::state::{self, Applied, Status};
 use eframe::egui;
 use std::path::PathBuf;
@@ -12,6 +12,11 @@ struct Dialog {
     base: PathBuf,
     runners: u32,
     paused: bool,
+    io_percent: u32,
+    sharing: Sharing,
+    /// `running now: …` for the IO cap and the sharing mode, from `status.json`.
+    running_io: String,
+    running_sharing: String,
     /// The stored file differs from what OK would write (not divisible, or not derived).
     rewrites: bool,
     /// What the manager runs right now; `None` when it has no runner slots.
@@ -26,11 +31,16 @@ pub fn run(base: PathBuf) -> eframe::Result {
     let stored = settings::read_settings(&base);
     let snap = state::read_status(&base, SystemTime::now());
     let vm = VmLimit::read();
+    let running = running_now(snap.clone());
     let dialog = Dialog {
         runners: stored.runner_count,
         paused: stored.paused,
-        rewrites: stored != Settings::derived(stored.runner_count, stored.paused, &vm),
-        running: running_now(snap.clone()),
+        io_percent: stored.io_percent,
+        sharing: stored.sharing,
+        running_io: running_io(running.is_some(), snap.job_io_mbps),
+        running_sharing: running_sharing(running.is_some(), snap.sharing.as_deref()),
+        rewrites: stored != edited(&stored, stored.runner_count, stored.paused, &vm),
+        running,
         running_job: snap.running_job(),
         vm,
         write_error: None,
@@ -39,7 +49,7 @@ pub fn run(base: PathBuf) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("Settings \u{b7} {}", crate::version()))
-            .with_inner_size([560.0, 300.0])
+            .with_inner_size([560.0, 360.0])
             .with_resizable(false)
             .with_minimize_button(false)
             .with_maximize_button(false)
@@ -52,6 +62,32 @@ pub fn run(base: PathBuf) -> eframe::Result {
         options,
         Box::new(move |_| Ok(Box::new(dialog))),
     )
+}
+
+/// What OK writes: the derived limits with the IO cap and sharing mode from `keep`.
+fn edited(keep: &Settings, runners: u32, paused: bool, vm: &VmLimit) -> Settings {
+    Settings {
+        io_percent: keep.io_percent,
+        sharing: keep.sharing,
+        ..Settings::derived(runners, paused, vm)
+    }
+}
+
+/// `running now: 88 MiB/s per job` (status `job_io_mbps`; docker reads "mb" as MiB).
+fn running_io(running: bool, mbps: Option<f64>) -> String {
+    match (running, mbps) {
+        (false, _) => NOT_RUNNING.into(),
+        (true, Some(v)) => format!("running now: {v:.0} MiB/s per job"),
+        (true, None) => "running now: unknown".into(),
+    }
+}
+
+fn running_sharing(running: bool, sharing: Option<&str>) -> String {
+    match (running, sharing) {
+        (false, _) => NOT_RUNNING.into(),
+        (true, Some(s)) => format!("running now: {s}"),
+        (true, None) => "running now: unknown".into(),
+    }
 }
 
 fn derived_row(ui: &mut egui::Ui, label: &str, value: u32, now: String) {
@@ -99,7 +135,12 @@ impl eframe::App for Dialog {
             let running = self.running;
             let vm = self.vm;
             let (cap_cpus, cap_gib) = vm.cap();
-            let edit = Settings::derived(self.runners, self.paused, &vm);
+            let keep = Settings {
+                io_percent: self.io_percent,
+                sharing: self.sharing,
+                ..Settings::default()
+            };
+            let edit = edited(&keep, self.runners, self.paused, &vm);
             let (each_cpus, each_gib) = edit.per_runner();
             egui::Grid::new("settings")
                 .num_columns(3)
@@ -121,6 +162,20 @@ impl eframe::App for Dialog {
                         each_gib,
                         running_per_runner(running, |a| a.job_memory_gib),
                     );
+                    ui.label("IO cap %");
+                    ui.add(egui::DragValue::new(&mut self.io_percent).range(IO_PERCENT));
+                    ui.label(&self.running_io);
+                    ui.end_row();
+                    ui.label("Sharing");
+                    egui::ComboBox::from_id_salt("sharing")
+                        .selected_text(self.sharing.word())
+                        .show_ui(ui, |ui| {
+                            for s in [Sharing::Slice, Sharing::Fixed] {
+                                ui.selectable_value(&mut self.sharing, s, s.word());
+                            }
+                        });
+                    ui.label(&self.running_sharing);
+                    ui.end_row();
                     ui.label("Paused");
                     ui.checkbox(&mut self.paused, "");
                     ui.end_row();
@@ -210,13 +265,34 @@ mod tests {
     }
 
     #[test]
+    fn running_now_io_and_sharing() {
+        assert_eq!(
+            running_io(true, Some(87.6)),
+            "running now: 88 MiB/s per job"
+        );
+        assert_eq!(running_io(true, None), "running now: unknown");
+        assert_eq!(running_io(false, Some(1.0)), NOT_RUNNING);
+        assert_eq!(running_sharing(true, Some("fixed")), "running now: fixed");
+        assert_eq!(running_sharing(false, Some("fixed")), NOT_RUNNING);
+        let vm = VmLimit::ASSUMED;
+        let keep = Settings {
+            io_percent: 40,
+            sharing: Sharing::Fixed,
+            ..Settings::default()
+        };
+        let e = edited(&keep, 3, true, &vm);
+        assert_eq!(
+            (e.io_percent, e.sharing, e.paused, e.per_runner()),
+            (40, Sharing::Fixed, true, (8, 24))
+        );
+    }
+
+    #[test]
     fn not_running_unless_the_manager_has_slots() {
         let a = applied(Some(2), Some(8));
         let snap = |status| state::Snapshot {
-            status,
             applied: a,
-            repo: String::new(),
-            run_url: String::new(),
+            ..state::Snapshot::bare(status)
         };
         for live in [
             Status::Starting,

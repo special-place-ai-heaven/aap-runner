@@ -2,6 +2,7 @@
 //! (`state.json`, `settings.json`, `tray.log`); it reads the admin-written `<base>\status.json`.
 //! No UI here.
 
+use crate::mark::Sym;
 use serde::Deserialize;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -13,6 +14,10 @@ pub const DEFAULT_BASE: &str = r"C:\ProgramData\aap-runner";
 pub const STALE_AFTER: Duration = Duration::from_secs(180);
 /// A larger `status.json` is treated as Unknown without reading it.
 pub const MAX_STATUS_BYTES: u64 = 64 * 1024;
+/// The newest `status.json` schema this app understands.
+pub const SCHEMA: u32 = 3;
+/// The `Error` detail for a `status.json` newer than this app.
+pub const NEWER_SCHEMA: &str = "This app is older than the service. Update the app.";
 
 /// The only folder the tray writes to. Its absence means "not installed".
 pub fn inbox(base: &Path) -> PathBuf {
@@ -59,6 +64,61 @@ impl Status {
             Status::Error(detail) => format!("Error: {detail}"),
         }
     }
+
+    /// The one symbol for this state, used by the tray icon, the header and the cards.
+    pub fn sym(&self) -> Sym {
+        match self {
+            Status::NotInstalled => Sym::NotInstalled,
+            Status::Unknown => Sym::Down,
+            Status::Off => Sym::Off,
+            Status::Starting => Sym::Starting,
+            Status::Idle => Sym::Idle,
+            Status::Running(_) => Sym::Running,
+            Status::Draining => Sym::Draining,
+            Status::Paused => Sym::Paused,
+            Status::Error(_) => Sym::Error,
+        }
+    }
+}
+
+/// Sampled pool use; any value may be absent (older supervisor or no sample yet).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+pub struct Pool {
+    pub cpu_cores: Option<f64>,
+    pub mem_gib: Option<f64>,
+    pub io_mbps: Option<f64>,
+}
+
+/// One runner slot, from `slots[]` or built from the top-level fields of an older status.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Slot {
+    pub slot: u32,
+    /// One of Idle, Running, Draining, Starting, Error.
+    pub state: Sym,
+    pub job: String,
+    pub repo: String,
+    pub run_url: String,
+    pub job_url: String,
+    pub started_at: Option<SystemTime>,
+    pub cpu_cores: Option<f64>,
+    pub mem_gib: Option<f64>,
+}
+
+impl Slot {
+    /// What the title link opens: a valid `job_url`, else a valid `run_url`, else nothing.
+    pub fn link(&self) -> Option<&str> {
+        if valid_job_url(&self.job_url) {
+            Some(&self.job_url)
+        } else if valid_run_url(&self.run_url) {
+            Some(&self.run_url)
+        } else {
+            None
+        }
+    }
+
+    pub fn busy(&self) -> bool {
+        matches!(self.state, Sym::Running | Sym::Draining)
+    }
 }
 
 /// Effective limits the supervisor reports back; each may be absent.
@@ -69,7 +129,7 @@ pub struct Applied {
     pub job_memory_gib: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub status: Status,
     pub applied: Applied,
@@ -77,35 +137,74 @@ pub struct Snapshot {
     pub repo: String,
     /// The running job's Actions URL as reported; use `job_url()`, never this, to open it.
     pub run_url: String,
+    /// The supervisor's `detail`, also outside the error state (a refused limit while paused).
+    pub detail: String,
+    /// When the supervisor last wrote the file; kept for a stale file too.
+    pub updated: Option<SystemTime>,
+    pub sampled_at: Option<SystemTime>,
+    pub pool: Pool,
+    /// `slots[]`, or one slot built from the top-level fields when there are none.
+    pub slots: Vec<Slot>,
+    pub job_io_mbps: Option<f64>,
+    pub sharing: Option<String>,
 }
 
 /// `https://github.com/<owner>/<repo>/actions/runs/<digits>` and nothing else, the same as
 /// `^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+$`.
 pub fn valid_run_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://github.com/") else {
-        return false;
-    };
+    actions_path_len(url) == Some(5)
+}
+
+/// [`valid_run_url`] plus `/job/<digits>`.
+pub fn valid_job_url(url: &str) -> bool {
+    actions_path_len(url) == Some(7)
+}
+
+/// Path parts of `https://github.com/O/R/actions/runs/N[/job/M]`; `None` for anything else.
+fn actions_path_len(url: &str) -> Option<usize> {
+    let rest = url.strip_prefix("https://github.com/")?;
     let name = |s: &str| {
         !s.is_empty()
             && s.bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
     };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let parts: Vec<&str> = rest.split('/').collect();
-    matches!(
-        parts.as_slice(),
-        [owner, repo, "actions", "runs", id]
-            if name(owner) && name(repo) && !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
-    )
+    let ok = match parts.as_slice() {
+        [owner, repo, "actions", "runs", id] => name(owner) && name(repo) && digits(id),
+        [owner, repo, "actions", "runs", id, "job", job] => {
+            name(owner) && name(repo) && digits(id) && digits(job)
+        }
+        _ => false,
+    };
+    ok.then_some(parts.len())
 }
 
 impl Snapshot {
-    fn bare(status: Status) -> Self {
+    pub fn bare(status: Status) -> Self {
         Snapshot {
             status,
             applied: Applied::default(),
             repo: String::new(),
             run_url: String::new(),
+            detail: String::new(),
+            updated: None,
+            sampled_at: None,
+            pool: Pool::default(),
+            slots: Vec::new(),
+            job_io_mbps: None,
+            sharing: None,
         }
+    }
+
+    /// Runners busy with a job (running or draining).
+    pub fn busy(&self) -> usize {
+        self.slots.iter().filter(|s| s.busy()).count()
+    }
+
+    /// Runner slots configured: `runner_count`, at least the number of slots reported.
+    pub fn runners(&self) -> usize {
+        (self.applied.runner_count.unwrap_or(0) as usize).max(self.slots.len())
     }
 
     /// The URL "Open job" may open: only a valid GitHub Actions run URL.
@@ -160,6 +259,7 @@ impl Snapshot {
 
 #[derive(Deserialize)]
 struct RawStatus {
+    schema: Option<u32>,
     state: String,
     #[serde(default)]
     job: String,
@@ -171,6 +271,36 @@ struct RawStatus {
     job_memory_gib: Option<u32>,
     repo: Option<String>,
     run_url: Option<String>,
+    sampled_at: Option<String>,
+    pool: Option<Pool>,
+    slots: Option<Vec<RawSlot>>,
+    job_io_mbps: Option<f64>,
+    sharing: Option<String>,
+}
+
+/// Every field optional: the supervisor writes `null` for a value that failed its checks.
+#[derive(Deserialize)]
+struct RawSlot {
+    slot: Option<u32>,
+    state: Option<String>,
+    job: Option<String>,
+    repo: Option<String>,
+    run_url: Option<String>,
+    job_url: Option<String>,
+    started_at: Option<String>,
+    cpu_cores: Option<f64>,
+    mem_gib: Option<f64>,
+}
+
+/// A slot state word. Anything else shows as Starting: the slot exists, its state says no more.
+fn slot_sym(state: &str) -> Sym {
+    match state {
+        "idle" => Sym::Idle,
+        "running" => Sym::Running,
+        "draining" => Sym::Draining,
+        "error" => Sym::Error,
+        _ => Sym::Starting,
+    }
 }
 
 /// Missing inbox = not installed; missing/bad/stale/oversized status.json = unknown.
@@ -198,16 +328,25 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
         .duration_since(updated)
         .is_ok_and(|age| age > STALE_AFTER)
     {
-        return unknown;
+        return Snapshot {
+            updated: Some(updated),
+            ..unknown
+        };
+    }
+    if raw.schema.is_some_and(|v| v > SCHEMA) {
+        return Snapshot {
+            updated: Some(updated),
+            ..Snapshot::bare(Status::Error(NEWER_SCHEMA.into()))
+        };
     }
     let status = match raw.state.as_str() {
         "off" => Status::Off,
         "starting" => Status::Starting,
         "idle" => Status::Idle,
-        "running" => Status::Running(raw.job),
+        "running" => Status::Running(raw.job.clone()),
         "draining" => Status::Draining,
         "paused" => Status::Paused,
-        "error" => Status::Error(raw.detail),
+        "error" => Status::Error(raw.detail.clone()),
         _ => return unknown,
     };
     let applied = Applied {
@@ -215,11 +354,58 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
         job_cpus: raw.job_cpus,
         job_memory_gib: raw.job_memory_gib,
     };
+    let repo = raw.repo.unwrap_or_default();
+    let run_url = raw.run_url.unwrap_or_default();
+    let reported: Vec<Slot> = raw
+        .slots
+        .unwrap_or_default()
+        .into_iter()
+        .zip(1..)
+        .map(|(s, n)| Slot {
+            slot: s.slot.unwrap_or(n),
+            state: slot_sym(s.state.as_deref().unwrap_or_default()),
+            job: s.job.unwrap_or_default(),
+            repo: s.repo.unwrap_or_default(),
+            run_url: s.run_url.unwrap_or_default(),
+            job_url: s.job_url.unwrap_or_default(),
+            started_at: s.started_at.as_deref().and_then(parse_rfc3339),
+            cpu_cores: s.cpu_cores,
+            mem_gib: s.mem_gib,
+        })
+        .collect();
+    // No (or an empty) slots[]: one card from the top-level fields while the manager runs.
+    let slots = if !reported.is_empty() {
+        reported
+    } else if matches!(
+        status,
+        Status::Starting | Status::Idle | Status::Running(_) | Status::Draining
+    ) {
+        vec![Slot {
+            slot: 1,
+            state: status.sym(),
+            job: raw.job,
+            repo: repo.clone(),
+            run_url: run_url.clone(),
+            job_url: String::new(),
+            started_at: None,
+            cpu_cores: None,
+            mem_gib: None,
+        }]
+    } else {
+        Vec::new()
+    };
     Snapshot {
         status,
         applied,
-        repo: raw.repo.unwrap_or_default(),
-        run_url: raw.run_url.unwrap_or_default(),
+        repo,
+        run_url,
+        detail: raw.detail,
+        updated: Some(updated),
+        sampled_at: raw.sampled_at.as_deref().and_then(parse_rfc3339),
+        pool: raw.pool.unwrap_or_default(),
+        slots,
+        job_io_mbps: raw.job_io_mbps,
+        sharing: raw.sharing,
     }
 }
 
@@ -240,6 +426,16 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     // std::fs::rename replaces the destination on Windows (MOVEFILE_REPLACE_EXISTING).
     fs::rename(&tmp, path)
+}
+
+/// Retry now: desired on plus a new `retry` stamp, which makes the supervisor reset its
+/// backoff and run the next step at once. An older supervisor reads only `desired`.
+pub fn write_retry(base: &Path, now: SystemTime) -> io::Result<()> {
+    let secs = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    write_atomic(
+        &inbox(base).join("state.json"),
+        format!(r#"{{"desired":"on","retry":{secs}}}"#).as_bytes(),
+    )
 }
 
 pub fn write_desired(base: &Path, desired: Desired) -> io::Result<()> {
@@ -287,7 +483,7 @@ pub fn log(base: &Path, msg: &str) {
 
 /// Minimal RFC 3339 parser: `YYYY-MM-DDTHH:MM:SS[.frac](Z|+HH:MM|-HH:MM)`.
 /// Fractional seconds are ignored (irrelevant against a 3-minute staleness window).
-fn parse_rfc3339(s: &str) -> Option<SystemTime> {
+pub fn parse_rfc3339(s: &str) -> Option<SystemTime> {
     fn num(t: &str) -> Option<i64> {
         if t.bytes().all(|c| c.is_ascii_digit()) {
             t.parse().ok()

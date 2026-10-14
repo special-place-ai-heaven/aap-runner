@@ -1,21 +1,26 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-//! Tray front-end for the AAP self-hosted runner. Reads `status.json`, writes only under
-//! `inbox\` (`state.json`, `settings.json`, `tray.log`), opens the logs folder and its own
-//! `--settings` window (via `current_exe`). Nothing else.
+//! Tray front-end for the AAP self-hosted runner. Reads `status.json` and `logs\supervisor.log`,
+//! writes only under `inbox\` (`state.json`, `settings.json`, `tray.log`) plus its own history
+//! mirror in `%TEMP%`, opens the logs folder and its own `--settings` and `--dashboard` windows
+//! (via `current_exe`). Nothing else.
 //!
 //! Like Fathom: a raw Win32 message pump on the main thread drives `tray-icon` directly.
 
+mod dashboard;
 mod dialog;
+mod history;
 #[cfg(test)]
 mod ico;
 mod mark;
+mod problem;
 mod settings;
 mod state;
 mod win;
 
-use mark::Badge;
-use state::{DEFAULT_BASE, Desired, Status};
+use history::History;
+use mark::Sym;
+use state::{DEFAULT_BASE, Desired, Snapshot, Status};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,7 +29,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIconBuilder};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 const POLL: Duration = Duration::from_secs(5);
 /// ponytail: theme poll like Fathom; RegNotifyChangeKeyValue if 2 s ever matters.
@@ -33,38 +38,86 @@ const RESTART_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// Absolute: a bare `explorer.exe` would be found in the tray's own folder first.
 const EXPLORER: &str = r"C:\Windows\explorer.exe";
 const TICK: Duration = Duration::from_millis(16);
-
-fn badge(s: &Status) -> Badge {
-    match s {
-        Status::Idle | Status::Starting | Status::Draining => Badge::Solid,
-        Status::Running(_) => Badge::Running,
-        Status::Paused => Badge::Paused,
-        Status::Error(_) => Badge::Error,
-        Status::Off | Status::Unknown | Status::NotInstalled => Badge::Hollow,
-    }
-}
+/// `NOTIFYICONDATA` holds 128 UTF-16 units including the NUL.
+const TOOLTIP_UNITS: usize = 127;
 
 fn version_string(version: &str, commit: &str) -> String {
     format!("AAP Runner v{version} ({commit})")
 }
 
-/// `AAP Runner v0.3.0 (abcdef12)`: menu, tooltip, settings title and `--version`.
+/// `AAP Runner v0.4.0 (abcdef12)`: menu, settings title and `--version`.
 pub fn version() -> String {
     version_string(env!("CARGO_PKG_VERSION"), env!("AAP_TRAY_COMMIT"))
 }
 
-fn tooltip(line: &str) -> String {
-    // Windows caps tooltips at 127 UTF-16 units; the line is cut, never the version suffix.
-    let suffix = format!(
-        " \u{b7} v{} ({})",
+/// `AAP Runner · v0.4.0 (abcdef12)`: the dashboard's title, which is also how the tray finds it.
+pub fn dashboard_title() -> String {
+    format!(
+        "AAP Runner \u{b7} v{} ({})",
         env!("CARGO_PKG_VERSION"),
         env!("AAP_TRAY_COMMIT")
-    );
-    let head: String = format!("AAP Runner: {line}")
-        .chars()
-        .take(120 - suffix.chars().count())
-        .collect();
-    head + &suffix
+    )
+}
+
+/// At most `max` UTF-16 units; a cut string ends in an ellipsis.
+fn cap_units(s: &str, max: usize) -> String {
+    if s.encode_utf16().count() <= max {
+        return s.to_owned();
+    }
+    let mut out = String::new();
+    let mut units = 0;
+    for c in s.chars() {
+        if units + c.len_utf16() > max - 1 {
+            break;
+        }
+        units += c.len_utf16();
+        out.push(c);
+    }
+    out.push('\u{2026}');
+    out
+}
+
+/// One line: `AAP Runner · 2/3 busy · 14 cores · 41 GiB · Workspace, Backend Tests`,
+/// `AAP Runner · Idle · 0/3 busy`, `AAP Runner · Error · <one-liner>`,
+/// `AAP Runner · Paused · 1 job finishing`. Job titles are cut to fit 127 UTF-16 units.
+fn tooltip(snap: &Snapshot, problem_line: Option<&str>) -> String {
+    let (busy, runners) = (snap.busy(), snap.runners());
+    let label = snap.status.sym().label();
+    let body = match &snap.status {
+        Status::Running(job) => {
+            let mut t = format!("{busy}/{runners} busy");
+            if let Some(c) = snap.pool.cpu_cores {
+                t += &format!(" \u{b7} {c:.0} cores");
+            }
+            if let Some(g) = snap.pool.mem_gib {
+                t += &format!(" \u{b7} {g:.0} GiB");
+            }
+            let mut jobs: Vec<&str> = snap
+                .slots
+                .iter()
+                .filter(|s| s.busy() && !s.job.is_empty())
+                .map(|s| s.job.as_str())
+                .collect();
+            if jobs.is_empty() && !job.is_empty() {
+                jobs.push(job);
+            }
+            if !jobs.is_empty() {
+                t += &format!(" \u{b7} {}", jobs.join(", "));
+            }
+            t
+        }
+        Status::Paused => match busy {
+            0 => format!("{label} \u{b7} no jobs"),
+            1 => format!("{label} \u{b7} 1 job finishing"),
+            n => format!("{label} \u{b7} {n} jobs finishing"),
+        },
+        Status::Error(_) => format!("{label} \u{b7} {}", problem_line.unwrap_or("")),
+        Status::Idle | Status::Starting | Status::Draining => {
+            format!("{label} \u{b7} {busy}/{runners} busy")
+        }
+        Status::Off | Status::NotInstalled | Status::Unknown => label.to_owned(),
+    };
+    cap_units(&format!("AAP Runner \u{b7} {body}"), TOOLTIP_UNITS)
 }
 
 /// Per-user single instance via an OS file lock held for the process lifetime.
@@ -100,40 +153,76 @@ fn toggle_pause(base: &Path) {
     }
 }
 
-fn open_settings(base: &Path) {
-    // The child takes its own lock, so a second click while it is open is a no-op.
-    let spawned =
-        std::env::current_exe().and_then(|exe| Command::new(exe).arg("--settings").spawn());
+/// Start this exe with `args`; the child takes its own lock, so a repeat is a no-op.
+fn spawn_self(base: &Path, args: &[&str]) {
+    let spawned = std::env::current_exe().and_then(|exe| Command::new(exe).args(args).spawn());
     if let Err(e) = spawned {
-        state::log(base, &format!("open settings failed: {e}"));
+        state::log(base, &format!("open {args:?} failed: {e}"));
+    }
+}
+
+fn open_settings(base: &Path) {
+    spawn_self(base, &["--settings"]);
+}
+
+fn open_logs(base: &Path) {
+    if let Err(e) = Command::new(EXPLORER).arg(base.join("logs")).spawn() {
+        state::log(base, &format!("open logs failed: {e}"));
+    }
+}
+
+/// Open the dashboard, or focus it if it is open. `toggle`: a left click on the icon closes it
+/// when it was the last active window. `problem`: open with the error panel shown.
+fn show_dashboard(base: &Path, toggle: Option<Option<isize>>, problem: bool) {
+    match (win::find_window(&dashboard_title()), toggle) {
+        (Some(h), Some(last)) if last == Some(h) => win::close(h),
+        (Some(h), _) => win::focus(h),
+        (None, _) if problem => spawn_self(base, &["--dashboard", "--problem"]),
+        (None, _) => spawn_self(base, &["--dashboard"]),
     }
 }
 
 fn main() {
-    let base = PathBuf::from(DEFAULT_BASE);
-    if std::env::args().nth(1).as_deref() == Some("--version") {
-        // GUI subsystem: visible when stdout is redirected or piped (scripts), silent otherwise.
-        println!("{}", version());
-        return;
-    }
-    if std::env::args().nth(1).as_deref() == Some("--settings") {
-        let Some(_lock) = single_instance("aap-runner-tray-settings.lock") else {
-            return;
-        };
-        if let Err(e) = dialog::run(base.clone()) {
-            state::log(&base, &format!("settings window failed: {e}"));
+    let base = std::env::var_os("AAP_FAKE_BASE").map_or(PathBuf::from(DEFAULT_BASE), PathBuf::from);
+    let arg = std::env::args().nth(1);
+    match arg.as_deref() {
+        Some("--version") => {
+            // GUI subsystem: visible when stdout is redirected or piped (scripts), silent otherwise.
+            println!("{}", version());
         }
-        return;
-    }
-    let Some(_lock) = single_instance("aap-runner-tray.lock") else {
-        return;
-    };
-    if let Err(e) = run_tray(&base) {
-        state::log(&base, &format!("tray failed: {e}"));
+        Some("--settings") => {
+            let Some(_lock) = single_instance("aap-runner-tray-settings.lock") else {
+                return;
+            };
+            if let Err(e) = dialog::run(base.clone()) {
+                state::log(&base, &format!("settings window failed: {e}"));
+            }
+        }
+        Some("--dashboard") => {
+            let Some(_lock) = single_instance("aap-runner-tray-dashboard.lock") else {
+                if let Some(h) = win::find_window(&dashboard_title()) {
+                    win::focus(h);
+                }
+                return;
+            };
+            let problem = std::env::args().any(|a| a == "--problem");
+            if let Err(e) = dashboard::run(base.clone(), problem) {
+                state::log(&base, &format!("dashboard window failed: {e}"));
+            }
+        }
+        _ => {
+            let Some(_lock) = single_instance("aap-runner-tray.lock") else {
+                return;
+            };
+            if let Err(e) = run_tray(&base) {
+                state::log(&base, &format!("tray failed: {e}"));
+            }
+        }
     }
 }
 
 fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let dashboard = MenuItem::new("Open dashboard", true, None);
     let status_item = MenuItem::new("", false, None);
     let open_job = MenuItem::new("Open job", false, None);
     let start = MenuItem::new("Start", true, None);
@@ -145,6 +234,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let version_item = MenuItem::new(version(), false, None);
     let quit = MenuItem::new("Quit", true, None);
     let menu = Menu::with_items(&[
+        &dashboard,
+        &PredefinedMenuItem::separator(),
         &status_item,
         &open_job,
         &PredefinedMenuItem::separator(),
@@ -163,29 +254,51 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
-        .with_tooltip(tooltip("starting"))
+        .with_tooltip("AAP Runner")
         .build()?;
 
     let menu_rx = MenuEvent::receiver();
+    let click_rx = TrayIconEvent::receiver();
     let restarting = Arc::new(AtomicBool::new(false));
     let mut light = win::taskbar_uses_light_theme();
     let mut size = mark::tuned_size_for_dpi(win::system_dpi());
     let mut theme_read = Instant::now();
     let mut next_poll = Instant::now();
     let mut last_busy = false;
-    let mut current = Badge::Hollow;
+    let mut current = (Sym::Down, 0);
     let mut shown_icon = None;
     let mut shown_text = None;
+    let mut shown_tip = None;
     // Only ever a `valid_run_url`, set from the last poll.
     let mut job_url: Option<String> = None;
+    let mut in_problem = false;
+    // The last active window that is not the taskbar: a click on the icon moves focus there.
+    let mut last_app = None;
+    let history_path = History::path();
+    let mut history = History::load(&history_path);
 
     loop {
         if !win::pump_messages() {
             return Ok(());
         }
+        if let Some(h) = win::foreground_app() {
+            last_app = Some(h);
+        }
+        while let Ok(e) = click_rx.try_recv() {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = e
+            {
+                show_dashboard(base, Some(last_app), in_problem);
+            }
+        }
         while let Ok(e) = menu_rx.try_recv() {
             let id = e.id();
-            if id == start.id() {
+            if id == dashboard.id() {
+                show_dashboard(base, None, false);
+            } else if id == start.id() {
                 set_desired(base, Desired::On);
             } else if id == stop.id() {
                 set_desired(base, Desired::Off);
@@ -210,9 +323,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                     state::log(base, &format!("open job failed: {e}"));
                 }
             } else if id == logs.id() {
-                if let Err(e) = Command::new(EXPLORER).arg(base.join("logs")).spawn() {
-                    state::log(base, &format!("open logs failed: {e}"));
-                }
+                open_logs(base);
             } else if id == quit.id() {
                 return Ok(()); // dropping `tray` removes the icon; no file is touched
             }
@@ -228,8 +339,31 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let busy = restarting.load(Ordering::SeqCst);
         if Instant::now() >= next_poll || busy != last_busy {
             last_busy = busy;
-            let snap = state::read_status(base, SystemTime::now());
-            current = badge(&snap.status);
+            let now = SystemTime::now();
+            let snap = state::read_status(base, now);
+            let probe = match &snap.status {
+                Status::Error(d) if d == problem::OLD_MANAGER => problem::read_tail(
+                    &base.join("logs").join("supervisor.log"),
+                    problem::LOG_TAIL_BYTES,
+                )
+                .ok()
+                .and_then(|l| problem::last_probe_exit(&l)),
+                _ => None,
+            };
+            let class = problem::current(&snap, probe);
+            let detail = match &snap.status {
+                Status::Error(d) => d.as_str(),
+                _ => snap.detail.as_str(),
+            };
+            let age = snap.updated.and_then(|u| now.duration_since(u).ok());
+            let line = class.map(|c| problem::one_liner(c, detail, age));
+            in_problem = class.is_some();
+            if history.observe(&snap, class, line.as_deref().unwrap_or(""), now)
+                && let Err(e) = history.save(&history_path)
+            {
+                state::log(base, &format!("write history failed: {e}"));
+            }
+            current = (snap.status.sym(), snap.busy());
             let text = if busy {
                 "Restarting\u{2026}".to_string()
             } else {
@@ -237,8 +371,16 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
             };
             if shown_text.as_ref() != Some(&text) {
                 status_item.set_text(&text);
-                let _ = tray.set_tooltip(Some(tooltip(&text)));
                 shown_text = Some(text);
+            }
+            let tip = if busy {
+                "AAP Runner \u{b7} Restarting\u{2026}".to_string()
+            } else {
+                tooltip(&snap, line.as_deref())
+            };
+            if shown_tip.as_ref() != Some(&tip) {
+                let _ = tray.set_tooltip(Some(&tip));
+                shown_tip = Some(tip);
             }
             job_url = snap.job_url().map(str::to_owned);
             open_job.set_enabled(job_url.is_some());
@@ -255,7 +397,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
         let key = (size, current, light);
         if shown_icon != Some(key) {
-            let icon = Icon::from_rgba(mark::tray_rgba(size, current, light), size, size)?;
+            let (sym, n) = current;
+            let icon = Icon::from_rgba(mark::tray_rgba(size, sym, n, light), size, size)?;
             let _ = tray.set_icon(Some(icon));
             shown_icon = Some(key);
         }
@@ -266,31 +409,117 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use state::{Pool, Slot, parse_status};
 
     #[test]
-    fn each_state_maps_to_its_badge() {
-        assert_eq!(badge(&Status::Off), Badge::Hollow);
-        assert_eq!(badge(&Status::Unknown), Badge::Hollow);
-        assert_eq!(badge(&Status::NotInstalled), Badge::Hollow);
-        assert_eq!(badge(&Status::Starting), Badge::Solid);
-        assert_eq!(badge(&Status::Idle), Badge::Solid);
-        assert_eq!(badge(&Status::Draining), Badge::Solid);
-        assert_eq!(badge(&Status::Running("x".into())), Badge::Running);
-        assert_eq!(badge(&Status::Paused), Badge::Paused);
-        assert_eq!(badge(&Status::Error("x".into())), Badge::Error);
+    fn each_state_maps_to_its_symbol() {
+        assert_eq!(Status::Off.sym(), Sym::Off);
+        assert_eq!(Status::Unknown.sym(), Sym::Down);
+        assert_eq!(Status::NotInstalled.sym(), Sym::NotInstalled);
+        assert_eq!(Status::Starting.sym(), Sym::Starting);
+        assert_eq!(Status::Idle.sym(), Sym::Idle);
+        assert_eq!(Status::Draining.sym(), Sym::Draining);
+        assert_eq!(Status::Running("x".into()).sym(), Sym::Running);
+        assert_eq!(Status::Paused.sym(), Sym::Paused);
+        assert_eq!(Status::Error("x".into()).sym(), Sym::Error);
+    }
+
+    fn slot(n: u32, state: Sym, job: &str) -> Slot {
+        Slot {
+            slot: n,
+            state,
+            job: job.into(),
+            repo: String::new(),
+            run_url: String::new(),
+            job_url: String::new(),
+            started_at: None,
+            cpu_cores: None,
+            mem_gib: None,
+        }
     }
 
     #[test]
-    fn tooltip_is_prefixed_capped_and_versioned() {
-        let suffix = format!(
-            " \u{b7} v{} ({})",
-            env!("CARGO_PKG_VERSION"),
-            env!("AAP_TRAY_COMMIT")
+    fn tooltip_lines() {
+        let mut running = Snapshot::bare(Status::Running("Workspace".into()));
+        running.applied.runner_count = Some(3);
+        running.pool = Pool {
+            cpu_cores: Some(14.2),
+            mem_gib: Some(41.0),
+            io_mbps: None,
+        };
+        running.slots = vec![
+            slot(1, Sym::Running, "Workspace"),
+            slot(2, Sym::Draining, "Backend Tests"),
+            slot(3, Sym::Idle, ""),
+        ];
+        assert_eq!(
+            tooltip(&running, None),
+            "AAP Runner \u{b7} 2/3 busy \u{b7} 14 cores \u{b7} 41 GiB \u{b7} Workspace, Backend Tests"
         );
-        assert_eq!(tooltip("Idle"), format!("AAP Runner: Idle{suffix}"));
-        let long = tooltip(&"x".repeat(300));
-        assert_eq!(long.chars().count(), 120);
-        assert!(long.ends_with(&suffix));
+        running.pool = Pool::default();
+        assert_eq!(
+            tooltip(&running, None),
+            "AAP Runner \u{b7} 2/3 busy \u{b7} Workspace, Backend Tests",
+            "no sample, no numbers"
+        );
+        let mut idle = Snapshot::bare(Status::Idle);
+        idle.applied.runner_count = Some(3);
+        assert_eq!(
+            tooltip(&idle, None),
+            "AAP Runner \u{b7} Idle \u{b7} 0/3 busy"
+        );
+        let mut paused = Snapshot::bare(Status::Paused);
+        paused.slots = vec![slot(1, Sym::Running, "x")];
+        assert_eq!(
+            tooltip(&paused, None),
+            "AAP Runner \u{b7} Paused \u{b7} 1 job finishing"
+        );
+        assert_eq!(
+            tooltip(
+                &Snapshot::bare(Status::Error("x".into())),
+                Some("Runner service keeps stopping")
+            ),
+            "AAP Runner \u{b7} Error \u{b7} Runner service keeps stopping"
+        );
+        assert_eq!(
+            tooltip(&Snapshot::bare(Status::Unknown), None),
+            "AAP Runner \u{b7} Service not running"
+        );
+        let now = SystemTime::now();
+        let old = parse_status(
+            r#"{"state":"running","job":"test-pg","updated":"2099-01-01T00:00:00Z","runner_count":3}"#,
+            now,
+        );
+        assert_eq!(
+            tooltip(&old, None),
+            "AAP Runner \u{b7} 1/3 busy \u{b7} test-pg",
+            "older supervisor: one slot from the top-level fields"
+        );
+    }
+
+    #[test]
+    fn tooltip_is_capped_at_127_utf16_units() {
+        let mut s = Snapshot::bare(Status::Running(String::new()));
+        s.slots = (1..=3)
+            .map(|n| slot(n, Sym::Running, &"\u{1F600}job title ".repeat(12)))
+            .collect();
+        let t = tooltip(&s, None);
+        assert!(
+            t.encode_utf16().count() <= TOOLTIP_UNITS,
+            "{}",
+            t.encode_utf16().count()
+        );
+        assert!(t.ends_with('\u{2026}'));
+        assert!(t.starts_with("AAP Runner \u{b7} 3/3 busy \u{b7} "));
+        assert_eq!(cap_units("short", 127), "short");
+        let exact = "x".repeat(127);
+        assert_eq!(cap_units(&exact, 127), exact);
+        let cut = cap_units(&"x".repeat(200), 127);
+        assert_eq!(cut.encode_utf16().count(), 127);
+        // A surrogate pair is never split.
+        let emoji = cap_units(&"\u{1F600}".repeat(100), 127);
+        assert!(emoji.encode_utf16().count() <= 127);
+        assert!(emoji.ends_with('\u{2026}'));
     }
 
     #[test]
@@ -311,7 +540,11 @@ mod tests {
                 env!("AAP_TRAY_COMMIT")
             )
         );
-        assert_eq!(env!("CARGO_PKG_VERSION"), "0.3.0");
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.4.0");
         assert!(!env!("AAP_TRAY_COMMIT").is_empty());
+        assert_eq!(
+            dashboard_title(),
+            format!("AAP Runner \u{b7} v0.4.0 ({})", env!("AAP_TRAY_COMMIT"))
+        );
     }
 }
