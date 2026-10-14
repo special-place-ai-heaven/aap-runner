@@ -40,8 +40,9 @@ admin-written.
 
 ## Menu
 
-Open dashboard, state line (with applied limits when reported, e.g. `Idle · 2 runners · 24 cpu · 72 GiB total`; same text
+State line (with applied limits when reported, e.g. `Idle · 2 runners · 24 cpu · 72 GiB total`; same text
 as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, Verify install, Repair install, Open logs, version, Quit.
+Left click on the icon opens the same window.
 
 - Dark menu: the menu follows the Windows app theme (HKCU `...\Themes\Personalize` `AppsUseLightTheme`).
   Before the menu is built the tray calls uxtheme's `SetPreferredAppMode(AllowDark)` (ordinal 135),
@@ -54,7 +55,7 @@ as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, Veri
 - Polls `status.json` every 5 s. Restart writes `off`, waits up to 15 min for `state: off`, then writes `on`.
 - Pause/Resume flips `paused` in `settings.json`; the label follows the file.
 - Settings… opens the window (or focuses it) with the focus on the settings column (see Window).
-- Quit closes the tray only; it does not touch any file. Single instance per user (file locks in `%TEMP%`).
+- Quit closes the tray and the window it opened. It does not touch any file. If the tray process is gone without that (a crash), the window sees `aap-runner-tray.lock` free on its 5 s poll and closes. Single instance per user (file locks in `%TEMP%`).
 - Tooltip: `AAP Runner: <state line> · v<version> (<commit>)`.
 - While a job runs the state line reads `Running <repo short name> · <job>` (the part of `repo` after
   the slash), or `Running job <job>` when `repo` is empty.
@@ -67,7 +68,7 @@ as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, Veri
 
 ## Window (`--dashboard`, `--settings`)
 
-One egui window in its own process (`current_exe()`), one at a time (file lock in `%TEMP%`). No tabs:
+One egui window in its own process (`current_exe()`), one at a time (file lock in `%TEMP%`). Quit kills that process; otherwise it exits when the tray lock is not held. No tabs:
 a fixed 260 px settings column on the left, a 1 px border, and the observability column on the right.
 Default 760 x 520, resizable, minimum 680 x 460, placed bottom-right in the work area. Left click on the
 tray icon opens it (or closes it when it is the active window). The layout is the "Single-view layout"

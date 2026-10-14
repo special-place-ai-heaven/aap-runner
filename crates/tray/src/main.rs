@@ -26,7 +26,7 @@ use mark::Sym;
 use state::{DEFAULT_BASE, Desired, Snapshot, Status};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -142,6 +142,29 @@ fn single_instance(name: &str) -> Option<Option<File>> {
     }
 }
 
+/// Probe of `aap-runner-tray.lock`. The window treats [`TrayLock::Free`] as the tray having quit or crashed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrayLock {
+    Held,
+    Free,
+    /// The lock file could not be opened. That is not "not held": the window stays.
+    Unreadable,
+}
+
+/// The window exits only when the tray lock is free. An unreadable lock keeps it up.
+pub fn window_exits_without_tray(lock: TrayLock) -> bool {
+    lock == TrayLock::Free
+}
+
+pub(crate) fn probe_tray_lock() -> TrayLock {
+    match single_instance("aap-runner-tray.lock") {
+        None => TrayLock::Held,
+        // The guard is dropped, so this probe does not keep the lock.
+        Some(Some(_)) => TrayLock::Free,
+        Some(None) => TrayLock::Unreadable,
+    }
+}
+
 fn set_desired(base: &Path, d: Desired) {
     if let Err(e) = state::write_desired(base, d) {
         state::log(base, &format!("write {d:?} failed: {e}"));
@@ -157,10 +180,13 @@ fn toggle_pause(base: &Path) {
 }
 
 /// Start this exe with `args`; the child takes its own lock, so a repeat is a no-op.
-fn spawn_self(base: &Path, args: &[&str]) {
-    let spawned = std::env::current_exe().and_then(|exe| Command::new(exe).args(args).spawn());
-    if let Err(e) = spawned {
-        state::log(base, &format!("open {args:?} failed: {e}"));
+fn spawn_self(base: &Path, args: &[&str]) -> Option<Child> {
+    match std::env::current_exe().and_then(|exe| Command::new(exe).args(args).spawn()) {
+        Ok(child) => Some(child),
+        Err(e) => {
+            state::log(base, &format!("open {args:?} failed: {e}"));
+            None
+        }
     }
 }
 
@@ -180,16 +206,33 @@ fn request_view(base: &Path, view: View) {
 /// Open the window as `view` asks (`None`: Status), or focus it if it is open and pass `view`
 /// on (`None`: no change). `toggle`: a left click on the icon closes it when it was the last
 /// active window.
-fn show_window(base: &Path, view: Option<View>, toggle: Option<Option<isize>>) {
+fn show_window(base: &Path, view: Option<View>, toggle: Option<Option<isize>>) -> Option<Child> {
     match (win::find_window(&dashboard_title()), toggle) {
-        (Some(h), Some(last)) if last == Some(h) => win::close(h),
+        (Some(h), Some(last)) if last == Some(h) => {
+            win::close(h);
+            None
+        }
         (Some(h), _) => {
             if let Some(view) = view {
                 request_view(base, view);
             }
             win::focus(h);
+            None
         }
         (None, _) => spawn_self(base, view.unwrap_or(View::Status).args()),
+    }
+}
+
+/// Keep the child that still owns the window. A later spawn lost the window lock and exits on its own.
+fn track_window(slot: &mut Option<Child>, spawned: Option<Child>) {
+    let Some(child) = spawned else { return };
+    let still = slot
+        .as_mut()
+        .is_some_and(|c| matches!(c.try_wait(), Ok(None)));
+    if still {
+        let _lost = child;
+    } else {
+        *slot = Some(child);
     }
 }
 
@@ -235,7 +278,6 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let dark_menus = win::DarkMenus::load();
     let mut apps_light = win::apps_use_light_theme();
     win::apply_dark_menus(dark_menus, None, !apps_light);
-    let dashboard = MenuItem::new("Open dashboard", true, None);
     let status_item = MenuItem::new("", false, None);
     let open_job = MenuItem::new("Open job", false, None);
     let start = MenuItem::new("Start", true, None);
@@ -249,8 +291,6 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let version_item = MenuItem::new(version(), false, None);
     let quit = MenuItem::new("Quit", true, None);
     let menu = Menu::with_items(&[
-        &dashboard,
-        &PredefinedMenuItem::separator(),
         &status_item,
         &open_job,
         &PredefinedMenuItem::separator(),
@@ -295,9 +335,13 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_app = None;
     let history_path = History::path();
     let mut history = History::load(&history_path);
+    let mut window: Option<Child> = None;
 
     loop {
         if !win::pump_messages() {
+            if let Some(mut child) = window.take() {
+                let _ = child.kill();
+            }
             return Ok(());
         }
         if let Some(h) = win::foreground_app() {
@@ -310,18 +354,19 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 ..
             } = e
             {
-                show_window(
-                    base,
-                    in_problem.then_some(View::Diagnostics),
-                    Some(last_app),
+                track_window(
+                    &mut window,
+                    show_window(
+                        base,
+                        in_problem.then_some(View::Diagnostics),
+                        Some(last_app),
+                    ),
                 );
             }
         }
         while let Ok(e) = menu_rx.try_recv() {
             let id = e.id();
-            if id == dashboard.id() {
-                show_window(base, Some(View::Status), None);
-            } else if id == start.id() {
+            if id == start.id() {
                 set_desired(base, Desired::On);
             } else if id == stop.id() {
                 set_desired(base, Desired::Off);
@@ -338,17 +383,17 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
             } else if id == pause.id() {
                 toggle_pause(base);
             } else if id == settings_item.id() {
-                show_window(base, Some(View::Settings), None);
+                track_window(&mut window, show_window(base, Some(View::Settings), None));
             } else if id == verify_item.id() {
                 if let Err(e) = helper::launch(base, helper::Verb::Verify) {
                     state::log(base, &e);
                 }
-                show_window(base, Some(View::Status), None);
+                track_window(&mut window, show_window(base, Some(View::Status), None));
             } else if id == repair_item.id() {
                 if let Err(e) = helper::launch(base, helper::Verb::Repair) {
                     state::log(base, &e);
                 }
-                show_window(base, Some(View::Status), None);
+                track_window(&mut window, show_window(base, Some(View::Status), None));
             } else if id == open_job.id() {
                 if let Some(url) = job_url.as_deref().filter(|u| state::valid_run_url(u))
                     && let Err(e) = Command::new(EXPLORER).arg(url).spawn()
@@ -358,6 +403,9 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
             } else if id == logs.id() {
                 open_logs(base);
             } else if id == quit.id() {
+                if let Some(mut child) = window.take() {
+                    let _ = child.kill();
+                }
                 return Ok(()); // dropping `tray` removes the icon; no file is touched
             }
             next_poll = Instant::now();
@@ -586,5 +634,12 @@ mod tests {
             dashboard_title(),
             format!("AAP Runner \u{b7} v0.5.0 ({})", env!("AAP_TRAY_COMMIT"))
         );
+    }
+
+    #[test]
+    fn window_exits_when_the_tray_lock_is_not_held() {
+        assert!(window_exits_without_tray(TrayLock::Free));
+        assert!(!window_exits_without_tray(TrayLock::Held));
+        assert!(!window_exits_without_tray(TrayLock::Unreadable));
     }
 }
