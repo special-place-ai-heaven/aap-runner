@@ -310,6 +310,9 @@ struct Dash {
     right_first: Option<egui::Id>,
     /// Move focus to the first control of the left (`true`) or right column.
     want_focus: Option<bool>,
+    /// Latest elevated Verify/Repair, polled from the temp pointer and `jobs\<id>\`.
+    job: Option<crate::helper::JobUi>,
+    job_at: Instant,
 }
 
 pub fn run(base: PathBuf, view: View) -> eframe::Result {
@@ -356,7 +359,10 @@ pub fn run(base: PathBuf, view: View) -> eframe::Result {
                 copied: None,
                 right_first: None,
                 want_focus: None,
+                job: None,
+                job_at: Instant::now(),
             };
+            d.job = crate::helper::load_job(&d.base);
             d.refresh(&cc.egui_ctx);
             // Initial focus: the problem button when there is an error, otherwise none.
             if d.problem.is_some() {
@@ -471,6 +477,8 @@ impl Dash {
                 crate::open_logs(&self.base);
                 return;
             }
+            Action::Repair => crate::helper::launch(&self.base, crate::helper::Verb::Repair)
+                .map(|()| "Approve the prompt to repair.".to_string()),
             Action::RestartService => Command::new(SCHTASKS)
                 .args(["/run", "/tn", SUPERVISOR_TASK])
                 .creation_flags(CREATE_NO_WINDOW)
@@ -1298,8 +1306,21 @@ impl Dash {
             });
         }
         ui.add_space(4.0);
-        ui.add_enabled(false, egui::Button::new("Verify"))
-            .on_disabled_hover_text("coming in M2");
+        ui.horizontal(|ui| {
+            if ui.button("Verify install").clicked()
+                && let Err(e) = crate::helper::launch(&self.base, crate::helper::Verb::Verify)
+            {
+                self.note = Some((e, Instant::now()));
+            }
+            if ui.button("Repair install").clicked()
+                && let Err(e) = crate::helper::launch(&self.base, crate::helper::Verb::Repair)
+            {
+                self.note = Some((e, Instant::now()));
+            }
+        });
+        if let Some(job) = &self.job {
+            ui.label(RichText::new(job.summary()).small());
+        }
     }
 
     /// The raw `detail` and since when.
@@ -1347,7 +1368,38 @@ impl Dash {
     }
 
     /// Everything under the pinned header row; it scrolls at small sizes.
+    fn job_banner(&self, ui: &mut egui::Ui) {
+        let Some(job) = &self.job else {
+            return;
+        };
+        let p = self.pal();
+        ui.label(RichText::new(job.summary()).font(FontId::new(13.0, semibold())));
+        if !job.lines.is_empty() {
+            egui::Frame::new()
+                .fill(p.card)
+                .stroke(Stroke::new(1.0, p.border))
+                .corner_radius(4)
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    egui::ScrollArea::vertical()
+                        .max_height(8.0 * 15.0)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for line in &job.lines {
+                                ui.add(
+                                    egui::Label::new(RichText::new(line).monospace())
+                                        .wrap_mode(egui::TextWrapMode::Extend),
+                                );
+                            }
+                        });
+                });
+        }
+        ui.add_space(8.0);
+    }
+
     fn right(&mut self, ui: &mut egui::Ui) {
+        self.job_banner(ui);
         let p = self.pal();
         match self.snap.status.clone() {
             _ if self.panel && self.problem.is_some() => self.error_panel(ui),
@@ -1414,6 +1466,15 @@ impl eframe::App for Dash {
         if self.read_at.elapsed() >= REFRESH {
             self.refresh(&ctx);
         }
+        let job_every = if self.job.as_ref().is_some_and(|j| j.active()) {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_secs(1)
+        };
+        if self.job_at.elapsed() >= job_every {
+            self.job = crate::helper::load_job(&self.base);
+            self.job_at = Instant::now();
+        }
         ctx.request_repaint_after(Duration::from_secs(1));
         if let Some(view) = take_request(&request_path()) {
             self.open(view);
@@ -1434,8 +1495,14 @@ impl eframe::App for Dash {
             .resizable(false)
             .frame(frame)
             .show(ui, |ui| {
-                self.settings
-                    .show(ui, &p, &self.base, &self.snap, &mut self.desired)
+                self.settings.show(
+                    ui,
+                    &p,
+                    &self.base,
+                    &self.snap,
+                    &mut self.desired,
+                    self.job.as_ref(),
+                )
             })
             .inner;
         self.right_first = None;

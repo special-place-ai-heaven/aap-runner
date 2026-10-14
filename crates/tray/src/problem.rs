@@ -40,6 +40,7 @@ pub enum Action {
     Settings,
     RestartService,
     OpenLogs,
+    Repair,
 }
 
 impl Action {
@@ -49,18 +50,20 @@ impl Action {
             Action::Settings => "Settings\u{2026}",
             Action::RestartService => "Restart service",
             Action::OpenLogs => "Open logs",
+            Action::Repair => "Repair install",
         }
     }
 }
 
 impl Class {
-    /// The primary action. Repair arrives in M2; until then the old manager opens the logs.
+    /// The primary action. An old manager is repaired from the elevated helper.
     pub fn action(self) -> Action {
         match self {
             Class::Mount | Class::Probe | Class::RestartLoop => Action::Retry,
             Class::LimitsRefused => Action::Settings,
             Class::SupervisorDown => Action::RestartService,
-            Class::ManagerOld | Class::DrainTimeout | Class::Other => Action::OpenLogs,
+            Class::ManagerOld => Action::Repair,
+            Class::DrainTimeout | Class::Other => Action::OpenLogs,
         }
     }
 
@@ -358,7 +361,7 @@ mod tests {
         assert_eq!(Class::Mount.action(), Action::Retry);
         assert_eq!(Class::LimitsRefused.action(), Action::Settings);
         assert_eq!(Class::SupervisorDown.action(), Action::RestartService);
-        assert_eq!(Class::ManagerOld.action(), Action::OpenLogs);
+        assert_eq!(Class::ManagerOld.action(), Action::Repair);
     }
 
     #[test]

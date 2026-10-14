@@ -1,8 +1,11 @@
 //! The only Win32 calls the tray and its windows make, after Fathom's `tray.rs`. Each `unsafe`
 //! block is a single FFI call (or a call pair) with owned, correctly sized out-parameters.
 
-use windows::Win32::Foundation::{ERROR_SUCCESS, HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_CANCELLED, ERROR_SUCCESS, HWND, LPARAM, RECT, WPARAM,
+};
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
@@ -11,9 +14,12 @@ use windows::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetThreadDpiAwarenessContext,
 };
+use windows::Win32::UI::Shell::{
+    SEE_MASK_FLAG_NO_UI, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, FindWindowW, GetClassNameW, GetForegroundWindow, IsIconic, MSG, PM_REMOVE,
-    PeekMessageW, PostMessageW, SPI_GETCLIENTAREAANIMATION, SPI_GETWORKAREA, SW_RESTORE,
+    PeekMessageW, PostMessageW, SPI_GETCLIENTAREAANIMATION, SPI_GETWORKAREA, SW_HIDE, SW_RESTORE,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetForegroundWindow, ShowWindow, SystemParametersInfoW,
     TranslateMessage, WM_CLOSE, WM_QUIT,
 };
@@ -270,6 +276,54 @@ pub fn apply_dark_menus(api: Option<DarkMenus>, window: Option<isize>, dark: boo
         };
     }
     true
+}
+
+/// 16 lowercase hex digits from the system RNG.
+pub fn random_id() -> std::io::Result<String> {
+    let mut bytes = [0u8; 8];
+    // SAFETY: `bytes` is a live 8-byte buffer. `None` selects the process-wide RNG.
+    let status = unsafe { BCryptGenRandom(None, &mut bytes, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
+    if status.0 < 0 {
+        return Err(std::io::Error::other(format!("rng status {}", status.0)));
+    }
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn wide(text: &std::ffi::OsStr) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    text.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+/// One UAC prompt. Returns when the elevated process has been created, not when it exits.
+/// The caller does not wait on the process.
+pub fn shell_execute_runas(exe: &std::path::Path, parameters: &str) -> Result<(), String> {
+    let file = wide(exe.as_os_str());
+    let params = wide(std::ffi::OsStr::new(parameters));
+    let verb = wide(std::ffi::OsStr::new("runas"));
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI,
+        lpVerb: PCWSTR::from_raw(verb.as_ptr()),
+        lpFile: PCWSTR::from_raw(file.as_ptr()),
+        lpParameters: PCWSTR::from_raw(params.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    // SAFETY: the three buffers are null-terminated and live for this call. `cbSize` is the
+    // struct's size. Every other pointer stays null from `Default`.
+    if let Err(err) = unsafe { ShellExecuteExW(&mut info) } {
+        let cancelled = err.code().0 as u32 & 0xFFFF == ERROR_CANCELLED.0;
+        return Err(if cancelled {
+            "Elevation was declined.".to_string()
+        } else {
+            format!("Could not start the elevated helper: {err}")
+        });
+    }
+    if !info.hProcess.is_invalid() {
+        // SAFETY: `hProcess` is the handle this call just opened.
+        let _ = unsafe { CloseHandle(info.hProcess) };
+    }
+    Ok(())
 }
 
 #[cfg(test)]

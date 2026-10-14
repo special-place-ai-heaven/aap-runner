@@ -11,6 +11,8 @@
 #   folders, so no junction can be made in it; files get Modify. The tray
 #   writes state.json, settings.json and tray.log there; the supervisor only
 #   reads them.
+# - inbox\jobs gets that same ACL. The tray writes one request file per
+#   elevated action there. The supervisor does not read it.
 # - Before any ACL or write the data folder and everything in it are
 #   checked: no reparse point (junction, symlink) anywhere, and an
 #   Administrators, SYSTEM or TrustedInstaller owner on everything outside
@@ -39,7 +41,8 @@ param(
     [string]$DataDir = 'C:\ProgramData\aap-runner',
     [string]$ScriptDir = 'C:\wsl\aap-runner-supervisor',
     [string]$TaskName = 'AAP-CRRR-Supervisor',
-    [string]$TrayExe = 'C:\TOOLS\git_runner\aap-runner-tray.exe'
+    [string]$TrayExe = 'C:\TOOLS\git_runner\aap-runner-tray.exe',
+    [switch]$EnsureRequestDir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -215,7 +218,39 @@ function Get-AapInboxAcl([string]$UserSid) {
 
 function Protect-AapDataDir([string]$Path, [string]$UserSid) {
     Set-Acl -LiteralPath $Path -AclObject (Get-AapDataDirAcl $UserSid)
-    Set-Acl -LiteralPath (Join-Path $Path 'inbox') -AclObject (Get-AapInboxAcl $UserSid)
+    $inbox = Join-Path $Path 'inbox'
+    Set-Acl -LiteralPath $inbox -AclObject (Get-AapInboxAcl $UserSid)
+    $jobs = Join-Path $inbox 'jobs'
+    if (Test-Path -LiteralPath $jobs) {
+        $attr = [int](New-Object IO.FileInfo $jobs).Attributes
+        if (($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "refusing: reparse point $jobs"
+        }
+        Set-Acl -LiteralPath $jobs -AclObject (Get-AapInboxAcl $UserSid)
+    }
+}
+
+# Creates inbox\jobs so the non-elevated tray can write a request file.
+# Same ACL as inbox: create files, not folders.
+function Initialize-AapRequestDir([string]$Path, [string]$UserSid) {
+    $inbox = Join-Path $Path 'inbox'
+    $jobs = Join-Path $inbox 'jobs'
+    foreach ($dir in @($Path, (Join-Path $Path 'logs'), $inbox, $jobs)) {
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        }
+    }
+    foreach ($p in @($Path, $inbox, $jobs)) {
+        $attr = [int](New-Object IO.FileInfo $p).Attributes
+        if ($attr -eq -1 -or ($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "refusing: reparse point $p"
+        }
+    }
+    $probe = Get-AapDataDirProblem $Path
+    if ($probe.Problems.Count -or $probe.Unreadable.Count) {
+        throw "refusing: $(@($probe.Problems) + @($probe.Unreadable) -join '; ')"
+    }
+    Protect-AapDataDir $Path $UserSid
 }
 
 function Register-AapTask([string]$Name, [string]$XmlFile) {
@@ -253,6 +288,7 @@ function Get-AapSupervisorPlan {
         $lines.Add("PASS no reparse point or non-admin owner under $($Facts.DataDir)")
         $lines.Add("WOULD acl $($Facts.DataDir) and logs: owner Administrators; Administrators, SYSTEM full; $($Facts.UserSid) read; no inheritance")
         $lines.Add("WOULD acl $($Facts.DataDir)\inbox: as above plus $($Facts.UserSid) create and delete files (no folders), Modify on files")
+        $lines.Add("WOULD acl $($Facts.DataDir)\inbox\jobs: same as inbox, for helper request files")
         if ($Facts.StateExists) {
             $lines.Add('SKIP inbox\state.json already present')
         } else {
@@ -305,7 +341,7 @@ function Invoke-AapInstallSupervisor {
     foreach ($line in $plan.Lines) { [Console]::Out.WriteLine($line) }
     if ($DryRun -or $plan.ExitCode -ne 0) { return [int]$plan.ExitCode }
 
-    foreach ($dir in @($DataDir, (Join-Path $DataDir 'logs'), $inbox)) {
+    foreach ($dir in @($DataDir, (Join-Path $DataDir 'logs'), $inbox, (Join-Path $inbox 'jobs'))) {
         if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
     }
     # Again right before Set-Acl, which would follow a junction made since the
@@ -343,6 +379,13 @@ function Invoke-AapInstallSupervisor {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         Initialize-AapModulePath
+        if ($EnsureRequestDir) {
+            if (-not (Test-AapElevated)) { throw 'refusing: elevation required' }
+            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            Initialize-AapRequestDir $DataDir $sid
+            [Console]::Out.WriteLine("DONE $DataDir\inbox\jobs")
+            exit 0
+        }
         $code = 1
         Invoke-AapInstallSupervisor | ForEach-Object {
             if ($_ -is [int]) { $code = $_ } else { [Console]::Out.WriteLine([string]$_) }

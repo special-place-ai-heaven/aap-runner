@@ -122,6 +122,7 @@ impl SettingsPanel {
         base: &Path,
         snap: &Snapshot,
         desired: &mut Desired,
+        job: Option<&crate::helper::JobUi>,
     ) -> Focus {
         let mut focus = Focus {
             first: None,
@@ -140,6 +141,23 @@ impl SettingsPanel {
             focus.track(ui, p, &r);
             if r.clicked() {
                 crate::open_logs(base);
+            }
+            if let Some(job) = job {
+                ui.label(RichText::new(job.summary()).small());
+            }
+            let repair = ui.button("Repair install");
+            focus.track(ui, p, &repair);
+            if repair.clicked()
+                && let Err(e) = crate::helper::launch(base, crate::helper::Verb::Repair)
+            {
+                crate::state::log(base, &e);
+            }
+            let verify = ui.button("Verify install");
+            focus.track(ui, p, &verify);
+            if verify.clicked()
+                && let Err(e) = crate::helper::launch(base, crate::helper::Verb::Verify)
+            {
+                crate::state::log(base, &e);
             }
         });
         focus
