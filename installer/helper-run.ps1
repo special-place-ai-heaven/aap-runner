@@ -24,6 +24,14 @@ $AapPs = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
 $AapSchtasks = 'C:\Windows\System32\schtasks.exe'
 $AapWsl = 'C:\Windows\System32\wsl.exe'
 
+function Initialize-AapModulePath {
+    $machine = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+    if ([string]::IsNullOrEmpty($machine)) {
+        throw 'refusing: machine PSModulePath is empty'
+    }
+    $env:PSModulePath = $machine
+}
+
 function Test-AapHelperDataDir([string]$Path) {
     if ([string]::IsNullOrEmpty($Path)) { return $false }
     if ($Path -match '\.\.') { return $false }
@@ -329,7 +337,28 @@ function Invoke-AapVerifyLive([string]$DataDir) {
     return 0
 }
 
+function Get-AapRepairRefusal([string]$DataDir) {
+    if (-not (Test-AapHelperDataDir $DataDir)) { return $null }
+    $path = Join-Path $DataDir 'status.json'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    if (Test-AapReparsePoint $path) { return $null }
+    $len = (Get-Item -LiteralPath $path -Force).Length
+    if ($len -gt 65536) { return $null }
+    $text = [IO.File]::ReadAllText($path)
+    $state = $null
+    if ($text -match '"state"\s*:\s*"([^"]+)"') { $state = $Matches[1] }
+    if ($state -eq 'running' -or $state -eq 'draining') {
+        return 'job running, repair refused; retry when idle or pause the runners first'
+    }
+    return $null
+}
+
 function Invoke-AapRepairLive([string]$TrayExe) {
+    $refusal = Get-AapRepairRefusal $AapDataDir
+    if ($refusal) {
+        [Console]::Out.WriteLine("FAIL $refusal")
+        return 1
+    }
     $layout = Get-AapHelperLayout
     foreach ($step in @(Get-AapRepairPlan)) {
         if ($step.Name -ne 'lock-acl') { continue }
@@ -401,6 +430,7 @@ function Invoke-AapRepairLive([string]$TrayExe) {
 if ($MyInvocation.InvocationName -ne '.') {
     $ErrorActionPreference = 'Stop'
     try {
+        Initialize-AapModulePath
         if ($Verb -ne 'verify' -and $Verb -ne 'repair') {
             [Console]::Error.WriteLine('refusing: verb')
             exit 2

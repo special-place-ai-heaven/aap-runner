@@ -32,7 +32,37 @@ const LOG_CAP: u64 = 1024 * 1024;
 const LOG_TAIL_BYTES: u64 = 8192;
 const REQUEST_WAIT: Duration = Duration::from_secs(180);
 const POWERSHELL: &str = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe";
+const SYSTEM32: &str = r"C:\Windows\System32";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// Shown instead of a UAC prompt when the exe directory is writable by a non-admin.
+pub const USER_WRITABLE_EXE_DIR: &str =
+    "tray exe is in a user-writable folder; move it to an admin-only folder";
+const USERS_SID: &str = "S-1-5-32-545";
+const AUTHENTICATED_USERS_SID: &str = "S-1-5-11";
+/// Write data, append/create, write EA, write attributes, generic write, generic all.
+const WRITE_OR_CREATE: u32 = 0x0002 | 0x0004 | 0x0010 | 0x0100 | 0x4000_0000 | 0x1000_0000;
+
+/// One allow or deny entry on the tray exe's directory. `inherit_only` does not apply to the
+/// directory itself.
+#[derive(Clone, Debug)]
+pub struct DirAce {
+    pub sid: String,
+    pub allow: bool,
+    pub rights: u32,
+    pub inherit_only: bool,
+}
+
+/// Users or Authenticated Users can replace the exe when an allow ACE on the directory itself
+/// includes write, modify, or create.
+pub fn user_can_replace_exe(aces: &[DirAce]) -> bool {
+    aces.iter().any(|ace| {
+        ace.allow
+            && !ace.inherit_only
+            && (ace.sid == USERS_SID || ace.sid == AUTHENTICATED_USERS_SID)
+            && ace.rights & WRITE_OR_CREATE != 0
+    })
+}
+
 const REPARSE: u32 = 0x400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,14 +510,44 @@ pub fn load_job(base: &Path) -> Option<JobUi> {
 /// Write the request when `inbox\jobs` already exists, record the id for the window, and ask
 /// Windows for one UAC prompt. If the folder does not exist yet, a background thread writes the
 /// request once the elevated helper has created it.
+fn refuse_elevation(verb: Verb, message: &str) -> Result<(), String> {
+    if let Ok(id) = win::random_id() {
+        let _ = write_pointer(&id, verb, message);
+    }
+    Err(message.to_string())
+}
+
 pub fn launch(base: &Path, verb: Verb) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let Some(dir) = exe.parent() else {
+        return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
+    };
+    match win::directory_aces(dir) {
+        Ok(aces) => {
+            let view: Vec<DirAce> = aces
+                .into_iter()
+                .map(|ace| DirAce {
+                    sid: ace.sid,
+                    allow: ace.allow,
+                    rights: ace.rights,
+                    inherit_only: ace.inherit_only,
+                })
+                .collect();
+            if user_can_replace_exe(&view) {
+                return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
+            }
+        }
+        Err(e) => {
+            return refuse_elevation(
+                verb,
+                &format!("could not read the tray exe folder ACL: {e}"),
+            );
+        }
+    }
     let id = win::random_id().map_err(|e| e.to_string())?;
     write_pointer(&id, verb, "")?;
     let wrote = write_request(base, &id, verb).is_ok();
-    if let Err(e) = win::shell_execute_runas(
-        &std::env::current_exe().map_err(|e| e.to_string())?,
-        &format!("--helper {} {id}", verb.as_str()),
-    ) {
+    if let Err(e) = win::shell_execute_runas(&exe, &format!("--helper {} {id}", verb.as_str())) {
         let _ = write_pointer(&id, verb, &e);
         return Err(e);
     }
@@ -538,22 +598,22 @@ fn ensure_request_dir(scripts_dir: &Path) -> Result<(), String> {
     let ps1 = scripts_dir
         .join("supervisor")
         .join("install-supervisor.ps1");
-    let out = Command::new(POWERSHELL)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(&ps1)
-        .args(["-EnsureRequestDir", "-DataDir", DATA_DIR])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut cmd = Command::new(POWERSHELL);
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+    ])
+    .arg(&ps1)
+    .args(["-EnsureRequestDir", "-DataDir", DATA_DIR])
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .creation_flags(CREATE_NO_WINDOW);
+    harden_powershell(&mut cmd).map_err(|e| e.to_string())?;
+    let out = cmd.output().map_err(|e| e.to_string())?;
     if out.status.success() {
         return Ok(());
     }
@@ -668,12 +728,12 @@ fn run_script(job: &Path, verb: Verb, tray: Option<&str>) -> io::Result<i32> {
     {
         cmd.args(["-TrayExe", exe]);
     }
-    let mut child = cmd
-        .stdin(Stdio::null())
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()?;
+        .creation_flags(CREATE_NO_WINDOW);
+    harden_powershell(&mut cmd)?;
+    let mut child = cmd.spawn()?;
     let log = job.join("log.txt");
     let id = job.file_name().and_then(|s| s.to_str()).unwrap_or("");
     stream_child(&mut child, &log, |line| {
@@ -683,6 +743,25 @@ fn run_script(job: &Path, verb: Verb, tray: Option<&str>) -> io::Result<i32> {
     })?;
     let status = child.wait()?;
     Ok(status.code().unwrap_or(1))
+}
+
+/// Machine module path, System32-only PATH, and no inherited execution-policy preference.
+fn harden_powershell(cmd: &mut Command) -> io::Result<()> {
+    cmd.env("PSModulePath", win::machine_ps_module_path()?);
+    cmd.env("PATH", SYSTEM32);
+    cmd.env_remove("PSExecutionPolicyPreference");
+    Ok(())
+}
+
+fn failure_step(log: &Path, code: i32) -> String {
+    for line in log_tail(log).iter().rev() {
+        if let Some(rest) = line.strip_prefix("FAIL ")
+            && !rest.is_empty()
+        {
+            return sanitize_step(rest);
+        }
+    }
+    format!("exit {code}")
 }
 
 fn fail_job(job: &Path, id: &str, verb: &str, to: &str, step: &str, code: i32) -> i32 {
@@ -766,7 +845,7 @@ pub fn run_elevated(verb_arg: &str, id: &str) -> i32 {
             id,
             got.as_str(),
             "failed",
-            &format!("exit {code}"),
+            &failure_step(&job.join("log.txt"), code),
             code,
         ),
         Err(e) => fail_job(&job, id, got.as_str(), "failed", &e.to_string(), 1),
@@ -937,5 +1016,71 @@ mod tests {
         let ui = load_job_from(&pointer, &base).unwrap();
         assert_eq!(ui.state, "declined");
         let _ = fs::remove_dir_all(&base);
+    }
+
+    fn ace(sid: &str, allow: bool, rights: u32, inherit_only: bool) -> DirAce {
+        DirAce {
+            sid: sid.to_string(),
+            allow,
+            rights,
+            inherit_only,
+        }
+    }
+
+    #[test]
+    fn a_user_writable_exe_directory_is_not_elevated() {
+        const READ_AND_EXECUTE: u32 = 0x200A9;
+        const MODIFY: u32 = 0x301BF;
+        assert!(!user_can_replace_exe(&[ace(
+            USERS_SID,
+            true,
+            READ_AND_EXECUTE,
+            false
+        )]));
+        assert!(user_can_replace_exe(&[ace(USERS_SID, true, 0x0002, false)]));
+        assert!(user_can_replace_exe(&[ace(
+            AUTHENTICATED_USERS_SID,
+            true,
+            MODIFY,
+            false
+        )]));
+        assert!(
+            !user_can_replace_exe(&[ace(USERS_SID, true, 0x0002, true)]),
+            "inherit-only create does not apply to the directory"
+        );
+        assert!(!user_can_replace_exe(&[ace(
+            "S-1-5-32-544",
+            true,
+            0x1000_0000,
+            false
+        )]));
+        assert!(
+            !user_can_replace_exe(&[ace(USERS_SID, false, 0x0002, false)]),
+            "a deny is not an allow"
+        );
+        assert_eq!(
+            USER_WRITABLE_EXE_DIR,
+            "tray exe is in a user-writable folder; move it to an admin-only folder"
+        );
+    }
+
+    #[test]
+    fn system32_is_not_treated_as_user_writable() {
+        let raw = crate::win::directory_aces(Path::new(r"C:\Windows\System32")).unwrap();
+        let view: Vec<DirAce> = raw
+            .into_iter()
+            .map(|ace| DirAce {
+                sid: ace.sid,
+                allow: ace.allow,
+                rights: ace.rights,
+                inherit_only: ace.inherit_only,
+            })
+            .collect();
+        assert!(
+            !user_can_replace_exe(&view),
+            "System32 looked writable: {view:?}"
+        );
+        let modules = crate::win::machine_ps_module_path().unwrap();
+        assert!(!modules.is_empty());
     }
 }

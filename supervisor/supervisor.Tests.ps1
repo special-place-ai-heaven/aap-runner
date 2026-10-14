@@ -1323,6 +1323,19 @@ Describe 'aap-runner host supervisor' {
             (Get-AapInboxAcl $op).AreAccessRulesProtected | Should -BeTrue
             (Get-AapDataDirAcl $op).GetOwner([Security.Principal.SecurityIdentifier]).Value | Should -Be 'S-1-5-32-544'
         }
+
+        It 'accepts an admin owner for the tray directory and refuses the operator' {
+            $dir = Join-Path $TestDrive 'tray-owner'
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+            $script:ownerSid = 'S-1-5-32-544'
+            Mock Get-Acl { & $script:mkAcl $script:ownerSid @() }
+            foreach ($sid in @('S-1-5-32-544', 'S-1-5-18', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')) {
+                $script:ownerSid = $sid
+                Test-AapAdminOwned $dir | Should -BeTrue
+            }
+            $script:ownerSid = $script:op
+            Test-AapAdminOwned $dir | Should -BeFalse
+        }
     }
 
     Describe 'tray autostart' {
@@ -1362,6 +1375,7 @@ Describe 'aap-runner host supervisor' {
                 Mock Test-AapElevated { return $true }
                 Mock Protect-AapDataDir { }
                 Mock Test-AapAdminAcl { return $true }
+                Mock Test-AapAdminOwned { return $true }
                 Mock Write-AapTrayRunValue { }
                 Mock Clear-AapTrayRunValue { }
                 Mock Stop-ScheduledTask { throw 'must not be reached' }
@@ -1375,6 +1389,15 @@ Describe 'aap-runner host supervisor' {
                 $DataDir = Join-Path $TestDrive ('pd-' + [guid]::NewGuid().ToString('n'))
                 $ScriptDir = Join-Path $TestDrive ('sd-' + [guid]::NewGuid().ToString('n'))
                 $TaskName = 'AAP-Test-NotRegistered'
+            }
+
+            It 'refuses a tray exe whose directory is not admin-owned' {
+                Mock Test-AapAdminOwned { return $false }
+                $TrayExe = Join-Path $TestDrive 'aap-runner-tray.exe'
+                Set-Content -LiteralPath $TrayExe -Value 'x'
+                $code = @(Invoke-AapInstallSupervisor | Where-Object { $_ -is [int] })[-1]
+                $code | Should -Be 1
+                Should -Invoke Write-AapTrayRunValue -Times 0 -Exactly
             }
 
             It 'writes the Run value when the tray exe exists' {
@@ -1424,13 +1447,13 @@ Describe 'aap-runner host supervisor' {
         }
 
 
-        It 'install-supervisor.ps1 -DryRun prints the Run value for an existing tray exe' {
+                It 'install-supervisor.ps1 -DryRun refuses a tray exe in a user-owned directory' {
             $tray = Join-Path $TestDrive 'aap-runner-tray.exe'
             Set-Content -LiteralPath $tray -Value 'x'
             $out = & $script:exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'install-supervisor.ps1') -DryRun -DataDir (Join-Path $TestDrive 'pd') -TaskName 'AAP-Test-NotRegistered' -TrayExe $tray 2>&1 | Out-String
-            $LASTEXITCODE | Should -Be 0
-            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-            $out | Should -Match ([regex]::Escape("WOULD run-key Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Run AAP-Runner-Tray = `"$tray`""))
+            $LASTEXITCODE | Should -Be 1
+            $out | Should -Match 'not admin-owned'
+            $out | Should -Not -Match 'WOULD run-key'
         }
 
         It 'uninstall-supervisor.ps1 -DryRun exits 0' {

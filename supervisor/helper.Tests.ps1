@@ -99,6 +99,28 @@ Describe 'helper verify' {
         $out | Should -Not -Match 'Set-Acl'
     }
 
+    It 'refuses repair when status.json says <state>' -TestCases @(
+        @{ state = 'running' }
+        @{ state = 'draining' }
+    ) {
+        $root = Join-Path $TestDrive "repair-$state"
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        $enc = New-Object System.Text.UTF8Encoding $false
+        [IO.File]::WriteAllText((Join-Path $root 'status.json'), ('{"state":"' + $state + '"}'), $enc)
+        Get-AapRepairRefusal $root | Should -Be 'job running, repair refused; retry when idle or pause the runners first'
+    }
+
+    It 'does not refuse repair when the runners are idle or status is missing' {
+        $idle = Join-Path $TestDrive 'repair-idle'
+        New-Item -ItemType Directory -Force -Path $idle | Out-Null
+        $enc = New-Object System.Text.UTF8Encoding $false
+        [IO.File]::WriteAllText((Join-Path $idle 'status.json'), '{"state":"idle"}', $enc)
+        Get-AapRepairRefusal $idle | Should -BeNullOrEmpty
+        $none = Join-Path $TestDrive 'repair-none'
+        New-Item -ItemType Directory -Force -Path $none | Out-Null
+        Get-AapRepairRefusal $none | Should -BeNullOrEmpty
+    }
+
     It 'names only the fixed repair paths' {
         $plan = @(Get-AapRepairPlan)
         ($plan.Name -join ',') | Should -Be 'lock-acl,lock-acl,lock-acl,lock-acl,lock-acl,install-supervisor,remount,restart-supervisor'
