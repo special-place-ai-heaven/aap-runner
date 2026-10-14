@@ -118,7 +118,7 @@ REAP_STARTED=0
 # Per-container cpu and memory, from one docker stats call this often, in
 # the background and bounded by SAMPLE_BUDGET_SECONDS. One call in flight.
 # ${RUN_DIR}/usage is the last good sample; status_json merges it.
-SAMPLE_INTERVAL_SECONDS=60
+SAMPLE_INTERVAL_SECONDS=10
 SAMPLE_BUDGET_SECONDS=20
 USAGE_PID=""
 # now_s + interval of the next sample. Empty means due now.
@@ -1255,13 +1255,15 @@ job_run_from_env() {
 
 # The job's repository and run URL, from the Runner.Worker and step
 # processes' environment inside the container (the Listener has none). No
-# GitHub token. Up to 6 tries 5 s apart, each bounded by timeout 10. Written
+# GitHub token. Retries every 5 s while the slot still runs this job (service
+# containers delay the step processes by a minute or more), at most 120 tries
+# (10 min), each bounded by timeout 10. Written
 # to slot-N.run as "NS REPO RUN_URL"; NS ties it to this job start, so a
 # result that lands after the job ended is never published. Never fails.
 discover_job_run() {
   local slot="$1" container="$2" ns="$3" env out i
   [[ -n "${ns}" ]] || return 0
-  for ((i = 1; i <= 6; i++)); do
+  for ((i = 1; i <= 120; i++)); do
     [[ "$(slot_ns "${slot}")" == "${ns}" ]] || return 0
     # The container's sh expands $p, not this shell.
     # shellcheck disable=SC2016
@@ -1274,7 +1276,7 @@ discover_job_run() {
       write_status
       return 0
     fi
-    ((i < 6)) && sleep 5
+    ((i < 120)) && sleep 5
   done
   return 0
 }
