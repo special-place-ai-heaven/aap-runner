@@ -145,20 +145,33 @@ settle() {
 }
 : > "${log}"
 AAP_GITHUB_APP_INSTALLATION_ID=""
-REAP_NEXT=0
+REAP_NEXT=""
 tick_reap; settle
 [[ "$(reaps)" -eq 0 ]] || fail "reaped without an installation id"
 AAP_GITHUB_APP_INSTALLATION_ID=67890
 REAP_INTERVAL_SECONDS=600
+# A pool that never reaped reaps on its first tick, whatever the clock reads:
+# here it has stepped back to before the epoch the gate would compare with.
+eval "real_$(declare -f now_s)"
+[[ "$(real_now_s)" =~ ^[0-9]+$ ]] || fail "now_s is not whole seconds: $(real_now_s)"
+fake_now=-5
+# shellcheck disable=SC2317
+now_s() { echo "${fake_now}"; }
 tick_reap; settle
 [[ "$(reaps)" -eq 1 ]] || fail "the first tick did not reap"
 tick_reap; settle
 tick_reap; settle
 [[ "$(reaps)" -eq 1 ]] || fail "a tick inside the interval reaped again"
-REAP_NEXT=${SECONDS}
+[[ "${REAP_NEXT}" -eq 595 ]] || fail "next reap is at ${REAP_NEXT}; want -5 + 600"
+fake_now=594
+tick_reap; settle
+[[ "$(reaps)" -eq 1 ]] || fail "a tick 1s before the interval reaped"
+fake_now=595
 tick_reap; settle
 [[ "$(reaps)" -eq 2 ]] || fail "a tick after the interval did not reap"
-REAP_NEXT=0
+# shellcheck disable=SC2317
+now_s() { real_now_s; }
+REAP_NEXT=""
 : > "${RUN_DIR}/drain"
 tick_reap; settle
 rm -f "${RUN_DIR}/drain"
@@ -167,11 +180,11 @@ rm -f "${RUN_DIR}/drain"
 reap_ghost_runners() {
   exec sleep 30
 }
-REAP_NEXT=0
+REAP_NEXT=""
 DEREGISTER_BUDGET_SECONDS=0
 tick_reap
 slow=${REAP_PID}
-REAP_NEXT=$((SECONDS + 600))
+REAP_NEXT=$(($(now_s) + 600))
 tick_reap 2> "${RUN_DIR}/tickerr"
 out=$(cat "${RUN_DIR}/tickerr")
 kill -0 "${slow}" 2>/dev/null && fail "a reap over the budget was not stopped"
@@ -196,7 +209,7 @@ remove_job_containers() {
 }
 : > "${log}"
 REAP_PID=""
-REAP_NEXT=0
+REAP_NEXT=""
 AAP_RUNNER_COUNT=1
 STATUS_TICK_SECONDS=0.2
 (run_pool) 2> /dev/null &

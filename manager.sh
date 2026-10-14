@@ -41,11 +41,30 @@ AAP_JOB_MEMORY=""
 AAP_JOB_CPUS=""
 AAP_JOB_PIDS_LIMIT=""
 AAP_JOB_TIMEOUT_MINUTES=""
+AAP_JOB_IO_PERCENT=""
+AAP_POOL_SHARING=""
 # Unset means absent (one slot). A present but empty value is refused.
 unset AAP_RUNNER_COUNT
 # Per-slot docker create limits, set by finish_runner_count.
 SLOT_CPUS=""
 SLOT_MEMORY=""
+# Per-slot disk IO cap in MiB/s on IO_DEVICE; 0 is no cap. Set by
+# finish_io_limits from WORK_DISK_MBPS_FILE (written by --measure-io).
+SLOT_IO_MBPS=0
+# The whole pool's IO budget in MiB/s (the slice cap in slice mode).
+POOL_IO_MBPS=0
+IO_DEVICE=""
+WORK_DISK_MBPS_FILE=/etc/aap-runner/work-disk.mbps
+# IOPS cap per MiB/s of bandwidth cap: 8 IOPS per MiB/s is a 128 KiB average
+# request, so the bandwidth cap binds for streaming IO and the IOPS cap only
+# bites on a small-block storm (fsync-heavy linkers, cargo metadata).
+IO_IOPS_PER_MB=8
+# Slice mode: every job container sits in this runtime systemd slice, which
+# holds the pool totals. Dashes nest it: aap.slice/aap-runner.slice/<this>.
+POOL_SLICE=aap-runner-pool.slice
+# Equal io weight per container. It only acts under the BFQ scheduler; the
+# slice's bandwidth cap is the real limiter.
+BLKIO_WEIGHT=500
 SLOT_PIDS=()
 SLOT_STARTED=()
 SLOT_FAILS=()
@@ -91,8 +110,18 @@ RUNNER_NAME_PREFIX=aap-crrr-
 # at a time, stopped after DEREGISTER_BUDGET_SECONDS.
 REAP_INTERVAL_SECONDS=600
 REAP_PID=""
-REAP_NEXT=0
+# now_s + interval of the next pass. Empty means never reaped: due now.
+REAP_NEXT=""
 REAP_STARTED=0
+
+# Whole seconds since boot, from /proc/uptime (CLOCK_BOOTTIME). Every timer
+# here uses it. SECONDS and date +%s follow the wall clock, and WSL steps
+# that backwards after a resume.
+now_s() {
+  local up
+  read -r up _ < /proc/uptime
+  printf '%s\n' "${up%%.*}"
+}
 
 below_floor() {
   local avail="$1" floor="$2"
@@ -176,6 +205,8 @@ apply_config_line() {
     AAP_JOB_CPUS) AAP_JOB_CPUS=${val} ;;
     AAP_JOB_PIDS_LIMIT) AAP_JOB_PIDS_LIMIT=${val} ;;
     AAP_JOB_TIMEOUT_MINUTES) AAP_JOB_TIMEOUT_MINUTES=${val} ;;
+    AAP_JOB_IO_PERCENT) AAP_JOB_IO_PERCENT=${val} ;;
+    AAP_POOL_SHARING) AAP_POOL_SHARING=${val} ;;
     AAP_RUNNER_COUNT) AAP_RUNNER_COUNT=${val} ;;
     *)
       echo "unknown config key: ${key}" >&2
@@ -209,10 +240,12 @@ load_config() {
   finish_disk_bounds
   finish_job_limits
   finish_runner_count
+  finish_io_limits
+  finish_pool_sharing
   finish_runner_labels
 }
 
-# limits.conf overrides three manager.conf keys, then the same checks run on
+# limits.conf overrides five manager.conf keys, then the same checks run on
 # the result (count 1..4, the per-slot split, the memory and cpu grammar).
 # It holds no App ids and no secrets. Any other key, an empty value, a file
 # that is not root's, or a group or world writable mode is refused.
@@ -235,9 +268,9 @@ load_limits() {
     esac
     key=${line%%=*}
     case "${key}" in
-      AAP_RUNNER_COUNT | AAP_JOB_CPUS | AAP_JOB_MEMORY) ;;
+      AAP_RUNNER_COUNT | AAP_JOB_CPUS | AAP_JOB_MEMORY | AAP_JOB_IO_PERCENT | AAP_POOL_SHARING) ;;
       *)
-        echo "refusing: ${LIMITS_PATH} key ${key} is not AAP_RUNNER_COUNT, AAP_JOB_CPUS, or AAP_JOB_MEMORY" >&2
+        echo "refusing: ${LIMITS_PATH} key ${key} is not AAP_RUNNER_COUNT, AAP_JOB_CPUS, AAP_JOB_MEMORY, AAP_JOB_IO_PERCENT, or AAP_POOL_SHARING" >&2
         exit 1
         ;;
     esac
@@ -396,6 +429,158 @@ finish_runner_count() {
   else
     SLOT_MEMORY="${mib}m"
   fi
+}
+
+# AAP_JOB_IO_PERCENT (0..100, default 90, 0 = no cap) of the measured work
+# disk is the pool's IO budget, split evenly over the slots. A slot under 10
+# MiB/s is refused. No measurement means no cap, never a failed pool.
+# Runs after finish_runner_count.
+finish_io_limits() {
+  local mbps="" budget
+  SLOT_IO_MBPS=0
+  POOL_IO_MBPS=0
+  [[ -z "${AAP_JOB_IO_PERCENT}" ]] && AAP_JOB_IO_PERCENT=90
+  if [[ ! "${AAP_JOB_IO_PERCENT}" =~ ^(0|[1-9][0-9]?|100)$ ]]; then
+    echo "refusing: AAP_JOB_IO_PERCENT=${AAP_JOB_IO_PERCENT} is not 0..100" >&2
+    return 1
+  fi
+  [[ "${AAP_JOB_IO_PERCENT}" -eq 0 ]] && return 0
+  { read -r mbps < "${WORK_DISK_MBPS_FILE}"; } 2>/dev/null || true
+  if [[ ! "${mbps}" =~ ^[1-9][0-9]{0,8}$ ]]; then
+    echo "io cap disabled: run aap-runner-manager --measure-io" >&2
+    return 0
+  fi
+  budget=$((mbps * AAP_JOB_IO_PERCENT / 100))
+  SLOT_IO_MBPS=$((budget / AAP_RUNNER_COUNT))
+  if [[ "${SLOT_IO_MBPS}" -lt 10 ]]; then
+    echo "refusing: ${AAP_JOB_IO_PERCENT}% of ${mbps} MiB/s over ${AAP_RUNNER_COUNT} slot(s) is ${SLOT_IO_MBPS} MiB/s per slot; each slot needs 10" >&2
+    SLOT_IO_MBPS=0
+    return 1
+  fi
+  POOL_IO_MBPS=${budget}
+}
+
+# AAP_POOL_SHARING: slice (default) puts every job in POOL_SLICE, which caps
+# the pool total, and lets each job use what the others leave idle. fixed
+# gives each slot a hard 1/count share (finish_runner_count, finish_io_limits).
+finish_pool_sharing() {
+  [[ -z "${AAP_POOL_SHARING}" ]] && AAP_POOL_SHARING=slice
+  case "${AAP_POOL_SHARING}" in
+    slice | fixed) ;;
+    *)
+      echo "refusing: AAP_POOL_SHARING=${AAP_POOL_SHARING} is not slice or fixed" >&2
+      return 1
+      ;;
+  esac
+}
+
+# systemctl set-property arguments for POOL_SLICE, one per line: the pool
+# cpu and memory totals, and the IO budget on IO_DEVICE when there is one.
+# Bandwidth is in bytes: systemd's M suffix is 10^6, docker's mb is MiB.
+slice_properties() {
+  local mem=${AAP_JOB_MEMORY^^} bytes iops
+  mem=${mem%B}
+  printf 'CPUQuota=%s%%\n' "$(awk -v n="${AAP_JOB_CPUS}" 'BEGIN { printf "%d", n * 100 }')"
+  printf 'MemoryMax=%s\n' "${mem}"
+  if ((POOL_IO_MBPS > 0)) && [[ -n "${IO_DEVICE}" ]]; then
+    bytes=$((POOL_IO_MBPS * 1048576))
+    iops=$((POOL_IO_MBPS * IO_IOPS_PER_MB))
+    printf 'IOReadBandwidthMax=%s %s\n' "${IO_DEVICE}" "${bytes}"
+    printf 'IOWriteBandwidthMax=%s %s\n' "${IO_DEVICE}" "${bytes}"
+    printf 'IOReadIOPSMax=%s %s\n' "${IO_DEVICE}" "${iops}"
+    printf 'IOWriteIOPSMax=%s %s\n' "${IO_DEVICE}" "${iops}"
+  fi
+}
+
+# At pool start, slice mode only. docker must use the systemd cgroup driver
+# for --cgroup-parent to name a slice. The slice's runtime properties are
+# reverted, then set fresh, so a smaller pool never keeps old limits. The
+# slice is never stopped: it is runtime-only and empties with its jobs. Any
+# failure logs and falls back to fixed; it never fails the pool.
+setup_pool_sharing() {
+  local driver
+  local -a props=()
+  [[ "${AAP_POOL_SHARING}" == slice ]] || return 0
+  driver=$(docker info --format '{{.CgroupDriver}}' 2>/dev/null) || driver=""
+  if [[ "${driver}" != systemd ]]; then
+    echo "pool sharing: docker cgroup driver is '${driver}', not systemd; using fixed per-slot limits" >&2
+    AAP_POOL_SHARING=fixed
+    return 0
+  fi
+  mapfile -t props < <(slice_properties)
+  systemctl revert "${POOL_SLICE}" >/dev/null 2>&1 || true
+  if ! systemctl set-property --runtime "${POOL_SLICE}" "${props[@]}"; then
+    echo "pool sharing: could not set ${POOL_SLICE}; using fixed per-slot limits" >&2
+    AAP_POOL_SHARING=fixed
+    return 0
+  fi
+  echo "pool sharing: ${POOL_SLICE} ${props[*]}"
+}
+
+# The whole block device behind the work mount: docker's --device-*-bps
+# take a disk, not a partition. Fresh mounts the bare disk (/dev/sde). Any
+# failure logs and drops the cap for this pool.
+resolve_io_device() {
+  local src parent=""
+  IO_DEVICE=""
+  ((SLOT_IO_MBPS > 0)) || return 0
+  src=$(findmnt -n -o SOURCE "${WORK_MOUNT}" 2>/dev/null) || src=""
+  if [[ "${src}" =~ [0-9]$ ]]; then
+    parent=$(lsblk -no PKNAME "${src}" 2>/dev/null | head -n 1 | tr -d '[:space:]') || parent=""
+    [[ -n "${parent}" ]] && src=/dev/${parent}
+  fi
+  if [[ ! "${src}" =~ ^/dev/[A-Za-z0-9_-]+$ ]]; then
+    echo "io cap disabled: no block device for ${WORK_MOUNT} (found '${src}')" >&2
+    SLOT_IO_MBPS=0
+    POOL_IO_MBPS=0
+    return 0
+  fi
+  IO_DEVICE=${src}
+}
+
+# MiB/s from GNU dd's summary line ("N bytes (...) copied, S s, ..."), as an
+# integer. docker reads "mb" in --device-*-bps as MiB, so this is MiB too.
+dd_mibps() {
+  awk '/ bytes .* copied, / { b = $1; for (i = 1; i < NF; i++) if ($i == "copied,") s = $(i + 1) }
+    END { if (b > 0 && s > 0) printf "%d\n", b / s / 1048576 }'
+}
+
+# --measure-io: 2 GiB direct write, then direct read, of the work disk. The
+# lower rate goes to WORK_DISK_MBPS_FILE (one integer, mode 0644).
+measure_io() {
+  local f="${WORK_MOUNT}/.aap-iobench" avail out w r mbps
+  if ! mountpoint -q "${WORK_MOUNT}"; then
+    echo "refusing: ${WORK_MOUNT} is not a mountpoint" >&2
+    return 1
+  fi
+  avail=$(df -BM --output=avail "${WORK_MOUNT}" | awk 'NR==2 { gsub(/M/, "", $1); print $1 }')
+  if [[ ! "${avail}" =~ ^[0-9]+$ ]] || ((avail < 3072)); then
+    echo "refusing: ${WORK_MOUNT} has ${avail:-unknown} MiB free; --measure-io needs 3 GiB" >&2
+    return 1
+  fi
+  if ! out=$(LC_ALL=C dd if=/dev/zero of="${f}" bs=4M count=512 oflag=direct conv=fsync 2>&1); then
+    rm -f "${f}"
+    echo "refusing: write benchmark failed: ${out}" >&2
+    return 1
+  fi
+  w=$(dd_mibps <<< "${out}")
+  if ! out=$(LC_ALL=C dd if="${f}" of=/dev/null bs=4M iflag=direct 2>&1); then
+    rm -f "${f}"
+    echo "refusing: read benchmark failed: ${out}" >&2
+    return 1
+  fi
+  r=$(dd_mibps <<< "${out}")
+  rm -f "${f}"
+  if [[ ! "${w}" =~ ^[1-9][0-9]*$ || ! "${r}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "refusing: could not read a rate from dd (write '${w}', read '${r}')" >&2
+    return 1
+  fi
+  mbps=$((w < r ? w : r))
+  printf '%s\n' "${mbps}" > "${WORK_DISK_MBPS_FILE}.tmp"
+  chmod 0644 "${WORK_DISK_MBPS_FILE}.tmp"
+  mv -f "${WORK_DISK_MBPS_FILE}.tmp" "${WORK_DISK_MBPS_FILE}"
+  echo "write ${w} MiB/s, read ${r} MiB/s" >&2
+  echo "work-disk.mbps=${mbps}"
 }
 
 # Child is a new session with a clean command, so the registration token
@@ -645,7 +830,7 @@ reap_ghost_runners() {
 tick_reap() {
   if [[ -n "${REAP_PID}" ]]; then
     if kill -0 "${REAP_PID}" 2>/dev/null; then
-      if ! draining && ((SECONDS - REAP_STARTED < DEREGISTER_BUDGET_SECONDS)); then
+      if ! draining && (($(now_s) - REAP_STARTED < DEREGISTER_BUDGET_SECONDS)); then
         return 0
       fi
       echo "warning: ghost reap stopped (drain, or over ${DEREGISTER_BUDGET_SECONDS}s)" >&2
@@ -655,11 +840,11 @@ tick_reap() {
     REAP_PID=""
   fi
   [[ "${AAP_GITHUB_APP_INSTALLATION_ID}" =~ ^[0-9]+$ ]] || return 0
-  if draining || ((SECONDS < REAP_NEXT)); then
+  if draining || { [[ -n "${REAP_NEXT}" ]] && (($(now_s) < REAP_NEXT)); }; then
     return 0
   fi
-  REAP_NEXT=$((SECONDS + REAP_INTERVAL_SECONDS))
-  REAP_STARTED=${SECONDS}
+  REAP_STARTED=$(now_s)
+  REAP_NEXT=$((REAP_STARTED + REAP_INTERVAL_SECONDS))
   {
     trap - EXIT TERM INT
     reap_ghost_runners
@@ -692,8 +877,8 @@ deregister_runners() {
     DEREG_PIDS+=("$!")
     DEREG_NAMES+=("${name}")
   done
-  deadline=$((SECONDS + DEREGISTER_BUDGET_SECONDS))
-  while ((SECONDS < deadline)); do
+  deadline=$(($(now_s) + DEREGISTER_BUDGET_SECONDS))
+  while (($(now_s) < deadline)); do
     alive=0
     for pid in "${DEREG_PIDS[@]}"; do
       if kill -0 "${pid}" 2>/dev/null; then
@@ -743,6 +928,7 @@ job_name() {
 
 run_one() {
   local slot="$1" token="" name net rc=1 killer="" seconds=0 runner=""
+  local -a lim=()
   name=$(job_name "${slot}")
   net="${name}"
   # set -e does not apply inside this function: the loop calls it from `if`.
@@ -755,6 +941,24 @@ run_one() {
   if ! docker network create --label aap-crrr-job=1 "${net}"; then
     return 1
   fi
+  # slice: the pool totals are the slice's caps; each container may use up to
+  # all of them, with an equal soft memory share. fixed: hard 1/count shares.
+  if [[ "${AAP_POOL_SHARING}" == slice ]]; then
+    lim=(--cgroup-parent "${POOL_SLICE}"
+      --memory "${AAP_JOB_MEMORY}"
+      --memory-swap "${AAP_JOB_MEMORY}"
+      --memory-reservation "${SLOT_MEMORY}"
+      --cpus "${AAP_JOB_CPUS}"
+      --blkio-weight "${BLKIO_WEIGHT}")
+  else
+    lim=(--memory "${SLOT_MEMORY}" --memory-swap "${SLOT_MEMORY}" --cpus "${SLOT_CPUS}")
+    if ((SLOT_IO_MBPS > 0)) && [[ -n "${IO_DEVICE}" ]]; then
+      lim+=(--device-read-bps "${IO_DEVICE}:${SLOT_IO_MBPS}mb"
+        --device-write-bps "${IO_DEVICE}:${SLOT_IO_MBPS}mb"
+        --device-read-iops "${IO_DEVICE}:$((SLOT_IO_MBPS * IO_IOPS_PER_MB))"
+        --device-write-iops "${IO_DEVICE}:$((SLOT_IO_MBPS * IO_IOPS_PER_MB))")
+    fi
+  fi
   # One bind mount, the sccache dir on the work disk. No -v, no /mnt.
   # assert_no_mnt_mounts rejects a source under /mnt even if the daemon adds
   # one. /mnt/wsl is the shared docker-desktop tmpfs.
@@ -763,9 +967,7 @@ run_one() {
     --interactive \
     --name "${name}" \
     --network "${net}" \
-    --memory "${SLOT_MEMORY}" \
-    --memory-swap "${SLOT_MEMORY}" \
-    --cpus "${SLOT_CPUS}" \
+    "${lim[@]}" \
     --cpu-shares "${CPU_SHARES}" \
     --pids-limit "${AAP_JOB_PIDS_LIMIT}" \
     --label aap-crrr-job=1 \
@@ -962,7 +1164,9 @@ discover_job_run() {
 # recently started running job, or "". repo and run_url: that job's, once
 # discover_job_run found them, else "". slots and runner_count:
 # AAP_RUNNER_COUNT. job_cpus and job_memory: the pool totals as configured,
-# after limits.conf. job_cpus is a JSON number and may be fractional (2.5)
+# after limits.conf. job_io_mbps: the per-slot IO share in MiB/s, 0 for none.
+# sharing: slice or fixed, as the pool runs (fixed after a fallback).
+# job_cpus is a JSON number and may be fractional (2.5)
 # when manager.conf says so; the supervisor treats a non-integer as unknown.
 # Paused is a Windows-side state and never appears here.
 status_json() {
@@ -1002,9 +1206,10 @@ status_json() {
   fi
   jq -cn --arg state "${state}" --arg job "${job}" --arg repo "${repo}" --arg run_url "${run_url}" --argjson slots "${AAP_RUNNER_COUNT:-1}" \
     --argjson busy "${busy}" --argjson updated "$(date +%s)" \
-    --arg cpus "${AAP_JOB_CPUS}" --arg memory "${AAP_JOB_MEMORY}" \
+    --arg cpus "${AAP_JOB_CPUS}" --arg memory "${AAP_JOB_MEMORY}" --argjson io "${SLOT_IO_MBPS:-0}" \
+    --arg sharing "$([[ "${AAP_POOL_SHARING}" == slice ]] && echo slice || echo fixed)" \
     '{state: $state, job: $job, repo: $repo, run_url: $run_url, slots: $slots, busy: $busy, updated: $updated,
-      runner_count: $slots, job_cpus: ($cpus | tonumber? // null), job_memory: $memory}'
+      runner_count: $slots, job_cpus: ($cpus | tonumber? // null), job_memory: $memory, job_io_mbps: $io, sharing: $sharing}'
 }
 
 # status.json, mode 0644, replaced by rename so a reader never sees half a
@@ -1336,7 +1541,7 @@ slot_restart_delay() {
 
 start_slot() {
   local slot="$1" delay="$2"
-  SLOT_STARTED[slot]=$(($(date +%s) + delay))
+  SLOT_STARTED[slot]=$(($(now_s) + delay))
   {
     sleep "${delay}"
     slot_loop "${slot}"
@@ -1487,7 +1692,7 @@ run_pool() {
       write_status
       continue
     fi
-    now=$(date +%s)
+    now=$(now_s)
     if [[ $((now - SLOT_STARTED[slot])) -lt "${SLOT_FAST_SECONDS}" ]]; then
       SLOT_FAILS[slot]=$((SLOT_FAILS[slot] + 1))
     else
@@ -1508,7 +1713,7 @@ main() {
   # Only no argument starts the pool, which first removes every job
   # container. Anything unknown stops here, before any docker call.
   case "${1-}" in
-    '' | --self-check | --assert-mounts | --check-limits | --drain | --undrain | --reap) ;;
+    '' | --self-check | --assert-mounts | --check-limits | --drain | --undrain | --reap | --measure-io) ;;
     --version)
       echo "${MANAGER_VERSION}"
       exit 0
@@ -1543,8 +1748,15 @@ main() {
   # effective limits printed, nothing started and no docker call.
   if [[ "${1:-}" == "--check-limits" ]]; then
     load_config
-    printf 'AAP_RUNNER_COUNT=%s\nAAP_JOB_CPUS=%s\nAAP_JOB_MEMORY=%s\n' \
-      "${AAP_RUNNER_COUNT}" "${AAP_JOB_CPUS}" "${AAP_JOB_MEMORY}"
+    printf 'AAP_RUNNER_COUNT=%s\nAAP_JOB_CPUS=%s\nAAP_JOB_MEMORY=%s\nAAP_JOB_IO_PERCENT=%s\nAAP_JOB_IO_MBPS=%s\nAAP_POOL_SHARING=%s\n' \
+      "${AAP_RUNNER_COUNT}" "${AAP_JOB_CPUS}" "${AAP_JOB_MEMORY}" "${AAP_JOB_IO_PERCENT}" "${SLOT_IO_MBPS}" "${AAP_POOL_SHARING}"
+    exit 0
+  fi
+
+  # Benchmarks the work disk and writes WORK_DISK_MBPS_FILE. No config, no
+  # pool start, no docker call. The pool reads the file at its next start.
+  if [[ "${1:-}" == "--measure-io" ]]; then
+    measure_io || exit 1
     exit 0
   fi
 
@@ -1574,7 +1786,9 @@ main() {
   check_key
   resolve_runner_uid
   remove_job_containers
-  echo "runner pool: ${AAP_RUNNER_COUNT} slot(s), each --cpus ${SLOT_CPUS} --memory ${SLOT_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT}"
+  resolve_io_device
+  setup_pool_sharing
+  echo "runner pool: ${AAP_RUNNER_COUNT} slot(s), sharing ${AAP_POOL_SHARING}, share --cpus ${SLOT_CPUS} --memory ${SLOT_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT} io ${SLOT_IO_MBPS:-0} MiB/s on ${IO_DEVICE:-none}"
   run_pool
 }
 

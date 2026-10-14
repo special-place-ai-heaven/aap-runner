@@ -39,9 +39,9 @@ feed() {
 }
 
 write_status
-[[ "$(jq -r 'keys_unsorted | join(",")' "${RUN_DIR}/status.json")" == "state,job,repo,run_url,slots,busy,updated,runner_count,job_cpus,job_memory" ]] \
-  || fail "keys are not state,job,repo,run_url,slots,busy,updated,runner_count,job_cpus,job_memory: $(cat "${RUN_DIR}/status.json")"
-[[ "$(jq -c '[.runner_count, .job_cpus, .job_memory]' "${RUN_DIR}/status.json")" == '[2,24,"72g"]' ]] \
+[[ "$(jq -r 'keys_unsorted | join(",")' "${RUN_DIR}/status.json")" == "state,job,repo,run_url,slots,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing" ]] \
+  || fail "keys are not state,job,repo,run_url,slots,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing: $(cat "${RUN_DIR}/status.json")"
+[[ "$(jq -c '[.runner_count, .job_cpus, .job_memory, .job_io_mbps]' "${RUN_DIR}/status.json")" == '[2,24,"72g",0]' ]] \
   || fail "effective limits in status.json: $(cat "${RUN_DIR}/status.json")"
 jq -e '(.slots | type) == "number" and (.busy | type) == "number" and (.updated | type) == "number" and (.job | type) == "string"' \
   "${RUN_DIR}/status.json" >/dev/null || fail "a status field has the wrong JSON type"
