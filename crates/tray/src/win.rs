@@ -2,14 +2,24 @@
 //! block is a single FFI call (or a call pair) with owned, correctly sized out-parameters.
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_CANCELLED, ERROR_SUCCESS, HWND, LPARAM, RECT, WPARAM,
+    CloseHandle, ERROR_CANCELLED, ERROR_SUCCESS, HLOCAL, HWND, LPARAM, LocalFree, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+use windows::Win32::Security::Authorization::{
+    ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+};
 use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
+use windows::Win32::Security::{
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
+    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, PSECURITY_DESCRIPTOR, PSID,
+};
 use windows::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
-use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+use windows::Win32::System::Registry::{
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+    RegGetValueW,
+};
 use windows::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetThreadDpiAwarenessContext,
@@ -23,7 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetForegroundWindow, ShowWindow, SystemParametersInfoW,
     TranslateMessage, WM_CLOSE, WM_QUIT,
 };
-use windows::core::{BOOL, HSTRING, PCSTR, PCWSTR, w};
+use windows::core::{BOOL, HSTRING, PCSTR, PCWSTR, PWSTR, w};
 
 /// Drain this thread's message queue (tray-icon's hidden window lives here).
 /// Returns `false` once `WM_QUIT` arrives.
@@ -324,6 +334,152 @@ pub fn shell_execute_runas(exe: &std::path::Path, parameters: &str) -> Result<()
         let _ = unsafe { CloseHandle(info.hProcess) };
     }
     Ok(())
+}
+
+/// One DACL entry from `directory_aces`.
+pub struct DirectoryAce {
+    pub sid: String,
+    pub allow: bool,
+    pub rights: u32,
+    pub inherit_only: bool,
+}
+
+/// Machine `PSModulePath`, expanded. Empty is an error: an elevated script must not fall
+/// back to the caller's module path.
+pub fn machine_ps_module_path() -> std::io::Result<String> {
+    let mut buf = vec![0u16; 2048];
+    let mut byte_len = (buf.len() * 2) as u32;
+    // SAFETY: the buffer and length are live. The flags ask for a string and expand REG_EXPAND_SZ.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!(r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+            w!("PSModulePath"),
+            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut byte_len),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(status.0 as i32));
+    }
+    let chars = (byte_len as usize / 2).saturating_sub(1);
+    let text = String::from_utf16_lossy(&buf[..chars.min(buf.len())]);
+    if text.is_empty() {
+        return Err(std::io::Error::other("machine PSModulePath is empty"));
+    }
+    Ok(text)
+}
+
+/// Allow and deny ACEs on `dir` itself. A null DACL is reported as Authenticated Users
+/// with generic-all, because that DACL grants everyone every right.
+pub fn directory_aces(dir: &std::path::Path) -> std::io::Result<Vec<DirectoryAce>> {
+    let wide_name = wide(dir.as_os_str());
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut sd = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
+    // SAFETY: `wide_name` is null-terminated for this call. The out-pointers are live locals.
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            PCWSTR::from_raw(wide_name.as_ptr()),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            None,
+            None,
+            Some(std::ptr::addr_of_mut!(dacl)),
+            None,
+            std::ptr::addr_of_mut!(sd),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(std::io::Error::from_raw_os_error(status.0 as i32));
+    }
+    let result = read_dacl(dacl);
+    if !sd.0.is_null() {
+        // SAFETY: this is the descriptor GetNamedSecurityInfo allocated.
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(sd.0)));
+        }
+    }
+    result
+}
+
+fn read_dacl(dacl: *mut ACL) -> std::io::Result<Vec<DirectoryAce>> {
+    if dacl.is_null() {
+        return Ok(vec![DirectoryAce {
+            sid: "S-1-5-11".to_string(),
+            allow: true,
+            rights: 0x1000_0000,
+            inherit_only: false,
+        }]);
+    }
+    let mut info = ACL_SIZE_INFORMATION::default();
+    // SAFETY: `dacl` is the DACL inside the descriptor, still allocated.
+    unsafe {
+        GetAclInformation(
+            dacl,
+            (&raw mut info).cast(),
+            size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        )
+    }
+    .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let mut out = Vec::new();
+    for index in 0..info.AceCount {
+        let mut ace_ptr: *mut core::ffi::c_void = std::ptr::null_mut();
+        // SAFETY: `index` is below AceCount and `dacl` is still live.
+        unsafe { GetAce(dacl, index, &mut ace_ptr) }
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        if ace_ptr.is_null() {
+            continue;
+        }
+        // SAFETY: GetAce returned a pointer to an ACE_HEADER inside `dacl`.
+        let header = unsafe { &*ace_ptr.cast::<ACE_HEADER>() };
+        let allow = match header.AceType {
+            0 => true,
+            1 => false,
+            _ => continue,
+        };
+        // Allow and deny ACEs share this layout. Object ACEs are skipped above.
+        let ace = unsafe { &*ace_ptr.cast::<ACCESS_ALLOWED_ACE>() };
+        out.push(DirectoryAce {
+            sid: sid_text(ace)?,
+            allow,
+            rights: ace.Mask,
+            inherit_only: header.AceFlags & 8 != 0,
+        });
+    }
+    Ok(out)
+}
+
+fn sid_text(ace: &ACCESS_ALLOWED_ACE) -> std::io::Result<String> {
+    let mut name = PWSTR(std::ptr::null_mut());
+    let sid = PSID(std::ptr::addr_of!(ace.SidStart).cast_mut().cast());
+    // SAFETY: `sid` points at the SID embedded in this ACE. `name` is an out-pointer.
+    unsafe { ConvertSidToStringSidW(sid, &mut name) }
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let text = if name.0.is_null() {
+        String::new()
+    } else {
+        // SAFETY: ConvertSidToStringSid wrote a null-terminated LocalAlloc string.
+        unsafe {
+            let mut len = 0usize;
+            while len < 184 && *name.0.add(len) != 0 {
+                len += 1;
+            }
+            String::from_utf16_lossy(std::slice::from_raw_parts(name.0, len))
+        }
+    };
+    if !name.0.is_null() {
+        // SAFETY: the string was allocated by ConvertSidToStringSid.
+        unsafe {
+            let _ = LocalFree(Some(HLOCAL(name.0.cast())));
+        }
+    }
+    if text.is_empty() {
+        return Err(std::io::Error::other("empty sid"));
+    }
+    Ok(text)
 }
 
 #[cfg(test)]

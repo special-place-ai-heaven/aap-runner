@@ -87,6 +87,21 @@ function Test-AapAdminAcl([string]$Path) {
     return ($rules.Count -gt 0)
 }
 
+# Owner is SYSTEM, Administrators, or TrustedInstaller. A user-owned folder
+# can be replaced before runas elevates the tray.
+function Test-AapAdminOwned([string]$Path) {
+    if ([string]::IsNullOrEmpty($Path)) { return $false }
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    $attr = [int](New-Object IO.FileInfo $Path).Attributes
+    if ($attr -eq -1 -or ($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+    try {
+        $owner = (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier])
+    } catch {
+        return $false
+    }
+    return ($null -ne $owner -and $AapAdminSids -contains $owner.Value)
+}
+
 # Rights that let a non-admin replace or re-permission a folder below: delete
 # it, delete children, change its DACL, take ownership. Create rights are not
 # counted; C:\ grants Authenticated Users "create folders" by default and that
@@ -317,7 +332,14 @@ function Invoke-AapInstallSupervisor {
     $stateExists = $false
     try { $stateExists = [bool](Test-Path -LiteralPath $stateFile -ErrorAction Stop) } catch { $stateExists = $false }
     $trayExists = [bool](Test-Path -LiteralPath $TrayExe -PathType Leaf)
-    if ($trayExists -and $TrayExe -notmatch ($AapPathPattern + '\.exe\z')) { throw "refusing: tray path $TrayExe" }
+    $trayProblems = @()
+    if ($trayExists) {
+        if ($TrayExe -notmatch ($AapPathPattern + '\.exe\z')) { throw "refusing: tray path $TrayExe" }
+        $trayDir = Split-Path -Parent $TrayExe
+        if (-not (Test-AapAdminOwned $trayDir)) {
+            $trayProblems = @("tray directory $trayDir is not admin-owned")
+        }
+    }
     $data = Get-AapDataDirProblem $DataDir
     $anc = Get-AapAncestorProblem $ScriptDir
     $plan = Get-AapSupervisorPlan @{
@@ -330,7 +352,7 @@ function Invoke-AapInstallSupervisor {
         StateExists    = $stateExists
         TrayExe        = $TrayExe
         TrayExists     = $trayExists
-        DataProblems   = @($data.Problems)
+        DataProblems   = @($data.Problems) + @($trayProblems)
         ScriptProblems = @($anc.Problems)
         Unreadable     = @($data.Unreadable) + @($anc.Unreadable)
     }
