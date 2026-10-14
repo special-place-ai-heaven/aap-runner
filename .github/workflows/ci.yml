@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bash:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: bash distro/bootstrap.sh --self-check
+      - run: bash distro/manager.sh --self-check
+      - run: bash tests/run.sh
+
+  pester:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/install-host.Tests.ps1
+      - shell: powershell
+        run: |
+          Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          Import-Module Pester -RequiredVersion 5.7.1
+          $c = New-PesterConfiguration
+          $c.Run.Path = 'supervisor'
+          $c.Run.Exit = $true
+          Invoke-Pester -Configuration $c
+
+  tray:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test

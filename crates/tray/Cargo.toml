@@ -4,9 +4,6 @@ version = "0.3.0"
 edition = "2024"
 publish = false
 
-# Standalone: not a member of the repository's root workspace.
-[workspace]
-
 [dependencies]
 eframe = { version = "=0.36.2", default-features = false, features = ["accesskit", "default_fonts", "glow"] }
 serde = { version = "=1.0.229", features = ["derive"] }
