@@ -99,26 +99,87 @@ Describe 'helper verify' {
         $out | Should -Not -Match 'Set-Acl'
     }
 
-    It 'refuses repair when status.json says <state>' -TestCases @(
+    It 'refuses repair when a fresh status.json says <state>' -TestCases @(
         @{ state = 'running' }
         @{ state = 'draining' }
+        @{ state = 'starting' }
     ) {
         $root = Join-Path $TestDrive "repair-$state"
         New-Item -ItemType Directory -Force -Path $root | Out-Null
         $enc = New-Object System.Text.UTF8Encoding $false
-        [IO.File]::WriteAllText((Join-Path $root 'status.json'), ('{"state":"' + $state + '"}'), $enc)
+        $updated = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $json = '{"state":"' + $state + '","updated":"' + $updated + '"}'
+        [IO.File]::WriteAllText((Join-Path $root 'status.json'), $json, $enc)
         Get-AapRepairRefusal $root | Should -Be 'job running, repair refused; retry when idle or pause the runners first'
     }
 
-    It 'does not refuse repair when the runners are idle or status is missing' {
+    It 'allows a fresh idle status and refuses a missing status unless the task is gone' {
         $idle = Join-Path $TestDrive 'repair-idle'
         New-Item -ItemType Directory -Force -Path $idle | Out-Null
         $enc = New-Object System.Text.UTF8Encoding $false
-        [IO.File]::WriteAllText((Join-Path $idle 'status.json'), '{"state":"idle"}', $enc)
+        $updated = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        [IO.File]::WriteAllText((Join-Path $idle 'status.json'), ('{"state":"idle","updated":"' + $updated + '"}'), $enc)
         Get-AapRepairRefusal $idle | Should -BeNullOrEmpty
+        $script:taskState = 'ready'
+        Mock Get-AapSupervisorTaskState { return $script:taskState }
         $none = Join-Path $TestDrive 'repair-none'
         New-Item -ItemType Directory -Force -Path $none | Out-Null
+        $unread = 'status unreadable, repair refused; retry when idle or pause the runners first'
+        Get-AapRepairRefusal $none | Should -Be $unread
+        $bad = Join-Path $TestDrive 'repair-bad'
+        New-Item -ItemType Directory -Force -Path $bad | Out-Null
+        [IO.File]::WriteAllText((Join-Path $bad 'status.json'), '{', $enc)
+        Get-AapRepairRefusal $bad | Should -Be $unread
+        $script:taskState = 'missing'
         Get-AapRepairRefusal $none | Should -BeNullOrEmpty
+        Get-AapRepairRefusal $bad | Should -BeNullOrEmpty
+    }
+
+    It 'trusts the task state when status.json is older than 180 s' {
+        $root = Join-Path $TestDrive 'repair-stale'
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
+        $enc = New-Object System.Text.UTF8Encoding $false
+        $busy = 'job running, repair refused; retry when idle or pause the runners first'
+        $unread = 'status unreadable, repair refused; retry when idle or pause the runners first'
+        [IO.File]::WriteAllText((Join-Path $root 'status.json'), '{"state":"idle","updated":"2020-01-01T00:00:00Z"}', $enc)
+        $script:taskState = 'running'
+        Mock Get-AapSupervisorTaskState { return $script:taskState }
+        Get-AapRepairRefusal $root | Should -Be $busy
+        [IO.File]::WriteAllText((Join-Path $root 'status.json'), '{"state":"running","updated":"2020-01-01T00:00:00Z"}', $enc)
+        $script:taskState = 'ready'
+        Get-AapRepairRefusal $root | Should -BeNullOrEmpty
+        $script:taskState = 'unknown'
+        Get-AapRepairRefusal $root | Should -Be $unread
+    }
+
+    It 'reads status again before the remount and before the restart' {
+        $script:checks = 0
+        Mock Get-AapRepairRefusal {
+            $script:checks++
+            if ($script:checks -ge 2) {
+                return 'job running, repair refused; retry when idle or pause the runners first'
+            }
+            return $null
+        }
+        Mock Invoke-AapStreaming { return 0 }
+        Mock Test-Path { return $true }
+        Mock Test-AapReparsePoint { return $false }
+        $code = Invoke-AapRepairLive ''
+        $code | Should -Be 1
+        $script:checks | Should -Be 2
+        Should -Invoke Invoke-AapStreaming -Times 0 -ParameterFilter { ($Arguments -join ' ') -match 'mount-work-vhdx\.ps1' -and ($Arguments -join ' ') -notmatch 'lock-acl' }
+        $script:checks = 0
+        Mock Get-AapRepairRefusal {
+            $script:checks++
+            if ($script:checks -ge 3) {
+                return 'job running, repair refused; retry when idle or pause the runners first'
+            }
+            return $null
+        }
+        $code = Invoke-AapRepairLive ''
+        $code | Should -Be 1
+        $script:checks | Should -Be 3
+        Should -Invoke Invoke-AapStreaming -Times 0 -ParameterFilter { $File -eq 'C:\Windows\System32\schtasks.exe' }
     }
 
     It 'names only the fixed repair paths' {

@@ -11,7 +11,8 @@ use windows::Win32::Security::Authorization::{
 use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, PSECURITY_DESCRIPTOR, PSID,
+    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, OWNER_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID,
 };
 use windows::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
@@ -336,12 +337,21 @@ pub fn shell_execute_runas(exe: &std::path::Path, parameters: &str) -> Result<()
     Ok(())
 }
 
-/// One DACL entry from `directory_aces`.
+/// One DACL entry. `other` is an ACE that is neither allow nor deny.
+#[derive(Clone, Debug)]
 pub struct DirectoryAce {
     pub sid: String,
     pub allow: bool,
+    pub other: bool,
     pub rights: u32,
     pub inherit_only: bool,
+}
+
+/// Owner SID plus the DACL of a file or directory.
+#[derive(Clone, Debug)]
+pub struct ObjectAcl {
+    pub owner: String,
+    pub aces: Vec<DirectoryAce>,
 }
 
 /// Machine `PSModulePath`, expanded. Empty is an error: an elevated script must not fall
@@ -372,10 +382,12 @@ pub fn machine_ps_module_path() -> std::io::Result<String> {
     Ok(text)
 }
 
-/// Allow and deny ACEs on `dir` itself. A null DACL is reported as Authenticated Users
-/// with generic-all, because that DACL grants everyone every right.
-pub fn directory_aces(dir: &std::path::Path) -> std::io::Result<Vec<DirectoryAce>> {
-    let wide_name = wide(dir.as_os_str());
+/// Owner and DACL of a file or directory. A null DACL is reported as Authenticated Users
+/// with generic-all, because that DACL grants everyone every right. An ACE that is neither
+/// allow nor deny is returned with `other` set so the caller can refuse it.
+pub fn object_acl(path: &std::path::Path) -> std::io::Result<ObjectAcl> {
+    let wide_name = wide(path.as_os_str());
+    let mut owner = PSID(std::ptr::null_mut());
     let mut dacl: *mut ACL = std::ptr::null_mut();
     let mut sd = PSECURITY_DESCRIPTOR(std::ptr::null_mut());
     // SAFETY: `wide_name` is null-terminated for this call. The out-pointers are live locals.
@@ -383,8 +395,8 @@ pub fn directory_aces(dir: &std::path::Path) -> std::io::Result<Vec<DirectoryAce
         GetNamedSecurityInfoW(
             PCWSTR::from_raw(wide_name.as_ptr()),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
-            None,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            Some(&mut owner),
             None,
             Some(std::ptr::addr_of_mut!(dacl)),
             None,
@@ -394,14 +406,33 @@ pub fn directory_aces(dir: &std::path::Path) -> std::io::Result<Vec<DirectoryAce
     if status != ERROR_SUCCESS {
         return Err(std::io::Error::from_raw_os_error(status.0 as i32));
     }
-    let result = read_dacl(dacl);
+    let owner_sid = if owner.0.is_null() {
+        String::new()
+    } else {
+        // SAFETY: the owner SID points into `sd`, which is still allocated.
+        match unsafe { psid_text(owner) } {
+            Ok(text) => text,
+            Err(e) => {
+                if !sd.0.is_null() {
+                    unsafe {
+                        let _ = LocalFree(Some(HLOCAL(sd.0)));
+                    }
+                }
+                return Err(e);
+            }
+        }
+    };
+    let aces = read_dacl(dacl);
     if !sd.0.is_null() {
         // SAFETY: this is the descriptor GetNamedSecurityInfo allocated.
         unsafe {
             let _ = LocalFree(Some(HLOCAL(sd.0)));
         }
     }
-    result
+    Ok(ObjectAcl {
+        owner: owner_sid,
+        aces: aces?,
+    })
 }
 
 fn read_dacl(dacl: *mut ACL) -> std::io::Result<Vec<DirectoryAce>> {
@@ -409,6 +440,7 @@ fn read_dacl(dacl: *mut ACL) -> std::io::Result<Vec<DirectoryAce>> {
         return Ok(vec![DirectoryAce {
             sid: "S-1-5-11".to_string(),
             allow: true,
+            other: false,
             rights: 0x1000_0000,
             inherit_only: false,
         }]);
@@ -435,16 +467,22 @@ fn read_dacl(dacl: *mut ACL) -> std::io::Result<Vec<DirectoryAce>> {
         }
         // SAFETY: GetAce returned a pointer to an ACE_HEADER inside `dacl`.
         let header = unsafe { &*ace_ptr.cast::<ACE_HEADER>() };
-        let allow = match header.AceType {
-            0 => true,
-            1 => false,
-            _ => continue,
-        };
-        // Allow and deny ACEs share this layout. Object ACEs are skipped above.
+        if header.AceType != 0 && header.AceType != 1 {
+            out.push(DirectoryAce {
+                sid: String::new(),
+                allow: false,
+                other: true,
+                rights: 0,
+                inherit_only: false,
+            });
+            continue;
+        }
+        // Allow and deny ACEs share this layout.
         let ace = unsafe { &*ace_ptr.cast::<ACCESS_ALLOWED_ACE>() };
         out.push(DirectoryAce {
             sid: sid_text(ace)?,
-            allow,
+            allow: header.AceType == 0,
+            other: false,
             rights: ace.Mask,
             inherit_only: header.AceFlags & 8 != 0,
         });
@@ -453,9 +491,14 @@ fn read_dacl(dacl: *mut ACL) -> std::io::Result<Vec<DirectoryAce>> {
 }
 
 fn sid_text(ace: &ACCESS_ALLOWED_ACE) -> std::io::Result<String> {
-    let mut name = PWSTR(std::ptr::null_mut());
     let sid = PSID(std::ptr::addr_of!(ace.SidStart).cast_mut().cast());
-    // SAFETY: `sid` points at the SID embedded in this ACE. `name` is an out-pointer.
+    // SAFETY: `sid` points at the SID embedded in this ACE. The caller still owns the ACL.
+    unsafe { psid_text(sid) }
+}
+
+unsafe fn psid_text(sid: PSID) -> std::io::Result<String> {
+    let mut name = PWSTR(std::ptr::null_mut());
+    // SAFETY: `sid` is a SID the caller still owns. `name` is an out-pointer.
     unsafe { ConvertSidToStringSidW(sid, &mut name) }
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let text = if name.0.is_null() {

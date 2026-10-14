@@ -337,28 +337,80 @@ function Invoke-AapVerifyLive([string]$DataDir) {
     return 0
 }
 
-function Get-AapRepairRefusal([string]$DataDir) {
-    if (-not (Test-AapHelperDataDir $DataDir)) { return $null }
-    $path = Join-Path $DataDir 'status.json'
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-    if (Test-AapReparsePoint $path) { return $null }
-    $len = (Get-Item -LiteralPath $path -Force).Length
-    if ($len -gt 65536) { return $null }
-    $text = [IO.File]::ReadAllText($path)
-    $state = $null
-    if ($text -match '"state"\s*:\s*"([^"]+)"') { $state = $Matches[1] }
-    if ($state -eq 'running' -or $state -eq 'draining') {
-        return 'job running, repair refused; retry when idle or pause the runners first'
+function Get-AapSupervisorTaskState {
+    try {
+        $task = Get-ScheduledTask -TaskName $AapSupervisorTask -ErrorAction Stop
+    } catch {
+        if ([string]$_.FullyQualifiedErrorId -match 'NotFound_TaskName') { return 'missing' }
+        return 'unknown'
     }
+    if ($null -eq $task) { return 'missing' }
+    switch ([string]$task.State) {
+        'Running' { return 'running' }
+        'Queued' { return 'running' }
+        'Ready' { return 'ready' }
+        'Disabled' { return 'ready' }
+        default { return 'unknown' }
+    }
+}
+
+# Missing, unreadable, or unparseable status refuses unless the supervisor task
+# does not exist. A parsed "updated" older than 180 s is not trusted: the task
+# state decides. starting, running, and draining refuse when the timestamp is fresh.
+function Get-AapRepairRefusal([string]$DataDir, [datetime]$Now = ([datetime]::UtcNow)) {
+    $busy = 'job running, repair refused; retry when idle or pause the runners first'
+    $unread = 'status unreadable, repair refused; retry when idle or pause the runners first'
+    if (-not (Test-AapHelperDataDir $DataDir)) { return $unread }
+    $path = Join-Path $DataDir 'status.json'
+    $text = $null
+    try {
+        if ((Test-Path -LiteralPath $path -PathType Leaf) -and -not (Test-AapReparsePoint $path)) {
+            $len = (Get-Item -LiteralPath $path -Force).Length
+            if ($len -le 65536) {
+                $text = [IO.File]::ReadAllText($path)
+                if ($text.Length -gt 65536) { $text = $null }
+            }
+        }
+    } catch {
+        $text = $null
+    }
+    $state = $null
+    if ($text -and ($text -match '"state"\s*:\s*"([^"]+)"')) { $state = $Matches[1] }
+    if ([string]::IsNullOrEmpty($state)) {
+        if ((Get-AapSupervisorTaskState) -eq 'missing') { return $null }
+        return $unread
+    }
+    if ($text -match '"updated"\s*:\s*"([^"]+)"') {
+        $updated = ConvertFrom-AapRfc3339 $Matches[1]
+        $fresh = $false
+        if ($null -ne $updated) {
+            $age = ($Now.ToUniversalTime() - $updated).TotalSeconds
+            if ($age -ge 0 -and $age -le 180) { $fresh = $true }
+        }
+        if (-not $fresh) {
+            switch (Get-AapSupervisorTaskState) {
+                'missing' { return $null }
+                'ready' { return $null }
+                'running' { return $busy }
+                default { return $unread }
+            }
+        }
+    }
+    if ($state -eq 'running' -or $state -eq 'draining' -or $state -eq 'starting') { return $busy }
     return $null
 }
 
-function Invoke-AapRepairLive([string]$TrayExe) {
+function Write-AapRepairRefusal {
     $refusal = Get-AapRepairRefusal $AapDataDir
     if ($refusal) {
         [Console]::Out.WriteLine("FAIL $refusal")
-        return 1
+        return $true
     }
+    return $false
+}
+
+function Invoke-AapRepairLive([string]$TrayExe) {
+    if (Write-AapRepairRefusal) { return 1 }
     $layout = Get-AapHelperLayout
     foreach ($step in @(Get-AapRepairPlan)) {
         if ($step.Name -ne 'lock-acl') { continue }
@@ -392,6 +444,7 @@ function Invoke-AapRepairLive([string]$TrayExe) {
         return 1
     }
     [Console]::Out.WriteLine('PASS install-supervisor')
+    if (Write-AapRepairRefusal) { return 1 }
     [Console]::Out.WriteLine('STEP remount')
     $installed = 'C:\wsl\mount-work-vhdx.ps1'
     $mountScript = $installed
@@ -413,6 +466,7 @@ function Invoke-AapRepairLive([string]$TrayExe) {
         return 1
     }
     [Console]::Out.WriteLine('PASS remount')
+    if (Write-AapRepairRefusal) { return 1 }
     [Console]::Out.WriteLine("STEP restart $AapSupervisorTask")
     $end = Invoke-AapStreaming $AapSchtasks @('/End', '/TN', $AapSupervisorTask)
     if ($end -ne 0) {
