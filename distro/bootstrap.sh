@@ -17,6 +17,10 @@ STAGE=${AAP_RUNNER_STAGE:-/mnt/c/aap-runner-staging}
 # tells the operator to unregister only this distro.
 INSTALL_MARKER=${AAP_RUNNER_INSTALL_MARKER:-/mnt/c/wsl/aap-runner.installing}
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# The Windows scripts sit in ../installer in the repository and beside this
+# file in a flat stage.
+INSTALLER_DIR=${SCRIPT_DIR}
+[[ -f "${SCRIPT_DIR}/install-host.ps1" ]] || INSTALLER_DIR=$(cd "${SCRIPT_DIR}/../installer" 2>/dev/null && pwd) || INSTALLER_DIR=${SCRIPT_DIR}
 # shellcheck source=labels.sh
 source "${SCRIPT_DIR}/labels.sh"
 # Exact match for AAP_RUNNER_LABELS_VERSION in labels.sh.
@@ -1310,7 +1314,7 @@ assert_dockerd_ipv6_off() {
 
 lock_windows_admin_only() {
   local win="$1"
-  if ! invoke_powershell_file "$(wslpath -w "${SCRIPT_DIR}/lock-acl.ps1")" \
+  if ! invoke_powershell_file "$(wslpath -w "${INSTALLER_DIR}/lock-acl.ps1")" \
     -LiteralPath "${win}"; then
     echo "refusing: ACL on ${win} is not limited to SYSTEM and Administrators" >&2
     exit 1
@@ -1614,7 +1618,7 @@ self_check() {
     echo "expected the operator SID on the trigger and the principal, found ${count}" >&2
     exit 1
   fi
-  if [[ "$(< "${SCRIPT_DIR}/mount-work-vhdx.ps1")" != *'C:\wsl\mount-work-vhdx.log'* ]]; then
+  if [[ "$(< "${INSTALLER_DIR}/mount-work-vhdx.ps1")" != *'C:\wsl\mount-work-vhdx.log'* ]]; then
     echo "mount script does not log under C:\\wsl" >&2
     exit 1
   fi
@@ -2030,7 +2034,7 @@ EOF
     fi
   done
   for ps1 in lock-acl.ps1 create-work-vhdx.ps1 mount-work-vhdx.ps1; do
-    if ! grep -q "GetEnvironmentVariable('PSModulePath', 'Machine')" "${SCRIPT_DIR}/${ps1}"; then
+    if ! grep -q "GetEnvironmentVariable('PSModulePath', 'Machine')" "${INSTALLER_DIR}/${ps1}"; then
       echo "${ps1} does not reset PSModulePath" >&2
       exit 1
     fi
@@ -2110,7 +2114,7 @@ EOF
     echo "the logon script is written before C:\\wsl is locked" >&2
     exit 1
   fi
-  vhdx_ps1=$(< "${SCRIPT_DIR}/create-work-vhdx.ps1")
+  vhdx_ps1=$(< "${INSTALLER_DIR}/create-work-vhdx.ps1")
   if [[ "${vhdx_ps1}" == *'$env:TEMP'* ]]; then
     echo "create-work-vhdx.ps1 writes the diskpart script under TEMP" >&2
     exit 1
@@ -2124,10 +2128,10 @@ EOF
     echo "create-work-vhdx.ps1 does not refuse a bad -Path" >&2
     exit 1
   fi
-  path_line=$(grep -n -- '-notmatch' "${SCRIPT_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
-  lock_line=$(grep -n -- '& $lock -LiteralPath $dir' "${SCRIPT_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
-  new_line=$(grep -n -- 'New-VHD -Path' "${SCRIPT_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
-  dp_line=$(grep -n -- 'aap-runner-diskpart.txt' "${SCRIPT_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
+  path_line=$(grep -n -- '-notmatch' "${INSTALLER_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
+  lock_line=$(grep -n -- '& $lock -LiteralPath $dir' "${INSTALLER_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
+  new_line=$(grep -n -- 'New-VHD -Path' "${INSTALLER_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
+  dp_line=$(grep -n -- 'aap-runner-diskpart.txt' "${INSTALLER_DIR}/create-work-vhdx.ps1" | head -1 | cut -d: -f1)
   if [[ -z "${path_line}" || -z "${lock_line}" || -z "${new_line}" || -z "${dp_line}" \
     || "${path_line}" -ge "${lock_line}" || "${lock_line}" -ge "${new_line}" \
     || "${new_line}" -ge "${dp_line}" ]]; then
@@ -2590,29 +2594,31 @@ EOF
   fi
   while read -r hash name; do
     [[ -n "${hash}" ]] || continue
-    dev=$(sha256sum "${SCRIPT_DIR}/${name}" | awk '{ print $1 }')
+    hashed="${SCRIPT_DIR}/${name}"
+    [[ -f "${hashed}" ]] || hashed="${INSTALLER_DIR}/${name}"
+    dev=$(sha256sum "${hashed}" | awk '{ print $1 }')
     if [[ "${dev}" != "${hash}" ]]; then
       echo "staging.sha256 does not match ${name}" >&2
       exit 1
     fi
   done < "${SCRIPT_DIR}/staging.sha256"
-  if ! grep -q 'AllowDiskMount' "${SCRIPT_DIR}/install-host.ps1"; then
+  if ! grep -q 'AllowDiskMount' "${INSTALLER_DIR}/install-host.ps1"; then
     echo "install-host.ps1 does not check AllowDiskMount" >&2
     exit 1
   fi
-  if ! grep -q 'GetEnvironmentVariable('"'"'PSModulePath'"'"', '"'"'Machine'"'"')' "${SCRIPT_DIR}/install-host.ps1"; then
+  if ! grep -q 'GetEnvironmentVariable('"'"'PSModulePath'"'"', '"'"'Machine'"'"')' "${INSTALLER_DIR}/install-host.ps1"; then
     echo "install-host.ps1 does not reset PSModulePath" >&2
     exit 1
   fi
-  if ! grep -q -- '-DryRun' "${SCRIPT_DIR}/install-host.ps1" \
-    || ! grep -q -- '-TestMode' "${SCRIPT_DIR}/install-host.ps1" \
-    || ! grep -q -- '-DistroName' "${SCRIPT_DIR}/install-host.ps1" \
-    || ! grep -q -- '-WorkVhdx' "${SCRIPT_DIR}/install-host.ps1"; then
+  if ! grep -q -- '-DryRun' "${INSTALLER_DIR}/install-host.ps1" \
+    || ! grep -q -- '-TestMode' "${INSTALLER_DIR}/install-host.ps1" \
+    || ! grep -q -- '-DistroName' "${INSTALLER_DIR}/install-host.ps1" \
+    || ! grep -q -- '-WorkVhdx' "${INSTALLER_DIR}/install-host.ps1"; then
     echo "install-host.ps1 is missing DryRun, TestMode, or the path overrides" >&2
     exit 1
   fi
   local unit=aap-runner-manager
-  if grep -q -F -- "systemctl start ${unit}" "${SCRIPT_DIR}/install-host.ps1" "${SCRIPT_DIR}/bootstrap.sh"; then
+  if grep -q -F -- "systemctl start ${unit}" "${INSTALLER_DIR}/install-host.ps1" "${SCRIPT_DIR}/bootstrap.sh"; then
     echo "the install starts the manager" >&2
     exit 1
   fi
@@ -2766,7 +2772,7 @@ ensure_work_vhdx() {
     echo "refusing: ${avail}G free on C:; creating the fixed work disk needs ${WORK_DISK_GB}G" >&2
     exit 1
   fi
-  if ! invoke_powershell_file "$(wslpath -w "${SCRIPT_DIR}/create-work-vhdx.ps1")" \
+  if ! invoke_powershell_file "$(wslpath -w "${INSTALLER_DIR}/create-work-vhdx.ps1")" \
     -Path "${win}" -SizeGiB "${WORK_DISK_GB}"; then
     echo "failed to create ${win}. Run bootstrap from an elevated shell." >&2
     exit 1
@@ -3022,7 +3028,7 @@ render_mount_task_xml() {
     echo "refusing: task script path cannot be placed in the task xml" >&2
     return 1
   fi
-  xml=$(< "${SCRIPT_DIR}/mount-work-vhdx-task.xml")
+  xml=$(< "${INSTALLER_DIR}/mount-work-vhdx-task.xml")
   if [[ "${xml}" != *'encoding="UTF-16"'* || "${xml}" != *'InteractiveToken'* || "${xml}" != *'LogonTrigger'* ]]; then
     echo "refusing: task xml template is missing the operator logon principal" >&2
     return 1
@@ -3051,7 +3057,7 @@ register_mount_task() {
   # Lock the folder before the logon script or the task xml is written.
   lock_created_windows_dir "${task_dir}"
   vhdx_win=$(wslpath -w "${WORK_VHDX}")
-  ps1_body=$(< "${SCRIPT_DIR}/mount-work-vhdx.ps1")
+  ps1_body=$(< "${INSTALLER_DIR}/mount-work-vhdx.ps1")
   ps1_body=${ps1_body//__AAP_VHDX__/${vhdx_win}}
   ps1_win=$(wslpath -w "${task_dir}/mount-work-vhdx.ps1")
   printf '%s\n' "${ps1_body}" > "${task_dir}/mount-work-vhdx.ps1"

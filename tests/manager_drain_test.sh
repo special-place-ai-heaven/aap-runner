@@ -8,8 +8,8 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=SCRIPTDIR/../manager.sh
-source "${here}/../manager.sh"
+# shellcheck source=SCRIPTDIR/../distro/manager.sh
+source "${here}/../distro/manager.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -177,8 +177,8 @@ echo "undrain starts drained slots again ok"
 # so no runner registers and no token is minted.
 # Re-source for the real run_one; keep this test's RUN_DIR.
 saved_run_dir=${RUN_DIR}
-# shellcheck source=SCRIPTDIR/../manager.sh
-source "${here}/../manager.sh"
+# shellcheck source=SCRIPTDIR/../distro/manager.sh
+source "${here}/../distro/manager.sh"
 RUN_DIR=${saved_run_dir}
 calls="${RUN_DIR}/calls"
 : > "${calls}"

@@ -297,7 +297,7 @@ function Write-AapStatus {
 # of & so stdout, stderr and the exit code come back separately, stdin can
 # carry data, and a hung call can be killed. That also avoids the Windows
 # PowerShell 5.1 trap where native stderr under Stop becomes a terminating
-# error (see ../mount-work-vhdx.ps1). WSL_UTF8=1 makes wsl.exe's own messages
+# error (see ../installer/mount-work-vhdx.ps1). WSL_UTF8=1 makes wsl.exe's own messages
 # UTF-8 instead of UTF-16; NULs are stripped in case it is ignored.
 # -Background returns the running Process (the keep-alive child).
 function Invoke-AapWsl {

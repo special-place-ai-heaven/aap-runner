@@ -317,6 +317,7 @@ function Copy-AapLockedStaging {
         $want = $Matches[1]
         $name = $Matches[2]
         $src = Join-Path $SourceDir $name
+        if (-not (Test-Path -LiteralPath $src)) { $src = Join-Path $PSScriptRoot $name }
         $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $src).Hash.ToLower()
         if ($got -ne $want) { throw "source hash mismatch for $name" }
         Copy-Item -LiteralPath $src -Destination (Join-Path $DestDir $name) -Force
@@ -440,7 +441,8 @@ function Invoke-AapInstallHost {
         }
     }
 
-    $repo = $PSScriptRoot
+    # bootstrap.sh and staging.sha256 live in ..\distro; the Windows scripts live here.
+    $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\distro')).Path
     $linuxRepo = Get-AapWslPath $OperatorDistro $repo
     $linuxVhdx = Get-AapWslPath $OperatorDistro $WorkVhdx
     $linuxInstall = Get-AapWslPath $OperatorDistro $InstallDir
@@ -488,7 +490,7 @@ function Invoke-AapInstallHost {
             # The xml hash does not cover the logon script. A changed
             # mount-work-vhdx.ps1 must re-run the task step, which rewrites it.
             if ($taskCurrent) {
-                $want = ((Get-Content -Raw -LiteralPath (Join-Path $repo 'mount-work-vhdx.ps1')) -replace '__AAP_VHDX__', $WorkVhdx).TrimEnd()
+                $want = ((Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'mount-work-vhdx.ps1')) -replace '__AAP_VHDX__', $WorkVhdx).TrimEnd()
                 $have = (Get-Content -Raw -LiteralPath (Join-Path $parent 'mount-work-vhdx.ps1')).TrimEnd()
                 if ($have -ne $want) { $taskCurrent = $false }
             }

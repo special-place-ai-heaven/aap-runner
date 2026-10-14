@@ -5,7 +5,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-dir="${here}/.."
+dir="${here}/../distro"
 
 fail() {
   echo "FAIL: $*" >&2

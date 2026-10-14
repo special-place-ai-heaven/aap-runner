@@ -415,8 +415,8 @@ The locked distro cannot see the checkout. From the operator distro, copy the cu
 
 ```bash
 img=/var/lib/aap-runner/image
-wsl.exe -d aap-runner -u root -- tee "${img}/Dockerfile" < ops/self-hosted-runner/Dockerfile >/dev/null
-wsl.exe -d aap-runner -u root -- tee "${img}/ephemeral-entry.sh" < ops/self-hosted-runner/ephemeral-entry.sh >/dev/null
+wsl.exe -d aap-runner -u root -- tee "${img}/Dockerfile" < distro/Dockerfile >/dev/null
+wsl.exe -d aap-runner -u root -- tee "${img}/ephemeral-entry.sh" < distro/ephemeral-entry.sh >/dev/null
 wsl.exe -d aap-runner -u root -- docker build -t aap-crrr-runner:local "${img}"
 ```
 
@@ -429,7 +429,7 @@ After the App key and `manager.conf` are in place:
 `aap-runner` has automount off, so it cannot read the Windows profile or run `wsl.exe`. From the operator distro:
 
 ```bash
-AAP_RUNNERS_READ_TOKEN="$(cat ~/.aap-runners-token)" bash ops/self-hosted-runner/evidence-host.sh
+AAP_RUNNERS_READ_TOKEN="$(cat ~/.aap-runners-token)" bash distro/evidence-host.sh
 ```
 
 That script runs `wsl.exe --version`, reads `%USERPROFILE%\.wslconfig` (or records that the file is absent), fetches the org's registered runners with `GET /orgs/special-place-ai-heaven/actions/runners`, copies those captures into the distro, and runs `aap-runner-evidence`. Evidence prints the wsl text under `HOST-REPORTED (operator-supplied, not verified)`. The distro did not read those files itself, so the printed text is not a verified pass. A missing `wsl --version` capture or a missing `.wslconfig` capture calls `bad` with `host P0 bundle is incomplete`. The rest of the evidence still prints, and the script exits non-zero. An operator-captured `absent` marker for `.wslconfig` is the Windows NAT default and is printed as `wslconfig: absent`. The registered-runner list (name, status, labels) is printed in that same bundle so it can be compared with `manager.conf`. A missing `gh` or a failed request is written into the list and does not by itself fail evidence. The App private key, the registration token, and the runners read token are not printed.

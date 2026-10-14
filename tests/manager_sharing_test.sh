@@ -7,8 +7,8 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=SCRIPTDIR/../manager.sh
-source "${here}/../manager.sh"
+# shellcheck source=SCRIPTDIR/../distro/manager.sh
+source "${here}/../distro/manager.sh"
 
 fail() {
   echo "FAIL: $*" >&2

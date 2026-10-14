@@ -7,8 +7,8 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# shellcheck source=SCRIPTDIR/../manager.sh
-source "${here}/../manager.sh"
+# shellcheck source=SCRIPTDIR/../distro/manager.sh
+source "${here}/../distro/manager.sh"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -121,8 +121,8 @@ echo "500 and lookup failure retried once, logged, rc 0 ok"
 # timeouts. A throwaway key signs the JWT.
 # Re-source for the real mint_installation_token; keep this test's RUN_DIR.
 saved_run_dir=${RUN_DIR}
-# shellcheck source=SCRIPTDIR/../manager.sh
-source "${here}/../manager.sh"
+# shellcheck source=SCRIPTDIR/../distro/manager.sh
+source "${here}/../distro/manager.sh"
 RUN_DIR=${saved_run_dir}
 AAP_GITHUB_ORG=example-org
 key="${RUN_DIR}/app.pem"
@@ -258,8 +258,8 @@ rm -f "${RUN_DIR}/drain"
 echo "sigterm during a hung drain deregistration stays in budget ok"
 
 # run_one: the wall clock stopped a listener that never got a job.
-# shellcheck source=SCRIPTDIR/../manager.sh
-source "${here}/../manager.sh"
+# shellcheck source=SCRIPTDIR/../distro/manager.sh
+source "${here}/../distro/manager.sh"
 RUN_DIR=${log%/log}
 : > "${log}"
 # shellcheck disable=SC2317

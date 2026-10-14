@@ -5,7 +5,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-manager="${here}/../manager.sh"
+manager="${here}/../distro/manager.sh"
 
 fail() {
   echo "FAIL: $*" >&2

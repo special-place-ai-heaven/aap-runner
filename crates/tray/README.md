@@ -80,7 +80,7 @@ Standalone crate, not part of the repository's root workspace. The repo's `.carg
 puts build output in the root `target/`.
 
 ```
-cd ops/self-hosted-runner/tray
+cd crates/tray
 cargo build --release
 cargo test
 ```
