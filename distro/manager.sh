@@ -113,6 +113,15 @@ REAP_PID=""
 # now_s + interval of the next pass. Empty means never reaped: due now.
 REAP_NEXT=""
 REAP_STARTED=0
+# Per-container cpu and memory, from one docker stats call this often, in
+# the background and bounded by SAMPLE_BUDGET_SECONDS. One call in flight.
+# ${RUN_DIR}/usage is the last good sample; status_json merges it.
+SAMPLE_INTERVAL_SECONDS=60
+SAMPLE_BUDGET_SECONDS=20
+USAGE_PID=""
+# now_s + interval of the next sample. Empty means due now.
+USAGE_NEXT=""
+USAGE_FAILS=0
 
 # Whole seconds since boot, from /proc/uptime (CLOCK_BOOTTIME). Every timer
 # here uses it. SECONDS and date +%s follow the wall clock, and WSL steps
@@ -852,6 +861,74 @@ tick_reap() {
   REAP_PID=$!
 }
 
+# docker stats lines "NAME<tab>CPUPerc<tab>MemUsage" on stdin. Prints
+# "SLOT NAME CORES GIB" for each container a slot file names: CORES is
+# CPUPerc / 100 and GIB the used memory, both to 1 decimal, or - when
+# docker gave no number. Other containers are skipped.
+usage_lines() {
+  local f name cpu mem
+  local -A slot_of=()
+  for f in "${RUN_DIR}"/slot-[1-9]; do
+    name=""
+    { read -r _ _ name _ < "${f}"; } 2>/dev/null || true
+    [[ -n "${name}" && "${name}" != - ]] && slot_of[${name}]=${f##*-}
+  done
+  while IFS=$'\t' read -r name cpu mem; do
+    [[ -n "${name}" && -n "${slot_of[${name}]:-}" ]] || continue
+    printf '%s\t%s\t%s\t%s\n' "${slot_of[${name}]}" "${name}" "${cpu}" "${mem%% / *}"
+  done | awk -F'\t' '
+    function gib(s,  n, u) {
+      if (s !~ /^[0-9.]+(B|KiB|MiB|GiB|TiB)$/) return "-"
+      n = s + 0; u = s; sub(/^[0-9.]+/, "", u)
+      if (u == "B") n /= 1073741824
+      else if (u == "KiB") n /= 1048576
+      else if (u == "MiB") n /= 1024
+      else if (u == "TiB") n *= 1024
+      return sprintf("%.1f", n)
+    }
+    { c = ($3 ~ /^[0-9.]+%$/) ? sprintf("%.1f", $3 / 100) : "-"; print $1, $2, c, gib($4) }'
+}
+
+# One usage sample into ${RUN_DIR}/usage: the sample time in Unix seconds,
+# then usage_lines. A failed docker stats leaves the previous file.
+sample_usage() {
+  local out tmp="${RUN_DIR}/usage.tmp.${BASHPID}"
+  out=$(timeout "${SAMPLE_BUDGET_SECONDS}" docker stats --no-stream \
+    --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' 2>/dev/null) || return 1
+  if { date +%s && usage_lines <<< "${out}"; } > "${tmp}" 2>/dev/null; then
+    mv -f "${tmp}" "${RUN_DIR}/usage" 2>/dev/null || true
+  fi
+  rm -f "${tmp}" 2>/dev/null || true
+  write_status
+}
+
+# From the pool loop: starts sample_usage every SAMPLE_INTERVAL_SECONDS in
+# the background, like tick_reap. A failure is logged once per 10.
+tick_usage() {
+  local rc=0
+  [[ -d "${RUN_DIR}" ]] || return 0
+  if [[ -n "${USAGE_PID}" ]]; then
+    kill -0 "${USAGE_PID}" 2>/dev/null && return 0
+    wait "${USAGE_PID}" 2>/dev/null || rc=$?
+    USAGE_PID=""
+    if ((rc != 0)); then
+      USAGE_FAILS=$((USAGE_FAILS + 1))
+      if ((USAGE_FAILS % 10 == 1)); then
+        echo "warning: docker stats failed (${USAGE_FAILS} so far); keeping the previous usage sample" >&2
+      fi
+    fi
+  fi
+  if [[ -n "${USAGE_NEXT}" ]] && (($(now_s) < USAGE_NEXT)); then
+    return 0
+  fi
+  USAGE_NEXT=$(($(now_s) + SAMPLE_INTERVAL_SECONDS))
+  {
+    trap - EXIT TERM INT
+    sample_usage
+  } &
+  USAGE_PID=$!
+}
+
 # Deletes a runner registration by name. Never fails the caller: a failure
 # after one retry is logged and the runner stays registered, offline.
 deregister_runner() {
@@ -1162,40 +1239,73 @@ discover_job_run() {
 # state: draining while the drain file exists, else running while a slot has
 # a job, else idle once a slot listens, else starting. job: the most
 # recently started running job, or "". repo and run_url: that job's, once
-# discover_job_run found them, else "". slots and runner_count:
-# AAP_RUNNER_COUNT. job_cpus and job_memory: the pool totals as configured,
+# discover_job_run found them, else "". runner_count: AAP_RUNNER_COUNT. job_cpus and job_memory: the pool totals as configured,
 # after limits.conf. job_io_mbps: the per-slot IO share in MiB/s, 0 for none.
 # sharing: slice or fixed, as the pool runs (fixed after a fallback).
 # job_cpus is a JSON number and may be fractional (2.5)
 # when manager.conf says so; the supervisor treats a non-integer as unknown.
 # Paused is a Windows-side state and never appears here.
+# Schema 3 adds sampled_at (the usage sample's time, null before one),
+# pool (usage summed over the slots, and the IO cap applied to the pool,
+# null for none), and slots, one entry per configured slot (schema 2's
+# slots was the count; runner_count still carries it). A slot is
+# retired, else draining while the drain file exists, else running or
+# starting, else idle. Its cpu_cores and mem_gib come from the sample only
+# while the sample names the slot's current container. job_url is null.
 status_json() {
-  local f st ns name busy=0 idle=0 best=-1 job="" state=starting
-  local rns rrepo rurl repo="" run_url="" 
-  for f in "${RUN_DIR}"/slot-[1-9]; do
-    [[ -f "${f}" ]] || continue
-    st="" ns="" name=""
-    { read -r st ns _ name < "${f}"; } 2>/dev/null || true
+  local slot f st ns cname name sst sjob srepo srun started cpu mem pio=""
+  local busy=0 idle=0 best=-1 job="" state=starting sampled="" u n c g
+  local rns rrepo rurl repo="" run_url=""
+  local -a args=()
+  local -A uname_of=() ucpu_of=() umem_of=()
+  {
+    read -r sampled
+    while read -r u n c g; do
+      uname_of[${u}]=${n}
+      ucpu_of[${u}]=${c}
+      umem_of[${u}]=${g}
+    done
+  } 2>/dev/null < "${RUN_DIR}/usage" || true
+  [[ "${sampled}" =~ ^[0-9]+$ ]] || sampled=""
+  for ((slot = 1; slot <= ${AAP_RUNNER_COUNT:-1}; slot++)); do
+    f="${RUN_DIR}/slot-${slot}"
+    st="" ns="" cname="" name="" sjob="" srepo="" srun="" started="" cpu="" mem=""
+    { read -r st ns cname name < "${f}"; } 2>/dev/null || true
     [[ "${ns}" =~ ^[0-9]+$ ]] || ns=0
     case "${st}" in
       running)
         busy=$((busy + 1))
+        sjob=${name}
+        started=$((ns / 1000000000))
+        rns="" rrepo="" rurl=""
+        { read -r rns rrepo rurl _ < "${f}.run"; } 2>/dev/null || true
+        if [[ "${rns}" == "${ns}" ]]; then
+          srepo=${rrepo}
+          srun=${rurl}
+        fi
         if ((ns > best)); then
           best=${ns}
-          job=${name}
-          rns="" rrepo="" rurl=""
-          { read -r rns rrepo rurl _ < "${f}.run"; } 2>/dev/null || true
-          if [[ "${rns}" == "${ns}" ]]; then
-            repo=${rrepo}
-            run_url=${rurl}
-          else
-            repo=""
-            run_url=""
-          fi
+          job=${sjob}
+          repo=${srepo}
+          run_url=${srun}
         fi
+        sst=running
         ;;
-      listening | idle) idle=$((idle + 1)) ;;
+      listening | idle)
+        idle=$((idle + 1))
+        sst=idle
+        ;;
+      starting | retired) sst=${st} ;;
+      *) sst=idle ;;
     esac
+    if [[ "${sst}" != retired ]] && draining; then
+      sst=draining
+    fi
+    if [[ -n "${cname}" && "${cname}" != - && "${uname_of[${slot}]:-}" == "${cname}" ]]; then
+      [[ "${ucpu_of[${slot}]}" =~ ^[0-9]+\.[0-9]$ ]] && cpu=${ucpu_of[${slot}]}
+      [[ "${umem_of[${slot}]}" =~ ^[0-9]+\.[0-9]$ ]] && mem=${umem_of[${slot}]}
+    fi
+    args+=("${slot}" "${sst}" "${sjob}" "${srepo}" "${srun}" "${started}" "${cpu}" "${mem}")
   done
   if draining; then
     state=draining
@@ -1204,12 +1314,31 @@ status_json() {
   elif ((idle > 0)); then
     state=idle
   fi
+  # The IO cap in force: the slice's budget, or each slot's share times the
+  # slots. None without a device.
+  if [[ -n "${IO_DEVICE}" ]]; then
+    if [[ "${AAP_POOL_SHARING}" == slice ]]; then
+      ((POOL_IO_MBPS > 0)) && pio=${POOL_IO_MBPS}
+    elif ((SLOT_IO_MBPS > 0)); then
+      pio=$((SLOT_IO_MBPS * ${AAP_RUNNER_COUNT:-1}))
+    fi
+  fi
   jq -cn --arg state "${state}" --arg job "${job}" --arg repo "${repo}" --arg run_url "${run_url}" --argjson slots "${AAP_RUNNER_COUNT:-1}" \
     --argjson busy "${busy}" --argjson updated "$(date +%s)" \
     --arg cpus "${AAP_JOB_CPUS}" --arg memory "${AAP_JOB_MEMORY}" --argjson io "${SLOT_IO_MBPS:-0}" \
     --arg sharing "$([[ "${AAP_POOL_SHARING}" == slice ]] && echo slice || echo fixed)" \
-    '{state: $state, job: $job, repo: $repo, run_url: $run_url, slots: $slots, busy: $busy, updated: $updated,
-      runner_count: $slots, job_cpus: ($cpus | tonumber? // null), job_memory: $memory, job_io_mbps: $io, sharing: $sharing}'
+    --arg sampled "${sampled}" --arg pio "${pio}" \
+    'def num: if . == "" then null else tonumber end;
+     def total(f): [.[] | f // 0] | add // 0 | . * 10 | round / 10;
+     $ARGS.positional as $p
+     | [range(0; $p | length; 8) as $i | $p[$i:$i + 8]
+        | {slot: (.[0] | tonumber), state: .[1], job: .[2], repo: .[3], run_url: .[4], job_url: null,
+           started_at: (.[5] | num), cpu_cores: (.[6] | num), mem_gib: (.[7] | num)}] as $s
+     | {state: $state, job: $job, repo: $repo, run_url: $run_url, busy: $busy, updated: $updated,
+        runner_count: $slots, job_cpus: ($cpus | tonumber? // null), job_memory: $memory, job_io_mbps: $io, sharing: $sharing,
+        schema: 3, sampled_at: ($sampled | num),
+        pool: {cpu_cores: ($s | total(.cpu_cores)), mem_gib: ($s | total(.mem_gib)), io_mbps: ($pio | num)},
+        slots: $s}' --args "${args[@]}"
 }
 
 # status.json, mode 0644, replaced by rename so a reader never sees half a
@@ -1611,7 +1740,7 @@ stop_pool() {
   # processes too, so stop them and run their names again in this batch. A
   # repeat is harmless: a runner that is gone is not listed, or is a 404.
   runners+=("${DEREG_NAMES[@]}")
-  for pid in "${SLOT_PIDS[@]}" "${TICK_PID}" "${REAP_PID}" "${DEREG_PIDS[@]}"; do
+  for pid in "${SLOT_PIDS[@]}" "${TICK_PID}" "${REAP_PID}" "${USAGE_PID}" "${DEREG_PIDS[@]}"; do
     if [[ -n "${pid}" ]]; then
       kill "${pid}" 2>/dev/null || true
     fi
@@ -1619,11 +1748,11 @@ stop_pool() {
   remove_job_containers
   # Only these children. A bare wait would also wait on anything else this
   # shell started, without a bound.
-  wait "${SLOT_PIDS[@]}" "${TICK_PID}" ${REAP_PID:+"${REAP_PID}"} "${DEREG_PIDS[@]}" 2>/dev/null || true
+  wait "${SLOT_PIDS[@]}" "${TICK_PID}" ${REAP_PID:+"${REAP_PID}"} ${USAGE_PID:+"${USAGE_PID}"} "${DEREG_PIDS[@]}" 2>/dev/null || true
   DEREG_PIDS=()
   DEREG_NAMES=()
   deregister_runners "${runners[@]}"
-  rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run
+  rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}/usage"
 }
 
 # A dead slot is restarted alone; the other slots' jobs keep running. A
@@ -1633,7 +1762,7 @@ run_pool() {
   local slot i died now rc
   trap 'stop_pool; exit 143' TERM INT
   trap stop_pool EXIT
-  rm -f "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run
+  rm -f "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}/usage"
   write_status
   for ((slot = 1; slot <= AAP_RUNNER_COUNT; slot++)); do
     SLOT_FAILS[slot]=0
@@ -1642,6 +1771,7 @@ run_pool() {
   start_tick
   # After the slots start, so the first runner is not held up by the API.
   tick_reap
+  tick_usage
   while true; do
     # Undrain: the drain file is gone, so drained slots (not retired ones)
     # start again and the pool is back to AAP_RUNNER_COUNT.
@@ -1670,6 +1800,7 @@ run_pool() {
         drain_listening_slots
       fi
       tick_reap
+      tick_usage
       write_status
       start_tick
       continue
@@ -1702,6 +1833,7 @@ run_pool() {
     if [[ "${SLOT_FAILS[slot]}" -ge "${SLOT_MAX_FAILS}" ]]; then
       echo "slot ${slot} retired after ${SLOT_FAILS[slot]} fast deaths; other slots keep running" >&2
       unset "SLOT_PIDS[${slot}]"
+      set_slot_state "${slot}" retired
       continue
     fi
     echo "slot ${slot} exited; restarting it" >&2

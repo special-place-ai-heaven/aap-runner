@@ -1544,11 +1544,11 @@ self_check() {
     echo "unreadable .wslconfig was allowed" >&2
     exit 1
   fi
-  if ! reason=$(networking_stop_reason no no "" unreadable "/mnt/c/Users/poslj/.wslconfig"); then
+  if ! reason=$(networking_stop_reason no no "" unreadable "/mnt/c/Users/operator/.wslconfig"); then
     echo "unreadable .wslconfig with a path was allowed" >&2
     exit 1
   fi
-  if [[ "${reason}" != *"(tried /mnt/c/Users/poslj/.wslconfig)"* ]]; then
+  if [[ "${reason}" != *"(tried /mnt/c/Users/operator/.wslconfig)"* ]]; then
     echo "unreadable refusal did not name the path" >&2
     printf '%s\n' "${reason}" >&2
     exit 1
@@ -1969,13 +1969,13 @@ EOF
     echo "wslconfig path lookup uses %USERPROFILE%" >&2
     exit 1
   fi
-  got=$(sanitize_windows_path $'\xff\xfeC:\\Users\\poslj\r\n')
-  if [[ "${got}" != 'C:\Users\poslj' ]]; then
+  got=$(sanitize_windows_path $'\xff\xfeC:\\Users\\operator\r\n')
+  if [[ "${got}" != 'C:\Users\operator' ]]; then
     echo "UTF-16 BOM was left on the profile path: ${got}" >&2
     exit 1
   fi
-  got=$(sanitize_windows_path $'warning: profile\nC:\\Users\\poslj\r')
-  if [[ "${got}" != 'C:\Users\poslj' ]]; then
+  got=$(sanitize_windows_path $'warning: profile\nC:\\Users\\operator\r')
+  if [[ "${got}" != 'C:\Users\operator' ]]; then
     echo "profile path was not taken from the drive line: ${got}" >&2
     exit 1
   fi
@@ -1986,11 +1986,11 @@ EOF
 if [[ "${AAP_FAKE_POWERSHELL_MODE:-ok}" == fail ]]; then
   exit 1
 fi
-printf '\xff\xfeC:\\Users\\poslj\n'
+printf '\xff\xfeC:\\Users\\operator\n'
 EOF
   cat > "${bin}/wslpath" << 'EOF'
 #!/bin/bash
-if [[ "${!#}" == 'C:\Users\poslj' ]]; then
+if [[ "${!#}" == 'C:\Users\operator' ]]; then
   printf '%s\n' "${AAP_FAKE_PROFILE}"
   exit 0
 fi

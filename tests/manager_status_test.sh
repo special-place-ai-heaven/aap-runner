@@ -1,7 +1,8 @@
 #!/bin/bash
 # status.json for the Windows-side supervisor: the exact keys, each state,
-# the job name taken from the runner's own "Running job: " line, mode 0644,
-# and an atomic replace. Sources the manager; docker is stubbed.
+# the job name taken from the runner's own "Running job: " line, the schema 3
+# slots, pool, and sampled_at, mode 0644, and an atomic replace. Sources the
+# manager; docker is stubbed.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -28,7 +29,8 @@ expect() {
   [[ "$(field state)" == "${state}" ]] || fail "state is $(field state); want ${state}: $(cat "${RUN_DIR}/status.json")"
   [[ "$(field job)" == "${job}" ]] || fail "job is '$(field job)'; want '${job}'"
   [[ "$(field busy)" == "${busy}" ]] || fail "busy is $(field busy); want ${busy}"
-  [[ "$(field slots)" == 2 ]] || fail "slots is $(field slots); want 2"
+  [[ "$(field runner_count)" == 2 ]] || fail "runner_count is $(field runner_count); want 2"
+  [[ "$(field 'slots | length')" == 2 ]] || fail "slots has $(field 'slots | length') entries; want 2"
   now=$(date +%s)
   (( $(field updated) <= now && $(field updated) >= now - 5 )) || fail "updated $(field updated) is not now (${now})"
 }
@@ -39,11 +41,11 @@ feed() {
 }
 
 write_status
-[[ "$(jq -r 'keys_unsorted | join(",")' "${RUN_DIR}/status.json")" == "state,job,repo,run_url,slots,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing" ]] \
-  || fail "keys are not state,job,repo,run_url,slots,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing: $(cat "${RUN_DIR}/status.json")"
+[[ "$(jq -r 'keys_unsorted | join(",")' "${RUN_DIR}/status.json")" == "state,job,repo,run_url,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing,schema,sampled_at,pool,slots" ]] \
+  || fail "keys are not state,job,repo,run_url,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing,schema,sampled_at,pool,slots: $(cat "${RUN_DIR}/status.json")"
 [[ "$(jq -c '[.runner_count, .job_cpus, .job_memory, .job_io_mbps]' "${RUN_DIR}/status.json")" == '[2,24,"72g",0]' ]] \
   || fail "effective limits in status.json: $(cat "${RUN_DIR}/status.json")"
-jq -e '(.slots | type) == "number" and (.busy | type) == "number" and (.updated | type) == "number" and (.job | type) == "string"' \
+jq -e '(.runner_count | type) == "number" and (.busy | type) == "number" and (.updated | type) == "number" and (.job | type) == "string"' \
   "${RUN_DIR}/status.json" >/dev/null || fail "a status field has the wrong JSON type"
 [[ "$(stat -c '%a' "${RUN_DIR}/status.json")" == 644 ]] || fail "status.json is not mode 0644"
 [[ "$(wc -l < "${RUN_DIR}/status.json")" -eq 1 ]] || fail "status.json is not one line"
@@ -75,6 +77,49 @@ rm -f "${RUN_DIR}/drain"
 write_status
 expect idle "" 0
 echo "draining ok"
+
+# Schema 3: one slots entry per configured slot, in slot order, with these
+# keys; pool sums the slots' sampled usage; sampled_at is the sample's time.
+slot_keys=slot,state,job,repo,run_url,job_url,started_at,cpu_cores,mem_gib
+[[ "$(field schema)" == 3 ]] || fail "schema is $(field schema)"
+[[ "$(jq -r '[.slots[] | keys_unsorted | join(",")] | unique | join(";")' "${RUN_DIR}/status.json")" == "${slot_keys}" ]]   || fail "slot keys: $(cat "${RUN_DIR}/status.json")"
+[[ "$(jq -c '[.slots[].slot]' "${RUN_DIR}/status.json")" == '[1,2]' ]] || fail "slots are not 1,2 in order"
+[[ "$(jq -c '[.sampled_at, .pool]' "${RUN_DIR}/status.json")" == '[null,{"cpu_cores":0,"mem_gib":0,"io_mbps":null}]' ]]   || fail "no sample yet: $(cat "${RUN_DIR}/status.json")"
+printf 'running 1760302860000000000 aap-crrr-1-1-1 build
+' > "${RUN_DIR}/slot-1"
+printf '1760302860000000000 octo/app https://github.com/octo/app/actions/runs/7
+' > "${RUN_DIR}/slot-1.run"
+printf 'listening 1760302800000000000 aap-crrr-2-1-1 
+' > "${RUN_DIR}/slot-2"
+printf '1760302900
+1 aap-crrr-1-1-1 6.2 9.1
+2 aap-crrr-2-1-1 0.3 0.4
+' > "${RUN_DIR}/usage"
+write_status
+[[ "$(jq -c '.slots[0]' "${RUN_DIR}/status.json")" == '{"slot":1,"state":"running","job":"build","repo":"octo/app","run_url":"https://github.com/octo/app/actions/runs/7","job_url":null,"started_at":1760302860,"cpu_cores":6.2,"mem_gib":9.1}' ]]   || fail "running slot: $(jq -c '.slots[0]' "${RUN_DIR}/status.json")"
+[[ "$(jq -c '.slots[1]' "${RUN_DIR}/status.json")" == '{"slot":2,"state":"idle","job":"","repo":"","run_url":"","job_url":null,"started_at":null,"cpu_cores":0.3,"mem_gib":0.4}' ]]   || fail "idle slot: $(jq -c '.slots[1]' "${RUN_DIR}/status.json")"
+[[ "$(jq -c '[.sampled_at, .pool]' "${RUN_DIR}/status.json")" == '[1760302900,{"cpu_cores":6.5,"mem_gib":9.5,"io_mbps":null}]' ]]   || fail "pool sums: $(cat "${RUN_DIR}/status.json")"
+# A sample of an earlier container is not this slot's usage.
+printf 'running 1760303000000000000 aap-crrr-1-2-1 test
+' > "${RUN_DIR}/slot-1"
+write_status
+[[ "$(jq -c '[.slots[0].cpu_cores, .slots[0].mem_gib, .slots[0].repo, .pool.cpu_cores]' "${RUN_DIR}/status.json")" == '[null,null,"",0.3]' ]]   || fail "stale sample or run used for a new container: $(cat "${RUN_DIR}/status.json")"
+: > "${RUN_DIR}/drain"
+printf 'retired 1760303000000000000 - 
+' > "${RUN_DIR}/slot-2"
+write_status
+[[ "$(jq -c '[.slots[].state]' "${RUN_DIR}/status.json")" == '["draining","retired"]' ]]   || fail "draining and retired slots: $(cat "${RUN_DIR}/status.json")"
+rm -f "${RUN_DIR}/drain" "${RUN_DIR}/usage" "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run
+# pool.io_mbps is the cap in force: the slice budget, or per slot times slots.
+io_cap() {
+  AAP_POOL_SHARING=$1 POOL_IO_MBPS=$2 SLOT_IO_MBPS=$3 IO_DEVICE=$4 status_json | jq -c .pool.io_mbps
+}
+[[ "$(io_cap slice 450 225 /dev/sde)" == 450 ]] || fail "slice io cap is $(io_cap slice 450 225 /dev/sde)"
+[[ "$(io_cap fixed 450 225 /dev/sde)" == 450 ]] || fail "fixed io cap is $(io_cap fixed 450 225 /dev/sde)"
+[[ "$(io_cap fixed 450 225 '')" == null ]] || fail "io cap without a device is $(io_cap fixed 450 225 '')"
+[[ "$(io_cap slice 0 0 /dev/sde)" == null ]] || fail "no io cap is $(io_cap slice 0 0 /dev/sde)"
+write_status
+echo "schema 3 ok"
 
 # run_one reads docker start's stdout. A container that dies mid-job prints
 # no completed line; the slot still goes back to idle, and docker start's
