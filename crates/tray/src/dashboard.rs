@@ -90,6 +90,24 @@ const MIN_SIZE: [f32; 2] = [680.0, 460.0];
 fn cards_to_draw(slot_count: usize) -> usize {
     slot_count.min(*crate::settings::RUNNERS.end() as usize)
 }
+
+/// Bottom-right inner size and outer position in a work area
+/// `[left, top, right, bottom]`. Height is at most `max[1]` and shrinks so
+/// the top stays inside the work area. Width shrinks only when it would
+/// cross the left edge. `title` is the assumed title-bar height.
+fn place_window(work: [f32; 4], max: [f32; 2], pad: f32, title: f32) -> (f32, f32, f32, f32) {
+    let [left, top, right, bottom] = work;
+    let avail_h = (bottom - top - pad - title).max(0.0);
+    let height = max[1].min(avail_h);
+    let y = (bottom - pad - height - title).max(top);
+    let mut width = max[0];
+    let mut x = right - pad - width;
+    if x < left {
+        width = (right - left - pad).max(0.0);
+        x = (right - pad - width).max(left);
+    }
+    (x, y, width, height)
+}
 /// The fixed settings column.
 const LEFT_W: f32 = 260.0;
 const PAD: f32 = 12.0;
@@ -324,10 +342,13 @@ pub fn run(base: PathBuf, view: View) -> eframe::Result {
         .with_inner_size(SIZE)
         .with_min_inner_size(MIN_SIZE)
         .with_resizable(true);
-    if let Some([_, _, right, bottom]) = crate::win::work_area_points() {
+    if let Some(work) = crate::win::work_area_points() {
         // ponytail: 32 pt assumed title bar; the position is not remembered.
-        viewport =
-            viewport.with_position(pos2(right - PAD - SIZE[0], bottom - PAD - SIZE[1] - 32.0));
+        let (x, y, width, height) = place_window(work, SIZE, PAD, 32.0);
+        viewport = viewport
+            .with_inner_size([width, height])
+            .with_min_inner_size([MIN_SIZE[0].min(width), MIN_SIZE[1].min(height)])
+            .with_position(pos2(x, y));
     }
     let options = eframe::NativeOptions {
         viewport,
@@ -1417,11 +1438,12 @@ impl Dash {
                     });
                     ui.add_space(4.0);
                 }
-                let runners = self.snap.runners().max(1) as f64;
+                let n = self.snap.runners().max(1) as u32;
+                let fixed = self.snap.sharing.as_deref() == Some("fixed");
                 let a = self.snap.applied;
                 let share = (
-                    a.job_cpus.map(|c| f64::from(c) / runners),
-                    a.job_memory_gib.map(|g| f64::from(g) / runners),
+                    a.job_cpus.map(|c| crate::settings::cpu_share(c, n, fixed)),
+                    a.job_memory_gib.map(|g| f64::from(g) / f64::from(n.max(1))),
                 );
                 let slots = self.snap.slots.clone();
                 for (i, slot) in slots.iter().take(cards_to_draw(slots.len())).enumerate() {
@@ -1684,5 +1706,29 @@ mod tests {
         let block = 20.0 + 4.0 + 18.0 + 4.0 + 18.0 + 20.0 + 2.0 + 12.0;
         let chrome = 520.0 - 3.0 * block;
         assert!(chrome + cards_to_draw(5) as f32 * block <= SIZE[1]);
+    }
+
+    #[test]
+    fn window_height_stays_inside_the_work_area() {
+        let max = SIZE;
+        let pad = PAD;
+        let title = 32.0;
+        // Tall monitor: the preferred 760 height, bottom-right, top inside.
+        let (x, y, w, h) = place_window([0.0, 0.0, 1920.0, 1080.0], max, pad, title);
+        assert_eq!((w, h), (760.0, 760.0));
+        assert_eq!(y, 1080.0 - pad - 760.0 - title);
+        assert!(y >= 0.0);
+        assert_eq!(x, 1920.0 - pad - 760.0);
+        // Short work area: height shrinks and the top is the work-area top.
+        let (x, y, w, h) = place_window([10.0, 40.0, 1400.0, 500.0], max, pad, title);
+        assert_eq!(w, 760.0);
+        assert_eq!(h, 500.0 - 40.0 - pad - title);
+        assert!(h < 760.0);
+        assert_eq!(y, 40.0);
+        assert!(x >= 10.0);
+        // Too short for the title bar and padding: height is zero, y is the top.
+        let (_, y, _, h) = place_window([0.0, 80.0, 800.0, 100.0], max, pad, title);
+        assert_eq!(h, 0.0);
+        assert_eq!(y, 80.0);
     }
 }
