@@ -1014,8 +1014,10 @@ deregister_runners() {
 }
 
 # Removes only this job's container, its anonymous volumes, and its network.
-# No label-wide prune here: another slot's network has no endpoints between
-# docker create and docker start, and a prune would delete it.
+# The label-wide prune of containers and networks labelled aap-crrr-job is
+# prune_job_docker, after every job. It is safe only because of until=1h:
+# another slot's network has no endpoints between docker create and docker
+# start, and a prune without the age filter would delete it.
 # remove_job_containers prunes at startup and stop, when no slot is running.
 cleanup_job() {
   local name="$1" net="$2"
@@ -1023,10 +1025,22 @@ cleanup_job() {
   docker network rm "${net}" || true
 }
 
+# One trim at a time: five slots starting together trim once. A caller that
+# does not get the lock skips the trim and returns 0; the holder's pass
+# covers it. Without RUN_DIR (self-check, tests) there is no lock file and
+# the trim just runs.
+bound_sccache_tree() {
+  [[ -d "${RUN_DIR}" ]] || { trim_sccache_tree; return 0; }
+  (
+    flock -n 9 || exit 0
+    trim_sccache_tree
+  ) 9> "${RUN_DIR}/sccache-trim.lock"
+}
+
 # Bytes, not du -sm. Over the cap, delete oldest regular files until the tree
 # is at or under 80% of the cap. The directory stays.
-bound_sccache_tree() {
-  local used bound target need ts sz path
+trim_sccache_tree() {
+  local used bound target need sz path
   [[ -d "${SCCACHE_HOST_DIR}" ]] || return 0
   [[ "${SCCACHE_TREE_MAX_MB}" =~ ^[0-9]+$ ]] || return 0
   bound=$(( SCCACHE_TREE_MAX_MB * 1024 * 1024 ))
@@ -1035,7 +1049,7 @@ bound_sccache_tree() {
   target=$(( bound * 80 / 100 ))
   echo "sccache tree ${SCCACHE_HOST_DIR} is ${used} bytes, over ${bound}; trimming oldest files to ${target}" >&2
   need=$(( used - target ))
-  while IFS=$'\t' read -r ts sz path; do
+  while IFS=$'\t' read -r _ sz path; do
     [[ -n "${path}" && -f "${path}" ]] || continue
     rm -f -- "${path}" || true
     if [[ "${sz}" =~ ^[0-9]+$ ]]; then
@@ -1045,11 +1059,14 @@ bound_sccache_tree() {
   done < <(find "${SCCACHE_HOST_DIR}" -type f -printf '%T@\t%s\t%p\n' | sort -n)
 }
 
+# A marker is named after the cleaner's pid. One whose process is gone (a
+# killed cleaner, a marker from before a restart) does not count, so
+# "cleaning" never sticks. stop_pool and run_pool clear the directory too.
 cleaning_now() {
   local f
   [[ -d "${RUN_DIR}/cleaning.d" ]] || return 1
   for f in "${RUN_DIR}/cleaning.d"/*; do
-    [[ -e "${f}" ]] && return 0
+    [[ -e "${f}" ]] && kill -0 "${f##*/}" 2>/dev/null && return 0
   done
   return 1
 }
@@ -1080,8 +1097,13 @@ prune_job_docker() {
 # 64-hex directories under the sysbox bind whose container docker no longer has.
 # Skip the pass when docker itself cannot be listed.
 clear_sysbox_leftovers() {
-  local root="${WORK_MOUNT}/sysbox" dir base ids
+  local root="${WORK_MOUNT}/sysbox" dir base ids dirs
   [[ -d "${root}" ]] || return 0
+  # Directories first, ids second. A container created between the two reads
+  # is then in the id list and not in the directory list, and stays. The
+  # other order would list its directory with no id yet and remove it under
+  # a live container. One removed between the reads is a leftover either way.
+  dirs=$(find "${root}" -mindepth 1 -maxdepth 2 -type d 2>/dev/null) || return 0
   ids=$(docker ps -aq --no-trunc 2>/dev/null) || return 0
   while IFS= read -r dir; do
     [[ -n "${dir}" && -d "${dir}" && "${dir}" == "${root}/"* ]] || continue
@@ -1090,7 +1112,7 @@ clear_sysbox_leftovers() {
     if ! printf '%s\n' "${ids}" | grep -qx "${base}"; then
       rm -rf -- "${dir}"
     fi
-  done < <(find "${root}" -mindepth 1 -maxdepth 2 -type d)
+  done <<< "${dirs}"
 }
 
 # Once a day, by wall clock. A clock step backwards runs it again.
@@ -2009,6 +2031,7 @@ stop_pool() {
   DEREG_NAMES=()
   deregister_runners "${runners[@]}"
   rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}/usage"
+  rm -rf "${RUN_DIR}/cleaning.d"
 }
 
 # A dead slot is restarted alone; the other slots' jobs keep running. A
@@ -2019,6 +2042,7 @@ run_pool() {
   trap 'stop_pool; exit 143' TERM INT
   trap stop_pool EXIT
   rm -f "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}/usage"
+  rm -rf "${RUN_DIR}/cleaning.d"
   write_status
   for ((slot = 1; slot <= AAP_RUNNER_COUNT; slot++)); do
     SLOT_FAILS[slot]=0

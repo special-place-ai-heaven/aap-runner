@@ -131,6 +131,24 @@ bound_sccache_tree 2>/dev/null
 [[ ! -e "${SCCACHE_HOST_DIR}/repo/old" ]] || fail "the oldest cache file was kept"
 echo "cache tree cap ok"
 
+# With RUN_DIR, the trim runs under a non-blocking lock: a caller that does
+# not get it skips the trim and returns 0, so slots starting together trim once.
+RUN_DIR="${work}/run"
+mkdir -p "${RUN_DIR}"
+head -c 2097152 /dev/zero > "${SCCACHE_HOST_DIR}/repo/old"
+touch -d '2020-01-01 00:00:00' "${SCCACHE_HOST_DIR}/repo/old"
+exec 9> "${RUN_DIR}/sccache-trim.lock"
+flock -n 9 || fail "could not take the trim lock in the test"
+bound_sccache_tree 2>/dev/null || fail "a trim that lost the lock did not return 0"
+[[ -f "${SCCACHE_HOST_DIR}/repo/old" ]] || fail "a trim ran while another held the lock"
+flock -u 9
+exec 9>&-
+bound_sccache_tree 2>/dev/null
+[[ ! -e "${SCCACHE_HOST_DIR}/repo/old" ]] || fail "the trim did not run once the lock was free"
+[[ -f "${SCCACHE_HOST_DIR}/repo/new" ]] || fail "the locked trim removed the newest file"
+RUN_DIR=/run/aap-runner
+echo "cache trim lock ok"
+
 : > "${calls}"
 prune_job_docker
 grep -qx 'image prune -f --filter dangling=true' "${calls}" || fail "image prune: $(cat "${calls}")"

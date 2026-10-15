@@ -76,14 +76,18 @@ rc=0
 echo "drained slot starts no run ok"
 
 # Drained before the pool starts: every slot exits 0, then the manager.
+# A cleaning marker left by an earlier manager goes with the start/stop.
 : > "${log}"
 AAP_RUNNER_COUNT=2
+mkdir -p "${RUN_DIR}/cleaning.d"
+: > "${RUN_DIR}/cleaning.d/$$"
 rc=0
 (run_pool) 2> "${err}" || rc=$?
 [[ "${rc}" -eq 0 ]] || fail "run_pool exited ${rc} with the drain file present; want 0: $(cat "${err}")"
 [[ "$(runs 1)" -eq 0 && "$(runs 2)" -eq 0 ]] || fail "a job run started while drained"
 [[ -e "${RUN_DIR}/drain" ]] || fail "the manager removed the drain file"
 [[ ! -e "${RUN_DIR}/status.json" ]] || fail "status.json was left after a drained exit"
+[[ ! -e "${RUN_DIR}/cleaning.d" ]] || fail "a stale cleaning marker survived the pool"
 echo "drained pool exits 0 ok"
 
 # Drain while slot 1 has a job and slot 2 listens.

@@ -298,15 +298,17 @@ fn bar_numbers(used: f64, share: Option<f64>, cores: bool) -> (String, bool) {
 }
 
 /// Work disk bar: used fraction of the size, caption `40 free / 100 GiB · floor 15`.
-/// `over` is free space under the floor.
+/// `over` is free space under the floor. A stale status (`fresh` false, the
+/// same `SAMPLE_STALE` rule as the cores and memory bars) is no sample.
 fn disk_line(
     size: Option<f64>,
     free: Option<f64>,
     floor: Option<f64>,
+    fresh: bool,
 ) -> (Option<f64>, Option<f64>, String, bool) {
     match (size, free) {
         (Some(size), Some(free))
-            if size.is_finite() && free.is_finite() && size >= 0.0 && free >= 0.0 =>
+            if fresh && size.is_finite() && free.is_finite() && size >= 0.0 && free >= 0.0 =>
         {
             let used = (size - free).max(0.0);
             let over = floor.is_some_and(|f| free < f);
@@ -977,6 +979,7 @@ impl Dash {
             self.snap.work_disk_gib,
             self.snap.work_disk_free_gb,
             self.snap.work_disk_floor_gb,
+            self.fresh(),
         );
         ui.horizontal(|ui| {
             fixed_label(ui, "Disk", 18.0);
@@ -1939,11 +1942,18 @@ mod tests {
 
     #[test]
     fn disk_line_names_free_size_and_floor() {
-        let (used, share, text, over) = disk_line(Some(100.0), Some(40.0), Some(15.0));
+        let (used, share, text, over) = disk_line(Some(100.0), Some(40.0), Some(15.0), true);
         assert_eq!((used, share, over), (Some(60.0), Some(100.0), false));
         assert_eq!(text, "40 free / 100 GiB \u{b7} floor 15");
-        assert!(disk_line(Some(100.0), Some(10.0), Some(15.0)).3);
-        let (used, share, text, over) = disk_line(None, None, None);
+        assert!(disk_line(Some(100.0), Some(10.0), Some(15.0), true).3);
+        let (used, share, text, over) = disk_line(None, None, None, true);
+        assert_eq!((used, share, over), (None, None, false));
+        assert_eq!(text, "no sample");
+    }
+
+    #[test]
+    fn disk_line_stale_is_no_sample_like_the_other_bars() {
+        let (used, share, text, over) = disk_line(Some(100.0), Some(10.0), Some(15.0), false);
         assert_eq!((used, share, over), (None, None, false));
         assert_eq!(text, "no sample");
     }
