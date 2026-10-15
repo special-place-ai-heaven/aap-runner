@@ -422,21 +422,11 @@ pub fn fixed_local_path(path: &str, drive_type: Option<u32>) -> bool {
     let b = path.as_bytes();
     // Accept plain DOS drive letter: C:\...
     let dos = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\';
-    // Accept Volume GUID form that strip_extended_path produces when VOLUME_NAME_DOS cannot
-    // supply a drive letter: Volume{GUID}\...  GetDriveTypeW accepts \\?\Volume{GUID}\.
-    let vol_guid = path.starts_with("Volume{")
-        && path[7..]
-            .find('}')
-            .is_some_and(|i| path.as_bytes().get(7 + i + 1) == Some(&b'\\'));
-    if !dos && !vol_guid {
-        return false;
-    }
-    drive_type == Some(3) // DRIVE_FIXED; DRIVE_REMOTE is 4
+    dos && drive_type == Some(3) // DRIVE_FIXED; DRIVE_REMOTE is 4
 }
 
 /// Extract the volume root suitable for `GetDriveTypeW` from any path form:
 /// - `C:\x\y.exe` or `\\?\C:\x\y.exe` (defensive) -> `"C:\"`
-/// - `\\?\Volume{GUID}\...` or `Volume{GUID}\...` -> `"\\?\Volume{GUID}\"`
 /// - UNC or unrecognized -> `None`
 pub fn drive_root_of(path: &str) -> Option<String> {
     // Strip \\?\ defensively; strip_extended_path should have removed it, but handle it.
@@ -446,16 +436,10 @@ pub fn drive_root_of(path: &str) -> Option<String> {
     if b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\' {
         return Some(format!("{}:\\", char::from(b[0]).to_ascii_uppercase()));
     }
-    // Volume GUID: Volume{...}\ (after strip) or \\?\Volume{...}\ (before strip).
-    // GetDriveTypeW accepts \\?\Volume{GUID}\ with trailing backslash.
-    if p.starts_with("Volume{") {
-        let end = p.find('\\').unwrap_or(p.len());
-        return Some(format!(r"\\?\{}\", &p[..end]));
-    }
     None // UNC or other non-local form
 }
 
-fn drive_type_of(path: &std::path::Path) -> Option<u32> {
+pub(crate) fn drive_type_of(path: &std::path::Path) -> Option<u32> {
     let root = drive_root_of(&path.to_string_lossy())?;
     let wide = wide(std::ffi::OsStr::new(&root));
     // SAFETY: `wide` is null-terminated and lives for this call.
@@ -755,20 +739,6 @@ mod tests {
         assert_eq!(drive_root_of(r"D:\foo.exe"), Some("D:\\".into()));
         // Extended prefix (defensive; strip_extended_path should remove it first)
         assert_eq!(drive_root_of(r"\\?\C:\x\y.exe"), Some("C:\\".into()));
-        // Volume GUID without \\?\ (after strip_extended_path removes it)
-        let vol = "Volume{12345678-1234-1234-1234-123456789abc}\\foo\\bar.exe";
-        let root = drive_root_of(vol);
-        assert!(root.is_some(), "Volume GUID form must yield a root");
-        let root = root.unwrap();
-        assert!(
-            root.starts_with(r"\\?\Volume{"),
-            "Volume GUID root must start with \\\\?\\Volume{{...}}: {root}"
-        );
-        assert!(root.ends_with('\\'), "root must end with backslash: {root}");
-        // Volume GUID with \\?\ (defensive)
-        let vol_ext = r"\\?\Volume{12345678-1234-1234-1234-123456789abc}\foo\bar.exe";
-        let root2 = drive_root_of(vol_ext);
-        assert_eq!(root, root2.unwrap());
         // UNC returns None
         assert_eq!(drive_root_of(r"\\server\share\exe"), None);
         assert_eq!(drive_root_of(r"\\?\UNC\server\share\exe"), None);
@@ -782,25 +752,6 @@ mod tests {
             is_fixed_local_path(&resolved.path),
             "resolved path '{}' must be on a fixed local drive",
             resolved.path.display()
-        );
-    }
-
-    #[test]
-    fn volume_guid_path_is_accepted_when_fixed() {
-        // After strip_extended_path removes \\?\ from \\?\Volume{GUID}\..., the path looks like
-        // Volume{GUID}\....  fixed_local_path must accept this when the drive type is DRIVE_FIXED.
-        let vol = "Volume{12345678-1234-1234-1234-123456789abc}\\foo.exe";
-        assert!(
-            fixed_local_path(vol, Some(3)),
-            "Volume GUID + DRIVE_FIXED must pass"
-        );
-        assert!(
-            !fixed_local_path(vol, Some(4)),
-            "Volume GUID + DRIVE_REMOTE must fail"
-        );
-        assert!(
-            !fixed_local_path(vol, Some(2)),
-            "Volume GUID + DRIVE_REMOVABLE must fail"
         );
     }
 }
