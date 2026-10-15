@@ -101,19 +101,29 @@ fn cards_to_draw(slot_count: usize) -> usize {
     slot_count.min(*crate::settings::RUNNERS.end() as usize)
 }
 
-/// Total height the right column needs for slots runner cards, the pinned
-/// header, the job status line, and vertical padding (worst case). Used by
-/// the layout test to prove five cards fit at SIZE[1] without scrolling.
-#[cfg(test)]
+/// Exact outer height of one compact runner card, derived from the draw constants.
+fn card_height() -> f32 {
+    CARD_SYM_H // state row (sym_widget, CARD_SYM_H)
+        + CARD_ITEM_GAP
+        + CARD_TITLE_H // title / "Waiting" row (allocated to CARD_TITLE_H)
+        + CARD_ITEM_GAP
+        + CARD_BARS_H // mini-bar row (allocated to CARD_BARS_H)
+        + 2.0 * CARD_MARGIN_V as f32 // frame inner margins
+        + 2.0 // frame border 1 px each side
+}
+
+/// Total right-column height for `slots` cards plus header, job line, and padding.
+/// Every term maps to a named draw constant; a change propagates to both rendering
+/// and the test. Referenced by debug_assert in run() and five_cards_fit test.
 fn right_column_height(slots: usize) -> f32 {
     let n = cards_to_draw(slots);
-    PAD                                               // top inner margin
-    + HEADER_H + ITEM_SPACING                        // header row + auto spacing
-    + AFTER_HEADER                                   // add_space after header
-    + JOB_LINE_H                                     // worst-case job status line
-    + n as f32 * CARD_H                              // cards
-    + n.saturating_sub(1) as f32 * CARD_GAP          // gaps between cards
-    + PAD // bottom inner margin
+    PAD // frame top inner margin
+        + HEADER_H + CARD_ITEM_GAP // header row + auto spacing
+        + AFTER_HEADER // explicit add_space(AFTER_HEADER)
+        + JOB_LINE_H + CARD_ITEM_GAP // job status line + auto spacing
+        + n as f32 * card_height() // runner cards
+        + n.saturating_sub(1) as f32 * (CARD_ITEM_GAP + CARD_GAP_SPACE) // inter-card gaps
+        + PAD // frame bottom inner margin
 }
 
 /// Bottom-right inner size and outer position in a work area
@@ -142,37 +152,30 @@ const SAMPLE_STALE: Duration = Duration::from_secs(150);
 const LABEL_W: f32 = 56.0;
 const BAR_H: f32 = 8.0;
 const LOG_ROWS: usize = 20;
-// --- Layout constants (draw-time) ---
+// ---- Layout constants (all used in drawing code) ----
 /// Symbol widget height inside a runner card (state row).
 const CARD_SYM_H: f32 = 20.0;
-/// Mini-bar / title row height inside a runner card.
+/// Title-row / "Waiting for a job" row height, allocated explicitly in drawing.
+const CARD_TITLE_H: f32 = 24.0;
+/// Mini-bar row height inside a runner card, allocated explicitly in drawing.
 const CARD_BARS_H: f32 = 18.0;
 /// Frame vertical inner-margin (each side) on a runner card.
 const CARD_MARGIN_V: i8 = 10;
-/// Explicit add_space between adjacent cards.
+/// egui item_spacing.y, set explicitly in the right column for deterministic layout.
+const CARD_ITEM_GAP: f32 = 4.0;
+/// Explicit add_space between adjacent cards (CARD_ITEM_GAP auto-added on top).
 const CARD_GAP_SPACE: f32 = 8.0;
 /// Pinned header row height (symbol widget).
 const HEADER_H: f32 = 24.0;
 /// Space added below the header before the scroll content.
 const AFTER_HEADER: f32 = 8.0;
+/// Job status line height: CollapsingHeader header matches interact_size.y;
+/// plain labels are allocated to this height for consistency.
+const JOB_LINE_H: f32 = CARD_TITLE_H; // interact_size.y from style()
 
 // --- Layout constants (test-only) ---
 // These aggregate the draw-time constants; a change to card sizing that does
 // not update CARD_SYM_H / CARD_BARS_H / CARD_MARGIN_V will break five_cards_fit.
-#[cfg(test)]
-const ITEM_SPACING: f32 = 4.0;
-#[cfg(test)]
-const CARD_H: f32 = CARD_SYM_H
-    + ITEM_SPACING
-    + CARD_BARS_H
-    + ITEM_SPACING
-    + CARD_BARS_H
-    + 2.0 * CARD_MARGIN_V as f32
-    + 2.0;
-#[cfg(test)]
-const CARD_GAP: f32 = ITEM_SPACING + CARD_GAP_SPACE;
-#[cfg(test)]
-const JOB_LINE_H: f32 = ITEM_SPACING + CARD_BARS_H;
 const SCHTASKS: &str = r"C:\Windows\System32\schtasks.exe";
 const SUPERVISOR_TASK: &str = "AAP-CRRR-Supervisor";
 /// `CREATE_NO_WINDOW`: schtasks is a console program; never flash a console.
@@ -445,6 +448,12 @@ pub fn run(base: PathBuf, view: View) -> eframe::Result {
         viewport,
         ..Default::default()
     };
+    debug_assert!(
+        right_column_height(5) <= SIZE[1],
+        "five cards overflow default window: {} > {}",
+        right_column_height(5),
+        SIZE[1]
+    );
     eframe::run_native(
         "aap-runner-dashboard",
         options,
@@ -1144,6 +1153,7 @@ impl Dash {
             .corner_radius(4)
             .inner_margin(egui::Margin::symmetric(12, CARD_MARGIN_V))
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(&name).font(FontId::new(13.0, semibold())));
@@ -1172,7 +1182,9 @@ impl Dash {
                 if slot.busy() || !slot.job.is_empty() {
                     self.title_row(ui, slot);
                 } else {
-                    ui.label(RichText::new("Waiting for a job").color(p.muted));
+                    ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
+                        ui.label(RichText::new("Waiting for a job").color(p.muted));
+                    });
                 }
                 let idle = !slot.busy();
                 let used = |v: Option<f64>| if idle { Some(0.0) } else { v.filter(|_| fresh) };
@@ -1229,7 +1241,7 @@ impl Dash {
                 Sense::hover()
             };
             let r = ui
-                .allocate_ui(vec2(w, 24.0), |ui| {
+                .allocate_ui(vec2(w, CARD_TITLE_H), |ui| {
                     ui.add(
                         egui::Label::new(RichText::new(&text).color(color))
                             .truncate()
@@ -1619,18 +1631,23 @@ impl Dash {
         }
     }
 
-    /// One-line helper status shown under the header. format: `Verb · state · step · Open log`
-    /// when log lines exist (CollapsingHeader, closed by default); plain muted label otherwise.
+    /// One-line helper status: `Verb · state · exit N` on failure,
+    /// `Verb · ok` on success, `Verb · running…` while active.
+    /// With log lines: a CollapsingHeader (closed by default) appends `· Open log`.
     fn job_status_line(&self, ui: &mut egui::Ui) {
         let Some(job) = &self.job else {
             return;
         };
         let p = self.pal();
+        let exit = job.step.strip_prefix("exit ").and_then(|s| s.parse().ok());
+        let text = job_status_text(&job.verb, &job.state, exit);
         if job.lines.is_empty() {
-            ui.label(RichText::new(job.summary()).small().color(p.muted));
+            ui.allocate_ui(vec2(ui.available_width(), JOB_LINE_H), |ui| {
+                ui.label(RichText::new(&text).small().color(p.muted));
+            });
         } else {
             egui::CollapsingHeader::new(
-                RichText::new(format!("{} · Open log", job.summary()))
+                RichText::new(format!("{text} · Open log"))
                     .small()
                     .color(p.muted),
             )
@@ -1692,6 +1709,22 @@ impl Dash {
                 self.note_line(ui);
             }
         }
+    }
+}
+
+/// Pure helper-status formatter for the right column's job status line.
+/// active states append `…`, "passed" maps to "ok", non-zero exit appends `· exit N`.
+fn job_status_text(verb: &str, state: &str, exit: Option<i32>) -> String {
+    let v = match verb {
+        "repair" => "Repair",
+        _ => "Verify",
+    };
+    let ellipsis = matches!(state, "waiting" | "queued" | "running");
+    let s = if state == "passed" { "ok" } else { state };
+    let sfx = if ellipsis { "…" } else { "" };
+    match exit.filter(|&c| c != 0) {
+        Some(code) => format!("{v} · {s}{sfx} · exit {code}"),
+        None => format!("{v} · {s}{sfx}"),
     }
 }
 
@@ -1790,6 +1823,7 @@ impl eframe::App for Dash {
             .inner;
         self.right_first = None;
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
             self.header_row(ui);
             ui.add_space(AFTER_HEADER);
             egui::ScrollArea::vertical()
@@ -1958,9 +1992,17 @@ mod tests {
             assert_eq!(cards_to_draw(n), n, "{n}");
         }
         assert_eq!(cards_to_draw(6), 5);
-        // Constants mirror the draw code; see CARD_H and CARD_GAP.
-        assert_eq!(CARD_H, 20.0 + 4.0 + 18.0 + 4.0 + 18.0 + 20.0 + 2.0);
-        assert_eq!(CARD_GAP, 4.0 + 8.0);
+        // card_height() derives from the draw constants; a change propagates automatically.
+        assert_eq!(
+            card_height(),
+            CARD_SYM_H
+                + CARD_ITEM_GAP
+                + CARD_TITLE_H
+                + CARD_ITEM_GAP
+                + CARD_BARS_H
+                + 2.0 * CARD_MARGIN_V as f32
+                + 2.0
+        );
         assert!(right_column_height(5) <= SIZE[1]);
     }
 
@@ -2001,14 +2043,28 @@ mod tests {
 
     #[test]
     fn five_cards_fit_default_height() {
-        // right_column_height uses the same named constants as the draw code.
-        // A change to card layout that does not update CARD_H / CARD_GAP breaks this.
-        assert!(
-            right_column_height(5) <= SIZE[1],
-            "five cards overflow: {:.0} > {:.0}",
-            right_column_height(5),
-            SIZE[1]
+        // right_column_height(5) is computed from the draw constants; any change to
+        // CARD_SYM_H / CARD_TITLE_H / CARD_BARS_H / CARD_MARGIN_V / CARD_ITEM_GAP
+        // propagates automatically into this assertion.
+        let h = right_column_height(5);
+        assert!(h <= SIZE[1], "five cards overflow: {h:.0} > {}", SIZE[1]);
+    }
+
+    #[test]
+    fn job_status_text_formats_exactly() {
+        assert_eq!(
+            job_status_text("verify", "failed", Some(1)),
+            "Verify · failed · exit 1"
         );
+        assert_eq!(
+            job_status_text("repair", "running", None),
+            "Repair · running…"
+        );
+        assert_eq!(job_status_text("verify", "passed", None), "Verify · ok");
+        assert_eq!(
+            job_status_text("verify", "failed", Some(0)),
+            "Verify · failed"
+        ); // exit 0 not appended
     }
 
     #[test]
