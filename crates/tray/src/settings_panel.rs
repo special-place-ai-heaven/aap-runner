@@ -228,7 +228,11 @@ impl SettingsPanel {
             label(ui, "Each");
             ui.label(each_line(&edit));
         });
-        now(ui, p, now_each(running));
+        now(
+            ui,
+            p,
+            now_each(running, snap.sharing.as_deref() == Some("fixed")),
+        );
         ui.horizontal(|ui| {
             label(ui, "Total");
             ui.label(total_line(&edit, &vm));
@@ -392,7 +396,11 @@ fn each_line(edit: &Settings) -> String {
     let n = edit.runner_count.max(1);
     format!(
         "{} CPU {} GiB",
-        settings::share_text(edit.job_cpus, n),
+        settings::one_decimal(settings::cpu_share(
+            edit.job_cpus,
+            n,
+            edit.sharing == Sharing::Fixed
+        )),
         settings::share_text(edit.job_memory_gib, n)
     )
 }
@@ -439,14 +447,14 @@ fn now_runners(running: Option<Applied>) -> String {
 }
 
 /// `now 4.8 CPU 14.4 GiB`: the reported totals divided by the reported runner count.
-fn now_each(running: Option<Applied>) -> String {
+fn now_each(running: Option<Applied>, fixed: bool) -> String {
     let Some(a) = running else {
         return NONE.into();
     };
     match (a.job_cpus, a.job_memory_gib, a.runner_count) {
         (Some(c), Some(g), Some(r)) if r > 0 => format!(
             "now {} CPU {} GiB",
-            settings::share_text(c, r),
+            settings::one_decimal(settings::cpu_share(c, r, fixed)),
             settings::share_text(g, r)
         ),
         _ => NONE.into(),
@@ -489,20 +497,30 @@ mod tests {
     fn now_lines_show_applied_values_or_a_dash() {
         let a = Some(applied(Some(3), Some(24), Some(72)));
         assert_eq!(now_runners(a), "now 3");
-        assert_eq!(now_each(a), "now 8 CPU 24 GiB");
+        assert_eq!(now_each(a, false), "now 8 CPU 24 GiB");
         assert_eq!(
-            now_each(Some(applied(Some(3), Some(25), Some(72)))),
+            now_each(Some(applied(Some(3), Some(25), Some(72))), false),
             "now 8.3 CPU 24 GiB"
         );
         assert_eq!(
-            now_each(Some(applied(Some(5), Some(24), Some(72)))),
+            now_each(Some(applied(Some(5), Some(24), Some(72))), false),
             "now 4.8 CPU 14.4 GiB"
         );
-        assert_eq!(now_each(Some(applied(Some(0), Some(24), Some(72)))), NONE);
-        assert_eq!(now_each(Some(applied(Some(2), None, Some(72)))), NONE);
+        assert_eq!(
+            now_each(Some(applied(Some(5), Some(24), Some(72))), true),
+            "now 4 CPU 14.4 GiB"
+        );
+        assert_eq!(
+            now_each(Some(applied(Some(0), Some(24), Some(72))), false),
+            NONE
+        );
+        assert_eq!(
+            now_each(Some(applied(Some(2), None, Some(72))), false),
+            NONE
+        );
         assert_eq!(now_runners(Some(applied(None, None, None))), NONE);
         assert_eq!(now_runners(None), NONE);
-        assert_eq!(now_each(None), NONE);
+        assert_eq!(now_each(None, false), NONE);
         assert_eq!(now_io(true, Some(199.6)), "now 200 MiB/s");
         assert_eq!(now_io(true, None), NONE);
         assert_eq!(now_io(false, Some(1.0)), NONE);
@@ -541,6 +559,21 @@ mod tests {
                 "26/26 CPU \u{b7} 72/72 GiB".into()
             )
         );
+    }
+
+    #[test]
+    fn fixed_sharing_shows_the_floored_cpu() {
+        let vm = VmLimit {
+            cpus: 26,
+            gib: 80,
+            assumed: false,
+        };
+        let keep = Settings {
+            sharing: Sharing::Fixed,
+            ..Settings::default()
+        };
+        let e = edited(&keep, 5, false, &vm);
+        assert_eq!(each_line(&e), "4 CPU 14.4 GiB");
     }
 
     #[test]

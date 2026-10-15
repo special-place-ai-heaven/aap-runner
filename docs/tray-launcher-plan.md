@@ -141,7 +141,7 @@ Do M1 to M3 inside the current repo. Split the repo only after the product works
 
 - A Rust Windows service, a named-pipe IPC, or MSIX.
 - A daily summary, a job history database, or a web dashboard.
-- More than 3 runners in the UI, even though the manager allows 4.
+- More than 5 runners.
 - Multi-host fleet management from one tray.
 - Auto-generating the GitHub App through the manifest flow. App creation stays a one-time manual step with a linked checklist, because it needs org-owner clicks anyway.
 - Silent auto-update without a click.

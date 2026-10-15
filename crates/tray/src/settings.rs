@@ -24,6 +24,17 @@ pub fn one_decimal(v: f64) -> String {
 pub fn share_text(total: u32, runners: u32) -> String {
     one_decimal(f64::from(total) / f64::from(runners.max(1)))
 }
+
+/// Cores each runner is held to. Fixed mode is the manager's whole-CPU floor;
+/// slice mode is the even split.
+pub fn cpu_share(total: u32, runners: u32, fixed: bool) -> f64 {
+    let n = runners.max(1);
+    if fixed {
+        f64::from(total / n)
+    } else {
+        f64::from(total) / f64::from(n)
+    }
+}
 pub const CPUS: RangeInclusive<u32> = 1..=28;
 pub const MEMORY_GIB: RangeInclusive<u32> = 1..=80;
 pub const IO_PERCENT: RangeInclusive<u32> = 0..=100;
@@ -314,6 +325,9 @@ mod tests {
         assert_eq!((five.job_cpus, five.job_memory_gib), (24, 72));
         assert_eq!(share_text(five.job_cpus, 5), "4.8");
         assert_eq!(share_text(five.job_memory_gib, 5), "14.4");
+        assert_eq!(cpu_share(24, 5, false), 4.8);
+        assert_eq!(cpu_share(24, 5, true), 4.0);
+        assert_eq!(one_decimal(cpu_share(24, 5, true)), "4");
         assert!(five.validate(&wide).is_ok());
         assert_eq!(Settings::derived(1, false, &VM), Settings::default());
         assert!(Settings::derived(2, true, &VM).paused);

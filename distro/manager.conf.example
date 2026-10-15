@@ -31,7 +31,7 @@ AAP_JOB_CPUS=6
 AAP_JOB_PIDS_LIMIT=4096
 # Stop and remove the container after this many minutes. 1..1440. Jobs time out at 90.
 AAP_JOB_TIMEOUT_MINUTES=120
-# Parallel job containers, 1..4. Absent means 1. An empty value is refused.
+# Parallel job containers, 1..5. Absent means 1. An empty value is refused.
 # AAP_JOB_CPUS and AAP_JOB_MEMORY above are the pool total. Each container gets
 # total / count, rounded down to whole cpus and whole MiB: Fresh 24 cpus and 72g
 # over 3 is 8 cpus and 24g each. A split under 1 cpu or 1g is refused.
