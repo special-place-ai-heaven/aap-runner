@@ -540,6 +540,13 @@ fn write_request(base: &Path, id: &str, verb: Verb) -> io::Result<()> {
 }
 
 fn pointer_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        let override_dir = POINTER_DIR.with(|d| d.borrow().clone());
+        if let Some(dir) = override_dir {
+            return dir.join("helper.json");
+        }
+    }
     std::env::temp_dir()
         .join("aap-runner-tray")
         .join("helper.json")
@@ -655,6 +662,8 @@ fn refuse_elevation(verb: Verb, message: &str) -> Result<(), String> {
 thread_local! {
     static CAPTURE_RUNAS: Cell<bool> = const { Cell::new(false) };
     static CAPTURED_RUNAS: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    /// Override for `pointer_path()` so tests never write to the real per-user temp file.
+    static POINTER_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 fn directory_gate_enabled() -> bool {
@@ -1343,6 +1352,10 @@ fn launch_hands_the_resolved_path_to_runas() {
         .status()
         .unwrap();
     assert!(status.success(), "mklink failed");
+    // Redirect pointer writes away from the real %TEMP%\aap-runner-tray\helper.json
+    let pointer_dir = root.join("pointer");
+    std::fs::create_dir_all(&pointer_dir).unwrap();
+    POINTER_DIR.with(|d| *d.borrow_mut() = Some(pointer_dir.clone()));
     let via_link = link.join("tray.exe");
     let resolved = crate::win::resolve_exe(&via_link).unwrap();
     let text = resolved.path.to_string_lossy().to_ascii_lowercase();
@@ -1376,6 +1389,11 @@ fn launch_hands_the_resolved_path_to_runas() {
             .to_ascii_lowercase()
             .contains(r"\link\")
     );
+    // Successful launch wrote pointer to the override dir, not the real %TEMP% path.
+    assert!(
+        pointer_dir.join("helper.json").exists(),
+        "pointer not written to override dir"
+    );
     CAPTURE_RUNAS.with(|c| c.set(true));
     CAPTURED_RUNAS.with(|slot| *slot.borrow_mut() = None);
     let unc = crate::win::ResolvedExe {
@@ -1388,6 +1406,22 @@ fn launch_hands_the_resolved_path_to_runas() {
     assert!(launch_resolved(&base, Verb::Verify, unc).is_err());
     assert!(CAPTURED_RUNAS.with(|slot| slot.borrow().is_none()));
     CAPTURE_RUNAS.with(|c| c.set(false));
+    // The UNC refusal must appear in the override pointer dir, NOT the real %TEMP% path.
+    let refusal = std::fs::read_to_string(pointer_dir.join("helper.json")).unwrap();
+    assert!(
+        refusal.contains("tray exe is not on a fixed local drive:"),
+        "refusal message not in pointer: {refusal}"
+    );
+    assert!(
+        refusal.contains("drive type"),
+        "drive type not in refusal: {refusal}"
+    );
+    // JSON-encodes the UNC path: server name is unambiguous in either encoding.
+    assert!(
+        refusal.contains("server"),
+        "UNC server not in refusal: {refusal}"
+    );
+    POINTER_DIR.with(|d| *d.borrow_mut() = None);
     let _ = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
         .args(["/d", "/c", "rmdir", &link.display().to_string()])
         .status();
