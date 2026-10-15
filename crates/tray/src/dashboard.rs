@@ -187,6 +187,10 @@ const PAUSED_LINE_H: f32 = 16.0;
 const JOB_STEP_H: f32 = JOB_LINE_H;
 /// Height of the left-column fixed footer (Verify + Repair + Open-logs buttons).
 const FOOTER_H: f32 = 3.0 * INTERACT_H + 2.0 * CARD_ITEM_GAP;
+/// Height of a pool-bar caption row (right-aligned label, fixed allocation).
+const CAPTION_H: f32 = 16.0;
+/// Height of the pool-bar track row: fixed_label + track, both at BAR_ROW_H px.
+const BAR_ROW_H: f32 = 18.0;
 
 const SCHTASKS: &str = r"C:\Windows\System32\schtasks.exe";
 const SUPERVISOR_TASK: &str = "AAP-CRRR-Supervisor";
@@ -384,6 +388,19 @@ fn disk_line(
             )
         }
         _ => (None, None, "no sample".into(), false),
+    }
+}
+
+/// Left-column IO cap label. Neither value is live traffic; both are caps.
+/// `pool_io`: pool aggregate IO budget (snapshot `pool.io_mbps`).
+/// `job_io`: per-runner IO cap from settings (`job_io_mbps`).
+/// Returns an empty string when both are None.
+fn pool_io_line(pool_io: Option<f64>, job_io: Option<f64>) -> String {
+    match (pool_io, job_io) {
+        (Some(u), Some(c)) => format!("IO cap {u:.0} pool \u{b7} {c:.0} each"),
+        (Some(u), None) => format!("IO cap {u:.0} pool"),
+        (None, Some(c)) => format!("IO cap {c:.0} each"),
+        (None, None) => String::new(),
     }
 }
 
@@ -896,7 +913,7 @@ impl Dash {
         w: f32,
     ) -> egui::Response {
         let p = self.pal();
-        let (row, r) = ui.allocate_exact_size(vec2(w, 18.0), Sense::hover());
+        let (row, r) = ui.allocate_exact_size(vec2(w, BAR_ROW_H), Sense::hover());
         let track = Rect::from_center_size(row.center(), vec2(w, BAR_H));
         ui.painter().rect_filled(track, 2.0, p.track);
         if let Some(u) = used {
@@ -945,14 +962,19 @@ impl Dash {
         let color = self.number_color(used, over);
         // Row 1: label + track
         ui.horizontal(|ui| {
-            fixed_label(ui, label, 18.0);
+            fixed_label(ui, label, BAR_ROW_H);
             let r = self.track(ui, id, used, share, over, track_w);
             a11y(&r, format!("{name} {}", text.replace(" / ", " of ")));
         });
-        // Row 2: numbers caption on its own line
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(&text).color(color));
-        });
+        // Row 2: caption in a fixed-height row -- no available_height() dependency.
+        let row_w = ui.available_width();
+        ui.allocate_ui_with_layout(
+            vec2(row_w, CAPTION_H),
+            Layout::right_to_left(Align::Center),
+            |ui| {
+                ui.label(RichText::new(&text).color(color));
+            },
+        );
     }
 
     /// Half of a compact card's bar row: `CPU [track] 6.2/8`, `w` wide in all.
@@ -1052,17 +1074,22 @@ impl Dash {
         let color = self.number_color(used, over);
         // Row 1: label + track + cleaning indicator
         ui.horizontal(|ui| {
-            fixed_label(ui, "Disk", 18.0);
+            fixed_label(ui, "Disk", BAR_ROW_H);
             let r = self.track(ui, egui::Id::new("pool-disk"), used, share, over, track_w);
             a11y(&r, format!("Work disk {text}"));
             if self.snap.cleaning {
                 ui.label(RichText::new("cleaning").color(p.muted).small());
             }
         });
-        // Row 2: caption on its own line
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(RichText::new(&text).color(color));
-        });
+        // Row 2: caption in a fixed-height row -- no available_height() dependency.
+        let row_w = ui.available_width();
+        ui.allocate_ui_with_layout(
+            vec2(row_w, CAPTION_H),
+            Layout::right_to_left(Align::Center),
+            |ui| {
+                ui.label(RichText::new(&text).color(color));
+            },
+        );
     }
 
     /// Pool bars and the `IO …` / `sampled N s ago` line.
@@ -1092,29 +1119,38 @@ impl Dash {
             "Pool memory".into(),
         );
         self.disk_bar(ui, track_w);
-        ui.horizontal(|ui| {
-            let io = match (
-                self.snap.pool.io_mbps.filter(|_| fresh),
-                self.snap.job_io_mbps,
-            ) {
-                (Some(u), Some(c)) => format!("IO {u:.0} / {c:.0} MiB/s"),
-                (Some(u), None) => format!("IO {u:.0} MiB/s"),
-                (None, Some(c)) => format!("IO cap {c:.0} MiB/s"),
-                (None, None) => String::new(),
-            };
-            ui.label(RichText::new(io).color(p.muted).small());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let text = match self
-                    .snap
-                    .sampled_at
-                    .and_then(|t| SystemTime::now().duration_since(t).ok())
-                {
-                    Some(a) => format!("sampled {} ago", problem::ago(a)),
-                    None => "no sample".into(),
-                };
-                ui.label(RichText::new(text).color(p.muted).small());
-            });
-        });
+        // IO cap line: fixed height; omitted when both values are None.
+        let io_text = pool_io_line(
+            self.snap.pool.io_mbps.filter(|_| fresh),
+            self.snap.job_io_mbps,
+        );
+        if !io_text.is_empty() {
+            let row_w = ui.available_width();
+            ui.allocate_ui_with_layout(
+                vec2(row_w, CAPTION_H),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    ui.label(RichText::new(&io_text).color(p.muted).small());
+                },
+            );
+        }
+        // Sampled-at line: right-aligned, fixed height.
+        let sampled_text = match self
+            .snap
+            .sampled_at
+            .and_then(|t| SystemTime::now().duration_since(t).ok())
+        {
+            Some(a) => format!("sampled {} ago", problem::ago(a)),
+            None => "no sample".into(),
+        };
+        let row_w = ui.available_width();
+        ui.allocate_ui_with_layout(
+            vec2(row_w, CAPTION_H),
+            Layout::right_to_left(Align::Center),
+            |ui| {
+                ui.label(RichText::new(&sampled_text).color(p.muted).small());
+            },
+        );
     }
 
     fn fresh(&self) -> bool {
@@ -1838,7 +1874,7 @@ impl eframe::App for Dash {
                     Layout::top_down(Align::Min),
                     |ui| {
                         let f = egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
+                            .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 let f = self.settings.show_top(
                                     ui,
@@ -1886,6 +1922,51 @@ impl eframe::App for Dash {
             ctx.memory_mut(|m| m.request_focus(id));
         }
     }
+}
+
+/// Height of the left column full area (2 x PAD + scroll content + gap + FOOTER_H).
+///
+/// `paused`: include one extra PAUSED_LINE_H row (status indicator).
+/// `job_line`: include the pending Apply/Revert section (label + button row).
+///
+/// # No available-height dependency
+/// Every row is INTERACT_H (any `ui.horizontal` with a 24 px widget), PAUSED_LINE_H
+/// (a `now()` row or bare label), CAPTION_H (a fixed-height bar caption), BAR_ROW_H
+/// (the pool bar track row), or an explicit `add_space` value.  No row calls
+/// `available_height()` or `available_size()`.
+#[cfg(test)]
+fn left_column_height(paused: bool, job_line: bool) -> f32 {
+    // settings (show_top) -- 15 items, 14 auto-gaps
+    let settings = 2.0 * INTERACT_H         // Power: label row + Start/Stop row
+        + 12.0                               // add_space(12)
+        + INTERACT_H + PAUSED_LINE_H         // Runners + now-runners
+        + 4.0                                // add_space(4)
+        + INTERACT_H + PAUSED_LINE_H         // Each + now-each
+        + INTERACT_H                         // Total
+        + 4.0 + INTERACT_H + PAUSED_LINE_H  // add_space(4) + IO cap + now-io
+        + 4.0 + INTERACT_H + PAUSED_LINE_H  // add_space(4) + Sharing + now-sharing
+        + 14.0 * CARD_ITEM_GAP; // auto item-spacing (15 items -> 14 gaps)
+
+    let paused_row = if paused {
+        CARD_ITEM_GAP + PAUSED_LINE_H
+    } else {
+        0.0
+    };
+
+    let job_row = if job_line {
+        // pending: add_space(12) + changes label + Apply/Revert row + 3 auto-gaps
+        CARD_ITEM_GAP + 12.0 + CARD_ITEM_GAP + PAUSED_LINE_H + CARD_ITEM_GAP + INTERACT_H
+    } else {
+        0.0
+    };
+
+    // auto-gap + add_space(8) + auto-gap between settings and pool
+    let to_pool = CARD_ITEM_GAP + 8.0 + CARD_ITEM_GAP;
+
+    // pool: 3 bars x (BAR_ROW_H + CAPTION_H) + IO line + sampled line + 7 auto-gaps
+    let pool = 3.0 * (BAR_ROW_H + CAPTION_H) + CAPTION_H + CAPTION_H + 7.0 * CARD_ITEM_GAP;
+
+    PAD + settings + paused_row + job_row + to_pool + pool + CARD_ITEM_GAP + FOOTER_H + PAD
 }
 
 #[cfg(test)]
@@ -2106,6 +2187,74 @@ mod tests {
             job_status_text("verify", "failed", Some(0)),
             "Verify · failed"
         ); // exit 0 not appended
+    }
+
+    #[test]
+    fn pool_io_line_formats_four_cases() {
+        assert_eq!(
+            pool_io_line(Some(3579.0), Some(715.0)),
+            "IO cap 3579 pool \u{b7} 715 each"
+        );
+        assert_eq!(pool_io_line(Some(3579.0), None), "IO cap 3579 pool");
+        assert_eq!(pool_io_line(None, Some(715.0)), "IO cap 715 each");
+        assert_eq!(pool_io_line(None, None), "");
+    }
+
+    #[test]
+    fn left_column_height_fits_minimum_window() {
+        // Independent row inventory (paused=true, job_line=true -- worst case).
+        // No row below uses available_height(); every height is a named constant.
+        let rows = [
+            INTERACT_H,    // Power label row
+            INTERACT_H,    // Power Start/Stop . Pause/Resume row
+            12.0_f32,      // add_space(12)
+            INTERACT_H,    // Runners control
+            PAUSED_LINE_H, // now-runners
+            4.0_f32,       // add_space(4)
+            INTERACT_H,    // Each
+            PAUSED_LINE_H, // now-each
+            INTERACT_H,    // Total
+            4.0_f32,       // add_space(4)
+            INTERACT_H,    // IO cap
+            PAUSED_LINE_H, // now-io
+            4.0_f32,       // add_space(4)
+            INTERACT_H,    // Sharing
+            PAUSED_LINE_H, // now-sharing
+            PAUSED_LINE_H, // paused indicator (paused=true)
+            12.0_f32,      // pending: add_space(12)
+            PAUSED_LINE_H, // pending: "N changes" label
+            INTERACT_H,    // pending: Apply/Revert row (job_line=true)
+        ];
+        let pool_rows = [
+            BAR_ROW_H, // Cores track row
+            CAPTION_H, // Cores caption
+            BAR_ROW_H, // Memory track row
+            CAPTION_H, // Memory caption
+            BAR_ROW_H, // Disk track row
+            CAPTION_H, // Disk caption
+            CAPTION_H, // IO cap line
+            CAPTION_H, // sampled line
+        ];
+        let s: f32 = rows.iter().sum::<f32>() + (rows.len() - 1) as f32 * CARD_ITEM_GAP;
+        let p: f32 = pool_rows.iter().sum::<f32>() + (pool_rows.len() - 1) as f32 * CARD_ITEM_GAP;
+        let to_pool = CARD_ITEM_GAP + 8.0 + CARD_ITEM_GAP;
+        let expected = PAD + s + to_pool + p + CARD_ITEM_GAP + FOOTER_H + PAD;
+        assert_eq!(
+            left_column_height(true, true),
+            expected,
+            "left_column_height formula drifted from the row inventory"
+        );
+        let title = 32.0;
+        assert!(
+            expected <= clamped_window_height(1080.0, title),
+            "left column overflows 1080p: {expected} > {}",
+            clamped_window_height(1080.0, title)
+        );
+        assert!(
+            expected <= clamped_window_height(768.0, title),
+            "left column overflows 768p: {expected} > {}",
+            clamped_window_height(768.0, title)
+        );
     }
 
     #[test]
