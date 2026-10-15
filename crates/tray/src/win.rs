@@ -293,7 +293,6 @@ pub fn apply_dark_menus(api: Option<DarkMenus>, window: Option<isize>, dark: boo
     true
 }
 
-/// 16 lowercase hex digits from the system RNG.
 /// The classic Open dialog, filtered to `*.pem`, owned by `owner` (an HWND) and started in
 /// `initial_dir`. `None` when the user cancelled or the dialog failed. Shortcuts are not resolved.
 pub fn pick_pem_file(
@@ -332,6 +331,7 @@ pub fn pick_pem_file(
     (len > 0).then(|| std::path::PathBuf::from(String::from_utf16_lossy(&file[..len])))
 }
 
+/// 16 lowercase hex digits from the system RNG.
 pub fn random_id() -> std::io::Result<String> {
     let mut bytes = [0u8; 8];
     // SAFETY: `bytes` is a live 8-byte buffer. `None` selects the process-wide RNG.

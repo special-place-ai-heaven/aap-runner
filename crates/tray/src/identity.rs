@@ -18,6 +18,19 @@ pub const GROUP_DEFAULT: &str = github_setup::GROUP_DEFAULT;
 /// What `manager.conf.example` ships. The manager refuses a label line without its base label.
 pub const LABELS_DEFAULT: &str = "self-hosted,linux,crrr";
 pub const KEY_MAX: u64 = 16 * 1024;
+
+/// Why Apply must wait. `desired_on` is inbox state.json desired exactly `on`.
+/// `status_word` is [`crate::state::Status::pool_word`].
+pub fn pool_block(desired_on: bool, status_word: &str) -> Option<&'static str> {
+    if !desired_on {
+        return Some("pool is off; retry when idle or running");
+    }
+    match status_word {
+        "draining" => Some("pool is draining; retry when idle or running"),
+        "paused" => Some("pool is paused; retry when idle or running"),
+        _ => None,
+    }
+}
 const REPARSE: u32 = 0x400;
 const PEM_HEADERS: [&str; 2] = [
     "-----BEGIN RSA PRIVATE KEY-----",
@@ -761,5 +774,25 @@ mod tests {
         let p = path();
         assert!(p.ends_with("identity.json"));
         assert_eq!(p.parent(), github_setup::path().parent());
+    }
+
+    #[test]
+    fn pool_block_matches_the_helper_gate() {
+        let off = "pool is off; retry when idle or running";
+        assert_eq!(pool_block(false, "idle"), Some(off));
+        assert_eq!(pool_block(false, "draining"), Some(off));
+        assert_eq!(
+            pool_block(true, "draining"),
+            Some("pool is draining; retry when idle or running")
+        );
+        assert_eq!(
+            pool_block(true, "paused"),
+            Some("pool is paused; retry when idle or running")
+        );
+        assert_eq!(pool_block(true, "idle"), None);
+        assert_eq!(pool_block(true, "running"), None);
+        assert_eq!(pool_block(true, "starting"), None);
+        assert_eq!(pool_block(true, "error"), None);
+        assert_eq!(pool_block(true, "missing"), None);
     }
 }
