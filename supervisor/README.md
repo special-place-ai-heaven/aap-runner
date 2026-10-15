@@ -84,13 +84,20 @@ The GitHub App id, the key and the runner labels are not read from the
 inbox by the supervisor. They live in `/etc/aap-runner/manager.conf` and
 `app.pem` inside the distro, root-only. The tray's identity page changes them
 through the elevated helper's `identity` verb (`installer/helper-run.ps1`):
-it re-checks every field, refuses a key file that is not a plain file under
-the requesting user's profile (or is a reparse point, not a PEM private key,
-or 16 KiB or more), streams the key over stdin into one `wsl -d aap-runner -u
-root` call that writes both files as `.tmp`, has the manager check the new
-conf, swaps them in, and if the manager unit is active drains, undrains and
-starts it again, as a limits change does. The helper logs the non-secret
-fields and `key installed: 1 file, N bytes`, never the key.
+it re-checks every field, opens the request and the key once each, and refuses a
+key whose final path is not a plain file under the requesting user's profile
+(a reparse point, not a PEM private key, or 16 KiB or more). It refuses before
+`wsl` when desired is not exactly `on` or the status is `draining` or `paused`
+(`pool is <state>; retry when idle or running`, or `pool is off` when desired
+is not on). It streams the key from that same handle into one `wsl -d aap-runner -u
+root` call. The script writes both files as `.tmp`, has the manager check the new
+conf (including `AAP_GITHUB_APP_PRIVATE_KEY_PATH=/etc/aap-runner/app.pem`), drains
+before the swap only when the start argument is `idle` or `running` and the unit
+is active, copies the old key to `app.pem.bak`, moves the new key then the conf,
+and restores the backup if the conf move fails. `--undrain` and `systemctl start`
+run only in that idle or running case after a finished drain. The helper logs the
+non-secret fields and `key installed: 1 file, N bytes`, and prints `PASS identity`
+only when that line was copied, never the key.
 
 ## Install and uninstall
 

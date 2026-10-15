@@ -1803,9 +1803,17 @@ impl Dash {
             ui.add_space(6.0);
         }
         let valid = self.ident.valid();
+        let pool_reason =
+            crate::identity::pool_block(self.desired == Desired::On, self.snap.status.pool_word());
+        if let Some(reason) = pool_reason {
+            ui.label(RichText::new(reason).color(p.over));
+        }
         ui.add_space(4.0);
         if ui
-            .add_enabled(valid.is_some(), egui::Button::new("Apply"))
+            .add_enabled(
+                valid.is_some() && pool_reason.is_none(),
+                egui::Button::new("Apply"),
+            )
             .clicked()
             && let Some(v) = valid
         {

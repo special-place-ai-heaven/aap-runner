@@ -79,6 +79,21 @@ impl Status {
             Status::Error(_) => Sym::Error,
         }
     }
+
+    /// The `status.json` `state` word the identity pool gate reads.
+    /// Missing or unreadable status is `missing`.
+    pub fn pool_word(&self) -> &'static str {
+        match self {
+            Status::Idle => "idle",
+            Status::Running(_) => "running",
+            Status::Draining => "draining",
+            Status::Paused => "paused",
+            Status::Starting => "starting",
+            Status::Error(_) => "error",
+            Status::Off => "off",
+            Status::NotInstalled | Status::Unknown => "missing",
+        }
+    }
 }
 
 /// Sampled pool use; any value may be absent (older supervisor or no sample yet).
@@ -883,5 +898,19 @@ mod tests {
             parse_status(newer, now).status,
             Status::Error(NEWER_SCHEMA.into())
         );
+    }
+
+    #[test]
+    fn pool_word_is_the_status_state() {
+        assert_eq!(Status::Idle.pool_word(), "idle");
+        assert_eq!(Status::Running("job".into()).pool_word(), "running");
+        assert_eq!(Status::Running(String::new()).pool_word(), "running");
+        assert_eq!(Status::Draining.pool_word(), "draining");
+        assert_eq!(Status::Paused.pool_word(), "paused");
+        assert_eq!(Status::Starting.pool_word(), "starting");
+        assert_eq!(Status::Error("x".into()).pool_word(), "error");
+        assert_eq!(Status::Off.pool_word(), "off");
+        assert_eq!(Status::Unknown.pool_word(), "missing");
+        assert_eq!(Status::NotInstalled.pool_word(), "missing");
     }
 }

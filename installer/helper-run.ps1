@@ -9,8 +9,9 @@
 # Without -Fixture the only accepted -DataDir is C:\ProgramData\aap-runner.
 # Every path below is a constant. The identity verb reads one request file,
 # inbox\jobs\<Id>.json, named from the 16-hex -Id; every field in it is
-# re-checked here, and the key path must be a plain file under the profile
-# of the user who owns that request file.
+# re-checked here. The request and the key are each opened once. The key's
+# final path must be a plain file under the profile of the user who owns
+# that request file.
 [CmdletBinding()]
 param(
     [string]$Verb,
@@ -250,59 +251,208 @@ function Format-AapProcessArg([string]$Arg) {
 # Streams stdout and stderr as the child runs. Returns the process exit code.
 # The copy runs on CLR threads and writes to Console directly. A PowerShell
 # scriptblock on those threads has no runspace, and pwsh 7 throws.
+# Every child drops WSLENV. Identity streams stdin from the handle it checked.
 function Initialize-AapStream {
-    if ('AapStream' -as [type]) { return }
+    if (('AapStream' -as [type]) -and ('AapOpen' -as [type])) { return }
+    if (('AapStream' -as [type]) -or ('AapOpen' -as [type])) {
+        throw 'refusing: stale helper types in this process'
+    }
     Add-Type -TypeDefinition @'
 using System;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
-public static class AapStream {
-    public static int Run(string file, string args) {
-        return Run(file, args, null);
+using Microsoft.Win32.SafeHandles;
+
+public static class AapOpen {
+    const uint GenericRead = 0x80000000;
+    const uint FileShareRead = 1;
+    const uint FileShareDelete = 4;
+    const uint OpenExisting = 3;
+    // FILE_SHARE_READ | FILE_SHARE_DELETE, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS
+    const uint OpenFlags = 0x02200000;
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder path, uint cch, uint flags);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileInformationByHandleEx(SafeFileHandle file, int cls, out TagInfo info, uint cb);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetFileSizeEx(SafeFileHandle file, out long size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool ReadFile(SafeFileHandle file, byte[] buf, uint count, out uint read, IntPtr overlapped);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetFilePointerEx(SafeFileHandle file, long distance, out long neu, uint method);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern uint GetSecurityInfo(SafeFileHandle handle, int type, uint info, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr sd);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool ConvertSidToStringSid(IntPtr sid, out IntPtr str);
+    [DllImport("kernel32.dll")]
+    static extern IntPtr LocalFree(IntPtr mem);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct TagInfo {
+        public uint FileAttributes;
+        public uint ReparseTag;
     }
-    // stdinPath: a file streamed to the child's stdin (at most 16 KiB), never read into a string.
-    public static int Run(string file, string args, string stdinPath) {
-        var psi = new ProcessStartInfo(file, args);
+
+    public static SafeFileHandle Open(string path) {
+        SafeFileHandle h = CreateFileW(path, GenericRead, FileShareRead | FileShareDelete, IntPtr.Zero, OpenExisting, OpenFlags, IntPtr.Zero);
+        if (h == null || h.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return h;
+    }
+
+    public static string FinalPath(SafeFileHandle h) {
+        StringBuilder sb = new StringBuilder(1024);
+        uint n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0);
+        if (n == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (n >= (uint)sb.Capacity) {
+            sb = new StringBuilder((int)n + 1);
+            n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0);
+            if (n == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        string p = sb.ToString(0, (int)n);
+        if (p.StartsWith(@"\\?\")) p = p.Substring(4);
+        return p;
+    }
+
+    public static int Attributes(SafeFileHandle h) {
+        TagInfo info;
+        int cb = Marshal.SizeOf(typeof(TagInfo));
+        if (!GetFileInformationByHandleEx(h, 9, out info, (uint)cb)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return unchecked((int)info.FileAttributes);
+    }
+
+    public static long Size(SafeFileHandle h) {
+        long n;
+        if (!GetFileSizeEx(h, out n)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return n;
+    }
+
+    public static int Read(SafeFileHandle h, byte[] buf, int count) {
+        if (count > buf.Length) count = buf.Length;
+        if (count < 0) count = 0;
+        uint n;
+        if (!ReadFile(h, buf, (uint)count, out n, IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        return (int)n;
+    }
+
+    public static void SeekZero(SafeFileHandle h) {
+        long neu;
+        if (!SetFilePointerEx(h, 0, out neu, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+
+    public static byte[] ReadAll(SafeFileHandle h) {
+        SeekZero(h);
+        long size = Size(h);
+        if (size < 0 || size > 1024L * 1024L) throw new IOException("size");
+        if (size == 0) return new byte[0];
+        byte[] buf = new byte[size];
+        int off = 0;
+        while (off < buf.Length) {
+            byte[] tmp = new byte[buf.Length - off];
+            uint n;
+            if (!ReadFile(h, tmp, (uint)tmp.Length, out n, IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (n == 0) break;
+            Buffer.BlockCopy(tmp, 0, buf, off, (int)n);
+            Array.Clear(tmp, 0, tmp.Length);
+            off += (int)n;
+        }
+        if (off == buf.Length) return buf;
+        byte[] cut = new byte[off];
+        Buffer.BlockCopy(buf, 0, cut, 0, off);
+        Array.Clear(buf, 0, buf.Length);
+        return cut;
+    }
+
+    public static string OwnerSid(SafeFileHandle h) {
+        IntPtr owner, group, dacl, sacl, sd;
+        uint err = GetSecurityInfo(h, 1, 1, out owner, out group, out dacl, out sacl, out sd);
+        if (err != 0) throw new Win32Exception((int)err);
+        try {
+            IntPtr str;
+            if (!ConvertSidToStringSid(owner, out str) || str == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+            try { return Marshal.PtrToStringUni(str); }
+            finally { LocalFree(str); }
+        } finally {
+            if (sd != IntPtr.Zero) LocalFree(sd);
+        }
+    }
+}
+
+public static class AapStream {
+    public static bool SawKeyInstalled;
+
+    public static int Run(string file, string args) {
+        return RunCore(file, args, null);
+    }
+
+    public static int RunHandle(string file, string args, SafeFileHandle stdin) {
+        return RunCore(file, args, stdin);
+    }
+
+    static int RunCore(string file, string args, SafeFileHandle stdin) {
+        ProcessStartInfo psi = new ProcessStartInfo(file, args);
         psi.UseShellExecute = false;
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;
-        psi.RedirectStandardInput = stdinPath != null;
+        psi.RedirectStandardInput = stdin != null;
         psi.CreateNoWindow = true;
         psi.EnvironmentVariables["WSL_UTF8"] = "1";
-        using (var proc = Process.Start(psi)) {
-            var outThread = new Thread(delegate() { Copy(proc.StandardOutput); });
-            var errThread = new Thread(delegate() { Copy(proc.StandardError); });
+        psi.EnvironmentVariables.Remove("WSLENV");
+        SawKeyInstalled = false;
+        using (Process proc = Process.Start(psi)) {
+            Thread outThread = new Thread(delegate() { Copy(proc.StandardOutput); });
+            Thread errThread = new Thread(delegate() { Copy(proc.StandardError); });
             outThread.Start();
             errThread.Start();
-            if (stdinPath != null) {
-                var buf = new byte[16384];
-                int n = 0;
-                bool tooBig = false;
-                using (var fs = File.Open(stdinPath, FileMode.Open, FileAccess.Read, FileShare.Read)) {
-                    int got;
-                    while (n < buf.Length && (got = fs.Read(buf, n, buf.Length - n)) > 0) { n += got; }
-                    tooBig = n >= buf.Length;
-                }
-                if (!tooBig) { proc.StandardInput.BaseStream.Write(buf, 0, n); }
-                Array.Clear(buf, 0, buf.Length);
-                proc.StandardInput.Close();
-                if (tooBig) { try { proc.Kill(); } catch (Exception) { } }
-            }
+            if (stdin != null) StreamTo(proc, stdin);
             proc.WaitForExit();
             outThread.Join();
             errThread.Join();
             return proc.ExitCode;
         }
     }
+
+    static void StreamTo(Process proc, SafeFileHandle stdin) {
+        IntPtr dup;
+        if (!DuplicateHandle(GetCurrentProcess(), stdin.DangerousGetHandle(), GetCurrentProcess(), out dup, 0, false, 2)) {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        GC.KeepAlive(stdin);
+        SafeFileHandle owned = new SafeFileHandle(dup, true);
+        byte[] buf = new byte[16384];
+        int n = 0;
+        bool tooBig = false;
+        using (FileStream fs = new FileStream(owned, FileAccess.Read)) {
+            int got;
+            while (n < buf.Length && (got = fs.Read(buf, n, buf.Length - n)) > 0) n += got;
+            tooBig = n >= buf.Length;
+        }
+        if (!tooBig) proc.StandardInput.BaseStream.Write(buf, 0, n);
+        Array.Clear(buf, 0, buf.Length);
+        proc.StandardInput.Close();
+        if (tooBig) { try { proc.Kill(); } catch (Exception) { } }
+    }
+
     static void Copy(StreamReader reader) {
         string line;
         while ((line = reader.ReadLine()) != null) {
             line = line.Replace("\0", "");
             if (line.Length > 2000) line = line.Substring(0, 2000);
+            if (line.StartsWith("key installed:", StringComparison.Ordinal)) SawKeyInstalled = true;
             Console.Out.WriteLine(line);
         }
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool DuplicateHandle(IntPtr srcProc, IntPtr src, IntPtr dstProc, out IntPtr dst, uint access, bool inherit, uint options);
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetCurrentProcess();
 }
 '@
 }
@@ -314,13 +464,14 @@ function Invoke-AapStreaming([string]$File, [string[]]$Arguments) {
     return [int][AapStream]::Run($File, ($quoted -join ' '))
 }
 
-# Same as Invoke-AapStreaming, with a file streamed to the child's stdin. The
-# only caller is the identity verb, which hands the key to one wsl.exe call.
-function Invoke-AapStreamingStdin([string]$File, [string[]]$Arguments, [string]$StdinPath) {
+# The key handle is the one identity already checked. There is no by-name open.
+function Invoke-AapStreamingStdin([string]$File, [string[]]$Arguments, $StdinHandle) {
     Initialize-AapStream
     $quoted = @()
     foreach ($a in @($Arguments)) { $quoted += (Format-AapProcessArg $a) }
-    return [int][AapStream]::Run($File, ($quoted -join ' '), $StdinPath)
+    $code = [int][AapStream]::RunHandle($File, ($quoted -join ' '), $StdinHandle)
+    $script:AapSawKeyLine = [bool][AapStream]::SawKeyInstalled
+    return $code
 }
 
 # --- identity: the request is untrusted; every field is checked again here ---
@@ -350,59 +501,82 @@ function Test-AapIdentityLabels([string]$Value) {
     return $parts.Count -ge 1
 }
 
-# $null when the key file may be used, else the reason. The file must be a
-# plain file (no reparse point on it or any folder up to the profile), under
-# $ProfileDir, 1..16383 bytes, and start with a PEM private-key header. Only
-# the first line is read, into a buffer that is cleared afterwards.
-function Get-AapIdentityKeyProblem([string]$Path, [string]$ProfileDir) {
-    if ([string]::IsNullOrEmpty($Path) -or $Path.Length -gt 1024) { return 'key path' }
-    if ($Path -match '\.\.' -or $Path -notmatch '^[A-Za-z]:\\') { return 'key path' }
-    if ([string]::IsNullOrEmpty($ProfileDir) -or $ProfileDir -notmatch '^[A-Za-z]:\\') { return 'profile' }
-    $full = [IO.Path]::GetFullPath($Path)
+# $null when the key may be used. The file is opened once; every check uses
+# that handle and the final path from it. The handle is left at offset 0 when
+# the key may be streamed, and closed when it may not.
+function Get-AapIdentityKeyView([string]$Path, [string]$ProfileDir) {
+    Initialize-AapStream
+    if ([string]::IsNullOrEmpty($Path) -or $Path.Length -gt 1024 -or $Path -match '\.\.' -or $Path -notmatch '^[A-Za-z]:\\') {
+        return [pscustomobject]@{ Problem = 'key path'; Handle = $null }
+    }
+    if ([string]::IsNullOrEmpty($ProfileDir) -or $ProfileDir -notmatch '^[A-Za-z]:\\') {
+        return [pscustomobject]@{ Problem = 'profile'; Handle = $null }
+    }
     $root = [IO.Path]::GetFullPath($ProfileDir).TrimEnd('\')
-    if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
-        return "key file is not under $root"
-    }
-    $info = New-Object IO.FileInfo $full
-    $attr = [int]$info.Attributes
-    if ($attr -eq -1) { return 'key file was not found' }
-    if (($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { return 'key file is a reparse point' }
-    if (($attr -band [int][IO.FileAttributes]::Directory) -ne 0) { return 'key file is not a regular file' }
-    $dir = $info.Directory
-    while ($null -ne $dir) {
-        if ((([int]$dir.Attributes) -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) {
-            return 'key path crosses a reparse point'
-        }
-        if ($dir.FullName.TrimEnd('\') -ieq $root) { break }
-        $dir = $dir.Parent
-    }
-    $len = [long]$info.Length
-    if ($len -le 0) { return 'key file is empty' }
-    if ($len -ge 16384) { return 'key file is larger than 16 KiB' }
-    $buf = New-Object byte[] 64
-    $fs = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $h = $null
+    $bytes = $null
     try {
-        $n = $fs.Read($buf, 0, $buf.Length)
-    } finally {
-        $fs.Close()
+        $h = [AapOpen]::Open($Path)
+    } catch {
+        return [pscustomobject]@{ Problem = 'key file was not found'; Handle = $null }
     }
-    $end = [Array]::IndexOf($buf, [byte]10, 0, $n)
-    if ($end -lt 0) { $end = $n }
-    if ($end -gt 0 -and $buf[$end - 1] -eq 13) { $end-- }
-    $line = [Text.Encoding]::ASCII.GetString($buf, 0, $end)
-    [Array]::Clear($buf, 0, $buf.Length)
-    if ($line -cne '-----BEGIN RSA PRIVATE KEY-----' -and $line -cne '-----BEGIN PRIVATE KEY-----') {
-        return 'key file is not a PEM private key'
+    $why = $null
+    try {
+        $attr = [AapOpen]::Attributes($h)
+        if (($attr -band 0x400) -ne 0) {
+            $why = 'key file is a reparse point'
+        } elseif (($attr -band 0x10) -ne 0) {
+            $why = 'key file is not a regular file'
+        } else {
+            $final = [AapOpen]::FinalPath($h)
+            if ($final -notmatch '^[A-Za-z]:\\' -or -not $final.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                $why = "key file is not under $root"
+            } else {
+                $len = [AapOpen]::Size($h)
+                if ($len -le 0) {
+                    $why = 'key file is empty'
+                } elseif ($len -ge 16384) {
+                    $why = 'key file is larger than 16 KiB'
+                } else {
+                    $buf = New-Object byte[] 64
+                    $n = 0
+                    try {
+                        $n = [AapOpen]::Read($h, $buf, $buf.Length)
+                        $end = -1
+                        if ($n -gt 0) { $end = [Array]::IndexOf($buf, [byte]10, 0, $n) }
+                        if ($end -lt 0) { $end = $n }
+                        if ($end -gt 0 -and $buf[$end - 1] -eq 13) { $end-- }
+                        $line = [Text.Encoding]::ASCII.GetString($buf, 0, $end)
+                    } finally {
+                        [Array]::Clear($buf, 0, $buf.Length)
+                    }
+                    [AapOpen]::SeekZero($h)
+                    if ($line -cne '-----BEGIN RSA PRIVATE KEY-----' -and $line -cne '-----BEGIN PRIVATE KEY-----') {
+                        $why = 'key file is not a PEM private key'
+                    }
+                }
+            }
+        }
+    } catch {
+        $why = 'key file was not found'
     }
-    return $null
+    if ($why) {
+        $h.Dispose()
+        return [pscustomobject]@{ Problem = $why; Handle = $null }
+    }
+    return [pscustomobject]@{ Problem = $null; Handle = $h }
 }
 
-# The profile folder of the user who wrote the request: the owner SID of the
-# request file (a user SID, never a group), looked up in ProfileList.
-function Get-AapRequestOwnerProfile([string]$Path) {
-    $sid = (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($sid -notmatch '^S-1-5-21(-\d+){4}\z') { throw "refusing: request owner $sid" }
-    $key = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+function Get-AapIdentityKeyProblem([string]$Path, [string]$ProfileDir) {
+    $view = Get-AapIdentityKeyView $Path $ProfileDir
+    if ($null -ne $view.Handle) { $view.Handle.Dispose() }
+    return $view.Problem
+}
+
+# ProfileImagePath for a user SID. The SID came from the request handle.
+function Get-AapRequestOwnerProfile([string]$Sid) {
+    if ($Sid -notmatch '^S-1-5-21(-\d+){4}\z') { throw "refusing: request owner $Sid" }
+    $key = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$Sid"
     $dir = [string](Get-ItemProperty -LiteralPath $key -ErrorAction Stop).ProfileImagePath
     if ([string]::IsNullOrEmpty($dir) -or $dir -match '\.\.' -or $dir -notmatch '^[A-Za-z]:\\[^"<>|*?]+\z') {
         throw 'refusing: requester profile'
@@ -411,9 +585,34 @@ function Get-AapRequestOwnerProfile([string]$Path) {
 }
 
 # Exactly the nine fields of the schema 1 identity request, each re-checked.
+# The file is opened once: the JSON (at most 4096 bytes) and the owner SID
+# both come from that handle.
 function Read-AapIdentityRequest([string]$Path, [string]$Id) {
-    $obj = Read-AapJsonBounded $Path 4096
-    if ($null -eq $obj) { throw 'refusing: request' }
+    Initialize-AapStream
+    $h = $null
+    try {
+        $h = [AapOpen]::Open($Path)
+    } catch {
+        throw 'refusing: request'
+    }
+    try {
+        $size = [AapOpen]::Size($h)
+        if ($size -le 0 -or $size -gt 4096) { throw 'refusing: request' }
+        $bytes = [AapOpen]::ReadAll($h)
+        if ($null -eq $bytes -or $bytes.Length -gt 4096) { throw 'refusing: request' }
+        $sid = [AapOpen]::OwnerSid($h)
+        $text = [Text.Encoding]::UTF8.GetString($bytes)
+    } finally {
+        if ($null -ne $bytes) { [Array]::Clear($bytes, 0, $bytes.Length) }
+        if ($null -ne $h) { $h.Dispose() }
+    }
+    if ($text.Length -gt 0 -and [int]$text[0] -eq 0xFEFF) { $text = $text.Substring(1) }
+    try {
+        $obj = $text | ConvertFrom-Json
+    } catch {
+        throw 'refusing: request'
+    }
+    if ($obj -isnot [System.Management.Automation.PSCustomObject]) { throw 'refusing: request' }
     $names = @($obj.PSObject.Properties.Name | Sort-Object)
     if (($names -join ',') -ne 'app_id,group,id,installation_id,key_path,labels,org,schema,verb') {
         throw 'refusing: request fields'
@@ -431,6 +630,7 @@ function Read-AapIdentityRequest([string]$Path, [string]$Id) {
         Group          = [string]$obj.group
         Labels         = [string]$obj.labels
         KeyPath        = [string]$obj.key_path
+        Profile        = (Get-AapRequestOwnerProfile $sid)
     }
     if (-not (Test-AapIdentitySlug $req.Org)) { throw 'refusing: org' }
     if (-not (Test-AapIdentityId $req.AppId)) { throw 'refusing: app_id' }
@@ -441,51 +641,56 @@ function Read-AapIdentityRequest([string]$Path, [string]$Id) {
     return $req
 }
 
-# Runs as root inside the distro with the key on stdin and the five fields
-# as arguments. Writes app.pem.tmp and manager.conf.tmp, has the manager
-# check the new conf, then swaps both in; on any failure the old files stay.
-# Then restarts the pool the way a limits change does (drain, undrain, start)
-# when it is running. It never prints the key or the conf.
+# Runs as root inside the distro. The key is on stdin. Arguments are the five
+# fields and a start word (idle, running, or hold). Drain, when the start word
+# allows it, happens before either file is replaced.
 function Get-AapIdentityScript {
     $text = @'
 #!/bin/bash
-# aap-runner identity: key on stdin; args: org app_id installation_id group labels
+# aap-runner identity: key on stdin; args: org app_id installation_id group labels start
 set -euo pipefail
 conf=/etc/aap-runner/manager.conf
 key=/etc/aap-runner/app.pem
 manager=/usr/local/sbin/aap-runner-manager
 
-# rewrite_conf IN OUT ORG APP INST GROUP LABELS: copy IN to OUT with the five
-# identity keys replaced in place and appended when missing; every other line
-# (comments, blanks, other keys) is kept as it is.
+# rewrite_conf IN OUT ORG APP INST GROUP LABELS. The private-key path is a
+# constant here; the start token is not an argument.
 rewrite_conf() {
   local in="$1" out="$2" line k seen=""
-  local -A want=([AAP_GITHUB_ORG]="$3" [AAP_GITHUB_APP_ID]="$4" [AAP_GITHUB_APP_INSTALLATION_ID]="$5" [AAP_RUNNER_GROUP]="$6" [AAP_RUNNER_LABELS]="$7")
+  local -A want=([AAP_GITHUB_ORG]="$3" [AAP_GITHUB_APP_ID]="$4" [AAP_GITHUB_APP_INSTALLATION_ID]="$5" [AAP_RUNNER_GROUP]="$6" [AAP_RUNNER_LABELS]="$7" [AAP_GITHUB_APP_PRIVATE_KEY_PATH]=/etc/aap-runner/app.pem)
   : > "$out"
   if [[ -f "$in" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
       k=${line%%=*}
       if [[ "$line" == *=* && "$line" != \#* && -n "${want[$k]+x}" ]]; then
-        printf '%s=%s\n' "$k" "${want[$k]}" >> "$out"
+        printf "%s=%s\n" "$k" "${want[$k]}" >> "$out"
         seen="$seen $k"
       else
-        printf '%s\n' "$line" >> "$out"
+        printf "%s\n" "$line" >> "$out"
       fi
     done < "$in"
   fi
-  for k in AAP_GITHUB_ORG AAP_GITHUB_APP_ID AAP_GITHUB_APP_INSTALLATION_ID AAP_RUNNER_GROUP AAP_RUNNER_LABELS; do
-    [[ " $seen " == *" $k "* ]] || printf '%s=%s\n' "$k" "${want[$k]}" >> "$out"
+  for k in AAP_GITHUB_ORG AAP_GITHUB_APP_ID AAP_GITHUB_APP_INSTALLATION_ID AAP_RUNNER_GROUP AAP_RUNNER_LABELS AAP_GITHUB_APP_PRIVATE_KEY_PATH; do
+    [[ " $seen " == *" $k "* ]] || printf "%s=%s\n" "$k" "${want[$k]}" >> "$out"
   done
 }
 
 main() {
-  if [[ $# -ne 5 ]]; then
-    echo "FAIL identity: expected 5 arguments" >&2
+  if [[ $# -ne 6 ]]; then
+    echo "FAIL identity: expected 6 arguments" >&2
     exit 2
   fi
+  local start="$6"
+  case "$start" in
+    idle|running|hold) ;;
+    *)
+      echo "FAIL identity: start" >&2
+      exit 2
+      ;;
+  esac
   umask 077
-  local tmpkey="$key.tmp" tmpconf="$conf.tmp" n first state i
-  trap 'rm -f "$tmpkey" "$tmpconf"' EXIT
+  local tmpkey="$key.tmp" tmpconf="$conf.tmp" n first state i bak iters sleep_s had=0 drained=0
+  trap "rm -f \"$tmpkey\" \"$tmpconf\"" EXIT
   head -c 16384 > "$tmpkey"
   n=$(stat -c %s "$tmpkey")
   if (( n == 0 || n >= 16384 )); then
@@ -495,7 +700,7 @@ main() {
   IFS= read -r first < "$tmpkey" || true
   first=${first%$'\r'}
   case "$first" in
-    '-----BEGIN RSA PRIVATE KEY-----' | '-----BEGIN PRIVATE KEY-----') ;;
+    "-----BEGIN RSA PRIVATE KEY-----"|"-----BEGIN PRIVATE KEY-----") ;;
     *)
       echo "FAIL identity: key is not a PEM private key" >&2
       exit 1
@@ -503,33 +708,65 @@ main() {
   esac
   chown root:root "$tmpkey"
   chmod 0400 "$tmpkey"
-  rewrite_conf "$conf" "$tmpconf" "$@"
+  rewrite_conf "$conf" "$tmpconf" "$1" "$2" "$3" "$4" "$5"
   chown root:root "$tmpconf"
   chmod 0400 "$tmpconf"
   if ! AAP_MANAGER_CONF="$tmpconf" "$manager" --check-limits > /dev/null; then
     echo "FAIL identity: the manager refused the new manager.conf" >&2
     exit 1
   fi
-  mv -f "$tmpconf" "$conf"
-  mv -f "$tmpkey" "$key"
+  if [[ "$start" == idle || "$start" == running ]]; then
+    state=$(systemctl is-active aap-runner-manager || true)
+    if [[ "$state" == active ]]; then
+      echo "restarting pool: drain"
+      "$manager" --drain
+      iters=${AAP_DRAIN_ITERS:-120}
+      sleep_s=${AAP_DRAIN_SLEEP:-5}
+      for ((i = 0; i < iters; i++)); do
+        state=$(systemctl is-active aap-runner-manager || true)
+        [[ "$state" == active ]] || break
+        sleep "$sleep_s"
+      done
+      if [[ "$state" == active ]]; then
+        trap - EXIT
+        echo "FAIL pool did not drain in 10 min; retry when idle"
+        exit 1
+      fi
+      drained=1
+    fi
+  fi
+  bak="${key}.bak"  # /etc/aap-runner/app.pem.bak
+  if [[ -f "$key" ]]; then
+    cp -a "$key" "$bak"
+    chown root:root "$bak"
+    chmod 0400 "$bak"
+    had=1
+  fi
+  if ! mv -f "$tmpkey" "$key"; then
+    echo "FAIL identity: app.pem was not replaced" >&2
+    exit 1
+  fi
+  if ! mv -f "$tmpconf" "$conf"; then
+    if [[ "$had" -eq 1 ]]; then
+      mv -f "$bak" "$key"
+    else
+      rm -f "$key"
+    fi
+    echo "FAIL identity: manager.conf was not replaced" >&2
+    exit 1
+  fi
+  rm -f "$bak"
   trap - EXIT
   echo "key installed: 1 file, $n bytes"
-  echo "manager.conf updated: AAP_GITHUB_ORG AAP_GITHUB_APP_ID AAP_GITHUB_APP_INSTALLATION_ID AAP_RUNNER_GROUP AAP_RUNNER_LABELS"
-  state=$(systemctl is-active aap-runner-manager || true)
-  if [[ "$state" != active ]]; then
-    echo "pool is $state; the new identity applies at the next start"
-    exit 0
-  fi
-  echo "restarting pool: drain"
-  "$manager" --drain
-  for ((i = 0; i < 120; i++)); do
+  echo "manager.conf updated: AAP_GITHUB_ORG AAP_GITHUB_APP_ID AAP_GITHUB_APP_INSTALLATION_ID AAP_RUNNER_GROUP AAP_RUNNER_LABELS AAP_GITHUB_APP_PRIVATE_KEY_PATH"
+  if [[ "$drained" -eq 1 ]]; then
+    "$manager" --undrain
+    systemctl start aap-runner-manager
+    echo "pool restarted: $(systemctl is-active aap-runner-manager || true)"
+  else
     state=$(systemctl is-active aap-runner-manager || true)
-    [[ "$state" == active ]] || break
-    sleep 5
-  done
-  "$manager" --undrain
-  systemctl start aap-runner-manager
-  echo "pool restarted: $(systemctl is-active aap-runner-manager || true)"
+    echo "pool is $state; the new identity applies at the next start"
+  fi
 }
 
 if [[ "${AAP_IDENTITY_LIB:-}" != 1 ]]; then
@@ -540,11 +777,42 @@ fi
 }
 
 # One wsl.exe call. The script travels base64 inside the -c argument so that
-# argument holds no quote; the fields are plain tokens; the key is on stdin.
-function Get-AapIdentityWslArgs($Req) {
+# argument holds no quote; the fields and the start word are plain tokens.
+function Get-AapIdentityWslArgs($Req, [string]$PoolWord) {
+    if ($PoolWord -ne 'idle' -and $PoolWord -ne 'running' -and $PoolWord -ne 'hold') {
+        throw 'refusing: pool'
+    }
     $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-AapIdentityScript)))
-    $cmd = "bash <(echo $b64 | base64 -d) $($Req.Org) $($Req.AppId) $($Req.InstallationId) $($Req.Group) $($Req.Labels)"
+    $cmd = "bash <(echo $b64 | base64 -d) $($Req.Org) $($Req.AppId) $($Req.InstallationId) $($Req.Group) $($Req.Labels) $PoolWord"
     return @('-d', 'aap-runner', '-u', 'root', '--', '/bin/bash', '-c', $cmd)
+}
+
+# desired must be exactly "on". draining and paused refuse. Anything else is hold.
+function Get-AapIdentityPool([string]$DataDir) {
+    $desired = ''
+    try {
+        $obj = Read-AapJsonBounded (Join-Path (Join-Path $DataDir 'inbox') 'state.json') 4096
+        if ($null -ne $obj) { $desired = [string]$obj.desired }
+    } catch {
+        $desired = ''
+    }
+    if ($desired -cne 'on') {
+        return [pscustomobject]@{ Fail = 'pool is off; retry when idle or running'; Word = $null }
+    }
+    $state = ''
+    try {
+        $obj = Read-AapJsonBounded (Join-Path $DataDir 'status.json') 65536
+        if ($null -ne $obj) { $state = [string]$obj.state }
+    } catch {
+        $state = ''
+    }
+    if ($state -ceq 'draining' -or $state -ceq 'paused') {
+        return [pscustomobject]@{ Fail = "pool is ${state}; retry when idle or running"; Word = $null }
+    }
+    if ($state -ceq 'idle' -or $state -ceq 'running') {
+        return [pscustomobject]@{ Fail = $null; Word = $state }
+    }
+    return [pscustomobject]@{ Fail = $null; Word = 'hold' }
 }
 
 function Invoke-AapIdentityLive([string]$DataDir, [string]$Id) {
@@ -556,27 +824,40 @@ function Invoke-AapIdentityLive([string]$DataDir, [string]$Id) {
     [Console]::Out.WriteLine('STEP identity request')
     try {
         $req = Read-AapIdentityRequest $reqPath $Id
-        $dir = Get-AapRequestOwnerProfile $reqPath
     } catch {
         [Console]::Out.WriteLine("FAIL identity $($_.Exception.Message)")
         return 2
     }
-    $why = Get-AapIdentityKeyProblem $req.KeyPath $dir
-    if ($why) {
-        [Console]::Out.WriteLine("FAIL identity $why")
+    $pool = Get-AapIdentityPool $DataDir
+    if ($pool.Fail) {
+        [Console]::Out.WriteLine("FAIL identity $($pool.Fail)")
+        return 2
+    }
+    $view = Get-AapIdentityKeyView $req.KeyPath $req.Profile
+    if ($view.Problem) {
+        if ($null -ne $view.Handle) { $view.Handle.Dispose() }
+        [Console]::Out.WriteLine("FAIL identity $($view.Problem)")
         return 2
     }
     [Console]::Out.WriteLine("INFO identity org $($req.Org) app $($req.AppId) installation $($req.InstallationId) group $($req.Group) labels $($req.Labels)")
     [Console]::Out.WriteLine('STEP identity install')
-    $code = Invoke-AapStreamingStdin $AapWsl (Get-AapIdentityWslArgs $req) $req.KeyPath
+    $script:AapSawKeyLine = $false
+    try {
+        $code = Invoke-AapStreamingStdin $AapWsl (Get-AapIdentityWslArgs $req $pool.Word) $view.Handle
+    } finally {
+        if ($null -ne $view.Handle) { $view.Handle.Dispose() }
+    }
     if ($code -ne 0) {
         [Console]::Out.WriteLine("FAIL identity exit $code")
+        return 1
+    }
+    if (-not $script:AapSawKeyLine) {
+        [Console]::Out.WriteLine('FAIL identity key installed line missing')
         return 1
     }
     [Console]::Out.WriteLine('PASS identity')
     return 0
 }
-
 # /etc/aap-runner/manager.conf of the aap-runner distro, or $null when the
 # distro is absent or wsl fails. One wsl call; the verify flow already enters
 # the distro for the units check.
