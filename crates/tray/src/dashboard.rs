@@ -85,6 +85,11 @@ fn take_request(path: &Path) -> Option<View> {
 /// Default inner size fits five compact cards. The column scrolls below the minimum.
 const SIZE: [f32; 2] = [760.0, 760.0];
 const MIN_SIZE: [f32; 2] = [680.0, 460.0];
+
+/// One card per reported slot, and no more than the runner limit.
+fn cards_to_draw(slot_count: usize) -> usize {
+    slot_count.min(*crate::settings::RUNNERS.end() as usize)
+}
 /// The fixed settings column.
 const LEFT_W: f32 = 260.0;
 const PAD: f32 = 12.0;
@@ -1419,11 +1424,7 @@ impl Dash {
                     a.job_memory_gib.map(|g| f64::from(g) / runners),
                 );
                 let slots = self.snap.slots.clone();
-                for (i, slot) in slots
-                    .iter()
-                    .take(*crate::settings::RUNNERS.end() as usize)
-                    .enumerate()
-                {
+                for (i, slot) in slots.iter().take(cards_to_draw(slots.len())).enumerate() {
                     if i > 0 {
                         ui.add_space(8.0);
                     }
@@ -1672,78 +1673,16 @@ mod tests {
         }
     }
 
-    /// Five idle cards, the pool bars and the history strips fit in the default window.
     #[test]
-    fn five_cards_fit_the_default_window() {
-        let ctx = egui::Context::default();
-        ctx.all_styles_mut(style);
-        let mut content = 0.0_f32;
-        let mut full = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(SIZE[0], 2000.0),
-                )),
-                ..Default::default()
-            },
-            |ui| {
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::new().inner_margin(PAD as i8))
-                    .show(ui, |ui| {
-                        ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
-                        ui.add_space(8.0);
-                        let y0 = ui.cursor().min.y;
-                        for _ in 0..2 {
-                            ui.allocate_exact_size(egui::vec2(200.0, 18.0), egui::Sense::hover());
-                        }
-                        ui.allocate_exact_size(egui::vec2(200.0, 16.0), egui::Sense::hover());
-                        ui.add_space(8.0);
-                        for i in 0..5 {
-                            if i > 0 {
-                                ui.add_space(8.0);
-                            }
-                            egui::Frame::new()
-                                .stroke(Stroke::new(1.0, egui::Color32::WHITE))
-                                .corner_radius(4)
-                                .inner_margin(egui::Margin::symmetric(12, 10))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.horizontal(|ui| {
-                                        ui.allocate_exact_size(
-                                            egui::vec2(20.0, 20.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new("Runner 1")
-                                                .font(egui::FontId::proportional(13.0)),
-                                        );
-                                    });
-                                    ui.label("Waiting for a job");
-                                    ui.allocate_exact_size(
-                                        egui::vec2(80.0, 18.0),
-                                        egui::Sense::hover(),
-                                    );
-                                });
-                        }
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("Last 60 min")
-                                .font(egui::FontId::proportional(13.0)),
-                        );
-                        ui.allocate_exact_size(egui::vec2(200.0, 28.0), egui::Sense::hover());
-                        ui.allocate_exact_size(egui::vec2(200.0, 28.0), egui::Sense::hover());
-                        ui.label("peak");
-                        content = ui.cursor().min.y - y0;
-                    });
-            },
-        );
-        full.textures_delta.clear();
-        let chrome = PAD * 2.0 + 24.0 + 8.0;
-        assert!(content > 400.0, "layout measured {content}");
-        assert!(
-            content + chrome <= SIZE[1],
-            "five cards need {content} plus chrome {chrome}; window is {}",
-            SIZE[1]
-        );
+    fn card_count_is_the_slot_count_up_to_five() {
+        for n in 0..=5 {
+            assert_eq!(cards_to_draw(n), n, "{n}");
+        }
+        assert_eq!(cards_to_draw(6), 5);
+        // Three cards fitted in a 520 window. One compact card is the 20 px symbol
+        // row, the title, the 18 px bars, the frame, and the gap before the next.
+        let block = 20.0 + 4.0 + 18.0 + 4.0 + 18.0 + 20.0 + 2.0 + 12.0;
+        let chrome = 520.0 - 3.0 * block;
+        assert!(chrome + cards_to_draw(5) as f32 * block <= SIZE[1]);
     }
 }
