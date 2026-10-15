@@ -1,4 +1,4 @@
-//! Elevated helper (`--helper <verb> <id>`) and the non-elevated side that asks for it.
+﻿//! Elevated helper (`--helper <verb> <id>`) and the non-elevated side that asks for it.
 //!
 //! The tray writes `inbox\jobs\<id>.json` and starts this exe with `runas` (one UAC prompt).
 //! The helper trusts nothing in that file except schema 1, a verb of `verify` or `repair`, and an
@@ -200,6 +200,7 @@ pub struct JobUi {
     pub verb: String,
     pub state: String,
     pub step: String,
+    pub exit_code: Option<i32>,
     pub lines: Vec<String>,
 }
 
@@ -587,6 +588,7 @@ pub fn load_job_from(pointer: &Path, base: &Path) -> Option<JobUi> {
             verb: raw.verb,
             state: "declined".into(),
             step: raw.error,
+            exit_code: None,
             lines: Vec::new(),
         });
     }
@@ -599,6 +601,7 @@ pub fn load_job_from(pointer: &Path, base: &Path) -> Option<JobUi> {
         verb: raw.verb,
         state: status.state,
         step: status.step,
+        exit_code: status.exit_code,
         lines: log_tail(&dir.join("log.txt")),
     })
 }

@@ -103,11 +103,11 @@ fn cards_to_draw(slot_count: usize) -> usize {
 
 /// Exact outer height of one compact runner card, derived from the draw constants.
 fn card_height() -> f32 {
-    CARD_SYM_H // state row (sym_widget, CARD_SYM_H)
+    CARD_SYM_H.max(INTERACT_H) // state row: ui.horizontal floored to interact_size.y
         + CARD_ITEM_GAP
-        + CARD_TITLE_H // title / "Waiting" row (allocated to CARD_TITLE_H)
+        + CARD_TITLE_H // title / "Waiting" row: allocated explicitly to 24 px
         + CARD_ITEM_GAP
-        + CARD_BARS_H // mini-bar row (allocated to CARD_BARS_H)
+        + CARD_BARS_H.max(INTERACT_H) // bars row: ui.horizontal floored to interact_size.y
         + 2.0 * CARD_MARGIN_V as f32 // frame inner margins
         + 2.0 // frame border 1 px each side
 }
@@ -121,6 +121,7 @@ fn right_column_height(slots: usize) -> f32 {
         + HEADER_H + CARD_ITEM_GAP // header row + auto spacing
         + AFTER_HEADER // explicit add_space(AFTER_HEADER)
         + JOB_LINE_H + CARD_ITEM_GAP // job status line + auto spacing
+        + PAUSED_LINE_H + 4.0 + 2.0 * CARD_ITEM_GAP // Paused label + add_space(4) + gaps
         + n as f32 * card_height() // runner cards
         + n.saturating_sub(1) as f32 * (CARD_ITEM_GAP + CARD_GAP_SPACE) // inter-card gaps
         + PAD // frame bottom inner margin
@@ -132,8 +133,8 @@ fn right_column_height(slots: usize) -> f32 {
 /// cross the left edge. `title` is the assumed title-bar height.
 fn place_window(work: [f32; 4], max: [f32; 2], pad: f32, title: f32) -> (f32, f32, f32, f32) {
     let [left, top, right, bottom] = work;
-    let avail_h = (bottom - top - pad - title).max(0.0);
-    let height = max[1].min(avail_h);
+    // clamped_window_height applies SIZE[1] and PAD; min(max[1]) lets tests override SIZE.
+    let height = clamped_window_height(bottom - top, title).min(max[1]);
     let y = (bottom - pad - height - title).max(top);
     let mut width = max[0];
     let mut x = right - pad - width;
@@ -142,6 +143,12 @@ fn place_window(work: [f32; 4], max: [f32; 2], pad: f32, title: f32) -> (f32, f3
         x = (right - pad - width).max(left);
     }
     (x, y, width, height)
+}
+/// Inner window height for a given work-area height, matching the clamp `place_window`
+/// applies in `run()` when called with `max = SIZE`. `title` is the title-bar allowance
+/// (32 pt in `run()`). Used in the layout test.
+fn clamped_window_height(work_h: f32, title: f32) -> f32 {
+    SIZE[1].min((work_h - PAD - title).max(0.0))
 }
 /// The fixed settings column.
 const LEFT_W: f32 = 260.0;
@@ -172,6 +179,10 @@ const AFTER_HEADER: f32 = 8.0;
 /// Job status line height: CollapsingHeader header matches interact_size.y;
 /// plain labels are allocated to this height for consistency.
 const JOB_LINE_H: f32 = CARD_TITLE_H; // interact_size.y from style()
+/// `interact_size.y` from `style()`; the minimum height of any `ui.horizontal` row.
+const INTERACT_H: f32 = 24.0; // kept in sync with style()
+/// Conservative height of a bare body-font label (13 px × leading ≈ 16 px).
+const PAUSED_LINE_H: f32 = 16.0;
 
 // --- Layout constants (test-only) ---
 // These aggregate the draw-time constants; a change to card sizing that does
@@ -367,7 +378,7 @@ fn disk_line(
             (
                 Some(used),
                 Some(size),
-                format!("{} free / {} GiB{floor_txt}", gib(free), gib(size)),
+                format!("{}/{} GiB{floor_txt}", gib(free), gib(size)),
                 over,
             )
         }
@@ -1639,8 +1650,7 @@ impl Dash {
             return;
         };
         let p = self.pal();
-        let exit = job.step.strip_prefix("exit ").and_then(|s| s.parse().ok());
-        let text = job_status_text(&job.verb, &job.state, exit);
+        let text = job_status_text(&job.verb, &job.state, job.exit_code);
         if job.lines.is_empty() {
             ui.allocate_ui(vec2(ui.available_width(), JOB_LINE_H), |ui| {
                 ui.label(RichText::new(&text).small().color(p.muted));
@@ -1652,6 +1662,7 @@ impl Dash {
                     .color(p.muted),
             )
             .default_open(false)
+            .id_salt("helper-log")
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .max_height(8.0 * 15.0)
@@ -1673,13 +1684,13 @@ impl Dash {
             self.github_page(ui);
             return;
         }
+        self.job_status_line(ui); // shown in every state (Off, Not installed, error panel)
         let p = self.pal();
         match self.snap.status.clone() {
             _ if self.panel && self.problem.is_some() => self.error_panel(ui),
             Status::NotInstalled => self.empty(ui, "AAP Runner is not installed on this PC."),
             Status::Off => self.empty(ui, "Runners are off. No jobs are taken."),
             status => {
-                self.job_status_line(ui); // helper status; pool moved to left column
                 if status == Status::Paused {
                     ui.label(match self.snap.busy() {
                         0 => "Paused \u{b7} no jobs".to_string(),
@@ -1811,14 +1822,22 @@ impl eframe::App for Dash {
             .resizable(false)
             .frame(frame)
             .show(ui, |ui| {
-                let mut focus =
-                    self.settings
-                        .show_top(ui, &p, &self.base, &self.snap, &mut self.desired);
-                ui.add_space(8.0);
-                self.pool(ui); // pool bars live in the left column
-                self.settings
-                    .show_bottom(ui, &p, &self.base, self.job.as_ref(), &mut focus);
-                focus
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let mut focus = self.settings.show_top(
+                            ui,
+                            &p,
+                            &self.base,
+                            &self.snap,
+                            &mut self.desired,
+                        );
+                        ui.add_space(8.0);
+                        self.pool(ui); // pool bars live in the left column
+                        self.settings.show_bottom(ui, &p, &self.base, &mut focus);
+                        focus
+                    })
+                    .inner
             })
             .inner;
         self.right_first = None;
@@ -1992,18 +2011,10 @@ mod tests {
             assert_eq!(cards_to_draw(n), n, "{n}");
         }
         assert_eq!(cards_to_draw(6), 5);
-        // card_height() derives from the draw constants; a change propagates automatically.
-        assert_eq!(
-            card_height(),
-            CARD_SYM_H
-                + CARD_ITEM_GAP
-                + CARD_TITLE_H
-                + CARD_ITEM_GAP
-                + CARD_BARS_H
-                + 2.0 * CARD_MARGIN_V as f32
-                + 2.0
-        );
-        assert!(right_column_height(5) <= SIZE[1]);
+        // 102 = 24 + 4 + 24 + 4 + 24 + 20 + 2: each ui.horizontal row is floored to
+        // INTERACT_H = 24 (interact_size.y). Computed from floor rules, not from the fn body.
+        assert_eq!(card_height(), 102.0);
+        assert!(right_column_height(5) <= clamped_window_height(1080.0, 32.0));
     }
 
     #[test]
@@ -2034,7 +2045,7 @@ mod tests {
     fn disk_line_names_free_size_and_floor() {
         let (used, share, text, over) = disk_line(Some(100.0), Some(40.0), Some(15.0), true);
         assert_eq!((used, share, over), (Some(60.0), Some(100.0), false));
-        assert_eq!(text, "40 free / 100 GiB \u{b7} floor 15");
+        assert_eq!(text, "40/100 GiB \u{b7} floor 15");
         assert!(disk_line(Some(100.0), Some(10.0), Some(15.0), true).3);
         let (used, share, text, over) = disk_line(None, None, None, true);
         assert_eq!((used, share, over), (None, None, false));
@@ -2042,12 +2053,19 @@ mod tests {
     }
 
     #[test]
-    fn five_cards_fit_default_height() {
-        // right_column_height(5) is computed from the draw constants; any change to
-        // CARD_SYM_H / CARD_TITLE_H / CARD_BARS_H / CARD_MARGIN_V / CARD_ITEM_GAP
-        // propagates automatically into this assertion.
+    fn five_cards_fit_clamped_height() {
         let h = right_column_height(5);
-        assert!(h <= SIZE[1], "five cards overflow: {h:.0} > {}", SIZE[1]);
+        // 1080 px work area: clamps to SIZE[1] = 760.
+        let h_1080 = clamped_window_height(1080.0, 32.0);
+        assert_eq!(h_1080, SIZE[1], "sanity: 1080p clamps to default size");
+        assert!(
+            h <= h_1080,
+            "five cards overflow 1080p: {h:.0} > {h_1080:.0}"
+        );
+        // 768 px work area (laptop): clamps below SIZE[1].
+        let h_768 = clamped_window_height(768.0, 32.0);
+        assert!(h_768 < SIZE[1]);
+        assert!(h <= h_768, "five cards overflow 768p: {h:.0} > {h_768:.0}");
     }
 
     #[test]
