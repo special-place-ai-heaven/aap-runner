@@ -1423,6 +1423,11 @@ impl Dash {
         if edit.changed() {
             self.setup.set_input(input);
         }
+        let submit =
+            edit.lost_focus() || (edit.has_focus() && ui.input(|i| i.key_pressed(Key::Enter)));
+        if submit {
+            self.setup.commit();
+        }
         ui.add_space(8.0);
         let rows = self.setup.rows();
         let start = crate::github_setup::first_open(&rows);

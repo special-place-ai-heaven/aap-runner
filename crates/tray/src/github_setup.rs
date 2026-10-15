@@ -2,7 +2,7 @@
 //! read, sent, or stored. A row the app cannot see yet stays a manual tick until
 //! a later input (the identity page) makes it checkable.
 //!
-//! ponytail: fork policy has no check, so an organization still ticks that row.
+//! ponytail: fork policy has no API check, so an organization and a user both tick that row.
 //! M3 passes Identity and Verify into `rows`; this page leaves both empty.
 
 use crate::state;
@@ -10,11 +10,13 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const ADVANCE_AFTER: Duration = Duration::from_secs(2);
 pub const GROUP_DEFAULT: &str = "aap-crrr";
 const APP_PERMS: &str = "Required permissions: Organization > Self-hosted runners: Read and write; Repository > Actions: Read. Webhook off. Choose Only on this account.";
+const APP_NEW: &str =
+    "?public=false&webhook_active=false&organization_self_hosted_runners=write&actions=read";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -23,11 +25,18 @@ pub enum Kind {
     User,
 }
 
+fn repo_is_verified() -> bool {
+    true
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
     pub login: String,
     pub kind: Kind,
     pub repo: Option<String>,
+    /// False when owner/repo was given and the public API returned 404.
+    #[serde(default = "repo_is_verified")]
+    pub repo_verified: bool,
     pub public_repos: u64,
 }
 
@@ -180,7 +189,9 @@ pub fn links(kind: Kind, login: &str) -> Option<Links> {
     }
     Some(match kind {
         Kind::Org => Links {
-            create_app: format!("https://github.com/organizations/{login}/settings/apps/new"),
+            create_app: format!(
+                "https://github.com/organizations/{login}/settings/apps/new{APP_NEW}"
+            ),
             apps: format!("https://github.com/organizations/{login}/settings/apps"),
             install_pattern: format!(
                 "https://github.com/organizations/{login}/settings/apps/<app>/installations"
@@ -191,7 +202,7 @@ pub fn links(kind: Kind, login: &str) -> Option<Links> {
             actions: format!("https://github.com/organizations/{login}/settings/actions"),
         },
         Kind::User => Links {
-            create_app: "https://github.com/settings/apps/new".into(),
+            create_app: format!("https://github.com/settings/apps/new{APP_NEW}"),
             apps: "https://github.com/settings/apps".into(),
             install_pattern: "https://github.com/settings/apps/<app>/installations".into(),
             runner_groups: None,
@@ -253,7 +264,8 @@ fn row(
 struct Check {
     id: RowId,
     title: &'static str,
-    failed: Option<bool>,
+    /// `Some(true)` passed, `Some(false)` failed, `None` not run.
+    ok: Option<bool>,
     known: bool,
     ticked: bool,
     fail: &'static str,
@@ -263,10 +275,10 @@ struct Check {
 }
 
 fn decided(c: Check) -> Row {
-    if c.failed == Some(false) {
+    if c.ok == Some(false) {
         return row(c.id, c.title, Phase::Unmet, false, c.fail, c.action, c.link);
     }
-    if c.known || c.failed == Some(true) {
+    if c.known || c.ok == Some(true) {
         return row(c.id, c.title, Phase::Met, false, "", c.action, c.link);
     }
     if c.ticked {
@@ -296,7 +308,7 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
         decided(Check {
             id: RowId::CreateApp,
             title: "Create a GitHub App",
-            failed: facts.verify.app_authenticates,
+            ok: facts.verify.app_authenticates,
             known: facts.identity.app_id.is_some(),
             ticked: facts.manual.create_app,
             fail: "The app did not authenticate.",
@@ -312,7 +324,7 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
         decided(Check {
             id: RowId::Install,
             title: "Install the app",
-            failed: facts.verify.installation_matches,
+            ok: facts.verify.installation_matches,
             known: facts.identity.installation_id.is_some(),
             ticked: facts.manual.install,
             fail: "The installation id does not match.",
@@ -328,7 +340,7 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
         decided(Check {
             id: RowId::Key,
             title: "Private key",
-            failed: None,
+            ok: None,
             known: facts.identity.key_present,
             ticked: facts.manual.private_key,
             fail: "",
@@ -346,7 +358,7 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
 }
 
 fn account_row(facts: &Facts) -> Row {
-    if facts.checking {
+    if facts.checking && facts.account.is_none() {
         return row(
             RowId::Account,
             "Account",
@@ -366,13 +378,18 @@ fn account_row(facts: &Facts) -> Row {
             Kind::Org => "an organization",
             Kind::User => "a user",
         };
+        let unverified = if account.repo_verified {
+            ""
+        } else {
+            " The repository could not be verified; it may be private."
+        };
         return row(
             RowId::Account,
             "Account",
             Phase::Met,
             false,
             "",
-            format!("{where_} is {kind}."),
+            format!("{where_} is {kind}.{unverified}"),
             None,
         );
     }
@@ -406,13 +423,9 @@ fn group_row(facts: &Facts, prev: bool, kind: Option<Kind>, links: Option<&Links
         );
     }
     let link = links.and_then(|l| l.runner_groups.clone());
-    let public = facts.account.as_ref().is_some_and(|a| a.public_repos > 0);
-    let allow = if public {
-        " Tick Allow public repositories, then add the repositories."
-    } else {
-        " Add the repositories that should use this group."
-    };
-    let action = format!("Create the group (default name {GROUP_DEFAULT}).{allow}");
+    let action = format!(
+        "Create the group (default name {GROUP_DEFAULT}). Tick Allow public repositories, then add the repositories."
+    );
     if facts.verify.runner_group_exists == Some(false) {
         return row(
             RowId::Group,
@@ -473,23 +486,22 @@ fn fork_row(facts: &Facts, prev: bool, kind: Option<Kind>, links: Option<&Links>
     if !prev {
         return blocked(RowId::Fork, "Fork policy");
     }
-    if kind == Some(Kind::User) {
+    let (action, link) = if kind == Some(Kind::User) {
         let link = facts.account.as_ref().and_then(|a| {
             a.repo
                 .as_ref()
                 .map(|repo| format!("https://github.com/{}/{repo}/settings/actions", a.login))
         });
-        return row(
-            RowId::Fork,
-            "Fork policy",
-            Phase::Met,
-            false,
-            "",
-            "A personal account has no organization Actions policy page. When a repository was given, its Actions settings are the place to require approval.",
+        (
+            "Require approval for outside collaborators. On a personal repository that setting is under Settings > Actions.",
             link,
-        );
-    }
-    let link = links.map(|l| l.actions.clone());
+        )
+    } else {
+        (
+            "Require approval for all outside collaborators.",
+            links.map(|l| l.actions.clone()),
+        )
+    };
     if facts.manual.fork_policy {
         row(
             RowId::Fork,
@@ -497,7 +509,7 @@ fn fork_row(facts: &Facts, prev: bool, kind: Option<Kind>, links: Option<&Links>
             Phase::Met,
             true,
             "",
-            "Require approval for all outside collaborators.",
+            action,
             link,
         )
     } else {
@@ -507,7 +519,7 @@ fn fork_row(facts: &Facts, prev: bool, kind: Option<Kind>, links: Option<&Links>
             Phase::Unmet,
             true,
             "Outside collaborators can still run workflows without approval.",
-            "Require approval for all outside collaborators.",
+            action,
             link,
         )
     }
@@ -536,23 +548,52 @@ pub fn first_open(list: &[Row]) -> Option<RowId> {
         .map(|r| r.id)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FailKind {
+    NotFound,
+    RateLimit,
+    Network,
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LookupError {
+    kind: FailKind,
+    message: String,
+}
+
+impl LookupError {
+    fn new(kind: FailKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+/// `repo` is `(status, body, requested name)` when the input was owner/repo.
 pub fn account_from(
     user_status: u16,
     user_body: &str,
-    repo: Option<(u16, &str)>,
-) -> Result<Account, String> {
+    repo: Option<(u16, &str, &str)>,
+) -> Result<Account, LookupError> {
     let user = interpret_user(user_status, user_body)?;
     let repo = match repo {
         None => None,
-        Some((status, body)) => Some(interpret_repo(status, body)?),
+        Some((status, body, name)) => Some(interpret_repo(status, body, name)?),
     };
     if !slug(&user.login) {
-        return Err("GitHub returned an unexpected login.".into());
+        return Err(LookupError::new(
+            FailKind::Other,
+            "GitHub returned an unexpected login.",
+        ));
     }
+    let repo_verified = repo.as_ref().is_none_or(|hit| hit.verified);
     Ok(Account {
         login: user.login,
         kind: user.kind,
-        repo,
+        repo: repo.map(|hit| hit.name),
+        repo_verified,
         public_repos: user.public_repos,
     })
 }
@@ -563,9 +604,12 @@ struct UserHit {
     public_repos: u64,
 }
 
-fn interpret_user(status: u16, body: &str) -> Result<UserHit, String> {
+fn interpret_user(status: u16, body: &str) -> Result<UserHit, LookupError> {
     if status == 404 {
-        return Err("That account was not found.".into());
+        return Err(LookupError::new(
+            FailKind::NotFound,
+            "That account was not found.",
+        ));
     }
     if status != 200 {
         return Err(status_error(status, body));
@@ -578,11 +622,16 @@ fn interpret_user(status: u16, body: &str) -> Result<UserHit, String> {
         public_repos: Option<u64>,
     }
     let body: Body = serde_json::from_str(body)
-        .map_err(|_| "GitHub returned an unexpected account.".to_string())?;
+        .map_err(|_| LookupError::new(FailKind::Other, "GitHub returned an unexpected account."))?;
     let kind = match body.kind.as_str() {
         "Organization" => Kind::Org,
         "User" => Kind::User,
-        _ => return Err("GitHub returned an unexpected account type.".into()),
+        _ => {
+            return Err(LookupError::new(
+                FailKind::Other,
+                "GitHub returned an unexpected account type.",
+            ));
+        }
     };
     Ok(UserHit {
         login: body.login,
@@ -591,9 +640,23 @@ fn interpret_user(status: u16, body: &str) -> Result<UserHit, String> {
     })
 }
 
-fn interpret_repo(status: u16, body: &str) -> Result<String, String> {
+struct RepoHit {
+    name: String,
+    verified: bool,
+}
+
+fn interpret_repo(status: u16, body: &str, requested: &str) -> Result<RepoHit, LookupError> {
     if status == 404 {
-        return Err("That repository was not found, or it is private. The public API cannot see a private repository.".into());
+        if !repo_name(requested) {
+            return Err(LookupError::new(
+                FailKind::Other,
+                "That repository name is not allowed.",
+            ));
+        }
+        return Ok(RepoHit {
+            name: requested.to_string(),
+            verified: false,
+        });
     }
     if status != 200 {
         return Err(status_error(status, body));
@@ -602,20 +665,33 @@ fn interpret_repo(status: u16, body: &str) -> Result<String, String> {
     struct Body {
         name: String,
     }
-    let body: Body = serde_json::from_str(body)
-        .map_err(|_| "GitHub returned an unexpected repository.".to_string())?;
+    let body: Body = serde_json::from_str(body).map_err(|_| {
+        LookupError::new(FailKind::Other, "GitHub returned an unexpected repository.")
+    })?;
     if !repo_name(&body.name) {
-        return Err("GitHub returned an unexpected repository name.".into());
+        return Err(LookupError::new(
+            FailKind::Other,
+            "GitHub returned an unexpected repository name.",
+        ));
     }
-    Ok(body.name)
+    Ok(RepoHit {
+        name: body.name,
+        verified: true,
+    })
 }
 
-fn status_error(status: u16, body: &str) -> String {
-    if body.to_ascii_lowercase().contains("rate limit") {
-        "GitHub rate limit. The lookup will retry.".into()
+fn status_error(status: u16, body: &str) -> LookupError {
+    if status == 429 || body.to_ascii_lowercase().contains("rate limit") {
+        LookupError::new(FailKind::RateLimit, "GitHub rate limit. Try again later.")
     } else {
-        format!("GitHub returned {status}.")
+        LookupError::new(FailKind::Other, format!("GitHub returned {status}."))
     }
+}
+
+/// First network retry waits 5 s, then 10, 20, and 40.
+fn backoff(tries: u32) -> Duration {
+    let shift = tries.saturating_sub(1).min(3);
+    Duration::from_secs(5u64 << shift)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -666,7 +742,10 @@ impl Disk {
 }
 
 pub fn path() -> PathBuf {
-    crate::history::History::path().with_file_name("github-setup.json")
+    let root = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    root.join("aap-runner").join("github-setup.json")
 }
 
 fn load_disk(path: &Path) -> Disk {
@@ -680,6 +759,9 @@ fn load_disk(path: &Path) -> Disk {
 }
 
 fn save_disk(path: &Path, disk: &Disk) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     if let Ok(text) = serde_json::to_vec(disk) {
         let _ = state::write_atomic(path, &text);
     }
@@ -687,7 +769,7 @@ fn save_disk(path: &Path, disk: &Disk) {
 
 struct Slot {
     ticket: u64,
-    done: Option<(u64, Result<Account, String>)>,
+    done: Option<(u64, Result<Account, LookupError>)>,
 }
 
 pub struct Store {
@@ -695,8 +777,31 @@ pub struct Store {
     disk: Disk,
     note: Option<String>,
     checking: bool,
+    fail: Option<FailKind>,
+    failed_input: Option<String>,
+    net_tries: u32,
+    next_retry: Option<Instant>,
     slot: Arc<Mutex<Slot>>,
     ticket: u64,
+}
+
+#[cfg(test)]
+thread_local! {
+    static HOLD_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SPAWNS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn hold_spawns(on: bool) {
+    HOLD_SPAWN.with(|flag| flag.set(on));
+    if on {
+        SPAWNS.with(|n| n.set(0));
+    }
+}
+
+#[cfg(test)]
+fn spawns() -> u32 {
+    SPAWNS.with(|n| n.get())
 }
 
 impl Store {
@@ -706,6 +811,10 @@ impl Store {
             path,
             note: None,
             checking: false,
+            fail: None,
+            failed_input: None,
+            net_tries: 0,
+            next_retry: None,
             slot: Arc::new(Mutex::new(Slot {
                 ticket: 0,
                 done: None,
@@ -726,34 +835,31 @@ impl Store {
             return;
         }
         self.disk.input = input;
-        match parse_target(&self.disk.input) {
-            Ok(parsed)
-                if self
-                    .disk
-                    .account
-                    .as_ref()
-                    .is_some_and(|a| same_target(&parsed, a)) =>
-            {
-                self.checking = false
-            }
-            Ok(parsed) => {
-                self.disk.account = None;
-                self.disk.create_app = false;
-                self.disk.install = false;
-                self.disk.private_key = false;
-                self.disk.runner_group = false;
-                self.disk.fork_policy = false;
-                self.note = None;
-                self.checking = true;
-                self.spawn(parsed);
-            }
-            Err(_) => {
-                self.disk.account = None;
-                self.checking = false;
-                self.note = None;
-            }
-        }
         save_disk(&self.path, &self.disk);
+    }
+
+    /// Look up when the field is submitted or loses focus. Typing only stores the text.
+    pub fn commit(&mut self) {
+        if self.checking {
+            return;
+        }
+        let Ok(parsed) = parse_target(&self.disk.input) else {
+            return;
+        };
+        if self
+            .disk
+            .account
+            .as_ref()
+            .is_some_and(|account| same_target(&parsed, account))
+        {
+            return;
+        }
+        self.fail = None;
+        self.failed_input = None;
+        self.net_tries = 0;
+        self.next_retry = None;
+        self.checking = true;
+        self.spawn(parsed);
     }
 
     pub fn set_group(&mut self, group: String) {
@@ -780,14 +886,28 @@ impl Store {
         save_disk(&self.path, &self.disk);
     }
 
-    /// Start a lookup when the page is open and the cached answer is missing.
+    /// Retry a network error for the same text, after [`backoff`]. A 404 or a rate limit stays put.
     pub fn retry(&mut self) {
-        if self.checking || self.disk.account.is_some() {
+        if self.checking || self.fail != Some(FailKind::Network) {
+            return;
+        }
+        if self.failed_input.as_deref() != Some(self.disk.input.as_str()) {
+            return;
+        }
+        if self.next_retry.is_some_and(|at| Instant::now() < at) {
             return;
         }
         let Ok(parsed) = parse_target(&self.disk.input) else {
             return;
         };
+        if self
+            .disk
+            .account
+            .as_ref()
+            .is_some_and(|account| same_target(&parsed, account))
+        {
+            return;
+        }
         self.checking = true;
         self.spawn(parsed);
     }
@@ -806,18 +926,7 @@ impl Store {
         if ticket != self.ticket {
             return;
         }
-        self.checking = false;
-        match result {
-            Ok(account) => {
-                self.note = None;
-                self.disk.account = Some(account);
-            }
-            Err(err) => {
-                self.note = Some(err);
-                self.disk.account = None;
-            }
-        }
-        save_disk(&self.path, &self.disk);
+        self.take_result(result);
     }
 
     pub fn rows(&self) -> Vec<Row> {
@@ -828,10 +937,8 @@ impl Store {
         let error = if self.disk.account.is_none() && !self.checking {
             match parse_target(&self.disk.input) {
                 Err(text) => Some(text.to_string()),
-                Ok(_) => self
-                    .note
-                    .clone()
-                    .or_else(|| Some("The lookup failed.".into())),
+                Ok(_) if self.note.is_some() => self.note.clone(),
+                Ok(_) => Some("Press Enter, or leave the field, to look this up.".into()),
             }
         } else {
             None
@@ -847,7 +954,51 @@ impl Store {
         }
     }
 
+    fn take_result(&mut self, result: Result<Account, LookupError>) {
+        self.checking = false;
+        match result {
+            Ok(account) => {
+                if self
+                    .disk
+                    .account
+                    .as_ref()
+                    .is_some_and(|old| !same_saved(old, &account))
+                {
+                    self.disk.create_app = false;
+                    self.disk.install = false;
+                    self.disk.private_key = false;
+                    self.disk.runner_group = false;
+                    self.disk.fork_policy = false;
+                }
+                self.note = None;
+                self.fail = None;
+                self.failed_input = None;
+                self.net_tries = 0;
+                self.next_retry = None;
+                self.disk.account = Some(account);
+            }
+            Err(err) => {
+                self.note = Some(err.message);
+                self.fail = Some(err.kind);
+                if err.kind == FailKind::Network {
+                    self.failed_input = Some(self.disk.input.clone());
+                    self.net_tries = self.net_tries.saturating_add(1);
+                    self.next_retry = Some(Instant::now() + backoff(self.net_tries));
+                } else {
+                    self.failed_input = None;
+                    self.next_retry = None;
+                }
+            }
+        }
+        save_disk(&self.path, &self.disk);
+    }
+
     fn spawn(&mut self, parsed: Parsed) {
+        #[cfg(test)]
+        if HOLD_SPAWN.with(|flag| flag.get()) {
+            SPAWNS.with(|n| n.set(n.get() + 1));
+            return;
+        }
         self.ticket = self.ticket.wrapping_add(1);
         let ticket = self.ticket;
         {
@@ -877,19 +1028,29 @@ fn same_target(parsed: &Parsed, account: &Account) -> bool {
     }
 }
 
-fn resolve(parsed: &Parsed) -> Result<Account, String> {
+fn same_saved(a: &Account, b: &Account) -> bool {
+    a.login.eq_ignore_ascii_case(&b.login)
+        && match (&a.repo, &b.repo) {
+            (None, None) => true,
+            (Some(x), Some(y)) => x.eq_ignore_ascii_case(y),
+            _ => false,
+        }
+}
+
+fn resolve(parsed: &Parsed) -> Result<Account, LookupError> {
     let user = http_get(&format!("/users/{}", parsed.owner))?;
     let repo = match &parsed.repo {
         None => None,
-        Some(repo) => {
-            let got = http_get(&format!("/repos/{}/{}", parsed.owner, repo))?;
-            Some((got.status, got.body))
+        Some(name) => {
+            let got = http_get(&format!("/repos/{}/{}", parsed.owner, name))?;
+            Some((got.status, got.body, name.clone()))
         }
     };
     account_from(
         user.status,
         &user.body,
-        repo.as_ref().map(|(s, b)| (*s, b.as_str())),
+        repo.as_ref()
+            .map(|(status, body, name)| (*status, body.as_str(), name.as_str())),
     )
 }
 
@@ -898,11 +1059,14 @@ struct Http {
     body: String,
 }
 
-fn http_get(path: &str) -> Result<Http, String> {
+fn http_get(path: &str) -> Result<Http, LookupError> {
     if !github_path_ok(path) {
-        return Err("refusing the request path".into());
+        return Err(LookupError::new(
+            FailKind::Other,
+            "refusing the request path",
+        ));
     }
-    unsafe { winhttp_get(path) }
+    unsafe { winhttp_get(path) }.map_err(|message| LookupError::new(FailKind::Network, message))
 }
 
 fn github_path_ok(path: &str) -> bool {
@@ -924,6 +1088,10 @@ fn github_path_ok(path: &str) -> bool {
     matches!(second, Some(repo) if repo_name(repo))
 }
 
+/// # Safety
+/// `path` must already have passed `github_path_ok`. Handles opened here are closed by
+/// `Handle` on every return, including errors. The strings passed in are null-terminated
+/// and live for the call.
 unsafe fn winhttp_get(path: &str) -> Result<Http, String> {
     use std::ffi::c_void;
     use windows::Win32::Networking::WinHttp::{
@@ -1063,6 +1231,7 @@ mod tests {
             login: "acme".into(),
             kind: Kind::Org,
             repo: None,
+            repo_verified: true,
             public_repos,
         }
     }
@@ -1071,6 +1240,7 @@ mod tests {
             login: "octocat".into(),
             kind: Kind::User,
             repo: Some("hello".into()),
+            repo_verified: true,
             public_repos: 2,
         }
     }
@@ -1094,7 +1264,7 @@ mod tests {
         let org = links(Kind::Org, "acme").unwrap();
         assert_eq!(
             org.create_app,
-            "https://github.com/organizations/acme/settings/apps/new"
+            "https://github.com/organizations/acme/settings/apps/new?public=false&webhook_active=false&organization_self_hosted_runners=write&actions=read"
         );
         assert_eq!(
             org.apps,
@@ -1113,7 +1283,10 @@ mod tests {
             "https://github.com/organizations/acme/settings/actions"
         );
         let user = links(Kind::User, "octocat").unwrap();
-        assert_eq!(user.create_app, "https://github.com/settings/apps/new");
+        assert_eq!(
+            user.create_app,
+            "https://github.com/settings/apps/new?public=false&webhook_active=false&organization_self_hosted_runners=write&actions=read"
+        );
         assert_eq!(user.apps, "https://github.com/settings/apps");
         assert_eq!(
             user.install_pattern,
@@ -1136,23 +1309,53 @@ mod tests {
         let user = account_from(
             200,
             r#"{"login":"octocat","type":"User","public_repos":8}"#,
-            Some((200, r#"{"name":"hello"}"#)),
+            Some((200, r#"{"name":"hello"}"#, "hello")),
         )
         .unwrap();
         assert_eq!(user.kind, Kind::User);
         assert_eq!(user.repo.as_deref(), Some("hello"));
-        assert!(
-            account_from(404, r#"{"message":"Not Found"}"#, None)
-                .unwrap_err()
-                .contains("not found")
-        );
+        let missing = account_from(404, r#"{"message":"Not Found"}"#, None).unwrap_err();
+        assert_eq!(missing.kind, FailKind::NotFound);
+        assert!(missing.message.contains("not found"));
+        let limited =
+            account_from(403, r#"{"message":"API rate limit exceeded"}"#, None).unwrap_err();
+        assert_eq!(limited.kind, FailKind::RateLimit);
         let private = account_from(
             200,
             r#"{"login":"octocat","type":"User","public_repos":1}"#,
-            Some((404, r#"{"message":"Not Found"}"#)),
+            Some((404, r#"{"message":"Not Found"}"#, "secret")),
         )
-        .unwrap_err();
-        assert!(private.contains("private"));
+        .unwrap();
+        assert_eq!(private.repo.as_deref(), Some("secret"));
+        assert!(!private.repo_verified);
+        let listed = rows(&facts(
+            Some(private),
+            Manual {
+                create_app: true,
+                install: true,
+                private_key: true,
+                ..Manual::default()
+            },
+        ));
+        assert_eq!(phase(&listed, RowId::Account), Phase::Met);
+        assert_ne!(phase(&listed, RowId::CreateApp), Phase::Blocked);
+        assert!(
+            listed
+                .iter()
+                .find(|r| r.id == RowId::Account)
+                .unwrap()
+                .action
+                .contains("could not be verified")
+        );
+        assert_eq!(
+            listed
+                .iter()
+                .find(|r| r.id == RowId::Fork)
+                .unwrap()
+                .link
+                .as_deref(),
+            Some("https://github.com/octocat/secret/settings/actions")
+        );
     }
 
     #[test]
@@ -1172,9 +1375,27 @@ mod tests {
                 .action
                 .contains("do not exist")
         );
-        assert_eq!(phase(&list, RowId::Fork), Phase::Met);
+        let fork = list.iter().find(|r| r.id == RowId::Fork).unwrap();
+        assert_eq!(fork.phase, Phase::Unmet);
+        assert!(fork.manual);
         assert_eq!(
-            list.iter()
+            fork.link.as_deref(),
+            Some("https://github.com/octocat/hello/settings/actions")
+        );
+        assert!(fork.action.contains("Settings > Actions"));
+        let mut bare = user();
+        bare.repo = None;
+        let bare_rows = rows(&facts(Some(bare), manual));
+        let bare_fork = bare_rows.iter().find(|r| r.id == RowId::Fork).unwrap();
+        assert!(bare_fork.manual);
+        assert!(bare_fork.link.is_none());
+        assert_eq!(bare_fork.phase, Phase::Unmet);
+        let mut ticked = manual;
+        ticked.fork_policy = true;
+        let done = rows(&facts(Some(user()), ticked));
+        assert_eq!(phase(&done, RowId::Fork), Phase::Met);
+        assert_eq!(
+            done.iter()
                 .find(|r| r.id == RowId::Workflow)
                 .unwrap()
                 .copy
@@ -1191,7 +1412,7 @@ mod tests {
         );
         let quiet = rows(&facts(Some(org(0)), manual));
         assert!(
-            !quiet
+            quiet
                 .iter()
                 .find(|r| r.id == RowId::Group)
                 .unwrap()
@@ -1309,5 +1530,101 @@ mod tests {
         std::fs::write(&path, r#"{"schema":9,"input":"nope"}"#).unwrap();
         assert!(load_disk(&path).input.is_empty());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    struct Hold;
+    impl Drop for Hold {
+        fn drop(&mut self) {
+            super::hold_spawns(false);
+        }
+    }
+    fn hold() -> Hold {
+        super::hold_spawns(true);
+        Hold
+    }
+
+    #[test]
+    fn typing_does_not_look_up_until_submit_and_ticks_clear_only_when_the_account_changes() {
+        let _hold = hold();
+        let path = state::temp_base("gh-keys").join("github-setup.json");
+        let mut store = Store::load(path.clone());
+        store.disk.account = Some(org(1));
+        store.disk.input = "acme".into();
+        store.disk.create_app = true;
+        store.set_input("othe".into());
+        assert_eq!(super::spawns(), 0);
+        assert!(store.disk.create_app);
+        assert_eq!(store.disk.account.as_ref().unwrap().login, "acme");
+        store.commit();
+        assert_eq!(super::spawns(), 1);
+        assert!(store.disk.create_app);
+        let mut other = org(0);
+        other.login = "othe".into();
+        store.take_result(Ok(other));
+        assert!(!store.disk.create_app);
+        store.disk.create_app = true;
+        let mut again = org(3);
+        again.login = "othe".into();
+        store.take_result(Ok(again));
+        assert!(store.disk.create_app);
+        store.disk.account = None;
+        store.disk.create_app = true;
+        store.take_result(Ok(org(1)));
+        assert!(store.disk.create_app);
+        store.disk.input = "acme".into();
+        store.disk.account = Some(org(1));
+        store.checking = false;
+        let before = super::spawns();
+        store.commit();
+        assert_eq!(super::spawns(), before);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_not_found_or_rate_limit_is_not_retried_and_a_network_error_backs_off() {
+        let _hold = hold();
+        let path = state::temp_base("gh-retry").join("github-setup.json");
+        let mut store = Store::load(path.clone());
+        store.disk.input = "other".into();
+        store.disk.account = Some(org(1));
+        store.disk.create_app = true;
+        store.take_result(Err(LookupError::new(
+            FailKind::Network,
+            "could not connect to api.github.com",
+        )));
+        assert!(store.disk.create_app);
+        assert_eq!(store.disk.account.as_ref().unwrap().login, "acme");
+        assert_eq!(store.fail, Some(FailKind::Network));
+        store.retry();
+        assert_eq!(super::spawns(), 0, "backoff has not elapsed");
+        store.next_retry = Some(Instant::now() - Duration::from_secs(1));
+        store.retry();
+        assert_eq!(super::spawns(), 1);
+        store.checking = false;
+        store.fail = Some(FailKind::NotFound);
+        store.retry();
+        store.fail = Some(FailKind::RateLimit);
+        store.retry();
+        assert_eq!(super::spawns(), 1);
+        assert_eq!(backoff(1), Duration::from_secs(5));
+        assert_eq!(backoff(2), Duration::from_secs(10));
+        assert_eq!(backoff(3), Duration::from_secs(20));
+        assert_eq!(backoff(4), Duration::from_secs(40));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn the_checklist_file_is_under_local_app_data() {
+        let path = path();
+        assert!(path.ends_with("github-setup.json"));
+        assert_eq!(
+            path.parent()
+                .and_then(|dir| dir.file_name())
+                .and_then(|n| n.to_str()),
+            Some("aap-runner")
+        );
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            assert!(path.starts_with(local));
+        }
     }
 }

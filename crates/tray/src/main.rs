@@ -2,8 +2,9 @@
 
 //! Tray front-end for the AAP self-hosted runner. Reads `status.json` and `logs\supervisor.log`,
 //! writes only under `inbox\` (`state.json`, `settings.json`, `tray.log`, `jobs\<id>.json`) plus
-//! its own history mirror, view request, helper pointer, and GitHub setup cache in `%TEMP%`.
-//! Opens the logs folder and its own window (`--dashboard`, `--settings`, `--github`). `--helper`
+//! its own history mirror, view request, and helper pointer in `%TEMP%`. The GitHub setup
+//! cache is `%LOCALAPPDATA%\aap-runner\github-setup.json`. Opens the logs folder and its own
+//! window (`--dashboard`, `--settings`, `--github`). `--helper`
 //! is the elevated mode: it writes `jobs\<id>\` and runs the embedded install scripts. GitHub setup
 //! calls the public API with no token. The window never starts `wsl.exe`.
 //!

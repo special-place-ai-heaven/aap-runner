@@ -67,7 +67,7 @@ Left click on the icon opens the same window.
   without git) as a disabled item above Quit, in the tooltip, the window title and the error panel. `--version`
   prints it to stdout and exits 0 (GUI-subsystem exe: capture it, e.g. `& .\aap-runner-tray.exe --version | Write-Output`).
 
-## Window (`--dashboard`, `--settings`)
+## Window (`--dashboard`, `--settings`, `--github`)
 
 One egui window in its own process (`current_exe()`), one at a time (file lock in `%TEMP%`). Quit kills that process; otherwise it exits when the tray lock is not held. No tabs:
 a fixed 260 px settings column on the left, a 1 px border, and the observability column on the right.
@@ -94,14 +94,16 @@ addendum of the design doc.
 - **Keyboard:** Tab runs down the left column, then the right. F6 jumps to the first control of the other
   column. Esc leaves the error panel, then closes the window. `--settings` puts the focus on Start/Stop;
   with a problem the initial focus is the problem button.
-- A second request (menu item, icon click, another `--settings`) writes `status`, `settings` or
+- A second request (menu item, icon click, another `--settings`) writes `status`, `settings`, `github` or
   `diagnostics` to `%TEMP%\aap-runner-tray\view.request` and focuses the open window, which takes the file.
 
 ## GitHub setup
 
-The menu item and `--github` swap the right column for a checklist. The left column stays the settings column. The input is an org slug or `owner/repo` (a `https://github.com/` prefix is stripped). The tray calls the public API (`GET /users/<owner>`, and `GET /repos/<owner>/<repo>` when a repo was given) with no token. The answer is cached in `%TEMP%\aap-runner-tray\github-setup.json` (schema 1: the text, the group name, the manual ticks, and the resolved account).
+The menu item and `--github` swap the right column for a checklist. The left column stays the settings column. The input is an org slug or `owner/repo` (a `https://github.com/` prefix is stripped). The tray calls the public API (`GET /users/<owner>`, and `GET /repos/<owner>/<repo>` when a repo was given) with no token. The answer is cached in `%LOCALAPPDATA%\aap-runner\github-setup.json` (schema 1: the text, the group name, the manual ticks, and the resolved account). `history.json` stays in `%TEMP%`.
 
-Rows are `checking`, met, unmet, or blocked. The page re-checks every 5 s while it is open. A row the app cannot see yet has a Done box. `rows` checks that row itself once an App id, installation id, or key file is supplied; this page passes those empty until the identity page (M3). An organization with public repositories is told to tick Allow public repositories. A user account is told that runner groups do not exist. Next stays disabled until every row is met, then the page returns to the runners after 2 s.
+The lookup runs when Enter is pressed or the field loses focus, not on each keystroke. A 404 and a rate-limit response are not retried on their own. A network error is retried after 5 s, then 10, 20, and 40. Done ticks stay until a lookup resolves to a different account than the saved one.
+
+Rows are `checking`, met, unmet, or blocked. A row the app cannot see yet has a Done box. `rows` checks that row itself once an App id, installation id, or key file is supplied; this page passes those empty until the identity page (M3). The runner-group row always says to tick Allow public repositories. The create-app link passes that row's permissions as URL parameters (`public=false`, webhook off, self-hosted runners write, actions read). A user account has no runner groups. Fork policy is a manual tick for a user too, and the link opens that repository's Settings > Actions page. A private repository still resolves the owner and does not block the later rows; the repository is marked unverifiable. Next stays disabled until every row is met, then the page returns to the runners after 2 s.
 
 The workflow box is:
 
