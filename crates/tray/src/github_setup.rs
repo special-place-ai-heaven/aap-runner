@@ -4,7 +4,7 @@
 //!
 //! ponytail: fork policy has no API check, so an organization ticks that row by hand.
 //! A user account stops the checklist; the manager only registers organization runners.
-//! M3 passes Identity and Verify into `rows`; this page leaves both empty.
+//! The dashboard passes the identity page's ids and the last Verify's app-token row into the store.
 
 use crate::state;
 use serde::{Deserialize, Serialize};
@@ -744,15 +744,20 @@ impl Disk {
 }
 
 pub fn path() -> PathBuf {
-    github_setup_path(std::env::var_os("LOCALAPPDATA"), std::env::temp_dir())
+    data_file("github-setup.json")
 }
 
-fn github_setup_path(local: Option<std::ffi::OsString>, temp: PathBuf) -> PathBuf {
+/// `%LOCALAPPDATA%\aap-runner\<name>`, or the temp directory when that variable is missing or empty.
+pub(crate) fn data_file(name: &str) -> PathBuf {
+    data_path(std::env::var_os("LOCALAPPDATA"), std::env::temp_dir(), name)
+}
+
+fn data_path(local: Option<std::ffi::OsString>, temp: PathBuf, name: &str) -> PathBuf {
     let root = match local {
         Some(value) if !value.is_empty() => PathBuf::from(value),
         _ => temp,
     };
-    root.join("aap-runner").join("github-setup.json")
+    root.join("aap-runner").join(name)
 }
 
 fn load_disk(path: &Path) -> Disk {
@@ -796,6 +801,9 @@ pub struct Store {
     queried: String,
     /// 404, rate limit, and unusable body, keyed by the trimmed input.
     remembered: HashMap<String, (FailKind, String, Option<SystemTime>)>,
+    /// From the identity page and the last Verify job; not persisted.
+    identity: Identity,
+    verify: Verify,
 }
 
 #[cfg(test)]
@@ -836,7 +844,25 @@ impl Store {
             pending: None,
             queried: String::new(),
             remembered: HashMap::new(),
+            identity: Identity::default(),
+            verify: Verify::default(),
         }
+    }
+
+    pub fn set_identity(&mut self, identity: Identity) {
+        self.identity = identity;
+    }
+
+    pub fn set_verify(&mut self, verify: Verify) {
+        self.verify = verify;
+    }
+
+    /// The resolved organization's login, for the identity page; `None` until one is resolved.
+    pub fn org(&self) -> Option<String> {
+        self.facts()
+            .account
+            .filter(|a| a.kind == Kind::Org)
+            .map(|a| a.login)
     }
 
     pub fn input(&self) -> &str {
@@ -1016,8 +1042,8 @@ impl Store {
             checking: self.checking,
             group: self.disk.group.clone(),
             manual: self.disk.manual(),
-            identity: Identity::default(),
-            verify: Verify::default(),
+            identity: self.identity,
+            verify: self.verify,
         }
     }
 
@@ -2158,13 +2184,14 @@ mod tests {
     fn empty_localappdata_uses_the_temp_dir() {
         let temp = std::path::PathBuf::from("T");
         let file = std::path::Path::new("aap-runner").join("github-setup.json");
-        assert_eq!(github_setup_path(None, temp.clone()), temp.join(&file));
+        let name = "github-setup.json";
+        assert_eq!(data_path(None, temp.clone(), name), temp.join(&file));
         assert_eq!(
-            github_setup_path(Some(std::ffi::OsString::new()), temp.clone()),
+            data_path(Some(std::ffi::OsString::new()), temp.clone(), name),
             temp.join(&file)
         );
         assert_eq!(
-            github_setup_path(Some("C:\\AppData\\Local".into()), temp),
+            data_path(Some("C:\\AppData\\Local".into()), temp, name),
             std::path::PathBuf::from("C:\\AppData\\Local").join(file)
         );
     }

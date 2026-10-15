@@ -4,7 +4,7 @@
 //! writes only under `inbox\` (`state.json`, `settings.json`, `tray.log`, `jobs\<id>.json`) plus
 //! its own history mirror, view request, and helper pointer in `%TEMP%`. The GitHub setup
 //! cache is `%LOCALAPPDATA%\aap-runner\github-setup.json`. Opens the logs folder and its own
-//! window (`--dashboard`, `--settings`, `--github`). `--helper`
+//! window (`--dashboard`, `--settings`, `--github`, `--identity`). `--helper`
 //! is the elevated mode: it writes `jobs\<id>\` and runs the embedded install scripts. GitHub setup
 //! calls the public API with no token. The window never starts `wsl.exe`.
 //!
@@ -16,6 +16,7 @@ mod helper;
 mod history;
 #[cfg(test)]
 mod ico;
+mod identity;
 mod mark;
 mod problem;
 mod settings;
@@ -289,6 +290,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let pause = MenuItem::new("Pause", true, None);
     let settings_item = MenuItem::new("Settings\u{2026}", true, None);
     let github_item = MenuItem::new("GitHub setup\u{2026}", true, None);
+    let identity_item = MenuItem::new("Identity\u{2026}", true, None);
     let verify_item = MenuItem::new("Verify install", true, None);
     let repair_item = MenuItem::new("Repair install", true, None);
     let logs = MenuItem::new("Open logs", true, None);
@@ -305,6 +307,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
         &pause,
         &settings_item,
         &github_item,
+        &identity_item,
         &verify_item,
         &repair_item,
         &PredefinedMenuItem::separator(),
@@ -391,6 +394,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 track_window(&mut window, show_window(base, Some(View::Settings), None));
             } else if id == github_item.id() {
                 track_window(&mut window, show_window(base, Some(View::Github), None));
+            } else if id == identity_item.id() {
+                track_window(&mut window, show_window(base, Some(View::Identity), None));
             } else if id == verify_item.id() {
                 if let Err(e) = helper::launch(base, helper::Verb::Verify) {
                     state::log(base, &e);

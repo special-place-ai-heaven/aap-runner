@@ -22,6 +22,10 @@ use windows::Win32::System::Registry::{
     RegGetValueW,
 };
 use windows::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime};
+use windows::Win32::UI::Controls::Dialogs::{
+    GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_NODEREFERENCELINKS,
+    OFN_PATHMUSTEXIST, OPENFILENAMEW,
+};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetThreadDpiAwarenessContext,
 };
@@ -290,6 +294,44 @@ pub fn apply_dark_menus(api: Option<DarkMenus>, window: Option<isize>, dark: boo
 }
 
 /// 16 lowercase hex digits from the system RNG.
+/// The classic Open dialog, filtered to `*.pem`, owned by `owner` (an HWND) and started in
+/// `initial_dir`. `None` when the user cancelled or the dialog failed. Shortcuts are not resolved.
+pub fn pick_pem_file(
+    owner: Option<isize>,
+    initial_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    let filter: Vec<u16> = "PEM private key (*.pem)\0*.pem\0All files\0*.*\0\0"
+        .encode_utf16()
+        .collect();
+    let title = wide(std::ffi::OsStr::new("Pick the GitHub App private key"));
+    let dir = wide(initial_dir.as_os_str());
+    let mut file = vec![0u16; 1024];
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: HWND(owner.unwrap_or(0) as *mut std::ffi::c_void),
+        lpstrFilter: PCWSTR::from_raw(filter.as_ptr()),
+        nFilterIndex: 1,
+        lpstrFile: PWSTR::from_raw(file.as_mut_ptr()),
+        nMaxFile: file.len() as u32,
+        lpstrInitialDir: PCWSTR::from_raw(dir.as_ptr()),
+        lpstrTitle: PCWSTR::from_raw(title.as_ptr()),
+        Flags: OFN_FILEMUSTEXIST
+            | OFN_PATHMUSTEXIST
+            | OFN_NOCHANGEDIR
+            | OFN_NODEREFERENCELINKS
+            | OFN_HIDEREADONLY,
+        ..Default::default()
+    };
+    // SAFETY: every pointer in `ofn` targets a buffer that lives for the call; `file` is the
+    // out-buffer and `nMaxFile` is its length in UTF-16 units.
+    let ok = unsafe { GetOpenFileNameW(&mut ofn) }.as_bool();
+    if !ok {
+        return None;
+    }
+    let len = file.iter().position(|c| *c == 0).unwrap_or(0);
+    (len > 0).then(|| std::path::PathBuf::from(String::from_utf16_lossy(&file[..len])))
+}
+
 pub fn random_id() -> std::io::Result<String> {
     let mut bytes = [0u8; 8];
     // SAFETY: `bytes` is a live 8-byte buffer. `None` selects the process-wide RNG.
