@@ -99,19 +99,17 @@ addendum of the design doc.
 
 ## GitHub setup
 
-The menu item and `--github` swap the right column for a checklist. The left column stays the settings column. The input is an org slug or `owner/repo` (a `https://github.com/` prefix is stripped). The tray calls the public API (`GET /users/<owner>`, and `GET /repos/<owner>/<repo>` when a repo was given) with no token. The answer is cached in `%LOCALAPPDATA%\aap-runner\github-setup.json` (schema 1: the text, the group name, the manual ticks, and the resolved account). `history.json` stays in `%TEMP%`.
+The menu item and `--github` swap the right column for a checklist. The left column stays the settings column. The input is an org slug or `owner/repo` (a `https://github.com/` prefix is stripped). The tray calls the public API (`GET /users/<owner>`, and `GET /repos/<owner>/<repo>` when a repo was given) with no token. The answer is cached in `%LOCALAPPDATA%\aap-runner\github-setup.json` (schema 1: the text, the group name, the manual ticks, and the resolved account). If `LOCALAPPDATA` is missing or empty, that file is placed under the temp directory instead. `history.json` stays in `%TEMP%`.
 
-The lookup runs when Enter is pressed or the field loses focus, not on each keystroke. A 404 and a rate-limit response are not retried on their own. A network error is retried after 5 s, then 10, 20, and 40. Done ticks stay until a lookup resolves to a different account than the saved one.
+The lookup runs when Enter is pressed or the field loses focus, not on each keystroke. A submit while a lookup is running is kept and runs when that lookup finishes; only the latest of those submits is looked up. A 404, a rate limit, and a body that is too large or not UTF-8 are remembered for that text, so submitting it again does not call GitHub. A network error is retried after 5 s, then 10, 20, and 40, and only for the text that failed. Done ticks stay until a lookup resolves to a different account than the saved one. Checking, and a failed lookup, replace a saved account on the checklist, so a previous success does not keep Next enabled.
 
-Rows are `checking`, met, unmet, or blocked. A row the app cannot see yet has a Done box. `rows` checks that row itself once an App id, installation id, or key file is supplied; this page passes those empty until the identity page (M3). The runner-group row always says to tick Allow public repositories. The create-app link passes that row's permissions as URL parameters (`public=false`, webhook off, self-hosted runners write, actions read). A user account has no runner groups. Fork policy is a manual tick for a user too, and the link opens that repository's Settings > Actions page. A private repository still resolves the owner and does not block the later rows; the repository is marked unverifiable. Next stays disabled until every row is met, then the page returns to the runners after 2 s.
+Rows are `checking`, met, unmet, or blocked. A row the app cannot see yet has a Done box. `rows` checks that row itself once an App id, installation id, or key file is supplied; this page passes those empty until the identity page (M3). The runner-group row always says to tick Allow public repositories. The create-app link passes that row's permissions as URL parameters (`public=false`, webhook off, self-hosted runners write, actions read). A user account is unmet (`Only organizations are supported; <login> is a user account.`) and the later rows stay blocked. A private repository still resolves the owner and does not block the later rows; the repository is marked unverifiable. Next stays disabled until every row is met, then the page returns to the runners after 2 s.
 
 The workflow box is:
 
 ```
 runs-on: {group: aap-crrr, labels: [self-hosted, linux]}
 ```
-
-For a user account the box is `runs-on: [self-hosted, linux]`.
 
 ## Elevated helper
 

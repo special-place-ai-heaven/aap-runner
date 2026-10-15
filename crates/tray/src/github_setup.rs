@@ -2,11 +2,13 @@
 //! read, sent, or stored. A row the app cannot see yet stays a manual tick until
 //! a later input (the identity page) makes it checkable.
 //!
-//! ponytail: fork policy has no API check, so an organization and a user both tick that row.
+//! ponytail: fork policy has no API check, so an organization ticks that row by hand.
+//! A user account stops the checklist; the manager only registers organization runners.
 //! M3 passes Identity and Verify into `rows`; this page leaves both empty.
 
 use crate::state;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -351,14 +353,14 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
     } else {
         blocked(RowId::Key, "Private key")
     };
-    let group = group_row(facts, key.phase == Phase::Met, kind, linked.as_ref());
-    let fork = fork_row(facts, group.phase == Phase::Met, kind, linked.as_ref());
+    let group = group_row(facts, key.phase == Phase::Met, linked.as_ref());
+    let fork = fork_row(facts, group.phase == Phase::Met, linked.as_ref());
     let flow = workflow_row(facts, fork.phase == Phase::Met, kind);
     vec![account, create, install, key, group, fork, flow]
 }
 
 fn account_row(facts: &Facts) -> Row {
-    if facts.checking && facts.account.is_none() {
+    if facts.checking {
         return row(
             RowId::Account,
             "Account",
@@ -370,13 +372,23 @@ fn account_row(facts: &Facts) -> Row {
         );
     }
     if let Some(account) = &facts.account {
+        if account.kind == Kind::User {
+            return row(
+                RowId::Account,
+                "Account",
+                Phase::Unmet,
+                false,
+                format!(
+                    "Only organizations are supported; {} is a user account.",
+                    account.login
+                ),
+                "",
+                None,
+            );
+        }
         let where_ = match &account.repo {
             Some(repo) => format!("{}/{}", account.login, repo),
             None => account.login.clone(),
-        };
-        let kind = match account.kind {
-            Kind::Org => "an organization",
-            Kind::User => "a user",
         };
         let unverified = if account.repo_verified {
             ""
@@ -389,7 +401,7 @@ fn account_row(facts: &Facts) -> Row {
             Phase::Met,
             false,
             "",
-            format!("{where_} is {kind}.{unverified}"),
+            format!("{where_} is an organization.{unverified}"),
             None,
         );
     }
@@ -407,20 +419,9 @@ fn account_row(facts: &Facts) -> Row {
     )
 }
 
-fn group_row(facts: &Facts, prev: bool, kind: Option<Kind>, links: Option<&Links>) -> Row {
+fn group_row(facts: &Facts, prev: bool, links: Option<&Links>) -> Row {
     if !prev {
         return blocked(RowId::Group, "Runner group");
-    }
-    if kind == Some(Kind::User) {
-        return row(
-            RowId::Group,
-            "Runner group",
-            Phase::Met,
-            false,
-            "",
-            "Runner groups do not exist on a personal account. Runners register per repository.",
-            None,
-        );
     }
     let link = links.and_then(|l| l.runner_groups.clone());
     let action = format!(
@@ -482,26 +483,12 @@ fn group_row(facts: &Facts, prev: bool, kind: Option<Kind>, links: Option<&Links
     r
 }
 
-fn fork_row(facts: &Facts, prev: bool, kind: Option<Kind>, links: Option<&Links>) -> Row {
+fn fork_row(facts: &Facts, prev: bool, links: Option<&Links>) -> Row {
     if !prev {
         return blocked(RowId::Fork, "Fork policy");
     }
-    let (action, link) = if kind == Some(Kind::User) {
-        let link = facts.account.as_ref().and_then(|a| {
-            a.repo
-                .as_ref()
-                .map(|repo| format!("https://github.com/{}/{repo}/settings/actions", a.login))
-        });
-        (
-            "Require approval for outside collaborators. On a personal repository that setting is under Settings > Actions.",
-            link,
-        )
-    } else {
-        (
-            "Require approval for all outside collaborators.",
-            links.map(|l| l.actions.clone()),
-        )
-    };
+    let action = "Require approval for all outside collaborators.";
+    let link = links.map(|l| l.actions.clone());
     if facts.manual.fork_policy {
         row(
             RowId::Fork,
@@ -553,7 +540,16 @@ enum FailKind {
     NotFound,
     RateLimit,
     Network,
+    /// Response body could not be used. Final: not retried like a dropped connection.
+    Body,
     Other,
+}
+
+fn remembers(kind: FailKind) -> bool {
+    matches!(
+        kind,
+        FailKind::NotFound | FailKind::RateLimit | FailKind::Body
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -742,9 +738,14 @@ impl Disk {
 }
 
 pub fn path() -> PathBuf {
-    let root = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    github_setup_path(std::env::var_os("LOCALAPPDATA"), std::env::temp_dir())
+}
+
+fn github_setup_path(local: Option<std::ffi::OsString>, temp: PathBuf) -> PathBuf {
+    let root = match local {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => temp,
+    };
     root.join("aap-runner").join("github-setup.json")
 }
 
@@ -783,6 +784,12 @@ pub struct Store {
     next_retry: Option<Instant>,
     slot: Arc<Mutex<Slot>>,
     ticket: u64,
+    /// Latest submit while a lookup is already running.
+    pending: Option<String>,
+    /// Text the in-flight lookup was started with. Empty when a result is injected.
+    queried: String,
+    /// 404, rate limit, and unusable body, keyed by the trimmed input.
+    remembered: HashMap<String, (FailKind, String)>,
 }
 
 #[cfg(test)]
@@ -820,6 +827,9 @@ impl Store {
                 done: None,
             })),
             ticket: 0,
+            pending: None,
+            queried: String::new(),
+            remembered: HashMap::new(),
         }
     }
 
@@ -839,11 +849,22 @@ impl Store {
     }
 
     /// Look up when the field is submitted or loses focus. Typing only stores the text.
+    /// A submit during a lookup is kept and run when that lookup finishes.
     pub fn commit(&mut self) {
         if self.checking {
+            self.pending = Some(self.disk.input.clone());
+            // The in-flight response is stale. pump drops it because the ticket no longer matches.
+            self.ticket = self.ticket.wrapping_add(1);
             return;
         }
-        let Ok(parsed) = parse_target(&self.disk.input) else {
+        let input = self.disk.input.clone();
+        self.lookup_input(&input);
+    }
+
+    fn lookup_input(&mut self, input: &str) {
+        self.net_tries = 0;
+        self.next_retry = None;
+        let Ok(parsed) = parse_target(input) else {
             return;
         };
         if self
@@ -852,12 +873,21 @@ impl Store {
             .as_ref()
             .is_some_and(|account| same_target(&parsed, account))
         {
+            self.note = None;
+            self.fail = None;
+            self.failed_input = None;
             return;
         }
+        if let Some((kind, message)) = self.remembered.get(input.trim()).cloned() {
+            self.note = Some(message);
+            self.fail = Some(kind);
+            self.failed_input = None;
+            return;
+        }
+        self.note = None;
         self.fail = None;
         self.failed_input = None;
-        self.net_tries = 0;
-        self.next_retry = None;
+        self.queried = input.to_string();
         self.checking = true;
         self.spawn(parsed);
     }
@@ -886,7 +916,7 @@ impl Store {
         save_disk(&self.path, &self.disk);
     }
 
-    /// Retry a network error for the same text, after [`backoff`]. A 404 or a rate limit stays put.
+    /// Retry a network error for the same text, after [`backoff`]. A 404, a rate limit, or an unusable body stays put.
     pub fn retry(&mut self) {
         if self.checking || self.fail != Some(FailKind::Network) {
             return;
@@ -908,6 +938,7 @@ impl Store {
         {
             return;
         }
+        self.queried = self.disk.input.clone();
         self.checking = true;
         self.spawn(parsed);
     }
@@ -924,6 +955,7 @@ impl Store {
             return;
         };
         if ticket != self.ticket {
+            self.finish_flight(None);
             return;
         }
         self.take_result(result);
@@ -934,17 +966,39 @@ impl Store {
     }
 
     fn facts(&self) -> Facts {
-        let error = if self.disk.account.is_none() && !self.checking {
-            match parse_target(&self.disk.input) {
-                Err(text) => Some(text.to_string()),
-                Ok(_) if self.note.is_some() => self.note.clone(),
-                Ok(_) => Some("Press Enter, or leave the field, to look this up.".into()),
-            }
+        let key = self.disk.input.trim().to_string();
+        let matched = parse_target(&self.disk.input).ok().is_some_and(|parsed| {
+            self.disk
+                .account
+                .as_ref()
+                .is_some_and(|account| same_target(&parsed, account))
+        });
+        let cached = self
+            .remembered
+            .get(&key)
+            .map(|(_, message)| message.clone());
+        let show_saved = matched && !self.checking && cached.is_none();
+        let account = if show_saved {
+            self.disk.account.clone()
         } else {
             None
         };
+        let error = if self.checking || show_saved {
+            None
+        } else if let Some(message) = cached {
+            Some(message)
+        } else if self.fail == Some(FailKind::Network)
+            && self.failed_input.as_deref() == Some(self.disk.input.as_str())
+        {
+            self.note.clone()
+        } else {
+            match parse_target(&self.disk.input) {
+                Err(text) => Some(text.to_string()),
+                Ok(_) => Some("Press Enter, or leave the field, to look this up.".into()),
+            }
+        };
         Facts {
-            account: self.disk.account.clone(),
+            account,
             error,
             checking: self.checking,
             group: self.disk.group.clone(),
@@ -955,7 +1009,25 @@ impl Store {
     }
 
     fn take_result(&mut self, result: Result<Account, LookupError>) {
+        let flight = self.slot.lock().unwrap_or_else(|e| e.into_inner()).ticket;
+        if flight != self.ticket {
+            self.finish_flight(None);
+            return;
+        }
+        self.finish_flight(Some(result));
+    }
+
+    fn finish_flight(&mut self, result: Option<Result<Account, LookupError>>) {
         self.checking = false;
+        if let Some(result) = result {
+            self.apply(result);
+        }
+        if let Some(input) = self.pending.take() {
+            self.lookup_input(&input);
+        }
+    }
+
+    fn apply(&mut self, result: Result<Account, LookupError>) {
         match result {
             Ok(account) => {
                 if self
@@ -975,18 +1047,30 @@ impl Store {
                 self.failed_input = None;
                 self.net_tries = 0;
                 self.next_retry = None;
+                if !self.queried.is_empty() {
+                    self.remembered.remove(self.queried.trim());
+                }
                 self.disk.account = Some(account);
             }
             Err(err) => {
-                self.note = Some(err.message);
+                let failed = if self.queried.is_empty() {
+                    self.disk.input.clone()
+                } else {
+                    self.queried.clone()
+                };
+                self.note = Some(err.message.clone());
                 self.fail = Some(err.kind);
                 if err.kind == FailKind::Network {
-                    self.failed_input = Some(self.disk.input.clone());
+                    self.failed_input = Some(failed);
                     self.net_tries = self.net_tries.saturating_add(1);
                     self.next_retry = Some(Instant::now() + backoff(self.net_tries));
                 } else {
                     self.failed_input = None;
                     self.next_retry = None;
+                    if remembers(err.kind) {
+                        self.remembered
+                            .insert(failed.trim().to_string(), (err.kind, err.message));
+                    }
                 }
             }
         }
@@ -994,17 +1078,17 @@ impl Store {
     }
 
     fn spawn(&mut self, parsed: Parsed) {
-        #[cfg(test)]
-        if HOLD_SPAWN.with(|flag| flag.get()) {
-            SPAWNS.with(|n| n.set(n.get() + 1));
-            return;
-        }
         self.ticket = self.ticket.wrapping_add(1);
         let ticket = self.ticket;
         {
             let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
             slot.ticket = ticket;
             slot.done = None;
+        }
+        #[cfg(test)]
+        if HOLD_SPAWN.with(|flag| flag.get()) {
+            SPAWNS.with(|n| n.set(n.get() + 1));
+            return;
         }
         let slot = Arc::clone(&self.slot);
         thread::spawn(move || {
@@ -1059,6 +1143,14 @@ struct Http {
     body: String,
 }
 
+fn transport_error(message: String) -> LookupError {
+    if message == "GitHub response is too large" || message == "GitHub response was not UTF-8" {
+        LookupError::new(FailKind::Body, message)
+    } else {
+        LookupError::new(FailKind::Network, message)
+    }
+}
+
 fn http_get(path: &str) -> Result<Http, LookupError> {
     if !github_path_ok(path) {
         return Err(LookupError::new(
@@ -1066,7 +1158,7 @@ fn http_get(path: &str) -> Result<Http, LookupError> {
             "refusing the request path",
         ));
     }
-    unsafe { winhttp_get(path) }.map_err(|message| LookupError::new(FailKind::Network, message))
+    unsafe { winhttp_get(path) }.map_err(transport_error)
 }
 
 fn github_path_ok(path: &str) -> bool {
@@ -1322,7 +1414,7 @@ mod tests {
         assert_eq!(limited.kind, FailKind::RateLimit);
         let private = account_from(
             200,
-            r#"{"login":"octocat","type":"User","public_repos":1}"#,
+            r#"{"login":"acme","type":"Organization","public_repos":1}"#,
             Some((404, r#"{"message":"Not Found"}"#, "secret")),
         )
         .unwrap();
@@ -1332,8 +1424,6 @@ mod tests {
             Some(private),
             Manual {
                 create_app: true,
-                install: true,
-                private_key: true,
                 ..Manual::default()
             },
         ));
@@ -1347,61 +1437,62 @@ mod tests {
                 .action
                 .contains("could not be verified")
         );
-        assert_eq!(
-            listed
-                .iter()
-                .find(|r| r.id == RowId::Fork)
-                .unwrap()
-                .link
-                .as_deref(),
-            Some("https://github.com/octocat/secret/settings/actions")
-        );
     }
 
     #[test]
-    fn a_user_owner_skips_groups_and_an_org_with_public_repos_says_so() {
+    fn a_user_account_stops_the_checklist_and_an_org_group_stays_manual() {
+        let ticked = Manual {
+            create_app: true,
+            install: true,
+            private_key: true,
+            runner_group: true,
+            fork_policy: true,
+        };
+        let list = rows(&facts(Some(user()), ticked));
+        let account = list.iter().find(|r| r.id == RowId::Account).unwrap();
+        assert_eq!(account.phase, Phase::Unmet);
+        assert_eq!(
+            account.missing,
+            "Only organizations are supported; octocat is a user account."
+        );
+        assert!(account.action.is_empty());
+        assert!(
+            list.iter()
+                .filter(|r| r.id != RowId::Account)
+                .all(|r| r.phase == Phase::Blocked)
+        );
+        assert!(list.iter().all(|r| !r.action.contains("do not exist")));
+        assert!(
+            list.iter()
+                .all(|r| !r.action.contains("Settings > Actions"))
+        );
+        assert!(list.iter().all(|r| {
+            r.link.as_deref() != Some("https://github.com/octocat/hello/settings/actions")
+        }));
+        assert!(!list.iter().all(|r| r.phase == Phase::Met));
+        let mut bare = user();
+        bare.repo = None;
+        let bare_rows = rows(&facts(Some(bare), ticked));
+        assert_eq!(
+            bare_rows
+                .iter()
+                .find(|r| r.id == RowId::Account)
+                .unwrap()
+                .missing,
+            "Only organizations are supported; octocat is a user account."
+        );
+        assert!(
+            bare_rows
+                .iter()
+                .filter(|r| r.id != RowId::Account)
+                .all(|r| r.phase == Phase::Blocked)
+        );
         let manual = Manual {
             create_app: true,
             install: true,
             private_key: true,
             ..Manual::default()
         };
-        let list = rows(&facts(Some(user()), manual));
-        assert_eq!(phase(&list, RowId::Group), Phase::Met);
-        assert!(
-            list.iter()
-                .find(|r| r.id == RowId::Group)
-                .unwrap()
-                .action
-                .contains("do not exist")
-        );
-        let fork = list.iter().find(|r| r.id == RowId::Fork).unwrap();
-        assert_eq!(fork.phase, Phase::Unmet);
-        assert!(fork.manual);
-        assert_eq!(
-            fork.link.as_deref(),
-            Some("https://github.com/octocat/hello/settings/actions")
-        );
-        assert!(fork.action.contains("Settings > Actions"));
-        let mut bare = user();
-        bare.repo = None;
-        let bare_rows = rows(&facts(Some(bare), manual));
-        let bare_fork = bare_rows.iter().find(|r| r.id == RowId::Fork).unwrap();
-        assert!(bare_fork.manual);
-        assert!(bare_fork.link.is_none());
-        assert_eq!(bare_fork.phase, Phase::Unmet);
-        let mut ticked = manual;
-        ticked.fork_policy = true;
-        let done = rows(&facts(Some(user()), ticked));
-        assert_eq!(phase(&done, RowId::Fork), Phase::Met);
-        assert_eq!(
-            done.iter()
-                .find(|r| r.id == RowId::Workflow)
-                .unwrap()
-                .copy
-                .as_deref(),
-            Some("runs-on: [self-hosted, linux]")
-        );
         let org_rows = rows(&facts(Some(org(3)), manual));
         let group = org_rows.iter().find(|r| r.id == RowId::Group).unwrap();
         assert_eq!(group.phase, Phase::Unmet);
@@ -1597,7 +1688,11 @@ mod tests {
         assert_eq!(store.fail, Some(FailKind::Network));
         store.retry();
         assert_eq!(super::spawns(), 0, "backoff has not elapsed");
+        store.set_input("elsewhere".into());
         store.next_retry = Some(Instant::now() - Duration::from_secs(1));
+        store.retry();
+        assert_eq!(super::spawns(), 0, "backoff stays on the input that failed");
+        store.set_input("other".into());
         store.retry();
         assert_eq!(super::spawns(), 1);
         store.checking = false;
@@ -1626,5 +1721,200 @@ mod tests {
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
             assert!(path.starts_with(local));
         }
+    }
+
+    #[test]
+    fn a_failed_submit_hides_the_saved_account_until_this_input_succeeds() {
+        let _hold = hold();
+        let path = state::temp_base("gh-fail").join("github-setup.json");
+        let mut store = Store::load(path.clone());
+        store.disk.account = Some(org(1));
+        store.disk.input = "acme".into();
+        store.disk.create_app = true;
+        store.disk.install = true;
+        store.disk.private_key = true;
+        store.disk.runner_group = true;
+        store.disk.fork_policy = true;
+        assert!(store.rows().iter().all(|r| r.phase == Phase::Met));
+        store.set_input("missing".into());
+        assert!(
+            !store.rows().iter().all(|r| r.phase == Phase::Met),
+            "a different field is not the saved success"
+        );
+        store.commit();
+        assert_eq!(super::spawns(), 1);
+        assert_eq!(
+            store
+                .rows()
+                .iter()
+                .find(|r| r.id == RowId::Account)
+                .unwrap()
+                .phase,
+            Phase::Checking
+        );
+        assert!(store.disk.create_app);
+        store.take_result(Err(LookupError::new(
+            FailKind::NotFound,
+            "That account was not found.",
+        )));
+        let account = store
+            .rows()
+            .into_iter()
+            .find(|r| r.id == RowId::Account)
+            .unwrap();
+        assert_eq!(account.phase, Phase::Unmet);
+        assert_eq!(account.missing, "That account was not found.");
+        assert!(store.rows().iter().any(|r| r.phase == Phase::Blocked));
+        assert!(!store.rows().iter().all(|r| r.phase == Phase::Met));
+        assert!(store.disk.create_app);
+        assert!(store.disk.fork_policy);
+        let spawned = super::spawns();
+        store.commit();
+        assert_eq!(super::spawns(), spawned);
+        store.set_input("acme".into());
+        store.commit();
+        assert_eq!(super::spawns(), spawned);
+        assert!(store.rows().iter().all(|r| r.phase == Phase::Met));
+        assert!(store.disk.create_app);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_submit_during_a_lookup_runs_when_that_lookup_finishes() {
+        let _hold = hold();
+        let path = state::temp_base("gh-pending").join("github-setup.json");
+        let mut store = Store::load(path.clone());
+        store.disk.account = Some(org(1));
+        store.disk.input = "acme".into();
+        store.disk.create_app = true;
+        store.set_input("other".into());
+        store.commit();
+        assert_eq!(super::spawns(), 1);
+        store.set_input("third".into());
+        store.commit();
+        store.set_input("fourth".into());
+        store.commit();
+        assert_eq!(super::spawns(), 1);
+        let mut other = org(0);
+        other.login = "other".into();
+        store.take_result(Ok(other));
+        assert_eq!(super::spawns(), 2);
+        assert!(store.disk.create_app);
+        assert_eq!(store.disk.account.as_ref().unwrap().login, "acme");
+        assert!(store.checking);
+        let mut fourth = org(0);
+        fourth.login = "fourth".into();
+        store.take_result(Ok(fourth));
+        assert_eq!(store.disk.account.as_ref().unwrap().login, "fourth");
+        assert!(!store.disk.create_app);
+        assert_eq!(super::spawns(), 2);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_resolved_user_stops_before_create_app() {
+        let _hold = hold();
+        let path = state::temp_base("gh-user").join("github-setup.json");
+        let mut store = Store::load(path.clone());
+        store.disk.create_app = true;
+        store.disk.fork_policy = true;
+        store.set_input("octocat/hello".into());
+        store.commit();
+        store.take_result(Ok(user()));
+        let rows = store.rows();
+        let account = rows.iter().find(|r| r.id == RowId::Account).unwrap();
+        assert_eq!(account.phase, Phase::Unmet);
+        assert_eq!(
+            account.missing,
+            "Only organizations are supported; octocat is a user account."
+        );
+        assert!(
+            rows.iter()
+                .filter(|r| r.id != RowId::Account)
+                .all(|r| r.phase == Phase::Blocked)
+        );
+        assert!(store.disk.create_app);
+        assert!(!rows.iter().any(|r| r.action.contains("do not exist")));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_final_failure_is_remembered_per_input_and_a_bad_body_is_not_retried() {
+        let _hold = hold();
+        let path = state::temp_base("gh-memory").join("github-setup.json");
+        let mut store = Store::load(path.clone());
+        store.set_input("missing".into());
+        store.commit();
+        assert_eq!(super::spawns(), 1);
+        store.take_result(Err(LookupError::new(
+            FailKind::NotFound,
+            "That account was not found.",
+        )));
+        store.commit();
+        assert_eq!(super::spawns(), 1, "the same 404 text is not queried again");
+        store.set_input("limited".into());
+        store.commit();
+        assert_eq!(super::spawns(), 2);
+        store.take_result(Err(LookupError::new(
+            FailKind::RateLimit,
+            "GitHub rate limit. Try again later.",
+        )));
+        store.commit();
+        assert_eq!(
+            super::spawns(),
+            2,
+            "the same rate-limit text is not queried again"
+        );
+        store.set_input("missing".into());
+        store.commit();
+        assert_eq!(super::spawns(), 2, "the earlier 404 is still remembered");
+        assert_eq!(
+            store
+                .rows()
+                .iter()
+                .find(|r| r.id == RowId::Account)
+                .unwrap()
+                .missing,
+            "That account was not found."
+        );
+        store.set_input("huge".into());
+        store.commit();
+        assert_eq!(super::spawns(), 3);
+        store.take_result(Err(transport_error("GitHub response is too large".into())));
+        assert_eq!(store.fail, Some(FailKind::Body));
+        store.retry();
+        store.commit();
+        assert_eq!(
+            super::spawns(),
+            3,
+            "an unusable body is not retried or re-queried"
+        );
+        store.set_input("odd".into());
+        store.commit();
+        let spawned = super::spawns();
+        store.take_result(Err(transport_error("GitHub response was not UTF-8".into())));
+        store.retry();
+        store.commit();
+        assert_eq!(super::spawns(), spawned);
+        assert_eq!(
+            transport_error("could not connect to api.github.com".into()).kind,
+            FailKind::Network
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn empty_localappdata_uses_the_temp_dir() {
+        let temp = std::path::PathBuf::from("T");
+        let file = std::path::Path::new("aap-runner").join("github-setup.json");
+        assert_eq!(github_setup_path(None, temp.clone()), temp.join(&file));
+        assert_eq!(
+            github_setup_path(Some(std::ffi::OsString::new()), temp.clone()),
+            temp.join(&file)
+        );
+        assert_eq!(
+            github_setup_path(Some("C:\\AppData\\Local".into()), temp),
+            std::path::PathBuf::from("C:\\AppData\\Local").join(file)
+        );
     }
 }
