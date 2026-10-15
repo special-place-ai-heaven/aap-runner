@@ -96,7 +96,7 @@ Start-ScheduledTask AAP-CRRR-Supervisor
 ```
 
 If the tray exe exists (`-TrayExe`, default
-`C:\TOOLS\git_runner\aap-runner-tray.exe`), the installer also adds the Run
+`%ProgramFiles%\aap-runner\aap-runner-tray.exe`), the installer also adds the Run
 value `AAP-Runner-Tray` for the installing user, so the tray starts at the
 next logon. It writes under `HKEY_USERS\<SID>` of that user, not the elevated
 session's HKCU; on Fresh both are the same account. A missing exe is skipped
