@@ -114,8 +114,11 @@ write_limits 0644 'AAP_JOB_CPUS='
 refused "has no value for AAP_JOB_CPUS"
 write_limits 0644 'AAP_JOB_CPUS'
 refused "has no value for AAP_JOB_CPUS"
-write_limits 0644 'AAP_RUNNER_COUNT=5'
-refused "AAP_RUNNER_COUNT=5 is not 1..4"
+write_limits 0644 'AAP_RUNNER_COUNT=5' 'AAP_JOB_CPUS=24' 'AAP_JOB_MEMORY=72g'
+out=$(check_limits) || fail "5 runners were refused: ${out}"
+[[ "${out}" == $'AAP_RUNNER_COUNT=5\nAAP_JOB_CPUS=24\nAAP_JOB_MEMORY=72g\nAAP_JOB_IO_PERCENT=90\nAAP_JOB_IO_MBPS=180\nAAP_POOL_SHARING=slice' ]] || fail "5 runner override: ${out}"
+write_limits 0644 'AAP_RUNNER_COUNT=6'
+refused "AAP_RUNNER_COUNT=6 is not 1..5"
 write_limits 0644 'AAP_JOB_MEMORY=12gb'
 refused "AAP_JOB_MEMORY=12gb"
 write_limits 0644 'AAP_JOB_IO_PERCENT=101'

@@ -183,4 +183,10 @@ if compgen -G "${RUN_DIR}/status.json.tmp.*" >/dev/null; then
 fi
 echo "atomic write ok"
 
+AAP_RUNNER_COUNT=5
+write_status
+[[ "$(field 'slots | length')" == 5 ]] || fail "5 runners did not publish 5 slots: $(cat "${RUN_DIR}/status.json")"
+[[ "$(jq -c '[.slots[].slot]' "${RUN_DIR}/status.json")" == '[1,2,3,4,5]' ]] || fail "slots are not 1..5: $(cat "${RUN_DIR}/status.json")"
+echo "five slots ok"
+
 echo "manager status tests ok"

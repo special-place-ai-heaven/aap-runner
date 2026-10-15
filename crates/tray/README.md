@@ -13,7 +13,7 @@ admin-written.
 | File | Writer | Content |
 |---|---|---|
 | `inbox\state.json` | tray (atomic: `.tmp` then rename) | `{"desired":"on"}` or `{"desired":"off"}` |
-| `inbox\settings.json` | tray (atomic) | `{"runner_count":1..3,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` |
+| `inbox\settings.json` | tray (atomic) | `{"runner_count":1..5,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` |
 | `inbox\tray.log` | tray, appended if `inbox\` exists | one line per failed write/spawn |
 | `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`. The elevated helper reads it. |
 | `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code` |
@@ -26,16 +26,16 @@ admin-written.
   3 minutes: `Unknown (supervisor not running)`.
 - `settings.json` missing, unparseable, out of range, or with fewer than 1 CPU / 1 GiB per runner:
   defaults `1 runner x 26 CPUs x 72 GiB / not paused`.
-- 1 to 3 runners. `job_cpus` and `job_memory_gib` are pool totals, not per job: the manager divides
-  them by `runner_count`. The window's main input is Runners. CPUs and memory per runner are derived:
-  `floor(cpu_cap / runners)` and `floor(mem_cap / runners)` (26 / 13 / 8 CPUs and 72 / 36 / 24 GiB for
-  1 / 2 / 3 runners on a 28 / 80 VM). It writes per-runner x runners (26/72, 26/72, 24/72), so the
-  totals always divide evenly.
+- 1 to 5 runners. `job_cpus` and `job_memory_gib` are the pool caps, not per job: the manager divides
+  them by `runner_count` and rounds down to a whole CPU and whole MiB. The window's main input is
+  Runners. Each runner's share of the caps is shown to one decimal (26 / 13 / 8.7 / 6.5 / 5.2 CPUs and
+  72 / 36 / 24 / 18 / 14.4 GiB for 1 / 2 / 3 / 4 / 5 runners on a 28 / 80 VM). 24 cores and 72 GiB over
+  5 runners is 4.8 cores and 14.4 GiB. The file stores the caps.
 - Host caps: the VM size comes from `[wsl2]` `processors=` / `memory=` in `%USERPROFILE%\.wslconfig`
   (`GB`/`G`/`MB`/`M`; missing file or key: 28 CPUs / 80 GiB, shown as "assumed"). Totals may use at
   most VM minus 2 CPUs and VM minus 8 GiB (26 / 72 on a 28 / 80 VM).
-- The tray never writes a file that breaks these rules: runners 1..3, totals in range, totals within
-  the caps, and totals divisible by `runner_count`. This also covers Pause/Resume, so a hand-edited
+- The tray never writes a file that breaks these rules: runners 1..5, totals in range, totals within
+  the caps, and at least 1 CPU and 1 GiB per runner. This also covers Pause/Resume, so a hand-edited
   file above the cap must be fixed in the window first.
 
 ## Menu
@@ -70,18 +70,18 @@ Left click on the icon opens the same window.
 
 One egui window in its own process (`current_exe()`), one at a time (file lock in `%TEMP%`). Quit kills that process; otherwise it exits when the tray lock is not held. No tabs:
 a fixed 260 px settings column on the left, a 1 px border, and the observability column on the right.
-Default 760 x 520, resizable, minimum 680 x 460, placed bottom-right in the work area. Left click on the
+Default 760 x 760, resizable, minimum 680 x 460, placed bottom-right in the work area. Left click on the
 tray icon opens it (or closes it when it is the active window). The layout is the "Single-view layout"
 addendum of the design doc.
 
 - **Left column:** `Power On/Off` (the desired state from `inbox\state.json`), `Start`/`Stop` and
   `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Then the edits: Runners
-  `1 | 2 | 3`, `Each 8 CPU 24 GiB` (derived), `Total 24/26 CPU · 72/72 GiB` against the caps, IO cap
+  `1 | 2 | 3 | 4 | 5`, `Each 8.7 CPU 24 GiB` (derived), `Total 26/26 CPU · 72/72 GiB` against the caps, IO cap
   0..100 % in steps of 5, Sharing `Slice | Fixed`. Each has a muted `now …` line from `status.json`
   (`now -` when nothing runs). While edits differ from `inbox\settings.json`: `N changes not applied`,
   a cap error inline, and Apply (disabled on an error; writes schema 2 atomically, as the old dialog's
   OK did) and Revert (reloads the file). Open logs is pinned at the bottom.
-- **Right column:** only observed values. A pinned header row (symbol, state, `N/3 busy`, `All OK` or
+- **Right column:** only observed values. A pinned header row (symbol, state, `N/M busy`, `All OK` or
   the `1 problem` button), pool bars, `IO … MiB/s` and `sampled N s ago`, one compact card per runner
   (state and elapsed; `title · repo` on one line with the full text in a tooltip and a copy button;
   CPU and Mem bars side by side), and the last 60 minutes. It scrolls at small sizes.

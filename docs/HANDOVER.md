@@ -28,7 +28,7 @@ before you change anything.
   service is a dead end (already decided, do not revisit).
 - `distro/`: bash. `bootstrap.sh` (3139 lines) builds the `aap-runner` WSL distro from a
   separate operator distro (`Ubuntu-24.04` with `jq` and `curl`). `manager.sh` runs the
-  runner pool (up to 3 Docker containers, cgroup slice limits, IO cap).
+  runner pool (up to 5 Docker containers, cgroup slice limits, IO cap).
 - `installer/`: `install-host.ps1 -WorkDiskGiB 100 [-KeyPath]` (admin shell, needs the
   operator distro), `install-supervisor.ps1`, VHDX helpers.
 - Identity (org, GitHub App id, installation id, labels) is hand-edited into
@@ -95,7 +95,7 @@ underneath only works because the owner ran the scripts by hand.
 
 ## Do not build
 
-Rust Windows service, named pipes, MSIX, daily summary emails, more than 3 runners,
+Rust Windows service, named pipes, MSIX, daily summary emails, more than 5 runners,
 fleet management, silent auto-update, autologon, a heavy/light runner distinction.
 
 ## Hard rules

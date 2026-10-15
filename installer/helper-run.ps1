@@ -148,7 +148,7 @@ function Get-AapVerifyReport {
         if ($null -ne $settings) { $count = $settings.runner_count }
         if ($null -eq $settings) {
             [void]$lines.Add('FAIL settings unreadable')
-        } elseif ($null -ne $count -and ($count -lt 1 -or $count -gt 3)) {
+        } elseif ($null -ne $count -and ($count -lt 1 -or $count -gt 5)) {
             [void]$lines.Add('FAIL settings runner_count')
         } else {
             [void]$lines.Add('PASS settings')

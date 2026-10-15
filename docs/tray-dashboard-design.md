@@ -159,7 +159,7 @@ Draining, 1 busy   Paused             Error
    - Rows 2-3 are pool bars: `Cores` and `Memory`. Each has a 56 px label, a 240 px track and right-aligned numbers.
    - The numbers are `14.2 / 24` and `41 / 72 GiB`. The caps are `job_cpus` and `job_memory_gib`.
    - Row 4 is muted text: `IO 88 / 200 MiB/s` on the left and `sampled 23 s ago` on the right.
-2. **Cards,** one per slot (1-3), 8 px apart.
+2. **Cards,** one per slot (1-5), 8 px apart.
    - **Row 1:** `Runner 1` (13 semibold), the 20 px symbol and label, and the elapsed time right-aligned (`12m 04s`, `1h 03m`).
    - **Row 2:** the job title as a link, up to two lines, then a 24 × 24 copy button.
    - **Row 3:** the repo short name, muted.
@@ -364,18 +364,18 @@ Last update 4 min ago.", its primary action is `Restart service`, and its log ar
 - Notifications beyond the existing error toast.
 - Re-run or cancel for GitHub jobs. Those need GitHub access, which the tray does not have.
 - An in-window log viewer beyond the 20-line tail. That is what Open logs is for.
-- Remembered position, resizing, more than 3 cards, or faked per-second usage.
+- Remembered position, resizing, more than 5 cards, or faked per-second usage.
 
 ## Single-view layout
 
 Owner change: no tabs, one window. It supersedes sections 3-4 where they conflict, and today's separate `--settings` dialog is retired.
 `--settings` and the menu's "Settings…" open this same window. Palette, type, spacing, symbols and motion are as above.
 
-- **Size.** Default 760 × 520, resizable, minimum 680 × 460, no maximum. Same bottom-right placement.
+- **Size.** Default 760 × 760, resizable, minimum 680 × 460, no maximum. Same bottom-right placement.
 - **Columns.** The left column is a fixed 260 px. A 1 px border separates it from the right column, which fills the rest (at least 396 px).
   At the minimum size the right column scrolls vertically (`ScrollArea`) under a pinned header row.
 - **Compact cards.** Three rows per card: symbol, state and elapsed; job title and repo on one line with an ellipsis and the full text in a tooltip; then the Cores and Memory bars side by side.
-  With 3 runners the whole view fits at 760 × 520 without scrolling.
+  With 5 runners the whole view fits at 760 × 760 without scrolling.
 
 **Left column, top to bottom:**
 1. **Power.** `Power  On`/`Off` is the desired state from `inbox\state.json`. The right column shows the actual state, so the two never repeat each other.
@@ -390,7 +390,7 @@ Owner change: no tabs, one window. It supersedes sections 3-4 where they conflic
    - Revert reloads the file.
 7. **Open logs,** pinned at the bottom.
 
-**Right column:** the header row (symbol, state, `N/3 busy`, `All OK` or `1 problem`), the pool bars, `IO … MiB/s` with `sampled N s ago`, the compact cards and the history strip.
+**Right column:** the header row (symbol, state, `N/M busy`, `All OK` or `1 problem`), the pool bars, `IO … MiB/s` with `sampled N s ago`, the compact cards and the history strip.
 The right column shows only observed values and has no inputs except links, copy buttons and the problem button.
 
 **Diagnostics: option (b).** The right column swaps to the error panel from section 5, with `< Back to runners` at its top.

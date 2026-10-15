@@ -22,7 +22,7 @@ Everything below was read on branch `cursor/runner-io-cap`. Nothing was modified
 
 1. The tray finds no install, meaning neither `inbox\` nor `config.json` exists. It opens the wizard, an egui window in its own process just like `--settings` today.
 2. **Checks, all without elevation:** WSL version (`wsl --version` and `wsl --status`), virtualization firmware flag, the `AllowDiskMount` policy, free space on C:, `.wslconfig` (reusing `VmLimit::from_wslconfig` and the `networkingMode` rule), and Windows edition.
-3. **Inputs:** org; App id; installation id; key file through the native Open dialog (`IFileOpenDialog`, filter `*.pem`); base and extra labels, checked with the same regex as `labels.sh`; runner count from 1 to 3; work-disk size, defaulting to 60 or 100 depending on detected RAM.
+3. **Inputs:** org; App id; installation id; key file through the native Open dialog (`IFileOpenDialog`, filter `*.pem`); base and extra labels, checked with the same regex as `labels.sh`; runner count from 1 to 5; work-disk size, defaulting to 60 or 100 depending on detected RAM.
 4. **Install:** one UAC prompt. The window then shows progress lines and keeps a "Show log" button.
 5. **Start:** the wizard writes `{"desired":"on"}` and shows Verify (see section 4).
 

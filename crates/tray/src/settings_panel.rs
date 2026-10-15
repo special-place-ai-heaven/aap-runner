@@ -1,8 +1,7 @@
 //! The window's left column (the separate `--settings` dialog until 0.5.0): Power, then the
 //! settings `inbox\settings.json` holds. Start/Stop and Pause/Resume act at once, as the menu
 //! does; Runners, IO cap and Sharing are edits that Apply writes. CPUs and memory per runner
-//! derive from the caps and the file stores per-runner x runners. Validation and the written
-//! file are unchanged.
+//! are the even share of the caps, shown to one decimal. The file stores the caps.
 
 use crate::dashboard::{Palette, button, primary_button, ring, semibold};
 use crate::mark::Sym;
@@ -219,7 +218,7 @@ impl SettingsPanel {
                 ui,
                 p,
                 &mut self.runners,
-                &[(1, "1"), (2, "2"), (3, "3")],
+                &[(1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")],
                 focus,
             );
         });
@@ -388,10 +387,14 @@ fn segmented<T: Copy + PartialEq>(
     .response
 }
 
-/// `8 CPU 24 GiB`: what each runner gets.
+/// `8.7 CPU 24 GiB`, `4.8 CPU 14.4 GiB`: each runner's even share of the caps.
 fn each_line(edit: &Settings) -> String {
-    let (cpus, gib) = edit.per_runner();
-    format!("{cpus} CPU {gib} GiB")
+    let n = edit.runner_count.max(1);
+    format!(
+        "{} CPU {} GiB",
+        settings::share_text(edit.job_cpus, n),
+        settings::share_text(edit.job_memory_gib, n)
+    )
 }
 
 /// `24/26 CPU · 72/72 GiB`: the totals against the caps.
@@ -435,13 +438,17 @@ fn now_runners(running: Option<Applied>) -> String {
         .map_or(NONE.into(), |n| format!("now {n}"))
 }
 
-/// `now 8 CPU 24 GiB`: the reported totals divided by the reported runner count.
+/// `now 4.8 CPU 14.4 GiB`: the reported totals divided by the reported runner count.
 fn now_each(running: Option<Applied>) -> String {
     let Some(a) = running else {
         return NONE.into();
     };
     match (a.job_cpus, a.job_memory_gib, a.runner_count) {
-        (Some(c), Some(g), Some(r)) if r > 0 => format!("now {} CPU {} GiB", c / r, g / r),
+        (Some(c), Some(g), Some(r)) if r > 0 => format!(
+            "now {} CPU {} GiB",
+            settings::share_text(c, r),
+            settings::share_text(g, r)
+        ),
         _ => NONE.into(),
     }
 }
@@ -485,7 +492,11 @@ mod tests {
         assert_eq!(now_each(a), "now 8 CPU 24 GiB");
         assert_eq!(
             now_each(Some(applied(Some(3), Some(25), Some(72)))),
-            "now 8 CPU 24 GiB"
+            "now 8.3 CPU 24 GiB"
+        );
+        assert_eq!(
+            now_each(Some(applied(Some(5), Some(24), Some(72)))),
+            "now 4.8 CPU 14.4 GiB"
         );
         assert_eq!(now_each(Some(applied(Some(0), Some(24), Some(72)))), NONE);
         assert_eq!(now_each(Some(applied(Some(2), None, Some(72)))), NONE);
@@ -517,7 +528,18 @@ mod tests {
         );
         assert_eq!(
             line(3),
-            ("8 CPU 24 GiB".into(), "24/26 CPU \u{b7} 72/72 GiB".into())
+            ("8.7 CPU 24 GiB".into(), "26/26 CPU \u{b7} 72/72 GiB".into())
+        );
+        assert_eq!(
+            line(4),
+            ("6.5 CPU 18 GiB".into(), "26/26 CPU \u{b7} 72/72 GiB".into())
+        );
+        assert_eq!(
+            line(5),
+            (
+                "5.2 CPU 14.4 GiB".into(),
+                "26/26 CPU \u{b7} 72/72 GiB".into()
+            )
         );
     }
 
