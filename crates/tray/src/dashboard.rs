@@ -262,7 +262,7 @@ pub fn elapsed(d: Duration) -> String {
 }
 
 /// `HH:MM` local for unix seconds and a UTC offset.
-fn clock(t: u64, offset: i64) -> String {
+pub(crate) fn clock(t: u64, offset: i64) -> String {
     let s = (t as i64 + offset).rem_euclid(86_400);
     format!("{:02}:{:02}", s / 3600, s % 3600 / 60)
 }
