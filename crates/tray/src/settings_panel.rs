@@ -113,15 +113,15 @@ impl SettingsPanel {
         }
     }
 
-    /// Draws the column. Open logs is pinned to the bottom.
-    pub fn show(
+    /// Top part of the left column: Power and the settings inputs.
+    /// Call `show_bottom` afterwards (with the pool block in between).
+    pub fn show_top(
         &mut self,
         ui: &mut egui::Ui,
         p: &Palette,
         base: &Path,
         snap: &Snapshot,
         desired: &mut Desired,
-        job: Option<&crate::helper::JobUi>,
     ) -> Focus {
         let mut focus = Focus {
             first: None,
@@ -134,6 +134,19 @@ impl SettingsPanel {
             ui.add_space(12.0);
             self.inputs(ui, p, base, snap, running, &mut focus);
         });
+        focus
+    }
+
+    /// Bottom part of the left column (pinned to the bottom via `bottom_up`):
+    /// Verify / Repair / Open logs. Call after `show_top` and any extra content.
+    pub fn show_bottom(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: &Palette,
+        base: &Path,
+        job: Option<&crate::helper::JobUi>,
+        focus: &mut Focus,
+    ) {
         // Last in Tab order, pinned to the bottom of what is left.
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             let r = ui.add_enabled(base.join("logs").is_dir(), egui::Button::new("Open logs"));
@@ -159,7 +172,6 @@ impl SettingsPanel {
                 crate::state::log(base, &e);
             }
         });
-        focus
     }
 
     fn power(

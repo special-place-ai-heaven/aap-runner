@@ -78,14 +78,18 @@ addendum of the design doc.
 - **Left column:** `Power On/Off` (the desired state from `inbox\state.json`), `Start`/`Stop` and
   `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Then the edits: Runners
   `1 | 2 | 3 | 4 | 5`, `Each 8.7 CPU 24 GiB` (derived), `Total 26/26 CPU · 72/72 GiB` against the caps, IO cap
-  0..100 % in steps of 5, Sharing `Slice | Fixed`. Each has a muted `now …` line from `status.json`
+  0..100 % in steps of 5, Sharing `Slice | Fixed`. Each has a muted `now ·` line from `status.json`
   (`now -` when nothing runs). While edits differ from `inbox\settings.json`: `N changes not applied`,
   a cap error inline, and Apply (disabled on an error; writes schema 2 atomically, as the old dialog's
-  OK did) and Revert (reloads the file). Open logs is pinned at the bottom.
+  OK did) and Revert (reloads the file). Below the settings: the pool bars (Cores, Memory, Disk with
+  free / size / floor, `IO · MiB/s`, `sampled N s ago`) with narrower tracks to fit the column width.
+  Verify install, Repair install, and Open logs are pinned at the bottom.
 - **Right column:** only observed values. A pinned header row (symbol, state, `N/M busy`, `All OK` or
-  the `1 problem` button), pool bars, a work-disk bar (free / size, floor), a cleaning note while cleanup runs, `IO … MiB/s` and `sampled N s ago`, one compact card per runner
-  (state and elapsed; `title · repo` on one line with the full text in a tooltip and a copy button;
-  CPU and Mem bars side by side), and the last 60 minutes. It scrolls at small sizes.
+  the `1 problem` button). Below the header: one status line for the current Verify/Repair job
+  (`Verb · state · step` with a `· Open log` CollapsingHeader when log lines exist).
+  Then one compact card per runner (state and elapsed; `title · repo` on one line with the full
+  text in a tooltip and a copy button; CPU and Mem bars side by side). Five cards fit the default
+  760 px window height without scrolling. The last 60 minutes follows below (scrolls at small sizes).
 - **Error panel:** replaces the right column's cards, with `< Back to runners` on top. It opens by itself
   when the state enters an error class; the `1 problem` button, an error symbol, `--dashboard --problem`
   and a left click in an error state reopen it. It holds the one-liner, raw detail and since, the class's
