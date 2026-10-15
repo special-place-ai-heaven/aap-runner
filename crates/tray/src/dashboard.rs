@@ -101,6 +101,21 @@ fn cards_to_draw(slot_count: usize) -> usize {
     slot_count.min(*crate::settings::RUNNERS.end() as usize)
 }
 
+/// Total height the right column needs for slots runner cards, the pinned
+/// header, the job status line, and vertical padding (worst case). Used by
+/// the layout test to prove five cards fit at SIZE[1] without scrolling.
+#[cfg(test)]
+fn right_column_height(slots: usize) -> f32 {
+    let n = cards_to_draw(slots);
+    PAD                                               // top inner margin
+    + HEADER_H + ITEM_SPACING                        // header row + auto spacing
+    + AFTER_HEADER                                   // add_space after header
+    + JOB_LINE_H                                     // worst-case job status line
+    + n as f32 * CARD_H                              // cards
+    + n.saturating_sub(1) as f32 * CARD_GAP          // gaps between cards
+    + PAD // bottom inner margin
+}
+
 /// Bottom-right inner size and outer position in a work area
 /// `[left, top, right, bottom]`. Height is at most `max[1]` and shrinks so
 /// the top stays inside the work area. Width shrinks only when it would
@@ -127,6 +142,37 @@ const SAMPLE_STALE: Duration = Duration::from_secs(150);
 const LABEL_W: f32 = 56.0;
 const BAR_H: f32 = 8.0;
 const LOG_ROWS: usize = 20;
+// --- Layout constants (draw-time) ---
+/// Symbol widget height inside a runner card (state row).
+const CARD_SYM_H: f32 = 20.0;
+/// Mini-bar / title row height inside a runner card.
+const CARD_BARS_H: f32 = 18.0;
+/// Frame vertical inner-margin (each side) on a runner card.
+const CARD_MARGIN_V: i8 = 10;
+/// Explicit add_space between adjacent cards.
+const CARD_GAP_SPACE: f32 = 8.0;
+/// Pinned header row height (symbol widget).
+const HEADER_H: f32 = 24.0;
+/// Space added below the header before the scroll content.
+const AFTER_HEADER: f32 = 8.0;
+
+// --- Layout constants (test-only) ---
+// These aggregate the draw-time constants; a change to card sizing that does
+// not update CARD_SYM_H / CARD_BARS_H / CARD_MARGIN_V will break five_cards_fit.
+#[cfg(test)]
+const ITEM_SPACING: f32 = 4.0;
+#[cfg(test)]
+const CARD_H: f32 = CARD_SYM_H
+    + ITEM_SPACING
+    + CARD_BARS_H
+    + ITEM_SPACING
+    + CARD_BARS_H
+    + 2.0 * CARD_MARGIN_V as f32
+    + 2.0;
+#[cfg(test)]
+const CARD_GAP: f32 = ITEM_SPACING + CARD_GAP_SPACE;
+#[cfg(test)]
+const JOB_LINE_H: f32 = ITEM_SPACING + CARD_BARS_H;
 const SCHTASKS: &str = r"C:\Windows\System32\schtasks.exe";
 const SUPERVISOR_TASK: &str = "AAP-CRRR-Supervisor";
 /// `CREATE_NO_WINDOW`: schtasks is a console program; never flash a console.
@@ -905,29 +951,33 @@ impl Dash {
         w: f32,
         name: String,
     ) {
-        ui.allocate_ui_with_layout(vec2(w, 18.0), Layout::left_to_right(Align::Center), |ui| {
-            ui.set_min_width(w);
-            fixed_label_w(ui, label, 32.0, 18.0);
-            let (text, over) = match used {
-                Some(u) => compact_numbers(u, share, cores),
-                None => ("no sample".into(), false),
-            };
-            let track_w = (ui.available_width() - 64.0).max(16.0);
-            let r = self.track(ui, id, used, share, over, track_w);
-            let spoken = text.replace('/', " of ");
-            a11y(
-                &r,
-                if over {
-                    format!("{name} {spoken} over share")
-                } else {
-                    format!("{name} {spoken}")
-                },
-            );
-            let color = self.number_color(used, over);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(text).color(color).small());
-            });
-        });
+        ui.allocate_ui_with_layout(
+            vec2(w, CARD_BARS_H),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.set_min_width(w);
+                fixed_label_w(ui, label, 32.0, 18.0);
+                let (text, over) = match used {
+                    Some(u) => compact_numbers(u, share, cores),
+                    None => ("no sample".into(), false),
+                };
+                let track_w = (ui.available_width() - 64.0).max(16.0);
+                let r = self.track(ui, id, used, share, over, track_w);
+                let spoken = text.replace('/', " of ");
+                a11y(
+                    &r,
+                    if over {
+                        format!("{name} {spoken} over share")
+                    } else {
+                        format!("{name} {spoken}")
+                    },
+                );
+                let color = self.number_color(used, over);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(text).color(color).small());
+                });
+            },
+        );
     }
 
     /// The pinned row: symbol, state, `N/M busy`, then `All OK` or the `1 problem` button.
@@ -938,7 +988,7 @@ impl Dash {
         ui.horizontal(|ui| {
             let r = sym_widget(
                 ui,
-                24.0,
+                HEADER_H,
                 sym,
                 &p,
                 p.bg,
@@ -1092,7 +1142,7 @@ impl Dash {
             .fill(p.card)
             .stroke(Stroke::new(1.0, p.border))
             .corner_radius(4)
-            .inner_margin(egui::Margin::symmetric(12, 10))
+            .inner_margin(egui::Margin::symmetric(12, CARD_MARGIN_V))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
@@ -1101,7 +1151,7 @@ impl Dash {
                     let error = slot.state == Sym::Error && self.problem.is_some();
                     let r = sym_widget(
                         ui,
-                        20.0,
+                        CARD_SYM_H,
                         slot.state,
                         &p,
                         p.card,
@@ -1569,35 +1619,36 @@ impl Dash {
         }
     }
 
-    /// Everything under the pinned header row; it scrolls at small sizes.
-    fn job_banner(&self, ui: &mut egui::Ui) {
+    /// One-line helper status shown under the header. format: `Verb · state · step · Open log`
+    /// when log lines exist (CollapsingHeader, closed by default); plain muted label otherwise.
+    fn job_status_line(&self, ui: &mut egui::Ui) {
         let Some(job) = &self.job else {
             return;
         };
         let p = self.pal();
-        ui.label(RichText::new(job.summary()).font(FontId::new(13.0, semibold())));
-        if !job.lines.is_empty() {
-            egui::Frame::new()
-                .fill(p.card)
-                .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(4)
-                .inner_margin(egui::Margin::symmetric(8, 6))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    egui::ScrollArea::vertical()
-                        .max_height(8.0 * 15.0)
-                        .stick_to_bottom(true)
-                        .show(ui, |ui| {
-                            for line in &job.lines {
-                                ui.add(
-                                    egui::Label::new(RichText::new(line).monospace())
-                                        .wrap_mode(egui::TextWrapMode::Extend),
-                                );
-                            }
-                        });
-                });
+        if job.lines.is_empty() {
+            ui.label(RichText::new(job.summary()).small().color(p.muted));
+        } else {
+            egui::CollapsingHeader::new(
+                RichText::new(format!("{} · Open log", job.summary()))
+                    .small()
+                    .color(p.muted),
+            )
+            .default_open(false)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(8.0 * 15.0)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in &job.lines {
+                            ui.add(
+                                egui::Label::new(RichText::new(line).monospace())
+                                    .wrap_mode(egui::TextWrapMode::Extend),
+                            );
+                        }
+                    });
+            });
         }
-        ui.add_space(8.0);
     }
 
     fn right(&mut self, ui: &mut egui::Ui) {
@@ -1605,15 +1656,13 @@ impl Dash {
             self.github_page(ui);
             return;
         }
-        self.job_banner(ui);
         let p = self.pal();
         match self.snap.status.clone() {
             _ if self.panel && self.problem.is_some() => self.error_panel(ui),
             Status::NotInstalled => self.empty(ui, "AAP Runner is not installed on this PC."),
             Status::Off => self.empty(ui, "Runners are off. No jobs are taken."),
             status => {
-                self.pool(ui);
-                ui.add_space(8.0);
+                self.job_status_line(ui); // helper status; pool moved to left column
                 if status == Status::Paused {
                     ui.label(match self.snap.busy() {
                         0 => "Paused \u{b7} no jobs".to_string(),
@@ -1632,7 +1681,7 @@ impl Dash {
                 let slots = self.snap.slots.clone();
                 for (i, slot) in slots.iter().take(cards_to_draw(slots.len())).enumerate() {
                     if i > 0 {
-                        ui.add_space(8.0);
+                        ui.add_space(CARD_GAP_SPACE);
                     }
                     self.card(ui, slot, share);
                 }
@@ -1729,20 +1778,20 @@ impl eframe::App for Dash {
             .resizable(false)
             .frame(frame)
             .show(ui, |ui| {
-                self.settings.show(
-                    ui,
-                    &p,
-                    &self.base,
-                    &self.snap,
-                    &mut self.desired,
-                    self.job.as_ref(),
-                )
+                let mut focus =
+                    self.settings
+                        .show_top(ui, &p, &self.base, &self.snap, &mut self.desired);
+                ui.add_space(8.0);
+                self.pool(ui); // pool bars live in the left column
+                self.settings
+                    .show_bottom(ui, &p, &self.base, self.job.as_ref(), &mut focus);
+                focus
             })
             .inner;
         self.right_first = None;
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             self.header_row(ui);
-            ui.add_space(8.0);
+            ui.add_space(AFTER_HEADER);
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| self.right(ui));
@@ -1909,11 +1958,10 @@ mod tests {
             assert_eq!(cards_to_draw(n), n, "{n}");
         }
         assert_eq!(cards_to_draw(6), 5);
-        // Three cards fitted in a 520 window. One compact card is the 20 px symbol
-        // row, the title, the 18 px bars, the frame, and the gap before the next.
-        let block = 20.0 + 4.0 + 18.0 + 4.0 + 18.0 + 20.0 + 2.0 + 12.0;
-        let chrome = 520.0 - 3.0 * block;
-        assert!(chrome + cards_to_draw(5) as f32 * block <= SIZE[1]);
+        // Constants mirror the draw code; see CARD_H and CARD_GAP.
+        assert_eq!(CARD_H, 20.0 + 4.0 + 18.0 + 4.0 + 18.0 + 20.0 + 2.0);
+        assert_eq!(CARD_GAP, 4.0 + 8.0);
+        assert!(right_column_height(5) <= SIZE[1]);
     }
 
     #[test]
@@ -1949,6 +1997,18 @@ mod tests {
         let (used, share, text, over) = disk_line(None, None, None, true);
         assert_eq!((used, share, over), (None, None, false));
         assert_eq!(text, "no sample");
+    }
+
+    #[test]
+    fn five_cards_fit_default_height() {
+        // right_column_height uses the same named constants as the draw code.
+        // A change to card layout that does not update CARD_H / CARD_GAP breaks this.
+        assert!(
+            right_column_height(5) <= SIZE[1],
+            "five cards overflow: {:.0} > {:.0}",
+            right_column_height(5),
+            SIZE[1]
+        );
     }
 
     #[test]
