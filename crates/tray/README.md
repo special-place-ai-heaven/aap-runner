@@ -15,7 +15,7 @@ admin-written.
 | `inbox\state.json` | tray (atomic: `.tmp` then rename) | `{"desired":"on"}` or `{"desired":"off"}` |
 | `inbox\settings.json` | tray (atomic) | `{"runner_count":1..5,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` |
 | `inbox\tray.log` | tray, appended if `inbox\` exists | one line per failed write/spawn |
-| `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`. The elevated helper reads it. |
+| `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`, or the `identity` request below. The elevated helper reads it. |
 | `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code` |
 | `jobs\<id>\log.txt`, `exit.txt` | elevated helper | live log and the process exit code |
 | `status.json` | supervisor, never the tray | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"…","updated":"<RFC3339>","detail":"…","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/…/actions/runs/N"}` (the last five optional; `repo` and `run_url` may be `""`). Schema 4 adds `work_disk_gib`, `work_disk_free_gb`, `work_disk_floor_gb` and `cleaning`; schema 3 still reads, with no disk sample and cleaning false. A schema above 4 is rejected. |
@@ -41,7 +41,7 @@ admin-written.
 ## Menu
 
 State line (with applied limits when reported, e.g. `Idle · 2 runners · 24 cpu · 72 GiB total`; same text
-as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, GitHub setup…, Verify install, Repair install, Open logs, version, Quit.
+as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, GitHub setup…, Identity…, Verify install, Repair install, Open logs, version, Quit.
 Left click on the icon opens the same window.
 
 - Dark menu: the menu follows the Windows app theme (HKCU `...\Themes\Personalize` `AppsUseLightTheme`).
@@ -56,6 +56,7 @@ Left click on the icon opens the same window.
 - Pause/Resume flips `paused` in `settings.json`; the label follows the file.
 - Settings… opens the window (or focuses it) with the focus on the settings column (see Window).
 - GitHub setup… opens the same window with the checklist in place of the runner cards (`--github`).
+- Identity… opens the same window with the identity page in place of the runner cards (`--identity`).
 - Quit closes the tray and the window it opened. It does not touch any file. If the tray process is gone without that (a crash), the window sees `aap-runner-tray.lock` free on its 5 s poll and closes. Single instance per user (file locks in `%TEMP%`).
 - Tooltip: `AAP Runner: <state line> · v<version> (<commit>)`.
 - While a job runs the state line reads `Running <repo short name> · <job>` (the part of `repo` after
@@ -67,7 +68,7 @@ Left click on the icon opens the same window.
   without git) as a disabled item above Quit, in the tooltip, the window title and the error panel. `--version`
   prints it to stdout and exits 0 (GUI-subsystem exe: capture it, e.g. `& .\aap-runner-tray.exe --version | Write-Output`).
 
-## Window (`--dashboard`, `--settings`, `--github`)
+## Window (`--dashboard`, `--settings`, `--github`, `--identity`)
 
 One egui window in its own process (`current_exe()`), one at a time (file lock in `%TEMP%`). Quit kills that process; otherwise it exits when the tray lock is not held. No tabs:
 a fixed 260 px settings column on the left, a 1 px border, and the observability column on the right.
@@ -105,7 +106,7 @@ addendum of the design doc.
 - **Keyboard:** Tab runs down the left column, then the right. F6 jumps to the first control of the other
   column. Esc leaves the error panel, then closes the window. `--settings` puts the focus on Start/Stop;
   with a problem the initial focus is the problem button.
-- A second request (menu item, icon click, another `--settings`) writes `status`, `settings`, `github` or
+- A second request (menu item, icon click, another `--settings`) writes `status`, `settings`, `github`, `identity` or
   `diagnostics` to `%TEMP%\aap-runner-tray\view.request` and focuses the open window, which takes the file.
 
 ## GitHub setup
@@ -114,7 +115,7 @@ The menu item and `--github` swap the right column for a checklist. The left col
 
 The lookup runs when Enter is pressed or the field loses focus, not on each keystroke. A submit while a lookup is running is kept and runs when that lookup finishes; only the latest of those submits is looked up. A 404 is remembered for that text, so submitting it again does not call GitHub. A rate limit is remembered until the Retry-After (seconds or an HTTP-date) or X-RateLimit-Reset time, 60 s when neither is usable and at most 1 h, and the account row says try again at that time in local time; losing focus does not query again before then. A body that is too large or not UTF-8 is remembered for that text and is not retried as a network error. A network error is retried after 5 s, then 10, 20, and 40, and only for the text that failed. Done ticks stay until a lookup resolves to a different account than the saved one. Checking, and a failed lookup, replace a saved account on the checklist, so a previous success does not keep Next enabled.
 
-Rows are `checking`, met, unmet, or blocked. A row the app cannot see yet has a Done box. `rows` checks that row itself once an App id, installation id, or key file is supplied; this page passes those empty until the identity page (M3). The runner-group row always says to tick Allow public repositories. The create-app link passes that row's permissions as URL parameters (`public=false`, webhook off, self-hosted runners write, actions read). A user account is unmet (`Only organizations are supported; <login> is a user account.`) and the later rows stay blocked. A private repository still resolves the owner and does not block the later rows; the repository is marked unverifiable. Next stays disabled until every row is met, then the page returns to the runners after 2 s.
+Rows are `checking`, met, unmet, or blocked. A row the app cannot see yet has a Done box. `rows` checks that row itself once an App id, installation id, or key file is supplied: the identity page's valid App id ticks Create a GitHub App, its installation id ticks Install the app, and a key file that passes its checks ticks Private key. The last finished Verify's `app-token` row sets Create a GitHub App and Install the app to pass or fail (`The app did not authenticate.`); the runner-group row has no API check and stays a manual tick. Those values live in memory for the window's lifetime; the Done ticks stay on disk. The runner-group row always says to tick Allow public repositories. The create-app link passes that row's permissions as URL parameters (`public=false`, webhook off, self-hosted runners write, actions read). A user account is unmet (`Only organizations are supported; <login> is a user account.`) and the later rows stay blocked. A private repository still resolves the owner and does not block the later rows; the repository is marked unverifiable. Next stays disabled until every row is met; Next, or 2 s after the last row is met, opens the identity page.
 
 The workflow box is:
 
@@ -122,21 +123,42 @@ The workflow box is:
 runs-on: {group: aap-crrr, labels: [self-hosted, linux]}
 ```
 
+## Identity
+
+The menu item, `--identity`, and Next on the GitHub setup page swap the right column for the identity page. Rows, in order: Organization (read-only, the login the GitHub setup page resolved; every other row is blocked until there is one), App id, Installation id, Runner group (default `aap-crrr`), Labels (comma list, default `self-hosted,linux,crrr`, the line `manager.conf.example` ships), and Private key file (a text field plus Browse…, the classic Open dialog filtered to `*.pem`, started in `%USERPROFILE%\Downloads`). Each row is met, unmet with the exact reason, or checking; the key file is re-checked every 5 s and at once when the path changes. The checks are pure functions in `src/identity.rs`:
+
+- An id is `[1-9][0-9]*` that fits a u64: no sign, no zero, no leading zero (`App id must be a positive integer`).
+- Org and group are GitHub slugs: 1 to 39 of `[A-Za-z0-9-]`, no leading, trailing, or double hyphen.
+- Labels are trimmed, empty items dropped, duplicates dropped, each `[a-z0-9-]+`, at least one.
+- The key file is a regular file (`symlink_metadata`, and `FILE_ATTRIBUTE_REPARSE_POINT` on the file itself is refused), under `%USERPROFILE%` by canonical path, 1 to 16383 bytes, and its first line is exactly `-----BEGIN RSA PRIVATE KEY-----` or `-----BEGIN PRIVATE KEY-----` (CR stripped). Only the size and that first line are read, into a buffer zeroed before it is dropped. The window keeps the path and nothing else; folders on the way are left to the helper.
+
+The typed text (ids, group, labels, key path; never the key) is `%LOCALAPPDATA%\aap-runner\identity.json` (schema 1), under the temp directory when `LOCALAPPDATA` is missing or empty. Apply is enabled only when every row is met. It writes an `identity` request and starts the helper exactly as Verify does (same id, pointer, and job folder rules); the status line and log above the rows follow `jobs\<id>\`. The request is
+
+```
+{"schema":1,"id":"<16 hex>","verb":"identity","org":"acme","app_id":123,"installation_id":456,"group":"aap-crrr","labels":"self-hosted,linux,crrr","key_path":"C:\\Users\\me\\Downloads\\app.pem"}
+```
+
+exactly those nine fields: the ids are JSON numbers, the labels are the normalised comma list, and `key_path` is a plain `X:\...` path under 1 KiB with no `..` or quote. The manager accepts only the group `aap-crrr` and a label line of `self-hosted,linux,<base label>`; the helper has the manager check the new file before it replaces anything, so another value is refused there with the manager's reason in the log.
+
 ## Elevated helper
 
-`aap-runner-tray.exe --helper <verb> <id>` with `<verb>` `verify` or `repair` and `<id>` 16 lowercase hex digits.
+`aap-runner-tray.exe --helper <verb> <id>` with `<verb>` `verify`, `repair`, or `identity` and `<id>` 16 lowercase hex digits.
 The menu items write `inbox\jobs\<id>.json` and start that command through ShellExecute `runas` (one UAC prompt).
-The helper accepts only schema 1 plus that verb and id. A path in the file is rejected. Every directory it uses is
+The helper accepts only schema 1 plus that verb and id; `identity` must carry the nine fields above, each re-checked, and the other two verbs must carry nothing else. Every directory it uses is
 under `C:\ProgramData\aap-runner` or a fixed install path (`C:\wsl`, the work VHDX, the two task names). A junction
 on the way is refused. `AAP_FAKE_BASE` is not consulted.
 
 The tray exe and its folder must be owned by SYSTEM, Administrators, or TrustedInstaller. Any other SID is refused if an allow ACE on the exe or the folder itself grants write-data, append, write-attributes, delete, delete-child, write-DAC, write-owner, GENERIC_WRITE, or GENERIC_ALL, and any ACE that is not a plain allow or deny is refused. The window then says to move the exe. The first-run wizard (M4) must install it to an admin-only folder. Repair reads `status.json` before it starts, again before the VHDX remount, and again before `schtasks /End`. It refuses `starting`, `running`, and `draining`. A missing, unreadable, or unparseable `status.json` also refuses unless the `AAP-CRRR-Supervisor` task does not exist. An `updated` timestamp older than 180 s, or a status file with no `updated` at all, is not trusted; the task state is used instead. Repair also refuses when `wsl --list --running --quiet` lists `aap-runner`. That list only sees the distros of the account that approves the UAC prompt. Elevation and install refuse a UNC or mapped-drive path: the final path from `GetFinalPathNameByHandleW` (with `VOLUME_NAME_DOS`) must resolve to a fixed local drive. A plain `C:\\...` path satisfies the check; UNC and network-redirected paths do not. An ancestor is refused when its owner is not SYSTEM, Administrators, or TrustedInstaller, or when an ACE is not a plain allow or deny. Parents of the exe folder are checked the same way as the installer ancestor walk (delete, delete-child, write-DAC, write-owner, or generic all for a non-admin SID). The exe is opened and elevated at the path `GetFinalPathNameByHandleW` returns, so a link is not what gets the prompt. This gate stops another account from swapping the exe. It does not stop malware that is already running as the same user.
 
-`verify` runs `install-host.ps1 -DryRun`, `install-supervisor.ps1 -DryRun`, the two scheduled-task queries, and
-`systemctl is-active` for sysbox and the manager. The dry run gets `-WorkDiskGiB` from `AAP_WORK_DISK_GIB` in the
+`verify` runs `install-host.ps1 -DryRun`, `install-supervisor.ps1 -DryRun`, the two scheduled-task queries,
+`systemctl is-active` for sysbox and the manager, and `aap-runner-manager --check-token` (`PASS app-token obtainable`
+or `FAIL app-token exit N`: the manager mints one App installation token with the installed key and discards it;
+the token never leaves the distro). The dry run gets `-WorkDiskGiB` from `AAP_WORK_DISK_GIB` in the
 distro's `/etc/aap-runner/manager.conf` (read with one `wsl -d aap-runner` call); without a distro, from the VHDX
 size rounded to GiB; with neither, `install-host.ps1` keeps its default. `repair` runs `lock-acl.ps1` on `C:\wsl` and the work-disk files,
-reinstalls the supervisor task, remounts the VHDX, and restarts `AAP-CRRR-Supervisor`. The scripts are compiled into
+reinstalls the supervisor task, remounts the VHDX, and restarts `AAP-CRRR-Supervisor`.
+
+`identity` (`helper-run.ps1 -Verb identity -Id <id>`) reads `inbox\jobs\<id>.json` itself, re-checks every field with the rules above, and refuses the key path unless it is a regular file under the profile of the user who owns that request file (the file's owner SID, a user SID, looked up in `ProfileList`), with no reparse point on the file or any folder up to that profile, 1 to 16383 bytes, and a PEM private-key first line. It then makes one `wsl -d aap-runner -u root -- /bin/bash -c "bash <(echo <base64 script> | base64 -d) <org> <app id> <installation id> <group> <labels>"` call with the key file streamed to stdin (at most 16 KiB, never read into a string). Inside the distro the script writes `app.pem.tmp` (root, 0400) and `manager.conf.tmp` with `AAP_GITHUB_ORG`, `AAP_GITHUB_APP_ID`, `AAP_GITHUB_APP_INSTALLATION_ID`, `AAP_RUNNER_GROUP`, and `AAP_RUNNER_LABELS` replaced in place (appended when missing) and every other line kept, runs `AAP_MANAGER_CONF=manager.conf.tmp aap-runner-manager --check-limits`, and only then moves both files into place; on any failure the previous key and conf stay. If `aap-runner-manager` is active it then drains, waits for the unit to stop (up to 10 min), undrains, and starts it again, the way the supervisor applies a limits change; otherwise the new identity applies at the next start. The log carries `INFO identity org … app … installation … group … labels …`, `key installed: 1 file, N bytes`, `manager.conf updated: …`, the pool line, and `PASS identity`; never the key, the key path, or the conf. The scripts are compiled into
 the exe and written under `jobs\<id>\scripts` before they run. The window tails `log.txt`.
 
 The window finds the current job from `%TEMP%\aap-runner-tray\helper.json` (schema 1, id, verb, optional error). The tray only accepts a result whose `id` was issued by this process; a file left by a previous run is ignored.
