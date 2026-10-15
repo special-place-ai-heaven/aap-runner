@@ -358,7 +358,7 @@ fn bar_numbers(used: f64, share: Option<f64>, cores: bool) -> (String, bool) {
     }
 }
 
-/// Work disk bar: used fraction of the size, caption `40 free / 100 GiB · floor 15`.
+/// Work disk bar: used fraction of the size, caption `40 GiB free of 100 · floor 15`.
 /// `over` is free space under the floor. A stale status (`fresh` false, the
 /// same `SAMPLE_STALE` rule as the cores and memory bars) is no sample.
 fn disk_line(
@@ -1070,7 +1070,7 @@ impl Dash {
         let p = self.pal();
         let fresh = self.fresh();
         let a = self.snap.applied;
-        let track_w = (ui.available_width() - LABEL_W - 130.0).clamp(80.0, 240.0);
+        let track_w = (ui.available_width() - LABEL_W - 8.0).clamp(80.0, 240.0);
         self.bar(
             ui,
             egui::Id::new("pool-cores"),
