@@ -409,6 +409,9 @@ function Invoke-AapInstallSupervisor {
     $trayExists = [bool](Test-Path -LiteralPath $TrayExe -PathType Leaf)
     $trayProblems = @()
     $script:trayAnc = [pscustomobject]@{ Problems = @(); Unreadable = @() }
+    if ($DataDir -notmatch '^[A-Za-z]:\\' -or -not (Test-AapFixedLocalPath ($DataDir.Substring(0, 3)))) {
+        throw "refusing: data dir is not a fixed local drive: $DataDir"
+    }
     if ($ScriptDir -notmatch '^[A-Za-z]:\\' -or -not (Test-AapFixedLocalPath ($ScriptDir.Substring(0, 3)))) {
         throw "refusing: script dir is not a fixed local drive: $ScriptDir"
     }
