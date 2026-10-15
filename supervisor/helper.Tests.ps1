@@ -321,8 +321,9 @@ Describe 'helper identity' {
             [IO.File]::WriteAllText((Join-Path $w 'fakemgr.sh'), $mgr, $script:enc)
             $posix = { param($p) ($p -replace '\\', '/') }
             $env:W = & $posix $w
-            $cmd = "exec bash '$(& $posix (Join-Path $w 'drive.sh'))' '$(& $posix (Join-Path $w 'identity.sh'))' $($m.Groups[2].Value) < '$(& $posix $StdinPath)'"
-            $out = & $script:gitBash --noprofile --norc -c $cmd 2>&1 | ForEach-Object { "$_" }
+            # stderr is merged inside bash: Windows PowerShell 5.1 under Stop turns native stderr into an error.
+            $cmd = "exec bash '$(& $posix (Join-Path $w 'drive.sh'))' '$(& $posix (Join-Path $w 'identity.sh'))' $($m.Groups[2].Value) < '$(& $posix $StdinPath)' 2>&1"
+            $out = & $script:gitBash --noprofile --norc -c $cmd | ForEach-Object { "$_" }
             foreach ($line in @($out)) { [Console]::Out.WriteLine($line) }
             return $LASTEXITCODE
         }
@@ -439,8 +440,9 @@ Describe 'helper identity' {
             [IO.File]::WriteAllText((Join-Path $w 'fakemgr.sh'), "#!/bin/bash`necho 'refusing: AAP_RUNNER_LABELS must be self-hosted,linux,crrr' >&2`nexit 1`n", $script:enc)
             $posix = { param($p) ($p -replace '\\', '/') }
             $env:W = & $posix $w
-            $cmd = "exec bash '$(& $posix (Join-Path $w 'drive.sh'))' '$(& $posix (Join-Path $w 'identity.sh'))' $($m.Groups[2].Value) < '$(& $posix $StdinPath)'"
-            $out = & $script:gitBash --noprofile --norc -c $cmd 2>&1 | ForEach-Object { "$_" }
+            # stderr is merged inside bash: Windows PowerShell 5.1 under Stop turns native stderr into an error.
+            $cmd = "exec bash '$(& $posix (Join-Path $w 'drive.sh'))' '$(& $posix (Join-Path $w 'identity.sh'))' $($m.Groups[2].Value) < '$(& $posix $StdinPath)' 2>&1"
+            $out = & $script:gitBash --noprofile --norc -c $cmd | ForEach-Object { "$_" }
             foreach ($line in @($out)) { [Console]::Out.WriteLine($line) }
             return $LASTEXITCODE
         }
