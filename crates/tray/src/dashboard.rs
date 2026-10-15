@@ -92,16 +92,14 @@ fn take_request(path: &Path) -> Option<View> {
     View::ALL.into_iter().find(|v| v.word() == text.trim())
 }
 
-/// Default inner size fits five compact cards. The column scrolls below the minimum.
+/// Default inner size. The window cannot shrink below min_size(); nothing scrolls in the left column.
 const SIZE: [f32; 2] = [760.0, 760.0];
-const MIN_SIZE: [f32; 2] = [680.0, MIN_SIZE_H];
 
 /// One card per reported slot, and no more than the runner limit.
 fn cards_to_draw(slot_count: usize) -> usize {
     slot_count.min(*crate::settings::RUNNERS.end() as usize)
 }
 
-#[cfg(test)]
 fn card_height() -> f32 {
     CARD_SYM_H.max(INTERACT_H) // state row: ui.horizontal floored to interact_size.y
         + CARD_ITEM_GAP
@@ -112,7 +110,6 @@ fn card_height() -> f32 {
         + 2.0 // frame border 1 px each side
 }
 
-#[cfg(test)]
 fn right_column_height(slots: usize) -> f32 {
     let n = cards_to_draw(slots);
     PAD // frame top inner margin
@@ -180,7 +177,6 @@ const AFTER_HEADER: f32 = 8.0;
 const JOB_LINE_H: f32 = CARD_TITLE_H; // interact_size.y from style()
 /// `interact_size.y` from `style()`; the minimum height of any `ui.horizontal` row.
 const INTERACT_H: f32 = 24.0;
-#[cfg(test)]
 /// Conservative height of a bare body-font label (13 px × leading ≈ 16 px).
 const PAUSED_LINE_H: f32 = 16.0;
 /// Second status row: step / reason text (FAIL detail, declined error, STEP name).
@@ -194,9 +190,11 @@ const CAPTION_H: f32 = 16.0;
 const BAR_ROW_H: f32 = 18.0;
 /// Fixed height for the cap-validation error label (two wrapped body-font lines).
 pub(crate) const CAP_ERROR_H: f32 = 32.0;
-/// Minimum inner window height: max(left_column_height(true), right_column_height(5)).
-/// = max(760, 702) = 760. Raise SIZE[1] if this ever changes (see test).
-const MIN_SIZE_H: f32 = 760.0;
+/// Minimum inner window size: tall enough for both columns to show without clipping.
+/// Height = left_column_height(true).max(right_column_height(5)) -- computed, never a literal.
+fn min_size() -> [f32; 2] {
+    [680.0, left_column_height(true).max(right_column_height(5))]
+}
 
 const SCHTASKS: &str = r"C:\Windows\System32\schtasks.exe";
 const SUPERVISOR_TASK: &str = "AAP-CRRR-Supervisor";
@@ -466,17 +464,19 @@ struct Dash {
 pub fn run(base: PathBuf, view: View) -> eframe::Result {
     // A request left by a window that closed before taking it would act on this one later.
     let _ = std::fs::remove_file(request_path());
+    let ms = min_size();
+    let default_size = [SIZE[0], SIZE[1].max(ms[1])];
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(crate::dashboard_title())
-        .with_inner_size(SIZE)
-        .with_min_inner_size(MIN_SIZE)
+        .with_inner_size(default_size)
+        .with_min_inner_size(ms)
         .with_resizable(true);
     if let Some(work) = crate::win::work_area_points() {
         // ponytail: 32 pt assumed title bar; the position is not remembered.
-        let (x, y, width, height) = place_window(work, SIZE, PAD, 32.0);
+        let (x, y, width, height) = place_window(work, default_size, PAD, 32.0);
         viewport = viewport
             .with_inner_size([width, height])
-            .with_min_inner_size([MIN_SIZE[0].min(width), MIN_SIZE[1].min(height)])
+            .with_min_inner_size([ms[0].min(width), ms[1].min(height)])
             .with_position(pos2(x, y));
     }
     let options = eframe::NativeOptions {
@@ -1917,7 +1917,6 @@ impl eframe::App for Dash {
 /// Bare `ui.label` ~ PAUSED_LINE_H. `CAP_ERROR_H` for the wrapped cap-error.
 /// No row calls `available_height()` or `available_size()`.
 /// A new row that does not fit grows SIZE[1], never adds a scrollbar.
-#[cfg(test)]
 fn left_column_height(job_line: bool) -> f32 {
     // settings (show_top) -- 15 items, 14 auto-gaps
     let settings = 2.0 * INTERACT_H          // Power: label row + Start/Stop row
@@ -2260,22 +2259,27 @@ mod tests {
 
     #[test]
     fn min_size_height_is_consistent() {
-        // MIN_SIZE[1] must cover both column worst cases; SIZE[1] >= MIN_SIZE[1].
+        // min_size() is computed from the column height functions, never a literal.
+        let ms = min_size();
         assert!(
-            MIN_SIZE[1] >= left_column_height(true),
-            "MIN_SIZE[1]={} < left column worst={}",
-            MIN_SIZE[1],
+            ms[1] >= left_column_height(true),
+            "min_size[1]={} < left column worst={}",
+            ms[1],
             left_column_height(true)
         );
         assert!(
-            MIN_SIZE[1] >= right_column_height(5),
-            "MIN_SIZE[1]={} < right column 5 cards={}",
-            MIN_SIZE[1],
+            ms[1] >= right_column_height(5),
+            "min_size[1]={} < right column 5 cards={}",
+            ms[1],
             right_column_height(5)
         );
-        let size_h = SIZE[1];
-        let min_h = MIN_SIZE[1];
-        assert!(size_h >= min_h, "SIZE[1]={size_h} < MIN_SIZE[1]={min_h}");
+        // The applied default height must be >= min_size.
+        let default_h = SIZE[1].max(ms[1]);
+        assert!(
+            default_h >= ms[1],
+            "default height {default_h} < min_size[1]={}",
+            ms[1]
+        );
     }
 
     #[test]
