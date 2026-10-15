@@ -15,7 +15,7 @@ pub const STALE_AFTER: Duration = Duration::from_secs(180);
 /// A larger `status.json` is treated as Unknown without reading it.
 pub const MAX_STATUS_BYTES: u64 = 64 * 1024;
 /// The newest `status.json` schema this app understands.
-pub const SCHEMA: u32 = 3;
+pub const SCHEMA: u32 = 4;
 /// The `Error` detail for a `status.json` newer than this app.
 pub const NEWER_SCHEMA: &str = "This app is older than the service. Update the app.";
 
@@ -147,6 +147,12 @@ pub struct Snapshot {
     pub slots: Vec<Slot>,
     pub job_io_mbps: Option<f64>,
     pub sharing: Option<String>,
+    /// Work disk size, free space, and floor, in GiB. Absent on a schema 3 file.
+    pub work_disk_gib: Option<f64>,
+    pub work_disk_free_gb: Option<f64>,
+    pub work_disk_floor_gb: Option<f64>,
+    /// True while the manager is cleaning the work disk.
+    pub cleaning: bool,
 }
 
 /// `https://github.com/<owner>/<repo>/actions/runs/<digits>` and nothing else, the same as
@@ -194,6 +200,10 @@ impl Snapshot {
             slots: Vec::new(),
             job_io_mbps: None,
             sharing: None,
+            work_disk_gib: None,
+            work_disk_free_gb: None,
+            work_disk_floor_gb: None,
+            cleaning: false,
         }
     }
 
@@ -264,6 +274,11 @@ struct RawStatus {
     slots: Option<Vec<RawSlot>>,
     job_io_mbps: Option<f64>,
     sharing: Option<String>,
+    work_disk_gib: Option<f64>,
+    work_disk_free_gb: Option<f64>,
+    work_disk_floor_gb: Option<f64>,
+    #[serde(default)]
+    cleaning: bool,
 }
 
 /// Every field optional: the supervisor writes `null` for a value that failed its checks.
@@ -394,6 +409,10 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
         slots,
         job_io_mbps: raw.job_io_mbps,
         sharing: raw.sharing,
+        work_disk_gib: raw.work_disk_gib,
+        work_disk_free_gb: raw.work_disk_free_gb,
+        work_disk_floor_gb: raw.work_disk_floor_gb,
+        cleaning: raw.cleaning,
     }
 }
 
@@ -842,6 +861,27 @@ mod tests {
             )
             .job_url(),
             None
+        );
+    }
+
+    #[test]
+    fn schema_three_has_no_disk_and_schema_four_publishes_it() {
+        let now = at("2026-10-12T08:01:00Z");
+        let old = r#"{"schema":3,"state":"idle","updated":"2026-10-12T08:00:00Z"}"#;
+        let snap = parse_status(old, now);
+        assert_eq!(snap.status, Status::Idle);
+        assert_eq!(snap.work_disk_gib, None);
+        assert!(!snap.cleaning);
+        let new = r#"{"schema":4,"state":"idle","updated":"2026-10-12T08:00:00Z","work_disk_gib":100,"work_disk_free_gb":40,"work_disk_floor_gb":15,"cleaning":true}"#;
+        let snap = parse_status(new, now);
+        assert_eq!(snap.work_disk_gib, Some(100.0));
+        assert_eq!(snap.work_disk_free_gb, Some(40.0));
+        assert_eq!(snap.work_disk_floor_gb, Some(15.0));
+        assert!(snap.cleaning);
+        let newer = r#"{"schema":5,"state":"idle","updated":"2026-10-12T08:00:00Z"}"#;
+        assert_eq!(
+            parse_status(newer, now).status,
+            Status::Error(NEWER_SCHEMA.into())
         );
     }
 }

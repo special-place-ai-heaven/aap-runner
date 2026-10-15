@@ -43,18 +43,18 @@ apply_work_disk_size() {
   WORK_DISK_PART_MB=$((gib * 1024))
 }
 
-# Same floor as the manager. ceil(60 * 55%) is 33, and the 60 GiB disk stays at 35.
+# Same floor as the manager. max(15 GB, 10% of the disk), rounded up.
 disk_floor_gb() {
   local gib="$1" floor
-  floor=$(( (gib * 55 + 99) / 100 ))
-  if [[ "${gib}" -eq 60 && "${floor}" -lt 35 ]]; then
-    floor=35
+  floor=$(( (gib * 10 + 99) / 100 ))
+  if [[ "${floor}" -lt 15 ]]; then
+    floor=15
   fi
   printf '%s\n' "${floor}"
 }
 
 # First install only. An existing manager.conf is left alone.
-# A floor below 55% of this disk is raised so a copied 35 does not under-protect 100 GiB.
+# A floor below max(15 GB, 10% of this disk) is raised. A higher value is kept.
 stamp_new_manager_conf() {
   local path="$1" floor min_floor
   if ! grep -q '^AAP_WORK_DISK_GIB=' "${path}"; then
@@ -1404,12 +1404,14 @@ self_check() {
   [[ "${WORK_DISK_GB}" == "60" ]]
   [[ "${WORK_DISK_BYTES}" -eq 64424509440 ]]
   [[ "${WORK_DISK_PART_MB}" -eq 61440 ]]
-  [[ "$(disk_floor_gb 60)" == "35" ]]
+  [[ "$(disk_floor_gb 60)" == "15" ]]
   apply_work_disk_size 100
   [[ "${WORK_DISK_GB}" == "100" ]]
   [[ "${WORK_DISK_BYTES}" -eq 107374182400 ]]
   [[ "${WORK_DISK_PART_MB}" -eq 102400 ]]
-  [[ "$(disk_floor_gb 100)" == "55" ]]
+  [[ "$(disk_floor_gb 100)" == "15" ]]
+  [[ "$(disk_floor_gb 200)" == "20" ]]
+  [[ "$(disk_floor_gb 512)" == "52" ]]
   if apply_work_disk_size 9; then
     echo "a 9 GiB work disk was accepted" >&2
     exit 1
@@ -1427,8 +1429,14 @@ self_check() {
   apply_work_disk_size 100
   stamp_new_manager_conf "${cfg}"
   grep -qx 'AAP_WORK_DISK_GIB=100' "${cfg}"
-  grep -qx 'AAP_DISK_FLOOR_GB=55' "${cfg}"
+  grep -qx 'AAP_DISK_FLOOR_GB=35' "${cfg}"
+  printf 'AAP_WORK_DISK_GIB=60\nAAP_DISK_FLOOR_GB=10\n' > "${cfg}"
+  apply_work_disk_size 200
+  stamp_new_manager_conf "${cfg}"
+  grep -qx 'AAP_WORK_DISK_GIB=200' "${cfg}"
+  grep -qx 'AAP_DISK_FLOOR_GB=20' "${cfg}"
   printf 'AAP_WORK_DISK_GIB=60\nAAP_DISK_FLOOR_GB=60\n' > "${cfg}"
+  apply_work_disk_size 100
   stamp_new_manager_conf "${cfg}"
   grep -qx 'AAP_WORK_DISK_GIB=100' "${cfg}"
   grep -qx 'AAP_DISK_FLOOR_GB=60' "${cfg}"

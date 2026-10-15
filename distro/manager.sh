@@ -88,8 +88,10 @@ SCCACHE_HOST_DIR=${WORK_MOUNT}/sccache
 SCCACHE_CONTAINER_DIR=/var/cache/aap-sccache
 SCCACHE_CACHE_SIZE=10G
 # SCCACHE_CACHE_SIZE bounds one directory, and any job can create another.
-# Before each job the whole tree is measured; over this cap it is wiped.
-SCCACHE_TREE_MAX_MB=20480
+# Before each job the whole tree is measured. Over 15% of the disk, the oldest
+# files are removed until the tree is at 80% of that bound. finish_disk_bounds
+# sets the cap from AAP_WORK_DISK_GIB. 9216 MiB is 15% of the default 60 GiB.
+SCCACHE_TREE_MAX_MB=9216
 RUNNER_UID=""
 # Interface for the Windows-side supervisor (wsl -d aap-runner -u root --).
 # ${RUN_DIR}/drain stops new jobs; ${RUN_DIR}/status.json reports the pool.
@@ -175,12 +177,12 @@ assert_work_mount_device() {
   fi
 }
 
-# At least 55% of the disk. ceil(60 * 55%) is 33, and the 60 GiB disk stays at 35.
+# At least max(15 GB, 10% of the disk), rounded up.
 disk_floor_gb() {
   local gib="$1" floor
-  floor=$(( (gib * 55 + 99) / 100 ))
-  if [[ "${gib}" -eq 60 && "${floor}" -lt 35 ]]; then
-    floor=35
+  floor=$(( (gib * 10 + 99) / 100 ))
+  if [[ "${floor}" -lt 15 ]]; then
+    floor=15
   fi
   printf '%s\n' "${floor}"
 }
@@ -297,7 +299,7 @@ load_limits() {
 }
 
 # AAP_WORK_DISK_GIB is this host's VHDX size. Absent means 60, which is CRRR.
-# A floor below 55% of that size is raised. 60 GiB stays at 35 GB free.
+# A floor below max(15 GB, 10% of that size) is raised. A higher value is kept.
 finish_disk_bounds() {
   local min_floor
   [[ -z "${AAP_WORK_DISK_GIB}" ]] && AAP_WORK_DISK_GIB=60
@@ -314,7 +316,7 @@ finish_disk_bounds() {
     return 1
   fi
   if [[ "${AAP_DISK_FLOOR_GB}" -lt "${min_floor}" ]]; then
-    echo "raising AAP_DISK_FLOOR_GB from ${AAP_DISK_FLOOR_GB} to ${min_floor} (55% of ${AAP_WORK_DISK_GIB} GiB; 60 GiB stays 35)" >&2
+    echo "raising AAP_DISK_FLOOR_GB from ${AAP_DISK_FLOOR_GB} to ${min_floor} (max of 15 GB and 10% of ${AAP_WORK_DISK_GIB} GiB)" >&2
     AAP_DISK_FLOOR_GB=${min_floor}
   fi
   WORK_DISK_MIN_GB=$((AAP_WORK_DISK_GIB - 10))
@@ -322,6 +324,7 @@ finish_disk_bounds() {
     WORK_DISK_MIN_GB=1
   fi
   WORK_DISK_MAX_GB=$((AAP_WORK_DISK_GIB + 4))
+  SCCACHE_TREE_MAX_MB=$(( AAP_WORK_DISK_GIB * 1024 * 15 / 100 ))
 }
 
 # Absent keys use the defaults. A present value that is not this grammar is refused.
@@ -685,7 +688,7 @@ assert_no_mnt_mounts() {
 }
 
 disk_ok() {
-  local avail size
+  local avail size pass="${1:-}"
   if ! mountpoint -q "${WORK_MOUNT}"; then
     echo "refusing to start a job: ${WORK_MOUNT} is not a mountpoint" >&2
     return 1
@@ -704,6 +707,12 @@ disk_ok() {
     return 1
   fi
   if below_floor "${avail}" "${AAP_DISK_FLOOR_GB}"; then
+    if [[ "${pass}" != cleaned ]]; then
+      echo "disk below floor: ${avail}G free on ${WORK_MOUNT}; floor is ${AAP_DISK_FLOOR_GB}G; cleaning once" >&2
+      clean_after_job
+      disk_ok cleaned || return 1
+      return 0
+    fi
     echo "refusing to start a job: ${avail}G free on ${WORK_MOUNT}; floor is ${AAP_DISK_FLOOR_GB}G" >&2
     return 1
   fi
@@ -1014,15 +1023,113 @@ cleanup_job() {
   docker network rm "${net}" || true
 }
 
-# du rounds up to whole MiB. rm keeps the top directory and its owner.
+# Bytes, not du -sm. Over the cap, delete oldest regular files until the tree
+# is at or under 80% of the cap. The directory stays.
 bound_sccache_tree() {
-  local used
+  local used bound target need ts sz path
   [[ -d "${SCCACHE_HOST_DIR}" ]] || return 0
-  used=$(du -sm "${SCCACHE_HOST_DIR}" 2>/dev/null | awk '{ print $1 }')
-  if [[ "${used}" =~ ^[0-9]+$ && "${used}" -gt "${SCCACHE_TREE_MAX_MB}" ]]; then
-    echo "sccache tree ${SCCACHE_HOST_DIR} is ${used} MiB, over ${SCCACHE_TREE_MAX_MB}; wiping it" >&2
-    rm -rf "${SCCACHE_HOST_DIR:?}"/*
+  [[ "${SCCACHE_TREE_MAX_MB}" =~ ^[0-9]+$ ]] || return 0
+  bound=$(( SCCACHE_TREE_MAX_MB * 1024 * 1024 ))
+  used=$(du -sb "${SCCACHE_HOST_DIR}" 2>/dev/null | awk '{ print $1 }')
+  [[ "${used}" =~ ^[0-9]+$ && "${used}" -gt "${bound}" ]] || return 0
+  target=$(( bound * 80 / 100 ))
+  echo "sccache tree ${SCCACHE_HOST_DIR} is ${used} bytes, over ${bound}; trimming oldest files to ${target}" >&2
+  need=$(( used - target ))
+  while IFS=$'\t' read -r ts sz path; do
+    [[ -n "${path}" && -f "${path}" ]] || continue
+    rm -f -- "${path}" || true
+    if [[ "${sz}" =~ ^[0-9]+$ ]]; then
+      need=$(( need - sz ))
+    fi
+    (( need > 0 )) || break
+  done < <(find "${SCCACHE_HOST_DIR}" -type f -printf '%T@\t%s\t%p\n' | sort -n)
+}
+
+cleaning_now() {
+  local f
+  [[ -d "${RUN_DIR}/cleaning.d" ]] || return 1
+  for f in "${RUN_DIR}/cleaning.d"/*; do
+    [[ -e "${f}" ]] && return 0
+  done
+  return 1
+}
+
+begin_cleaning() {
+  [[ -d "${RUN_DIR}" ]] || return 0
+  mkdir -p "${RUN_DIR}/cleaning.d"
+  touch "${RUN_DIR}/cleaning.d/${BASHPID}"
+  write_status || true
+}
+
+end_cleaning() {
+  rm -f "${RUN_DIR}/cleaning.d/${BASHPID}" 2>/dev/null || true
+  rmdir "${RUN_DIR}/cleaning.d" 2>/dev/null || true
+  write_status || true
+}
+
+# Dangling images, build cache, and stopped job containers and networks older
+# than an hour. A network another slot just created is younger than that, so
+# this does not take it.
+prune_job_docker() {
+  docker image prune -f --filter dangling=true >/dev/null 2>&1 || true
+  docker builder prune -f >/dev/null 2>&1 || true
+  docker container prune -f --filter label=aap-crrr-job=1 --filter until=1h >/dev/null 2>&1 || true
+  docker network prune -f --filter label=aap-crrr-job=1 --filter until=1h >/dev/null 2>&1 || true
+}
+
+# 64-hex directories under the sysbox bind whose container docker no longer has.
+# Skip the pass when docker itself cannot be listed.
+clear_sysbox_leftovers() {
+  local root="${WORK_MOUNT}/sysbox" dir base ids
+  [[ -d "${root}" ]] || return 0
+  ids=$(docker ps -aq --no-trunc 2>/dev/null) || return 0
+  while IFS= read -r dir; do
+    [[ -n "${dir}" && -d "${dir}" && "${dir}" == "${root}/"* ]] || continue
+    base=$(basename "${dir}")
+    [[ "${base}" =~ ^[0-9a-f]{64}$ ]] || continue
+    if ! printf '%s\n' "${ids}" | grep -qx "${base}"; then
+      rm -rf -- "${dir}"
+    fi
+  done < <(find "${root}" -mindepth 1 -maxdepth 2 -type d)
+}
+
+# Once a day, by wall clock. A clock step backwards runs it again.
+maybe_daily_clean() {
+  local stamp="${RUN_DIR}/daily-clean" now last=0
+  [[ -d "${RUN_DIR}" ]] || return 0
+  now=$(date +%s)
+  if [[ -f "${stamp}" ]]; then
+    read -r last < "${stamp}" || true
   fi
+  [[ "${last}" =~ ^[0-9]+$ ]] || last=0
+  if (( now >= last && now - last < 86400 )); then
+    return 0
+  fi
+  journalctl --vacuum-size=200M >/dev/null 2>&1 || true
+  clear_sysbox_leftovers || true
+  printf '%s\n' "${now}" > "${stamp}" 2>/dev/null || true
+}
+
+# After every job, and once when a start is under the floor. The cache trim
+# is included because that tree is on this disk.
+clean_after_job() {
+  begin_cleaning
+  bound_sccache_tree || true
+  prune_job_docker
+  maybe_daily_clean
+  end_cleaning
+}
+
+# df -BG integers, or empty when the work disk is not mounted.
+work_disk_df() {
+  local size="" free="" line=""
+  if mountpoint -q "${WORK_MOUNT}" 2>/dev/null; then
+    line=$(df -BG --output=size,avail "${WORK_MOUNT}" 2>/dev/null | awk 'NR==2 { gsub(/G/, "", $1); gsub(/G/, "", $2); print $1, $2 }') || line=""
+    read -r size free <<< "${line}" || true
+  fi
+  [[ "${size}" =~ ^[0-9]+$ ]] || size=""
+  [[ "${free}" =~ ^[0-9]+$ ]] || free=""
+  printf '%s %s\n' "${size}" "${free}"
 }
 
 # Slots start in the same second under one manager PID, so the slot index
@@ -1290,17 +1397,21 @@ discover_job_run() {
 # job_cpus is a JSON number and may be fractional (2.5)
 # when manager.conf says so; the supervisor treats a non-integer as unknown.
 # Paused is a Windows-side state and never appears here.
-# Schema 3 adds sampled_at (the usage sample's time, null before one),
+# Schema 4 adds sampled_at (the usage sample's time, null before one),
 # pool (usage summed over the slots, and the IO cap applied to the pool,
 # null for none), and slots, one entry per configured slot (schema 2's
 # slots was the count; runner_count still carries it). A slot is
 # retired, else draining while the drain file exists, else running or
 # starting, else idle. Its cpu_cores and mem_gib come from the sample only
 # while the sample names the slot's current container. job_url is null.
+# work_disk_gib, work_disk_free_gb and work_disk_floor_gb are df -BG
+# integers (null when the mount cannot be read). cleaning is true while
+# clean_after_job runs.
 status_json() {
   local slot f st ns cname name sst sjob srepo srun started cpu mem pio=""
   local busy=0 idle=0 best=-1 job="" state=starting sampled="" u n c g
   local rns rrepo rurl repo="" run_url=""
+  local dsize="" dfree="" floor="" cleaning=false
   local -a args=()
   local -A uname_of=() ucpu_of=() umem_of=()
   {
@@ -1368,11 +1479,17 @@ status_json() {
       pio=$((SLOT_IO_MBPS * ${AAP_RUNNER_COUNT:-1}))
     fi
   fi
+  read -r dsize dfree < <(work_disk_df)
+  [[ "${AAP_DISK_FLOOR_GB}" =~ ^[0-9]+$ ]] && floor=${AAP_DISK_FLOOR_GB}
+  if cleaning_now; then
+    cleaning=true
+  fi
   jq -cn --arg state "${state}" --arg job "${job}" --arg repo "${repo}" --arg run_url "${run_url}" --argjson slots "${AAP_RUNNER_COUNT:-1}" \
     --argjson busy "${busy}" --argjson updated "$(date +%s)" \
     --arg cpus "${AAP_JOB_CPUS}" --arg memory "${AAP_JOB_MEMORY}" --argjson io "${SLOT_IO_MBPS:-0}" \
     --arg sharing "$([[ "${AAP_POOL_SHARING}" == slice ]] && echo slice || echo fixed)" \
     --arg sampled "${sampled}" --arg pio "${pio}" \
+    --arg dsize "${dsize}" --arg dfree "${dfree}" --arg floor "${floor}" --argjson cleaning "${cleaning}" \
     'def num: if . == "" then null else tonumber end;
      def total(f): [.[] | f // 0] | add // 0 | . * 10 | round / 10;
      $ARGS.positional as $p
@@ -1381,9 +1498,11 @@ status_json() {
            started_at: (.[5] | num), cpu_cores: (.[6] | num), mem_gib: (.[7] | num)}] as $s
      | {state: $state, job: $job, repo: $repo, run_url: $run_url, busy: $busy, updated: $updated,
         runner_count: $slots, job_cpus: ($cpus | tonumber? // null), job_memory: $memory, job_io_mbps: $io, sharing: $sharing,
-        schema: 3, sampled_at: ($sampled | num),
+        schema: 4, sampled_at: ($sampled | num),
         pool: {cpu_cores: ($s | total(.cpu_cores)), mem_gib: ($s | total(.mem_gib)), io_mbps: ($pio | num)},
-        slots: $s}' --args "${args[@]}"
+        slots: $s,
+        work_disk_gib: ($dsize | num), work_disk_free_gb: ($dfree | num),
+        work_disk_floor_gb: ($floor | num), cleaning: $cleaning}' --args "${args[@]}"
 }
 
 # status.json, mode 0644, replaced by rename so a reader never sees half a
@@ -1417,12 +1536,14 @@ self_check() {
   [[ "${got}" == "35" ]]
   got=$(printf '1G-blocks\n     60G\n' | parse_df_gb)
   [[ "${got}" == "60" ]]
-  [[ "$(disk_floor_gb 60)" == "35" ]]
-  [[ "$(disk_floor_gb 100)" == "55" ]]
+  [[ "$(disk_floor_gb 60)" == "15" ]]
+  [[ "$(disk_floor_gb 100)" == "15" ]]
+  [[ "$(disk_floor_gb 151)" == "16" ]]
+  [[ "$(disk_floor_gb 200)" == "20" ]]
   AAP_WORK_DISK_GIB=""
   AAP_DISK_FLOOR_GB=""
   finish_disk_bounds
-  [[ "${AAP_WORK_DISK_GIB}" == "60" && "${AAP_DISK_FLOOR_GB}" == "35" ]]
+  [[ "${AAP_WORK_DISK_GIB}" == "60" && "${AAP_DISK_FLOOR_GB}" == "15" ]]
   [[ "${WORK_DISK_MIN_GB}" == "50" && "${WORK_DISK_MAX_GB}" == "64" ]]
   if ! size_is_work_disk 60 || ! size_is_work_disk 50 || ! size_is_work_disk 64; then
     echo "60G work disk was rejected" >&2
@@ -1435,7 +1556,7 @@ self_check() {
   AAP_WORK_DISK_GIB=100
   AAP_DISK_FLOOR_GB=""
   finish_disk_bounds
-  [[ "${AAP_DISK_FLOOR_GB}" == "55" ]]
+  [[ "${AAP_DISK_FLOOR_GB}" == "15" ]]
   [[ "${WORK_DISK_MIN_GB}" == "90" && "${WORK_DISK_MAX_GB}" == "104" ]]
   if ! size_is_work_disk 100 || ! size_is_work_disk 90 || ! size_is_work_disk 104; then
     echo "100G work disk was rejected" >&2
@@ -1448,11 +1569,15 @@ self_check() {
   AAP_WORK_DISK_GIB=100
   AAP_DISK_FLOOR_GB=35
   finish_disk_bounds
-  [[ "${AAP_DISK_FLOOR_GB}" == "55" ]]
+  [[ "${AAP_DISK_FLOOR_GB}" == "35" ]]
   AAP_WORK_DISK_GIB=100
   AAP_DISK_FLOOR_GB=60
   finish_disk_bounds
   [[ "${AAP_DISK_FLOOR_GB}" == "60" ]]
+  AAP_WORK_DISK_GIB=200
+  AAP_DISK_FLOOR_GB=10
+  finish_disk_bounds
+  [[ "${AAP_DISK_FLOOR_GB}" == "20" ]]
   AAP_WORK_DISK_GIB=9
   if finish_disk_bounds; then
     echo "a 9 GiB work disk was accepted" >&2
@@ -1467,7 +1592,7 @@ self_check() {
   AAP_DISK_FLOOR_GB=""
   finish_disk_bounds
   [[ "${WORK_DISK_MIN_GB}" == "502" && "${WORK_DISK_MAX_GB}" == "516" ]]
-  [[ "${AAP_DISK_FLOOR_GB}" == "282" ]]
+  [[ "${AAP_DISK_FLOOR_GB}" == "52" ]]
   sample=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
   if ! work_mount_matches /dev/sdb1 /dev/sda "${sample}" "${sample}"; then
     echo "a distinct work-disk device was rejected" >&2
@@ -1626,6 +1751,91 @@ self_check() {
     echo "wall clock was still running after disarm" >&2
     return 1
   fi
+  sc_dir=$(mktemp -d)
+  SCCACHE_HOST_DIR=${sc_dir}
+  mkdir -p "${sc_dir}/repo"
+  head -c 2097152 /dev/zero > "${sc_dir}/repo/old"
+  head -c 2097152 /dev/zero > "${sc_dir}/repo/new"
+  touch -d '2020-01-01 00:00:00' "${sc_dir}/repo/old"
+  touch -d '2024-01-01 00:00:00' "${sc_dir}/repo/new"
+  SCCACHE_TREE_MAX_MB=3
+  bound_sccache_tree
+  [[ -d "${sc_dir}" ]]
+  [[ ! -e "${sc_dir}/repo/old" ]]
+  [[ -f "${sc_dir}/repo/new" ]]
+  rm -rf "${sc_dir}"
+  # Dead sysbox directories go. A live id and a non-id stay. docker is stubbed.
+  (
+    sys=$(mktemp -d)
+    dead=$(printf 'a%.0s' {1..64})
+    live=$(printf 'b%.0s' {1..64})
+    mkdir -p "${sys}/sysbox/${dead}" "${sys}/sysbox/docker/${live}" "${sys}/sysbox/docker/keep-me"
+    WORK_MOUNT=${sys}
+    docker() { printf '%s\n' "${live}"; }
+    clear_sysbox_leftovers
+    if [[ -d "${sys}/sysbox/${dead}" || ! -d "${sys}/sysbox/docker/${live}" || ! -d "${sys}/sysbox/docker/keep-me" ]]; then
+      echo "sysbox leftover cleanup removed the wrong directory" >&2
+      exit 1
+    fi
+    rm -rf "${sys}"
+  ) || return 1
+  # Once per 24 h. journalctl is stubbed; a fresh stamp does not vacuum again.
+  (
+    rd=$(mktemp -d)
+    log=${rd}/log
+    : > "${log}"
+    RUN_DIR=${rd}
+    WORK_MOUNT=${rd}/nomount
+    journalctl() { echo vacuum >> "${log}"; }
+    docker() { return 1; }
+    maybe_daily_clean
+    [[ "$(wc -l < "${log}")" -eq 1 ]]
+    maybe_daily_clean
+    [[ "$(wc -l < "${log}")" -eq 1 ]]
+    printf '%s\n' "$(( $(date +%s) - 90000 ))" > "${rd}/daily-clean"
+    maybe_daily_clean
+    [[ "$(wc -l < "${log}")" -eq 2 ]]
+    rm -rf "${rd}"
+  ) || return 1
+  # A start under the floor cleans once and reads df again.
+  AAP_FAKE_FREE=10
+  AAP_FAKE_SIZE=60
+  AAP_WORK_DISK_GIB=60
+  AAP_DISK_FLOOR_GB=15
+  finish_disk_bounds
+  cleaned=0
+  mountpoint() { return 0; }
+  assert_work_mount_device() { return 0; }
+  df() {
+    case "$*" in
+      *avail*) printf 'Avail\n%sG\n' "${AAP_FAKE_FREE}" ;;
+      *) printf '1G-blocks\n%sG\n' "${AAP_FAKE_SIZE}" ;;
+    esac
+  }
+  clean_after_job() {
+    cleaned=$((cleaned + 1))
+    AAP_FAKE_FREE=20
+  }
+  if ! disk_ok; then
+    echo "a floor miss that cleanup fixes was refused" >&2
+    return 1
+  fi
+  [[ "${cleaned}" == 1 ]]
+  AAP_FAKE_FREE=10
+  cleaned=0
+  clean_after_job() { cleaned=$((cleaned + 1)); }
+  if disk_ok; then
+    echo "a floor miss that cleanup does not fix was accepted" >&2
+    return 1
+  fi
+  [[ "${cleaned}" == 1 ]]
+  AAP_FAKE_FREE=20
+  cleaned=0
+  if ! disk_ok; then
+    echo "free space above the floor was refused" >&2
+    return 1
+  fi
+  [[ "${cleaned}" == 0 ]]
   echo "disk floor self-check ok"
 }
 
@@ -1701,6 +1911,7 @@ slot_loop() {
       echo "slot ${slot}: runner container exited non-zero; workspace was removed with the container" >&2
       sleep 5
     fi
+    clean_after_job
   done
 }
 

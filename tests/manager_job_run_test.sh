@@ -76,7 +76,7 @@ discover_job_run 1 c1 "$(slot_ns 1)"
 [[ "$(grep -c '^docker exec c1' "${calls}")" -eq 3 && "$(grep -c '^sleep 5' "${calls}")" -eq 2 ]] \
   || fail "did not retry every 5 s until the run id appeared: $(cat "${calls}")"
 [[ "$(grep -c '^timeout 10' "${calls}")" -eq 3 ]] || fail "docker exec was not bounded by timeout 10"
-[[ "$(jq -r 'keys_unsorted | join(",")' "${RUN_DIR}/status.json")" == state,job,repo,run_url,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing,schema,sampled_at,pool,slots ]] \
+[[ "$(jq -r 'keys_unsorted | join(",")' "${RUN_DIR}/status.json")" == state,job,repo,run_url,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing,schema,sampled_at,pool,slots,work_disk_gib,work_disk_free_gb,work_disk_floor_gb,cleaning ]] \
   || fail "keys: $(cat "${RUN_DIR}/status.json")"
 [[ "$(field state)/$(field job)/$(field repo)/$(field run_url)" == "running/build/octo/hello.world/https://github.com/octo/hello.world/actions/runs/123456" ]] \
   || fail "status after discovery: $(cat "${RUN_DIR}/status.json")"

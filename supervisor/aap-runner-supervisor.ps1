@@ -29,8 +29,9 @@
 #   content stays. Both files are parsed strictly. Only validated values
 #   ever reach a command or the limits file.
 # - status.json   {"state","job","updated","detail","runner_count",
-#   "job_cpus","job_memory_gib","repo","run_url","schema":3,"sampled_at",
-#   "pool","slots","job_io_mbps","sharing"} in the admin-owned root. Every
+#   "job_cpus","job_memory_gib","repo","run_url","schema":4,"sampled_at",
+#   "pool","slots","job_io_mbps","sharing","work_disk_gib","work_disk_free_gb",
+#   "work_disk_floor_gb","cleaning"} in the admin-owned root. Every
 #   manager value is re-validated: URLs and repos match a strict pattern
 #   (the tray opens them), numbers are in range, else empty or null. pool,
 #   slots and the rest are mirrored only while the manager reports idle,
@@ -346,12 +347,16 @@ function Write-AapStatus {
         job_memory_gib = $null
         repo           = $Repo
         run_url        = $RunUrl
-        schema         = 3
-        sampled_at     = $null
-        pool           = [ordered]@{ cpu_cores = $null; mem_gib = $null; io_mbps = $null }
-        slots          = @()
-        job_io_mbps    = $null
-        sharing        = $null
+        schema             = 4
+        sampled_at         = $null
+        pool               = [ordered]@{ cpu_cores = $null; mem_gib = $null; io_mbps = $null }
+        slots              = @()
+        job_io_mbps        = $null
+        sharing            = $null
+        work_disk_gib      = $null
+        work_disk_free_gb  = $null
+        work_disk_floor_gb = $null
+        cleaning           = $false
     }
     # Pool and slots only while the manager reports them; never while off,
     # paused, starting or in error.
@@ -361,6 +366,10 @@ function Write-AapStatus {
         $obj.slots = $Mirror.Slots
         $obj.job_io_mbps = $Mirror.JobIoMbps
         $obj.sharing = $Mirror.Sharing
+        $obj.work_disk_gib = $Mirror.WorkDiskGib
+        $obj.work_disk_free_gb = $Mirror.WorkDiskFreeGb
+        $obj.work_disk_floor_gb = $Mirror.WorkDiskFloorGb
+        $obj.cleaning = [bool]$Mirror.Cleaning
     }
     if ($eff) {
         $obj.runner_count = $eff.RunnerCount
@@ -445,6 +454,8 @@ function Invoke-AapRoot([string[]]$Argv, $StdIn = $null) {
 # Repo and RunUrl are '' unless they match exactly; the tray opens RunUrl.
 # Schema 3 adds sampled_at, pool, slots (an array; at most 5 objects are
 # kept), job_io_mbps and sharing; an older manager's slots count gives [].
+# Schema 4 adds work_disk_gib, work_disk_free_gb, work_disk_floor_gb and
+# cleaning. A manager file without them leaves the sizes null and cleaning false.
 function ConvertFrom-AapManagerStatus([string]$Text) {
     try { $obj = ConvertFrom-Json -InputObject $Text } catch { return $null }
     if (-not ($obj -is [pscustomobject])) { return $null }
@@ -483,6 +494,8 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
     }
     $sharing = $obj.sharing
     if (-not ($sharing -is [string] -and ($sharing -ceq 'slice' -or $sharing -ceq 'fixed'))) { $sharing = $null }
+    $cleaning = $false
+    if ($obj.cleaning -is [bool] -and $obj.cleaning) { $cleaning = $true }
     return @{
         State     = $state
         Job       = [string]$obj.job
@@ -496,8 +509,12 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
             io_mbps   = Get-AapNumber $pool.io_mbps 1048576
         }
         Slots     = $slots
-        JobIoMbps = Get-AapNumber $obj.job_io_mbps 1048576
-        Sharing   = $sharing
+        JobIoMbps       = Get-AapNumber $obj.job_io_mbps 1048576
+        Sharing         = $sharing
+        WorkDiskGib     = Get-AapNumber $obj.work_disk_gib 1024
+        WorkDiskFreeGb  = Get-AapNumber $obj.work_disk_free_gb 1024
+        WorkDiskFloorGb = Get-AapNumber $obj.work_disk_floor_gb 1024
+        Cleaning        = $cleaning
     }
 }
 
