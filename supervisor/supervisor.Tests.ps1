@@ -1330,6 +1330,26 @@ Describe 'aap-runner host supervisor' {
             @($r.Problems) -join "`n" | Should -Match 'not a plain allow or deny'
         }
 
+        It 'refuses a junction ancestor without reading its target' {
+            $link = Join-Path $TestDrive 'anc-link'
+            & $script:mkJunction $link (Join-Path $TestDrive 'anc-target')
+            Mock Get-Acl { & $script:mkAcl 'S-1-5-32-544' @() }
+            $r = Get-AapAncestorProblem (Join-Path $link 'sub\leaf.ps1')
+            @($r.Problems) -join "`n" | Should -Match ([regex]::Escape("reparse point $link"))
+            Should -Invoke Get-Acl -Times 0 -Exactly -ParameterFilter { $LiteralPath -eq $link }
+        }
+
+        It 'refuses an ancestor with a null DACL' {
+            $raw = New-Object System.Security.AccessControl.RawSecurityDescriptor 'O:BA'
+            $ds = New-Object System.Security.AccessControl.DirectorySecurity
+            $bytes = New-Object byte[] $raw.BinaryLength
+            $raw.GetBinaryForm($bytes, 0)
+            $ds.SetSecurityDescriptorBinaryForm($bytes)
+            Mock Get-Acl { $ds }
+            $r = Get-AapAncestorProblem 'C:\wsl\aap-runner-supervisor'
+            @($r.Problems) -join "`n" | Should -Match 'C:\\wsl has no DACL'
+        }
+
         It 'does not treat write-attributes on a parent as a replace right' {
             $users = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-545'
             $attr = New-Object System.Security.AccessControl.FileSystemAccessRule($users, 'WriteAttributes', 'None', 'None', 'Allow')
@@ -1344,6 +1364,16 @@ Describe 'aap-runner host supervisor' {
             Test-AapFixedLocalPath $final | Should -BeTrue
             Test-AapFixedLocalPath '\\server\share\tray.exe' | Should -BeFalse
             Test-AapFixedLocalPath 'C:notepad.exe' | Should -BeFalse
+        }
+
+        It 'resolves a folder through a junction to its target and a plain folder to itself' {
+            $target = Join-Path $TestDrive 'final-target'
+            $link = Join-Path $TestDrive 'final-link'
+            & $script:mkJunction $link $target
+            $resolved = Get-AapFinalDosPath $link
+            $resolved | Should -Be (Get-AapFinalDosPath $target)
+            $resolved | Should -Match 'final-target$'
+            Get-AapFinalDosPath $env:SystemRoot | Should -Be $env:SystemRoot
         }
 
         It 'gives the user read only on the root and no folder creation in inbox' {

@@ -137,6 +137,17 @@ function Get-AapAncestorProblem([string]$Path) {
     $unreadable = New-Object System.Collections.Generic.List[string]
     $dir = Split-Path -Parent $Path
     while ($dir) {
+        # As the leaf check: attributes do not follow the link, so a junction
+        # or symlink ancestor is refused before its target's ACL is read. An
+        # unreadable one (no traverse right) falls through to Get-Acl, which
+        # reports it as unreadable.
+        $attr = -1
+        try { $attr = [int](New-Object IO.FileInfo $dir).Attributes } catch { $attr = -1 }
+        if ($attr -ne -1 -and ($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $problems.Add("reparse point $dir")
+            $dir = Split-Path -Parent $dir
+            continue
+        }
         $acl = $null
         try { $acl = Get-Acl -LiteralPath $dir } catch { $unreadable.Add($dir) }
         if ($acl) {
@@ -144,6 +155,9 @@ function Get-AapAncestorProblem([string]$Path) {
             $owner = $raw.Owner.Value
             if ($AapAdminSids -notcontains $owner) {
                 $problems.Add("owner $owner on $dir is not an admin")
+            }
+            if ($null -eq $raw.DiscretionaryAcl) {
+                $problems.Add("$dir has no DACL (everyone has full control)")
             }
             foreach ($ace in $raw.DiscretionaryAcl) {
                 $type = [int]$ace.AceType
@@ -184,10 +198,17 @@ public static class AapPathNative {
 "@
 }
 
+# A file opens for read. A folder opens with access 0 (query only) and
+# FILE_FLAG_BACKUP_SEMANTICS, the only way to get a directory handle, so an
+# admin-only folder still resolves without elevation.
 function Get-AapFinalDosPath([string]$Path) {
     Initialize-AapPathNative
     $invalid = [IntPtr]::new(-1)
-    $handle = [AapPathNative]::CreateFileW($Path, -2147483648, 7, [IntPtr]::Zero, 3, 0x80, [IntPtr]::Zero)
+    $attr = -1
+    try { $attr = [int](New-Object IO.FileInfo $Path).Attributes } catch { $attr = -1 }
+    $access = -2147483648
+    if ($attr -ne -1 -and ($attr -band [int][IO.FileAttributes]::Directory) -ne 0) { $access = 0 }
+    $handle = [AapPathNative]::CreateFileW($Path, $access, 7, [IntPtr]::Zero, 3, (0x80 -bor 0x02000000), [IntPtr]::Zero)
     if ($handle -eq $invalid) { throw "refusing: could not open $Path" }
     try {
         $buf = New-Object System.Text.StringBuilder 1024
@@ -409,11 +430,20 @@ function Invoke-AapInstallSupervisor {
     $trayExists = [bool](Test-Path -LiteralPath $TrayExe -PathType Leaf)
     $trayProblems = @()
     $script:trayAnc = [pscustomobject]@{ Problems = @(); Unreadable = @() }
-    if ($DataDir -notmatch '^[A-Za-z]:\\' -or -not (Test-AapFixedLocalPath ($DataDir.Substring(0, 3)))) {
-        throw "refusing: data dir is not a fixed local drive: $DataDir"
-    }
-    if ($ScriptDir -notmatch '^[A-Za-z]:\\' -or -not (Test-AapFixedLocalPath ($ScriptDir.Substring(0, 3)))) {
-        throw "refusing: script dir is not a fixed local drive: $ScriptDir"
+    # An existing folder is judged by its final path, so a junction or mount
+    # point onto a network or removable drive is caught. The folder keeps its
+    # given path otherwise: the reparse checks below must still see the link.
+    # A folder that cannot be opened (C:\wsl without elevation) is reported
+    # like an unreadable ACL: INFO on a dry run, FAIL on a real one.
+    $unresolved = @()
+    foreach ($pair in @(@('data dir', $DataDir), @('script dir', $ScriptDir))) {
+        $given = $pair[1]
+        if ($given -notmatch '^[A-Za-z]:\\') { throw "refusing: $($pair[0]) is not a fixed local drive: $given" }
+        $final = $given
+        if ([IO.Directory]::Exists($given)) {
+            try { $final = Get-AapFinalDosPath $given } catch { $unresolved += @($given) }
+        }
+        if (-not (Test-AapFixedLocalPath $final)) { throw "refusing: $($pair[0]) is not a fixed local drive: $final" }
     }
     if ($trayExists) {
         $TrayExe = Get-AapFinalDosPath $TrayExe
@@ -442,7 +472,7 @@ function Invoke-AapInstallSupervisor {
         TrayExists     = $trayExists
         DataProblems   = @($data.Problems) + @($trayProblems)
         ScriptProblems = @($anc.Problems) + @($script:trayAnc.Problems)
-        Unreadable     = @($data.Unreadable) + @($anc.Unreadable) + @($script:trayAnc.Unreadable)
+        Unreadable     = @($unresolved) + @($data.Unreadable) + @($anc.Unreadable) + @($script:trayAnc.Unreadable)
     }
     $template = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'aap-runner-supervisor-task.xml')
     $ps1 = Join-Path $ScriptDir 'aap-runner-supervisor.ps1'
