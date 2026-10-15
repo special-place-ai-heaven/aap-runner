@@ -1313,6 +1313,39 @@ Describe 'aap-runner host supervisor' {
             Should -Invoke Get-Acl -Times 2 -Exactly
         }
 
+        It 'refuses an ancestor owned by the operator' {
+            Mock Get-Acl { & $script:mkAcl $script:op @() }
+            $r = Get-AapAncestorProblem 'C:\wsl\aap-runner-supervisor'
+            @($r.Problems) -join "`n" | Should -Match 'is not an admin'
+        }
+
+        It 'refuses an ancestor ACE that is not allow or deny' {
+            $raw = New-Object System.Security.AccessControl.RawSecurityDescriptor 'O:BA D:(OA;;RPWP;c9651a32-5a0b-4e8c-9a55-6b9a0a0a0a0a;;BU)'
+            $ds = New-Object System.Security.AccessControl.DirectorySecurity
+            $bytes = New-Object byte[] $raw.BinaryLength
+            $raw.GetBinaryForm($bytes, 0)
+            $ds.SetSecurityDescriptorBinaryForm($bytes)
+            Mock Get-Acl { $ds }
+            $r = Get-AapAncestorProblem 'C:\wsl\aap-runner-supervisor'
+            @($r.Problems) -join "`n" | Should -Match 'not a plain allow or deny'
+        }
+
+        It 'does not treat write-attributes on a parent as a replace right' {
+            $users = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-32-545'
+            $attr = New-Object System.Security.AccessControl.FileSystemAccessRule($users, 'WriteAttributes', 'None', 'None', 'Allow')
+            Mock Get-Acl { & $script:mkAcl 'S-1-5-32-544' @($attr) }
+            $r = Get-AapAncestorProblem 'C:\wsl\aap-runner-supervisor'
+            @($r.Problems).Count | Should -Be 0
+        }
+
+        It 'resolves notepad to a fixed local drive and refuses a UNC path' {
+            $final = Get-AapFinalDosPath 'C:\Windows\System32\notepad.exe'
+            $final | Should -Match '^[A-Za-z]:\\'
+            Test-AapFixedLocalPath $final | Should -BeTrue
+            Test-AapFixedLocalPath '\\server\share\tray.exe' | Should -BeFalse
+            Test-AapFixedLocalPath 'C:notepad.exe' | Should -BeFalse
+        }
+
         It 'gives the user read only on the root and no folder creation in inbox' {
             $op = $script:op
             $rootRules = @((Get-AapDataDirAcl $op).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq $op })
@@ -1347,6 +1380,9 @@ Describe 'aap-runner host supervisor' {
             $wdac = New-Object System.Security.AccessControl.FileSystemAccessRule($me, 'ChangePermissions', 'None', 'None', 'Allow')
             $wdacRaw = New-Object System.Security.AccessControl.RawSecurityDescriptor((& $script:mkAcl 'S-1-5-32-544' @($wdac)).GetSecurityDescriptorBinaryForm(), 0)
             Test-AapAdminDescriptor $wdacRaw | Should -BeFalse
+            $attr = New-Object System.Security.AccessControl.FileSystemAccessRule($me, 'WriteAttributes', 'None', 'None', 'Allow')
+            $attrRaw = New-Object System.Security.AccessControl.RawSecurityDescriptor((& $script:mkAcl 'S-1-5-32-544' @($attr)).GetSecurityDescriptorBinaryForm(), 0)
+            Test-AapAdminDescriptor $attrRaw | Should -BeFalse
             $objectAce = New-Object System.Security.AccessControl.RawSecurityDescriptor 'O:BA D:(OA;;RPWP;c9651a32-5a0b-4e8c-9a55-6b9a0a0a0a0a;;BU)'
             Test-AapAdminDescriptor $objectAce | Should -BeFalse
         }

@@ -96,7 +96,7 @@ function Test-AapAdminDescriptor($Raw) {
     if ($null -eq $Raw -or $null -eq $Raw.Owner) { return $false }
     if ($AapAdminSids -notcontains $Raw.Owner.Value) { return $false }
     if ($null -eq $Raw.DiscretionaryAcl) { return $false }
-    $bad = 0x2 -bor 0x4 -bor 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
+    $bad = 0x2 -bor 0x4 -bor 0x100 -bor 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
     foreach ($ace in $Raw.DiscretionaryAcl) {
         $type = [int]$ace.AceType
         if ($type -ne 0 -and $type -ne 1) { return $false }
@@ -129,6 +129,9 @@ function Test-AapAdminOwned([string]$Path) {
 # cannot replace an existing child. Inherit-only entries do not apply to the
 # folder itself (they show up on the child, which the leaf check covers).
 function Get-AapAncestorProblem([string]$Path) {
+    # Delete, delete-child, write-DAC, write-owner, GENERIC_ALL. Not 0x100:
+    # write-attributes on a parent does not replace the child. Create-folder
+    # rights are absent on purpose.
     $bad = [int]([Security.AccessControl.FileSystemRights]'Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership') -bor 0x10000000
     $problems = New-Object System.Collections.Generic.List[string]
     $unreadable = New-Object System.Collections.Generic.List[string]
@@ -137,13 +140,23 @@ function Get-AapAncestorProblem([string]$Path) {
         $acl = $null
         try { $acl = Get-Acl -LiteralPath $dir } catch { $unreadable.Add($dir) }
         if ($acl) {
-            foreach ($ace in (Get-AapAccessRule $acl)) {
-                if ($ace.AccessControlType -ne 'Allow') { continue }
-                if (($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
-                $sid = $ace.IdentityReference.Value
+            $raw = New-Object System.Security.AccessControl.RawSecurityDescriptor($acl.GetSecurityDescriptorBinaryForm(), 0)
+            $owner = $raw.Owner.Value
+            if ($AapAdminSids -notcontains $owner) {
+                $problems.Add("owner $owner on $dir is not an admin")
+            }
+            foreach ($ace in $raw.DiscretionaryAcl) {
+                $type = [int]$ace.AceType
+                if ($type -ne 0 -and $type -ne 1) {
+                    $problems.Add("$dir has an ACE that is not a plain allow or deny")
+                    continue
+                }
+                if ($type -ne 0) { continue }
+                if (([int]$ace.AceFlags -band 8) -ne 0) { continue }
+                $sid = $ace.SecurityIdentifier.Value
                 if ($AapAdminSids -contains $sid) { continue }
-                if (([int]$ace.FileSystemRights -band $bad) -ne 0) {
-                    $problems.Add("$dir grants $sid $($ace.FileSystemRights)")
+                if (([int]$ace.AccessMask -band $bad) -ne 0) {
+                    $problems.Add("$dir grants $sid $($ace.AccessMask)")
                 }
             }
         }
@@ -152,9 +165,50 @@ function Get-AapAncestorProblem([string]$Path) {
     return [pscustomobject]@{ Problems = $problems; Unreadable = $unreadable }
 }
 
-# Walks the data folder without following any reparse point. Everything
-# outside inbox\ must have an admin owner; inbox\ children are the tray's own
-# files and may be owned by the user.
+function Initialize-AapPathNative {
+    if ('AapPathNative' -as [type]) { return }
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class AapPathNative {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr CreateFileW(string name, int access, int share, IntPtr sec, int disp, int flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetFinalPathNameByHandleW(IntPtr handle, StringBuilder buf, uint len, uint flags);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern uint GetDriveTypeW(string root);
+}
+"@
+}
+
+function Get-AapFinalDosPath([string]$Path) {
+    Initialize-AapPathNative
+    $invalid = [IntPtr]::new(-1)
+    $handle = [AapPathNative]::CreateFileW($Path, -2147483648, 7, [IntPtr]::Zero, 3, 0x80, [IntPtr]::Zero)
+    if ($handle -eq $invalid) { throw "refusing: could not open $Path" }
+    try {
+        $buf = New-Object System.Text.StringBuilder 1024
+        $n = [AapPathNative]::GetFinalPathNameByHandleW($handle, $buf, 1024, 0)
+        if ($n -eq 0 -or $n -ge 1024) { throw "refusing: could not resolve $Path" }
+        $text = $buf.ToString()
+        if ($text.StartsWith('\\?\UNC\')) { return '\\' + $text.Substring(8) }
+        if ($text.StartsWith('\\?\')) { return $text.Substring(4) }
+        return $text
+    } finally {
+        [void][AapPathNative]::CloseHandle($handle)
+    }
+}
+
+function Test-AapFixedLocalPath([string]$Path) {
+    if ($Path -notmatch '^[A-Za-z]:\\') { return $false }
+    Initialize-AapPathNative
+    $root = $Path.Substring(0, 3)
+    return ([AapPathNative]::GetDriveTypeW($root) -eq 3)
+}
+
 function Get-AapDataDirProblem([string]$Path) {
     $problems = New-Object System.Collections.Generic.List[string]
     $unreadable = New-Object System.Collections.Generic.List[string]
@@ -355,7 +409,12 @@ function Invoke-AapInstallSupervisor {
     $trayExists = [bool](Test-Path -LiteralPath $TrayExe -PathType Leaf)
     $trayProblems = @()
     $script:trayAnc = [pscustomobject]@{ Problems = @(); Unreadable = @() }
+    if ($ScriptDir -notmatch '^[A-Za-z]:\\' -or -not (Test-AapFixedLocalPath ($ScriptDir.Substring(0, 3)))) {
+        throw "refusing: script dir is not a fixed local drive: $ScriptDir"
+    }
     if ($trayExists) {
+        $TrayExe = Get-AapFinalDosPath $TrayExe
+        if (-not (Test-AapFixedLocalPath $TrayExe)) { throw "refusing: tray path is not a fixed local drive: $TrayExe" }
         if ($TrayExe -notmatch ($AapPathPattern + '\.exe\z')) { throw "refusing: tray path $TrayExe" }
         $trayDir = Split-Path -Parent $TrayExe
         if (-not (Test-AapAdminOwned $trayDir)) {

@@ -412,6 +412,34 @@ fn owned_acl(owner: PSID, dacl: *mut ACL, sd: PSECURITY_DESCRIPTOR) -> std::io::
     })
 }
 
+/// A DOS path on a fixed local disk: `C:\...`, drive type `DRIVE_FIXED`.
+/// UNC (`\\server\...`) and a network redirect (`DRIVE_REMOTE`) are refused.
+pub fn is_fixed_local_path(path: &std::path::Path) -> bool {
+    fixed_local_path(&path.to_string_lossy(), drive_type_of(path))
+}
+
+pub fn fixed_local_path(path: &str, drive_type: Option<u32>) -> bool {
+    let b = path.as_bytes();
+    if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
+        return false;
+    }
+    drive_type == Some(3) // DRIVE_FIXED; DRIVE_REMOTE is 4
+}
+
+fn drive_type_of(path: &std::path::Path) -> Option<u32> {
+    let text = path.to_string_lossy();
+    if text.len() < 2 {
+        return None;
+    }
+    let root = format!("{}\\", &text[..2]);
+    let wide = wide(std::ffi::OsStr::new(&root));
+    // SAFETY: `wide` is null-terminated and lives for this call.
+    let kind = unsafe {
+        windows::Win32::Storage::FileSystem::GetDriveTypeW(PCWSTR::from_raw(wide.as_ptr()))
+    };
+    Some(kind)
+}
+
 /// `\\?\C:\...` from `GetFinalPathNameByHandleW` back to a DOS path.
 pub fn strip_extended_path(raw: &str) -> String {
     if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
@@ -686,5 +714,12 @@ mod tests {
             r"\\server\share\tray.exe"
         );
         assert_eq!(strip_extended_path(r"C:\plain.exe"), r"C:\plain.exe");
+        assert!(fixed_local_path(r"C:\Windows\notepad.exe", Some(3)));
+        assert!(!fixed_local_path(r"Z:\tray.exe", Some(4)), "mapped drive");
+        assert!(!fixed_local_path(r"\\server\share\tray.exe", Some(3)));
+        assert!(!fixed_local_path(r"C:notepad.exe", Some(3)));
+        assert!(is_fixed_local_path(std::path::Path::new(
+            r"C:\Windows\notepad.exe"
+        )));
     }
 }

@@ -110,7 +110,7 @@ and `-DryRun` runs the same checks. The script goes to
 `C:\wsl\aap-runner-supervisor`, which inherits the SYSTEM and Administrators
 only ACL that `install-host.ps1` puts on `C:\wsl`. The copy is refused unless
 that folder has only those entries. It is also refused if any folder above it,
-up to `C:\`, lets anyone else delete, re-permission or take ownership of it.
+up to `C:\`, is not owned by SYSTEM, Administrators, or TrustedInstaller, has an ACE that is not a plain allow or deny, or lets anyone else delete, re-permission or take ownership of it. Create-folder rights on a parent are still allowed. The script, the data folder, and the tray exe must be on a fixed local drive: a UNC path or a mapped drive is refused, using the final path from `GetFinalPathNameByHandleW`.
 
 The installer does not start the task. The initial state is off, and a
 supervisor that starts with desired off drains and terminates a running
