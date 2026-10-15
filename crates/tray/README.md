@@ -82,8 +82,10 @@ addendum of the design doc.
   (`now -` when nothing runs). While edits differ from `inbox\settings.json`: `N changes not applied`,
   a cap error inline, and Apply (disabled on an error; writes schema 2 atomically, as the old dialog's
   OK did) and Revert (reloads the file). Below the settings: the pool bars (Cores, Memory, Disk with
-  `N GiB free of M · floor P`, `IO · MiB/s`, `sampled N s ago`) with narrower tracks to fit the column width.
-  Verify install, Repair install, and Open logs are pinned at the bottom.
+  `N GiB free of M · floor P`, `IO cap N pool · M each` (both caps known),
+  `IO cap N pool` / `IO cap M each` (one cap known), `sampled N s ago`) with narrower tracks to
+  fit the column width. All bar rows use a fixed height; the footer (Verify/Repair/Open logs) is
+  outside the scroll area and always visible.
 - **Right column:** only observed values. A pinned header row (symbol, state, `N/M busy`, `All OK` or
   the `1 problem` button). Below the header (in every state including Off and Not installed): one
   status line for the current Verify/Repair job (format: `Verify · failed · exit 1` on failure,
