@@ -120,13 +120,23 @@ io_cap() {
 [[ "$(io_cap slice 0 0 /dev/sde)" == null ]] || fail "no io cap is $(io_cap slice 0 0 /dev/sde)"
 write_status
 jq -e '.schema == 4 and (.cleaning | type) == "boolean" and (.work_disk_floor_gb == null or (.work_disk_floor_gb | type) == "number") and (.work_disk_gib == null or (.work_disk_gib | type) == "number") and (.work_disk_free_gb == null or (.work_disk_free_gb | type) == "number")' "${RUN_DIR}/status.json" >/dev/null || fail "disk fields: $(cat "${RUN_DIR}/status.json")"
+# A marker is the cleaner's pid. A live pid counts; a dead one (a killed
+# cleaner, or one from before a restart) does not, so cleaning never sticks.
 mkdir -p "${RUN_DIR}/cleaning.d"
-: > "${RUN_DIR}/cleaning.d/1"
+: > "${RUN_DIR}/cleaning.d/$$"
 write_status
 [[ "$(jq -r .cleaning "${RUN_DIR}/status.json")" == true ]] || fail "cleaning was not set"
 rm -rf "${RUN_DIR}/cleaning.d"
 write_status
 [[ "$(jq -r .cleaning "${RUN_DIR}/status.json")" == false ]] || fail "cleaning stayed set"
+(exit 0) &
+dead=$!
+wait "${dead}"
+mkdir -p "${RUN_DIR}/cleaning.d"
+: > "${RUN_DIR}/cleaning.d/${dead}"
+write_status
+[[ "$(jq -r .cleaning "${RUN_DIR}/status.json")" == false ]] || fail "a dead cleaner's marker set cleaning"
+rm -rf "${RUN_DIR}/cleaning.d"
 echo "schema 4 ok"
 
 # run_one reads docker start's stdout. A container that dies mid-job prints
