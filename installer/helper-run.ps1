@@ -173,7 +173,7 @@ function Get-AapVerifyReport {
         [void]$lines.Add('FAIL status missing or unknown state')
     } else {
         $schema = $status.schema
-        if ($null -eq $schema -or $schema -eq 1 -or $schema -eq 2 -or $schema -eq 3) {
+        if ($null -eq $schema -or $schema -eq 1 -or $schema -eq 2 -or $schema -eq 3 -or $schema -eq 4) {
             [void]$lines.Add("PASS status $($status.state)")
         } else {
             [void]$lines.Add("FAIL status schema $schema")

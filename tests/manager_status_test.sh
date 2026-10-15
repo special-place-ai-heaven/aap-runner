@@ -41,8 +41,8 @@ feed() {
 }
 
 write_status
-[[ "$(jq -r 'keys_unsorted | join(",")' "${RUN_DIR}/status.json")" == "state,job,repo,run_url,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing,schema,sampled_at,pool,slots" ]] \
-  || fail "keys are not state,job,repo,run_url,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing,schema,sampled_at,pool,slots: $(cat "${RUN_DIR}/status.json")"
+[[ "$(jq -r 'keys_unsorted | join(",")' "${RUN_DIR}/status.json")" == "state,job,repo,run_url,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing,schema,sampled_at,pool,slots,work_disk_gib,work_disk_free_gb,work_disk_floor_gb,cleaning" ]] \
+  || fail "keys are not state,job,repo,run_url,busy,updated,runner_count,job_cpus,job_memory,job_io_mbps,sharing,schema,sampled_at,pool,slots,work_disk_gib,work_disk_free_gb,work_disk_floor_gb,cleaning: $(cat "${RUN_DIR}/status.json")"
 [[ "$(jq -c '[.runner_count, .job_cpus, .job_memory, .job_io_mbps]' "${RUN_DIR}/status.json")" == '[2,24,"72g",0]' ]] \
   || fail "effective limits in status.json: $(cat "${RUN_DIR}/status.json")"
 jq -e '(.runner_count | type) == "number" and (.busy | type) == "number" and (.updated | type) == "number" and (.job | type) == "string"' \
@@ -78,10 +78,10 @@ write_status
 expect idle "" 0
 echo "draining ok"
 
-# Schema 3: one slots entry per configured slot, in slot order, with these
+# Schema 4: one slots entry per configured slot, in slot order, with these
 # keys; pool sums the slots' sampled usage; sampled_at is the sample's time.
 slot_keys=slot,state,job,repo,run_url,job_url,started_at,cpu_cores,mem_gib
-[[ "$(field schema)" == 3 ]] || fail "schema is $(field schema)"
+[[ "$(field schema)" == 4 ]] || fail "schema is $(field schema)"
 [[ "$(jq -r '[.slots[] | keys_unsorted | join(",")] | unique | join(";")' "${RUN_DIR}/status.json")" == "${slot_keys}" ]]   || fail "slot keys: $(cat "${RUN_DIR}/status.json")"
 [[ "$(jq -c '[.slots[].slot]' "${RUN_DIR}/status.json")" == '[1,2]' ]] || fail "slots are not 1,2 in order"
 [[ "$(jq -c '[.sampled_at, .pool]' "${RUN_DIR}/status.json")" == '[null,{"cpu_cores":0,"mem_gib":0,"io_mbps":null}]' ]]   || fail "no sample yet: $(cat "${RUN_DIR}/status.json")"
@@ -119,7 +119,15 @@ io_cap() {
 [[ "$(io_cap fixed 450 225 '')" == null ]] || fail "io cap without a device is $(io_cap fixed 450 225 '')"
 [[ "$(io_cap slice 0 0 /dev/sde)" == null ]] || fail "no io cap is $(io_cap slice 0 0 /dev/sde)"
 write_status
-echo "schema 3 ok"
+jq -e '.schema == 4 and (.cleaning | type) == "boolean" and (.work_disk_floor_gb == null or (.work_disk_floor_gb | type) == "number") and (.work_disk_gib == null or (.work_disk_gib | type) == "number") and (.work_disk_free_gb == null or (.work_disk_free_gb | type) == "number")' "${RUN_DIR}/status.json" >/dev/null || fail "disk fields: $(cat "${RUN_DIR}/status.json")"
+mkdir -p "${RUN_DIR}/cleaning.d"
+: > "${RUN_DIR}/cleaning.d/1"
+write_status
+[[ "$(jq -r .cleaning "${RUN_DIR}/status.json")" == true ]] || fail "cleaning was not set"
+rm -rf "${RUN_DIR}/cleaning.d"
+write_status
+[[ "$(jq -r .cleaning "${RUN_DIR}/status.json")" == false ]] || fail "cleaning stayed set"
+echo "schema 4 ok"
 
 # run_one reads docker start's stdout. A container that dies mid-job prints
 # no completed line; the slot still goes back to idle, and docker start's

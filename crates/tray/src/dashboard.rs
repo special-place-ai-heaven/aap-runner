@@ -297,6 +297,33 @@ fn bar_numbers(used: f64, share: Option<f64>, cores: bool) -> (String, bool) {
     }
 }
 
+/// Work disk bar: used fraction of the size, caption `40 free / 100 GiB · floor 15`.
+/// `over` is free space under the floor.
+fn disk_line(
+    size: Option<f64>,
+    free: Option<f64>,
+    floor: Option<f64>,
+) -> (Option<f64>, Option<f64>, String, bool) {
+    match (size, free) {
+        (Some(size), Some(free))
+            if size.is_finite() && free.is_finite() && size >= 0.0 && free >= 0.0 =>
+        {
+            let used = (size - free).max(0.0);
+            let over = floor.is_some_and(|f| free < f);
+            let floor_txt = floor
+                .map(|f| format!(" \u{b7} floor {}", gib(f)))
+                .unwrap_or_default();
+            (
+                Some(used),
+                Some(size),
+                format!("{} free / {} GiB{floor_txt}", gib(free), gib(size)),
+                over,
+            )
+        }
+        _ => (None, None, "no sample".into(), false),
+    }
+}
+
 /// Copy, Open: the URL a title opens, checked again at the moment of use.
 fn checked(url: &str) -> Option<&str> {
     (state::valid_job_url(url) || state::valid_run_url(url)).then_some(url)
@@ -944,6 +971,27 @@ impl Dash {
         });
     }
 
+    /// Work disk next to the pool totals. `cleaning` while the manager cleans.
+    fn disk_bar(&self, ui: &mut egui::Ui, track_w: f32) {
+        let (used, share, text, over) = disk_line(
+            self.snap.work_disk_gib,
+            self.snap.work_disk_free_gb,
+            self.snap.work_disk_floor_gb,
+        );
+        ui.horizontal(|ui| {
+            fixed_label(ui, "Disk", 18.0);
+            let r = self.track(ui, egui::Id::new("pool-disk"), used, share, over, track_w);
+            a11y(&r, format!("Work disk {text}"));
+            let color = self.number_color(used, over);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if self.snap.cleaning {
+                    ui.label(RichText::new("cleaning").color(self.pal().muted).small());
+                }
+                ui.label(RichText::new(text).color(color));
+            });
+        });
+    }
+
     /// Pool bars and the `IO …` / `sampled N s ago` line.
     fn pool(&mut self, ui: &mut egui::Ui) {
         let p = self.pal();
@@ -970,6 +1018,7 @@ impl Dash {
             track_w,
             "Pool memory".into(),
         );
+        self.disk_bar(ui, track_w);
         ui.horizontal(|ui| {
             let io = match (
                 self.snap.pool.io_mbps.filter(|_| fresh),
@@ -1886,5 +1935,16 @@ mod tests {
         let (_, y, _, h) = place_window([0.0, 80.0, 800.0, 100.0], max, pad, title);
         assert_eq!(h, 0.0);
         assert_eq!(y, 80.0);
+    }
+
+    #[test]
+    fn disk_line_names_free_size_and_floor() {
+        let (used, share, text, over) = disk_line(Some(100.0), Some(40.0), Some(15.0));
+        assert_eq!((used, share, over), (Some(60.0), Some(100.0), false));
+        assert_eq!(text, "40 free / 100 GiB \u{b7} floor 15");
+        assert!(disk_line(Some(100.0), Some(10.0), Some(15.0)).3);
+        let (used, share, text, over) = disk_line(None, None, None);
+        assert_eq!((used, share, over), (None, None, false));
+        assert_eq!(text, "no sample");
     }
 }

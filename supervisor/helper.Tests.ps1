@@ -39,6 +39,21 @@ Describe 'helper verify' {
         @($report.Lines | Where-Object { $_.StartsWith('FAIL') }).Count | Should -Be 0
     }
 
+    It 'accepts status schema 4 and refuses schema 5' {
+        $root = Join-Path $TestDrive 'schema4'
+        $updated = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        New-AapFixture -Root $root -Updated $updated
+        $enc = New-Object System.Text.UTF8Encoding $false
+        $path = Join-Path $root 'status.json'
+        $text = [IO.File]::ReadAllText($path).Replace('"schema":3', '"schema":4,"work_disk_gib":60,"work_disk_free_gb":40,"work_disk_floor_gb":15,"cleaning":false')
+        [IO.File]::WriteAllText($path, $text, $enc)
+        $report = Get-AapVerifyReport -DataDir $root
+        ($report.Lines -join "`n") | Should -Match 'PASS status idle'
+        [IO.File]::WriteAllText($path, $text.Replace('"schema":4', '"schema":5'), $enc)
+        $report5 = Get-AapVerifyReport -DataDir $root
+        ($report5.Lines -join "`n") | Should -Match 'FAIL status schema 5'
+    }
+
     It 'runs verify -Fixture against that tree and does not mention wsl' {
         $root = Join-Path $TestDrive 'file'
         $updated = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')

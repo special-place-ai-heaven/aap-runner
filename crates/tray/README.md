@@ -18,7 +18,7 @@ admin-written.
 | `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`. The elevated helper reads it. |
 | `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code` |
 | `jobs\<id>\log.txt`, `exit.txt` | elevated helper | live log and the process exit code |
-| `status.json` | supervisor, never the tray | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"…","updated":"<RFC3339>","detail":"…","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/…/actions/runs/N"}` (the last five optional; `repo` and `run_url` may be `""`) |
+| `status.json` | supervisor, never the tray | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"…","updated":"<RFC3339>","detail":"…","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/…/actions/runs/N"}` (the last five optional; `repo` and `run_url` may be `""`). Schema 4 adds `work_disk_gib`, `work_disk_free_gb`, `work_disk_floor_gb` and `cleaning`; schema 3 still reads, with no disk sample and cleaning false. A schema above 4 is rejected. |
 | `logs\` | supervisor | opened by "Open logs" via `C:\Windows\explorer.exe` (absolute path) |
 
 - `inbox\` missing: `Not installed`; Start/Stop/Restart, Pause/Resume and Settings are disabled.
@@ -83,7 +83,7 @@ addendum of the design doc.
   a cap error inline, and Apply (disabled on an error; writes schema 2 atomically, as the old dialog's
   OK did) and Revert (reloads the file). Open logs is pinned at the bottom.
 - **Right column:** only observed values. A pinned header row (symbol, state, `N/M busy`, `All OK` or
-  the `1 problem` button), pool bars, `IO … MiB/s` and `sampled N s ago`, one compact card per runner
+  the `1 problem` button), pool bars, a work-disk bar (free / size, floor), a cleaning note while cleanup runs, `IO … MiB/s` and `sampled N s ago`, one compact card per runner
   (state and elapsed; `title · repo` on one line with the full text in a tooltip and a copy button;
   CPU and Mem bars side by side), and the last 60 minutes. It scrolls at small sizes.
 - **Error panel:** replaces the right column's cards, with `< Back to runners` on top. It opens by itself

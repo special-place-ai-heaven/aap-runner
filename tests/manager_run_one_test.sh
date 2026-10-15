@@ -117,14 +117,30 @@ grep -qx "network rm ${name}" "${calls}" || fail "run_one did not remove its own
 echo "token, cache dir, and per-job cleanup ok"
 
 mkdir -p "${SCCACHE_HOST_DIR}/repo"
-head -c 2097152 /dev/zero > "${SCCACHE_HOST_DIR}/repo/object"
+head -c 2097152 /dev/zero > "${SCCACHE_HOST_DIR}/repo/new"
+touch -d '2024-01-01 00:00:00' "${SCCACHE_HOST_DIR}/repo/new"
 SCCACHE_TREE_MAX_MB=8
 bound_sccache_tree 2>/dev/null
-[[ -f "${SCCACHE_HOST_DIR}/repo/object" ]] || fail "a tree under the cap was wiped"
-SCCACHE_TREE_MAX_MB=1
+[[ -f "${SCCACHE_HOST_DIR}/repo/new" ]] || fail "a tree under the cap was trimmed"
+head -c 2097152 /dev/zero > "${SCCACHE_HOST_DIR}/repo/old"
+touch -d '2020-01-01 00:00:00' "${SCCACHE_HOST_DIR}/repo/old"
+SCCACHE_TREE_MAX_MB=3
 bound_sccache_tree 2>/dev/null
-[[ -d "${SCCACHE_HOST_DIR}" ]] || fail "the wipe removed the top cache dir"
-[[ -z "$(ls -A "${SCCACHE_HOST_DIR}")" ]] || fail "a tree over the cap was not wiped"
+[[ -d "${SCCACHE_HOST_DIR}" ]] || fail "the trim removed the top cache dir"
+[[ -f "${SCCACHE_HOST_DIR}/repo/new" ]] || fail "the newest cache file was trimmed"
+[[ ! -e "${SCCACHE_HOST_DIR}/repo/old" ]] || fail "the oldest cache file was kept"
 echo "cache tree cap ok"
+
+: > "${calls}"
+prune_job_docker
+grep -qx 'image prune -f --filter dangling=true' "${calls}" || fail "image prune: $(cat "${calls}")"
+grep -qx 'builder prune -f' "${calls}" || fail "builder prune missing"
+grep -qx 'container prune -f --filter label=aap-crrr-job=1 --filter until=1h' "${calls}" || fail "container prune: $(cat "${calls}")"
+grep -qx 'network prune -f --filter label=aap-crrr-job=1 --filter until=1h' "${calls}" || fail "network prune: $(cat "${calls}")"
+if grep -qx 'network prune -f --filter label=aap-crrr-job=1' "${calls}"; then
+  fail "network prune had no age bound"
+fi
+declare -f slot_loop | grep -q clean_after_job || fail "slot_loop does not clean after a job"
+echo "after-job prune ok"
 
 echo "manager run_one tests ok"

@@ -138,11 +138,13 @@ Describe 'aap-runner host supervisor' {
             Write-AapStatus 'idle' '' 'second write replaces the first'
             $path = Join-Path $AapCfg.DataDir 'status.json'
             $s = Get-AapStatusFile
-            @($s.PSObject.Properties.Name) -join ',' | Should -Be 'state,job,updated,detail,runner_count,job_cpus,job_memory_gib,repo,run_url,schema,sampled_at,pool,slots,job_io_mbps,sharing'
+            @($s.PSObject.Properties.Name) -join ',' | Should -Be 'state,job,updated,detail,runner_count,job_cpus,job_memory_gib,repo,run_url,schema,sampled_at,pool,slots,job_io_mbps,sharing,work_disk_gib,work_disk_free_gb,work_disk_floor_gb,cleaning'
             $s.runner_count | Should -BeNullOrEmpty
-            $s.schema | Should -Be 3
+            $s.schema | Should -Be 4
             @($s.slots).Count | Should -Be 0
             @($s.pool.PSObject.Properties.Name) -join ',' | Should -Be 'cpu_cores,mem_gib,io_mbps'
+            $s.work_disk_gib | Should -BeNullOrEmpty
+            $s.cleaning | Should -BeFalse
             $s.pool.cpu_cores | Should -BeNullOrEmpty
             $s.state | Should -Be 'idle'
             $s.detail | Should -Be 'second write replaces the first'
@@ -331,8 +333,10 @@ Describe 'aap-runner host supervisor' {
 
         It 'mirrors pool, slots, job_io_mbps and sharing from a schema 3 manager' {
             $s = Invoke-AapMirror $script:full
-            $s.schema | Should -Be 3
+            $s.schema | Should -Be 4
             $s.state | Should -Be 'running'
+            $s.work_disk_gib | Should -BeNullOrEmpty
+            $s.cleaning | Should -BeFalse
             $s.pool.cpu_cores | Should -Be 6.2
             $s.pool.mem_gib | Should -Be 12.5
             $s.pool.io_mbps | Should -Be 240
@@ -355,6 +359,22 @@ Describe 'aap-runner host supervisor' {
             $t | Should -Match '"sampled_at":"2025-10-14T10:00:00Z"'
             $t | Should -Match '"started_at":"2025-10-14T10:00:00Z"'
             $t | Should -Match '"started_at":null'
+        }
+
+        It 'mirrors work disk and cleaning from a schema 4 manager' {
+            $s = Invoke-AapMirror '{"schema":4,"state":"running","job":"ci-1","runner_count":2,"job_cpus":16,"job_memory":"32g","work_disk_gib":100,"work_disk_free_gb":40,"work_disk_floor_gb":15,"cleaning":true,"slots":[]}'
+            $s.schema | Should -Be 4
+            $s.work_disk_gib | Should -Be 100
+            $s.work_disk_free_gb | Should -Be 40
+            $s.work_disk_floor_gb | Should -Be 15
+            $s.cleaning | Should -BeTrue
+            $parsed = ConvertFrom-AapManagerStatus '{"schema":4,"state":"idle","job":"","work_disk_gib":-1,"work_disk_free_gb":"x","work_disk_floor_gb":9000,"cleaning":"yes","slots":[]}'
+            Write-AapStatus 'running' 'ci-1' '' '' '' $parsed
+            $bad = Get-AapStatusFile
+            $bad.work_disk_gib | Should -BeNullOrEmpty
+            $bad.work_disk_free_gb | Should -BeNullOrEmpty
+            $bad.work_disk_floor_gb | Should -BeNullOrEmpty
+            $bad.cleaning | Should -BeFalse
         }
 
         It 'passes an RFC 3339 sampled_at through' {
@@ -424,9 +444,11 @@ Describe 'aap-runner host supervisor' {
             @{ name = 'without slots'; text = '{"state":"running","job":"ci-9","repo":"o/r"}' }
         ) {
             $s = Invoke-AapMirror $text
-            $s.schema | Should -Be 3
+            $s.schema | Should -Be 4
             $s.state | Should -Be 'running'
             $s.job | Should -Be 'ci-9'
+            $s.work_disk_gib | Should -BeNullOrEmpty
+            $s.cleaning | Should -BeFalse
             $s.repo | Should -Be 'o/r'
             @($s.slots).Count | Should -Be 0
             $s.pool.cpu_cores | Should -BeNullOrEmpty
@@ -450,6 +472,8 @@ Describe 'aap-runner host supervisor' {
             $s.pool.cpu_cores | Should -BeNullOrEmpty
             $s.job_io_mbps | Should -BeNullOrEmpty
             $s.sharing | Should -BeNullOrEmpty
+            $s.work_disk_gib | Should -BeNullOrEmpty
+            $s.cleaning | Should -BeFalse
             Get-AapStatusText | Should -Match '"sampled_at":null'
         }
 
