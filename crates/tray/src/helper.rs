@@ -1,9 +1,11 @@
 //! Elevated helper (`--helper <verb> <id>`) and the non-elevated side that asks for it.
 //!
 //! The tray writes `inbox\jobs\<id>.json` and starts this exe with `runas` (one UAC prompt).
-//! The helper trusts nothing in that file except schema 1, a verb of `verify` or `repair`, and an
-//! id of 16 lowercase hex digits that matches the command line. Every path is built from
-//! `C:\ProgramData\aap-runner` plus that id. A reparse point on the way is refused, not followed.
+//! The helper trusts nothing in that file except schema 1, a verb of `verify`, `repair`, or
+//! `identity`, and an id of 16 lowercase hex digits that matches the command line. An `identity`
+//! request also carries the org, ids, group, labels, and the key file path, each re-checked here
+//! and again by the script. Every other path is built from `C:\ProgramData\aap-runner` plus that
+//! id. A reparse point on the way is refused, not followed.
 //!
 //! Progress lands in `jobs\<id>\` (`status.json`, `log.txt`, `exit.txt`), which the tray polls.
 //! The work itself is the existing PowerShell scripts, embedded and written into that folder
@@ -12,6 +14,7 @@
 //! ponytail: each run keeps its script copy under `jobs\<id>\scripts`. Delete old job folders by
 //! hand; a cap is the upgrade if that directory grows.
 
+use crate::identity;
 use crate::state;
 use crate::win;
 use serde::{Deserialize, Serialize};
@@ -198,6 +201,7 @@ const REPARSE: u32 = 0x400;
 pub enum Verb {
     Verify,
     Repair,
+    Identity,
 }
 
 impl Verb {
@@ -205,6 +209,7 @@ impl Verb {
         match self {
             Verb::Verify => "verify",
             Verb::Repair => "repair",
+            Verb::Identity => "identity",
         }
     }
 
@@ -212,6 +217,7 @@ impl Verb {
         match self {
             Verb::Verify => "Verify",
             Verb::Repair => "Repair",
+            Verb::Identity => "Identity",
         }
     }
 
@@ -219,6 +225,7 @@ impl Verb {
         match text {
             "verify" => Some(Verb::Verify),
             "repair" => Some(Verb::Repair),
+            "identity" => Some(Verb::Identity),
             _ => None,
         }
     }
@@ -231,6 +238,8 @@ pub struct JobUi {
     pub step: String,
     pub exit_code: Option<i32>,
     pub lines: Vec<String>,
+    /// Verify's `app-token` row: `Some(true)` on `PASS app-token`, `Some(false)` on `FAIL app-token`.
+    pub app_token: Option<bool>,
 }
 
 impl JobUi {
@@ -258,12 +267,56 @@ struct JobStatus {
     exit_code: Option<i32>,
 }
 
+/// The identity fields are present only for the `identity` verb. The path is a string here; the
+/// script checks the file (regular, under the requester's profile, PEM, under 16 KiB).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRequest {
     schema: u32,
     id: String,
     verb: String,
+    #[serde(default)]
+    org: Option<String>,
+    #[serde(default)]
+    app_id: Option<u64>,
+    #[serde(default)]
+    installation_id: Option<u64>,
+    #[serde(default)]
+    group: Option<String>,
+    #[serde(default)]
+    labels: Option<String>,
+    #[serde(default)]
+    key_path: Option<String>,
+}
+
+impl RawRequest {
+    fn has_identity(&self) -> bool {
+        self.org.is_some()
+            || self.app_id.is_some()
+            || self.installation_id.is_some()
+            || self.group.is_some()
+            || self.labels.is_some()
+            || self.key_path.is_some()
+    }
+
+    fn identity_ok(&self) -> bool {
+        let path_ok = |p: &String| {
+            (4..=1024).contains(&p.len())
+                && p.bytes().all(|b| b >= 0x20 && b != b'"')
+                && p.as_bytes()[0].is_ascii_alphabetic()
+                && p[1..].starts_with(":\\")
+                && !p.contains("..")
+        };
+        self.org.as_deref().is_some_and(identity::slug_ok)
+            && self.app_id.is_some_and(|n| n > 0)
+            && self.installation_id.is_some_and(|n| n > 0)
+            && self.group.as_deref().is_some_and(identity::slug_ok)
+            && self
+                .labels
+                .as_deref()
+                .is_some_and(|l| identity::parse_labels(l).is_ok_and(|v| v.join(",") == l))
+            && self.key_path.as_ref().is_some_and(path_ok)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -488,6 +541,11 @@ fn parse_request(bytes: &[u8], argv_verb: &str, argv_id: &str) -> Result<Verb, S
     if verb.as_str() != argv_verb {
         return Err("request verb".into());
     }
+    match verb {
+        Verb::Identity if !raw.identity_ok() => return Err("request identity".into()),
+        Verb::Verify | Verb::Repair if raw.has_identity() => return Err("request rejected".into()),
+        _ => {}
+    }
     Ok(verb)
 }
 
@@ -524,7 +582,12 @@ fn read_request(path: &Path, argv_verb: &str, argv_id: &str) -> ReqRead {
     }
 }
 
-fn write_request(base: &Path, id: &str, verb: Verb) -> io::Result<()> {
+fn write_request(
+    base: &Path,
+    id: &str,
+    verb: Verb,
+    identity: Option<&identity::Valid>,
+) -> io::Result<()> {
     let dir = base.join("inbox").join("jobs");
     if reparse_path(&dir) || reparse_path(&base.join("inbox")) || reparse_path(base) {
         return Err(io::Error::other("reparse point"));
@@ -536,8 +599,11 @@ fn write_request(base: &Path, id: &str, verb: Verb) -> io::Result<()> {
     if reparse_path(&path) {
         return Err(io::Error::other("reparse point"));
     }
-    let body = format!(r#"{{"schema":1,"id":"{id}","verb":"{}"}}"#, verb.as_str());
-    state::write_atomic(&path, body.as_bytes())
+    let body = match identity {
+        Some(v) => identity::request_json(id, v),
+        None => format!(r#"{{"schema":1,"id":"{id}","verb":"{}"}}"#, verb.as_str()).into_bytes(),
+    };
+    state::write_atomic(&path, &body)
 }
 
 fn pointer_path() -> PathBuf {
@@ -606,6 +672,31 @@ fn log_tail(path: &Path) -> Vec<String> {
     lines.split_off(start)
 }
 
+/// `Some(true)` when the log has a `PASS <row>` line, `Some(false)` on `FAIL <row>`, else `None`.
+/// The whole log is read (it is capped at [`LOG_CAP`]); the last such line wins.
+fn log_row(path: &Path, row: &str) -> Option<bool> {
+    if reparse_path(path) {
+        return None;
+    }
+    let mut text = String::new();
+    File::open(path)
+        .ok()?
+        .take(LOG_CAP)
+        .read_to_string(&mut text)
+        .ok()?;
+    let pass = format!("PASS {row}");
+    let fail = format!("FAIL {row}");
+    text.lines().rev().find_map(|line| {
+        if line.starts_with(&pass) {
+            Some(true)
+        } else if line.starts_with(&fail) {
+            Some(false)
+        } else {
+            None
+        }
+    })
+}
+
 /// What the window shows for the latest helper action. `pointer` is the temp file the tray
 /// writes; `base` is the data directory the job folder lives under.
 pub fn load_job_from(pointer: &Path, base: &Path) -> Option<JobUi> {
@@ -631,6 +722,7 @@ pub fn load_job_from(pointer: &Path, base: &Path) -> Option<JobUi> {
             step: raw.error,
             exit_code: None,
             lines: Vec::new(),
+            app_token: None,
         });
     }
     let dir = job_dir(base, &raw.id);
@@ -638,12 +730,19 @@ pub fn load_job_from(pointer: &Path, base: &Path) -> Option<JobUi> {
     if status.schema != 1 || status.id != raw.id || status.verb != raw.verb {
         return None;
     }
+    let app_token = if raw.verb == "verify" && matches!(status.state.as_str(), "passed" | "failed")
+    {
+        log_row(&dir.join("log.txt"), "app-token")
+    } else {
+        None
+    };
     Some(JobUi {
         verb: raw.verb,
         state: status.state,
         step: status.step,
         exit_code: status.exit_code,
         lines: log_tail(&dir.join("log.txt")),
+        app_token,
     })
 }
 
@@ -692,6 +791,15 @@ fn start_runas(exe: &Path, parameters: &str) -> Result<(), String> {
 }
 
 pub fn launch(base: &Path, verb: Verb) -> Result<(), String> {
+    launch_with(base, verb, None)
+}
+
+/// The identity page's Apply: the same prompt and job folder as Verify, with the fields in the request.
+pub fn launch_identity(base: &Path, fields: &identity::Valid) -> Result<(), String> {
+    launch_with(base, Verb::Identity, Some(fields.clone()))
+}
+
+fn launch_with(base: &Path, verb: Verb, identity: Option<identity::Valid>) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let resolved = match win::resolve_exe(&exe) {
         Ok(opened) => opened,
@@ -700,7 +808,7 @@ pub fn launch(base: &Path, verb: Verb) -> Result<(), String> {
         }
     };
     // runas gets the handle-resolved path, not the path this process was started from.
-    launch_resolved(base, verb, resolved)
+    launch_resolved(base, verb, resolved, identity)
 }
 
 fn not_fixed_drive_msg(path: &Path, drive_type: u32) -> String {
@@ -710,7 +818,12 @@ fn not_fixed_drive_msg(path: &Path, drive_type: u32) -> String {
     )
 }
 
-fn launch_resolved(base: &Path, verb: Verb, resolved: win::ResolvedExe) -> Result<(), String> {
+fn launch_resolved(
+    base: &Path,
+    verb: Verb,
+    resolved: win::ResolvedExe,
+    identity: Option<identity::Valid>,
+) -> Result<(), String> {
     let path = resolved.path;
     if !win::is_fixed_local_path(&path) {
         let dt = win::drive_type_of(&path).unwrap_or(0);
@@ -732,7 +845,7 @@ fn launch_resolved(base: &Path, verb: Verb, resolved: win::ResolvedExe) -> Resul
     }
     let id = win::random_id().map_err(|e| e.to_string())?;
     write_pointer(&id, verb, "")?;
-    let wrote = write_request(base, &id, verb).is_ok();
+    let wrote = write_request(base, &id, verb, identity.as_ref()).is_ok();
     if let Err(e) = start_runas(&path, &format!("--helper {} {id}", verb.as_str())) {
         let _ = write_pointer(&id, verb, &e);
         return Err(e);
@@ -742,7 +855,7 @@ fn launch_resolved(base: &Path, verb: Verb, resolved: win::ResolvedExe) -> Resul
         thread::spawn(move || {
             let deadline = Instant::now() + REQUEST_WAIT;
             while Instant::now() < deadline {
-                if write_request(&base, &id, verb).is_ok() {
+                if write_request(&base, &id, verb, identity.as_ref()).is_ok() {
                     return;
                 }
                 thread::sleep(Duration::from_millis(200));
@@ -899,6 +1012,10 @@ fn pipe_lines(reader: impl Read, tx: mpsc::Sender<String>) {
 
 fn run_script(job: &Path, verb: Verb, tray: Option<&str>) -> io::Result<i32> {
     let script = job.join("scripts").join("helper-run.ps1");
+    let id = job.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    if verb == Verb::Identity && !valid_id(id) {
+        return Err(io::Error::other("bad id"));
+    }
     let mut cmd = Command::new(POWERSHELL);
     cmd.args([
         "-NoProfile",
@@ -914,6 +1031,9 @@ fn run_script(job: &Path, verb: Verb, tray: Option<&str>) -> io::Result<i32> {
     {
         cmd.args(["-TrayExe", exe]);
     }
+    if verb == Verb::Identity {
+        cmd.args(["-Id", id]);
+    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -921,7 +1041,6 @@ fn run_script(job: &Path, verb: Verb, tray: Option<&str>) -> io::Result<i32> {
     harden_powershell(&mut cmd)?;
     let mut child = cmd.spawn()?;
     let log = job.join("log.txt");
-    let id = job.file_name().and_then(|s| s.to_str()).unwrap_or("");
     stream_child(&mut child, &log, |line| {
         if !line.is_empty() {
             let _ = advance(job, id, verb.as_str(), "running", line, None);
@@ -1091,6 +1210,131 @@ mod tests {
         let install = format!(r#"{{"schema":1,"id":"{id}","verb":"install"}}"#);
         assert!(parse_request(install.as_bytes(), "install", id).is_err());
         assert!(parse_request(&vec![b'x'; 4097], "verify", id).is_err());
+        let with_org = format!(r#"{{"schema":1,"id":"{id}","verb":"verify","org":"acme"}}"#);
+        assert!(
+            parse_request(with_org.as_bytes(), "verify", id).is_err(),
+            "identity fields on verify"
+        );
+    }
+
+    fn identity_fields() -> identity::Valid {
+        identity::Valid {
+            org: "acme".into(),
+            app_id: 123,
+            installation_id: 456,
+            group: "aap-crrr".into(),
+            labels: "self-hosted,linux,crrr".into(),
+            key_path: r"C:\Users\me\Downloads\k.pem".into(),
+        }
+    }
+
+    #[test]
+    fn an_identity_request_needs_every_field_valid() {
+        let id = "0123456789abcdef";
+        let ok = identity::request_json(id, &identity_fields());
+        assert_eq!(parse_request(&ok, "identity", id).unwrap(), Verb::Identity);
+        assert!(
+            parse_request(&ok, "verify", id).is_err(),
+            "verb must match argv"
+        );
+        let bare = format!(r#"{{"schema":1,"id":"{id}","verb":"identity"}}"#);
+        assert!(parse_request(bare.as_bytes(), "identity", id).is_err());
+        let bad = |edit: fn(&mut identity::Valid)| {
+            let mut v = identity_fields();
+            edit(&mut v);
+            parse_request(&identity::request_json(id, &v), "identity", id)
+        };
+        assert!(bad(|v| v.org = "-acme".into()).is_err());
+        assert!(bad(|v| v.app_id = 0).is_err());
+        assert!(bad(|v| v.installation_id = 0).is_err());
+        assert!(bad(|v| v.group = "a--b".into()).is_err());
+        assert!(bad(|v| v.labels = "Linux".into()).is_err());
+        assert!(bad(|v| v.labels = "a, b".into()).is_err(), "not normalised");
+        assert!(bad(|v| v.key_path = String::new()).is_err());
+        assert!(bad(|v| v.key_path = r"\\server\share\k.pem".into()).is_err());
+        assert!(bad(|v| v.key_path = r"C:\Users\..\k.pem".into()).is_err());
+        assert!(bad(|v| v.key_path = "C:\\Users\\k\n.pem".into()).is_err());
+        assert!(bad(|v| v.key_path = r"C:\Users\me\my key.pem".into()).is_ok());
+        let path = format!(
+            r#"{{"schema":1,"id":"{id}","verb":"identity","org":"acme","app_id":"123","installation_id":456,"group":"aap-crrr","labels":"linux","key_path":"C:\\k.pem"}}"#
+        );
+        assert!(
+            parse_request(path.as_bytes(), "identity", id).is_err(),
+            "id as a string"
+        );
+    }
+
+    #[test]
+    fn the_identity_request_file_holds_the_path_and_not_the_key() {
+        let base = temp();
+        fs::create_dir_all(base.join("inbox").join("jobs")).unwrap();
+        let key = base.join("real.pem");
+        fs::write(
+            &key,
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEtestbody\n-----END RSA PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        let mut v = identity_fields();
+        v.key_path = key.display().to_string();
+        let id = "fedcba9876543210";
+        write_request(&base, id, Verb::Identity, Some(&v)).unwrap();
+        let text = fs::read_to_string(request_path(&base, id)).unwrap();
+        assert!(text.contains(r#""verb":"identity""#), "{text}");
+        assert!(text.contains("real.pem"), "{text}");
+        assert!(!text.contains("MIIEtestbody"), "{text}");
+        assert!(!text.contains("PRIVATE KEY"), "{text}");
+        assert!(text.len() < 1024);
+        write_request(&base, id, Verb::Verify, None).unwrap();
+        assert_eq!(
+            fs::read_to_string(request_path(&base, id)).unwrap(),
+            format!(r#"{{"schema":1,"id":"{id}","verb":"verify"}}"#)
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_app_token_row_is_read_from_a_finished_verify_log() {
+        let base = temp();
+        let id = "0123456789abcdef";
+        let dir = job_dir(&base, id);
+        fs::create_dir_all(&dir).unwrap();
+        advance(&dir, id, "verify", "queued", "waiting", None).unwrap();
+        advance(&dir, id, "verify", "running", "STEP app-token", None).unwrap();
+        let pointer = base.join("helper.json");
+        fs::write(
+            &pointer,
+            format!(r#"{{"schema":1,"id":"{id}","verb":"verify","error":""}}"#),
+        )
+        .unwrap();
+        register_id(id);
+        let mut log = String::from("PASS data-dir\nSTEP app-token\nFAIL app-token exit 1\n");
+        fs::write(dir.join("log.txt"), &log).unwrap();
+        assert_eq!(
+            load_job_from(&pointer, &base).unwrap().app_token,
+            None,
+            "not until the job finished"
+        );
+        advance(
+            &dir,
+            id,
+            "verify",
+            "failed",
+            "FAIL app-token exit 1",
+            Some(1),
+        )
+        .unwrap();
+        assert_eq!(
+            load_job_from(&pointer, &base).unwrap().app_token,
+            Some(false)
+        );
+        log.push_str("PASS app-token obtainable\n");
+        fs::write(dir.join("log.txt"), &log).unwrap();
+        assert_eq!(
+            load_job_from(&pointer, &base).unwrap().app_token,
+            Some(true)
+        );
+        assert_eq!(log_row(&dir.join("log.txt"), "units"), None);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1381,7 +1625,7 @@ fn launch_hands_the_resolved_path_to_runas() {
             }],
         },
     };
-    launch_resolved(&base, Verb::Verify, opened).unwrap();
+    launch_resolved(&base, Verb::Verify, opened, None).unwrap();
     let got = CAPTURED_RUNAS
         .with(|slot| slot.borrow_mut().take())
         .unwrap();
@@ -1406,7 +1650,7 @@ fn launch_hands_the_resolved_path_to_runas() {
             aces: Vec::new(),
         },
     };
-    assert!(launch_resolved(&base, Verb::Verify, unc).is_err());
+    assert!(launch_resolved(&base, Verb::Verify, unc, None).is_err());
     assert!(CAPTURED_RUNAS.with(|slot| slot.borrow().is_none()));
     CAPTURE_RUNAS.with(|c| c.set(false));
     // The UNC refusal must appear in the override pointer dir, NOT the real %TEMP% path.

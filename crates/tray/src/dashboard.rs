@@ -31,14 +31,17 @@ pub enum View {
     Diagnostics,
     /// The GitHub setup checklist, in place of the runner cards.
     Github,
+    /// The identity page (org, App ids, labels, key file), in place of the runner cards.
+    Identity,
 }
 
 impl View {
-    const ALL: [View; 4] = [
+    const ALL: [View; 5] = [
         View::Status,
         View::Settings,
         View::Diagnostics,
         View::Github,
+        View::Identity,
     ];
 
     /// The command line that opens the window this way.
@@ -48,6 +51,7 @@ impl View {
             View::Settings => &["--settings"],
             View::Diagnostics => &["--dashboard", "--problem"],
             View::Github => &["--github"],
+            View::Identity => &["--identity"],
         }
     }
 
@@ -56,6 +60,7 @@ impl View {
         match args.first()?.as_str() {
             "--settings" => Some(View::Settings),
             "--github" => Some(View::Github),
+            "--identity" => Some(View::Identity),
             "--dashboard" if args.iter().any(|a| a == "--problem") => Some(View::Diagnostics),
             "--dashboard" => Some(View::Status),
             _ => None,
@@ -68,8 +73,15 @@ impl View {
             View::Settings => "settings",
             View::Diagnostics => "diagnostics",
             View::Github => "github",
+            View::Identity => "identity",
         }
     }
+}
+
+fn profile_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_default()
 }
 
 /// `%TEMP%\aap-runner-tray\tab.request`: one word, written by whoever wants the open window to
@@ -459,6 +471,9 @@ struct Dash {
     /// Saw an unmet row this visit, so a later all-met state may advance.
     github_arm: bool,
     github_met_at: Option<Instant>,
+    /// The identity page replaces the right column's cards.
+    identity: bool,
+    ident: crate::identity::Store,
 }
 
 pub fn run(base: PathBuf, view: View) -> eframe::Result {
@@ -516,6 +531,8 @@ pub fn run(base: PathBuf, view: View) -> eframe::Result {
                 setup: crate::github_setup::Store::load(crate::github_setup::path()),
                 github_arm: false,
                 github_met_at: None,
+                identity: false,
+                ident: crate::identity::Store::load(crate::identity::path()),
             };
             d.job = crate::helper::load_job(&d.base);
             d.refresh(&cc.egui_ctx);
@@ -583,18 +600,26 @@ impl Dash {
             View::Status => {
                 self.panel = false;
                 self.github = false;
+                self.identity = false;
             }
             View::Settings => self.want_focus = Some(true),
             View::Diagnostics => {
                 self.github = false;
+                self.identity = false;
                 self.show_panel();
             }
             View::Github => {
                 self.panel = false;
+                self.identity = false;
                 self.github = true;
                 self.github_arm = false;
                 self.github_met_at = None;
                 self.setup.retry();
+            }
+            View::Identity => {
+                self.panel = false;
+                self.github = false;
+                self.identity = true;
             }
         }
     }
@@ -1679,8 +1704,127 @@ impl Dash {
             .all(|r| r.phase == crate::github_setup::Phase::Met);
         ui.add_space(4.0);
         if ui.add_enabled(met, egui::Button::new("Next")).clicked() {
-            self.github = false;
+            self.open(View::Identity);
         }
+    }
+
+    fn identity_page(&mut self, ui: &mut egui::Ui) {
+        let p = self.pal();
+        if ui
+            .add(egui::Button::new(RichText::new("< Back to runners").color(p.accent)).frame(false))
+            .clicked()
+        {
+            self.identity = false;
+            return;
+        }
+        ui.label(RichText::new("Identity").strong());
+        ui.label(
+            RichText::new(
+                "The key file stays where it is. Apply hands its path to the elevated helper, which copies it into the distro as root. Nothing here is logged.",
+            )
+            .color(p.muted)
+            .small(),
+        );
+        self.job_status_line(ui);
+        ui.add_space(8.0);
+        let fields = self.ident.fields();
+        let rows = self.ident.rows();
+        let apps =
+            crate::github_setup::links(crate::github_setup::Kind::Org, &fields.org).map(|l| l.apps);
+        for row in &rows {
+            let mark = match row.phase {
+                crate::github_setup::Phase::Checking => "\u{2026}",
+                crate::github_setup::Phase::Met => "\u{2713}",
+                crate::github_setup::Phase::Unmet => "\u{2715}",
+                crate::github_setup::Phase::Blocked => "\u{2013}",
+            };
+            let color = if row.phase == crate::github_setup::Phase::Blocked {
+                p.muted
+            } else {
+                p.text
+            };
+            ui.label(RichText::new(format!("{mark}  {}", row.title)).color(color));
+            if row.phase == crate::github_setup::Phase::Blocked {
+                continue;
+            }
+            let mut edited: Option<String> = None;
+            let hint = match row.id {
+                crate::identity::RowId::Org => {
+                    ui.label(RichText::new(&fields.org).monospace());
+                    "From the GitHub setup page."
+                }
+                crate::identity::RowId::AppId => {
+                    edited = self.identity_edit(ui, &fields.app_id);
+                    "The App ID is on the app's settings page."
+                }
+                crate::identity::RowId::Installation => {
+                    edited = self.identity_edit(ui, &fields.installation_id);
+                    "The number at the end of the installation URL: .../settings/installations/<id>."
+                }
+                crate::identity::RowId::Group => {
+                    edited = self.identity_edit(ui, &fields.group);
+                    "The runner group from the checklist."
+                }
+                crate::identity::RowId::Labels => {
+                    edited = self.identity_edit(ui, &fields.labels);
+                    "Comma list. The manager expects self-hosted,linux plus its base label."
+                }
+                crate::identity::RowId::Key => {
+                    ui.horizontal(|ui| {
+                        edited = self.identity_edit(ui, &fields.key_path);
+                        if ui.button("Browse\u{2026}").clicked() {
+                            let owner = crate::win::find_window(&crate::dashboard_title());
+                            let start = profile_dir().join("Downloads");
+                            if let Some(picked) = crate::win::pick_pem_file(owner, &start) {
+                                edited = Some(picked.display().to_string());
+                            }
+                        }
+                    });
+                    "The .pem downloaded from the app page, saved under your user profile."
+                }
+            };
+            if let Some(value) = edited {
+                match row.id {
+                    crate::identity::RowId::AppId => self.ident.set_app_id(value),
+                    crate::identity::RowId::Installation => self.ident.set_installation_id(value),
+                    crate::identity::RowId::Group => self.ident.set_group(value),
+                    crate::identity::RowId::Labels => self.ident.set_labels(value),
+                    crate::identity::RowId::Key => self.ident.set_key_path(value),
+                    crate::identity::RowId::Org => {}
+                }
+            }
+            if !row.missing.is_empty() {
+                ui.label(RichText::new(&row.missing).color(p.over));
+            }
+            ui.label(RichText::new(hint).color(p.muted).small());
+            if let (crate::identity::RowId::AppId, Some(link)) = (row.id, &apps) {
+                ui.hyperlink_to(link, link);
+            }
+            ui.add_space(6.0);
+        }
+        let valid = self.ident.valid();
+        ui.add_space(4.0);
+        if ui
+            .add_enabled(valid.is_some(), egui::Button::new("Apply"))
+            .clicked()
+            && let Some(v) = valid
+        {
+            if let Err(e) = crate::helper::launch_identity(&self.base, &v) {
+                state::log(&self.base, &e);
+            }
+            self.job = crate::helper::load_job(&self.base);
+            self.job_at = Instant::now();
+        }
+    }
+
+    /// One text field of the identity page; `Some` when the text changed this frame.
+    fn identity_edit(&mut self, ui: &mut egui::Ui, value: &str) -> Option<String> {
+        let mut text = value.to_string();
+        let r = ui.text_edit_singleline(&mut text);
+        if self.right_first.is_none() {
+            self.right_first = Some(r.id);
+        }
+        r.changed().then_some(text)
     }
 
     /// One-line helper status: `Verb · state · exit N` on failure,
@@ -1733,6 +1877,10 @@ impl Dash {
             self.github_page(ui);
             return;
         }
+        if self.identity {
+            self.identity_page(ui);
+            return;
+        }
         self.job_status_line(ui); // shown in every state (Off, Not installed, error panel)
         let p = self.pal();
         match self.snap.status.clone() {
@@ -1777,6 +1925,7 @@ impl Dash {
 fn job_status_text(verb: &str, state: &str, exit: Option<i32>) -> String {
     let v = match verb {
         "repair" => "Repair",
+        "identity" => "Identity",
         _ => "Verify",
     };
     let ellipsis = matches!(state, "waiting" | "queued" | "running");
@@ -1830,6 +1979,23 @@ impl eframe::App for Dash {
         if self.job_at.elapsed() >= job_every {
             self.job = crate::helper::load_job(&self.base);
             self.job_at = Instant::now();
+            // The checklist ticks its app rows from the identity page and the last Verify.
+            self.ident.set_org(self.setup.org().unwrap_or_default());
+            self.setup.set_identity(self.ident.identity());
+            if let Some(job) = &self.job
+                && job.verb == "verify"
+                && let Some(ok) = job.app_token
+            {
+                self.setup.set_verify(crate::github_setup::Verify {
+                    app_authenticates: Some(ok),
+                    installation_matches: Some(ok),
+                    runner_group_exists: None,
+                });
+            }
+        }
+        if self.identity {
+            self.ident.set_org(self.setup.org().unwrap_or_default());
+            self.ident.tick(&profile_dir());
         }
         ctx.request_repaint_after(Duration::from_secs(1));
         if let Some(view) = take_request(&request_path()) {
@@ -1849,9 +2015,9 @@ impl eframe::App for Dash {
             } else if self.github_arm {
                 let at = *self.github_met_at.get_or_insert_with(Instant::now);
                 if crate::github_setup::ready_to_advance(true, true, at.elapsed()) {
-                    self.github = false;
                     self.github_arm = false;
                     self.github_met_at = None;
+                    self.open(View::Identity);
                 }
             }
         }
@@ -1860,6 +2026,8 @@ impl eframe::App for Dash {
                 self.panel = false;
             } else if self.github {
                 self.github = false;
+            } else if self.identity {
+                self.identity = false;
             } else {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -2169,6 +2337,10 @@ mod tests {
             "Repair · running…"
         );
         assert_eq!(job_status_text("verify", "passed", None), "Verify · ok");
+        assert_eq!(
+            job_status_text("identity", "running", None),
+            "Identity · running…"
+        );
         assert_eq!(
             job_status_text("verify", "failed", Some(0)),
             "Verify · failed"
