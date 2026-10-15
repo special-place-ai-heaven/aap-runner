@@ -257,7 +257,7 @@ load_config() {
 }
 
 # limits.conf overrides five manager.conf keys, then the same checks run on
-# the result (count 1..4, the per-slot split, the memory and cpu grammar).
+# the result (count 1..5, the per-slot split, the memory and cpu grammar).
 # It holds no App ids and no secrets. Any other key, an empty value, a file
 # that is not root's, or a group or world writable mode is refused.
 load_limits() {
@@ -399,15 +399,15 @@ finish_job_limits() {
   fi
 }
 
-# AAP_RUNNER_COUNT is 1..4 parallel job containers. AAP_JOB_CPUS and
+# AAP_RUNNER_COUNT is 1..5 parallel job containers. AAP_JOB_CPUS and
 # AAP_JOB_MEMORY are the pool total, split evenly and rounded down to whole
 # cpus and whole MiB. A slot under 1 cpu or 1g is refused. One slot keeps the
 # configured values verbatim. Runs after finish_job_limits validated them.
 finish_runner_count() {
   local num unit mult mib cpus
   [[ -z "${AAP_RUNNER_COUNT+x}" ]] && AAP_RUNNER_COUNT=1
-  if [[ ! "${AAP_RUNNER_COUNT}" =~ ^[1-4]$ ]]; then
-    echo "refusing: AAP_RUNNER_COUNT=${AAP_RUNNER_COUNT} is not 1..4" >&2
+  if [[ ! "${AAP_RUNNER_COUNT}" =~ ^[1-5]$ ]]; then
+    echo "refusing: AAP_RUNNER_COUNT=${AAP_RUNNER_COUNT} is not 1..5" >&2
     return 1
   fi
   if [[ "${AAP_RUNNER_COUNT}" -eq 1 ]]; then

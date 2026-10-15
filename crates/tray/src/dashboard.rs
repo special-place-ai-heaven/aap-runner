@@ -82,8 +82,8 @@ fn take_request(path: &Path) -> Option<View> {
     View::ALL.into_iter().find(|v| v.word() == text.trim())
 }
 
-/// Default and minimum inner size; resizable, no maximum.
-const SIZE: [f32; 2] = [760.0, 520.0];
+/// Default inner size fits five compact cards. The column scrolls below the minimum.
+const SIZE: [f32; 2] = [760.0, 760.0];
 const MIN_SIZE: [f32; 2] = [680.0, 460.0];
 /// The fixed settings column.
 const LEFT_W: f32 = 260.0;
@@ -234,13 +234,9 @@ fn clock(t: u64, offset: i64) -> String {
     format!("{:02}:{:02}", s / 3600, s % 3600 / 60)
 }
 
-/// `24`, `7.5`: whole numbers without a decimal.
+/// `24`, `7.5`, `4.8`: whole numbers without a decimal.
 fn whole(v: f64) -> String {
-    if (v - v.round()).abs() < 0.05 {
-        format!("{v:.0}")
-    } else {
-        format!("{v:.1}")
-    }
+    crate::settings::one_decimal(v)
 }
 
 /// `9.1` below 10, `41` above: GiB the way the mockups write them.
@@ -1423,7 +1419,11 @@ impl Dash {
                     a.job_memory_gib.map(|g| f64::from(g) / runners),
                 );
                 let slots = self.snap.slots.clone();
-                for (i, slot) in slots.iter().take(3).enumerate() {
+                for (i, slot) in slots
+                    .iter()
+                    .take(*crate::settings::RUNNERS.end() as usize)
+                    .enumerate()
+                {
                     if i > 0 {
                         ui.add_space(8.0);
                     }
@@ -1611,6 +1611,14 @@ mod tests {
             ("2.0 / 8.7".into(), false)
         );
         assert_eq!(bar_numbers(3.0, None, false), ("3.0 GiB".into(), false));
+        assert_eq!(
+            bar_numbers(4.8, Some(24.0 / 5.0), true),
+            ("4.8 / 4.8".into(), false)
+        );
+        assert_eq!(
+            bar_numbers(0.0, Some(72.0 / 5.0), false),
+            ("0.0 / 14.4 GiB".into(), false)
+        );
     }
 
     #[test]
@@ -1632,6 +1640,14 @@ mod tests {
             ("2.0/8.7".into(), false)
         );
         assert_eq!(compact_numbers(3.0, None, false), ("3".into(), false));
+        assert_eq!(
+            compact_numbers(4.8, Some(24.0 / 5.0), true),
+            ("4.8/4.8".into(), false)
+        );
+        assert_eq!(
+            compact_numbers(0.0, Some(72.0 / 5.0), false),
+            ("0/14.4".into(), false)
+        );
     }
 
     #[test]
@@ -1654,5 +1670,80 @@ mod tests {
         for s in crate::mark::SYMS {
             assert_ne!(DARK.state(s), LIGHT.state(s), "{s:?}");
         }
+    }
+
+    /// Five idle cards, the pool bars and the history strips fit in the default window.
+    #[test]
+    fn five_cards_fit_the_default_window() {
+        let ctx = egui::Context::default();
+        ctx.all_styles_mut(style);
+        let mut content = 0.0_f32;
+        let mut full = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(SIZE[0], 2000.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::new().inner_margin(PAD as i8))
+                    .show(ui, |ui| {
+                        ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+                        ui.add_space(8.0);
+                        let y0 = ui.cursor().min.y;
+                        for _ in 0..2 {
+                            ui.allocate_exact_size(egui::vec2(200.0, 18.0), egui::Sense::hover());
+                        }
+                        ui.allocate_exact_size(egui::vec2(200.0, 16.0), egui::Sense::hover());
+                        ui.add_space(8.0);
+                        for i in 0..5 {
+                            if i > 0 {
+                                ui.add_space(8.0);
+                            }
+                            egui::Frame::new()
+                                .stroke(Stroke::new(1.0, egui::Color32::WHITE))
+                                .corner_radius(4)
+                                .inner_margin(egui::Margin::symmetric(12, 10))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        ui.allocate_exact_size(
+                                            egui::vec2(20.0, 20.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new("Runner 1")
+                                                .font(egui::FontId::proportional(13.0)),
+                                        );
+                                    });
+                                    ui.label("Waiting for a job");
+                                    ui.allocate_exact_size(
+                                        egui::vec2(80.0, 18.0),
+                                        egui::Sense::hover(),
+                                    );
+                                });
+                        }
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Last 60 min")
+                                .font(egui::FontId::proportional(13.0)),
+                        );
+                        ui.allocate_exact_size(egui::vec2(200.0, 28.0), egui::Sense::hover());
+                        ui.allocate_exact_size(egui::vec2(200.0, 28.0), egui::Sense::hover());
+                        ui.label("peak");
+                        content = ui.cursor().min.y - y0;
+                    });
+            },
+        );
+        full.textures_delta.clear();
+        let chrome = PAD * 2.0 + 24.0 + 8.0;
+        assert!(content > 400.0, "layout measured {content}");
+        assert!(
+            content + chrome <= SIZE[1],
+            "five cards need {content} plus chrome {chrome}; window is {}",
+            SIZE[1]
+        );
     }
 }

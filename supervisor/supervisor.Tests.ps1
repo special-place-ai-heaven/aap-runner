@@ -405,11 +405,18 @@ Describe 'aap-runner host supervisor' {
             @($s.pool.PSObject.Properties.Name) -join ',' | Should -Be 'cpu_cores,mem_gib,io_mbps'
         }
 
-        It 'keeps at most 4 slots' {
+        It 'keeps at most 5 slots' {
             $six = (1..6 | ForEach-Object { '{"slot":' + $_ + ',"state":"idle"}' }) -join ','
             $s = Invoke-AapMirror ('{"state":"idle","job":"","slots":[' + $six + ']}')
-            @($s.slots).Count | Should -Be 4
-            $s.slots[3].slot | Should -Be 4
+            @($s.slots).Count | Should -Be 5
+            $s.slots[4].slot | Should -Be 5
+        }
+
+        It 'reads runner_count 5' {
+            Write-AapSettingsFile '{"runner_count":5,"job_cpus":24,"job_memory_gib":72,"paused":false}'
+            $s = Read-AapSettingsFile
+            Get-AapLimitsKey $s.Limits | Should -Be '5,24,72'
+            Get-AapLogText | Should -Not -Match 'WARN'
         }
 
         It 'mirrors an older manager <name> with slots [] and schema 3' -TestCases @(
@@ -742,7 +749,7 @@ Describe 'aap-runner host supervisor' {
 
         It 'ignores <name> and keeps the last valid settings' -TestCases @(
             @{ name = 'runner_count 0'; text = '{"runner_count":0,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
-            @{ name = 'runner_count 4'; text = '{"runner_count":4,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
+            @{ name = 'runner_count 6'; text = '{"runner_count":6,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
             @{ name = 'job_cpus 0'; text = '{"runner_count":2,"job_cpus":0,"job_memory_gib":32,"paused":false}' }
             @{ name = 'job_cpus 29'; text = '{"runner_count":2,"job_cpus":29,"job_memory_gib":32,"paused":false}' }
             @{ name = 'job_memory_gib 0'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":0,"paused":false}' }

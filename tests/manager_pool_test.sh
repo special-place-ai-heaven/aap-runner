@@ -39,11 +39,11 @@ refused() {
 split 6 12g
 assert_eq "${AAP_RUNNER_COUNT}" 1 "absent count"
 assert_eq "${SLOT_CPUS}/${SLOT_MEMORY}" 6/12g "absent count keeps limits"
-for n in 1 2 3 4; do
+for n in 1 2 3 4 5; do
   split 24 72g "${n}"
   assert_eq "${AAP_RUNNER_COUNT}" "${n}" "count ${n}"
 done
-for bad in 0 5 2.0 abc "" " 2" 02 -1; do
+for bad in 0 6 2.0 abc "" " 2" 02 -1; do
   refused 24 72g "${bad}"
 done
 echo "runner count ok"
@@ -64,6 +64,8 @@ split 24 72g 3
 assert_eq "${SLOT_CPUS}/${SLOT_MEMORY}" 8/24g "24/72g over 3"
 split 24 72g 4
 assert_eq "${SLOT_CPUS}/${SLOT_MEMORY}" 6/18g "24/72g over 4"
+split 24 72g 5
+assert_eq "${SLOT_CPUS}/${SLOT_MEMORY}" 4/14745m "24/72g over 5 rounds down"
 split 6 12g 4
 assert_eq "${SLOT_CPUS}/${SLOT_MEMORY}" 1/3g "6/12g over 4 rounds cpus down"
 split 6 10g 4

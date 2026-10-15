@@ -1,6 +1,6 @@
 //! `inbox\settings.json`: pool size and pool-total limits, written by the tray, applied by the
-//! supervisor. The window edits the runner count, the IO cap and the sharing mode, and derives CPUs
-//! and memory per runner from the caps; the file keeps totals (per-runner x runners).
+//! supervisor. The window edits the runner count, the IO cap and the sharing mode, and shows each
+//! runner's even share of the caps to one decimal. The file stores the caps.
 //! Schema 2 adds `schema`, `io_percent` and `sharing`; a schema 1 file reads with their defaults.
 
 use crate::state::{inbox, read_bounded, write_atomic};
@@ -9,7 +9,21 @@ use std::io;
 use std::ops::RangeInclusive;
 use std::path::Path;
 
-pub const RUNNERS: RangeInclusive<u32> = 1..=3;
+pub const RUNNERS: RangeInclusive<u32> = 1..=5;
+
+/// `8`, `4.8`, `14.4`: one decimal, dropped when the value is whole.
+pub fn one_decimal(v: f64) -> String {
+    if (v - v.round()).abs() < 0.05 {
+        format!("{v:.0}")
+    } else {
+        format!("{v:.1}")
+    }
+}
+
+/// Even split of a pool total across `runners`.
+pub fn share_text(total: u32, runners: u32) -> String {
+    one_decimal(f64::from(total) / f64::from(runners.max(1)))
+}
 pub const CPUS: RangeInclusive<u32> = 1..=28;
 pub const MEMORY_GIB: RangeInclusive<u32> = 1..=80;
 pub const IO_PERCENT: RangeInclusive<u32> = 0..=100;
@@ -60,6 +74,7 @@ impl Default for Settings {
 
 impl Settings {
     /// Totals from per-runner values, so they always divide evenly.
+    #[cfg(test)]
     pub fn from_per_runner(runners: u32, cpus: u32, gib: u32, paused: bool) -> Settings {
         Settings {
             runner_count: runners,
@@ -70,10 +85,16 @@ impl Settings {
         }
     }
 
-    /// What the window writes: each runner gets its share of the caps, `floor(cap / runners)`.
+    /// What the window writes: the pool caps. Each runner's share is `cap / runners`.
     pub fn derived(runners: u32, paused: bool, vm: &VmLimit) -> Settings {
-        let (cpus, gib) = vm.per_runner_max(runners);
-        Settings::from_per_runner(runners, cpus, gib, paused)
+        let (job_cpus, job_memory_gib) = vm.cap();
+        Settings {
+            runner_count: runners,
+            job_cpus,
+            job_memory_gib,
+            paused,
+            ..Settings::default()
+        }
     }
 
     /// What each runner gets: the manager floor-divides the pool totals by the runner count.
@@ -82,6 +103,7 @@ impl Settings {
         (self.job_cpus / n, self.job_memory_gib / n)
     }
 
+    #[cfg(test)]
     pub fn is_divisible(&self) -> bool {
         let n = self.runner_count.max(1);
         self.job_cpus.is_multiple_of(n) && self.job_memory_gib.is_multiple_of(n)
@@ -107,8 +129,7 @@ impl Settings {
         Ok(())
     }
 
-    /// What the tray writes: the shape, totals within the host caps, and totals that divide
-    /// evenly across the runners.
+    /// What the tray writes: the shape, and totals within the host caps.
     pub fn validate(&self, vm: &VmLimit) -> Result<(), String> {
         self.check_shape()?;
         let (cap_cpus, cap_gib) = vm.cap();
@@ -122,12 +143,6 @@ impl Settings {
             return Err(format!(
                 "Total memory {} GiB exceeds the cap of {cap_gib} GiB",
                 self.job_memory_gib
-            ));
-        }
-        if !self.is_divisible() {
-            return Err(format!(
-                "Totals must divide evenly across {} runners",
-                self.runner_count
             ));
         }
         Ok(())
@@ -171,6 +186,7 @@ impl VmLimit {
     }
 
     /// Each runner's share of the caps: `(cap_cpus / runners, cap_gib / runners)`.
+    #[cfg(test)]
     pub fn per_runner_max(&self, runners: u32) -> (u32, u32) {
         let n = runners.max(1);
         let (cpus, gib) = self.cap();
@@ -284,7 +300,21 @@ mod tests {
         };
         assert_eq!(d(1, &VM), ((26, 72), (26, 72), true));
         assert_eq!(d(2, &VM), ((13, 36), (26, 72), true));
-        assert_eq!(d(3, &VM), ((8, 24), (24, 72), true));
+        assert_eq!(d(3, &VM), ((8, 24), (26, 72), true));
+        assert_eq!(d(4, &VM), ((6, 18), (26, 72), true));
+        assert_eq!(d(5, &VM), ((5, 14), (26, 72), true));
+        assert_eq!(share_text(26, 5), "5.2");
+        assert_eq!(share_text(72, 5), "14.4");
+        let wide = VmLimit {
+            cpus: 26,
+            gib: 80,
+            assumed: false,
+        };
+        let five = Settings::derived(5, false, &wide);
+        assert_eq!((five.job_cpus, five.job_memory_gib), (24, 72));
+        assert_eq!(share_text(five.job_cpus, 5), "4.8");
+        assert_eq!(share_text(five.job_memory_gib, 5), "14.4");
+        assert!(five.validate(&wide).is_ok());
         assert_eq!(Settings::derived(1, false, &VM), Settings::default());
         assert!(Settings::derived(2, true, &VM).paused);
         let small = VmLimit {
@@ -295,7 +325,7 @@ mod tests {
         assert_eq!(small.per_runner_max(1), (14, 24));
         assert_eq!(d(1, &small), ((14, 24), (14, 24), true));
         assert_eq!(d(2, &small), ((7, 12), (14, 24), true));
-        assert_eq!(d(3, &small), ((4, 8), (12, 24), true));
+        assert_eq!(d(3, &small), ((4, 8), (14, 24), true));
         let tiny = VmLimit {
             cpus: 4,
             gib: 10,
@@ -306,25 +336,25 @@ mod tests {
     }
 
     #[test]
-    fn non_divisible_stored_file_loads_floored_and_is_rewritten() {
+    fn uneven_totals_within_the_caps_stay_and_show_one_decimal() {
         let base = temp_base("settings-nondiv");
         let file = inbox(&base).join("settings.json");
         fs::write(
             &file,
-            r#"{"runner_count":3,"job_cpus":25,"job_memory_gib":71}"#,
+            r#"{"runner_count":5,"job_cpus":24,"job_memory_gib":72}"#,
         )
         .unwrap();
         let stored = read_settings(&base);
-        assert_eq!((stored.job_cpus, stored.job_memory_gib), (25, 71));
+        assert_eq!(
+            (stored.runner_count, stored.job_cpus, stored.job_memory_gib),
+            (5, 24, 72)
+        );
         assert!(!stored.is_divisible());
-        assert_eq!(stored.per_runner(), (8, 23));
-        assert!(stored.validate(&VM).is_err());
-        assert!(write_settings(&base, &stored, &VM).is_err());
-        let (c, g) = stored.per_runner();
-        let fixed = Settings::from_per_runner(3, c, g, false);
-        write_settings(&base, &fixed, &VM).unwrap();
-        assert_eq!(read_settings(&base), fixed);
-        assert_eq!((fixed.job_cpus, fixed.job_memory_gib), (24, 69));
+        assert_eq!(share_text(stored.job_cpus, 5), "4.8");
+        assert_eq!(share_text(stored.job_memory_gib, 5), "14.4");
+        assert!(stored.validate(&VM).is_ok());
+        write_settings(&base, &stored, &VM).unwrap();
+        assert_eq!(read_settings(&base).runner_count, 5);
         fs::remove_dir_all(&base).unwrap();
     }
 
@@ -375,15 +405,20 @@ mod tests {
     }
 
     #[test]
-    fn runner_count_is_one_to_three() {
-        let s = |r| Settings::from_per_runner(r, 8, 24, false);
+    fn runner_count_is_one_to_five() {
+        let s = |r| Settings::from_per_runner(r, 4, 14, false);
         assert!(s(0).validate(&VM).is_err());
-        assert!(s(3).validate(&VM).is_ok());
-        assert!(s(4).check_shape().is_err());
+        assert!(s(5).validate(&VM).is_ok());
+        assert!(s(6).check_shape().is_err());
         assert!(
-            with(|s| (s.runner_count, s.job_cpus, s.job_memory_gib) = (4, 24, 72))
+            with(|s| (s.runner_count, s.job_cpus, s.job_memory_gib) = (6, 24, 72))
                 .validate(&VM)
                 .is_err()
+        );
+        assert!(
+            with(|s| (s.runner_count, s.job_cpus, s.job_memory_gib) = (5, 24, 72))
+                .validate(&VM)
+                .is_ok()
         );
     }
 
@@ -393,7 +428,9 @@ mod tests {
         for (s, ok) in [
             (with(|s| s.runner_count = 0), false),
             (with(|s| s.runner_count = 3), true),
-            (with(|s| s.runner_count = 4), false),
+            (with(|s| s.runner_count = 4), true),
+            (with(|s| s.runner_count = 5), true),
+            (with(|s| s.runner_count = 6), false),
             (with(|s| s.job_cpus = 0), false),
             (with(|s| s.job_cpus = 28), true),
             (with(|s| s.job_cpus = 29), false),
@@ -426,7 +463,7 @@ mod tests {
             r#"{"runner_count":1,"io_percent":101}"#,
             r#"{"runner_count":1,"sharing":"shared"}"#,
             r#"{"runner_count":9}"#,
-            r#"{"runner_count":4}"#,
+            r#"{"runner_count":6}"#,
         ] {
             fs::write(inbox(&base).join("settings.json"), garbage).unwrap();
             assert_eq!(read_settings(&base), Settings::default(), "{garbage}");

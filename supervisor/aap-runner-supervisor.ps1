@@ -22,7 +22,7 @@
 # - inbox\state.json    {"desired":"on"|"off"} plus optional "retry":<unix s>.
 #   A retry newer than the last one seen resets both backoffs and runs the
 #   next attempt now; nothing else is taken from it.
-# - inbox\settings.json {"runner_count":1..3,"job_cpus":1..28,
+# - inbox\settings.json {"runner_count":1..5,"job_cpus":1..28,
 #   "job_memory_gib":1..80,"paused":true|false} plus optional "schema":2,
 #   "io_percent":0..100 and "sharing":"slice"|"fixed" (schema 2). Missing =
 #   no override, not paused. Invalid = one logged warning, the last valid
@@ -86,7 +86,7 @@ $AapLimitsFile = '/etc/aap-runner/limits.conf'
 # only data channel into it. Same /bin/sh -c "..." form as install-host.ps1's
 # key install, which is verified on Fresh.
 $AapWriteLimits = 'umask 022; cat > /etc/aap-runner/limits.conf.tmp && mv /etc/aap-runner/limits.conf.tmp /etc/aap-runner/limits.conf'
-$AapSettingRanges = [ordered]@{ runner_count = 3; job_cpus = 28; job_memory_gib = 80 }
+$AapSettingRanges = [ordered]@{ runner_count = 5; job_cpus = 28; job_memory_gib = 80 }
 $AapRepoPattern = '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z'
 $AapRunUrlPattern = '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+\z'
 $AapJobUrlPattern = '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+/job/[0-9]+\z'
@@ -443,7 +443,7 @@ function Invoke-AapRoot([string[]]$Argv, $StdIn = $null) {
 # /run/aap-runner/status.json from the manager. State is $null unless the
 # Windows contract knows it. Limits are $null unless all three parse.
 # Repo and RunUrl are '' unless they match exactly; the tray opens RunUrl.
-# Schema 3 adds sampled_at, pool, slots (an array; at most 4 objects are
+# Schema 3 adds sampled_at, pool, slots (an array; at most 5 objects are
 # kept), job_io_mbps and sharing; an older manager's slots count gives [].
 function ConvertFrom-AapManagerStatus([string]$Text) {
     try { $obj = ConvertFrom-Json -InputObject $Text } catch { return $null }
@@ -461,7 +461,7 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
     if (-not ($pool -is [Management.Automation.PSCustomObject])) { $pool = [pscustomobject]@{} }
     $slots = @()
     if ($obj.slots -is [array]) {
-        $slots = @(@($obj.slots | Where-Object { $_ -is [Management.Automation.PSCustomObject] } | Select-Object -First 4) | ForEach-Object {
+        $slots = @(@($obj.slots | Where-Object { $_ -is [Management.Automation.PSCustomObject] } | Select-Object -First 5) | ForEach-Object {
                 $n = $_.slot
                 if (-not ($n -is [int] -or $n -is [long]) -or $n -lt 0 -or $n -gt 64) { $n = $null }
                 $st = $_.state
