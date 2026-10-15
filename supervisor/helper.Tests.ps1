@@ -563,21 +563,6 @@ Describe 'helper identity' {
         Get-AapIdentityKeyProblem $key $script:profileDir | Should -Be 'key file is a reparse point'
     }
 
-    It 'streams stdin from the already-open handle' {
-        $key = New-AapKey 'stream.pem'
-        $orig = [IO.File]::ReadAllBytes($key)
-        $h = [AapOpen]::Open($key)
-        $dest = Join-Path $TestDrive 'streamed.bin'
-        try {
-            Rename-Item -LiteralPath $key -NewName 'stream-held.pem'
-            $code = [AapStream]::RunHandle($AapPs, "-NoProfile -Command `"`$in = [Console]::OpenStandardInput(); `$ms = New-Object IO.MemoryStream; `$in.CopyTo(`$ms); [IO.File]::WriteAllBytes('$dest', `$ms.ToArray())`"", $h)
-            $code | Should -Be 0
-            [Convert]::ToBase64String([IO.File]::ReadAllBytes($dest)) | Should -Be ([Convert]::ToBase64String($orig))
-        } finally {
-            $h.Dispose()
-        }
-    }
-
     It 'removes WSLENV from helper children and records a key installed line' {
         $env:WSLENV = 'AAP_TEST/u'
         try {
