@@ -15,6 +15,8 @@
 use crate::state;
 use crate::win;
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use std::cell::{Cell, RefCell};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::windows::fs::MetadataExt;
@@ -94,6 +96,16 @@ pub fn ancestor_lets_non_admin_replace(aces: &[DirAce]) -> bool {
     })
 }
 
+/// Owner is not an admin SID, an ACE is neither allow nor deny, or a non-admin
+/// allow on the folder itself carries [`ANCESTOR_RIGHTS`].
+pub fn ancestor_refused(view: &AclView) -> bool {
+    if !ADMIN_SIDS.contains(&view.owner.as_str()) {
+        return true;
+    }
+    view.aces.iter().any(|ace| ace.kind == AceKind::Other)
+        || ancestor_lets_non_admin_replace(&view.aces)
+}
+
 pub fn elevation_allowed(object: &AclView) -> bool {
     if !ADMIN_SIDS.contains(&object.owner.as_str()) {
         return false;
@@ -139,7 +151,7 @@ fn require_ancestors(dir: &Path) -> Result<(), String> {
         }
         match win::acl_of_path(parent, true) {
             Ok(sec) => {
-                if ancestor_lets_non_admin_replace(&acl_view(sec).aces) {
+                if ancestor_refused(&acl_view(sec)) {
                     return Err(USER_WRITABLE_EXE_DIR.to_string());
                 }
             }
@@ -617,6 +629,34 @@ fn refuse_elevation(verb: Verb, message: &str) -> Result<(), String> {
     Err(message.to_string())
 }
 
+#[cfg(test)]
+thread_local! {
+    static CAPTURE_RUNAS: Cell<bool> = const { Cell::new(false) };
+    static CAPTURED_RUNAS: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+fn directory_gate_enabled() -> bool {
+    #[cfg(test)]
+    {
+        if CAPTURE_RUNAS.with(Cell::get) {
+            return false;
+        }
+    }
+    true
+}
+
+fn start_runas(exe: &Path, parameters: &str) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        if CAPTURE_RUNAS.with(Cell::get) {
+            CAPTURED_RUNAS.with(|slot| *slot.borrow_mut() = Some(exe.to_path_buf()));
+            let _ = parameters;
+            return Ok(());
+        }
+    }
+    win::shell_execute_runas(exe, parameters)
+}
+
 pub fn launch(base: &Path, verb: Verb) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let resolved = match win::resolve_exe(&exe) {
@@ -625,24 +665,33 @@ pub fn launch(base: &Path, verb: Verb) -> Result<(), String> {
             return refuse_elevation(verb, &format!("could not read the tray exe ACL: {e}"));
         }
     };
-    let Some(dir) = resolved.path.parent().map(std::path::Path::to_path_buf) else {
+    // runas gets the handle-resolved path, not the path this process was started from.
+    launch_resolved(base, verb, resolved)
+}
+
+fn launch_resolved(base: &Path, verb: Verb, resolved: win::ResolvedExe) -> Result<(), String> {
+    let path = resolved.path;
+    if !win::is_fixed_local_path(&path) {
+        return refuse_elevation(verb, "tray exe is not on a fixed local drive");
+    }
+    let Some(dir) = path.parent().map(std::path::Path::to_path_buf) else {
         return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
     };
     if !elevation_allowed(&acl_view(resolved.acl)) {
         return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
     }
-    if let Err(e) = require_admin_only(&dir, "tray exe folder") {
-        return refuse_elevation(verb, &e);
-    }
-    if let Err(e) = require_ancestors(&dir) {
-        return refuse_elevation(verb, &e);
+    if directory_gate_enabled() {
+        if let Err(e) = require_admin_only(&dir, "tray exe folder") {
+            return refuse_elevation(verb, &e);
+        }
+        if let Err(e) = require_ancestors(&dir) {
+            return refuse_elevation(verb, &e);
+        }
     }
     let id = win::random_id().map_err(|e| e.to_string())?;
     write_pointer(&id, verb, "")?;
     let wrote = write_request(base, &id, verb).is_ok();
-    if let Err(e) =
-        win::shell_execute_runas(&resolved.path, &format!("--helper {} {id}", verb.as_str()))
-    {
+    if let Err(e) = start_runas(&path, &format!("--helper {} {id}", verb.as_str())) {
         let _ = write_pointer(&id, verb, &e);
         return Err(e);
     }
@@ -1218,10 +1267,98 @@ mod tests {
             TI,
             vec![ace(USER, AceKind::Deny, MODIFY, false)]
         )));
+
+        assert!(ancestor_refused(&view(
+            USER,
+            vec![ace(ADMINS, AceKind::Allow, 0, false)]
+        )));
+        assert!(ancestor_refused(&view(
+            TI,
+            vec![ace("", AceKind::Other, 0, false)]
+        )));
+        assert!(!ancestor_refused(&view(
+            TI,
+            vec![ace(USERS, AceKind::Allow, 0x4, false)]
+        )));
+        assert!(
+            !ancestor_refused(&view(TI, vec![ace(USERS, AceKind::Allow, 0x100, false)])),
+            "write-attributes on a parent is not a replace right"
+        );
         assert_eq!(
             USER_WRITABLE_EXE_DIR,
             "tray exe is in a user-writable folder; move it to an admin-only folder"
         );
         assert!(!crate::win::machine_ps_module_path().unwrap().is_empty());
     }
+}
+
+#[test]
+fn launch_hands_the_resolved_path_to_runas() {
+    let root = std::env::temp_dir().join(format!("aap-runas-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let target = root.join("target");
+    let link = root.join("link");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("tray.exe"), b"x").unwrap();
+    let status = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
+        .args([
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            &link.display().to_string(),
+            &target.display().to_string(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success(), "mklink failed");
+    let via_link = link.join("tray.exe");
+    let resolved = crate::win::resolve_exe(&via_link).unwrap();
+    let text = resolved.path.to_string_lossy().to_ascii_lowercase();
+    assert!(text.contains(r"\target\tray.exe"), "{text}");
+    assert!(!text.contains(r"\link\"), "{text}");
+    let base = root.join("data");
+    std::fs::create_dir_all(base.join("inbox").join("jobs")).unwrap();
+    CAPTURE_RUNAS.with(|c| c.set(true));
+    CAPTURED_RUNAS.with(|slot| *slot.borrow_mut() = None);
+    let opened = crate::win::ResolvedExe {
+        path: resolved.path.clone(),
+        acl: crate::win::ObjectAcl {
+            owner: "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464".into(),
+            aces: vec![crate::win::DirectoryAce {
+                sid: "S-1-5-32-544".into(),
+                allow: true,
+                other: false,
+                rights: 0x1000_0000,
+                inherit_only: false,
+            }],
+        },
+    };
+    launch_resolved(&base, Verb::Verify, opened).unwrap();
+    let got = CAPTURED_RUNAS
+        .with(|slot| slot.borrow_mut().take())
+        .unwrap();
+    CAPTURE_RUNAS.with(|c| c.set(false));
+    assert_eq!(got, resolved.path);
+    assert!(
+        !got.to_string_lossy()
+            .to_ascii_lowercase()
+            .contains(r"\link\")
+    );
+    CAPTURE_RUNAS.with(|c| c.set(true));
+    CAPTURED_RUNAS.with(|slot| *slot.borrow_mut() = None);
+    let unc = crate::win::ResolvedExe {
+        path: PathBuf::from(r"\\server\share\tray.exe"),
+        acl: crate::win::ObjectAcl {
+            owner: "S-1-5-18".into(),
+            aces: Vec::new(),
+        },
+    };
+    assert!(launch_resolved(&base, Verb::Verify, unc).is_err());
+    assert!(CAPTURED_RUNAS.with(|slot| slot.borrow().is_none()));
+    CAPTURE_RUNAS.with(|c| c.set(false));
+    let _ = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
+        .args(["/d", "/c", "rmdir", &link.display().to_string()])
+        .status();
+    let _ = std::fs::remove_dir_all(&root);
 }
