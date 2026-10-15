@@ -94,7 +94,7 @@ fn take_request(path: &Path) -> Option<View> {
 
 /// Default inner size fits five compact cards. The column scrolls below the minimum.
 const SIZE: [f32; 2] = [760.0, 760.0];
-const MIN_SIZE: [f32; 2] = [680.0, 460.0];
+const MIN_SIZE: [f32; 2] = [680.0, MIN_SIZE_H];
 
 /// One card per reported slot, and no more than the runner limit.
 fn cards_to_draw(slot_count: usize) -> usize {
@@ -192,6 +192,11 @@ const FOOTER_GAP: f32 = 8.0;
 const CAPTION_H: f32 = 16.0;
 /// Height of the pool-bar track row: fixed_label + track, both at BAR_ROW_H px.
 const BAR_ROW_H: f32 = 18.0;
+/// Fixed height for the cap-validation error label (two wrapped body-font lines).
+pub(crate) const CAP_ERROR_H: f32 = 32.0;
+/// Minimum inner window height: max(left_column_height(true), right_column_height(5)).
+/// = max(760, 702) = 760. Raise SIZE[1] if this ever changes (see test).
+const MIN_SIZE_H: f32 = 760.0;
 
 const SCHTASKS: &str = r"C:\Windows\System32\schtasks.exe";
 const SUPERVISOR_TASK: &str = "AAP-CRRR-Supervisor";
@@ -1063,26 +1068,25 @@ impl Dash {
         });
     }
 
-    /// Work disk next to the pool totals. `cleaning` while the manager cleans.
+    /// Work disk bar. `cleaning` appends to the caption row (no room on track row).
     fn disk_bar(&self, ui: &mut egui::Ui, track_w: f32) {
-        let (used, share, text, over) = disk_line(
+        let (used, share, mut text, over) = disk_line(
             self.snap.work_disk_gib,
             self.snap.work_disk_free_gb,
             self.snap.work_disk_floor_gb,
             self.fresh(),
         );
-        let p = self.pal();
+        if self.snap.cleaning {
+            text.push_str(" \u{b7} cleaning");
+        }
         let color = self.number_color(used, over);
-        // Row 1: label + track + cleaning indicator
+        // Row 1: label + track (cleaning is in the caption)
         ui.horizontal(|ui| {
             fixed_label(ui, "Disk", BAR_ROW_H);
             let r = self.track(ui, egui::Id::new("pool-disk"), used, share, over, track_w);
             a11y(&r, format!("Work disk {text}"));
-            if self.snap.cleaning {
-                ui.label(RichText::new("cleaning").color(p.muted).small());
-            }
         });
-        // Row 2: caption in a fixed-height row -- no available_height() dependency.
+        // Row 2: caption (includes cleaning when active) -- no available_height().
         let row_w = ui.available_width();
         ui.allocate_ui_with_layout(
             vec2(row_w, CAPTION_H),
@@ -1906,37 +1910,36 @@ impl eframe::App for Dash {
 
 /// Height of the left column full area (2 x PAD + settings + pool + footer buttons).
 ///
-/// `paused`: include one extra PAUSED_LINE_H row (status indicator).
-/// `job_line`: include the pending Apply/Revert section (label + button row).
+/// `job_line`: include the pending section (changes label + cap error + Apply/Revert).
 ///
-/// # No available-height dependency
-/// Every row is INTERACT_H (any `ui.horizontal` with a 24 px widget), PAUSED_LINE_H
-/// (a `now()` row or bare label), CAPTION_H (a fixed-height bar caption), BAR_ROW_H
-/// (the pool bar track row), or an explicit `add_space` value.  No row calls
-/// `available_height()` or `available_size()`.  A new row that does not fit here
-/// grows SIZE[1], never adds a scrollbar.
+/// # Row heights (all ui.horizontal rows floor to INTERACT_H = 24)
+/// Every `ui.horizontal` row is INTERACT_H, including `now()` rows and pool track rows.
+/// Bare `ui.label` ~ PAUSED_LINE_H. `CAP_ERROR_H` for the wrapped cap-error.
+/// No row calls `available_height()` or `available_size()`.
+/// A new row that does not fit grows SIZE[1], never adds a scrollbar.
 #[cfg(test)]
-fn left_column_height(paused: bool, job_line: bool) -> f32 {
+fn left_column_height(job_line: bool) -> f32 {
     // settings (show_top) -- 15 items, 14 auto-gaps
-    let settings = 2.0 * INTERACT_H         // Power: label row + Start/Stop row
-        + 12.0                               // add_space(12)
-        + INTERACT_H + PAUSED_LINE_H         // Runners + now-runners
-        + 4.0                                // add_space(4)
-        + INTERACT_H + PAUSED_LINE_H         // Each + now-each
-        + INTERACT_H                         // Total
-        + 4.0 + INTERACT_H + PAUSED_LINE_H  // add_space(4) + IO cap + now-io
-        + 4.0 + INTERACT_H + PAUSED_LINE_H  // add_space(4) + Sharing + now-sharing
-        + 14.0 * CARD_ITEM_GAP; // auto item-spacing (15 items -> 14 gaps)
-
-    let paused_row = if paused {
-        CARD_ITEM_GAP + PAUSED_LINE_H
-    } else {
-        0.0
-    };
+    let settings = 2.0 * INTERACT_H          // Power: label row + Start/Stop row
+        + 12.0                                // add_space(12)
+        + INTERACT_H + INTERACT_H             // Runners + now-runners (ui.horizontal)
+        + 4.0                                 // add_space(4)
+        + INTERACT_H + INTERACT_H             // Each + now-each
+        + INTERACT_H                          // Total
+        + 4.0 + INTERACT_H + INTERACT_H      // add_space(4) + IO cap + now-io
+        + 4.0 + INTERACT_H + INTERACT_H      // add_space(4) + Sharing + now-sharing
+        + 14.0 * CARD_ITEM_GAP; // 15 items -> 14 auto-gaps
 
     let job_row = if job_line {
-        // pending: add_space(12) + changes label + Apply/Revert row + 3 auto-gaps
-        CARD_ITEM_GAP + 12.0 + CARD_ITEM_GAP + PAUSED_LINE_H + CARD_ITEM_GAP + INTERACT_H
+        // add_space(12) + changes label + cap error + Apply/Revert + 4 auto-gaps
+        CARD_ITEM_GAP
+            + 12.0
+            + CARD_ITEM_GAP
+            + PAUSED_LINE_H
+            + CARD_ITEM_GAP
+            + CAP_ERROR_H
+            + CARD_ITEM_GAP
+            + INTERACT_H
     } else {
         0.0
     };
@@ -1944,13 +1947,13 @@ fn left_column_height(paused: bool, job_line: bool) -> f32 {
     // auto-gap + add_space(8) + auto-gap between settings and pool
     let to_pool = CARD_ITEM_GAP + 8.0 + CARD_ITEM_GAP;
 
-    // pool: 3 bars x (BAR_ROW_H + CAPTION_H) + IO line + sampled line + 7 auto-gaps
-    let pool = 3.0 * (BAR_ROW_H + CAPTION_H) + CAPTION_H + CAPTION_H + 7.0 * CARD_ITEM_GAP;
+    // pool: 3 track rows (INTERACT_H) + 3 captions + IO + sampled + 7 auto-gaps
+    let pool = 3.0 * (INTERACT_H + CAPTION_H) + CAPTION_H + CAPTION_H + 7.0 * CARD_ITEM_GAP;
 
     // footer: FOOTER_GAP + 3 button rows + 3 auto-gaps
     let footer = FOOTER_GAP + 3.0 * INTERACT_H + 3.0 * CARD_ITEM_GAP;
 
-    PAD + settings + paused_row + job_row + to_pool + pool + CARD_ITEM_GAP + footer + PAD
+    PAD + settings + job_row + to_pool + pool + CARD_ITEM_GAP + footer + PAD
 }
 
 #[cfg(test)]
@@ -2191,35 +2194,36 @@ mod tests {
         // The left column has no ScrollArea; a future row that does not fit grows
         // SIZE[1] instead of adding a scrollbar.
         let rows = [
-            INTERACT_H,    // Power label row
-            INTERACT_H,    // Power Start/Stop . Pause/Resume row
+            INTERACT_H, // Power label row
+            INTERACT_H, // Power Start/Stop . Pause/Resume row
+            12.0_f32,   // add_space(12)
+            INTERACT_H, // Runners control
+            INTERACT_H, // ui.horizontal in now(): now-runners
+            4.0_f32,    // add_space(4)
+            INTERACT_H, // Each
+            INTERACT_H, // ui.horizontal in now(): now-each
+            INTERACT_H, // Total
+            4.0_f32,    // add_space(4)
+            INTERACT_H, // IO cap
+            INTERACT_H, // ui.horizontal in now(): now-io
+            4.0_f32,    // add_space(4)
+            INTERACT_H, // Sharing
+            INTERACT_H, // ui.horizontal in now(): now-sharing
+            // --- pending (job_line=true) ---
             12.0_f32,      // add_space(12)
-            INTERACT_H,    // Runners control
-            PAUSED_LINE_H, // now-runners
-            4.0_f32,       // add_space(4)
-            INTERACT_H,    // Each
-            PAUSED_LINE_H, // now-each
-            INTERACT_H,    // Total
-            4.0_f32,       // add_space(4)
-            INTERACT_H,    // IO cap
-            PAUSED_LINE_H, // now-io
-            4.0_f32,       // add_space(4)
-            INTERACT_H,    // Sharing
-            PAUSED_LINE_H, // now-sharing
-            PAUSED_LINE_H, // paused indicator (paused=true)
-            12.0_f32,      // pending: add_space(12)
-            PAUSED_LINE_H, // pending: "N changes" label
-            INTERACT_H,    // pending: Apply/Revert row (job_line=true)
+            PAUSED_LINE_H, // ui.label: "N changes not applied" (bare label)
+            CAP_ERROR_H,   // allocate_ui_with_layout: cap-error, two body-font lines
+            INTERACT_H,    // ui.horizontal: Apply + Revert buttons
         ];
         let pool_rows = [
-            BAR_ROW_H, // Cores track row
-            CAPTION_H, // Cores caption
-            BAR_ROW_H, // Memory track row
-            CAPTION_H, // Memory caption
-            BAR_ROW_H, // Disk track row
-            CAPTION_H, // Disk caption
-            CAPTION_H, // IO cap line
-            CAPTION_H, // sampled line
+            INTERACT_H, // ui.horizontal: Cores fixed_label + track
+            CAPTION_H,  // Cores caption
+            INTERACT_H, // ui.horizontal: Memory fixed_label + track
+            CAPTION_H,  // Memory caption
+            INTERACT_H, // ui.horizontal: Disk fixed_label + track
+            CAPTION_H,  // Disk caption
+            CAPTION_H,  // IO cap line
+            CAPTION_H,  // sampled line
         ];
         // Footer: FOOTER_GAP + 3 button rows + 3 auto-gaps
         let footer_rows = [
@@ -2235,18 +2239,11 @@ mod tests {
         let to_pool = CARD_ITEM_GAP + 8.0 + CARD_ITEM_GAP;
         let expected = PAD + s + to_pool + p + CARD_ITEM_GAP + f + PAD;
         assert_eq!(
-            left_column_height(true, true),
+            left_column_height(true),
             expected,
             "left_column_height formula drifted from the row inventory"
         );
-        // The window height is defined by the right column (5 runner cards).
-        assert!(
-            left_column_height(true, true) <= right_column_height(5),
-            "left column taller than 5-card right column: {} > {}",
-            left_column_height(true, true),
-            right_column_height(5)
-        );
-        // The right column must fit the clamped window at 1080p and 768p.
+        // The right column with 5 cards must fit the clamped window heights.
         let title = 32.0;
         let rh = right_column_height(5);
         assert!(
@@ -2259,6 +2256,26 @@ mod tests {
             "right column overflows 768p: {rh:.0} > {}",
             clamped_window_height(768.0, title)
         );
+    }
+
+    #[test]
+    fn min_size_height_is_consistent() {
+        // MIN_SIZE[1] must cover both column worst cases; SIZE[1] >= MIN_SIZE[1].
+        assert!(
+            MIN_SIZE[1] >= left_column_height(true),
+            "MIN_SIZE[1]={} < left column worst={}",
+            MIN_SIZE[1],
+            left_column_height(true)
+        );
+        assert!(
+            MIN_SIZE[1] >= right_column_height(5),
+            "MIN_SIZE[1]={} < right column 5 cards={}",
+            MIN_SIZE[1],
+            right_column_height(5)
+        );
+        let size_h = SIZE[1];
+        let min_h = MIN_SIZE[1];
+        assert!(size_h >= min_h, "SIZE[1]={size_h} < MIN_SIZE[1]={min_h}");
     }
 
     #[test]
