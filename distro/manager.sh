@@ -14,7 +14,9 @@ require_labels_version 1 || exit 1
 # to tell this manager (drain, status, limits) from one that would treat an
 # unknown argument as "start the pool".
 MANAGER_VERSION="aap-runner-manager 2"
-CONFIG_PATH=/etc/aap-runner/manager.conf
+# The tray helper's identity verb points this at manager.conf.tmp for one
+# --check-limits before it swaps the file in. Root sets it; nothing else does.
+CONFIG_PATH="${AAP_MANAGER_CONF:-/etc/aap-runner/manager.conf}"
 # Optional. The Windows supervisor writes the tray's settings here.
 LIMITS_PATH=/etc/aap-runner/limits.conf
 WORK_MOUNT=/var/lib/ghrunner
@@ -2125,7 +2127,7 @@ main() {
   # Only no argument starts the pool, which first removes every job
   # container. Anything unknown stops here, before any docker call.
   case "${1-}" in
-    '' | --self-check | --assert-mounts | --check-limits | --drain | --undrain | --reap | --measure-io) ;;
+    '' | --self-check | --assert-mounts | --check-limits | --check-token | --drain | --undrain | --reap | --measure-io) ;;
     --version)
       echo "${MANAGER_VERSION}"
       exit 0
@@ -2163,6 +2165,20 @@ main() {
     printf 'AAP_RUNNER_COUNT=%s\nAAP_JOB_CPUS=%s\nAAP_JOB_MEMORY=%s\nAAP_JOB_IO_PERCENT=%s\nAAP_JOB_IO_MBPS=%s\nAAP_POOL_SHARING=%s\n' \
       "${AAP_RUNNER_COUNT}" "${AAP_JOB_CPUS}" "${AAP_JOB_MEMORY}" "${AAP_JOB_IO_PERCENT}" "${SLOT_IO_MBPS}" "${AAP_POOL_SHARING}"
     exit 0
+  fi
+
+  # For the tray's Verify: mint one App installation token with the installed
+  # key and discard it. Prints a fixed line and exits 0, or exits 1; neither
+  # the JWT nor the token is printed. No pool start, no docker call.
+  if [[ "${1:-}" == "--check-token" ]]; then
+    load_config
+    check_key
+    if mint_installation_token > /dev/null; then
+      echo "app token: ok"
+      exit 0
+    fi
+    echo "app token: failed" >&2
+    exit 1
   fi
 
   # Benchmarks the work disk and writes WORK_DISK_MBPS_FILE. No config, no

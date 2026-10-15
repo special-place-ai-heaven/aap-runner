@@ -1,11 +1,19 @@
-# Verify against a fixture ProgramData tree. No wsl, no scheduled task, no ACL write.
-# Pester 5. Windows PowerShell 5.1 and PowerShell 7.
+# Verify against a fixture ProgramData tree, and the identity verb against a
+# fixture request. No wsl, no scheduled task, no ACL write. Pester 5. Windows
+# PowerShell 5.1 and PowerShell 7.
 
 Describe 'helper verify' {
     BeforeAll {
         . (Join-Path $PSScriptRoot '..\installer\helper-run.ps1')
         Mock Test-AapDistroListed { return 'stopped' }
         $script:junctions = New-Object System.Collections.Generic.List[string]
+        function Invoke-AapCaptured([scriptblock]$Script) {
+            $sw = New-Object IO.StringWriter
+            $orig = [Console]::Out
+            [Console]::SetOut($sw)
+            try { $code = & $Script } finally { [Console]::SetOut($orig) }
+            return [pscustomobject]@{ Code = [int]$code; Out = $sw.ToString() }
+        }
         function New-AapFixture {
             param([string]$Root, [string]$Updated, [string]$Desired = 'on', [string]$State = 'idle')
             New-Item -ItemType Directory -Force -Path (Join-Path $Root 'inbox') | Out-Null
@@ -249,6 +257,25 @@ Describe 'helper verify' {
         }
     }
 
+    It 'verify adds an app-token row from the manager check' {
+        Mock Get-AapDistroManagerConf { return $null }
+        Mock Get-AapVhdxBytes { return [long]0 }
+        Mock Get-AapVerifyReport { return [pscustomobject]@{ ExitCode = 0; Lines = @('PASS data-dir') } }
+        Mock Invoke-AapStreaming { if (($Arguments -join ' ') -match '--check-token$') { return $script:tokenCode }; return 0 }
+        $script:tokenCode = 0
+        $ok = Invoke-AapCaptured { Invoke-AapVerifyLive -DataDir 'C:\ProgramData\aap-runner' }
+        $ok.Code | Should -Be 0
+        $ok.Out | Should -Match 'STEP app-token'
+        $ok.Out | Should -Match 'PASS app-token obtainable'
+        Should -Invoke Invoke-AapStreaming -Times 1 -Exactly -ParameterFilter {
+            $File -eq 'C:\Windows\System32\wsl.exe' -and ($Arguments -join ' ') -eq '-d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --check-token'
+        }
+        $script:tokenCode = 1
+        $bad = Invoke-AapCaptured { Invoke-AapVerifyLive -DataDir 'C:\ProgramData\aap-runner' }
+        $bad.Code | Should -Be 1
+        $bad.Out | Should -Match 'FAIL app-token exit 1'
+    }
+
     It 'names only the fixed repair paths' {
         $plan = @(Get-AapRepairPlan)
         ($plan.Name -join ',') | Should -Be 'lock-acl,lock-acl,lock-acl,lock-acl,lock-acl,install-supervisor,remount,restart-supervisor'
@@ -263,6 +290,253 @@ Describe 'helper verify' {
             'AAP-CRRR-Supervisor'
         ) -join "`n")
         ($plan.Path -join "`n") | Should -Not -Match '\.\.'
+    }
+}
+
+Describe 'helper identity' {
+    BeforeAll {
+        . (Join-Path $PSScriptRoot '..\installer\helper-run.ps1')
+        $script:junctions = New-Object System.Collections.Generic.List[string]
+        $script:enc = New-Object System.Text.UTF8Encoding $false
+        $script:pemBody = 'MIIEowIBAAKCAQEAnotarealkeybodyjustbytesforthetest'
+        $script:pem = "-----BEGIN RSA PRIVATE KEY-----`n$($script:pemBody)`n-----END RSA PRIVATE KEY-----`n"
+        $script:gitBash = 'C:\Program Files\Git\bin\bash.exe'
+        $script:profileDir = Join-Path $TestDrive 'Users\me'
+        New-Item -ItemType Directory -Force -Path (Join-Path $script:profileDir 'Downloads') | Out-Null
+        Mock Get-AapRequestOwnerProfile { return $script:profileDir }
+        $script:wslCalls = New-Object System.Collections.Generic.List[object]
+        # The distro side, run through Git bash when it is present: the real script in
+        # library mode with the paths, chown, chmod, systemctl, and the manager replaced.
+        Mock Invoke-AapStreamingStdin {
+            $script:wslCalls.Add(@{ File = $File; Arguments = $Arguments; StdinPath = $StdinPath })
+            if (-not (Test-Path -LiteralPath $script:gitBash)) { return 0 }
+            $m = [regex]::Match($Arguments[-1], '^bash <\(echo ([A-Za-z0-9+/=]+) \| base64 -d\) (.+)$')
+            if (-not $m.Success) { return 97 }
+            $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($m.Groups[1].Value))
+            $w = $script:scriptWork
+            [IO.File]::WriteAllText((Join-Path $w 'identity.sh'), $text, $script:enc)
+            $drive = "export AAP_IDENTITY_LIB=1`nsource `"`$1`"; shift`nconf=`"`$W/manager.conf`"; key=`"`$W/app.pem`"; manager=`"`$W/fakemgr.sh`"`nchown() { :; }`nchmod() { :; }`nsystemctl() { echo inactive; }`nmain `"`$@`"`n"
+            [IO.File]::WriteAllText((Join-Path $w 'drive.sh'), $drive, $script:enc)
+            $mgr = "#!/bin/bash`n[[ `"`$1`" == --check-limits ]] || exit 0`ngrep -q '^AAP_GITHUB_APP_ID=[1-9][0-9]*`$' `"`$AAP_MANAGER_CONF`"`n"
+            [IO.File]::WriteAllText((Join-Path $w 'fakemgr.sh'), $mgr, $script:enc)
+            $posix = { param($p) ($p -replace '\\', '/') }
+            $env:W = & $posix $w
+            $cmd = "exec bash '$(& $posix (Join-Path $w 'drive.sh'))' '$(& $posix (Join-Path $w 'identity.sh'))' $($m.Groups[2].Value) < '$(& $posix $StdinPath)'"
+            $out = & $script:gitBash --noprofile --norc -c $cmd 2>&1 | ForEach-Object { "$_" }
+            foreach ($line in @($out)) { [Console]::Out.WriteLine($line) }
+            return $LASTEXITCODE
+        }
+        function Invoke-AapCaptured([scriptblock]$Script) {
+            $sw = New-Object IO.StringWriter
+            $orig = [Console]::Out
+            [Console]::SetOut($sw)
+            try { $code = & $Script } finally { [Console]::SetOut($orig) }
+            return [pscustomobject]@{ Code = [int]$code; Out = $sw.ToString() }
+        }
+        function New-AapIdentityRequest {
+            param([string]$Root, [string]$Id, [string]$KeyPath, [hashtable]$Override = @{})
+            $jobs = Join-Path (Join-Path $Root 'inbox') 'jobs'
+            New-Item -ItemType Directory -Force -Path $jobs | Out-Null
+            $req = [ordered]@{
+                schema = 1; id = $Id; verb = 'identity'; org = 'acme'; app_id = 123; installation_id = 456
+                group = 'aap-crrr'; labels = 'self-hosted,linux,crrr'; key_path = $KeyPath
+            }
+            foreach ($k in $Override.Keys) { $req[$k] = $Override[$k] }
+            [IO.File]::WriteAllText((Join-Path $jobs "$Id.json"), ($req | ConvertTo-Json -Compress), $script:enc)
+        }
+        function New-AapKey([string]$Name, [string]$Text = $script:pem) {
+            $path = Join-Path (Join-Path $script:profileDir 'Downloads') $Name
+            [IO.File]::WriteAllText($path, $Text, $script:enc)
+            return $path
+        }
+    }
+
+    BeforeEach {
+        $script:wslCalls.Clear()
+        $script:scriptWork = Join-Path $TestDrive ('distro-' + [guid]::NewGuid().ToString('n').Substring(0, 8))
+        New-Item -ItemType Directory -Force -Path $script:scriptWork | Out-Null
+    }
+
+    AfterEach {
+        foreach ($j in @($script:junctions)) {
+            & C:\Windows\System32\cmd.exe /d /c rmdir "$j" | Out-Null
+        }
+        $script:junctions.Clear()
+    }
+
+    It 'checks each field the way the tray does' {
+        Test-AapIdentityId '1' | Should -BeTrue
+        Test-AapIdentityId '1234567890123456789' | Should -BeTrue
+        foreach ($bad in @('', '0', '007', '+5', '-5', '1.5', '12a', '12345678901234567890')) {
+            Test-AapIdentityId $bad | Should -BeFalse -Because $bad
+        }
+        Test-AapIdentitySlug 'acme' | Should -BeTrue
+        Test-AapIdentitySlug ('x' * 39) | Should -BeTrue
+        foreach ($bad in @('', '-acme', 'acme-', 'ac--me', 'ac_me', 'ac me', ('x' * 40))) {
+            Test-AapIdentitySlug $bad | Should -BeFalse -Because $bad
+        }
+        Test-AapIdentityLabels 'self-hosted,linux,crrr' | Should -BeTrue
+        foreach ($bad in @('', 'Linux', 'a,a', 'a, b', 'a,,b', 'a_b')) {
+            Test-AapIdentityLabels $bad | Should -BeFalse -Because $bad
+        }
+    }
+
+    It 'rewrites a fixture manager.conf keeping other lines and installs the key once' {
+        if (-not (Test-Path -LiteralPath $script:gitBash)) {
+            Set-ItResult -Skipped -Because 'Git bash is not installed; the distro script cannot run here'
+            return
+        }
+        $root = Join-Path $TestDrive 'id-good'
+        $key = New-AapKey 'good.pem'
+        $id = '0123456789abcdef'
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $key
+        $before = "# keep me`nAAP_GITHUB_ORG=old`nAAP_GITHUB_APP_ID=`nAAP_RUNNER_IMAGE=aap-crrr-runner:local`n`nAAP_RUNNER_LABELS=self-hosted,linux,crrr`nAAP_WORK_DISK_GIB=60`n"
+        [IO.File]::WriteAllText((Join-Path $script:scriptWork 'manager.conf'), $before, $script:enc)
+        $r = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
+        $r.Code | Should -Be 0
+        Should -Invoke Invoke-AapStreamingStdin -Times 1 -Exactly
+        $call = $script:wslCalls[0]
+        $call.File | Should -Be 'C:\Windows\System32\wsl.exe'
+        ($call.Arguments[0..6] -join ' ') | Should -Be '-d aap-runner -u root -- /bin/bash -c'
+        $call.Arguments[7] | Should -Match ' acme 123 456 aap-crrr self-hosted,linux,crrr$'
+        $call.Arguments[7] | Should -Not -Match '"'
+        $call.StdinPath | Should -Be $key
+        $after = [IO.File]::ReadAllText((Join-Path $script:scriptWork 'manager.conf'))
+        $after | Should -Be "# keep me`nAAP_GITHUB_ORG=acme`nAAP_GITHUB_APP_ID=123`nAAP_RUNNER_IMAGE=aap-crrr-runner:local`n`nAAP_RUNNER_LABELS=self-hosted,linux,crrr`nAAP_WORK_DISK_GIB=60`nAAP_GITHUB_APP_INSTALLATION_ID=456`nAAP_RUNNER_GROUP=aap-crrr`n"
+        [IO.File]::ReadAllText((Join-Path $script:scriptWork 'app.pem')) | Should -Be $script:pem
+        Test-Path -LiteralPath (Join-Path $script:scriptWork 'app.pem.tmp') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:scriptWork 'manager.conf.tmp') | Should -BeFalse
+        $r.Out | Should -Match "key installed: 1 file, $($script:pem.Length) bytes"
+        $r.Out | Should -Match 'INFO identity org acme app 123 installation 456 group aap-crrr labels self-hosted,linux,crrr'
+        $r.Out | Should -Match 'PASS identity'
+        $r.Out | Should -Not -Match $script:pemBody
+        $r.Out | Should -Not -Match 'PRIVATE KEY'
+        $r.Out | Should -Not -Match ([regex]::Escape($key))
+    }
+
+    It 'keeps the old key and conf when the manager refuses the new conf' {
+        if (-not (Test-Path -LiteralPath $script:gitBash)) {
+            Set-ItResult -Skipped -Because 'Git bash is not installed; the distro script cannot run here'
+            return
+        }
+        $root = Join-Path $TestDrive 'id-refused'
+        $key = New-AapKey 'refused.pem'
+        $id = '0123456789abcd00'
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $key
+        $oldConf = "AAP_GITHUB_APP_ID=notanumber`n"
+        [IO.File]::WriteAllText((Join-Path $script:scriptWork 'manager.conf'), $oldConf, $script:enc)
+        [IO.File]::WriteAllText((Join-Path $script:scriptWork 'app.pem'), 'old key bytes', $script:enc)
+        # The fake manager refuses a conf whose app id is not digits; make the rewrite produce one by
+        # handing it a request the PowerShell side accepts but the "manager" does not: mark via env.
+        Mock Invoke-AapStreamingStdin {
+            $script:wslCalls.Add(@{ File = $File; Arguments = $Arguments; StdinPath = $StdinPath })
+            $m = [regex]::Match($Arguments[-1], '^bash <\(echo ([A-Za-z0-9+/=]+) \| base64 -d\) (.+)$')
+            $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($m.Groups[1].Value))
+            $w = $script:scriptWork
+            [IO.File]::WriteAllText((Join-Path $w 'identity.sh'), $text, $script:enc)
+            $drive = "export AAP_IDENTITY_LIB=1`nsource `"`$1`"; shift`nconf=`"`$W/manager.conf`"; key=`"`$W/app.pem`"; manager=`"`$W/fakemgr.sh`"`nchown() { :; }`nchmod() { :; }`nsystemctl() { echo inactive; }`nmain `"`$@`"`n"
+            [IO.File]::WriteAllText((Join-Path $w 'drive.sh'), $drive, $script:enc)
+            [IO.File]::WriteAllText((Join-Path $w 'fakemgr.sh'), "#!/bin/bash`necho 'refusing: AAP_RUNNER_LABELS must be self-hosted,linux,crrr' >&2`nexit 1`n", $script:enc)
+            $posix = { param($p) ($p -replace '\\', '/') }
+            $env:W = & $posix $w
+            $cmd = "exec bash '$(& $posix (Join-Path $w 'drive.sh'))' '$(& $posix (Join-Path $w 'identity.sh'))' $($m.Groups[2].Value) < '$(& $posix $StdinPath)'"
+            $out = & $script:gitBash --noprofile --norc -c $cmd 2>&1 | ForEach-Object { "$_" }
+            foreach ($line in @($out)) { [Console]::Out.WriteLine($line) }
+            return $LASTEXITCODE
+        }
+        $r = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
+        $r.Code | Should -Be 1
+        $r.Out | Should -Match 'refusing: AAP_RUNNER_LABELS'
+        $r.Out | Should -Match 'FAIL identity: the manager refused the new manager.conf'
+        $r.Out | Should -Match 'FAIL identity exit 1'
+        [IO.File]::ReadAllText((Join-Path $script:scriptWork 'manager.conf')) | Should -Be $oldConf
+        [IO.File]::ReadAllText((Join-Path $script:scriptWork 'app.pem')) | Should -Be 'old key bytes'
+        Test-Path -LiteralPath (Join-Path $script:scriptWork 'app.pem.tmp') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:scriptWork 'manager.conf.tmp') | Should -BeFalse
+        $r.Out | Should -Not -Match $script:pemBody
+    }
+
+    It 'refuses a key outside the profile' {
+        $root = Join-Path $TestDrive 'id-outside'
+        $key = Join-Path $TestDrive 'outside.pem'
+        [IO.File]::WriteAllText($key, $script:pem, $script:enc)
+        $id = '0123456789abcd01'
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $key
+        $r = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
+        $r.Code | Should -Be 2
+        $r.Out | Should -Match ('FAIL identity key file is not under ' + [regex]::Escape($script:profileDir))
+        Should -Invoke Invoke-AapStreamingStdin -Times 0
+        $r.Out | Should -Not -Match $script:pemBody
+    }
+
+    It 'refuses a reparse point on the key or on the way to it' {
+        $root = Join-Path $TestDrive 'id-junction'
+        $target = Join-Path $TestDrive 'junction-target'
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+        [IO.File]::WriteAllText((Join-Path $target 'k.pem'), $script:pem, $script:enc)
+        $link = Join-Path $script:profileDir 'link'
+        New-Item -ItemType Junction -Path $link -Target $target | Out-Null
+        $script:junctions.Add($link)
+        $id = '0123456789abcd02'
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath (Join-Path $link 'k.pem')
+        $r = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
+        $r.Code | Should -Be 2
+        $r.Out | Should -Match 'FAIL identity key path crosses a reparse point'
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $link
+        $r2 = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
+        $r2.Code | Should -Be 2
+        $r2.Out | Should -Match 'FAIL identity key file is a reparse point'
+        Should -Invoke Invoke-AapStreamingStdin -Times 0
+    }
+
+    It 'refuses a non-PEM file, an empty file, and a 16 KiB + 1 file' {
+        $root = Join-Path $TestDrive 'id-shape'
+        $id = '0123456789abcd03'
+        $cert = New-AapKey 'cert.pem' "-----BEGIN CERTIFICATE-----`nabc`n"
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $cert
+        (Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }).Out | Should -Match 'FAIL identity key file is not a PEM private key'
+        $empty = New-AapKey 'empty.pem' ''
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $empty
+        (Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }).Out | Should -Match 'FAIL identity key file is empty'
+        $big = New-AapKey 'big.pem' ($script:pem + ('x' * (16384 + 1 - $script:pem.Length)))
+        (Get-Item -LiteralPath $big).Length | Should -Be 16385
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $big
+        (Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }).Out | Should -Match 'FAIL identity key file is larger than 16 KiB'
+        $missing = Join-Path (Join-Path $script:profileDir 'Downloads') 'missing.pem'
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $missing
+        (Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }).Out | Should -Match 'FAIL identity key file was not found'
+        $pkcs8 = New-AapKey 'p8.pem' "-----BEGIN PRIVATE KEY-----`r`nabc`r`n"
+        Get-AapIdentityKeyProblem $pkcs8 $script:profileDir | Should -BeNullOrEmpty
+        Should -Invoke Invoke-AapStreamingStdin -Times 0
+    }
+
+    It 'refuses a request with a bad or extra field' {
+        $root = Join-Path $TestDrive 'id-fields'
+        $key = New-AapKey 'fields.pem'
+        $id = '0123456789abcd04'
+        $cases = @(
+            @{ org = '-acme' }, @{ app_id = 0 }, @{ app_id = '123' }, @{ installation_id = -1 }
+            @{ group = 'a--b' }, @{ labels = 'Linux' }, @{ labels = 'a,a' }, @{ schema = 2 }
+            @{ verb = 'verify' }, @{ id = 'fedcba9876543210' }, @{ extra = 'x' }, @{ key_path = '' }
+        )
+        foreach ($case in $cases) {
+            New-AapIdentityRequest -Root $root -Id $id -KeyPath $key -Override $case
+            $r = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
+            $r.Code | Should -Be 2 -Because ($case | ConvertTo-Json -Compress)
+            $r.Out | Should -Match 'FAIL identity refusing: '
+        }
+        Should -Invoke Invoke-AapStreamingStdin -Times 0
+        $r = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id 'nothex' }
+        $r.Code | Should -Be 2
+        $r.Out | Should -Match 'FAIL identity id'
+    }
+
+    It 'identity -Fixture changes nothing' {
+        $exe = (Get-Process -Id $PID).Path
+        $out = & $exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot '..\installer\helper-run.ps1') -Verb identity -Id 0123456789abcdef -DataDir (Join-Path $TestDrive 'nope') -Fixture 2>&1 | Out-String
+        $LASTEXITCODE | Should -Be 2
+        $out | Should -Match 'FAIL identity fixture mode does not change the machine'
+        $out | Should -Not -Match 'wsl'
     }
 }
 

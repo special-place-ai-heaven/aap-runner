@@ -46,4 +46,40 @@ out=$(bash "${manager}" --version) || fail "--version as a plain user failed"
 [[ "${out}" == "aap-runner-manager 2" ]] || fail "--version as a plain user printed: ${out}"
 echo "version marker ok"
 
+# --check-token: load_config and check_key run, one token is minted and
+# discarded, and the output never carries it.
+token_cli() {
+  bash -c '
+    source "$1"
+    marker=$2
+    rc=$3
+    shift 3
+    id() { echo 0; }
+    docker() { echo "docker $*" >> "${marker}"; return 99; }
+    load_config() { echo load_config >> "${marker}"; }
+    check_key() { echo check_key >> "${marker}"; }
+    mint_installation_token() { echo "ghs_notasecret_but_must_not_print"; return "${rc}"; }
+    main "$@"
+  ' _ "${manager}" "${work}/token" "$@" 2>&1
+}
+rc=0
+out=$(token_cli 0 --check-token) || rc=$?
+[[ "${rc}" -eq 0 && "${out}" == "app token: ok" ]] || fail "--check-token ok exited ${rc}: ${out}"
+[[ "$(cat "${work}/token")" == $'load_config\ncheck_key' ]] || fail "--check-token skipped a check: $(cat "${work}/token")"
+rm -f "${work}/token"
+rc=0
+out=$(token_cli 1 --check-token) || rc=$?
+[[ "${rc}" -eq 1 && "${out}" == "app token: failed" ]] || fail "--check-token failure exited ${rc}: ${out}"
+[[ "${out}" != *ghs_* ]] || fail "--check-token printed the token"
+[[ ! -e "${work}/touched" ]] || fail "--check-token reached docker"
+echo "check-token ok"
+
+# AAP_MANAGER_CONF moves the config path for one call (the identity verb's
+# pre-swap check); unset, the path is the installed file.
+out=$(AAP_MANAGER_CONF=/tmp/x.conf bash -c 'source "$1"; echo "${CONFIG_PATH}"' _ "${manager}")
+[[ "${out}" == "/tmp/x.conf" ]] || fail "AAP_MANAGER_CONF ignored: ${out}"
+out=$(env -u AAP_MANAGER_CONF bash -c 'source "$1"; echo "${CONFIG_PATH}"' _ "${manager}")
+[[ "${out}" == "/etc/aap-runner/manager.conf" ]] || fail "default CONFIG_PATH: ${out}"
+echo "config path override ok"
+
 echo "manager cli tests ok"

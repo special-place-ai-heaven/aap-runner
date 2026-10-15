@@ -1,4 +1,4 @@
-# Verify and repair for the elevated tray helper.
+# Verify, repair, and identity for the elevated tray helper.
 # Windows PowerShell 5.1 and PowerShell 7. Dot-source safe: no mandatory
 # parameters, so tests can load the functions. A -File run checks the verb.
 #
@@ -7,13 +7,17 @@
 # never passes -Fixture.
 #
 # Without -Fixture the only accepted -DataDir is C:\ProgramData\aap-runner.
-# Every path below is a constant. Nothing is taken from a request file.
+# Every path below is a constant. The identity verb reads one request file,
+# inbox\jobs\<Id>.json, named from the 16-hex -Id; every field in it is
+# re-checked here, and the key path must be a plain file under the profile
+# of the user who owns that request file.
 [CmdletBinding()]
 param(
     [string]$Verb,
     [string]$DataDir = 'C:\ProgramData\aap-runner',
     [switch]$Fixture,
-    [string]$TrayExe
+    [string]$TrayExe,
+    [string]$Id
 )
 
 $AapDataDir = 'C:\ProgramData\aap-runner'
@@ -246,19 +250,24 @@ function Format-AapProcessArg([string]$Arg) {
 # Streams stdout and stderr as the child runs. Returns the process exit code.
 # The copy runs on CLR threads and writes to Console directly. A PowerShell
 # scriptblock on those threads has no runspace, and pwsh 7 throws.
-function Invoke-AapStreaming([string]$File, [string[]]$Arguments) {
-    if (-not ('AapStream' -as [type])) {
-        Add-Type -TypeDefinition @'
+function Initialize-AapStream {
+    if ('AapStream' -as [type]) { return }
+    Add-Type -TypeDefinition @'
 using System;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
 public static class AapStream {
     public static int Run(string file, string args) {
+        return Run(file, args, null);
+    }
+    // stdinPath: a file streamed to the child's stdin (at most 16 KiB), never read into a string.
+    public static int Run(string file, string args, string stdinPath) {
         var psi = new ProcessStartInfo(file, args);
         psi.UseShellExecute = false;
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;
+        psi.RedirectStandardInput = stdinPath != null;
         psi.CreateNoWindow = true;
         psi.EnvironmentVariables["WSL_UTF8"] = "1";
         using (var proc = Process.Start(psi)) {
@@ -266,6 +275,20 @@ public static class AapStream {
             var errThread = new Thread(delegate() { Copy(proc.StandardError); });
             outThread.Start();
             errThread.Start();
+            if (stdinPath != null) {
+                var buf = new byte[16384];
+                int n = 0;
+                bool tooBig = false;
+                using (var fs = File.Open(stdinPath, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+                    int got;
+                    while (n < buf.Length && (got = fs.Read(buf, n, buf.Length - n)) > 0) { n += got; }
+                    tooBig = n >= buf.Length;
+                }
+                if (!tooBig) { proc.StandardInput.BaseStream.Write(buf, 0, n); }
+                Array.Clear(buf, 0, buf.Length);
+                proc.StandardInput.Close();
+                if (tooBig) { try { proc.Kill(); } catch (Exception) { } }
+            }
             proc.WaitForExit();
             outThread.Join();
             errThread.Join();
@@ -282,10 +305,276 @@ public static class AapStream {
     }
 }
 '@
-    }
+}
+
+function Invoke-AapStreaming([string]$File, [string[]]$Arguments) {
+    Initialize-AapStream
     $quoted = @()
     foreach ($a in @($Arguments)) { $quoted += (Format-AapProcessArg $a) }
     return [int][AapStream]::Run($File, ($quoted -join ' '))
+}
+
+# Same as Invoke-AapStreaming, with a file streamed to the child's stdin. The
+# only caller is the identity verb, which hands the key to one wsl.exe call.
+function Invoke-AapStreamingStdin([string]$File, [string[]]$Arguments, [string]$StdinPath) {
+    Initialize-AapStream
+    $quoted = @()
+    foreach ($a in @($Arguments)) { $quoted += (Format-AapProcessArg $a) }
+    return [int][AapStream]::Run($File, ($quoted -join ' '), $StdinPath)
+}
+
+# --- identity: the request is untrusted; every field is checked again here ---
+
+function Test-AapIdentityId([string]$Value) {
+    return ($Value -match '^[1-9][0-9]{0,18}\z')
+}
+
+# GitHub slug: 1..39 of [A-Za-z0-9-], no leading, trailing, or double hyphen.
+function Test-AapIdentitySlug([string]$Value) {
+    if ([string]::IsNullOrEmpty($Value) -or $Value.Length -gt 39) { return $false }
+    if ($Value -notmatch '^[A-Za-z0-9-]+\z') { return $false }
+    if ($Value.StartsWith('-') -or $Value.EndsWith('-') -or $Value.Contains('--')) { return $false }
+    return $true
+}
+
+# Comma list of distinct [a-z0-9-]+ items, already normalised by the tray.
+function Test-AapIdentityLabels([string]$Value) {
+    if ([string]::IsNullOrEmpty($Value) -or $Value.Length -gt 256) { return $false }
+    $parts = @($Value -split ',')
+    $seen = @{}
+    foreach ($part in $parts) {
+        if ($part -cnotmatch '^[a-z0-9-]+\z') { return $false }
+        if ($seen.ContainsKey($part)) { return $false }
+        $seen[$part] = $true
+    }
+    return $parts.Count -ge 1
+}
+
+# $null when the key file may be used, else the reason. The file must be a
+# plain file (no reparse point on it or any folder up to the profile), under
+# $ProfileDir, 1..16383 bytes, and start with a PEM private-key header. Only
+# the first line is read, into a buffer that is cleared afterwards.
+function Get-AapIdentityKeyProblem([string]$Path, [string]$ProfileDir) {
+    if ([string]::IsNullOrEmpty($Path) -or $Path.Length -gt 1024) { return 'key path' }
+    if ($Path -match '\.\.' -or $Path -notmatch '^[A-Za-z]:\\') { return 'key path' }
+    if ([string]::IsNullOrEmpty($ProfileDir) -or $ProfileDir -notmatch '^[A-Za-z]:\\') { return 'profile' }
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetFullPath($ProfileDir).TrimEnd('\')
+    if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        return "key file is not under $root"
+    }
+    $info = New-Object IO.FileInfo $full
+    $attr = [int]$info.Attributes
+    if ($attr -eq -1) { return 'key file was not found' }
+    if (($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { return 'key file is a reparse point' }
+    if (($attr -band [int][IO.FileAttributes]::Directory) -ne 0) { return 'key file is not a regular file' }
+    $dir = $info.Directory
+    while ($null -ne $dir) {
+        if ((([int]$dir.Attributes) -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) {
+            return 'key path crosses a reparse point'
+        }
+        if ($dir.FullName.TrimEnd('\') -ieq $root) { break }
+        $dir = $dir.Parent
+    }
+    $len = [long]$info.Length
+    if ($len -le 0) { return 'key file is empty' }
+    if ($len -ge 16384) { return 'key file is larger than 16 KiB' }
+    $buf = New-Object byte[] 64
+    $fs = [IO.File]::Open($full, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $n = $fs.Read($buf, 0, $buf.Length)
+    } finally {
+        $fs.Close()
+    }
+    $end = [Array]::IndexOf($buf, [byte]10, 0, $n)
+    if ($end -lt 0) { $end = $n }
+    if ($end -gt 0 -and $buf[$end - 1] -eq 13) { $end-- }
+    $line = [Text.Encoding]::ASCII.GetString($buf, 0, $end)
+    [Array]::Clear($buf, 0, $buf.Length)
+    if ($line -cne '-----BEGIN RSA PRIVATE KEY-----' -and $line -cne '-----BEGIN PRIVATE KEY-----') {
+        return 'key file is not a PEM private key'
+    }
+    return $null
+}
+
+# The profile folder of the user who wrote the request: the owner SID of the
+# request file (a user SID, never a group), looked up in ProfileList.
+function Get-AapRequestOwnerProfile([string]$Path) {
+    $sid = (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($sid -notmatch '^S-1-5-21(-\d+){4}\z') { throw "refusing: request owner $sid" }
+    $key = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid"
+    $dir = [string](Get-ItemProperty -LiteralPath $key -ErrorAction Stop).ProfileImagePath
+    if ([string]::IsNullOrEmpty($dir) -or $dir -match '\.\.' -or $dir -notmatch '^[A-Za-z]:\\[^"<>|*?]+\z') {
+        throw 'refusing: requester profile'
+    }
+    return $dir
+}
+
+# Exactly the nine fields of the schema 1 identity request, each re-checked.
+function Read-AapIdentityRequest([string]$Path, [string]$Id) {
+    $obj = Read-AapJsonBounded $Path 4096
+    if ($null -eq $obj) { throw 'refusing: request' }
+    $names = @($obj.PSObject.Properties.Name | Sort-Object)
+    if (($names -join ',') -ne 'app_id,group,id,installation_id,key_path,labels,org,schema,verb') {
+        throw 'refusing: request fields'
+    }
+    if ([string]$obj.schema -ne '1' -or [string]$obj.verb -ne 'identity' -or [string]$obj.id -ne $Id) {
+        throw 'refusing: request header'
+    }
+    foreach ($num in @($obj.app_id, $obj.installation_id)) {
+        if ($num -is [string] -or $num -is [bool] -or $null -eq $num) { throw 'refusing: request id type' }
+    }
+    $req = [pscustomobject]@{
+        Org            = [string]$obj.org
+        AppId          = [string]$obj.app_id
+        InstallationId = [string]$obj.installation_id
+        Group          = [string]$obj.group
+        Labels         = [string]$obj.labels
+        KeyPath        = [string]$obj.key_path
+    }
+    if (-not (Test-AapIdentitySlug $req.Org)) { throw 'refusing: org' }
+    if (-not (Test-AapIdentityId $req.AppId)) { throw 'refusing: app_id' }
+    if (-not (Test-AapIdentityId $req.InstallationId)) { throw 'refusing: installation_id' }
+    if (-not (Test-AapIdentitySlug $req.Group)) { throw 'refusing: group' }
+    if (-not (Test-AapIdentityLabels $req.Labels)) { throw 'refusing: labels' }
+    if ([string]::IsNullOrEmpty($req.KeyPath)) { throw 'refusing: key_path' }
+    return $req
+}
+
+# Runs as root inside the distro with the key on stdin and the five fields
+# as arguments. Writes app.pem.tmp and manager.conf.tmp, has the manager
+# check the new conf, then swaps both in; on any failure the old files stay.
+# Then restarts the pool the way a limits change does (drain, undrain, start)
+# when it is running. It never prints the key or the conf.
+function Get-AapIdentityScript {
+    $text = @'
+#!/bin/bash
+# aap-runner identity: key on stdin; args: org app_id installation_id group labels
+set -euo pipefail
+conf=/etc/aap-runner/manager.conf
+key=/etc/aap-runner/app.pem
+manager=/usr/local/sbin/aap-runner-manager
+
+# rewrite_conf IN OUT ORG APP INST GROUP LABELS: copy IN to OUT with the five
+# identity keys replaced in place and appended when missing; every other line
+# (comments, blanks, other keys) is kept as it is.
+rewrite_conf() {
+  local in="$1" out="$2" line k seen=""
+  local -A want=([AAP_GITHUB_ORG]="$3" [AAP_GITHUB_APP_ID]="$4" [AAP_GITHUB_APP_INSTALLATION_ID]="$5" [AAP_RUNNER_GROUP]="$6" [AAP_RUNNER_LABELS]="$7")
+  : > "$out"
+  if [[ -f "$in" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      k=${line%%=*}
+      if [[ "$line" == *=* && "$line" != \#* && -n "${want[$k]+x}" ]]; then
+        printf '%s=%s\n' "$k" "${want[$k]}" >> "$out"
+        seen="$seen $k"
+      else
+        printf '%s\n' "$line" >> "$out"
+      fi
+    done < "$in"
+  fi
+  for k in AAP_GITHUB_ORG AAP_GITHUB_APP_ID AAP_GITHUB_APP_INSTALLATION_ID AAP_RUNNER_GROUP AAP_RUNNER_LABELS; do
+    [[ " $seen " == *" $k "* ]] || printf '%s=%s\n' "$k" "${want[$k]}" >> "$out"
+  done
+}
+
+main() {
+  if [[ $# -ne 5 ]]; then
+    echo "FAIL identity: expected 5 arguments" >&2
+    exit 2
+  fi
+  umask 077
+  local tmpkey="$key.tmp" tmpconf="$conf.tmp" n first state i
+  trap 'rm -f "$tmpkey" "$tmpconf"' EXIT
+  head -c 16384 > "$tmpkey"
+  n=$(stat -c %s "$tmpkey")
+  if (( n == 0 || n >= 16384 )); then
+    echo "FAIL identity: key size $n" >&2
+    exit 1
+  fi
+  IFS= read -r first < "$tmpkey" || true
+  first=${first%$'\r'}
+  case "$first" in
+    '-----BEGIN RSA PRIVATE KEY-----' | '-----BEGIN PRIVATE KEY-----') ;;
+    *)
+      echo "FAIL identity: key is not a PEM private key" >&2
+      exit 1
+      ;;
+  esac
+  chown root:root "$tmpkey"
+  chmod 0400 "$tmpkey"
+  rewrite_conf "$conf" "$tmpconf" "$@"
+  chown root:root "$tmpconf"
+  chmod 0400 "$tmpconf"
+  if ! AAP_MANAGER_CONF="$tmpconf" "$manager" --check-limits > /dev/null; then
+    echo "FAIL identity: the manager refused the new manager.conf" >&2
+    exit 1
+  fi
+  mv -f "$tmpconf" "$conf"
+  mv -f "$tmpkey" "$key"
+  trap - EXIT
+  echo "key installed: 1 file, $n bytes"
+  echo "manager.conf updated: AAP_GITHUB_ORG AAP_GITHUB_APP_ID AAP_GITHUB_APP_INSTALLATION_ID AAP_RUNNER_GROUP AAP_RUNNER_LABELS"
+  state=$(systemctl is-active aap-runner-manager || true)
+  if [[ "$state" != active ]]; then
+    echo "pool is $state; the new identity applies at the next start"
+    exit 0
+  fi
+  echo "restarting pool: drain"
+  "$manager" --drain
+  for ((i = 0; i < 120; i++)); do
+    state=$(systemctl is-active aap-runner-manager || true)
+    [[ "$state" == active ]] || break
+    sleep 5
+  done
+  "$manager" --undrain
+  systemctl start aap-runner-manager
+  echo "pool restarted: $(systemctl is-active aap-runner-manager || true)"
+}
+
+if [[ "${AAP_IDENTITY_LIB:-}" != 1 ]]; then
+  main "$@"
+fi
+'@
+    return ($text -replace "`r`n", "`n")
+}
+
+# One wsl.exe call. The script travels base64 inside the -c argument so that
+# argument holds no quote; the fields are plain tokens; the key is on stdin.
+function Get-AapIdentityWslArgs($Req) {
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-AapIdentityScript)))
+    $cmd = "bash <(echo $b64 | base64 -d) $($Req.Org) $($Req.AppId) $($Req.InstallationId) $($Req.Group) $($Req.Labels)"
+    return @('-d', 'aap-runner', '-u', 'root', '--', '/bin/bash', '-c', $cmd)
+}
+
+function Invoke-AapIdentityLive([string]$DataDir, [string]$Id) {
+    if ($Id -notmatch '^[0-9a-f]{16}\z') {
+        [Console]::Out.WriteLine('FAIL identity id')
+        return 2
+    }
+    $reqPath = Join-Path (Join-Path (Join-Path $DataDir 'inbox') 'jobs') "$Id.json"
+    [Console]::Out.WriteLine('STEP identity request')
+    try {
+        $req = Read-AapIdentityRequest $reqPath $Id
+        $dir = Get-AapRequestOwnerProfile $reqPath
+    } catch {
+        [Console]::Out.WriteLine("FAIL identity $($_.Exception.Message)")
+        return 2
+    }
+    $why = Get-AapIdentityKeyProblem $req.KeyPath $dir
+    if ($why) {
+        [Console]::Out.WriteLine("FAIL identity $why")
+        return 2
+    }
+    [Console]::Out.WriteLine("INFO identity org $($req.Org) app $($req.AppId) installation $($req.InstallationId) group $($req.Group) labels $($req.Labels)")
+    [Console]::Out.WriteLine('STEP identity install')
+    $code = Invoke-AapStreamingStdin $AapWsl (Get-AapIdentityWslArgs $req) $req.KeyPath
+    if ($code -ne 0) {
+        [Console]::Out.WriteLine("FAIL identity exit $code")
+        return 1
+    }
+    [Console]::Out.WriteLine('PASS identity')
+    return 0
 }
 
 # /etc/aap-runner/manager.conf of the aap-runner distro, or $null when the
@@ -368,6 +657,18 @@ function Invoke-AapVerifyLive([string]$DataDir) {
         [Console]::Out.WriteLine('PASS units sysbox and aap-runner-manager')
     } else {
         [Console]::Out.WriteLine("FAIL units exit $code")
+        $failed = $true
+    }
+    # The manager mints an App token with the installed key. Pass or fail only; the
+    # manager prints nothing secret and the token never leaves the distro.
+    [Console]::Out.WriteLine('STEP app-token')
+    $code = Invoke-AapStreaming $AapWsl @(
+        '-d', 'aap-runner', '-u', 'root', '--',
+        '/usr/local/sbin/aap-runner-manager', '--check-token')
+    if ($code -eq 0) {
+        [Console]::Out.WriteLine('PASS app-token obtainable')
+    } else {
+        [Console]::Out.WriteLine("FAIL app-token exit $code")
         $failed = $true
     }
     if ($failed) { return 1 }
@@ -546,13 +847,13 @@ if ($MyInvocation.InvocationName -ne '.') {
     $ErrorActionPreference = 'Stop'
     try {
         Initialize-AapModulePath
-        if ($Verb -ne 'verify' -and $Verb -ne 'repair') {
+        if ($Verb -ne 'verify' -and $Verb -ne 'repair' -and $Verb -ne 'identity') {
             [Console]::Error.WriteLine('refusing: verb')
             exit 2
         }
         if ($Fixture) {
-            if ($Verb -eq 'repair') {
-                [Console]::Out.WriteLine('FAIL repair fixture mode does not change the machine')
+            if ($Verb -ne 'verify') {
+                [Console]::Out.WriteLine("FAIL $Verb fixture mode does not change the machine")
                 exit 2
             }
             if (-not (Test-AapHelperDataDir $DataDir)) {
@@ -573,6 +874,13 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         if ($Verb -eq 'verify') {
             exit (Invoke-AapVerifyLive -DataDir $DataDir)
+        }
+        if ($Verb -eq 'identity') {
+            if ($Id -notmatch '^[0-9a-f]{16}\z') {
+                [Console]::Error.WriteLine('refusing: Id')
+                exit 2
+            }
+            exit (Invoke-AapIdentityLive -DataDir $DataDir -Id $Id)
         }
         exit (Invoke-AapRepairLive -TrayExe $TrayExe)
     } catch {
