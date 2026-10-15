@@ -3,7 +3,7 @@
 //! does; Runners, IO cap and Sharing are edits that Apply writes. CPUs and memory per runner
 //! are the even share of the caps, shown to one decimal. The file stores the caps.
 
-use crate::dashboard::{Palette, button, primary_button, ring, semibold};
+use crate::dashboard::{CAP_ERROR_H, Palette, button, primary_button, ring, semibold};
 use crate::mark::Sym;
 use crate::settings::{self, IO_PERCENT, Settings, Sharing, VmLimit};
 use crate::state::{Applied, Desired, Snapshot, Status};
@@ -277,7 +277,14 @@ impl SettingsPanel {
         });
         let invalid = self.edit().validate(&vm).err();
         if let Some(e) = invalid.as_ref().or(self.write_error.as_ref()) {
-            ui.add(egui::Label::new(RichText::new(e).color(p.state(Sym::Error))).wrap());
+            let row_w = ui.available_width();
+            ui.allocate_ui_with_layout(
+                vec2(row_w, CAP_ERROR_H),
+                Layout::top_down(Align::Min),
+                |ui| {
+                    ui.add(egui::Label::new(RichText::new(e).color(p.state(Sym::Error))).wrap());
+                },
+            );
         }
         ui.horizontal(|ui| {
             let r = primary_button(ui, p, "Apply", invalid.is_none());
