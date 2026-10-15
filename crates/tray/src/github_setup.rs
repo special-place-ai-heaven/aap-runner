@@ -557,7 +557,7 @@ impl LookupError {
     fn rate_limit(until: SystemTime) -> Self {
         Self {
             kind: FailKind::RateLimit,
-            message: try_again_at(until),
+            message: try_again_at(until, crate::win::local_offset_secs()),
             until: Some(until),
         }
     }
@@ -680,18 +680,14 @@ fn status_error(status: u16, body: &str) -> LookupError {
     }
 }
 
-fn try_again_at(at: SystemTime) -> String {
+/// `offset` is local time minus UTC in seconds, as the dashboard clock uses.
+fn try_again_at(at: SystemTime, offset: i64) -> String {
     let secs = at
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    // ponytail: UTC clock only, no date. Add the civil date if a reset on another day must be unambiguous.
-    let clock = secs % 86_400;
-    format!(
-        "try again at {:02}:{:02} UTC",
-        clock / 3600,
-        (clock % 3600) / 60
-    )
+    // ponytail: local clock only, no date. A reset is capped at one hour out, so the date is never ambiguous.
+    format!("try again at {}", crate::dashboard::clock(secs, offset))
 }
 
 /// First network retry waits 5 s, then 10, 20, and 40.
@@ -1148,19 +1144,62 @@ fn rate_error(http: &Http) -> Option<LookupError> {
     if !limited {
         return None;
     }
-    Some(match http.rate_until {
-        Some(until) => LookupError::rate_limit(until),
-        None => LookupError::new(FailKind::RateLimit, "GitHub rate limit. Try again later."),
-    })
+    Some(LookupError::rate_limit(http.rate_until))
 }
 
-/// Retry-After seconds win over X-RateLimit-Reset.
-/// ponytail: an HTTP-date Retry-After is dropped by `header_seconds`, so the reset header is used. Parse the date if GitHub sends only that.
-fn rate_until(retry_after: Option<u64>, reset: Option<u64>, now: SystemTime) -> Option<SystemTime> {
-    if let Some(secs) = retry_after {
-        return now.checked_add(Duration::from_secs(secs));
+/// Without a usable header the limit is held this long.
+const RATE_DEFAULT: Duration = Duration::from_secs(60);
+/// No header may hold the limit longer than this.
+const RATE_CAP: Duration = Duration::from_secs(3600);
+
+/// Retry-After (delta-seconds or an HTTP-date) wins over X-RateLimit-Reset (unix seconds).
+/// Garbage or no header gives `now + 60 s`; any value is capped at `now + 1 h`.
+fn rate_until(retry_after: Option<&str>, reset: Option<&str>, now: SystemTime) -> SystemTime {
+    let now_unix = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let retry_after = retry_after.map(str::trim);
+    let unix = match retry_after.and_then(|s| s.parse::<u64>().ok()) {
+        Some(secs) => now_unix.saturating_add(secs),
+        None => retry_after
+            .and_then(http_date_unix)
+            .or_else(|| reset.and_then(|s| s.trim().parse::<u64>().ok()))
+            .unwrap_or(now_unix + RATE_DEFAULT.as_secs()),
+    };
+    UNIX_EPOCH + Duration::from_secs(unix.min(now_unix + RATE_CAP.as_secs()))
+}
+
+/// Unix seconds of an RFC 7231 IMF-fixdate, e.g. `Wed, 21 Oct 2015 07:28:00 GMT`. Anything else is `None`.
+fn http_date_unix(text: &str) -> Option<u64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let parts: Vec<&str> = text.split_ascii_whitespace().collect();
+    let &[_weekday, day, month, year, time, "GMT"] = parts.as_slice() else {
+        return None;
+    };
+    let day: i64 = day.parse().ok().filter(|d| (1..=31).contains(d))?;
+    let month = MONTHS.iter().position(|m| *m == month)? as i64 + 1;
+    let year: i64 = year.parse().ok().filter(|y| (1970..=9999).contains(y))?;
+    let mut hms = time.split(':').map(|p| p.parse::<i64>().ok());
+    let (Some(Some(h)), Some(Some(m)), Some(Some(s)), None) =
+        (hms.next(), hms.next(), hms.next(), hms.next())
+    else {
+        return None;
+    };
+    if h > 23 || m > 59 || s > 60 {
+        return None;
     }
-    reset.and_then(|unix| UNIX_EPOCH.checked_add(Duration::from_secs(unix)))
+    // Days from the civil date (Howard Hinnant's algorithm).
+    let (y, mo) = if month <= 2 {
+        (year - 1, month + 9)
+    } else {
+        (year, month - 3)
+    };
+    let era = y / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * mo + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + h * 3600 + m * 60 + s).ok()
 }
 
 fn resolve(parsed: &Parsed) -> Result<Account, LookupError> {
@@ -1189,7 +1228,7 @@ fn resolve(parsed: &Parsed) -> Result<Account, LookupError> {
 struct Http {
     status: u16,
     body: String,
-    rate_until: Option<SystemTime>,
+    rate_until: SystemTime,
 }
 
 enum FetchFail {
@@ -1364,9 +1403,9 @@ unsafe fn winhttp_get(path: &str) -> Result<Http, FetchFail> {
         }
     }
     let body = String::from_utf8(body).map_err(|_| FetchFail::NotUtf8)?;
-    let retry_after = header_seconds(request, "Retry-After");
-    let reset = header_seconds(request, "X-RateLimit-Reset");
-    let rate_until = rate_until(retry_after, reset, SystemTime::now());
+    let retry_after = header_text(request, "Retry-After");
+    let reset = header_text(request, "X-RateLimit-Reset");
+    let rate_until = rate_until(retry_after.as_deref(), reset.as_deref(), SystemTime::now());
     Ok(Http {
         status: status as u16,
         body,
@@ -1374,7 +1413,8 @@ unsafe fn winhttp_get(path: &str) -> Result<Http, FetchFail> {
     })
 }
 
-fn header_seconds(request: *mut std::ffi::c_void, name: &str) -> Option<u64> {
+/// The trimmed value of a response header, or `None` when absent or empty.
+fn header_text(request: *mut std::ffi::c_void, name: &str) -> Option<String> {
     use windows::Win32::Networking::WinHttp::WinHttpQueryHeaders;
     use windows::core::PCWSTR;
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
@@ -1397,10 +1437,7 @@ fn header_seconds(request: *mut std::ffi::c_void, name: &str) -> Option<u64> {
     let chars = (len as usize / 2).min(buf.len());
     let text = String::from_utf16_lossy(&buf[..chars]);
     let text = text.trim_end_matches('\0').trim();
-    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    text.parse().ok()
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 struct Handle(*mut std::ffi::c_void);
@@ -1997,22 +2034,97 @@ mod tests {
     fn retry_after_seconds_beat_the_reset_time() {
         let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         assert_eq!(
-            rate_until(Some(90), Some(1_800_000_000), now),
-            Some(now + Duration::from_secs(90))
+            rate_until(Some("90"), Some("1700000900"), now),
+            now + Duration::from_secs(90)
         );
         assert_eq!(
-            rate_until(None, Some(1_700_000_090), now),
-            Some(UNIX_EPOCH + Duration::from_secs(1_700_000_090))
+            rate_until(None, Some("1700000090"), now),
+            UNIX_EPOCH + Duration::from_secs(1_700_000_090)
         );
-        assert_eq!(rate_until(None, None, now), None);
         let bare = rate_error(&Http {
             status: 429,
             body: String::new(),
-            rate_until: None,
+            rate_until: now,
         })
         .unwrap();
         assert_eq!(bare.kind, FailKind::RateLimit);
-        assert!(bare.until.is_none());
+        assert_eq!(bare.until, Some(now));
+    }
+
+    #[test]
+    fn a_missing_or_garbage_header_holds_the_limit_for_60_s() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let in_60 = now + Duration::from_secs(60);
+        assert_eq!(rate_until(None, None, now), in_60);
+        assert_eq!(rate_until(Some(""), Some(" "), now), in_60);
+        assert_eq!(rate_until(Some("soon"), Some("-5"), now), in_60);
+        assert_eq!(
+            rate_until(Some("Wed, 21 Oct 2015 07:28:00"), None, now),
+            in_60
+        );
+        assert_eq!(
+            rate_until(Some("Wed, 32 Oct 2015 07:28:00 GMT"), None, now),
+            in_60
+        );
+        assert_eq!(
+            rate_until(Some("Wed, 21 Oct 2015 24:00:00 GMT"), None, now),
+            in_60
+        );
+    }
+
+    #[test]
+    fn an_http_date_retry_after_is_parsed() {
+        assert_eq!(
+            http_date_unix("Wed, 21 Oct 2015 07:28:00 GMT"),
+            Some(1_445_412_480)
+        );
+        assert_eq!(http_date_unix("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0));
+        assert_eq!(
+            http_date_unix("Tue, 29 Feb 2000 12:00:00 GMT"),
+            Some(951_825_600)
+        );
+        assert_eq!(
+            http_date_unix("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        let now = UNIX_EPOCH + Duration::from_secs(1_445_412_000);
+        assert_eq!(
+            rate_until(
+                Some("Wed, 21 Oct 2015 07:28:00 GMT"),
+                Some("1445413000"),
+                now
+            ),
+            UNIX_EPOCH + Duration::from_secs(1_445_412_480),
+            "the date beats the reset header"
+        );
+    }
+
+    #[test]
+    fn a_reset_is_capped_at_one_hour_out() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let in_1h = now + Duration::from_secs(3600);
+        assert_eq!(rate_until(None, Some("1800000000"), now), in_1h);
+        assert_eq!(rate_until(Some("86400"), None, now), in_1h);
+        assert_eq!(
+            rate_until(Some("Fri, 01 Jan 2100 00:00:00 GMT"), None, now),
+            in_1h
+        );
+        assert_eq!(
+            rate_until(Some(u64::MAX.to_string().as_str()), None, now),
+            in_1h
+        );
+        assert_eq!(
+            rate_until(Some("3599"), None, now),
+            now + Duration::from_secs(3599)
+        );
+    }
+
+    #[test]
+    fn try_again_at_is_shown_in_local_time() {
+        let at = UNIX_EPOCH + Duration::from_secs(1_445_412_480); // 07:28 UTC
+        assert_eq!(try_again_at(at, 0), "try again at 07:28");
+        assert_eq!(try_again_at(at, 2 * 3600), "try again at 09:28");
+        assert_eq!(try_again_at(at, -8 * 3600), "try again at 23:28");
     }
 
     #[test]
