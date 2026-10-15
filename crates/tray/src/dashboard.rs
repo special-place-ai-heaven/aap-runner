@@ -8,7 +8,7 @@
 use crate::history::{History, Sample, secs};
 use crate::mark::Sym;
 use crate::problem::{self, Action, Class};
-use crate::settings_panel::{Focus, SettingsPanel};
+use crate::settings_panel::SettingsPanel;
 use crate::state::{self, Desired, Slot, Snapshot, Status};
 use eframe::egui::{
     self, Align, Align2, Color32, FontFamily, FontId, Key, Layout, Rect, RichText, Sense, Shape,
@@ -185,8 +185,9 @@ const INTERACT_H: f32 = 24.0;
 const PAUSED_LINE_H: f32 = 16.0;
 /// Second status row: step / reason text (FAIL detail, declined error, STEP name).
 const JOB_STEP_H: f32 = JOB_LINE_H;
-/// Height of the left-column fixed footer (Verify + Repair + Open-logs buttons).
-const FOOTER_H: f32 = 3.0 * INTERACT_H + 2.0 * CARD_ITEM_GAP;
+/// Gap between the pool block and the footer buttons in the left column.
+/// A future row that does not fit here grows SIZE[1], never adds a scrollbar.
+const FOOTER_GAP: f32 = 8.0;
 /// Height of a pool-bar caption row (right-aligned label, fixed allocation).
 const CAPTION_H: f32 = 16.0;
 /// Height of the pool-bar track row: fixed_label + track, both at BAR_ROW_H px.
@@ -1866,35 +1867,14 @@ impl eframe::App for Dash {
             .resizable(false)
             .frame(frame)
             .show(ui, |ui| {
-                let avail = ui.available_rect_before_wrap();
-                let content_h = (avail.height() - FOOTER_H - CARD_ITEM_GAP).max(0.0);
-                let mut top_focus: Option<Focus> = None;
-                ui.allocate_ui_with_layout(
-                    vec2(avail.width(), content_h),
-                    Layout::top_down(Align::Min),
-                    |ui| {
-                        let f = egui::ScrollArea::vertical()
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                let f = self.settings.show_top(
-                                    ui,
-                                    &p,
-                                    &self.base,
-                                    &self.snap,
-                                    &mut self.desired,
-                                );
-                                ui.add_space(8.0);
-                                self.pool(ui); // pool bars live in the left column
-                                f
-                            })
-                            .inner;
-                        top_focus = Some(f);
-                    },
-                );
-                let mut focus = top_focus.unwrap_or(Focus {
-                    first: None,
-                    has: false,
-                });
+                // No ScrollArea: every row is fixed height.
+                // A future row that does not fit grows SIZE[1], never adds a scrollbar.
+                let mut focus =
+                    self.settings
+                        .show_top(ui, &p, &self.base, &self.snap, &mut self.desired);
+                ui.add_space(8.0);
+                self.pool(ui);
+                ui.add_space(FOOTER_GAP);
                 self.settings.show_bottom(ui, &p, &self.base, &mut focus);
                 focus
             })
@@ -1924,7 +1904,7 @@ impl eframe::App for Dash {
     }
 }
 
-/// Height of the left column full area (2 x PAD + scroll content + gap + FOOTER_H).
+/// Height of the left column full area (2 x PAD + settings + pool + footer buttons).
 ///
 /// `paused`: include one extra PAUSED_LINE_H row (status indicator).
 /// `job_line`: include the pending Apply/Revert section (label + button row).
@@ -1933,7 +1913,8 @@ impl eframe::App for Dash {
 /// Every row is INTERACT_H (any `ui.horizontal` with a 24 px widget), PAUSED_LINE_H
 /// (a `now()` row or bare label), CAPTION_H (a fixed-height bar caption), BAR_ROW_H
 /// (the pool bar track row), or an explicit `add_space` value.  No row calls
-/// `available_height()` or `available_size()`.
+/// `available_height()` or `available_size()`.  A new row that does not fit here
+/// grows SIZE[1], never adds a scrollbar.
 #[cfg(test)]
 fn left_column_height(paused: bool, job_line: bool) -> f32 {
     // settings (show_top) -- 15 items, 14 auto-gaps
@@ -1966,7 +1947,10 @@ fn left_column_height(paused: bool, job_line: bool) -> f32 {
     // pool: 3 bars x (BAR_ROW_H + CAPTION_H) + IO line + sampled line + 7 auto-gaps
     let pool = 3.0 * (BAR_ROW_H + CAPTION_H) + CAPTION_H + CAPTION_H + 7.0 * CARD_ITEM_GAP;
 
-    PAD + settings + paused_row + job_row + to_pool + pool + CARD_ITEM_GAP + FOOTER_H + PAD
+    // footer: FOOTER_GAP + 3 button rows + 3 auto-gaps
+    let footer = FOOTER_GAP + 3.0 * INTERACT_H + 3.0 * CARD_ITEM_GAP;
+
+    PAD + settings + paused_row + job_row + to_pool + pool + CARD_ITEM_GAP + footer + PAD
 }
 
 #[cfg(test)]
@@ -2204,6 +2188,8 @@ mod tests {
     fn left_column_height_fits_minimum_window() {
         // Independent row inventory (paused=true, job_line=true -- worst case).
         // No row below uses available_height(); every height is a named constant.
+        // The left column has no ScrollArea; a future row that does not fit grows
+        // SIZE[1] instead of adding a scrollbar.
         let rows = [
             INTERACT_H,    // Power label row
             INTERACT_H,    // Power Start/Stop . Pause/Resume row
@@ -2235,24 +2221,42 @@ mod tests {
             CAPTION_H, // IO cap line
             CAPTION_H, // sampled line
         ];
+        // Footer: FOOTER_GAP + 3 button rows + 3 auto-gaps
+        let footer_rows = [
+            FOOTER_GAP, // add_space before buttons
+            INTERACT_H, // Verify install
+            INTERACT_H, // Repair install
+            INTERACT_H, // Open logs
+        ];
         let s: f32 = rows.iter().sum::<f32>() + (rows.len() - 1) as f32 * CARD_ITEM_GAP;
         let p: f32 = pool_rows.iter().sum::<f32>() + (pool_rows.len() - 1) as f32 * CARD_ITEM_GAP;
+        let f: f32 =
+            footer_rows.iter().sum::<f32>() + (footer_rows.len() - 1) as f32 * CARD_ITEM_GAP;
         let to_pool = CARD_ITEM_GAP + 8.0 + CARD_ITEM_GAP;
-        let expected = PAD + s + to_pool + p + CARD_ITEM_GAP + FOOTER_H + PAD;
+        let expected = PAD + s + to_pool + p + CARD_ITEM_GAP + f + PAD;
         assert_eq!(
             left_column_height(true, true),
             expected,
             "left_column_height formula drifted from the row inventory"
         );
-        let title = 32.0;
+        // The window height is defined by the right column (5 runner cards).
         assert!(
-            expected <= clamped_window_height(1080.0, title),
-            "left column overflows 1080p: {expected} > {}",
+            left_column_height(true, true) <= right_column_height(5),
+            "left column taller than 5-card right column: {} > {}",
+            left_column_height(true, true),
+            right_column_height(5)
+        );
+        // The right column must fit the clamped window at 1080p and 768p.
+        let title = 32.0;
+        let rh = right_column_height(5);
+        assert!(
+            rh <= clamped_window_height(1080.0, title),
+            "right column overflows 1080p: {rh:.0} > {}",
             clamped_window_height(1080.0, title)
         );
         assert!(
-            expected <= clamped_window_height(768.0, title),
-            "left column overflows 768p: {expected} > {}",
+            rh <= clamped_window_height(768.0, title),
+            "right column overflows 768p: {rh:.0} > {}",
             clamped_window_height(768.0, title)
         );
     }

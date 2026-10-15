@@ -137,10 +137,9 @@ impl SettingsPanel {
         focus
     }
 
-    /// Bottom part of the left column (pinned to the bottom via `bottom_up`):
-    /// Renders Verify / Repair / Open-logs buttons. Called from a fixed-height footer
-    /// OUTSIDE the left-column scroll area (dashboard.rs) so these buttons never
-    /// overdraw the pool bars at small window heights.
+    /// Footer buttons (Verify / Repair / Open logs) in the normal left-column flow,
+    /// preceded by add_space(FOOTER_GAP).  No scroll area in the left column;
+    /// a new row here grows the window height (SIZE[1]), never adds a scrollbar.
     pub fn show_bottom(&mut self, ui: &mut egui::Ui, p: &Palette, base: &Path, focus: &mut Focus) {
         let verify = ui.button("Verify install");
         focus.track(ui, p, &verify);
