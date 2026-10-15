@@ -86,7 +86,8 @@ addendum of the design doc.
   Verify install, Repair install, and Open logs are pinned at the bottom.
 - **Right column:** only observed values. A pinned header row (symbol, state, `N/M busy`, `All OK` or
   the `1 problem` button). Below the header: one status line for the current Verify/Repair job
-  (`Verb · state · step` with a `· Open log` CollapsingHeader when log lines exist).
+  (format: `Verify · failed · exit 1` on failure, `Repair · running…` while active,
+  `Verify · ok` on success; with a `· Open log` CollapsingHeader when log lines are available).
   Then one compact card per runner (state and elapsed; `title · repo` on one line with the full
   text in a tooltip and a copy button; CPU and Mem bars side by side). Five cards fit the default
   760 px window height without scrolling. The last 60 minutes follows below (scrolls at small sizes).
