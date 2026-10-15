@@ -287,15 +287,52 @@ public static class AapStream {
     foreach ($a in @($Arguments)) { $quoted += (Format-AapProcessArg $a) }
     return [int][AapStream]::Run($File, ($quoted -join ' '))
 }
+
+# /etc/aap-runner/manager.conf of the aap-runner distro, or $null when the
+# distro is absent or wsl fails. One wsl call; the verify flow already enters
+# the distro for the units check.
+function Get-AapDistroManagerConf {
+    if (-not (Test-Path -LiteralPath $AapWsl)) { return $null }
+    # Windows PowerShell 5.1 turns merged native stderr into a terminating error under Stop.
+    $ErrorActionPreference = 'Continue'
+    try {
+        $out = & $AapWsl -d 'aap-runner' -u root -- /bin/cat /etc/aap-runner/manager.conf 2>&1 | ForEach-Object { "$_" } | Out-String
+    } catch {
+        return $null
+    }
+    if ($LASTEXITCODE -ne 0) { return $null }
+    return ($out -replace [char]0, '')
+}
+
+# Bytes of the fixed work VHDX, 0 when it is absent.
+function Get-AapVhdxBytes {
+    if (-not (Test-Path -LiteralPath $AapVhdx -PathType Leaf)) { return [long]0 }
+    return [long](Get-Item -LiteralPath $AapVhdx -Force).Length
+}
+
+# AAP_WORK_DISK_GIB from the distro's manager.conf; without a distro the VHDX
+# size rounded to GiB; 0 when neither is known (install-host keeps its default).
+function Get-AapWorkDiskGiB {
+    $conf = Get-AapDistroManagerConf
+    if ($conf -and ($conf -match '(?m)^AAP_WORK_DISK_GIB=([0-9]+)\s*$')) { return [int]$Matches[1] }
+    return [int][math]::Round((Get-AapVhdxBytes) / 1GB)
+}
+
 function Invoke-AapVerifyLive([string]$DataDir) {
     $layout = Get-AapHelperLayout
     $report = Get-AapVerifyReport -DataDir $DataDir
     foreach ($line in @($report.Lines)) { [Console]::Out.WriteLine([string]$line) }
     $failed = ($report.ExitCode -ne 0)
     [Console]::Out.WriteLine('STEP install-host -DryRun')
-    $code = Invoke-AapStreaming $AapPs @(
+    $hostArgs = @(
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
         (Join-Path $layout.Installer 'install-host.ps1'), '-DryRun')
+    $gib = Get-AapWorkDiskGiB
+    if ($gib -gt 0) {
+        [Console]::Out.WriteLine("INFO work-disk $gib GiB")
+        $hostArgs += @('-WorkDiskGiB', "$gib")
+    }
+    $code = Invoke-AapStreaming $AapPs $hostArgs
     if ($code -ne 0) {
         [Console]::Out.WriteLine("FAIL install-host exit $code")
         $failed = $true

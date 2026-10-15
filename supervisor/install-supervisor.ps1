@@ -29,7 +29,7 @@
 #   trigger, this user's SID, InteractiveToken, the same verified path as
 #   AAP-CRRR-Mount-Work-Disk. Logoff stops the runner by design: WSL
 #   sessions belong to the logon session.
-# - -TrayExe (default C:\TOOLS\git_runner\aap-runner-tray.exe), if the file
+# - -TrayExe (default %ProgramFiles%\aap-runner\aap-runner-tray.exe), if the file
 #   exists: Run value AAP-Runner-Tray = "<path>" for the installing user, so
 #   the tray starts at logon. Missing exe = skipped with an INFO line. The
 #   tray is not started.
@@ -41,7 +41,7 @@ param(
     [string]$DataDir = 'C:\ProgramData\aap-runner',
     [string]$ScriptDir = 'C:\wsl\aap-runner-supervisor',
     [string]$TaskName = 'AAP-CRRR-Supervisor',
-    [string]$TrayExe = 'C:\TOOLS\git_runner\aap-runner-tray.exe',
+    [string]$TrayExe = (Join-Path $env:ProgramFiles 'aap-runner\aap-runner-tray.exe'),
     [switch]$EnsureRequestDir
 )
 

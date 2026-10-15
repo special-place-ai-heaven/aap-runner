@@ -219,6 +219,36 @@ Describe 'helper verify' {
         Should -Invoke Invoke-AapStreaming -Times 0 -ParameterFilter { $File -eq 'C:\Windows\System32\schtasks.exe' }
     }
 
+    It 'passes the configured work-disk size to install-host -DryRun' {
+        Mock Get-AapDistroManagerConf { return "AAP_WORK_DISK_GIB=200`nAAP_DISK_FLOOR_GB=20`n" }
+        Mock Get-AapVhdxBytes { return [long]64424509440 }
+        Mock Invoke-AapStreaming { return 0 }
+        Mock Get-AapVerifyReport { return [pscustomobject]@{ ExitCode = 0; Lines = @('PASS data-dir') } }
+        Get-AapWorkDiskGiB | Should -Be 200
+        $null = Invoke-AapVerifyLive -DataDir 'C:\ProgramData\aap-runner'
+        Should -Invoke Invoke-AapStreaming -Times 1 -Exactly -ParameterFilter {
+            ($Arguments -join ' ') -match 'install-host\.ps1 -DryRun -WorkDiskGiB 200$'
+        }
+    }
+
+    It 'falls back to the measured VHDX size when the distro is absent' {
+        Mock Get-AapDistroManagerConf { return $null }
+        Mock Get-AapVhdxBytes { return [long]214748364800 + 4MB }
+        Mock Invoke-AapStreaming { return 0 }
+        Mock Get-AapVerifyReport { return [pscustomobject]@{ ExitCode = 0; Lines = @('PASS data-dir') } }
+        Get-AapWorkDiskGiB | Should -Be 200
+        $null = Invoke-AapVerifyLive -DataDir 'C:\ProgramData\aap-runner'
+        Should -Invoke Invoke-AapStreaming -Times 1 -Exactly -ParameterFilter {
+            ($Arguments -join ' ') -match 'install-host\.ps1 -DryRun -WorkDiskGiB 200$'
+        }
+        Mock Get-AapVhdxBytes { return [long]0 }
+        Get-AapWorkDiskGiB | Should -Be 0
+        $null = Invoke-AapVerifyLive -DataDir 'C:\ProgramData\aap-runner'
+        Should -Invoke Invoke-AapStreaming -Times 1 -Exactly -ParameterFilter {
+            ($Arguments -join ' ') -match 'install-host\.ps1 -DryRun$'
+        }
+    }
+
     It 'names only the fixed repair paths' {
         $plan = @(Get-AapRepairPlan)
         ($plan.Name -join ',') | Should -Be 'lock-acl,lock-acl,lock-acl,lock-acl,lock-acl,install-supervisor,remount,restart-supervisor'
@@ -233,5 +263,16 @@ Describe 'helper verify' {
             'AAP-CRRR-Supervisor'
         ) -join "`n")
         ($plan.Path -join "`n") | Should -Not -Match '\.\.'
+    }
+}
+
+Describe 'install-supervisor defaults' {
+    BeforeAll {
+        . (Join-Path $PSScriptRoot 'install-supervisor.ps1')
+    }
+
+    It 'defaults TrayExe to the aap-runner folder under Program Files' {
+        $TrayExe | Should -Be (Join-Path $env:ProgramFiles 'aap-runner\aap-runner-tray.exe')
+        $TrayExe | Should -Not -Match 'TOOLS'
     }
 }
