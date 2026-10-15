@@ -62,7 +62,7 @@ split by trust:
 | `inbox\settings.json` | tray or you | `{"runner_count":1-5,"job_cpus":1-28,"job_memory_gib":1-80,"paused":true\|false}`. All four keys, whole numbers, a real boolean. Schema 2 adds optional `"schema":2`, `"io_percent":0-100` (whole number) and `"sharing":"slice"\|"fixed"`; a file without them (schema 1) is still read. Anything else logs one warning and the last valid settings stay. Missing means no override and not paused. |
 | `status.json` | supervisor | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"","updated":"<RFC3339>","detail":"","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/owner/name/actions/runs/ID"}`. The three numbers are what the manager reports as applied, or null. `repo` and `run_url` are the running job's, copied from the manager only when they match `owner/name` and `https://github.com/owner/name/actions/runs/<digits>` exactly, else empty. Both are empty while off or paused. Schema 4 writes `"schema":4` and adds `"work_disk_gib"`, `"work_disk_free_gb"`, `"work_disk_floor_gb"` and `"cleaning":true|false` (null and false unless the manager is idle, running, or draining; a schema 3 manager file still reads; a size outside 0-1024 is null). Schema 3 fields: `"sampled_at":"<RFC3339>"\|null`, `"pool":{"cpu_cores","mem_gib","io_mbps"}`, `"slots":[{"slot","state","job","repo","run_url","job_url","started_at","cpu_cores","mem_gib"}]`, `"job_io_mbps"` and `"sharing":"slice"\|"fixed"\|null`. They are copied from the manager only while it reports idle, running or draining; otherwise `slots` is `[]` and the rest null. Every value is re-checked: numbers in range (cores 0-1024, GiB 0-4096) else null, `repo` and `run_url` as above, `job_url` as `https://github.com/owner/name/actions/runs/<digits>/job/<digits>`, slot `state` one of idle, running, draining, starting, error, else empty. At most 5 slots. The manager's unix-second times are written as RFC 3339 UTC. An older manager without a `slots` list gives `[]`. Rewritten at least every 60 s. The tray calls it stale after 180 s. |
 | `logs\supervisor.log` | supervisor | One line per event, rotated to `.1` at 5 MB. |
-| `inbox\jobs\<id>.json` | tray | Schema 1: `{"schema":1,"id":"<16 lowercase hex>","verb":"verify"|"repair"}`. Nothing else is accepted. The supervisor does not read it. |
+| `inbox\jobs\<id>.json` | tray | Schema 1: `{"schema":1,"id":"<16 lowercase hex>","verb":"verify"|"repair"}`, or with `"verb":"identity"` plus exactly `org`, `app_id`, `installation_id` (numbers), `group`, `labels`, and `key_path` (see `crates/tray/README.md`, Identity). Nothing else is accepted. The supervisor does not read it. |
 | `jobs\<id>\` | elevated helper | `status.json` (schema 1: `queued`, `running`, `passed`, `failed`, or `rejected`), `log.txt`, `exit.txt`. Admin-owned. The tray reads them. The supervisor does not. |
 
 While On, `inbox\settings.json` is read every 5 s:
@@ -80,9 +80,17 @@ While On, `inbox\settings.json` is read every 5 s:
   and sysbox stay up and the status is `paused`. `paused: false` starts it
   again. Off wins over paused.
 
-The GitHub App id, the key and the runner labels cannot be changed from the
-tray. They live in `/etc/aap-runner/manager.conf` and `app.pem` inside the
-distro, root-only, and change only by editing those as root.
+The GitHub App id, the key and the runner labels are not read from the
+inbox by the supervisor. They live in `/etc/aap-runner/manager.conf` and
+`app.pem` inside the distro, root-only. The tray's identity page changes them
+through the elevated helper's `identity` verb (`installer/helper-run.ps1`):
+it re-checks every field, refuses a key file that is not a plain file under
+the requesting user's profile (or is a reparse point, not a PEM private key,
+or 16 KiB or more), streams the key over stdin into one `wsl -d aap-runner -u
+root` call that writes both files as `.tmp`, has the manager check the new
+conf, swaps them in, and if the manager unit is active drains, undrains and
+starts it again, as a limits change does. The helper logs the non-secret
+fields and `key installed: 1 file, N bytes`, never the key.
 
 ## Install and uninstall
 
