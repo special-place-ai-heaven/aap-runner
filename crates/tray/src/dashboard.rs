@@ -8,7 +8,7 @@
 use crate::history::{History, Sample, secs};
 use crate::mark::Sym;
 use crate::problem::{self, Action, Class};
-use crate::settings_panel::SettingsPanel;
+use crate::settings_panel::{Focus, SettingsPanel};
 use crate::state::{self, Desired, Slot, Snapshot, Status};
 use eframe::egui::{
     self, Align, Align2, Color32, FontFamily, FontId, Key, Layout, Rect, RichText, Sense, Shape,
@@ -101,7 +101,7 @@ fn cards_to_draw(slot_count: usize) -> usize {
     slot_count.min(*crate::settings::RUNNERS.end() as usize)
 }
 
-/// Exact outer height of one compact runner card, derived from the draw constants.
+#[cfg(test)]
 fn card_height() -> f32 {
     CARD_SYM_H.max(INTERACT_H) // state row: ui.horizontal floored to interact_size.y
         + CARD_ITEM_GAP
@@ -112,15 +112,14 @@ fn card_height() -> f32 {
         + 2.0 // frame border 1 px each side
 }
 
-/// Total right-column height for `slots` cards plus header, job line, and padding.
-/// Every term maps to a named draw constant; a change propagates to both rendering
-/// and the test. Referenced by debug_assert in run() and five_cards_fit test.
+#[cfg(test)]
 fn right_column_height(slots: usize) -> f32 {
     let n = cards_to_draw(slots);
     PAD // frame top inner margin
         + HEADER_H + CARD_ITEM_GAP // header row + auto spacing
         + AFTER_HEADER // explicit add_space(AFTER_HEADER)
         + JOB_LINE_H + CARD_ITEM_GAP // job status line + auto spacing
+        + JOB_STEP_H + CARD_ITEM_GAP // step / reason row (always allocated) + auto spacing
         + PAUSED_LINE_H + 4.0 + 2.0 * CARD_ITEM_GAP // Paused label + add_space(4) + gaps
         + n as f32 * card_height() // runner cards
         + n.saturating_sub(1) as f32 * (CARD_ITEM_GAP + CARD_GAP_SPACE) // inter-card gaps
@@ -180,13 +179,15 @@ const AFTER_HEADER: f32 = 8.0;
 /// plain labels are allocated to this height for consistency.
 const JOB_LINE_H: f32 = CARD_TITLE_H; // interact_size.y from style()
 /// `interact_size.y` from `style()`; the minimum height of any `ui.horizontal` row.
-const INTERACT_H: f32 = 24.0; // kept in sync with style()
+const INTERACT_H: f32 = 24.0;
+#[cfg(test)]
 /// Conservative height of a bare body-font label (13 px × leading ≈ 16 px).
 const PAUSED_LINE_H: f32 = 16.0;
+/// Second status row: step / reason text (FAIL detail, declined error, STEP name).
+const JOB_STEP_H: f32 = JOB_LINE_H;
+/// Height of the left-column fixed footer (Verify + Repair + Open-logs buttons).
+const FOOTER_H: f32 = 3.0 * INTERACT_H + 2.0 * CARD_ITEM_GAP;
 
-// --- Layout constants (test-only) ---
-// These aggregate the draw-time constants; a change to card sizing that does
-// not update CARD_SYM_H / CARD_BARS_H / CARD_MARGIN_V will break five_cards_fit.
 const SCHTASKS: &str = r"C:\Windows\System32\schtasks.exe";
 const SUPERVISOR_TASK: &str = "AAP-CRRR-Supervisor";
 /// `CREATE_NO_WINDOW`: schtasks is a console program; never flash a console.
@@ -308,7 +309,7 @@ fn style(s: &mut egui::Style) {
     .into();
     s.spacing.item_spacing = vec2(8.0, 4.0);
     s.spacing.button_padding = vec2(10.0, 4.0);
-    s.spacing.interact_size.y = 24.0;
+    s.spacing.interact_size.y = INTERACT_H;
 }
 
 /// `45s`, `12m 04s`, `1h 03m`.
@@ -378,7 +379,7 @@ fn disk_line(
             (
                 Some(used),
                 Some(size),
-                format!("{}/{} GiB{floor_txt}", gib(free), gib(size)),
+                format!("{} GiB free of {}{floor_txt}", gib(free), gib(size)),
                 over,
             )
         }
@@ -459,12 +460,6 @@ pub fn run(base: PathBuf, view: View) -> eframe::Result {
         viewport,
         ..Default::default()
     };
-    debug_assert!(
-        right_column_height(5) <= SIZE[1],
-        "five cards overflow default window: {} > {}",
-        right_column_height(5),
-        SIZE[1]
-    );
     eframe::run_native(
         "aap-runner-dashboard",
         options,
@@ -943,18 +938,20 @@ impl Dash {
         track_w: f32,
         name: String,
     ) {
+        let (text, over) = match used {
+            Some(u) => bar_numbers(u, share, cores),
+            None => ("no sample".into(), false),
+        };
+        let color = self.number_color(used, over);
+        // Row 1: label + track
         ui.horizontal(|ui| {
             fixed_label(ui, label, 18.0);
-            let (text, over) = match used {
-                Some(u) => bar_numbers(u, share, cores),
-                None => ("no sample".into(), false),
-            };
             let r = self.track(ui, id, used, share, over, track_w);
             a11y(&r, format!("{name} {}", text.replace(" / ", " of ")));
-            let color = self.number_color(used, over);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(RichText::new(text).color(color));
-            });
+        });
+        // Row 2: numbers caption on its own line
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(RichText::new(&text).color(color));
         });
     }
 
@@ -1051,17 +1048,20 @@ impl Dash {
             self.snap.work_disk_floor_gb,
             self.fresh(),
         );
+        let p = self.pal();
+        let color = self.number_color(used, over);
+        // Row 1: label + track + cleaning indicator
         ui.horizontal(|ui| {
             fixed_label(ui, "Disk", 18.0);
             let r = self.track(ui, egui::Id::new("pool-disk"), used, share, over, track_w);
             a11y(&r, format!("Work disk {text}"));
-            let color = self.number_color(used, over);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if self.snap.cleaning {
-                    ui.label(RichText::new("cleaning").color(self.pal().muted).small());
-                }
-                ui.label(RichText::new(text).color(color));
-            });
+            if self.snap.cleaning {
+                ui.label(RichText::new("cleaning").color(p.muted).small());
+            }
+        });
+        // Row 2: caption on its own line
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(RichText::new(&text).color(color));
         });
     }
 
@@ -1651,6 +1651,7 @@ impl Dash {
         };
         let p = self.pal();
         let text = job_status_text(&job.verb, &job.state, job.exit_code);
+        // Line 1: summary status
         if job.lines.is_empty() {
             ui.allocate_ui(vec2(ui.available_width(), JOB_LINE_H), |ui| {
                 ui.label(RichText::new(&text).small().color(p.muted));
@@ -1677,6 +1678,13 @@ impl Dash {
                     });
             });
         }
+        // Line 2: step / reason text.
+        let show_step = !job.step.is_empty() && !job.step.starts_with("exit ");
+        ui.allocate_ui(vec2(ui.available_width(), JOB_STEP_H), |ui| {
+            if show_step {
+                ui.label(RichText::new(&job.step).small().color(p.muted));
+            }
+        });
     }
 
     fn right(&mut self, ui: &mut egui::Ui) {
@@ -1822,22 +1830,37 @@ impl eframe::App for Dash {
             .resizable(false)
             .frame(frame)
             .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        let mut focus = self.settings.show_top(
-                            ui,
-                            &p,
-                            &self.base,
-                            &self.snap,
-                            &mut self.desired,
-                        );
-                        ui.add_space(8.0);
-                        self.pool(ui); // pool bars live in the left column
-                        self.settings.show_bottom(ui, &p, &self.base, &mut focus);
-                        focus
-                    })
-                    .inner
+                let avail = ui.available_rect_before_wrap();
+                let content_h = (avail.height() - FOOTER_H - CARD_ITEM_GAP).max(0.0);
+                let mut top_focus: Option<Focus> = None;
+                ui.allocate_ui_with_layout(
+                    vec2(avail.width(), content_h),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        let f = egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                let f = self.settings.show_top(
+                                    ui,
+                                    &p,
+                                    &self.base,
+                                    &self.snap,
+                                    &mut self.desired,
+                                );
+                                ui.add_space(8.0);
+                                self.pool(ui); // pool bars live in the left column
+                                f
+                            })
+                            .inner;
+                        top_focus = Some(f);
+                    },
+                );
+                let mut focus = top_focus.unwrap_or(Focus {
+                    first: None,
+                    has: false,
+                });
+                self.settings.show_bottom(ui, &p, &self.base, &mut focus);
+                focus
             })
             .inner;
         self.right_first = None;
@@ -2045,7 +2068,7 @@ mod tests {
     fn disk_line_names_free_size_and_floor() {
         let (used, share, text, over) = disk_line(Some(100.0), Some(40.0), Some(15.0), true);
         assert_eq!((used, share, over), (Some(60.0), Some(100.0), false));
-        assert_eq!(text, "40/100 GiB \u{b7} floor 15");
+        assert_eq!(text, "40 GiB free of 100 \u{b7} floor 15");
         assert!(disk_line(Some(100.0), Some(10.0), Some(15.0), true).3);
         let (used, share, text, over) = disk_line(None, None, None, true);
         assert_eq!((used, share, over), (None, None, false));

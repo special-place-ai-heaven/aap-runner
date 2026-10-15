@@ -82,7 +82,7 @@ addendum of the design doc.
   (`now -` when nothing runs). While edits differ from `inbox\settings.json`: `N changes not applied`,
   a cap error inline, and Apply (disabled on an error; writes schema 2 atomically, as the old dialog's
   OK did) and Revert (reloads the file). Below the settings: the pool bars (Cores, Memory, Disk with
-  `free/size GiB · floor N`, `IO · MiB/s`, `sampled N s ago`) with narrower tracks to fit the column width.
+  `N GiB free of M · floor P`, `IO · MiB/s`, `sampled N s ago`) with narrower tracks to fit the column width.
   Verify install, Repair install, and Open logs are pinned at the bottom.
 - **Right column:** only observed values. A pinned header row (symbol, state, `N/M busy`, `All OK` or
   the `1 problem` button). Below the header (in every state including Off and Not installed): one

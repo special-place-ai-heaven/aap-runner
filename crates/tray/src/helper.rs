@@ -1,4 +1,4 @@
-﻿//! Elevated helper (`--helper <verb> <id>`) and the non-elevated side that asks for it.
+//! Elevated helper (`--helper <verb> <id>`) and the non-elevated side that asks for it.
 //!
 //! The tray writes `inbox\jobs\<id>.json` and starts this exe with `runas` (one UAC prompt).
 //! The helper trusts nothing in that file except schema 1, a verb of `verify` or `repair`, and an

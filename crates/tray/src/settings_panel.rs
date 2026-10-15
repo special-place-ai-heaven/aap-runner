@@ -138,30 +138,29 @@ impl SettingsPanel {
     }
 
     /// Bottom part of the left column (pinned to the bottom via `bottom_up`):
-    /// Verify / Repair / Open logs. Call after `show_top` and any extra content.
+    /// Renders Verify / Repair / Open-logs buttons. Called from a fixed-height footer
+    /// OUTSIDE the left-column scroll area (dashboard.rs) so these buttons never
+    /// overdraw the pool bars at small window heights.
     pub fn show_bottom(&mut self, ui: &mut egui::Ui, p: &Palette, base: &Path, focus: &mut Focus) {
-        // Last in Tab order, pinned to the bottom of what is left.
-        ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-            let r = ui.add_enabled(base.join("logs").is_dir(), egui::Button::new("Open logs"));
-            focus.track(ui, p, &r);
-            if r.clicked() {
-                crate::open_logs(base);
-            }
-            let repair = ui.button("Repair install");
-            focus.track(ui, p, &repair);
-            if repair.clicked()
-                && let Err(e) = crate::helper::launch(base, crate::helper::Verb::Repair)
-            {
-                crate::state::log(base, &e);
-            }
-            let verify = ui.button("Verify install");
-            focus.track(ui, p, &verify);
-            if verify.clicked()
-                && let Err(e) = crate::helper::launch(base, crate::helper::Verb::Verify)
-            {
-                crate::state::log(base, &e);
-            }
-        });
+        let verify = ui.button("Verify install");
+        focus.track(ui, p, &verify);
+        if verify.clicked()
+            && let Err(e) = crate::helper::launch(base, crate::helper::Verb::Verify)
+        {
+            crate::state::log(base, &e);
+        }
+        let repair = ui.button("Repair install");
+        focus.track(ui, p, &repair);
+        if repair.clicked()
+            && let Err(e) = crate::helper::launch(base, crate::helper::Verb::Repair)
+        {
+            crate::state::log(base, &e);
+        }
+        let r = ui.add_enabled(base.join("logs").is_dir(), egui::Button::new("Open logs"));
+        focus.track(ui, p, &r);
+        if r.clicked() {
+            crate::open_logs(base);
+        }
     }
 
     fn power(
