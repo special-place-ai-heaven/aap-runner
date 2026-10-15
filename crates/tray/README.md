@@ -82,12 +82,13 @@ addendum of the design doc.
   (`now -` when nothing runs). While edits differ from `inbox\settings.json`: `N changes not applied`,
   a cap error inline, and Apply (disabled on an error; writes schema 2 atomically, as the old dialog's
   OK did) and Revert (reloads the file). Below the settings: the pool bars (Cores, Memory, Disk with
-  free / size / floor, `IO · MiB/s`, `sampled N s ago`) with narrower tracks to fit the column width.
+  `free/size GiB · floor N`, `IO · MiB/s`, `sampled N s ago`) with narrower tracks to fit the column width.
   Verify install, Repair install, and Open logs are pinned at the bottom.
 - **Right column:** only observed values. A pinned header row (symbol, state, `N/M busy`, `All OK` or
-  the `1 problem` button). Below the header: one status line for the current Verify/Repair job
-  (format: `Verify · failed · exit 1` on failure, `Repair · running…` while active,
-  `Verify · ok` on success; with a `· Open log` CollapsingHeader when log lines are available).
+  the `1 problem` button). Below the header (in every state including Off and Not installed): one
+  status line for the current Verify/Repair job (format: `Verify · failed · exit 1` on failure,
+  `Repair · running…` while active, `Verify · ok` on success; with a `· Open log`
+  CollapsingHeader when log lines are available; log panel keyed on a fixed id, not the label text).
   Then one compact card per runner (state and elapsed; `title · repo` on one line with the full
   text in a tooltip and a copy button; CPU and Mem bars side by side). Five cards fit the default
   760 px window height without scrolling. The last 60 minutes follows below (scrolls at small sizes).

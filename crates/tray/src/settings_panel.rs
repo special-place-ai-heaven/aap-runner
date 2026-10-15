@@ -139,23 +139,13 @@ impl SettingsPanel {
 
     /// Bottom part of the left column (pinned to the bottom via `bottom_up`):
     /// Verify / Repair / Open logs. Call after `show_top` and any extra content.
-    pub fn show_bottom(
-        &mut self,
-        ui: &mut egui::Ui,
-        p: &Palette,
-        base: &Path,
-        job: Option<&crate::helper::JobUi>,
-        focus: &mut Focus,
-    ) {
+    pub fn show_bottom(&mut self, ui: &mut egui::Ui, p: &Palette, base: &Path, focus: &mut Focus) {
         // Last in Tab order, pinned to the bottom of what is left.
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
             let r = ui.add_enabled(base.join("logs").is_dir(), egui::Button::new("Open logs"));
             focus.track(ui, p, &r);
             if r.clicked() {
                 crate::open_logs(base);
-            }
-            if let Some(job) = job {
-                ui.label(RichText::new(job.summary()).small());
             }
             let repair = ui.button("Repair install");
             focus.track(ui, p, &repair);
