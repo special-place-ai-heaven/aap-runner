@@ -691,10 +691,18 @@ pub fn launch(base: &Path, verb: Verb) -> Result<(), String> {
     launch_resolved(base, verb, resolved)
 }
 
+fn not_fixed_drive_msg(path: &Path, drive_type: u32) -> String {
+    format!(
+        "tray exe is not on a fixed local drive: {} (drive type {drive_type})",
+        path.display()
+    )
+}
+
 fn launch_resolved(base: &Path, verb: Verb, resolved: win::ResolvedExe) -> Result<(), String> {
     let path = resolved.path;
     if !win::is_fixed_local_path(&path) {
-        return refuse_elevation(verb, "tray exe is not on a fixed local drive");
+        let dt = win::drive_type_of(&path).unwrap_or(0);
+        return refuse_elevation(verb, &not_fixed_drive_msg(&path, dt));
     }
     let Some(dir) = path.parent().map(std::path::Path::to_path_buf) else {
         return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
@@ -1414,4 +1422,13 @@ fn stale_result_with_unknown_id_is_ignored() {
     assert_eq!(job.unwrap().state, "declined");
 
     let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn not_fixed_drive_message_format() {
+    let msg = not_fixed_drive_msg(std::path::Path::new(r"C:\x\t.exe"), 4);
+    assert_eq!(
+        msg,
+        r"tray exe is not on a fixed local drive: C:\x\t.exe (drive type 4)"
+    );
 }
