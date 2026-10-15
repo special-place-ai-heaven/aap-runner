@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const ADVANCE_AFTER: Duration = Duration::from_secs(2);
 pub const GROUP_DEFAULT: &str = "aap-crrr";
@@ -186,41 +186,27 @@ fn parse_target(raw: &str) -> Result<Parsed, &'static str> {
 }
 
 pub fn links(kind: Kind, login: &str) -> Option<Links> {
-    if !slug(login) {
+    if kind != Kind::Org || !slug(login) {
         return None;
     }
-    Some(match kind {
-        Kind::Org => Links {
-            create_app: format!(
-                "https://github.com/organizations/{login}/settings/apps/new{APP_NEW}"
-            ),
-            apps: format!("https://github.com/organizations/{login}/settings/apps"),
-            install_pattern: format!(
-                "https://github.com/organizations/{login}/settings/apps/<app>/installations"
-            ),
-            runner_groups: Some(format!(
-                "https://github.com/organizations/{login}/settings/actions/runner-groups"
-            )),
-            actions: format!("https://github.com/organizations/{login}/settings/actions"),
-        },
-        Kind::User => Links {
-            create_app: format!("https://github.com/settings/apps/new{APP_NEW}"),
-            apps: "https://github.com/settings/apps".into(),
-            install_pattern: "https://github.com/settings/apps/<app>/installations".into(),
-            runner_groups: None,
-            actions: format!("https://github.com/{login}"),
-        },
+    Some(Links {
+        create_app: format!("https://github.com/organizations/{login}/settings/apps/new{APP_NEW}"),
+        apps: format!("https://github.com/organizations/{login}/settings/apps"),
+        install_pattern: format!(
+            "https://github.com/organizations/{login}/settings/apps/<app>/installations"
+        ),
+        runner_groups: Some(format!(
+            "https://github.com/organizations/{login}/settings/actions/runner-groups"
+        )),
+        actions: format!("https://github.com/organizations/{login}/settings/actions"),
     })
 }
 
-pub fn workflow(kind: Kind, group: &str) -> String {
-    match kind {
-        Kind::Org => format!(
-            "runs-on: {{group: {}, labels: [self-hosted, linux]}}",
-            group.trim()
-        ),
-        Kind::User => "runs-on: [self-hosted, linux]".into(),
-    }
+pub fn workflow(group: &str) -> String {
+    format!(
+        "runs-on: {{group: {}, labels: [self-hosted, linux]}}",
+        group.trim()
+    )
 }
 
 fn blank(id: RowId, title: &'static str, phase: Phase) -> Row {
@@ -355,7 +341,7 @@ pub fn rows(facts: &Facts) -> Vec<Row> {
     };
     let group = group_row(facts, key.phase == Phase::Met, linked.as_ref());
     let fork = fork_row(facts, group.phase == Phase::Met, linked.as_ref());
-    let flow = workflow_row(facts, fork.phase == Phase::Met, kind);
+    let flow = workflow_row(facts, fork.phase == Phase::Met);
     vec![account, create, install, key, group, fork, flow]
 }
 
@@ -512,7 +498,7 @@ fn fork_row(facts: &Facts, prev: bool, links: Option<&Links>) -> Row {
     }
 }
 
-fn workflow_row(facts: &Facts, prev: bool, kind: Option<Kind>) -> Row {
+fn workflow_row(facts: &Facts, prev: bool) -> Row {
     if !prev {
         return blocked(RowId::Workflow, "Workflow");
     }
@@ -525,7 +511,7 @@ fn workflow_row(facts: &Facts, prev: bool, kind: Option<Kind>) -> Row {
         "Use this runs-on value.",
         None,
     );
-    r.copy = Some(workflow(kind.unwrap_or(Kind::Org), &facts.group));
+    r.copy = Some(workflow(&facts.group));
     r
 }
 
@@ -556,6 +542,7 @@ fn remembers(kind: FailKind) -> bool {
 pub(crate) struct LookupError {
     kind: FailKind,
     message: String,
+    until: Option<SystemTime>,
 }
 
 impl LookupError {
@@ -563,6 +550,15 @@ impl LookupError {
         Self {
             kind,
             message: message.into(),
+            until: None,
+        }
+    }
+
+    fn rate_limit(until: SystemTime) -> Self {
+        Self {
+            kind: FailKind::RateLimit,
+            message: try_again_at(until),
+            until: Some(until),
         }
     }
 }
@@ -684,6 +680,20 @@ fn status_error(status: u16, body: &str) -> LookupError {
     }
 }
 
+fn try_again_at(at: SystemTime) -> String {
+    let secs = at
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // ponytail: UTC clock only, no date. Add the civil date if a reset on another day must be unambiguous.
+    let clock = secs % 86_400;
+    format!(
+        "try again at {:02}:{:02} UTC",
+        clock / 3600,
+        (clock % 3600) / 60
+    )
+}
+
 /// First network retry waits 5 s, then 10, 20, and 40.
 fn backoff(tries: u32) -> Duration {
     let shift = tries.saturating_sub(1).min(3);
@@ -789,7 +799,7 @@ pub struct Store {
     /// Text the in-flight lookup was started with. Empty when a result is injected.
     queried: String,
     /// 404, rate limit, and unusable body, keyed by the trimmed input.
-    remembered: HashMap<String, (FailKind, String)>,
+    remembered: HashMap<String, (FailKind, String, Option<SystemTime>)>,
 }
 
 #[cfg(test)]
@@ -878,11 +888,18 @@ impl Store {
             self.failed_input = None;
             return;
         }
-        if let Some((kind, message)) = self.remembered.get(input.trim()).cloned() {
-            self.note = Some(message);
-            self.fail = Some(kind);
-            self.failed_input = None;
-            return;
+        let key = input.trim();
+        if let Some((kind, message, until)) = self.remembered.get(key).cloned() {
+            let expired =
+                kind == FailKind::RateLimit && until.is_some_and(|at| SystemTime::now() >= at);
+            if expired {
+                self.remembered.remove(key);
+            } else {
+                self.note = Some(message);
+                self.fail = Some(kind);
+                self.failed_input = None;
+                return;
+            }
         }
         self.note = None;
         self.fail = None;
@@ -976,7 +993,7 @@ impl Store {
         let cached = self
             .remembered
             .get(&key)
-            .map(|(_, message)| message.clone());
+            .map(|(_, message, _)| message.clone());
         let show_saved = matched && !self.checking && cached.is_none();
         let account = if show_saved {
             self.disk.account.clone()
@@ -1068,8 +1085,10 @@ impl Store {
                     self.failed_input = None;
                     self.next_retry = None;
                     if remembers(err.kind) {
-                        self.remembered
-                            .insert(failed.trim().to_string(), (err.kind, err.message));
+                        self.remembered.insert(
+                            failed.trim().to_string(),
+                            (err.kind, err.message, err.until),
+                        );
                     }
                 }
             }
@@ -1121,12 +1140,41 @@ fn same_saved(a: &Account, b: &Account) -> bool {
         }
 }
 
+fn rate_error(http: &Http) -> Option<LookupError> {
+    let limited = http.status == 429
+        || (http.status != 200
+            && http.status != 404
+            && http.body.to_ascii_lowercase().contains("rate limit"));
+    if !limited {
+        return None;
+    }
+    Some(match http.rate_until {
+        Some(until) => LookupError::rate_limit(until),
+        None => LookupError::new(FailKind::RateLimit, "GitHub rate limit. Try again later."),
+    })
+}
+
+/// Retry-After seconds win over X-RateLimit-Reset.
+/// ponytail: an HTTP-date Retry-After is dropped by `header_seconds`, so the reset header is used. Parse the date if GitHub sends only that.
+fn rate_until(retry_after: Option<u64>, reset: Option<u64>, now: SystemTime) -> Option<SystemTime> {
+    if let Some(secs) = retry_after {
+        return now.checked_add(Duration::from_secs(secs));
+    }
+    reset.and_then(|unix| UNIX_EPOCH.checked_add(Duration::from_secs(unix)))
+}
+
 fn resolve(parsed: &Parsed) -> Result<Account, LookupError> {
     let user = http_get(&format!("/users/{}", parsed.owner))?;
+    if let Some(err) = rate_error(&user) {
+        return Err(err);
+    }
     let repo = match &parsed.repo {
         None => None,
         Some(name) => {
             let got = http_get(&format!("/repos/{}/{}", parsed.owner, name))?;
+            if let Some(err) = rate_error(&got) {
+                return Err(err);
+            }
             Some((got.status, got.body, name.clone()))
         }
     };
@@ -1141,13 +1189,32 @@ fn resolve(parsed: &Parsed) -> Result<Account, LookupError> {
 struct Http {
     status: u16,
     body: String,
+    rate_until: Option<SystemTime>,
 }
 
-fn transport_error(message: String) -> LookupError {
-    if message == "GitHub response is too large" || message == "GitHub response was not UTF-8" {
-        LookupError::new(FailKind::Body, message)
-    } else {
-        LookupError::new(FailKind::Network, message)
+enum FetchFail {
+    Network(String),
+    TooLarge,
+    NotUtf8,
+}
+
+impl From<String> for FetchFail {
+    fn from(message: String) -> Self {
+        FetchFail::Network(message)
+    }
+}
+
+impl From<&str> for FetchFail {
+    fn from(message: &str) -> Self {
+        FetchFail::Network(message.to_string())
+    }
+}
+
+fn lookup_from_fetch(err: FetchFail) -> LookupError {
+    match err {
+        FetchFail::TooLarge => LookupError::new(FailKind::Body, "GitHub response is too large"),
+        FetchFail::NotUtf8 => LookupError::new(FailKind::Body, "GitHub response was not UTF-8"),
+        FetchFail::Network(message) => LookupError::new(FailKind::Network, message),
     }
 }
 
@@ -1158,7 +1225,7 @@ fn http_get(path: &str) -> Result<Http, LookupError> {
             "refusing the request path",
         ));
     }
-    unsafe { winhttp_get(path) }.map_err(transport_error)
+    unsafe { winhttp_get(path) }.map_err(lookup_from_fetch)
 }
 
 fn github_path_ok(path: &str) -> bool {
@@ -1184,7 +1251,7 @@ fn github_path_ok(path: &str) -> bool {
 /// `path` must already have passed `github_path_ok`. Handles opened here are closed by
 /// `Handle` on every return, including errors. The strings passed in are null-terminated
 /// and live for the call.
-unsafe fn winhttp_get(path: &str) -> Result<Http, String> {
+unsafe fn winhttp_get(path: &str) -> Result<Http, FetchFail> {
     use std::ffi::c_void;
     use windows::Win32::Networking::WinHttp::{
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_OPTION_REDIRECT_POLICY,
@@ -1208,10 +1275,10 @@ unsafe fn winhttp_get(path: &str) -> Result<Http, String> {
         )
     };
     if session.is_null() {
-        return Err(format!(
+        return Err(FetchFail::Network(format!(
             "could not open WinHTTP ({})",
             std::io::Error::last_os_error()
-        ));
+        )));
     }
     let _session = Handle(session);
     unsafe {
@@ -1293,14 +1360,47 @@ unsafe fn winhttp_get(path: &str) -> Result<Http, String> {
         }
         body.extend_from_slice(&buf[..read as usize]);
         if body.len() > 64 * 1024 {
-            return Err("GitHub response is too large".into());
+            return Err(FetchFail::TooLarge);
         }
     }
-    let body = String::from_utf8(body).map_err(|_| "GitHub response was not UTF-8".to_string())?;
+    let body = String::from_utf8(body).map_err(|_| FetchFail::NotUtf8)?;
+    let retry_after = header_seconds(request, "Retry-After");
+    let reset = header_seconds(request, "X-RateLimit-Reset");
+    let rate_until = rate_until(retry_after, reset, SystemTime::now());
     Ok(Http {
         status: status as u16,
         body,
+        rate_until,
     })
+}
+
+fn header_seconds(request: *mut std::ffi::c_void, name: &str) -> Option<u64> {
+    use windows::Win32::Networking::WinHttp::WinHttpQueryHeaders;
+    use windows::core::PCWSTR;
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut buf = vec![0u16; 64];
+    let mut len = (buf.len() * 2) as u32;
+    let mut index = 0u32;
+    let ok = unsafe {
+        WinHttpQueryHeaders(
+            request,
+            65535,
+            PCWSTR::from_raw(wide.as_ptr()),
+            Some(buf.as_mut_ptr().cast()),
+            &mut len,
+            &mut index,
+        )
+    };
+    if ok.is_err() {
+        return None;
+    }
+    let chars = (len as usize / 2).min(buf.len());
+    let text = String::from_utf16_lossy(&buf[..chars]);
+    let text = text.trim_end_matches('\0').trim();
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse().ok()
 }
 
 struct Handle(*mut std::ffi::c_void);
@@ -1374,17 +1474,7 @@ mod tests {
             org.actions,
             "https://github.com/organizations/acme/settings/actions"
         );
-        let user = links(Kind::User, "octocat").unwrap();
-        assert_eq!(
-            user.create_app,
-            "https://github.com/settings/apps/new?public=false&webhook_active=false&organization_self_hosted_runners=write&actions=read"
-        );
-        assert_eq!(user.apps, "https://github.com/settings/apps");
-        assert_eq!(
-            user.install_pattern,
-            "https://github.com/settings/apps/<app>/installations"
-        );
-        assert!(user.runner_groups.is_none());
+        assert!(links(Kind::User, "octocat").is_none());
         assert!(links(Kind::Org, "bad/name").is_none());
     }
 
@@ -1880,7 +1970,7 @@ mod tests {
         store.set_input("huge".into());
         store.commit();
         assert_eq!(super::spawns(), 3);
-        store.take_result(Err(transport_error("GitHub response is too large".into())));
+        store.take_result(Err(lookup_from_fetch(FetchFail::TooLarge)));
         assert_eq!(store.fail, Some(FailKind::Body));
         store.retry();
         store.commit();
@@ -1892,14 +1982,63 @@ mod tests {
         store.set_input("odd".into());
         store.commit();
         let spawned = super::spawns();
-        store.take_result(Err(transport_error("GitHub response was not UTF-8".into())));
+        store.take_result(Err(lookup_from_fetch(FetchFail::NotUtf8)));
         store.retry();
         store.commit();
         assert_eq!(super::spawns(), spawned);
         assert_eq!(
-            transport_error("could not connect to api.github.com".into()).kind,
+            lookup_from_fetch(FetchFail::Network("GitHub response is too large".into())).kind,
             FailKind::Network
         );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn retry_after_seconds_beat_the_reset_time() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        assert_eq!(
+            rate_until(Some(90), Some(1_800_000_000), now),
+            Some(now + Duration::from_secs(90))
+        );
+        assert_eq!(
+            rate_until(None, Some(1_700_000_090), now),
+            Some(UNIX_EPOCH + Duration::from_secs(1_700_000_090))
+        );
+        assert_eq!(rate_until(None, None, now), None);
+        let bare = rate_error(&Http {
+            status: 429,
+            body: String::new(),
+            rate_until: None,
+        })
+        .unwrap();
+        assert_eq!(bare.kind, FailKind::RateLimit);
+        assert!(bare.until.is_none());
+    }
+
+    #[test]
+    fn a_rate_limit_expires_and_until_then_focus_loss_does_not_query() {
+        let _hold = hold();
+        let path = state::temp_base("gh-rate").join("github-setup.json");
+        let mut store = Store::load(path.clone());
+        store.set_input("limited".into());
+        store.commit();
+        let spawned = super::spawns();
+        let until = SystemTime::now() + Duration::from_secs(3600);
+        store.take_result(Err(LookupError::rate_limit(until)));
+        let missing = store
+            .rows()
+            .into_iter()
+            .find(|r| r.id == RowId::Account)
+            .unwrap()
+            .missing;
+        assert!(missing.starts_with("try again at "), "{missing}");
+        store.commit();
+        assert_eq!(super::spawns(), spawned, "focus loss does not re-query yet");
+        store.take_result(Err(LookupError::rate_limit(
+            SystemTime::now() - Duration::from_secs(5),
+        )));
+        store.commit();
+        assert_eq!(super::spawns(), spawned + 1, "the rate limit has expired");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
