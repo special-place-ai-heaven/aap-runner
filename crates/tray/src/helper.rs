@@ -17,18 +17,35 @@ use crate::win;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::windows::fs::MetadataExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{LazyLock, Mutex, mpsc};
+
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub const DATA_DIR: &str = r"C:\ProgramData\aap-runner";
 const REQUEST_MAX: u64 = 4096;
+
+/// IDs issued by this process via `write_pointer`. `load_job_from` rejects any result whose
+/// id is not in this set so that a stale `helper.json` from a previous process is ignored.
+static ISSUED_IDS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn register_id(id: &str) {
+    let _ = ISSUED_IDS.lock().map(|mut s| {
+        s.insert(id.to_string());
+    });
+}
+
+fn is_issued_id(id: &str) -> bool {
+    ISSUED_IDS.lock().is_ok_and(|s| s.contains(id))
+}
+
 const STATUS_MAX: u64 = 64 * 1024;
 const LOG_CAP: u64 = 1024 * 1024;
 const LOG_TAIL_BYTES: u64 = 8192;
@@ -529,6 +546,7 @@ fn pointer_path() -> PathBuf {
 }
 
 fn write_pointer(id: &str, verb: Verb, error: &str) -> Result<(), String> {
+    register_id(id); // record this id so load_job_from can detect stale results
     let path = pointer_path();
     let Some(dir) = path.parent() else {
         return Err("pointer path".into());
@@ -592,6 +610,10 @@ pub fn load_job_from(pointer: &Path, base: &Path) -> Option<JobUi> {
     }
     let raw: Pointer = serde_json::from_str(&text).ok()?;
     if raw.schema != 1 || !valid_id(&raw.id) || Verb::parse(&raw.verb).is_none() {
+        return None;
+    }
+    // Reject stale results from a previous process: this process never issued that id.
+    if !is_issued_id(&raw.id) {
         return None;
     }
     if !raw.error.is_empty() {
@@ -1145,6 +1167,7 @@ mod tests {
             format!(r#"{{"schema":1,"id":"{id}","verb":"verify","error":""}}"#),
         )
         .unwrap();
+        register_id(id); // register so load_job_from accepts it
         let ui = load_job_from(&pointer, &base).unwrap();
         assert_eq!(ui.state, "running");
         assert_eq!(ui.step, "STEP units");
@@ -1361,4 +1384,34 @@ fn launch_hands_the_resolved_path_to_runas() {
         .args(["/d", "/c", "rmdir", &link.display().to_string()])
         .status();
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn stale_result_with_unknown_id_is_ignored() {
+    let base = std::env::temp_dir().join(format!("aap-stale-{}", std::process::id()));
+    let pointer = base.join("helper.json");
+    let data = base.join("data");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+
+    // Write a pointer whose id was NOT issued by this process.
+    let stale_id = "deadbeefdeadbeef";
+    let content = format!(
+        r#"{{"schema":1,"id":"{stale_id}","verb":"verify","error":"from a previous run"}}"#
+    );
+    std::fs::write(&pointer, content.as_bytes()).unwrap();
+
+    // Must be ignored.
+    assert!(
+        load_job_from(&pointer, &data).is_none(),
+        "stale id must be rejected"
+    );
+
+    // Register the id and re-read; now the declined result is shown.
+    register_id(stale_id);
+    let job = load_job_from(&pointer, &data);
+    assert!(job.is_some(), "registered id must be accepted");
+    assert_eq!(job.unwrap().state, "declined");
+
+    let _ = std::fs::remove_dir_all(&base);
 }
