@@ -403,6 +403,7 @@ public static class AapOpen {
 
 public static class AapStream {
     public static bool SawKeyInstalled;
+    public static bool SawRestartPending;
     public static string LastFail = "";
 
     public static int Run(string file, string args) {
@@ -424,6 +425,7 @@ public static class AapStream {
         psi.EnvironmentVariables.Remove("WSLENV");
         SawKeyInstalled = false;
         LastFail = "";
+        SawRestartPending = false;
         if (stdin != null) return RunInherited(file, args, stdin);
         using (Process proc = Process.Start(psi)) {
             Thread outThread = new Thread(delegate() { Copy(proc.StandardOutput); });
@@ -506,6 +508,7 @@ public static class AapStream {
             line = line.Replace("\0", "");
             if (line.Length > 2000) line = line.Substring(0, 2000);
             if (line.StartsWith("key installed:", StringComparison.Ordinal)) SawKeyInstalled = true;
+            if (line == "restart pending") SawRestartPending = true;
             if (line.StartsWith("FAIL ", StringComparison.Ordinal)) LastFail = line;
             Console.Out.WriteLine(line);
         }
@@ -557,6 +560,7 @@ function Invoke-AapStreamingStdin([string]$File, [string[]]$Arguments, $StdinHan
     foreach ($a in @($Arguments)) { $quoted += (Format-AapProcessArg $a) }
     $code = [int][AapStream]::RunHandle($File, ($quoted -join ' '), $StdinHandle)
     $script:AapSawKeyLine = [bool][AapStream]::SawKeyInstalled
+    $script:AapSawRestart = [bool][AapStream]::SawRestartPending
     return $code
 }
 
@@ -765,6 +769,19 @@ rewrite_conf() {
 }
 
 main() {
+  if [[ "${1:-}" == restart ]]; then
+    local desired="${2:-off}" status="${3:-paused}"
+    case "$desired" in on|off) ;; *) desired=off ;; esac
+    case "$status" in idle|running|draining|paused|starting|error|off|missing) ;; *) status=paused ;; esac
+    if [[ "$desired" != on || "$status" == draining || "$status" == paused ]]; then
+      echo "identity installed; pool left paused"
+      exit 0
+    fi
+    "$manager" --undrain
+    systemctl start aap-runner-manager
+    echo "pool restarted: $(systemctl is-active aap-runner-manager || true)"
+    exit 0
+  fi
   if [[ $# -ne 6 ]]; then
     echo "FAIL identity: expected 6 arguments" >&2
     exit 2
@@ -817,8 +834,8 @@ main() {
         sleep "$sleep_s"
       done
       if [[ "$state" == active ]]; then
-        trap - EXIT
         "$manager" --undrain || true
+        rm -f "$tmpkey" "$tmpconf"
         echo "FAIL pool did not drain in 10 min; retry when idle"
         exit 1
       fi
@@ -857,9 +874,7 @@ main() {
   echo "key installed: 1 file, $n bytes"
   echo "manager.conf updated: AAP_GITHUB_ORG AAP_GITHUB_APP_ID AAP_GITHUB_APP_INSTALLATION_ID AAP_RUNNER_GROUP AAP_RUNNER_LABELS AAP_GITHUB_APP_PRIVATE_KEY_PATH"
   if [[ "$drained" -eq 1 ]]; then
-    "$manager" --undrain
-    systemctl start aap-runner-manager
-    echo "pool restarted: $(systemctl is-active aap-runner-manager || true)"
+    echo "restart pending"
   else
     state=$(systemctl is-active aap-runner-manager || true)
     echo "pool is $state; the new identity applies at the next start"
@@ -915,6 +930,31 @@ function Get-AapIdentityPool([string]$DataDir) {
     return [pscustomobject]@{ Fail = "pool is ${state}; retry when idle or running"; Word = $null }
 }
 
+function Get-AapIdentityRestartWords([string]$DataDir) {
+    $desired = 'off'
+    $obj = Read-AapJsonBounded (Join-Path (Join-Path $DataDir 'inbox') 'state.json') 4096
+    if ($null -ne $obj -and [string]$obj.desired -ceq 'on') { $desired = 'on' }
+    $status = 'missing'
+    $st = Read-AapJsonBounded (Join-Path $DataDir 'status.json') 65536
+    if ($null -ne $st -and [string]$st.state -match '^(idle|running|draining|paused|starting|error|off)$') {
+        $status = [string]$st.state
+    }
+    return [pscustomobject]@{ Desired = $desired; Status = $status }
+}
+
+function Get-AapIdentityRestartArgs([string]$Desired, [string]$Status) {
+    if ($Desired -cne 'on' -and $Desired -cne 'off') { $Desired = 'off' }
+    if ($Status -cnotmatch '^(idle|running|draining|paused|starting|error|off|missing)$') { $Status = 'paused' }
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-AapIdentityScript)))
+    $cmd = "bash <(echo $b64 | base64 -d) restart $Desired $Status"
+    return @('-d', 'aap-runner', '-u', 'root', '--', '/bin/bash', '-c', $cmd)
+}
+
+function Invoke-AapIdentityRestart([string]$DataDir) {
+    $words = Get-AapIdentityRestartWords $DataDir
+    return Invoke-AapStreaming $AapWsl (Get-AapIdentityRestartArgs $words.Desired $words.Status)
+}
+
 function Invoke-AapIdentityLive([string]$DataDir, [string]$Id) {
     if ($Id -notmatch '^[0-9a-f]{16}\z') {
         [Console]::Out.WriteLine('FAIL identity id')
@@ -957,6 +997,13 @@ function Invoke-AapIdentityLive([string]$DataDir, [string]$Id) {
     if (-not $script:AapSawKeyLine) {
         [Console]::Out.WriteLine('FAIL identity key installed line missing')
         return 1
+    }
+    if ($script:AapSawRestart) {
+        $again = Invoke-AapIdentityRestart $DataDir
+        if ($again -ne 0) {
+            [Console]::Out.WriteLine("FAIL identity exit $again")
+            return 1
+        }
     }
     [Console]::Out.WriteLine('PASS identity')
     return 0
