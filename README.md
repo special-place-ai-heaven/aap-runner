@@ -4,6 +4,8 @@ Ephemeral self-hosted GitHub Actions runners for a Windows PC. Each job runs in 
 fresh Sysbox container inside a locked-down WSL 2 distro, and the runner registers
 through a GitHub App.
 
+![The tray window: settings and pool usage on the left, one card per runner with the running job, CPU and memory, and the last hour on the right](docs/images/tray.png)
+
 ## The three parts
 
 | Part | Where | What it does |
