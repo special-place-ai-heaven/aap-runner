@@ -369,6 +369,23 @@ public static class AapOpen {
         return cut;
     }
 
+    [DllImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+    static extern bool GetStandard(SafeFileHandle file, int cls, out StandardInfo info, uint cb);
+    [StructLayout(LayoutKind.Sequential)]
+    struct StandardInfo {
+        public long AllocationSize;
+        public long EndOfFile;
+        public uint NumberOfLinks;
+        [MarshalAs(UnmanagedType.U1)] public bool DeletePending;
+        [MarshalAs(UnmanagedType.U1)] public bool Directory;
+    }
+    public static uint Links(SafeFileHandle h) {
+        StandardInfo info;
+        if (!GetStandard(h, 1, out info, (uint)Marshal.SizeOf(typeof(StandardInfo))))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return info.NumberOfLinks;
+    }
+
     public static string OwnerSid(SafeFileHandle h) {
         IntPtr owner, group, dacl, sacl, sd;
         uint err = GetSecurityInfo(h, 1, 1, out owner, out group, out dacl, out sacl, out sd);
@@ -386,6 +403,7 @@ public static class AapOpen {
 
 public static class AapStream {
     public static bool SawKeyInstalled;
+    public static string LastFail = "";
 
     public static int Run(string file, string args) {
         return RunCore(file, args, null);
@@ -400,17 +418,18 @@ public static class AapStream {
         psi.UseShellExecute = false;
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;
-        psi.RedirectStandardInput = stdin != null;
+        psi.RedirectStandardInput = false;
         psi.CreateNoWindow = true;
         psi.EnvironmentVariables["WSL_UTF8"] = "1";
         psi.EnvironmentVariables.Remove("WSLENV");
         SawKeyInstalled = false;
+        LastFail = "";
+        if (stdin != null) return RunInherited(file, args, stdin);
         using (Process proc = Process.Start(psi)) {
             Thread outThread = new Thread(delegate() { Copy(proc.StandardOutput); });
             Thread errThread = new Thread(delegate() { Copy(proc.StandardError); });
             outThread.Start();
             errThread.Start();
-            if (stdin != null) StreamTo(proc, stdin);
             proc.WaitForExit();
             outThread.Join();
             errThread.Join();
@@ -418,25 +437,67 @@ public static class AapStream {
         }
     }
 
-    static void StreamTo(Process proc, SafeFileHandle stdin) {
-        IntPtr dup;
-        if (!DuplicateHandle(GetCurrentProcess(), stdin.DangerousGetHandle(), GetCurrentProcess(), out dup, 0, false, 2)) {
+    static int RunInherited(string file, string args, SafeFileHandle stdin) {
+        SecurityAttrs sa = new SecurityAttrs();
+        sa.nLength = Marshal.SizeOf(typeof(SecurityAttrs));
+        sa.bInheritHandle = true;
+        SafeFileHandle outRead, outWrite, errRead, errWrite;
+        if (!CreatePipe(out outRead, out outWrite, ref sa, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (!CreatePipe(out errRead, out errWrite, ref sa, 0)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (!SetHandleInformation(outRead, 1, 0) || !SetHandleInformation(errRead, 1, 0))
             throw new Win32Exception(Marshal.GetLastWin32Error());
-        }
+        IntPtr inDup;
+        if (!DuplicateHandle(GetCurrentProcess(), stdin.DangerousGetHandle(), GetCurrentProcess(), out inDup, 0, true, 2))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
         GC.KeepAlive(stdin);
-        SafeFileHandle owned = new SafeFileHandle(dup, true);
-        byte[] buf = new byte[16384];
-        int n = 0;
-        bool tooBig = false;
-        using (FileStream fs = new FileStream(owned, FileAccess.Read)) {
-            int got;
-            while (n < buf.Length && (got = fs.Read(buf, n, buf.Length - n)) > 0) n += got;
-            tooBig = n >= buf.Length;
+        StartupInfo si = new StartupInfo();
+        si.cb = Marshal.SizeOf(typeof(StartupInfo));
+        si.dwFlags = 0x100 | 0x1;
+        si.wShowWindow = 0;
+        si.hStdInput = inDup;
+        si.hStdOutput = outWrite.DangerousGetHandle();
+        si.hStdError = errWrite.DangerousGetHandle();
+        IntPtr env = EnvBlock();
+        ProcessInfo pi;
+        StringBuilder cmd = new StringBuilder(32768);
+        cmd.Append('"').Append(file).Append('"');
+        if (!string.IsNullOrEmpty(args)) { cmd.Append(' '); cmd.Append(args); }
+        bool ok = CreateProcessW(file, cmd, IntPtr.Zero, IntPtr.Zero, true, 0x08000000 | 0x00000400, env, null, ref si, out pi);
+        int err = Marshal.GetLastWin32Error();
+        Marshal.FreeHGlobal(env);
+        CloseHandle(inDup);
+        outWrite.Dispose();
+        errWrite.Dispose();
+        if (!ok) { outRead.Dispose(); errRead.Dispose(); throw new Win32Exception(err); }
+        Thread outThread = new Thread(delegate() { Copy(new StreamReader(new FileStream(outRead, FileAccess.Read))); });
+        Thread errThread = new Thread(delegate() { Copy(new StreamReader(new FileStream(errRead, FileAccess.Read))); });
+        outThread.Start();
+        errThread.Start();
+        WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
+        uint code;
+        if (!GetExitCodeProcess(pi.hProcess, out code)) code = 1;
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        outThread.Join();
+        errThread.Join();
+        return unchecked((int)code);
+    }
+
+    static IntPtr EnvBlock() {
+        StringBuilder sb = new StringBuilder();
+        bool saw = false;
+        foreach (System.Collections.DictionaryEntry e in Environment.GetEnvironmentVariables()) {
+            string k = (string)e.Key;
+            if (string.Equals(k, "WSLENV", StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.Equals(k, "WSL_UTF8", StringComparison.OrdinalIgnoreCase)) saw = true;
+            sb.Append(k);
+            sb.Append('=');
+            sb.Append(e.Value ?? "");
+            sb.Append('\0');
         }
-        if (!tooBig) proc.StandardInput.BaseStream.Write(buf, 0, n);
-        Array.Clear(buf, 0, buf.Length);
-        proc.StandardInput.Close();
-        if (tooBig) { try { proc.Kill(); } catch (Exception) { } }
+        if (!saw) sb.Append("WSL_UTF8=1\0");
+        sb.Append('\0');
+        return Marshal.StringToHGlobalUni(sb.ToString());
     }
 
     static void Copy(StreamReader reader) {
@@ -445,6 +506,7 @@ public static class AapStream {
             line = line.Replace("\0", "");
             if (line.Length > 2000) line = line.Substring(0, 2000);
             if (line.StartsWith("key installed:", StringComparison.Ordinal)) SawKeyInstalled = true;
+            if (line.StartsWith("FAIL ", StringComparison.Ordinal)) LastFail = line;
             Console.Out.WriteLine(line);
         }
     }
@@ -453,6 +515,30 @@ public static class AapStream {
     static extern bool DuplicateHandle(IntPtr srcProc, IntPtr src, IntPtr dstProc, out IntPtr dst, uint access, bool inherit, uint options);
     [DllImport("kernel32.dll")]
     static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CreatePipe(out SafeFileHandle read, out SafeFileHandle write, ref SecurityAttrs sa, uint size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetHandleInformation(SafeFileHandle h, uint mask, uint flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool CreateProcessW(string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref StartupInfo si, out ProcessInfo pi);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern uint WaitForSingleObject(IntPtr h, uint ms);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetExitCodeProcess(IntPtr h, out uint code);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool CloseHandle(IntPtr h);
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct SecurityAttrs { public int nLength; public IntPtr lpSecurityDescriptor; public bool bInheritHandle; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct StartupInfo {
+        public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow; public short cbReserved2; public IntPtr lpReserved2;
+        public IntPtr hStdInput, hStdOutput, hStdError;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    struct ProcessInfo { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
 }
 '@
 }
@@ -528,8 +614,11 @@ function Get-AapIdentityKeyView([string]$Path, [string]$ProfileDir) {
         } elseif (($attr -band 0x10) -ne 0) {
             $why = 'key file is not a regular file'
         } else {
+            $links = [AapOpen]::Links($h)
+            if ($links -gt 1) { $why = 'key file has more than one hard link' }
             $final = [AapOpen]::FinalPath($h)
-            if ($final -notmatch '^[A-Za-z]:\\' -or -not $final.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            if ($why) {
+            } elseif ($final -notmatch '^[A-Za-z]:\\' -or -not $final.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
                 $why = "key file is not under $root"
             } else {
                 $len = [AapOpen]::Size($h)
@@ -642,7 +731,7 @@ function Read-AapIdentityRequest([string]$Path, [string]$Id) {
 }
 
 # Runs as root inside the distro. The key is on stdin. Arguments are the five
-# fields and a start word (idle, running, or hold). Drain, when the start word
+# fields and a start word (idle, running, off, or missing). Drain, when the start word
 # allows it, happens before either file is replaced.
 function Get-AapIdentityScript {
     $text = @'
@@ -682,7 +771,7 @@ main() {
   fi
   local start="$6"
   case "$start" in
-    idle|running|hold) ;;
+    idle|running|off|missing) ;;
     *)
       echo "FAIL identity: start" >&2
       exit 2
@@ -729,10 +818,18 @@ main() {
       done
       if [[ "$state" == active ]]; then
         trap - EXIT
+        "$manager" --undrain || true
         echo "FAIL pool did not drain in 10 min; retry when idle"
         exit 1
       fi
       drained=1
+    fi
+  fi
+  if [[ "$start" == off || "$start" == missing ]]; then
+    state=$(systemctl is-active aap-runner-manager || true)
+    if [[ "$state" == active ]]; then
+      echo "FAIL pool is active while status is $start; retry when idle"
+      exit 1
     fi
   fi
   bak="${key}.bak"  # /etc/aap-runner/app.pem.bak
@@ -779,7 +876,7 @@ fi
 # One wsl.exe call. The script travels base64 inside the -c argument so that
 # argument holds no quote; the fields and the start word are plain tokens.
 function Get-AapIdentityWslArgs($Req, [string]$PoolWord) {
-    if ($PoolWord -ne 'idle' -and $PoolWord -ne 'running' -and $PoolWord -ne 'hold') {
+    if ($PoolWord -ne 'idle' -and $PoolWord -ne 'running' -and $PoolWord -ne 'off' -and $PoolWord -ne 'missing') {
         throw 'refusing: pool'
     }
     $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-AapIdentityScript)))
@@ -806,13 +903,16 @@ function Get-AapIdentityPool([string]$DataDir) {
     } catch {
         $state = ''
     }
-    if ($state -ceq 'draining' -or $state -ceq 'paused') {
+    if ($state -ceq 'draining' -or $state -ceq 'paused' -or $state -ceq 'starting' -or $state -ceq 'error') {
         return [pscustomobject]@{ Fail = "pool is ${state}; retry when idle or running"; Word = $null }
     }
-    if ($state -ceq 'idle' -or $state -ceq 'running') {
+    if ($state -ceq 'idle' -or $state -ceq 'running' -or $state -ceq 'off') {
         return [pscustomobject]@{ Fail = $null; Word = $state }
     }
-    return [pscustomobject]@{ Fail = $null; Word = 'hold' }
+    if ($state -eq '') {
+        return [pscustomobject]@{ Fail = $null; Word = 'missing' }
+    }
+    return [pscustomobject]@{ Fail = "pool is ${state}; retry when idle or running"; Word = $null }
 }
 
 function Invoke-AapIdentityLive([string]$DataDir, [string]$Id) {
@@ -842,12 +942,15 @@ function Invoke-AapIdentityLive([string]$DataDir, [string]$Id) {
     [Console]::Out.WriteLine("INFO identity org $($req.Org) app $($req.AppId) installation $($req.InstallationId) group $($req.Group) labels $($req.Labels)")
     [Console]::Out.WriteLine('STEP identity install')
     $script:AapSawKeyLine = $false
+    [AapStream]::LastFail = ''
     try {
         $code = Invoke-AapStreamingStdin $AapWsl (Get-AapIdentityWslArgs $req $pool.Word) $view.Handle
     } finally {
         if ($null -ne $view.Handle) { $view.Handle.Dispose() }
     }
     if ($code -ne 0) {
+        $last = [string][AapStream]::LastFail
+        if ($last -like 'FAIL pool *') { return 1 }
         [Console]::Out.WriteLine("FAIL identity exit $code")
         return 1
     }
@@ -866,7 +969,13 @@ function Get-AapDistroManagerConf {
     # Windows PowerShell 5.1 turns merged native stderr into a terminating error under Stop.
     $ErrorActionPreference = 'Continue'
     try {
-        $out = & $AapWsl -d 'aap-runner' -u root -- /bin/cat /etc/aap-runner/manager.conf 2>&1 | ForEach-Object { "$_" } | Out-String
+        $savedWslenv = $env:WSLENV
+        Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+        try {
+            $out = & $AapWsl -d 'aap-runner' -u root -- /bin/cat /etc/aap-runner/manager.conf 2>&1 | ForEach-Object { "$_" } | Out-String
+        } finally {
+            if ($null -eq $savedWslenv) { Remove-Item Env:WSLENV -ErrorAction SilentlyContinue } else { $env:WSLENV = $savedWslenv }
+        }
     } catch {
         return $null
     }
@@ -985,7 +1094,13 @@ function Test-AapWslListHasDistro([string]$Text, [string]$Name) {
 # this does not start the distro.
 function Test-AapDistroListed {
     if (-not (Test-Path -LiteralPath $AapWsl)) { return 'unknown' }
-    $out = & $AapWsl --list --running --quiet 2>&1 | Out-String
+    $savedWslenv = $env:WSLENV
+    Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+    try {
+        $out = & $AapWsl --list --running --quiet 2>&1 | Out-String
+    } finally {
+        if ($null -eq $savedWslenv) { Remove-Item Env:WSLENV -ErrorAction SilentlyContinue } else { $env:WSLENV = $savedWslenv }
+    }
     if ($LASTEXITCODE -ne 0) { return 'unknown' }
     if (Test-AapWslListHasDistro $out 'aap-runner') { return 'running' }
     return 'stopped'

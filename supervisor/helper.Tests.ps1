@@ -323,7 +323,10 @@ function global:Invoke-AapDistroScript {
     $stdinPosix = & $posix (Join-Path $w 'stdin.bin')
     $cmd = "exec bash '$(& $posix (Join-Path $w 'drive.sh'))' '$(& $posix (Join-Path $w 'identity.sh'))' $($m.Groups[2].Value) < '$stdinPosix' 2>&1"
     $out = & $script:gitBash --noprofile --norc -c $cmd | ForEach-Object { "$_" }
-    foreach ($line in @($out)) { [Console]::Out.WriteLine([string]$line) }
+    foreach ($line in @($out)) {
+        [Console]::Out.WriteLine([string]$line)
+        if ([string]$line -like 'FAIL *') { [AapStream]::LastFail = [string]$line }
+    }
     if ((@($out) -join "`n") -match 'key installed:') { $script:AapSawKeyLine = $true }
     return [int]$LASTEXITCODE
 }
@@ -587,6 +590,8 @@ Describe 'helper identity' {
             @{ State = '{"desired":"off"}'; Status = '{"state":"idle"}'; Fail = 'pool is off; retry when idle or running' }
             @{ State = '{"desired":"on"}'; Status = '{"state":"draining"}'; Fail = 'pool is draining; retry when idle or running' }
             @{ State = '{"desired":"on"}'; Status = '{"state":"paused"}'; Fail = 'pool is paused; retry when idle or running' }
+            @{ State = '{"desired":"on"}'; Status = '{"state":"starting"}'; Fail = 'pool is starting; retry when idle or running' }
+            @{ State = '{"desired":"on"}'; Status = '{"state":"error"}'; Fail = 'pool is error; retry when idle or running' }
         )
         foreach ($case in $cases) {
             [IO.File]::WriteAllText((Join-Path $inbox 'state.json'), $case.State, $script:enc)
@@ -647,6 +652,7 @@ Describe 'helper identity' {
         $env:AAP_DRAIN_SLEEP = '0'
         try {
             $script:distroSystemctl = 'echo active'
+            $script:distroManager = "#!/bin/bash`nif [[ `"`$1`" == --undrain ]]; then echo undrain; exit 0; fi`n[[ `"`$1`" == --check-limits ]] || exit 0`ngrep -q '^AAP_GITHUB_APP_ID=[1-9][0-9]*`$' `"`$AAP_MANAGER_CONF`"`n"
             $r = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
         } finally {
             Remove-Item Env:AAP_DRAIN_ITERS -ErrorAction SilentlyContinue
@@ -654,6 +660,8 @@ Describe 'helper identity' {
         }
         $r.Code | Should -Be 1
         $r.Out | Should -Match 'FAIL pool did not drain in 10 min; retry when idle'
+        $r.Out | Should -Match 'undrain'
+        $r.Out | Should -Not -Match 'FAIL identity exit 1'
         [IO.File]::ReadAllText((Join-Path $script:scriptWork 'app.pem')) | Should -Be $oldKey
         [IO.File]::ReadAllText((Join-Path $script:scriptWork 'manager.conf')) | Should -Be $oldConf
         (Test-Path -LiteralPath (Join-Path $script:scriptWork 'app.pem.tmp')) | Should -BeTrue
@@ -679,6 +687,65 @@ Describe 'helper identity' {
         [IO.File]::ReadAllText((Join-Path $script:scriptWork 'app.pem')) | Should -Be $oldKey
         [IO.File]::ReadAllText((Join-Path $script:scriptWork 'manager.conf')) | Should -Be $oldConf
         [IO.File]::ReadAllText((Join-Path $script:scriptWork 'app.pem')) | Should -Not -Be $script:pem
+    }
+
+    It 'passes off or missing when the unit is inactive' {
+        if (-not (Test-Path -LiteralPath $script:gitBash)) {
+            Set-ItResult -Skipped -Because 'Git bash is not installed; the distro script cannot run here'
+            return
+        }
+        $root = Join-Path $TestDrive 'id-pool-off'
+        $key = New-AapKey 'pool-off.pem'
+        $id = '0123456789abcd16'
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $key
+        $inbox = Join-Path $root 'inbox'
+        [IO.File]::WriteAllText((Join-Path $inbox 'state.json'), '{"desired":"on"}', $script:enc)
+        [IO.File]::WriteAllText((Join-Path $root 'status.json'), '{"state":"off"}', $script:enc)
+        $script:wslCalls.Clear()
+        $r = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
+        $r.Code | Should -Be 0
+        $script:wslCalls[0].Arguments[-1] | Should -Match ' off$'
+        Remove-Item -LiteralPath (Join-Path $root 'status.json')
+        $script:wslCalls.Clear()
+        $r2 = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
+        $r2.Code | Should -Be 0
+        $script:wslCalls[0].Arguments[-1] | Should -Match ' missing$'
+    }
+
+    It 'refuses a key that has a second hard link' {
+        $key = New-AapKey 'links.pem'
+        $other = Join-Path (Split-Path -Parent $key) 'links-2.pem'
+        & C:\Windows\System32\cmd.exe /c mklink /H $other $key | Out-Null
+        $LASTEXITCODE | Should -Be 0
+        $root = Join-Path $TestDrive 'id-links'
+        $id = '0123456789abcd15'
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $key
+        $script:wslCalls.Clear()
+        $r = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
+        $r.Code | Should -Be 2
+        $r.Out | Should -Match 'FAIL identity key file has more than one hard link'
+        $script:wslCalls.Count | Should -Be 0
+    }
+
+    It 'streams stdin from the already-open handle' {
+        $key = New-AapKey 'stream.pem'
+        $orig = [IO.File]::ReadAllBytes($key)
+        $h = [AapOpen]::Open($key)
+        $dest = Join-Path $TestDrive 'streamed.bin'
+        try {
+            Rename-Item -LiteralPath $key -NewName 'stream-held.pem'
+            $cmd = '-NoProfile -Command "& { $in = [Console]::OpenStandardInput(); $b = New-Object byte[] 3; [void]$in.Read($b,0,3); [IO.File]::WriteAllBytes(''DEST'', $b) }"'
+            $cmd = $cmd.Replace('DEST', $dest)
+            $code = [AapStream]::RunHandle($AapPs, $cmd, $h)
+            $code | Should -Be 0
+            $got = [IO.File]::ReadAllBytes($dest)
+            $got.Length | Should -Be 3
+            $got[0] | Should -Be $orig[0]
+            $got[1] | Should -Be $orig[1]
+            $got[2] | Should -Be $orig[2]
+        } finally {
+            $h.Dispose()
+        }
     }
     It 'identity -Fixture changes nothing' {
         $exe = (Get-Process -Id $PID).Path
