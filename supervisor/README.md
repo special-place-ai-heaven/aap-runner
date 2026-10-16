@@ -86,8 +86,8 @@ inbox by the supervisor. They live in `/etc/aap-runner/manager.conf` and
 through the elevated helper's `identity` verb (`installer/helper-run.ps1`):
 it re-checks every field, opens the request and the key once each, and refuses a
 key whose final path is not a plain file under the requesting user's profile
-(a reparse point, not a PEM private key, or 16 KiB or more). It refuses before
-`wsl` when desired is not exactly `on` or the status is `draining` or `paused`
+(a reparse point, more than one hard link, not a PEM private key, or 16 KiB or more). It refuses before
+`wsl` when desired is not exactly `on` or the status is `draining`, `paused`, `starting`, or `error`
 (`pool is <state>; retry when idle or running`, or `pool is off` when desired
 is not on). It streams the key from that same handle into one `wsl -d aap-runner -u
 root` call. The script writes both files as `.tmp`, has the manager check the new

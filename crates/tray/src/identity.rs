@@ -26,9 +26,12 @@ pub fn pool_block(desired_on: bool, status_word: &str) -> Option<&'static str> {
         return Some("pool is off; retry when idle or running");
     }
     match status_word {
+        "idle" | "running" | "off" | "missing" => None,
         "draining" => Some("pool is draining; retry when idle or running"),
         "paused" => Some("pool is paused; retry when idle or running"),
-        _ => None,
+        "starting" => Some("pool is starting; retry when idle or running"),
+        "error" => Some("pool is error; retry when idle or running"),
+        _ => Some("pool is not idle; retry when idle or running"),
     }
 }
 const REPARSE: u32 = 0x400;
@@ -791,8 +794,15 @@ mod tests {
         );
         assert_eq!(pool_block(true, "idle"), None);
         assert_eq!(pool_block(true, "running"), None);
-        assert_eq!(pool_block(true, "starting"), None);
-        assert_eq!(pool_block(true, "error"), None);
+        assert_eq!(pool_block(true, "off"), None);
         assert_eq!(pool_block(true, "missing"), None);
+        assert_eq!(
+            pool_block(true, "starting"),
+            Some("pool is starting; retry when idle or running")
+        );
+        assert_eq!(
+            pool_block(true, "error"),
+            Some("pool is error; retry when idle or running")
+        );
     }
 }
