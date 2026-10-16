@@ -328,6 +328,11 @@ function global:Invoke-AapDistroScript {
         if ([string]$line -like 'FAIL *') { [AapStream]::LastFail = [string]$line }
     }
     if ((@($out) -join "`n") -match 'key installed:') { $script:AapSawKeyLine = $true }
+    if ((@($out) -join "`n") -match 'restart pending') { $script:AapSawRestart = $true }
+    if ($script:flipPool -and $script:flipRoot) {
+        [IO.File]::WriteAllText((Join-Path (Join-Path $script:flipRoot 'inbox') 'state.json'), $script:flipDesiredJson, $script:enc)
+        [IO.File]::WriteAllText((Join-Path $script:flipRoot 'status.json'), $script:flipStatusJson, $script:enc)
+    }
     return [int]$LASTEXITCODE
 }
 
@@ -383,6 +388,8 @@ Describe 'helper identity' {
         $script:distroExtra = ''
         $script:distroSystemctl = 'echo inactive'
         $script:distroManager = ''
+        $script:flipPool = $false
+        $script:AapSawRestart = $false
         $script:scriptWork = Join-Path $TestDrive ('distro-' + [guid]::NewGuid().ToString('n').Substring(0, 8))
         New-Item -ItemType Directory -Force -Path $script:scriptWork | Out-Null
     }
@@ -664,8 +671,8 @@ Describe 'helper identity' {
         $r.Out | Should -Not -Match 'FAIL identity exit 1'
         [IO.File]::ReadAllText((Join-Path $script:scriptWork 'app.pem')) | Should -Be $oldKey
         [IO.File]::ReadAllText((Join-Path $script:scriptWork 'manager.conf')) | Should -Be $oldConf
-        (Test-Path -LiteralPath (Join-Path $script:scriptWork 'app.pem.tmp')) | Should -BeTrue
-        (Test-Path -LiteralPath (Join-Path $script:scriptWork 'manager.conf.tmp')) | Should -BeTrue
+        (Test-Path -LiteralPath (Join-Path $script:scriptWork 'app.pem.tmp')) | Should -BeFalse
+        (Test-Path -LiteralPath (Join-Path $script:scriptWork 'manager.conf.tmp')) | Should -BeFalse
     }
 
     It 'restores the old key when manager.conf cannot be moved' {
@@ -747,6 +754,55 @@ Describe 'helper identity' {
             $h.Dispose()
         }
     }
+    It 'leaves the pool paused when desired goes off or a drain starts before restart' {
+        if (-not (Test-Path -LiteralPath $script:gitBash)) {
+            Set-ItResult -Skipped -Because 'Git bash is not installed; the distro script cannot run here'
+            return
+        }
+        $root = Join-Path $TestDrive 'id-pause'
+        $key = New-AapKey 'pause.pem'
+        $id = '0123456789abcd17'
+        New-AapIdentityRequest -Root $root -Id $id -KeyPath $key
+        $script:distroSystemctl = 'if [[ "$1" == is-active ]]; then if [[ -f "$W/saw" ]]; then echo inactive; else touch "$W/saw"; echo active; fi; else echo ok; fi'
+        $script:flipPool = $true
+        $script:flipRoot = $root
+        Mock Invoke-AapStreaming {
+            $script:wslCalls.Add(@{ File = $File; Arguments = @($Arguments) })
+            $m = [regex]::Match([string]$Arguments[-1], 'base64 -d\) restart ([a-z]+) ([a-z]+)')
+            if (-not $m.Success) { return 98 }
+            $b64 = [regex]::Match([string]$Arguments[-1], 'echo ([A-Za-z0-9+/=]+) \| base64')
+            $text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64.Groups[1].Value))
+            $w = $script:scriptWork
+            [IO.File]::WriteAllText((Join-Path $w 'identity.sh'), $text, $script:enc)
+            $drive = "export AAP_IDENTITY_LIB=1`nsource `"`$1`"`nconf=`"`$W/manager.conf`"`nkey=`"`$W/app.pem`"`nmanager=`"`$W/fakemgr.sh`"`nchown() { :; }`nchmod() { :; }`nsystemctl() { echo inactive; }`nmain restart $($m.Groups[1].Value) $($m.Groups[2].Value)`n"
+            [IO.File]::WriteAllText((Join-Path $w 'drive.sh'), $drive, $script:enc)
+            $posix = { param($p) ($p -replace '\\', '/') }
+            $env:W = & $posix $w
+            $cmd = "bash '$(& $posix (Join-Path $w 'drive.sh'))' '$(& $posix (Join-Path $w 'identity.sh'))' 2>&1"
+            $out = & $script:gitBash --noprofile --norc -c $cmd | ForEach-Object { "$_" }
+            foreach ($line in @($out)) { [Console]::Out.WriteLine([string]$line) }
+            return [int]$LASTEXITCODE
+        }
+        foreach ($case in @(
+            @{ Desired = '{"desired":"off"}'; Status = '{"state":"idle"}'; Token = 'restart off idle' }
+            @{ Desired = '{"desired":"on"}'; Status = '{"state":"draining"}'; Token = 'restart on draining' }
+            @{ Desired = '{"desired":"on"}'; Status = '{"state":"paused"}'; Token = 'restart on paused' }
+        )) {
+            Remove-Item -LiteralPath (Join-Path $script:scriptWork 'saw') -ErrorAction SilentlyContinue
+            [IO.File]::WriteAllText((Join-Path (Join-Path $root 'inbox') 'state.json'), '{"desired":"on"}', $script:enc)
+            [IO.File]::WriteAllText((Join-Path $root 'status.json'), '{"state":"idle"}', $script:enc)
+            $script:flipDesiredJson = $case.Desired
+            $script:flipStatusJson = $case.Status
+            $script:wslCalls.Clear()
+            $r = Invoke-AapCaptured { Invoke-AapIdentityLive -DataDir $root -Id $id }
+            $r.Code | Should -Be 0 -Because $case.Token
+            $r.Out | Should -Match 'restart pending'
+            $r.Out | Should -Match 'identity installed; pool left paused'
+            $r.Out | Should -Not -Match 'pool restarted'
+            ($script:wslCalls[-1].Arguments -join ' ') | Should -Match ([regex]::Escape($case.Token))
+        }
+    }
+
     It 'identity -Fixture changes nothing' {
         $exe = (Get-Process -Id $PID).Path
         $out = & $exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot '..\installer\helper-run.ps1') -Verb identity -Id 0123456789abcdef -DataDir (Join-Path $TestDrive 'nope') -Fixture 2>&1 | Out-String
