@@ -116,7 +116,7 @@ lacks() {
   done
 }
 
-want_props="set-property --runtime aap-runner-pool.slice CPUQuota=2400% MemoryMax=72G"
+want_props="set-property --runtime aap-runner-pool.slice CPUQuota=2400% MemoryMax=72G MemoryHigh=49152M"
 want_props+=" IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax="
 want_props+=" IOReadBandwidthMax=/dev/sde 943718400 IOWriteBandwidthMax=/dev/sde 943718400"
 want_props+=" IOReadIOPSMax=/dev/sde 7200 IOWriteIOPSMax=/dev/sde 7200"
@@ -129,12 +129,14 @@ echo "slice properties for 1, 2, 3 slots ok, no revert"
 
 # Unmeasured disk: the IO lists are cleared, so an earlier pool's cap goes.
 AAP_JOB_MEMORY=12g AAP_JOB_CPUS=2.5 POOL_IO_MBPS=0
-want="CPUQuota=250% MemoryMax=12G IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax= "
+want="CPUQuota=250% MemoryMax=12G MemoryHigh=8192M IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax= "
 [[ "$(slice_properties | tr '\n' ' ')" == "${want}" ]] || fail "fractional cpus, no io: $(slice_properties)"
 AAP_JOB_MEMORY=4096m
-[[ "$(slice_properties | sed -n 2p)" == "MemoryMax=4096M" ]] || fail "m suffix: $(slice_properties)"
+[[ "$(slice_properties | sed -n 2,3p | tr '\n' ' ')" == "MemoryMax=4096M MemoryHigh=2730M " ]] || fail "m suffix: $(slice_properties)"
 AAP_JOB_MEMORY=4294967296b
-[[ "$(slice_properties | sed -n 2p)" == "MemoryMax=4294967296" ]] || fail "b suffix: $(slice_properties)"
+[[ "$(slice_properties | sed -n 2,3p | tr '\n' ' ')" == "MemoryMax=4294967296 MemoryHigh=2730M " ]] || fail "b suffix: $(slice_properties)"
+AAP_JOB_MEMORY=3145728k
+[[ "$(slice_properties | sed -n 3p)" == "MemoryHigh=2048M" ]] || fail "k suffix: $(slice_properties)"
 echo "slice property units ok"
 
 # Slice readiness: the probe unit always starts the slice. With an IO cap
@@ -233,5 +235,22 @@ RUN_DIR="${work}"
 AAP_POOL_SHARING=slice
 [[ "$(status_json | jq -r .sharing)" == slice ]] || fail "status sharing for slice"
 echo "config and status ok"
+
+# Post-job cache reclaim: the slice's inactive_file bytes go to
+# memory.reclaim; under 256 MiB, or with no slice cgroup, nothing is written.
+cg="${work}/pool.slice"
+mkdir -p "${cg}"
+POOL_SLICE_CGROUP="${cg}"
+printf 'anon 1024\ninactive_file 1073741824\nactive_file 5\n' > "${cg}/memory.stat"
+out=$(reclaim_pool_cache)
+[[ "$(cat "${cg}/memory.reclaim")" == 1073741824 ]] || fail "reclaim wrote: $(cat "${cg}/memory.reclaim")"
+[[ "${out}" == "cache: reclaimed 1024 MiB of cold page cache from aap-runner-pool.slice" ]] || fail "reclaim log: ${out}"
+rm -f "${cg}/memory.reclaim"
+printf 'inactive_file 268435455\n' > "${cg}/memory.stat"
+[[ -z "$(reclaim_pool_cache)" ]] || fail "small cache was reclaimed"
+[[ ! -e "${cg}/memory.reclaim" ]] || fail "small cache wrote memory.reclaim"
+POOL_SLICE_CGROUP="${work}/missing"
+reclaim_pool_cache || fail "missing cgroup is not a no-op"
+echo "post-job cache reclaim ok"
 
 echo "manager sharing tests ok"

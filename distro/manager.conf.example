@@ -43,7 +43,8 @@ AAP_RUNNER_COUNT=1
 # refused. No work-disk.mbps means no cap. Not yet verified live under sysbox-runc.
 AAP_JOB_IO_PERCENT=90
 # slice (default): jobs share one systemd slice capped at the pool totals, so
-# an idle or light job leaves its share to the others. fixed: each container
+# an idle or light job leaves its share to the others; the slice also trims
+# its page cache above two thirds of AAP_JOB_MEMORY. fixed: each container
 # gets a hard 1/count share. Slice falls back to fixed unless docker uses the
 # systemd cgroup driver. See Pool sharing in README.md.
 AAP_POOL_SHARING=slice
