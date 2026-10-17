@@ -493,11 +493,21 @@ finish_pool_sharing() {
 # systemctl set-property arguments for POOL_SLICE, one per line: the pool
 # cpu and memory totals, and the IO budget on IO_DEVICE when there is one.
 # Bandwidth is in bytes: systemd's M suffix is 10^6, docker's mb is MiB.
+# MemoryHigh at two thirds of the total makes the kernel trim the pool's
+# page cache above that mark instead of keeping every build's files until
+# MemoryMax; without it the WSL VM holds the cache and never returns it to
+# Windows while jobs keep the VM busy (seen live 2026-10-17: 47 GiB vmmem
+# for 6 GiB of processes). Whole MiB, awk so a huge value cannot wrap.
 slice_properties() {
-  local mem=${AAP_JOB_MEMORY^^} bytes iops
+  local mem=${AAP_JOB_MEMORY^^} bytes iops high
   mem=${mem%B}
+  high=$(awk -v m="${mem}" 'BEGIN {
+    n = m + 0; u = substr(m, length(m), 1)
+    if (u == "K") n *= 1024; else if (u == "M") n *= 1048576; else if (u == "G") n *= 1073741824
+    printf "%d", n * 2 / 3 / 1048576 }')
   printf 'CPUQuota=%s%%\n' "$(awk -v n="${AAP_JOB_CPUS}" 'BEGIN { printf "%d", n * 100 }')"
   printf 'MemoryMax=%s\n' "${mem}"
+  printf 'MemoryHigh=%sM\n' "${high}"
   # An empty assignment clears the list, so a cap from an earlier pool or
   # another device never survives. The values that follow are set fresh.
   printf '%s=\n' IOReadBandwidthMax IOWriteBandwidthMax IOReadIOPSMax IOWriteIOPSMax
@@ -1134,12 +1144,31 @@ maybe_daily_clean() {
   printf '%s\n' "${now}" > "${stamp}" 2>/dev/null || true
 }
 
+# After every job: evict the pool slice's cold page cache (file pages no
+# running job has touched lately) and compact, so the freed pages can go
+# back to Windows through WSL's page reporting. Build inputs live on the
+# work disk; a miss is a re-read, never a loss. Without this the cache
+# grows with every build and the VM never shrinks while jobs keep it busy
+# (seen live 2026-10-17: 22 GiB cache, 47 GiB vmmem for 6 GiB of
+# processes). Under 256 MiB is not worth the eviction. Fixed mode has no
+# slice cgroup, so it is skipped there.
+reclaim_pool_cache() {
+  local bytes
+  [[ -f "${POOL_SLICE_CGROUP}/memory.stat" ]] || return 0
+  bytes=$(awk '$1 == "inactive_file" { print $2 }' "${POOL_SLICE_CGROUP}/memory.stat" 2>/dev/null) || return 0
+  [[ "${bytes}" =~ ^[0-9]+$ ]] && ((bytes >= 268435456)) || return 0
+  echo "${bytes}" > "${POOL_SLICE_CGROUP}/memory.reclaim" 2>/dev/null || true
+  echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
+  echo "cache: reclaimed $((bytes / 1048576)) MiB of cold page cache from ${POOL_SLICE}"
+}
+
 # After every job, and once when a start is under the floor. The cache trim
 # is included because that tree is on this disk.
 clean_after_job() {
   begin_cleaning
   bound_sccache_tree || true
   prune_job_docker
+  reclaim_pool_cache || true
   maybe_daily_clean
   end_cleaning
 }
