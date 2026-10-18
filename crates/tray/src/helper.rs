@@ -38,6 +38,11 @@ const REQUEST_MAX: u64 = 4096;
 /// IDs issued by this process via `write_pointer`. `load_job_from` rejects any result whose
 /// id is not in this set so that a stale `helper.json` from a previous process is ignored.
 static ISSUED_IDS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+static INSTALL_PROCESS: Mutex<Option<win::ProcessIdentity>> = Mutex::new(None);
+
+pub fn install_process() -> Option<win::ProcessIdentity> {
+    INSTALL_PROCESS.lock().ok().and_then(|p| *p)
+}
 
 fn register_id(id: &str) {
     let _ = ISSUED_IDS.lock().map(|mut s| {
@@ -163,6 +168,238 @@ fn acl_view(sec: win::ObjectAcl) -> AclView {
     }
 }
 
+/// Bootstrap alone accepts the initiating user's writes. It never accepts another user's
+/// writes; Verify, Repair and Identity retain the original administrator-only policy.
+fn allowed_for_verb(object: &AclView, bootstrap_user: Option<&str>, ancestor: bool) -> bool {
+    let Some(user) = bootstrap_user else {
+        return if ancestor {
+            !ancestor_refused(object)
+        } else {
+            elevation_allowed(object)
+        };
+    };
+    if object.owner != user && !ADMIN_SIDS.contains(&object.owner.as_str()) {
+        return false;
+    }
+    let mask = if ancestor {
+        ANCESTOR_RIGHTS
+    } else {
+        REPLACE_RIGHTS
+    };
+    object.aces.iter().all(|ace| match ace.kind {
+        AceKind::Other => false,
+        AceKind::Deny => true,
+        AceKind::Allow => {
+            ace.inherit_only
+                || ace.sid == user
+                || ADMIN_SIDS.contains(&ace.sid.as_str())
+                || ace.rights & mask == 0
+        }
+    })
+}
+
+fn check_exe_directories(dir: &Path, bootstrap_user: Option<&str>) -> Result<(), String> {
+    if bootstrap_user.is_none() {
+        require_admin_only(dir, "tray exe folder")?;
+        return require_ancestors(dir);
+    }
+    for (index, path) in dir.ancestors().enumerate() {
+        if reparse_path(path) {
+            return Err("installer path contains a link or junction; use a local folder".into());
+        }
+        let view = acl_view(win::acl_of_path(path, true).map_err(|e| e.to_string())?);
+        if !allowed_for_verb(&view, bootstrap_user, index > 0) {
+            return Err("installer folder permits another account to replace it; move the exe to your private Downloads folder".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn install_location_ok() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let resolved = win::resolve_exe(&exe).map_err(|e| e.to_string())?;
+    let user = win::current_user_sid().map_err(|e| e.to_string())?;
+    if !win::is_fixed_local_path(&resolved.path)
+        || !allowed_for_verb(&acl_view(resolved.acl), Some(&user), false)
+    {
+        return Err("Installer must be on a fixed local drive, owned by you or Administrators, and writable only by you or Administrators. Move it to your private Downloads folder.".into());
+    }
+    check_exe_directories(resolved.path.parent().ok_or("installer path")?, Some(&user))
+}
+
+pub fn start_installed_tray() -> Result<(), String> {
+    let exe = Path::new(r"C:\Program Files\aap-runner\aap-runner-tray.exe");
+    let resolved = win::resolve_exe(exe).map_err(|e| e.to_string())?;
+    if !win::is_fixed_local_path(&resolved.path) || !elevation_allowed(&acl_view(resolved.acl)) {
+        return Err("installed tray is not protected".into());
+    }
+    check_exe_directories(resolved.path.parent().ok_or("installed tray path")?, None)?;
+    Command::new(resolved.path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn open_install_log(base: &Path, id: &str) -> Result<(), String> {
+    if !valid_id(id) {
+        return Err("Invalid install job id".into());
+    }
+    let dir = job_dir(base, id);
+    require_admin_only(&dir, "install job")?;
+    require_ancestors(&dir)?;
+    let log = dir.join("log.txt");
+    if reparse_path(&log) {
+        return Err("Install log is a link".into());
+    }
+    Command::new(r"C:\Windows\explorer.exe")
+        .arg(log)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn ensure_admin_dir(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        win::create_admin_dir(path).map_err(|e| e.to_string())?;
+    }
+    if reparse_path(path) || !path.is_dir() {
+        return Err("protected folder is a link or not a directory".into());
+    }
+    require_admin_only(path, "protected folder")?;
+    require_ancestors(path)
+}
+
+/// Only the Install verb may copy itself. Create-new plus an inherited admin ACL prevents
+/// replacing an existing installation or executing a staged binary written by another user.
+fn prepare_install(base: &Path, job: &Path) -> Result<String, String> {
+    install_location_ok()?;
+    ensure_admin_dir(base)?;
+    ensure_admin_dir(&base.join("jobs"))?;
+    ensure_admin_dir(&base.join("jobs/install"))?;
+    ensure_admin_dir(job)?;
+    let destination_dir = Path::new(r"C:\Program Files\aap-runner");
+    ensure_admin_dir(destination_dir)?;
+    let destination = destination_dir.join("aap-runner-tray.exe");
+    let source = win::resolve_exe(&std::env::current_exe().map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?
+        .path;
+    if destination.exists() {
+        if reparse_path(&destination) {
+            return Err("installed tray is a link".into());
+        }
+        require_admin_only(&destination, "installed tray")?;
+        if source != destination && !same_file_bytes(&source, &destination)? {
+            return Err("A different protected tray already exists. Run C:\\Program Files\\aap-runner\\aap-runner-tray.exe to resume setup.".into());
+        }
+    } else {
+        let mut source_file = File::open(&source).map_err(|e| e.to_string())?;
+        let mut target = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&destination)
+            .map_err(|e| e.to_string())?;
+        io::copy(&mut source_file, &mut target).map_err(|e| e.to_string())?;
+        target.sync_all().map_err(|e| e.to_string())?;
+        require_admin_only(&destination, "installed tray")?;
+    }
+    Ok(destination.display().to_string())
+}
+
+fn same_file_bytes(a: &Path, b: &Path) -> Result<bool, String> {
+    let mut a = File::open(a).map_err(|e| e.to_string())?;
+    let mut b = File::open(b).map_err(|e| e.to_string())?;
+    if a.metadata().map_err(|e| e.to_string())?.len()
+        != b.metadata().map_err(|e| e.to_string())?.len()
+    {
+        return Ok(false);
+    }
+    let mut left = [0u8; 8192];
+    let mut right = [0u8; 8192];
+    loop {
+        let n = a.read(&mut left).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Ok(true);
+        }
+        b.read_exact(&mut right[..n]).map_err(|e| e.to_string())?;
+        if left[..n] != right[..n] {
+            return Ok(false);
+        }
+    }
+}
+
+/// Only a fixed helper-owned journal can restore the identity of a previous install job.
+#[derive(Deserialize)]
+pub struct InstallCheckpoint {
+    schema: u32,
+    pub step: String,
+    pub job_id: String,
+    runner_count: u32,
+    job_cpus: u32,
+    job_memory_gib: u32,
+    work_disk_gib: u32,
+}
+
+impl InstallCheckpoint {
+    pub fn sizing(&self) -> crate::wizard::Sizing {
+        crate::wizard::Sizing {
+            runner_count: self.runner_count,
+            job_cpus: self.job_cpus,
+            job_memory_gib: self.job_memory_gib,
+            work_disk_gib: self.work_disk_gib,
+        }
+    }
+}
+
+pub fn install_checkpoint(base: &Path) -> Option<InstallCheckpoint> {
+    let dir = base.join("jobs/install");
+    let path = dir.join("state.json");
+    if reparse_path(&path)
+        || require_admin_only(&dir, "install journal").is_err()
+        || require_ancestors(&dir).is_err()
+        || require_admin_only(&path, "install journal").is_err()
+    {
+        return None;
+    }
+    let checkpoint: InstallCheckpoint = serde_json::from_str(&state::read_bounded(&path)?).ok()?;
+    (checkpoint.schema == 1
+        && valid_id(&checkpoint.job_id)
+        && matches!(checkpoint.step.as_str(), "install" | "done")
+        && checkpoint.sizing().check_shape().is_ok())
+    .then_some(checkpoint)
+}
+
+pub fn resume_install_job(base: &Path) -> Option<JobUi> {
+    let checkpoint = install_checkpoint(base)?;
+    resume_install_id(base, &checkpoint.job_id)
+}
+
+pub fn resume_install_id(base: &Path, id: &str) -> Option<JobUi> {
+    if !valid_id(id) {
+        return None;
+    }
+    let dir = job_dir(base, id);
+    if require_admin_only(&dir, "install job").is_err() || require_ancestors(&dir).is_err() {
+        return None;
+    }
+    if require_admin_only(&dir.join("status.json"), "install status").is_err() {
+        return None;
+    }
+    let status = read_status_file(&dir.join("status.json")).ok()??;
+    if status.schema != 1 || status.id != id || status.verb != "install" {
+        return None;
+    }
+    Some(JobUi {
+        verb: status.verb,
+        state: status.state,
+        step: status.step,
+        exit_code: status.exit_code,
+        lines: log_tail(&dir.join("log.txt")),
+        app_token: None,
+    })
+}
+
 fn require_ancestors(dir: &Path) -> Result<(), String> {
     let mut current = dir.to_path_buf();
     while let Some(parent) = current.parent() {
@@ -202,6 +439,7 @@ pub enum Verb {
     Verify,
     Repair,
     Identity,
+    Install,
 }
 
 impl Verb {
@@ -210,6 +448,7 @@ impl Verb {
             Verb::Verify => "verify",
             Verb::Repair => "repair",
             Verb::Identity => "identity",
+            Verb::Install => "install",
         }
     }
 
@@ -218,6 +457,7 @@ impl Verb {
             Verb::Verify => "Verify",
             Verb::Repair => "Repair",
             Verb::Identity => "Identity",
+            Verb::Install => "Install",
         }
     }
 
@@ -226,6 +466,7 @@ impl Verb {
             "verify" => Some(Verb::Verify),
             "repair" => Some(Verb::Repair),
             "identity" => Some(Verb::Identity),
+            "install" => Some(Verb::Install),
             _ => None,
         }
     }
@@ -287,9 +528,33 @@ struct RawRequest {
     labels: Option<String>,
     #[serde(default)]
     key_path: Option<String>,
+    #[serde(default)]
+    runner_count: Option<u32>,
+    #[serde(default)]
+    job_cpus: Option<u32>,
+    #[serde(default)]
+    job_memory_gib: Option<u32>,
+    #[serde(default)]
+    work_disk_gib: Option<u32>,
 }
 
 impl RawRequest {
+    fn sizing(&self) -> Option<crate::wizard::Sizing> {
+        Some(crate::wizard::Sizing {
+            runner_count: self.runner_count?,
+            job_cpus: self.job_cpus?,
+            job_memory_gib: self.job_memory_gib?,
+            work_disk_gib: self.work_disk_gib?,
+        })
+    }
+
+    fn has_sizing(&self) -> bool {
+        self.runner_count.is_some()
+            || self.job_cpus.is_some()
+            || self.job_memory_gib.is_some()
+            || self.work_disk_gib.is_some()
+    }
+
     fn has_identity(&self) -> bool {
         self.org.is_some()
             || self.app_id.is_some()
@@ -336,6 +601,74 @@ struct Embedded {
 
 fn scripts() -> &'static [Embedded] {
     &[
+        Embedded {
+            rel: "installer/create-work-vhdx.ps1",
+            text: include_str!("../../../installer/create-work-vhdx.ps1"),
+        },
+        Embedded {
+            rel: "installer/mount-work-vhdx-task.xml",
+            text: include_str!("../../../installer/mount-work-vhdx-task.xml"),
+        },
+        Embedded {
+            rel: "distro/stage-into-distro.sh",
+            text: include_str!("../../../distro/stage-into-distro.sh"),
+        },
+        Embedded {
+            rel: "distro/Dockerfile",
+            text: include_str!("../../../distro/Dockerfile"),
+        },
+        Embedded {
+            rel: "distro/aap-runner-manager.service",
+            text: include_str!("../../../distro/aap-runner-manager.service"),
+        },
+        Embedded {
+            rel: "distro/aap-workdisk.service",
+            text: include_str!("../../../distro/aap-workdisk.service"),
+        },
+        Embedded {
+            rel: "distro/daemon.json",
+            text: include_str!("../../../distro/daemon.json"),
+        },
+        Embedded {
+            rel: "distro/docker-workdisk.conf",
+            text: include_str!("../../../distro/docker-workdisk.conf"),
+        },
+        Embedded {
+            rel: "distro/ephemeral-entry.sh",
+            text: include_str!("../../../distro/ephemeral-entry.sh"),
+        },
+        Embedded {
+            rel: "distro/evidence-host.sh",
+            text: include_str!("../../../distro/evidence-host.sh"),
+        },
+        Embedded {
+            rel: "distro/evidence.sh",
+            text: include_str!("../../../distro/evidence.sh"),
+        },
+        Embedded {
+            rel: "distro/manager.conf.example",
+            text: include_str!("../../../distro/manager.conf.example"),
+        },
+        Embedded {
+            rel: "distro/manager.sh",
+            text: include_str!("../../../distro/manager.sh"),
+        },
+        Embedded {
+            rel: "distro/mount-work-disk.sh",
+            text: include_str!("../../../distro/mount-work-disk.sh"),
+        },
+        Embedded {
+            rel: "distro/nftables.conf",
+            text: include_str!("../../../distro/nftables.conf"),
+        },
+        Embedded {
+            rel: "distro/sysbox-restart.conf",
+            text: include_str!("../../../distro/sysbox-restart.conf"),
+        },
+        Embedded {
+            rel: "distro/wsl.conf",
+            text: include_str!("../../../distro/wsl.conf"),
+        },
         Embedded {
             rel: "helper-run.ps1",
             text: include_str!("../../../installer/helper-run.ps1"),
@@ -529,7 +862,7 @@ fn parse_request(bytes: &[u8], argv_verb: &str, argv_id: &str) -> Result<Verb, S
     }
     let raw: RawRequest =
         serde_json::from_slice(bytes).map_err(|_| "request rejected".to_string())?;
-    if raw.schema != 1 {
+    if raw.schema != if argv_verb == "install" { 2 } else { 1 } {
         return Err("request schema".into());
     }
     if !valid_id(&raw.id) || raw.id != argv_id {
@@ -542,6 +875,15 @@ fn parse_request(bytes: &[u8], argv_verb: &str, argv_id: &str) -> Result<Verb, S
         return Err("request verb".into());
     }
     match verb {
+        Verb::Install
+            if !raw.identity_ok()
+                || !raw.sizing().is_some_and(|s| s.check_shape().is_ok())
+                || raw.group.as_deref() != Some(identity::GROUP_DEFAULT)
+                || raw.labels.as_deref() != Some(identity::LABELS_DEFAULT) =>
+        {
+            return Err("request install".into());
+        }
+        v if v != Verb::Install && raw.has_sizing() => return Err("request rejected".into()),
         Verb::Identity if !raw.identity_ok() => return Err("request identity".into()),
         Verb::Verify | Verb::Repair if raw.has_identity() => return Err("request rejected".into()),
         _ => {}
@@ -582,11 +924,22 @@ fn read_request(path: &Path, argv_verb: &str, argv_id: &str) -> ReqRead {
     }
 }
 
+#[cfg(test)]
 fn write_request(
     base: &Path,
     id: &str,
     verb: Verb,
     identity: Option<&identity::Valid>,
+) -> io::Result<()> {
+    write_request_with_size(base, id, verb, identity, None)
+}
+
+fn write_request_with_size(
+    base: &Path,
+    id: &str,
+    verb: Verb,
+    identity: Option<&identity::Valid>,
+    sizing: Option<&crate::wizard::Sizing>,
 ) -> io::Result<()> {
     let dir = base.join("inbox").join("jobs");
     if reparse_path(&dir) || reparse_path(&base.join("inbox")) || reparse_path(base) {
@@ -599,10 +952,21 @@ fn write_request(
     if reparse_path(&path) {
         return Err(io::Error::other("reparse point"));
     }
-    let body = match identity {
+    let mut body = match identity {
         Some(v) => identity::request_json(id, v),
         None => format!(r#"{{"schema":1,"id":"{id}","verb":"{}"}}"#, verb.as_str()).into_bytes(),
     };
+    if let Some(s) = sizing {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&body).map_err(io::Error::other)?;
+        value["schema"] = 2.into();
+        value["verb"] = "install".into();
+        value["runner_count"] = s.runner_count.into();
+        value["job_cpus"] = s.job_cpus.into();
+        value["job_memory_gib"] = s.job_memory_gib.into();
+        value["work_disk_gib"] = s.work_disk_gib.into();
+        body = serde_json::to_vec(&value).map_err(io::Error::other)?;
+    }
     state::write_atomic(&path, &body)
 }
 
@@ -750,6 +1114,11 @@ pub fn load_job(base: &Path) -> Option<JobUi> {
     load_job_from(&pointer_path(), base)
 }
 
+pub fn issued_install_id() -> Option<String> {
+    let raw: Pointer = serde_json::from_str(&state::read_bounded(&pointer_path())?).ok()?;
+    (raw.verb == "install" && is_issued_id(&raw.id)).then_some(raw.id)
+}
+
 /// Write the request when `inbox\jobs` already exists, record the id for the window, and ask
 /// Windows for one UAC prompt. If the folder does not exist yet, a background thread writes the
 /// request once the elevated helper has created it.
@@ -787,7 +1156,35 @@ fn start_runas(exe: &Path, parameters: &str) -> Result<(), String> {
             return Ok(());
         }
     }
-    win::shell_execute_runas(exe, parameters)
+    if let Some(id) = parameters.strip_prefix("--helper install ") {
+        let id = id.to_string();
+        let process = win::shell_execute_runas_observed(exe, parameters, move |code| {
+            let path = pointer_path();
+            let ours = state::read_bounded(&path)
+                .and_then(|s| serde_json::from_str::<Pointer>(&s).ok())
+                .is_some_and(|p| p.id == id);
+            let completed =
+                read_status_file(&job_dir(Path::new(DATA_DIR), &id).join("status.json"))
+                    .ok()
+                    .flatten()
+                    .is_some_and(|s| matches!(s.state.as_str(), "passed" | "failed" | "rejected"));
+            if ours && !completed {
+                let _ = write_pointer(
+                    &id,
+                    Verb::Install,
+                    &format!(
+                        "Installer exited ({code}) before writing a result. Use the same administrator account, check ProgramData folder permissions, and retry."
+                    ),
+                );
+            }
+        })?;
+        if let Ok(mut slot) = INSTALL_PROCESS.lock() {
+            *slot = process;
+        }
+        Ok(())
+    } else {
+        win::shell_execute_runas(exe, parameters)
+    }
 }
 
 pub fn launch(base: &Path, verb: Verb) -> Result<(), String> {
@@ -797,6 +1194,23 @@ pub fn launch(base: &Path, verb: Verb) -> Result<(), String> {
 /// The identity page's Apply: the same prompt and job folder as Verify, with the fields in the request.
 pub fn launch_identity(base: &Path, fields: &identity::Valid) -> Result<(), String> {
     launch_with(base, Verb::Identity, Some(fields.clone()))
+}
+
+pub fn launch_install(
+    base: &Path,
+    fields: &identity::Valid,
+    sizing: &crate::wizard::Sizing,
+) -> Result<(), String> {
+    sizing.check_shape()?;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let resolved = win::resolve_exe(&exe).map_err(|e| e.to_string())?;
+    launch_payload(
+        base,
+        Verb::Install,
+        resolved,
+        Some(fields.clone()),
+        Some(sizing.clone()),
+    )
 }
 
 fn launch_with(base: &Path, verb: Verb, identity: Option<identity::Valid>) -> Result<(), String> {
@@ -824,6 +1238,16 @@ fn launch_resolved(
     resolved: win::ResolvedExe,
     identity: Option<identity::Valid>,
 ) -> Result<(), String> {
+    launch_payload(base, verb, resolved, identity, None)
+}
+
+fn launch_payload(
+    base: &Path,
+    verb: Verb,
+    resolved: win::ResolvedExe,
+    identity: Option<identity::Valid>,
+    sizing: Option<crate::wizard::Sizing>,
+) -> Result<(), String> {
     let path = resolved.path;
     if !win::is_fixed_local_path(&path) {
         let dt = win::drive_type_of(&path).unwrap_or(0);
@@ -832,20 +1256,23 @@ fn launch_resolved(
     let Some(dir) = path.parent().map(std::path::Path::to_path_buf) else {
         return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
     };
-    if !elevation_allowed(&acl_view(resolved.acl)) {
+    let bootstrap_user = if verb == Verb::Install {
+        Some(win::current_user_sid().map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+    if !allowed_for_verb(&acl_view(resolved.acl), bootstrap_user.as_deref(), false) {
         return refuse_elevation(verb, USER_WRITABLE_EXE_DIR);
     }
-    if directory_gate_enabled() {
-        if let Err(e) = require_admin_only(&dir, "tray exe folder") {
-            return refuse_elevation(verb, &e);
-        }
-        if let Err(e) = require_ancestors(&dir) {
-            return refuse_elevation(verb, &e);
-        }
+    if directory_gate_enabled()
+        && let Err(e) = check_exe_directories(&dir, bootstrap_user.as_deref())
+    {
+        return refuse_elevation(verb, &e);
     }
     let id = win::random_id().map_err(|e| e.to_string())?;
     write_pointer(&id, verb, "")?;
-    let wrote = write_request(base, &id, verb, identity.as_ref()).is_ok();
+    let wrote =
+        write_request_with_size(base, &id, verb, identity.as_ref(), sizing.as_ref()).is_ok();
     if let Err(e) = start_runas(&path, &format!("--helper {} {id}", verb.as_str())) {
         let _ = write_pointer(&id, verb, &e);
         return Err(e);
@@ -855,7 +1282,9 @@ fn launch_resolved(
         thread::spawn(move || {
             let deadline = Instant::now() + REQUEST_WAIT;
             while Instant::now() < deadline {
-                if write_request(&base, &id, verb, identity.as_ref()).is_ok() {
+                if write_request_with_size(&base, &id, verb, identity.as_ref(), sizing.as_ref())
+                    .is_ok()
+                {
                     return;
                 }
                 thread::sleep(Duration::from_millis(200));
@@ -1013,7 +1442,7 @@ fn pipe_lines(reader: impl Read, tx: mpsc::Sender<String>) {
 fn run_script(job: &Path, verb: Verb, tray: Option<&str>) -> io::Result<i32> {
     let script = job.join("scripts").join("helper-run.ps1");
     let id = job.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if verb == Verb::Identity && !valid_id(id) {
+    if matches!(verb, Verb::Identity | Verb::Install) && !valid_id(id) {
         return Err(io::Error::other("bad id"));
     }
     let mut cmd = Command::new(POWERSHELL);
@@ -1026,12 +1455,12 @@ fn run_script(job: &Path, verb: Verb, tray: Option<&str>) -> io::Result<i32> {
     ])
     .arg(&script)
     .args(["-Verb", verb.as_str(), "-DataDir", DATA_DIR]);
-    if verb == Verb::Repair
+    if matches!(verb, Verb::Repair | Verb::Install)
         && let Some(exe) = tray
     {
         cmd.args(["-TrayExe", exe]);
     }
-    if verb == Verb::Identity {
+    if matches!(verb, Verb::Identity | Verb::Install) {
         cmd.args(["-Id", id]);
     }
     cmd.stdin(Stdio::null())
@@ -1085,9 +1514,34 @@ pub fn run_elevated(verb_arg: &str, id: &str) -> i32 {
     }
     let base = PathBuf::from(DATA_DIR);
     let job = job_dir(&base, id);
-    if ensure_real_dir(&job).is_err() {
+    // Every verb must establish the trust boundary before writing executable scripts.
+    if ensure_admin_dir(&base)
+        .and_then(|_| ensure_admin_dir(&base.join("jobs")))
+        .and_then(|_| ensure_admin_dir(&job))
+        .is_err()
+    {
         return 2;
     }
+    let installed_exe = if verb == Verb::Install {
+        if advance(
+            &job,
+            id,
+            verb.as_str(),
+            "queued",
+            "checking installer",
+            None,
+        )
+        .is_err()
+        {
+            return 2;
+        }
+        match prepare_install(&base, &job) {
+            Ok(path) => Some(path),
+            Err(e) => return fail_job(&job, id, verb.as_str(), "rejected", &e, 2),
+        }
+    } else {
+        None
+    };
     let scripts_dir = job.join("scripts");
     if let Err(e) = materialize(&scripts_dir) {
         return fail_job(&job, id, verb.as_str(), "rejected", &e, 2);
@@ -1143,7 +1597,8 @@ pub fn run_elevated(verb_arg: &str, id: &str) -> i32 {
     if advance(&job, id, got.as_str(), "running", "starting", None).is_err() {
         return 2;
     }
-    match run_script(&job, got, tray_exe_arg().as_deref()) {
+    let tray = installed_exe.or_else(tray_exe_arg);
+    match run_script(&job, got, tray.as_deref()) {
         Ok(0) => fail_job(&job, id, got.as_str(), "passed", "done", 0),
         Ok(code) => fail_job(
             &job,
@@ -1226,6 +1681,90 @@ mod tests {
             labels: "self-hosted,linux,crrr".into(),
             key_path: r"C:\Users\me\Downloads\k.pem".into(),
         }
+    }
+
+    #[test]
+    fn install_requests_require_schema_two_and_bounded_sizing() {
+        let base = temp();
+        fs::create_dir_all(base.join("inbox/jobs")).unwrap();
+        let id = "acacacacacacacac";
+        write_request_with_size(
+            &base,
+            id,
+            Verb::Install,
+            Some(&identity_fields()),
+            Some(&crate::wizard::Sizing::default()),
+        )
+        .unwrap();
+        let bytes = fs::read(request_path(&base, id)).unwrap();
+        assert_eq!(parse_request(&bytes, "install", id).unwrap(), Verb::Install);
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        for (key, bad) in [
+            ("schema", 1),
+            ("runner_count", 0),
+            ("runner_count", 6),
+            ("job_cpus", 29),
+            ("job_memory_gib", 81),
+            ("work_disk_gib", 59),
+            ("work_disk_gib", 513),
+        ] {
+            let mut invalid = value.clone();
+            invalid[key] = bad.into();
+            assert!(
+                parse_request(&serde_json::to_vec(&invalid).unwrap(), "install", id).is_err(),
+                "{key}={bad}"
+            );
+        }
+        for key in ["job_cpus", "key_path", "runner_count"] {
+            let mut invalid = value.clone();
+            invalid.as_object_mut().unwrap().remove(key);
+            assert!(parse_request(&serde_json::to_vec(&invalid).unwrap(), "install", id).is_err());
+        }
+        let mut invalid = value;
+        invalid["path"] = "C:\\other".into();
+        assert!(parse_request(&serde_json::to_vec(&invalid).unwrap(), "install", id).is_err());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn install_bootstrap_allows_only_the_current_user_in_addition_to_admins() {
+        let user = "S-1-5-21-123-1001";
+        let mut acl = AclView {
+            owner: user.into(),
+            aces: vec![DirAce {
+                sid: user.into(),
+                kind: AceKind::Allow,
+                rights: REPLACE_RIGHTS,
+                inherit_only: false,
+            }],
+        };
+        assert!(allowed_for_verb(&acl, Some(user), false));
+        assert!(
+            !allowed_for_verb(&acl, None, false),
+            "other verbs keep the admin-only gate"
+        );
+        acl.aces.push(DirAce {
+            sid: "S-1-1-0".into(),
+            kind: AceKind::Allow,
+            rights: 0x0002,
+            inherit_only: false,
+        });
+        assert!(!allowed_for_verb(&acl, Some(user), false));
+        acl.aces[1].rights = 0x0001_0000;
+        assert!(!allowed_for_verb(&acl, Some(user), true));
+        acl.aces.pop();
+        acl.aces[0].kind = AceKind::Other;
+        assert!(!allowed_for_verb(&acl, Some(user), false));
+    }
+
+    #[test]
+    fn user_owned_install_journal_never_authorizes_resume() {
+        let base = temp();
+        fs::create_dir_all(base.join("jobs/install")).unwrap();
+        fs::write(base.join("jobs/install/state.json"), r#"{"schema":1,"step":"done","job_id":"acacacacacacacac","runner_count":1,"job_cpus":2,"job_memory_gib":4,"work_disk_gib":60}"#).unwrap();
+        assert!(install_checkpoint(&base).is_none());
+        assert!(resume_install_job(&base).is_none());
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

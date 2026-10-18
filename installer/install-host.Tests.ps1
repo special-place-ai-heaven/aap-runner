@@ -157,6 +157,18 @@ $plan = Get-AapInstallPlan (Get-AapBaseFacts @{ StageCurrent = $false })
 Assert-Aap ($plan.Actions -notcontains 'upgrade') 'a fresh install planned an upgrade'
 Assert-Aap ($plan.Actions -contains 'inside') 'a fresh install skipped inside'
 
+foreach ($unsafe in @(
+    @{ FreshInstall = $true; ManagerEnabled = $true },
+    @{ FreshInstall = $true; ManagerActive = $true },
+    @{ FreshInstall = $true; InsideDone = $true; StageCurrent = $false }
+)) {
+    $plan = Get-AapInstallPlan (Get-AapBaseFacts $unsafe)
+    Assert-Aap ($plan.ExitCode -eq 1) 'first-run install accepted an existing manager or upgrade'
+    Assert-Aap ($plan.Actions.Count -eq 0) 'first-run refusal retained destructive actions'
+}
+$plan = Get-AapInstallPlan (Get-AapBaseFacts @{ FreshInstall = $true })
+Assert-Aap ($plan.ExitCode -eq 0 -and $plan.Actions -contains 'inside') 'fresh first-run install was refused'
+
 Assert-Aap ((Get-AapAllowDiskMountLine 'absent') -eq 'PASS AllowDiskMount absent') 'absent policy'
 Assert-Aap ((Get-AapAllowDiskMountLine '0') -eq 'FAIL AllowDiskMount 0') 'zero policy'
 Assert-Aap ((Get-AapAllowDiskMountLine '1') -eq 'PASS AllowDiskMount 1') 'one policy'

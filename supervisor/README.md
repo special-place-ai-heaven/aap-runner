@@ -64,6 +64,31 @@ split by trust:
 | `logs\supervisor.log` | supervisor | One line per event, rotated to `.1` at 5 MB. |
 | `inbox\jobs\<id>.json` | tray | Schema 1: `{"schema":1,"id":"<16 lowercase hex>","verb":"verify"|"repair"}`, or with `"verb":"identity"` plus exactly `org`, `app_id`, `installation_id` (numbers), `group`, `labels`, and `key_path` (see `crates/tray/README.md`, Identity). Nothing else is accepted. The supervisor does not read it. |
 | `jobs\<id>\` | elevated helper | `status.json` (schema 1: `queued`, `running`, `passed`, `failed`, or `rejected`), `log.txt`, `exit.txt`. Admin-owned. The tray reads them. The supervisor does not. |
+| `jobs\install\state.json` | elevated install helper | Schema 1 first-run checkpoint: `step` (`install` or `done`), `phase` (`host`, `identity`, `supervisor`, `start`, `done`), `job_id`, identity fields excluding the key path, and `runner_count`, `job_cpus`, `job_memory_gib`, `work_disk_gib`. Admin-owned; only the wizard reads it. |
+| `config.json` | elevated install helper | Schema 1 installed identity (`org`, `app_id`, `installation_id`, `group`, `labels`) and `work_disk_gib`; no key or key path. Written before first supervisor startup. |
+
+First-run `install` requests use schema 2 and the identity request fields plus
+`runner_count` (1..5), `job_cpus` (runner count..28), `job_memory_gib` (runner
+count..80), and `work_disk_gib` (60..512), all whole JSON numbers. Other verbs
+keep their schema 1 contract. The helper revalidates every field, uses the
+identity verb's checked key handle, and calls `install-host.ps1 -FreshInstall`
+with the fixed operator distro `Ubuntu-24.04`. First install keeps the current
+manager defaults: group `aap-crrr`, labels `self-hosted,linux,crrr`. The fresh-install plan refuses
+an enabled/active manager or a staging upgrade. With no protected checkpoint,
+an existing distro or supervisor refuses installation. A checkpoint can resume
+only the original sizing; completed host phases are skipped. Identity can be
+corrected until App authentication succeeds, so a wrong App or installation id
+can be fixed and retried without reinstalling the host. Later phases bind the
+authenticated identity too. The helper independently probes that the manager
+remains inactive before it resumes mutations.
+
+The install helper writes the initial settings and `desired: on` only after
+identity and sizing validation and supervisor registration, then starts the
+supervisor task. These writes are atomic renames from protected staging, never
+opens of existing inbox targets; inbox file permissions remain operator
+modifiable. A protected install lock serializes retries. If a crash occurs
+after task startup, the next helper acknowledges the running task without
+replaying installation. Per-job logs and exit codes use the existing contract.
 
 While On, `inbox\settings.json` is read every 5 s:
 

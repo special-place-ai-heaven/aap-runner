@@ -680,7 +680,8 @@ function Get-AapRequestOwnerProfile([string]$Sid) {
 # Exactly the nine fields of the schema 1 identity request, each re-checked.
 # The file is opened once: the JSON (at most 4096 bytes) and the owner SID
 # both come from that handle.
-function Read-AapIdentityRequest([string]$Path, [string]$Id) {
+function Read-AapIdentityRequest([string]$Path, [string]$Id, [string]$ExpectedVerb = 'identity') {
+    if ($ExpectedVerb -ne 'identity' -and $ExpectedVerb -ne 'install') { throw 'refusing: request verb' }
     Initialize-AapStream
     $h = $null
     try {
@@ -707,10 +708,16 @@ function Read-AapIdentityRequest([string]$Path, [string]$Id) {
     }
     if ($obj -isnot [System.Management.Automation.PSCustomObject]) { throw 'refusing: request' }
     $names = @($obj.PSObject.Properties.Name | Sort-Object)
-    if (($names -join ',') -ne 'app_id,group,id,installation_id,key_path,labels,org,schema,verb') {
+    $fields = 'app_id,group,id,installation_id,key_path,labels,org,schema,verb'
+    $schema = '1'
+    if ($ExpectedVerb -eq 'install') {
+        $fields = 'app_id,group,id,installation_id,job_cpus,job_memory_gib,key_path,labels,org,runner_count,schema,verb,work_disk_gib'
+        $schema = '2'
+    }
+    if (($names -join ',') -ne $fields) {
         throw 'refusing: request fields'
     }
-    if ([string]$obj.schema -ne '1' -or [string]$obj.verb -ne 'identity' -or [string]$obj.id -ne $Id) {
+    if ([string]$obj.schema -ne $schema -or [string]$obj.verb -ne $ExpectedVerb -or [string]$obj.id -ne $Id) {
         throw 'refusing: request header'
     }
     foreach ($num in @($obj.app_id, $obj.installation_id)) {
@@ -731,7 +738,290 @@ function Read-AapIdentityRequest([string]$Path, [string]$Id) {
     if (-not (Test-AapIdentitySlug $req.Group)) { throw 'refusing: group' }
     if (-not (Test-AapIdentityLabels $req.Labels)) { throw 'refusing: labels' }
     if ([string]::IsNullOrEmpty($req.KeyPath)) { throw 'refusing: key_path' }
+    if ($ExpectedVerb -eq 'install') {
+        if ($obj.schema -is [string] -or $obj.schema -is [bool]) { throw 'refusing: request schema type' }
+        foreach ($name in @('org', 'group', 'labels', 'key_path')) {
+            if ($obj.$name -isnot [string]) { throw "refusing: $name must be a JSON string" }
+        }
+        Assert-AapInstallSizing $obj
+        $req | Add-Member NoteProperty RunnerCount ([int]$obj.runner_count)
+        $req | Add-Member NoteProperty JobCpus ([int]$obj.job_cpus)
+        $req | Add-Member NoteProperty JobMemoryGiB ([int]$obj.job_memory_gib)
+        $req | Add-Member NoteProperty WorkDiskGiB ([int]$obj.work_disk_gib)
+        if ($req.Group -cne 'aap-crrr' -or $req.Labels -cne 'self-hosted,linux,crrr') {
+            throw 'refusing: install requires group aap-crrr and labels self-hosted,linux,crrr'
+        }
+    }
     return $req
+}
+
+function Assert-AapInstallSizing($Obj) {
+    foreach ($name in @('runner_count', 'job_cpus', 'job_memory_gib', 'work_disk_gib')) {
+        $n = $Obj.$name
+        if ($null -eq $n -or $n -is [string] -or $n -is [bool] -or [string]$n -notmatch '^[1-9][0-9]*$') {
+            throw "refusing: $name must be a whole JSON number"
+        }
+    }
+    if ($Obj.runner_count -lt 1 -or $Obj.runner_count -gt 5 -or
+        $Obj.job_cpus -lt $Obj.runner_count -or $Obj.job_cpus -gt 28 -or
+        $Obj.job_memory_gib -lt $Obj.runner_count -or $Obj.job_memory_gib -gt 80 -or
+        $Obj.work_disk_gib -lt 60 -or $Obj.work_disk_gib -gt 512) {
+        throw 'refusing: install sizing outside runners 1..5, CPU count..28, memory count..80, disk 60..512'
+    }
+}
+
+# The Rust helper protects the root/jobs before materializing scripts. Check
+# again here before accepting a checkpoint or making an elevated file write.
+function Assert-AapInstallArea([string]$DataDir) {
+    $layout = Get-AapHelperLayout
+    & {
+        param($Root, $Installer)
+        . $Installer
+        foreach ($path in @($Root, (Join-Path $Root 'jobs'))) {
+            if (-not (Test-AapAdminOwned $path)) { throw 'refusing: install area must be admin-owned and not user-writable' }
+        }
+        $inbox = Join-Path $Root 'inbox'
+        if (-not [IO.Directory]::Exists($inbox) -or (Test-AapReparsePoint $inbox)) { throw 'refusing: install inbox must be a regular directory' }
+        $install = Join-Path $Root 'jobs\install'
+        $anc = Get-AapAncestorProblem $install
+        if ($anc.Problems.Count -or $anc.Unreadable.Count) { throw 'refusing: install area ancestors' }
+        foreach ($path in @($install, (Join-Path $install 'state.json'))) {
+            if ((Test-Path -LiteralPath $path) -and -not (Test-AapAdminOwned $path)) { throw 'refusing: install checkpoint permissions' }
+        }
+    } $DataDir (Join-Path $layout.Supervisor 'install-supervisor.ps1')
+}
+
+function New-AapInstallState($Req, [string]$Id, [string]$Phase) {
+    return [pscustomobject][ordered]@{
+        schema = 1; step = $(if ($Phase -eq 'done') { 'done' } else { 'install' }); job_id = $Id; phase = $Phase
+        org = $Req.Org; app_id = $Req.AppId; installation_id = $Req.InstallationId
+        group = $Req.Group; labels = $Req.Labels
+        runner_count = $Req.RunnerCount; job_cpus = $Req.JobCpus
+        job_memory_gib = $Req.JobMemoryGiB; work_disk_gib = $Req.WorkDiskGiB
+    }
+}
+
+function Assert-AapInstallState($State, $Req) {
+    if ($State.schema -ne 1 -or $State.job_id -notmatch '^[0-9a-f]{16}\z' -or
+        @('host', 'identity', 'supervisor', 'start', 'done') -notcontains $State.phase -or
+        $State.step -ne $(if ($State.phase -eq 'done') { 'done' } else { 'install' })) {
+        throw 'refusing: install checkpoint'
+    }
+    $expected = New-AapInstallState $Req $State.job_id $State.phase
+    if ((@($State.PSObject.Properties.Name | Sort-Object) -join ',') -ne
+        (@($expected.PSObject.Properties.Name | Sort-Object) -join ',')) { throw 'refusing: install checkpoint fields' }
+    foreach ($name in @('org', 'app_id', 'installation_id', 'group', 'labels', 'runner_count', 'job_cpus', 'job_memory_gib', 'work_disk_gib')) {
+        if (@('host', 'identity') -contains $State.phase -and @('org', 'app_id', 'installation_id', 'group', 'labels') -contains $name) { continue }
+        if ([string]$State.$name -cne [string]$expected.$name) { throw 'refusing: install inputs changed; resume with the original identity and sizing' }
+    }
+}
+
+function Read-AapInstallState([string]$DataDir) {
+    $path = Join-Path $DataDir 'jobs\install\state.json'
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    $state = Read-AapJsonBounded $path 4096
+    if ($null -eq $state) { throw 'refusing: install checkpoint unreadable' }
+    return $state
+}
+
+# The temporary file lives under admin-only jobs/install even when the target
+# is an inbox file. Rename replaces a link itself instead of opening its target.
+function Write-AapInstallJson([string]$DataDir, [string]$Relative, $Value) {
+    if (@('jobs\install\state.json', 'inbox\settings.json', 'inbox\state.json', 'config.json') -notcontains $Relative) {
+        throw 'refusing: install output path'
+    }
+    Assert-AapInstallArea $DataDir
+    $dir = Join-Path $DataDir 'jobs\install'
+    if (-not [IO.Directory]::Exists($dir)) { [void][IO.Directory]::CreateDirectory($dir) }
+    $tmp = Join-Path $dir ([guid]::NewGuid().ToString('n') + '.tmp')
+    $target = Join-Path $DataDir $Relative
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($Value | ConvertTo-Json -Compress))
+    $file = [IO.File]::Open($tmp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
+    if ($Relative.StartsWith('inbox\')) {
+        # Preserve the inbox contract after a rename from protected staging.
+        # Apply to the unpredictable admin-directory temp name, never to an
+        # attacker-replaceable inbox name after the move.
+        $acl = New-Object Security.AccessControl.FileSecurity
+        $acl.SetAccessRuleProtection($true, $false)
+        $admins = New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'
+        $acl.SetOwner($admins)
+        foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+            $principal = New-Object Security.Principal.SecurityIdentifier $sid
+            $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($principal, 'FullControl', 'Allow')))
+        }
+        $user = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule($user, 'Modify', 'Allow')))
+        Set-Acl -LiteralPath $tmp -AclObject $acl
+    }
+    if (-not ('AapInstallMove' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class AapInstallMove {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern bool MoveFileEx(string from, string to, uint flags);
+}
+'@
+    }
+    if (-not [AapInstallMove]::MoveFileEx($tmp, $target, 9)) { throw 'install atomic write failed' }
+}
+
+function Get-AapInstallDistroState {
+    $savedWslenv = $env:WSLENV
+    Remove-Item Env:WSLENV -ErrorAction SilentlyContinue
+    try {
+        $ErrorActionPreference = 'Continue'
+        $out = & $AapWsl --list --quiet 2>&1 | Out-String
+        $code = $LASTEXITCODE
+    } finally {
+        if ($null -eq $savedWslenv) { Remove-Item Env:WSLENV -ErrorAction SilentlyContinue } else { $env:WSLENV = $savedWslenv }
+    }
+    if ($code -ne 0) { return 'unknown' }
+    if (Test-AapWslListHasDistro $out 'aap-runner') { return 'present' }
+    return 'absent'
+}
+
+# Pure facts -> refusal. A checkpoint permits only this installer to resume its
+# incomplete host, never an existing supervisor or an observed active pool.
+function Get-AapInstallRefusal($State, [string]$Task, [string]$Distro, [string]$Pool) {
+    if ($Task -eq 'unknown' -or $Distro -eq 'unknown') { return 'cannot inspect existing installation; retry after WSL and Task Scheduler are available' }
+    if ($Pool -and $Pool -ne 'off') { return 'active or uncertain pool; first-run install refused' }
+    if ($Task -ne 'missing' -and ($null -eq $State -or @('supervisor', 'start', 'done') -notcontains $State.phase -or $Task -ne 'ready')) {
+        return 'existing or running supervisor; first-run install refused'
+    }
+    if ($null -eq $State -and $Distro -ne 'absent') { return 'existing distro; use the installed app instead of first-run install' }
+    if ($null -ne $State -and $State.phase -ne 'host' -and $Distro -eq 'absent') { return 'install checkpoint refers to a missing distro; installation refused' }
+    return $null
+}
+
+function Test-AapInstallManagerInactive {
+    # The checkpoint is evidence of our previous steps, not evidence that the
+    # manager is still stopped. Probe it immediately before resuming mutations.
+    $text = 'state=$(systemctl is-active aap-runner-manager || true); [[ "$state" == inactive ]]'
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($text))
+    $code = Invoke-AapStreaming $AapWsl @('-d', 'aap-runner', '-u', 'root', '--', '/bin/bash', '-c', "bash <(echo $b64 | base64 -d)")
+    return $code -eq 0
+}
+
+function Get-AapInstallLimitsArgs($Req) {
+    $text = @'
+set -euo pipefail
+state=$(systemctl is-active aap-runner-manager || true)
+[[ "$state" == inactive ]] || { echo 'FAIL install manager must remain inactive'; exit 1; }
+umask 077
+printf 'AAP_RUNNER_COUNT=%s\nAAP_JOB_CPUS=%s\nAAP_JOB_MEMORY=%sg\nAAP_JOB_IO_PERCENT=0\nAAP_POOL_SHARING=slice\n' "$1" "$2" "$3" > /etc/aap-runner/limits.conf.tmp
+chown root:root /etc/aap-runner/limits.conf.tmp
+chmod 0400 /etc/aap-runner/limits.conf.tmp
+mv -f /etc/aap-runner/limits.conf.tmp /etc/aap-runner/limits.conf
+/usr/local/sbin/aap-runner-manager --check-limits
+/usr/local/sbin/aap-runner-manager --check-token
+echo 'PASS install limits and GitHub App authentication'
+'@
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($text -replace "`r`n", "`n")))
+    return @('-d', 'aap-runner', '-u', 'root', '--', '/bin/bash', '-c', "bash <(echo $b64 | base64 -d) $($Req.RunnerCount) $($Req.JobCpus) $($Req.JobMemoryGiB)")
+}
+
+function Invoke-AapInstallSteps([string]$DataDir, [string]$Id, [string]$TrayExe) {
+    try {
+        if ($Id -notmatch '^[0-9a-f]{16}\z' -or -not (Test-AapHelperExe $TrayExe)) { throw 'refusing: install id or tray exe' }
+        Assert-AapInstallArea $DataDir
+        $req = Read-AapIdentityRequest (Join-Path $DataDir "inbox\jobs\$Id.json") $Id 'install'
+        $state = Read-AapInstallState $DataDir
+        if ($null -ne $state) { Assert-AapInstallState $state $req }
+        $task = Get-AapSupervisorTaskState
+        $distro = Get-AapInstallDistroState
+        $status = Read-AapJsonBounded (Join-Path $DataDir 'status.json') 65536
+        $pool = ''
+        if ($null -ne $status) { $pool = [string]$status.state }
+        # A start that completed just before a crash is acknowledged without
+        # re-running any installer, identity mutation, or task command.
+        if ($null -ne $state -and @('start', 'done') -contains $state.phase -and $task -eq 'running') {
+            Write-AapInstallJson $DataDir 'jobs\install\state.json' (New-AapInstallState $req $Id 'done')
+            [Console]::Out.WriteLine('PASS install supervisor already started')
+            return 0
+        }
+        $refusal = Get-AapInstallRefusal $state $task $distro $pool
+        if ($refusal) { throw $refusal }
+        if ($distro -eq 'present' -and -not (Test-AapInstallManagerInactive)) { throw 'active or uncertain manager; first-run install refused' }
+        if ($null -eq $state) { $state = New-AapInstallState $req $Id 'host' }
+        if ($state.phase -eq 'done') { [Console]::Out.WriteLine('PASS install already complete'); return 0 }
+        # Until authentication succeeds, allow correction of App/installation
+        # ids and other identity fields without replaying completed host work.
+        $state = New-AapInstallState $req $Id $state.phase
+        Write-AapInstallJson $DataDir 'jobs\install\state.json' $state
+    } catch {
+        [Console]::Out.WriteLine("FAIL install $($_.Exception.Message)")
+        return 2
+    }
+    $layout = Get-AapHelperLayout
+    $view = $null
+    try {
+        # Open before the long host install, hold this exact checked file until
+        # it is streamed. No legacy install-host -KeyPath or name-based reopen.
+        if (@('host', 'identity') -contains $state.phase) {
+            $view = Get-AapIdentityKeyView $req.KeyPath $req.Profile
+            if ($view.Problem) { throw $view.Problem }
+        }
+        if ($state.phase -eq 'host') {
+            [Console]::Out.WriteLine('STEP install host prerequisites, distro, and work disk')
+            $code = Invoke-AapStreaming $AapPs @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $layout.Installer 'install-host.ps1'), '-FreshInstall', '-OperatorDistro', 'Ubuntu-24.04', '-WorkDiskGiB', [string]$req.WorkDiskGiB)
+            if ($code -ne 0) { throw "host install exit $code" }
+            $state = New-AapInstallState $req $Id 'identity'
+            Write-AapInstallJson $DataDir 'jobs\install\state.json' $state
+        }
+        if ($state.phase -eq 'identity') {
+            [Console]::Out.WriteLine('STEP install GitHub App identity')
+            $script:AapSawKeyLine = $false
+            $code = Invoke-AapStreamingStdin $AapWsl (Get-AapIdentityWslArgs $req 'off') $view.Handle
+            if ($code -ne 0 -or -not $script:AapSawKeyLine) { throw 'identity install did not confirm the key was installed' }
+            $code = Invoke-AapStreaming $AapWsl (Get-AapInstallLimitsArgs $req)
+            if ($code -ne 0) { throw "sizing or App authentication failed, exit $code" }
+            $state = New-AapInstallState $req $Id 'supervisor'
+            Write-AapInstallJson $DataDir 'jobs\install\state.json' $state
+        }
+        if ($state.phase -eq 'supervisor') {
+            [Console]::Out.WriteLine('STEP install supervisor and tray startup')
+            $code = Invoke-AapStreaming $AapPs @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $layout.Supervisor 'install-supervisor.ps1'), '-TrayExe', $TrayExe)
+            if ($code -ne 0) { throw "supervisor install exit $code" }
+            $state = New-AapInstallState $req $Id 'start'
+            Write-AapInstallJson $DataDir 'jobs\install\state.json' $state
+        }
+        if ($state.phase -eq 'start') {
+            [Console]::Out.WriteLine('STEP install selected sizing and start supervisor')
+            Write-AapInstallJson $DataDir 'inbox\settings.json' ([ordered]@{ schema = 2; runner_count = $req.RunnerCount; job_cpus = $req.JobCpus; job_memory_gib = $req.JobMemoryGiB; paused = $false; io_percent = 0; sharing = 'slice' })
+            Write-AapInstallJson $DataDir 'inbox\state.json' @{ desired = 'on' }
+            Write-AapInstallJson $DataDir 'config.json' ([ordered]@{ schema = 1; org = $req.Org; app_id = $req.AppId; installation_id = $req.InstallationId; group = $req.Group; labels = $req.Labels; work_disk_gib = $req.WorkDiskGiB })
+            $code = Invoke-AapStreaming $AapSchtasks @('/Run', '/TN', $AapSupervisorTask)
+            if ($code -ne 0) { throw "supervisor start exit $code" }
+            Write-AapInstallJson $DataDir 'jobs\install\state.json' (New-AapInstallState $req $Id 'done')
+        }
+        [Console]::Out.WriteLine('PASS install')
+        return 0
+    } catch {
+        [Console]::Out.WriteLine("FAIL install $($_.Exception.Message)")
+        return 1
+    } finally {
+        if ($null -ne $view -and $null -ne $view.Handle) { $view.Handle.Dispose() }
+    }
+}
+
+function Invoke-AapInstallLive([string]$DataDir, [string]$Id, [string]$TrayExe) {
+    $lock = $null
+    try {
+        Assert-AapInstallArea $DataDir
+        $dir = Join-Path $DataDir 'jobs\install'
+        if (-not [IO.Directory]::Exists($dir)) { [void][IO.Directory]::CreateDirectory($dir) }
+        $lockPath = Join-Path $dir 'install.lock'
+        if (Test-AapReparsePoint $lockPath) { throw 'refusing: install lock reparse point' }
+        $lock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        return Invoke-AapInstallSteps $DataDir $Id $TrayExe
+    } catch {
+        [Console]::Out.WriteLine('FAIL install could not acquire protected install lock; retry when the other install finishes')
+        return 2
+    } finally {
+        if ($null -ne $lock) { $lock.Dispose() }
+    }
 }
 
 # Runs as root inside the distro. The key is on stdin. Arguments are the five
@@ -1290,7 +1580,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $ErrorActionPreference = 'Stop'
     try {
         Initialize-AapModulePath
-        if ($Verb -ne 'verify' -and $Verb -ne 'repair' -and $Verb -ne 'identity') {
+        if ($Verb -ne 'verify' -and $Verb -ne 'repair' -and $Verb -ne 'identity' -and $Verb -ne 'install') {
             [Console]::Error.WriteLine('refusing: verb')
             exit 2
         }
@@ -1324,6 +1614,9 @@ if ($MyInvocation.InvocationName -ne '.') {
                 exit 2
             }
             exit (Invoke-AapIdentityLive -DataDir $DataDir -Id $Id)
+        }
+        if ($Verb -eq 'install') {
+            exit (Invoke-AapInstallLive -DataDir $DataDir -Id $Id -TrayExe $TrayExe)
         }
         exit (Invoke-AapRepairLive -TrayExe $TrayExe)
     } catch {

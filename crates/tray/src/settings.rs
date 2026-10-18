@@ -215,7 +215,7 @@ impl VmLimit {
 
 /// `(processors, memory GiB)` from the `[wsl2]` section; `None` for a missing or bad value.
 /// Memory takes `GB`/`G`/`MB`/`M` in any case (WSL's GB is GiB); MB floors to whole GiB.
-fn parse_wslconfig(text: &str) -> (Option<u32>, Option<u32>) {
+pub(crate) fn parse_wslconfig(text: &str) -> (Option<u32>, Option<u32>) {
     let (mut section, mut cpus, mut gib) = (String::new(), None, None);
     for line in text.lines() {
         let line = line.split(['#', ';']).next().unwrap_or("").trim();

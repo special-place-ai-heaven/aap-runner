@@ -18,6 +18,7 @@
 [CmdletBinding()]
 param(
     [switch]$DryRun,
+    [switch]$FreshInstall,
     [switch]$TestMode,
     [string]$DistroName,
     [string]$WorkVhdx,
@@ -103,6 +104,14 @@ function Get-AapInstallPlan {
 
     if (-not $failed -and $Facts.LeftoverExt4 -and -not $Facts.DistroRegistered) {
         Add-AapLine $lines "FAIL leftover $install\ext4.vhdx"
+        $failed = $true
+    }
+
+    # The wizard can resume its own incomplete install, but must never turn the
+    # upgrade-capable installer into a stop/reinstall operation on a live pool.
+    if ($Facts.FreshInstall -and ($Facts.ManagerEnabled -or $Facts.ManagerActive -or
+            ($Facts.InsideDone -and -not $Facts.StageCurrent))) {
+        Add-AapLine $lines 'FAIL first-run install refuses an active/enabled manager or a staging upgrade; use the installed app'
         $failed = $true
     }
 
@@ -501,6 +510,7 @@ function Invoke-AapInstallHost {
     $stageCurrent = $true
     $pem = 'absent'
     $managerOn = $false
+    $managerActive = $false
     if ($registered) {
         & wsl.exe -d $DistroName -u root -- /bin/test -f /etc/aap-runner/install.done 1>$null 2>$null
         if ($LASTEXITCODE -eq 0) { $insideDone = $true }
@@ -514,12 +524,17 @@ function Invoke-AapInstallHost {
         if ($LASTEXITCODE -eq 0 -and $mode.Trim() -eq '400:0') { $pem = 'ok' }
         $en = Invoke-AapQuiet { & wsl.exe -d $DistroName -u root -- /bin/systemctl is-enabled aap-runner-manager }
         if ($en -match '(?m)^enabled\s*$') { $managerOn = $true }
+        if ($FreshInstall) {
+            $active = Invoke-AapQuiet { & wsl.exe -d $DistroName -u root -- /bin/systemctl is-active aap-runner-manager }
+            if ($active.Trim() -ne 'inactive') { $managerActive = $true }
+        }
     }
     $attached = $pre -match 'PASS attached-disks work=/dev/'
     $leftover = (-not $registered) -and [bool](Test-AapPathQuiet (Join-Path $InstallDir 'ext4.vhdx'))
 
     $facts = @{
         DryRun            = [bool]$DryRun
+        FreshInstall      = [bool]$FreshInstall
         TestMode          = [bool]$TestMode
         Elevated          = (Test-AapElevated)
         AllowDiskMount    = (Get-AapAllowDiskMountObserved)
@@ -537,6 +552,7 @@ function Invoke-AapInstallHost {
         StageCurrent      = $stageCurrent
         AppPem            = $pem
         ManagerEnabled    = $managerOn
+        ManagerActive     = $managerActive
         KeyPath           = $KeyPath
         LeftoverExt4      = [bool]$leftover
         Denied            = @($denied)

@@ -23,6 +23,7 @@ mod settings;
 mod settings_panel;
 mod state;
 mod win;
+mod wizard;
 
 use dashboard::View;
 use history::History;
@@ -256,7 +257,12 @@ fn main() {
         };
         std::process::exit(code);
     }
-    if let Some(view) = View::from_args(&args) {
+    let first_run = wizard::needed(&base);
+    if let Some(view) = if first_run {
+        Some(View::Wizard)
+    } else {
+        View::from_args(&args)
+    } {
         // One window: a second request passes its view to the open one and focuses it.
         let Some(_lock) = single_instance("aap-runner-tray-dashboard.lock") else {
             request_view(&base, view);
@@ -267,6 +273,12 @@ fn main() {
         };
         if let Err(e) = dashboard::run(base.clone(), view) {
             state::log(&base, &format!("window failed: {e}"));
+        }
+        if view == View::Wizard
+            && helper::install_checkpoint(&base).is_some_and(|s| s.step == "done")
+            && let Err(e) = helper::start_installed_tray()
+        {
+            state::log(&base, &e);
         }
         return;
     }
