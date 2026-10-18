@@ -1,6 +1,6 @@
 # GitHub runner build parity implementation plan
 
-Revision 1 — 2026-10-18. **Planning only; no implementation or rollout started.**
+Revision 2 — 2026-10-18. **Planning only; no implementation or rollout started.**
 
 ## Outcome and evidence standard
 
@@ -34,8 +34,9 @@ identifiers. Resource limits and zccache may change performance, never correctne
   are covered by P01/P05/P17/P18/P23 and the acceptance matrix. Preserve the original
   report; it is not copied into this public repository.
 - Base `main` and `origin/main` were `ae001a6`. M4 PR [#20](https://github.com/special-place-ai-heaven/aap-runner/pull/20)
-  was OPEN with all CI green, head `4c3071a`. It is a dependency to reconcile and
-  owner-merge, not code assumed present on main. Planning does not merge it.
+  was OPEN at initial planning, with all CI green and head `4c3071a`. It is now
+  merged at `47a8ca689547d0a1f960d5c994a7a0ce8767d127`; reconcile those APIs before
+  later integration. No live installation was changed by that merge.
 - The audit at that head is [github-runner-parity-audit.md](https://github.com/special-place-ai-heaven/aap-runner/blob/4c3071a/docs/github-runner-parity-audit.md).
   Its generic Windows 2025/VS2022 inventory link is not the VS2026 baseline: this
   plan explicitly corrects that selection and requires an actual hosted reference.
@@ -187,7 +188,7 @@ ownership centrally, never create an untracked side task. P23 expands one exact
 preparation child per selected consuming repository; P27 has separate activation
 children after canary availability. P26 repairs also receive linked child
 items and invalidate affected certificates. Parent items stay incomplete until all
-mandatory children are owner-merged and cleaned.
+mandatory children are agent-merged and cleaned.
 
 Expand required children before dispatch; their dependencies target complete
 external prerequisites, not their own parent. Parent summary PRs become merge-ready
@@ -202,13 +203,18 @@ silently become an implementation worker.
 
 ## Hard merge-and-clean discipline
 
+The owner clarified that agents handle routine merges. This supersedes the initial
+owner-only merge instruction. Review/check gates and the separate requirement for
+explicit live-installation approval remain in force.
+
 Each task has a branch, one implementation worktree, any registered verification
 worktree, a unique target/temp root and a resource manifest. **No build in base main,
 no shared Cargo target, no unregistered temporary environment.**
 
-`VERIFIED → REVIEWED → PR_OPEN → AWAITING_OWNER_MERGE → MERGED_CLEANUP_REQUIRED → CLEANUP_VERIFIED → COMPLETE`
+`VERIFIED → REVIEWED → PR_OPEN → READY_TO_MERGE → MERGED_CLEANUP_REQUIRED → CLEANUP_VERIFIED → COMPLETE`
 
-The owner merges. Agents do not merge, force-push, reset or stash user work. At the
+Agents merge after independent review and required checks pass. Agents never
+force-push, reset or stash user work. At the
 first observed merge, close the **global no-new-dispatch barrier**. No agent starts
 another ledger item and no dependent advances until every merged item has a verified
 cleanup receipt. Already-running independent items may finish their existing work;
@@ -237,7 +243,7 @@ the affected task starts; missing facts do not block independent planning work.
 | Gate | Required evidence | Blocks |
 | --- | --- | --- |
 | D0 | Owner authorizes implementation; P00 cleanup tests and its merge/cleanup complete | All later implementation dispatch |
-| D1 | M4 PR20 owner-merged, actual main API/schema reconciled | P02 shared consumers and later installer/tray integration |
+| D1 | M4 PR20 agent-merged, actual main API/schema reconciled | P02 shared consumers and later installer/tray integration |
 | D2 | Approved disposable lab/build host, Hyper-V capabilities, lawful guest media/source and activation path, bounded compute/storage budget | Transport proof and actual VM/image tests; never satisfied by Windows 11 ownership alone |
 | D3 | Exact hosted baseline image/release and retrievable inputs/source restrictions recorded | Image promotion and comparison evidence |
 | D4 | zccache release artifacts verified and per-platform compiler matrix measured | Enabling cache wrappers for that mode; direct compiler path stays required |
@@ -256,7 +262,7 @@ implementation PR supplies executable checks and negative controls for its own
 outputs. The independent verifier reruns them at the exact final head and records
 image/fixture/input identities. A changed head or image invalidates stale evidence.
 
-Completion requires every mandatory leaf and consumer child accepted, owner-merged
+Completion requires every mandatory leaf and consumer child accepted, agent-merged
 where applicable and cleanup-verified; both final profiles certified; no unresolved
 required behavioral/inventory difference; approved staged rollout and rollback proof;
 and no disposable worktree/target/process/temp residue. Updates rerun certification

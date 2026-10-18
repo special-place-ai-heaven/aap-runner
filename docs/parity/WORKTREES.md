@@ -1,7 +1,8 @@
 # Worktree ownership and cleanup contract
 
 This specifies automation to implement in P00. These are future operations, not
-commands run against the live machine by this planning PR. The owner merges PRs.
+commands run against the live machine by this planning PR. Agents merge PRs after
+independent review and required checks pass; the owner does not perform routine merges.
 The coordinator serializes claims, merge observations and cleanup under one ledger
 lock. A worker may never declare itself COMPLETE.
 
@@ -21,7 +22,7 @@ The coordinator atomically delegates disjoint ownership subsets; a parent does n
 hold an overlapping write lease while a child works. The parent's summary PR becomes
 merge-ready only after all required children are merged and cleanup-verified.
 Do not merge a parent early and then need to claim children through its cleanup
-barrier. If an unexpected early owner merge occurs, preserve the incomplete parent,
+barrier. If an unexpected early merge occurs, preserve the incomplete parent,
 clean that merged attempt, and record a recovery/remainder item before reopening
 dispatch; never manufacture COMPLETE to escape the barrier.
 
@@ -62,7 +63,7 @@ can overlap implementation of disjoint ready leaves; it cannot certify an old he
 Use these states, with evidence for every transition:
 
 `NOT_STARTED → CLAIMED → IN_PROGRESS → VERIFIED → REVIEWED → PR_OPEN →
-AWAITING_OWNER_MERGE → MERGED_CLEANUP_REQUIRED → CLEANUP_VERIFIED → COMPLETE`
+READY_TO_MERGE → MERGED_CLEANUP_REQUIRED → CLEANUP_VERIFIED → COMPLETE`
 
 Failure sets HOLD plus a reason and recovery owner. On a reviewed-head change,
 invalidate affected checks/reviews; rerun before accepting. Security review is
@@ -72,8 +73,8 @@ image ingestion, cache trust and destructive cleanup. No self-approval.
 The first observed merge closes a global no-new-dispatch barrier. No new item or
 child can be claimed, and no dependent can start, until all merged tasks have
 verified cleanup receipts. Already-running work may finish only its existing item.
-Serialize cleanup with further merge processing; agents do not ask the owner to
-merge another queued PR while cleanup is pending. If the owner merges several,
+Serialize cleanup with further merge processing; agents do not merge another queued
+PR while cleanup is pending. If an external actor merges several,
 queue all of them for cleanup and keep the barrier closed until all are resolved.
 Do not implement another ledger item in a merged worktree while waiting.
 
@@ -173,7 +174,7 @@ resource providers, then a disposable local Git integration test. Required cases
 | PID reused; process start time differs | No kill issued |
 | Locked target, partial deletion or guest teardown failure | Bounded retry; barrier remains closed |
 | Crash before/after each persisted transition | Idempotent recovery; no double lease or premature COMPLETE |
-| Two simultaneous claims or merges; owner merges several PRs | Atomic serialization; no next-item dispatch |
+| Two simultaneous claims or merges; external actor merges several PRs | Atomic serialization; no next-item dispatch |
 | Shared cache, benchmark directory, live-path and Docker-volume sentinels | No mutation or deletion |
 | Clean success plus independent residue scan | Exact owned roots/resources absent; retained assets accounted |
 | Empty attempt directories and verifier scratch remain | Cleanup incomplete until removed and absence proved |

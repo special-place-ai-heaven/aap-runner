@@ -20,5 +20,5 @@ paths. This is a planning consistency check, not proof of runtime correctness.
 No source code, supervisor, installer, distro, live pool or host configuration is
 changed by this package. No build/test suite or candidate binary is run. Future
 implementation requires its own executable checks, independent security review,
-authorized lab proof and post-merge cleanup receipts. The owner controls merges and
-live rollout.
+authorized lab proof and post-merge cleanup receipts. Agents handle reviewed green
+merges and branch cleanup. The owner separately authorizes live rollout.

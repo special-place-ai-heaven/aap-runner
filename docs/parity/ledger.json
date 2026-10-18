@@ -1,12 +1,14 @@
 {
   "schema": 1,
-  "plan_revision": 1,
+  "plan_revision": 2,
   "status": "PLANNING_ONLY",
   "baseline_commit": "ae001a60c7e02b23cad2e8bcf43cf52b34ecbf31",
   "m4": {
     "pr": 20,
     "head": "4c3071a25bab3f7a7110c623bfd2fc0d3cea5d50",
-    "state_at_planning": "OPEN_CI_GREEN"
+    "state_at_planning": "OPEN_CI_GREEN",
+    "current_state": "MERGED",
+    "merge_commit": "47a8ca689547d0a1f960d5c994a7a0ce8767d127"
   },
   "max_concurrent_workers": 3,
   "max_compile_heavy": 2,
@@ -481,7 +483,7 @@
       "lane": "Luna high",
       "delivery_state": "NOT_STARTED",
       "deliverable": "Expand one exact owned preparation child per consuming repository: inventory current workflows, remove sccache coupling safely, add inert/manual-only reference and candidate fixtures, and prepare reviewed activation patches. Normal production routing remains on available legacy profiles until P27. Actual activation is a separate P27 child per repository after authorized canary availability.",
-      "acceptance": "Preparation children are owner-merged and cleaned; selected consumer commits pass reference/candidate fixtures in the authorized lab. Negative check proves merged pre-cutover changes do not route production jobs to unavailable profiles or remove required legacy runtime cache support. Record every later P27 activation child and its exact ownership.",
+      "acceptance": "Preparation children are agent-merged and cleaned; selected consumer commits pass reference/candidate fixtures in the authorized lab. Negative check proves merged pre-cutover changes do not route production jobs to unavailable profiles or remove required legacy runtime cache support. Record every later P27 activation child and its exact ownership.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -554,7 +556,7 @@
       "lane": "Sol high",
       "delivery_state": "NOT_STARTED",
       "deliverable": "Only after new explicit owner authorization, stage certified images and adopt/drain legacy capacity before adding a native Windows canary, then Ubuntu. Never run five legacy plus additional new workers. Record measured reserves and live parity results. Activate consumer routing only after the target profiles are available and approved; expand one exact owned activation child per repository, preserving rollback routing. P28 waits for every activation child to merge and clean.",
-      "acceptance": "Existing jobs finish without cancellation, global cap holds through restart, native real workflows pass, rollback rehearsed. Never delete Docker volumes or benchmark data. No authorization means waiting, not completed or failed. Confirm pre-cutover normal jobs stay routable, then native-profile canary availability before activation, real production routing after activation, and rollback routing on rehearsal. Activation children remain incomplete until owner-merged and cleanup-verified.",
+      "acceptance": "Existing jobs finish without cancellation, global cap holds through restart, native real workflows pass, rollback rehearsed. Never delete Docker volumes or benchmark data. No authorization means waiting, not completed or failed. Confirm pre-cutover normal jobs stay routable, then native-profile canary availability before activation, real production routing after activation, and rollback routing on rehearsal. Activation children remain incomplete until agent-merged and cleanup-verified.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -571,7 +573,7 @@
       "lane": "Luna medium",
       "delivery_state": "NOT_STARTED",
       "deliverable": "Reconcile every task/consumer child, reference/candidate certificate, merge/review identity, cleanup receipt, retained product asset and update/rollback runbook. Remove all disposable planning/execution resources by their manifests and publish the verified service profile.",
-      "acceptance": "Every required task accepted, owner-merged where applicable and CLEANUP_VERIFIED; no orphan worktree/target/process/temp artifact. Explicit product images/cache/evidence remain accounted. No deferred mandatory parity gate or unsupported claim.",
+      "acceptance": "Every required task accepted, agent-merged where applicable and CLEANUP_VERIFIED; no orphan worktree/target/process/temp artifact. Explicit product images/cache/evidence remain accounted. No deferred mandatory parity gate or unsupported claim.",
       "merge_proof": null,
       "cleanup_receipt": null
     }
