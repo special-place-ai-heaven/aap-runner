@@ -6,14 +6,17 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
 use windows::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, GetSecurityInfo, SE_FILE_OBJECT,
+    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
+    SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
 use windows::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
-    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, OWNER_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, PSID,
+    DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetTokenInformation,
+    OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY,
+    TOKEN_USER, TokenUser,
 };
+use windows::Win32::Storage::FileSystem::CreateDirectoryW;
 use windows::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
@@ -22,6 +25,10 @@ use windows::Win32::System::Registry::{
     RegGetValueW,
 };
 use windows::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime};
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetExitCodeProcess, GetProcessId, GetProcessTimes, INFINITE, OpenProcess,
+    OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+};
 use windows::Win32::UI::Controls::Dialogs::{
     GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_NODEREFERENCELINKS,
     OFN_PATHMUSTEXIST, OPENFILENAMEW,
@@ -342,6 +349,55 @@ pub fn random_id() -> std::io::Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
+/// Read the actual process user, never an inbox or environment value.
+pub fn current_user_sid() -> std::io::Result<String> {
+    let mut token = windows::Win32::Foundation::HANDLE::default();
+    unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) }
+        .map_err(std::io::Error::other)?;
+    let token = Opened(token);
+    let mut required = 0;
+    let _ = unsafe { GetTokenInformation(token.0, TokenUser, None, 0, &mut required) };
+    let mut buffer = vec![0usize; (required as usize).div_ceil(std::mem::size_of::<usize>())];
+    unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenUser,
+            Some(buffer.as_mut_ptr().cast()),
+            required,
+            &mut required,
+        )
+    }
+    .map_err(std::io::Error::other)?;
+    // TOKEN_USER and its SID point into the aligned token information buffer above.
+    let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+    unsafe { psid_text(user.User.Sid) }
+}
+
+/// Set the protected ACL atomically at creation; never repair an existing path here.
+pub fn create_admin_dir(path: &std::path::Path) -> std::io::Result<()> {
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            w!("O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GRGX;;;BU)"),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )
+    }
+    .map_err(std::io::Error::other)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: BOOL(0),
+    };
+    let name = wide(path.as_os_str());
+    let result = unsafe { CreateDirectoryW(PCWSTR(name.as_ptr()), Some(&attributes)) };
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+    }
+    result.map_err(std::io::Error::other)
+}
+
 fn wide(text: &std::ffi::OsStr) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
     text.encode_wide().chain(std::iter::once(0)).collect()
@@ -350,6 +406,48 @@ fn wide(text: &std::ffi::OsStr) -> Vec<u16> {
 /// One UAC prompt. Returns when the elevated process has been created, not when it exits.
 /// The caller does not wait on the process.
 pub fn shell_execute_runas(exe: &std::path::Path, parameters: &str) -> Result<(), String> {
+    shell_execute_runas_observed(exe, parameters, |_| {}).map(|_| ())
+}
+
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub created: u64,
+}
+
+fn process_identity(
+    process: windows::Win32::Foundation::HANDLE,
+) -> std::io::Result<ProcessIdentity> {
+    let mut created = windows::Win32::Foundation::FILETIME::default();
+    let mut exited = created;
+    let mut kernel = created;
+    let mut user = created;
+    unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) }
+        .map_err(std::io::Error::other)?;
+    Ok(ProcessIdentity {
+        pid: unsafe { GetProcessId(process) },
+        created: (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime),
+    })
+}
+
+pub fn process_alive(expected: ProcessIdentity) -> Option<bool> {
+    let process =
+        match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, expected.pid) } {
+            Ok(p) => Opened(p),
+            Err(e) if e.code().0 as u32 & 0xffff == 87 => return Some(false),
+            Err(_) => return None,
+        };
+    let actual = process_identity(process.0).ok()?;
+    let mut code = 0;
+    unsafe { GetExitCodeProcess(process.0, &mut code) }.ok()?;
+    Some(actual.created == expected.created && code == 259)
+}
+
+pub fn shell_execute_runas_observed(
+    exe: &std::path::Path,
+    parameters: &str,
+    on_exit: impl FnOnce(u32) + Send + 'static,
+) -> Result<Option<ProcessIdentity>, String> {
     let file = wide(exe.as_os_str());
     let params = wide(std::ffi::OsStr::new(parameters));
     let verb = wide(std::ffi::OsStr::new("runas"));
@@ -372,11 +470,22 @@ pub fn shell_execute_runas(exe: &std::path::Path, parameters: &str) -> Result<()
             format!("Could not start the elevated helper: {err}")
         });
     }
+    let identity = process_identity(info.hProcess).ok();
     if !info.hProcess.is_invalid() {
-        // SAFETY: `hProcess` is the handle this call just opened.
-        let _ = unsafe { CloseHandle(info.hProcess) };
+        // Transfer ownership to the observer thread. The handle stays valid until it closes it.
+        let raw = info.hProcess.0 as isize;
+        std::thread::spawn(move || {
+            let process = windows::Win32::Foundation::HANDLE(raw as *mut std::ffi::c_void);
+            let mut code = 1;
+            unsafe {
+                WaitForSingleObject(process, INFINITE);
+                let _ = GetExitCodeProcess(process, &mut code);
+                let _ = CloseHandle(process);
+            }
+            on_exit(code);
+        });
     }
-    Ok(())
+    Ok(identity)
 }
 
 /// One DACL entry. `other` is an ACE that is neither allow nor deny.

@@ -33,15 +33,17 @@ pub enum View {
     Github,
     /// The identity page (org, App ids, labels, key file), in place of the runner cards.
     Identity,
+    Wizard,
 }
 
 impl View {
-    const ALL: [View; 5] = [
+    const ALL: [View; 6] = [
         View::Status,
         View::Settings,
         View::Diagnostics,
         View::Github,
         View::Identity,
+        View::Wizard,
     ];
 
     /// The command line that opens the window this way.
@@ -52,6 +54,7 @@ impl View {
             View::Diagnostics => &["--dashboard", "--problem"],
             View::Github => &["--github"],
             View::Identity => &["--identity"],
+            View::Wizard => &["--setup"],
         }
     }
 
@@ -61,6 +64,7 @@ impl View {
             "--settings" => Some(View::Settings),
             "--github" => Some(View::Github),
             "--identity" => Some(View::Identity),
+            "--setup" => Some(View::Wizard),
             "--dashboard" if args.iter().any(|a| a == "--problem") => Some(View::Diagnostics),
             "--dashboard" => Some(View::Status),
             _ => None,
@@ -74,6 +78,7 @@ impl View {
             View::Diagnostics => "diagnostics",
             View::Github => "github",
             View::Identity => "identity",
+            View::Wizard => "wizard",
         }
     }
 }
@@ -474,6 +479,7 @@ struct Dash {
     /// The identity page replaces the right column's cards.
     identity: bool,
     ident: crate::identity::Store,
+    wizard: Option<crate::wizard::Wizard>,
 }
 
 pub fn run(base: PathBuf, view: View) -> eframe::Result {
@@ -533,6 +539,7 @@ pub fn run(base: PathBuf, view: View) -> eframe::Result {
                 github_met_at: None,
                 identity: false,
                 ident: crate::identity::Store::load(crate::identity::path()),
+                wizard: None,
             };
             d.job = crate::helper::load_job(&d.base);
             d.refresh(&cc.egui_ctx);
@@ -596,7 +603,19 @@ impl Dash {
 
     /// Show what `view` asks for: the cards, focus in the left column, or the error panel.
     fn open(&mut self, view: View) {
+        if self.wizard.is_some() {
+            return;
+        }
         match view {
+            View::Wizard => {
+                self.wizard = Some(crate::wizard::Wizard::load(
+                    &self.base,
+                    crate::wizard::draft_path(),
+                ));
+                self.panel = false;
+                self.github = false;
+                self.identity = false;
+            }
             View::Status => {
                 self.panel = false;
                 self.github = false;
@@ -1615,9 +1634,13 @@ impl Dash {
 
     fn github_page(&mut self, ui: &mut egui::Ui) {
         let p = self.pal();
-        if ui
-            .add(egui::Button::new(RichText::new("< Back to runners").color(p.accent)).frame(false))
-            .clicked()
+        if self.wizard.is_none()
+            && ui
+                .add(
+                    egui::Button::new(RichText::new("< Back to runners").color(p.accent))
+                        .frame(false),
+                )
+                .clicked()
         {
             self.github = false;
             return;
@@ -1703,16 +1726,20 @@ impl Dash {
             .iter()
             .all(|r| r.phase == crate::github_setup::Phase::Met);
         ui.add_space(4.0);
-        if ui.add_enabled(met, egui::Button::new("Next")).clicked() {
+        if self.wizard.is_none() && ui.add_enabled(met, egui::Button::new("Next")).clicked() {
             self.open(View::Identity);
         }
     }
 
     fn identity_page(&mut self, ui: &mut egui::Ui) {
         let p = self.pal();
-        if ui
-            .add(egui::Button::new(RichText::new("< Back to runners").color(p.accent)).frame(false))
-            .clicked()
+        if self.wizard.is_none()
+            && ui
+                .add(
+                    egui::Button::new(RichText::new("< Back to runners").color(p.accent))
+                        .frame(false),
+                )
+                .clicked()
         {
             self.identity = false;
             return;
@@ -1802,6 +1829,9 @@ impl Dash {
             }
             ui.add_space(6.0);
         }
+        if self.wizard.is_some() {
+            return;
+        }
         let valid = self.ident.valid();
         let pool_reason =
             crate::identity::pool_block(self.desired == Desired::On, self.snap.status.pool_word());
@@ -1826,6 +1856,204 @@ impl Dash {
     }
 
     /// One text field of the identity page; `Some` when the text changed this frame.
+    fn wizard_ui(&mut self, ui: &mut egui::Ui) {
+        use crate::wizard::{Step, all_met};
+        self.setup.pump();
+        self.setup.retry();
+        self.ident.set_org(self.setup.org().unwrap_or_default());
+        self.ident.tick(&profile_dir());
+        self.setup.set_identity(self.ident.identity());
+        self.wizard.as_mut().unwrap().tick(&self.base);
+        let step = self.wizard.as_ref().unwrap().draft.step;
+        let p = self.pal();
+        let frame = egui::Frame::new().fill(p.bg).inner_margin(PAD as i8);
+        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+            ui.heading("Set up AAP Runner");
+            ui.label(RichText::new(step.label()).color(p.accent));
+            ui.label(RichText::new("Runners are available while you are logged on to Windows.").small().color(p.muted));
+            ui.separator();
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let before_fields = self.ident.fields();
+                let before_target = self.setup.input().to_string();
+                let mut met = false;
+                match step {
+                    Step::Prerequisites => {
+                        let w = self.wizard.as_ref().unwrap();
+                        let rows = crate::wizard::prerequisites(w.facts.as_ref(), w.error.as_deref(), crate::helper::install_location_ok(), w.draft.operator_ready);
+                        met = all_met(&rows);
+                        if wizard_rows(ui, &p, &rows) { self.wizard.as_mut().unwrap().recheck(); met = false; }
+                        let w = self.wizard.as_mut().unwrap();
+                        if ui.checkbox(&mut w.draft.operator_ready, "I verified the Ubuntu-24.04 tools and /mnt/c with the command above").changed() { w.met_at = None; w.save(); met = false; }
+                    }
+                    Step::Github => {
+                        self.github_page(ui);
+                        met = self.setup.rows().iter().all(|r| r.phase == crate::github_setup::Phase::Met);
+                    }
+                    Step::Identity => {
+                        self.identity_page(ui);
+                        self.ident.tick(&profile_dir());
+                        let fields = self.ident.fields();
+                        let supported = fields.group == crate::identity::GROUP_DEFAULT && crate::identity::parse_labels(&fields.labels).is_ok_and(|v| v.join(",") == crate::identity::LABELS_DEFAULT);
+                        if !supported { ui.label(RichText::new("First install requires runner group aap-crrr and labels self-hosted,linux,crrr. Edit those fields above.").color(p.over)); }
+                        met = self.ident.valid().is_some() && supported;
+                    }
+                    Step::Sizing => {
+                        let w = self.wizard.as_mut().unwrap();
+                        let previous = w.draft.sizing.clone();
+                        let s = &mut w.draft.sizing;
+                        ui.horizontal(|ui| {
+                            ui.label("Runners");
+                            for n in 1..=5 { ui.selectable_value(&mut s.runner_count, n, n.to_string()); }
+                        });
+                        ui.horizontal(|ui| { ui.label("Total CPUs"); ui.add(egui::DragValue::new(&mut s.job_cpus).range(1..=28)); });
+                        ui.horizontal(|ui| { ui.label("Total memory (GiB)"); ui.add(egui::DragValue::new(&mut s.job_memory_gib).range(1..=80)); });
+                        ui.horizontal(|ui| { ui.label("Work disk (GiB)"); ui.add(egui::DragValue::new(&mut s.work_disk_gib).range(60..=512)); });
+                        ui.label(format!("Each runner: {} CPUs, {} GiB", crate::settings::share_text(s.job_cpus, s.runner_count), crate::settings::share_text(s.job_memory_gib, s.runner_count)));
+                        if let Some(f) = &w.facts {
+                            let (cpus, gib) = f.vm().cap();
+                            ui.label(format!("Pool capacity: {cpus} CPUs, {gib} GiB after Windows/WSL headroom."));
+                        }
+                        if previous != *s { w.met_at = None; w.save(); }
+                        let rows = crate::wizard::sizing_rows(&w.draft.sizing, w.facts.as_ref());
+                        met = all_met(&rows);
+                        if wizard_rows(ui, &p, &rows) { w.recheck(); met = false; }
+                    }
+                    Step::Install => self.wizard_install(ui),
+                    Step::Done => {
+                        ui.label(RichText::new("Installation completed. The supervisor has been started.").strong());
+                        ui.label("The runner pool starts with your selected limits. Close setup to open the tray.");
+                        if ui.button("Open tray").clicked() { ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close); }
+                    }
+                }
+                let changed = before_fields != self.ident.fields() || before_target != self.setup.input();
+                let w = self.wizard.as_mut().unwrap();
+                if changed { w.met_at = None; }
+                if !matches!(step, Step::Install | Step::Done) {
+                    ui.separator();
+                    let auto = w.advance(met && !changed, Instant::now());
+                    let mut next = false;
+                    ui.horizontal(|ui| {
+                        if step != Step::Prerequisites && ui.button("Back").clicked() { w.go(step.previous()); }
+                        next = ui.add_enabled(met && !changed, egui::Button::new("Next")).clicked();
+                        if met { ui.label("Continuing in 2 seconds…"); }
+                    });
+                    if next || auto { w.go(step.next()); }
+                }
+                if let Some(error) = &w.error { ui.label(RichText::new(error).color(p.over)); }
+            });
+        });
+    }
+
+    fn wizard_install(&mut self, ui: &mut egui::Ui) {
+        let p = self.pal();
+        let w = self.wizard.as_ref().unwrap();
+        let active = w.draft.submitted || w.job.as_ref().is_some_and(|j| j.active());
+        let failed = w.launch_error.is_some()
+            || w.job
+                .as_ref()
+                .is_some_and(|j| matches!(j.state.as_str(), "failed" | "rejected" | "declined"));
+        let valid = self.ident.valid();
+        let ready = !active && valid.is_some() && w.draft.sizing.check_shape().is_ok();
+        let mut primary = None;
+        ui.label(format!(
+            "{} runners · {} CPUs total · {} GiB total · {} GiB work disk",
+            w.draft.sizing.runner_count,
+            w.draft.sizing.job_cpus,
+            w.draft.sizing.job_memory_gib,
+            w.draft.sizing.work_disk_gib
+        ));
+        if let Some(job) = &w.job {
+            ui.label(job_status_text(&job.verb, &job.state, job.exit_code));
+            ui.label(&job.step);
+            egui::CollapsingHeader::new("Open log")
+                .id_salt("install-log")
+                .default_open(true)
+                .show(ui, |ui| {
+                    for line in &job.lines {
+                        ui.label(RichText::new(line).monospace());
+                    }
+                });
+            if failed {
+                primary = install_failure(ui, &p, &job.step, ready);
+                if ui.button("Copy diagnostics").clicked() {
+                    ui.ctx().copy_text(format!(
+                        "{}\n{}\n{}",
+                        crate::version(),
+                        job.summary(),
+                        job.lines.join("\n")
+                    ));
+                }
+            }
+        } else if active {
+            ui.spinner();
+            ui.label("Waiting for the elevated helper. Setup can be closed and resumed. A second install will not be started.");
+        } else {
+            ui.label("Install asks Windows for administrator permission once, then shows each completed action here.");
+        }
+        if let Some(error) = &w.launch_error {
+            ui.label(RichText::new(error).color(p.over));
+        }
+        let orphan_launch = w.draft.submitted && w.draft.process.is_none() && w.job.is_none();
+        if orphan_launch {
+            ui.label("No helper process or trusted job was recorded. If Windows was restarted or the permission prompt was cancelled, recover this interrupted launch.");
+            if ui.button("Recover interrupted launch").clicked() {
+                let w = self.wizard.as_mut().unwrap();
+                w.draft.submitted = false;
+                w.save();
+                return;
+            }
+        }
+        if valid.is_none() && !active {
+            ui.label("Identity details or the selected key file are no longer valid. Go Back and fix the named row.");
+        }
+        let log_id = w.draft.job_id.clone();
+        let mut launch = primary == Some(Action::Retry);
+        if primary == Some(Action::OpenLogs)
+            && let Some(id) = log_id
+            && let Err(error) = crate::helper::open_install_log(&self.base, &id)
+        {
+            self.wizard.as_mut().unwrap().launch_error = Some(error);
+        }
+        if primary == Some(Action::Settings) {
+            self.wizard
+                .as_mut()
+                .unwrap()
+                .go(crate::wizard::Step::Sizing);
+        }
+        ui.horizontal(|ui| {
+            if ui.add_enabled(!active, egui::Button::new("Back")).clicked() {
+                self.wizard
+                    .as_mut()
+                    .unwrap()
+                    .go(crate::wizard::Step::Sizing);
+            }
+            launch |= ui
+                .add_enabled(
+                    ready,
+                    egui::Button::new(if failed { "Retry" } else { "Install" }),
+                )
+                .clicked();
+        });
+        if launch && let Some(identity) = valid {
+            let w = self.wizard.as_mut().unwrap();
+            w.launch_error = None;
+            w.draft.submitted = true;
+            if !w.save() {
+                w.draft.submitted = false;
+                return;
+            }
+            if let Err(e) = crate::helper::launch_install(&self.base, &identity, &w.draft.sizing) {
+                w.launch_error = Some(e);
+                w.draft.submitted = false;
+                w.save();
+            } else {
+                w.draft.job_id = crate::helper::issued_install_id();
+                w.draft.process = crate::helper::install_process();
+                w.save();
+            }
+        }
+    }
+
     fn identity_edit(&mut self, ui: &mut egui::Ui, value: &str) -> Option<String> {
         let mut text = value.to_string();
         let r = ui.text_edit_singleline(&mut text);
@@ -1930,10 +2158,70 @@ impl Dash {
 
 /// Pure helper-status formatter for the right column's job status line.
 /// active states append `…`, "passed" maps to "ok", non-zero exit appends `· exit N`.
+fn install_failure(ui: &mut egui::Ui, p: &Palette, detail: &str, ready: bool) -> Option<Action> {
+    let class = problem::classify(detail, None);
+    ui.label(RichText::new(problem::one_liner(class, detail, None)).color(p.over));
+    // A first install can retry or adjust sizing; existing-install repair/restart operations
+    // remain outside this wizard. Other failures use the existing Open logs primary action.
+    let action = match class.action() {
+        Action::Retry => Action::Retry,
+        Action::Settings => Action::Settings,
+        _ => Action::OpenLogs,
+    };
+    ui.add_enabled(
+        ready || action == Action::OpenLogs,
+        egui::Button::new(action.label()),
+    )
+    .clicked()
+    .then_some(action)
+}
+
+fn wizard_rows(ui: &mut egui::Ui, p: &Palette, rows: &[crate::wizard::Row]) -> bool {
+    let mut recheck = false;
+    for row in rows {
+        let (mark, color) = match row.phase {
+            crate::github_setup::Phase::Checking => ("…", p.muted),
+            crate::github_setup::Phase::Met => ("✓", p.text),
+            crate::github_setup::Phase::Unmet => ("✕", p.over),
+            crate::github_setup::Phase::Blocked => ("–", p.muted),
+        };
+        ui.label(RichText::new(format!("{mark}  {}", row.title)).color(color));
+        if !row.missing.is_empty() {
+            ui.label(&row.missing);
+        }
+        if row.phase == crate::github_setup::Phase::Unmet {
+            if row.link.is_none()
+                && row.command.is_none()
+                && ui.button(format!("Re-check {}", row.title)).clicked()
+            {
+                recheck = true;
+            }
+            if let Some(link) = row.link
+                && ui.hyperlink_to("Fix / instructions", link).clicked()
+            {
+                recheck = true;
+            }
+            if let Some(command) = row.command {
+                ui.label(RichText::new(command).monospace());
+                if ui
+                    .button(format!("Copy command for {}", row.title))
+                    .clicked()
+                {
+                    ui.ctx().copy_text(command.into());
+                    recheck = true;
+                }
+            }
+        }
+        ui.add_space(6.0);
+    }
+    recheck || ui.button("Re-check now").clicked()
+}
+
 fn job_status_text(verb: &str, state: &str, exit: Option<i32>) -> String {
     let v = match verb {
         "repair" => "Repair",
         "identity" => "Identity",
+        "install" => "Install",
         _ => "Verify",
     };
     let ellipsis = matches!(state, "waiting" | "queued" | "running");
@@ -1969,6 +2257,11 @@ fn copy_button(ui: &mut egui::Ui, p: &Palette, copied: bool) -> egui::Response {
 impl eframe::App for Dash {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.wizard.is_some() {
+            self.wizard_ui(ui);
+            ctx.request_repaint_after(Duration::from_millis(250));
+            return;
+        }
         self.setup.pump();
         if self.read_at.elapsed() >= REFRESH {
             if crate::window_exits_without_tray(crate::probe_tray_lock()) {
@@ -2134,6 +2427,40 @@ fn left_column_height(job_line: bool) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wizard_checklist_renders_missing_items_without_live_probes() {
+        let context = egui::Context::default();
+        let rows = crate::wizard::prerequisites(
+            None,
+            Some("Windows check unavailable; re-check now."),
+            Ok(()),
+            false,
+        );
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                assert!(!wizard_rows(ui, &DARK, &rows));
+            });
+        });
+        assert!(!output.shapes.is_empty());
+        assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains("Windows check unavailable"))));
+        output.textures_delta.clear();
+        assert!(!crate::wizard::all_met(&rows));
+    }
+
+    #[test]
+    fn installer_failure_page_shows_the_existing_class_summary_and_primary_action() {
+        let context = egui::Context::default();
+        let detail = "FAIL installation: operator distro has no jq";
+        assert_eq!(problem::classify(detail, None), Class::Other);
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            assert!(install_failure(ui, &DARK, detail, false).is_none());
+        });
+        for expected in [detail, Action::OpenLogs.label()] {
+            assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.text().contains(expected))), "missing {expected}");
+        }
+        output.textures_delta.clear();
+    }
 
     fn args(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()

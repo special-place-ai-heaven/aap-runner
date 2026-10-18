@@ -4,6 +4,8 @@ Windows tray front-end for the self-hosted runner. The window only reads and wri
 `C:\ProgramData\aap-runner` (writes only under
 `inbox\`, including `inbox\jobs\`) and opens the logs folder. It never runs `wsl.exe`. GitHub setup is the one place that calls the public GitHub API, and it sends no credentials.
 The same exe has an elevated `--helper` mode (below) that shells out to the existing PowerShell install scripts.
+On a fresh PC it opens the first-run wizard. Per-user setup drafts are stored under
+`%LOCALAPPDATA%\aap-runner`; they never authorize elevated actions.
 
 ## Files (under `C:\ProgramData\aap-runner`, created by the install script)
 
@@ -15,7 +17,7 @@ admin-written.
 | `inbox\state.json` | tray (atomic: `.tmp` then rename) | `{"desired":"on"}` or `{"desired":"off"}` |
 | `inbox\settings.json` | tray (atomic) | `{"runner_count":1..5,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` |
 | `inbox\tray.log` | tray, appended if `inbox\` exists | one line per failed write/spawn |
-| `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`, or the `identity` request below. The elevated helper reads it. |
+| `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`, or the `identity` request below. Install uses schema 2 (First-run wizard). The elevated helper reads it. |
 | `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code` |
 | `jobs\<id>\log.txt`, `exit.txt` | elevated helper | live log and the process exit code |
 | `status.json` | supervisor, never the tray | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"…","updated":"<RFC3339>","detail":"…","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/…/actions/runs/N"}` (the last five optional; `repo` and `run_url` may be `""`). Schema 4 adds `work_disk_gib`, `work_disk_free_gb`, `work_disk_floor_gb` and `cleaning`; schema 3 still reads, with no disk sample and cleaning false. A schema above 4 is rejected. |
@@ -140,9 +142,82 @@ The typed text (ids, group, labels, key path; never the key) is `%LOCALAPPDATA%\
 
 exactly those nine fields: the ids are JSON numbers, the labels are the normalised comma list, and `key_path` is a plain `X:\...` path under 1 KiB with no `..` or quote. The manager accepts only the group `aap-crrr` and a label line of `self-hosted,linux,<base label>`; the helper has the manager check the new file before it replaces anything, so another value is refused there with the manager's reason in the log.
 
+## First-run wizard (`--setup`)
+
+When neither `inbox\` nor `config.json` exists, startup opens setup instead of the
+tray. An unfinished install journal keeps setup available after installation has
+created `inbox\`. Existing installations continue to open the tray normally.
+
+The pages are Prerequisites, GitHub setup, Identity, Sizing, Install, and Done.
+GitHub setup and Identity reuse the existing pages and validation. Every checklist
+uses checking/met/unmet/blocked rows, refreshes facts every 5 seconds and after
+Re-check/Fix, enables Next only when every row is met, and advances after 2 seconds
+of continuously met rows. Editing inputs or requesting a re-check resets the timer.
+Missing requirements show the exact item and a settings link, command, or correction
+action. Commands are offered to the operator; the tray never runs `wsl.exe`.
+
+Prerequisites collect Windows build, virtualization, WSL package version, registered
+Ubuntu-24.04 WSL2 distro, disk policy, NAT configuration, free C: space, current-account
+administrator membership/UAC availability, HTTPS reachability, and executable trust.
+Operator-distro curl/jq/sha256sum availability is an explicit manual confirmation:
+registry registration alone does not prove those tools exist. Ubuntu 26.04 is not
+supported. Runners remain available only while the installing user is logged on.
+
+Sizing selects 1..5 runners, total CPUs and memory, and a 60..512 GiB work disk.
+Validation reserves the existing VM headroom and also bounds sizing by detected
+physical resources. Disk space must cover the fixed work disk plus installation
+headroom. The current backend requires runner group `aap-crrr` and labels
+`self-hosted,linux,crrr` for first installation.
+
+Install sends schema 2 with exactly the existing identity fields, `schema`, `id`,
+`verb:"install"`, and integer `runner_count`, `job_cpus`, `job_memory_gib`, and
+`work_disk_gib`. The key path is a picker result, not key contents. The elevated
+helper revalidates every field and streams the key using the existing checked-handle
+identity implementation. No key bytes enter a request, checkpoint, or log.
+
+The install-only bootstrap permits a fixed local executable whose path passes the
+current-user/admin ownership and other-user write exclusion checks. UAC must be
+approved by the same administrator account; cross-account elevation is unsupported.
+The helper creates or validates protected directories before staging any scripts,
+copies the executable into the fixed protected Program Files directory, and refuses
+an existing different executable rather than overwriting it. Verify/Repair/Identity
+retain their stricter admin-only executable gate. All verbs validate protected job
+directories before materializing scripts.
+
+Installation shows helper status and a bounded live log tail, with failure details,
+Retry, log access, and Copy diagnostics. The helper refuses an existing pool or
+upgrade and serializes install mutations. Its stages install the host, apply and
+authenticate identity, install the supervisor, write selected settings, and start
+the supervisor. Done launches the protected installed tray.
+
+Resume files have separate trust roles:
+
+| File | Writer and purpose |
+| --- | --- |
+| `%LOCALAPPDATA%\aap-runner\jobs\install\state.json` | Unprivileged schema 1 draft: page, sizing, submitted state, job id, operator confirmation, and process identity. Missing/empty LOCALAPPDATA falls back to temp like GitHub setup. Process identity is a read-only liveness hint. |
+| `C:\ProgramData\aap-runner\jobs\install\state.json` | Admin-owned schema 1 journal: validated sizing/identity, job id, and phase `host`, `identity`, `supervisor`, `start`, or `done`. Elevated resume trusts only this fixed protected journal. |
+| `C:\ProgramData\aap-runner\config.json` | Admin-owned completed-install marker/configuration, with validated non-secret identity and sizing. |
+
+Closing and reopening resumes the page or active helper job. A dead helper is
+classified as interrupted across repeated refreshes, making recovery available
+without launching a duplicate install. Identity can be corrected before authentication
+succeeds; completed host sizing remains bound. No draft can assert successful install.
+
+Owner verification requires a disposable Windows VM with Ubuntu-24.04; never test
+fresh installation against the active pool. Launch from Downloads, complete the
+checklists, select sizing, approve one UAC prompt, and observe progress. Close and
+reopen during installation, then confirm the protected tray opens and Verify passes.
+Exercise declined UAC, a wrong App id corrected on retry, and an interrupted helper.
+Automated tests use injected facts, headless egui frames, and mocked PowerShell
+actions; they do not prove a live first installation or UAC/ACL behavior.
+
+M4 installs the current Linux backend. The required native Windows/Ubuntu hosted
+runner parity and planned zccache migration are assessed separately in
+[`docs/github-runner-parity-audit.md`](../../docs/github-runner-parity-audit.md).
+
 ## Elevated helper
 
-`aap-runner-tray.exe --helper <verb> <id>` with `<verb>` `verify`, `repair`, or `identity` and `<id>` 16 lowercase hex digits.
+`aap-runner-tray.exe --helper <verb> <id>` with `<verb>` `verify`, `repair`, `identity`, or `install` and `<id>` 16 lowercase hex digits.
 The menu items write `inbox\jobs\<id>.json` and start that command through ShellExecute `runas` (one UAC prompt).
 The helper accepts only schema 1 plus that verb and id; `identity` must carry the nine fields above, each re-checked, and the other two verbs must carry nothing else. Every directory it uses is
 under `C:\ProgramData\aap-runner` or a fixed install path (`C:\wsl`, the work VHDX, the two task names). A junction
@@ -180,8 +255,8 @@ The helper does not read that file. The supervisor does not read it either.
 
 ## Build
 
-Standalone crate, not part of the repository's root workspace. The repo's `.cargo/config.toml`
-puts build output in the root `target/`.
+The tray is a member of the repository's root Cargo workspace. Cargo puts build
+output in the root `target/`.
 
 ```
 cd crates/tray
@@ -189,4 +264,6 @@ cargo build --release
 cargo test
 ```
 
-The release binary is copied by hand to `%ProgramFiles%\aap-runner\aap-runner-tray.exe` (the `install-supervisor.ps1 -TrayExe` default). No autostart is registered by this crate.
+First-run installation copies the binary to `%ProgramFiles%\aap-runner\aap-runner-tray.exe`
+(the `install-supervisor.ps1 -TrayExe` default). The supervisor installer registers
+autostart. Existing live installations are updated only by the owner after review.
