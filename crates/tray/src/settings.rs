@@ -2,14 +2,15 @@
 //! supervisor. The window edits the runner count, the IO cap and the sharing mode, and shows each
 //! runner's even share of the caps to one decimal. The file stores the caps.
 //! Schema 2 adds `schema`, `io_percent` and `sharing`; a schema 1 file reads with their defaults.
-//! The optional `windows_runner_count` (written only when not 0) is the Windows profile's count;
-//! `runner_count` stays the Linux count and the totals stay what the Linux pool gets.
+//! `windows_runner_count` is reserved for the Windows profile's count: read when present, never
+//! written while no Windows backend exists (the count lives in a tray-local file instead), so
+//! every file this tray writes is what it always was. `runner_count` stays the Linux count.
 
 use crate::state::{inbox, read_bounded, write_atomic};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::ops::RangeInclusive;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The Linux count the supervisor accepts.
 pub const RUNNERS: RangeInclusive<u32> = 1..=5;
@@ -47,19 +48,88 @@ pub fn counts_valid(linux: u32, windows: u32, windows_backend: bool) -> bool {
         && count_range(Os::Windows, linux, windows_backend).contains(&windows)
 }
 
-/// Linux's part of the pool `(cpus, gib)`: every runner gets `pool / (linux + windows)` whatever
-/// its OS, floored to whole CPUs and GiB (the file stores integers). Windows keeps the rest.
+/// What each runner gets when `linux + windows` share the pool: `pool / (linux + windows)`
+/// floored to whole CPUs and GiB, the same for both profiles.
+pub fn each_part(pool: (u32, u32), linux: u32, windows: u32) -> (u32, u32) {
+    let n = linux.saturating_add(windows).max(1);
+    (pool.0 / n, pool.1 / n)
+}
+
+/// Linux's part of the pool `(cpus, gib)`: the whole pool with no Windows runners (the file is
+/// then what it always was), else the floored per-runner part times `linux`.
 pub fn linux_part(pool: (u32, u32), linux: u32, windows: u32) -> (u32, u32) {
-    let (l, n) = (
-        u64::from(linux),
-        (u64::from(linux) + u64::from(windows)).max(1),
-    );
-    let part = |total: u32| (u64::from(total) * l / n).min(u64::from(total)) as u32;
-    (part(pool.0), part(pool.1))
+    if windows == 0 {
+        return pool;
+    }
+    let (cpus, gib) = each_part(pool, linux, windows);
+    (cpus.saturating_mul(linux), gib.saturating_mul(linux))
+}
+
+/// The Windows count the written totals account for: none while no Windows backend exists, so
+/// a Windows-only edit leaves `runner_count` and the totals exactly as they were.
+pub fn applied_windows(windows: u32) -> u32 {
+    if WINDOWS_BACKEND { windows } else { 0 }
 }
 
 pub(crate) fn is_zero(v: &u32) -> bool {
     *v == 0
+}
+
+/// `windows_runner_count` stays out of `inbox\settings.json` while no Windows backend exists: a
+/// supervisor that predates the key rejects the whole file (Pause included), so the file must be
+/// what it always was. It is also omitted when 0.
+fn omit_windows(v: &u32) -> bool {
+    !WINDOWS_BACKEND || *v == 0
+}
+
+/// Where the window keeps the Windows count while no Windows backend exists: tray-local,
+/// `%LOCALAPPDATA%\aap-runner\windows-runners.json` (`<base>\windows-runners.json` in tests).
+pub fn windows_choice_path(base: &Path) -> PathBuf {
+    if cfg!(test) {
+        base.join("windows-runners.json")
+    } else {
+        crate::github_setup::data_file("windows-runners.json")
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct WindowsChoice {
+    schema: u32,
+    windows_runner_count: u32,
+}
+
+/// The kept Windows count; 0 when missing, unreadable, another schema or not 0..4.
+pub fn read_windows_choice(path: &Path) -> u32 {
+    read_bounded(path)
+        .and_then(|s| serde_json::from_str::<WindowsChoice>(s.trim_start_matches('\u{feff}')).ok())
+        .filter(|c| c.schema == 1 && c.windows_runner_count < MAX_RUNNERS)
+        .map_or(0, |c| c.windows_runner_count)
+}
+
+pub fn write_windows_choice(path: &Path, windows: u32) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let choice = WindowsChoice {
+        schema: 1,
+        windows_runner_count: windows,
+    };
+    write_atomic(path, &serde_json::to_vec(&choice)?)
+}
+
+/// What the window shows as stored: `settings.json`, with the Windows count from the tray-local
+/// file while no Windows backend exists (0 when it does not fit the stored Linux count).
+pub fn read_with_windows_choice(base: &Path) -> Settings {
+    let mut s = read_settings(base);
+    if !WINDOWS_BACKEND {
+        let w = read_windows_choice(&windows_choice_path(base));
+        s.windows_runner_count = if counts_valid(s.runner_count, w, false) {
+            w
+        } else {
+            0
+        };
+    }
+    s
 }
 
 /// `8`, `4.8`, `14.4`: one decimal, dropped when the value is whole.
@@ -118,8 +188,9 @@ pub struct Settings {
     /// Per-job IO cap as a percentage of the work disk's measured throughput.
     pub io_percent: u32,
     pub sharing: Sharing,
-    /// Windows profile count; stored only (no backend yet). Omitted from the file when 0.
-    #[serde(skip_serializing_if = "is_zero")]
+    /// Windows profile count. Reserved in the file: never written while no Windows backend
+    /// exists (the window keeps it in `windows_choice_path`), and not when 0.
+    #[serde(skip_serializing_if = "omit_windows")]
     pub windows_runner_count: u32,
 }
 
@@ -151,10 +222,10 @@ impl Settings {
         }
     }
 
-    /// What the window writes: Linux's part of the pool caps (all of them with no Windows
-    /// runners). Each runner's share is `cap / (linux + windows)`.
+    /// What the window writes: Linux's part of the pool caps for the Windows runners that
+    /// actually run (`applied_windows`: none yet), so today the whole caps, as before.
     pub fn derived(linux: u32, windows: u32, paused: bool, vm: &VmLimit) -> Settings {
-        let (job_cpus, job_memory_gib) = linux_part(vm.cap(), linux, windows);
+        let (job_cpus, job_memory_gib) = linux_part(vm.cap(), linux, applied_windows(windows));
         Settings {
             runner_count: linux,
             windows_runner_count: windows,
@@ -200,8 +271,11 @@ impl Settings {
         check("Total memory GiB", self.job_memory_gib, &MEMORY_GIB)?;
         check("IO cap percent", self.io_percent, &IO_PERCENT)?;
         let (cpus, gib) = self.per_runner();
-        if cpus < 1 || gib < 1 {
-            return Err("Each runner needs at least 1 CPU and 1 GiB".into());
+        if cpus < 1 {
+            return Err("Linux's part needs at least 1 CPU per runner".into());
+        }
+        if gib < 1 {
+            return Err("Linux's part needs at least 1 GiB per runner".into());
         }
         Ok(())
     }
@@ -683,58 +757,124 @@ mod tests {
     }
 
     #[test]
-    fn every_runner_gets_an_even_part_of_the_pool_whatever_its_os() {
-        assert_eq!(linux_part((26, 72), 3, 0), (26, 72));
+    fn every_runner_gets_an_even_floored_part_whatever_its_os() {
+        assert_eq!(each_part((26, 72), 3, 2), (5, 14), "26/5 and 72/5, floored");
         assert_eq!(
-            linux_part((26, 72), 3, 2),
-            (15, 43),
-            "3/5 of the pool, floored"
+            linux_part((26, 72), 3, 0),
+            (26, 72),
+            "no split: the whole pool"
         );
+        assert_eq!(linux_part((26, 72), 3, 2), (15, 42), "5 x 3, 14 x 3");
         assert_eq!(linux_part((26, 72), 1, 4), (5, 14));
         assert_eq!(linux_part((26, 72), 0, 5), (0, 0));
-        assert_eq!(linux_part((26, 72), 0, 0), (0, 0));
+        assert_eq!(linux_part((26, 72), 0, 0), (26, 72));
         assert_eq!(linux_part((u32::MAX, u32::MAX), 5, 0), (u32::MAX, u32::MAX));
-        let s = Settings::derived(3, 2, false, &VM);
         assert_eq!(
-            (
-                s.runner_count,
-                s.windows_runner_count,
-                s.job_cpus,
-                s.job_memory_gib
-            ),
-            (3, 2, 15, 43)
+            each_part((u32::MAX, 1), u32::MAX, u32::MAX),
+            (1, 0),
+            "no overflow"
         );
-        assert_eq!(s.per_runner(), (5, 14));
-        assert_eq!(s.validate(&VM), Ok(()));
-        assert_eq!(Settings::derived(3, 0, false, &VM).job_cpus, 26);
+        assert_eq!(applied_windows(3), 0, "inert: the totals ignore Windows");
+        // With the backend the split is what derived() would write.
+        let (cpus, gib) = linux_part(VM.cap(), 3, 2);
+        let with_backend = Settings {
+            runner_count: 3,
+            windows_runner_count: 2,
+            job_cpus: cpus,
+            job_memory_gib: gib,
+            ..Settings::default()
+        };
+        assert_eq!(with_backend.per_runner(), each_part(VM.cap(), 3, 2));
+        assert_eq!(with_backend.validate(&VM), Ok(()));
+        let thin = with(|s| (s.runner_count, s.job_cpus) = (2, 1));
+        assert_eq!(
+            thin.check_shape(),
+            Err("Linux's part needs at least 1 CPU per runner".into())
+        );
+        let thin = with(|s| (s.runner_count, s.job_memory_gib) = (2, 1));
+        assert_eq!(
+            thin.check_shape(),
+            Err("Linux's part needs at least 1 GiB per runner".into())
+        );
         assert!(Settings::derived(3, 3, false, &VM).validate(&VM).is_err());
         assert!(Settings::derived(1, 4, false, &VM).validate(&VM).is_ok());
     }
 
+    /// Security review: while no Windows backend exists no tray write emits
+    /// `windows_runner_count` (an older supervisor rejects such a file, Pause included). Every
+    /// write path serializes `Settings` through `write_settings` (Apply, Pause/Resume) or serde;
+    /// each gives exactly the file a Windows-0 tray writes.
     #[test]
-    fn windows_count_round_trips_and_is_absent_when_zero() {
+    fn no_write_path_emits_the_windows_key_without_a_backend() {
+        if WINDOWS_BACKEND {
+            return; // with a backend the key is written on purpose
+        }
+        let base = temp_base("settings-windows-only");
+        let file = inbox(&base).join("settings.json");
+        write_settings(&base, &Settings::derived(3, 0, false, &VM), &VM).unwrap();
+        let before = fs::read_to_string(&file).unwrap();
+        assert!(!before.contains("windows"), "{before}");
+        for w in 1..=2 {
+            let s = Settings::derived(3, w, false, &VM);
+            assert_eq!(s.windows_runner_count, w, "kept in memory for the window");
+            write_settings(&base, &s, &VM).unwrap();
+            assert_eq!(
+                fs::read_to_string(&file).unwrap(),
+                before,
+                "Windows {w}: byte-identical"
+            );
+            assert!(!serde_json::to_string(&s).unwrap().contains("windows"));
+            // Pause/Resume: read, flip `paused`, write (as toggle_pause does).
+            let paused = Settings {
+                paused: true,
+                ..read_settings(&base)
+            };
+            write_settings(&base, &paused, &VM).unwrap();
+            let text = fs::read_to_string(&file).unwrap();
+            assert_eq!(text, before.replace("\"paused\":false", "\"paused\":true"));
+            write_settings(&base, &s, &VM).unwrap();
+        }
+        // The key a future tray may write is still read (and checked) when present.
+        fs::write(&file, r#"{"runner_count":2,"windows_runner_count":3}"#).unwrap();
+        assert_eq!(read_settings(&base).windows_runner_count, 3);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_windows_choice_is_kept_tray_local() {
+        let base = temp_base("settings-windows-choice");
+        let path = windows_choice_path(&base);
+        assert_eq!(read_windows_choice(&path), 0, "missing");
+        write_windows_choice(&path, 2).unwrap();
+        assert_eq!(read_windows_choice(&path), 2);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            r#"{"schema":1,"windows_runner_count":2}"#
+        );
+        write_settings(&base, &Settings::derived(3, 0, false, &VM), &VM).unwrap();
+        assert_eq!(read_with_windows_choice(&base).windows_runner_count, 2);
+        write_settings(&base, &Settings::derived(4, 0, false, &VM), &VM).unwrap();
+        assert_eq!(
+            read_with_windows_choice(&base).windows_runner_count,
+            0,
+            "4 Linux + 2 Windows does not fit: 0"
+        );
+        for bad in [
+            "not json",
+            r#"{"schema":2,"windows_runner_count":1}"#,
+            r#"{"schema":1,"windows_runner_count":5}"#,
+            r#"{"schema":1,"windows_runner_count":-1}"#,
+        ] {
+            fs::write(&path, bad).unwrap();
+            assert_eq!(read_windows_choice(&path), 0, "{bad}");
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn windows_key_is_read_when_present_and_checked() {
         let base = temp_base("settings-windows");
         let file = inbox(&base).join("settings.json");
-        let raw = || -> serde_json::Value {
-            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap()
-        };
-        let two = Settings::derived(3, 2, false, &VM);
-        write_settings(&base, &two, &VM).unwrap();
-        assert_eq!(read_settings(&base), two);
-        assert_eq!(raw()["windows_runner_count"], 2);
-        assert_eq!(
-            raw()["runner_count"],
-            3,
-            "runner_count stays the Linux count"
-        );
-        assert_eq!(raw().as_object().unwrap().len(), 8);
-        let none = Settings::derived(3, 0, false, &VM);
-        write_settings(&base, &none, &VM).unwrap();
-        assert!(
-            raw().get("windows_runner_count").is_none(),
-            "0 is not written"
-        );
-        assert_eq!(read_settings(&base).windows_runner_count, 0);
         for bad in [
             r#"{"runner_count":4,"windows_runner_count":2}"#,
             r#"{"runner_count":1,"windows_runner_count":5}"#,

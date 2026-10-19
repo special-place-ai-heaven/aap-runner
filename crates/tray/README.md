@@ -15,7 +15,7 @@ admin-written.
 | File | Writer | Content |
 |---|---|---|
 | `inbox\state.json` | tray (atomic: `.tmp` then rename) | `{"desired":"on"}` or `{"desired":"off"}` |
-| `inbox\settings.json` | tray (atomic) | `{"runner_count":1..5,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` plus schema 2 keys and, only when not 0, `"windows_runner_count":0..4` |
+| `inbox\settings.json` | tray (atomic) | `{"runner_count":1..5,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` plus schema 2 keys; `"windows_runner_count":0..4` is reserved for a tray with a Windows backend and never written by this one |
 | `inbox\tray.log` | tray, appended if `inbox\` exists | one line per failed write/spawn |
 | `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`, or the `identity` request below. Install uses schema 2 (First-run wizard). The elevated helper reads it. |
 | `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code` |
@@ -34,12 +34,19 @@ admin-written.
   72 / 36 / 24 / 18 / 14.4 GiB for 1 / 2 / 3 / 4 / 5 runners on a 28 / 80 VM). 24 cores and 72 GiB over
   5 runners is 4.8 cores and 14.4 GiB. The file stores the caps.
 - Two profiles, Linux and Windows, 0..5 each, at most 5 together and never 0 + 0. No Windows
-  backend exists yet, so Linux keeps at least 1 (Windows at most 4) and the Windows count is stored
-  as the optional `windows_runner_count`, written only when not 0, and starts nothing. The
-  supervisor validates it and never applies it. `runner_count` stays the Linux count. Every runner
-  gets `cap / (linux + windows)` whatever its OS: the file's totals are Linux's part, floored to
-  whole CPUs and GiB (3 Linux + 2 Windows on 26 / 72 caps: 15 CPUs, 43 GiB; Windows shows the
-  remaining 11 / 29). With Windows 0 the file is exactly what it was before.
+  backend exists yet, so Linux keeps at least 1 (Windows at most 4) and the Windows count starts
+  nothing. It is kept tray-local in `%LOCALAPPDATA%\aap-runner\windows-runners.json`
+  (`{"schema":1,"windows_runner_count":N}`, atomic write, missing or invalid = 0), never in
+  `inbox\settings.json`: a supervisor older than the key rejects the whole file, Pause included.
+  So every `settings.json` this tray writes (Apply, Pause/Resume) is byte-identical to before,
+  `runner_count` stays the Linux count, the totals ignore the Windows count, and a Windows-only
+  edit writes nothing to `limits.conf` and restarts nothing. The schema 2 key
+  `windows_runner_count` stays reserved: the supervisor validates it when present and never
+  applies it, for a future tray with a Windows backend. With a backend, every runner gets
+  `cap / (linux + windows)` floored to whole CPUs and GiB, whatever its OS, and Linux's totals are
+  that times the Linux count (3 Linux + 2 Windows on 26 / 72 caps: 5 CPUs and 14 GiB each, Linux
+  15 / 42). The window shows that even share for Windows now, marked prospective. With Windows 0
+  the file is exactly what it was before.
 - Host caps: the VM size comes from `[wsl2]` `processors=` / `memory=` in `%USERPROFILE%\.wslconfig`
   (`GB`/`G`/`MB`/`M`; missing file or key: 28 CPUs / 80 GiB, shown as "assumed"). Totals may use at
   most VM minus 2 CPUs and VM minus 8 GiB (26 / 72 on a 28 / 80 VM).
@@ -87,12 +94,15 @@ addendum of the design doc.
 
 - **Left column:** `Power On/Off` (the desired state from `inbox\state.json`), `Start`/`Stop` and
   `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Then the edits: Linux
-  `0 | 1 | 2 | 3 | 4 | 5` with `Each 8.7 CPU 24 GiB` (derived) and `Total 26/26 CPU · 72/72 GiB`
-  (its part against the caps); Windows `0 | … | 5` with the amber note `Windows backend not
-  installed — coming with the native Windows runner. Starts nothing.` and its own Each and Total;
-  cells above the budget the other row leaves are greyed and inert (Linux 0 too, until a Windows
-  backend exists). Each row label carries its OS glyph and colour. `Host keeps 2 CPU 8 GiB`, IO cap
-  0..100 % in steps of 5, Sharing `Slice | Fixed`. Linux, IO cap and Sharing have a muted `now ·` line from `status.json`
+  `0 | 1 | 2 | 3 | 4 | 5` with one line `Each 8.7 CPU 24 GiB of 26/72` (each runner's share and
+  the written totals; the tooltip shows the totals against the caps and that the host keeps
+  2 CPU 8 GiB) and a muted `now 3 · 8.7 CPU 24 GiB` line from `status.json`; Windows
+  `0 | … | 5` with one amber line `not installed · 5 CPU 14 GiB` (the prospective even share; the
+  tooltip says it is prospective and that nothing starts), the row's tooltip carrying the full
+  `Windows backend not installed — coming with the native Windows runner` note. Cells above the
+  budget the other row leaves are greyed and inert (Linux 0 too, until a Windows backend exists).
+  Each row label carries its OS glyph and colour. IO cap 0..100 % in steps of 5, Sharing
+  `Slice | Fixed`. IO cap and Sharing have a muted `now ·` line from `status.json`
   (`now -` when nothing runs). While edits differ from `inbox\settings.json`: `N changes not applied`,
   a cap error inline, and Apply (disabled on an error; writes schema 2 atomically, as the old dialog's
   OK did) and Revert (reloads the file). Below the settings: the pool bars (Cores, Memory, Disk with
@@ -101,7 +111,8 @@ addendum of the design doc.
   `IO cap N pool` / `IO cap M each` (one cap known), `sampled N s ago`) with narrower tracks.
   All rows are fixed height; there is no scroll area in the left column. The footer
   (Verify/Repair/Open logs) follows in the normal top-down flow after a fixed gap.
-  `SIZE[1]` = `MIN_SIZE[1]` = 924 px = max(left worst case 924, five-card right 702);
+  `SIZE[1]` = `MIN_SIZE[1]` = 760 px = max(left worst case 760, five-card right 702); a test keeps
+  the left worst case at most 780 pt (1080p at 125 %);
   a new left-column row that does not fit grows SIZE[1], never adds a scrollbar.
 - **Profile identity:** Linux is a Tux-style penguin glyph in green, Windows the four-pane window
   in blue (both painted, both themes; no image assets). The glyph and colour mark the row labels,
@@ -184,10 +195,11 @@ Operator-distro curl/jq/sha256sum availability is an explicit manual confirmatio
 registry registration alone does not prove those tools exist. Ubuntu 26.04 is not
 supported. Runners remain available only while the installing user is logged on.
 
-Sizing selects Linux and Windows runner counts (same rule and inert Windows note as the
-window), total CPUs and memory, and a 60..512 GiB work disk. The Windows count stays in the
-draft as optional `windows_runner_count`; the install request carries only the Linux count and
-Linux's even part of the totals.
+Sizing selects the Linux runner count (same rule as the window), total CPUs and memory, and a
+60..512 GiB work disk. While no Windows backend exists the Windows row is hidden and one line says
+`Windows runners: available after the native Windows backend`; the draft's Windows count is held
+at 0, so nothing chosen can be lost at install. The install request carries only the Linux count
+and the totals.
 Validation reserves the existing VM headroom and also bounds sizing by detected
 physical resources. Disk space must cover the fixed work disk plus installation
 headroom. The current backend requires runner group `aap-crrr` and labels

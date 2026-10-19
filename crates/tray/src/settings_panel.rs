@@ -52,7 +52,7 @@ impl Focus {
 
 impl SettingsPanel {
     pub fn load(base: &Path) -> Self {
-        let stored = settings::read_settings(base);
+        let stored = settings::read_with_windows_choice(base);
         SettingsPanel {
             stored,
             linux: stored.runner_count,
@@ -67,7 +67,7 @@ impl SettingsPanel {
     /// Re-read the file. Inputs with no pending change follow it; pending edits stay pending.
     pub fn reload(&mut self, base: &Path) {
         let follow = self.changes() == 0;
-        self.stored = settings::read_settings(base);
+        self.stored = settings::read_with_windows_choice(base);
         if follow {
             self.revert();
         }
@@ -124,7 +124,19 @@ impl SettingsPanel {
 
     fn apply(&mut self, base: &Path) -> bool {
         let edit = self.edit();
-        match settings::write_settings(base, &edit, &self.vm) {
+        // settings.json first (it never carries the Windows count without a backend), then the
+        // tray-local Windows count.
+        let written = settings::write_settings(base, &edit, &self.vm).and_then(|()| {
+            if WINDOWS_BACKEND {
+                Ok(())
+            } else {
+                settings::write_windows_choice(
+                    &settings::windows_choice_path(base),
+                    edit.windows_runner_count,
+                )
+            }
+        });
+        match written {
             Ok(()) => {
                 self.stored = edit;
                 self.write_error = None;
@@ -236,8 +248,8 @@ impl SettingsPanel {
         // From before the inputs: a change shows on the next frame, which egui paints right
         // after the input event.
         let edit = self.edit();
-        let (linux_each, linux_total) = profile_lines(&edit, &vm, Os::Linux);
-        let (windows_each, windows_total) = profile_lines(&edit, &vm, Os::Windows);
+        let linux = linux_line(&edit, &vm);
+        let windows = windows_line(&edit, self.windows, &vm);
         let fits_linux = settings::count_range(Os::Linux, self.windows, WINDOWS_BACKEND);
         let fits_windows = settings::count_range(Os::Windows, self.linux, WINDOWS_BACKEND);
         ui.horizontal(|ui| {
@@ -252,21 +264,18 @@ impl SettingsPanel {
                 focus,
             );
         });
-        now(ui, p, now_runners(running));
-        ui.add_space(4.0);
         ui.horizontal(|ui| {
             label(ui, "Each");
-            ui.label(linux_each);
-        });
+            ui.label(linux.each);
+            ui.label(RichText::new(linux.total).color(p.muted).small());
+        })
+        .response
+        .on_hover_text(linux.tip);
         now(
             ui,
             p,
-            now_each(running, snap.sharing.as_deref() == Some("fixed")),
+            now_linux(running, snap.sharing.as_deref() == Some("fixed")),
         );
-        ui.horizontal(|ui| {
-            label(ui, "Total");
-            ui.label(linux_total);
-        });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             os_label(ui, p, Os::Windows);
@@ -281,30 +290,12 @@ impl SettingsPanel {
             )
             .on_hover_text(WINDOWS_INERT);
         });
-        let row_w = ui.available_width();
-        ui.allocate_ui_with_layout(
-            vec2(row_w, CAP_ERROR_H),
-            Layout::top_down(Align::Min),
-            |ui| {
-                ui.set_min_size(vec2(row_w, CAP_ERROR_H));
-                ui.add(egui::Label::new(RichText::new(WINDOWS_INERT).color(p.over).small()).wrap());
-            },
-        );
         ui.horizontal(|ui| {
             label(ui, "Each");
-            ui.label(windows_each);
-        });
-        ui.horizontal(|ui| {
-            label(ui, "Total");
-            ui.label(windows_total);
-        });
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            label(ui, "Host");
-            ui.label(RichText::new(host_line()).color(p.muted));
+            ui.label(RichText::new(windows.text).color(p.over).small());
         })
         .response
-        .on_hover_text("Kept for Windows and WSL; the totals above never use it.");
+        .on_hover_text(windows.tip);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             label(ui, "IO cap");
@@ -365,7 +356,7 @@ impl SettingsPanel {
             let r = button(ui, p, "Revert");
             focus.has |= r.has_focus();
             if r.clicked() {
-                self.stored = settings::read_settings(base);
+                self.stored = settings::read_with_windows_choice(base);
                 self.revert();
             }
         });
@@ -509,37 +500,59 @@ fn segmented<T: Copy + PartialEq>(
     .response
 }
 
-/// One profile's `Each` (`8.7 CPU 24 GiB`, `-` with no runners) and `Total`
-/// (`15/26 CPU · 43/72 GiB`, its part against the caps). Linux's part is what the file stores;
-/// Windows has the rest of the caps.
-fn profile_lines(edit: &Settings, vm: &VmLimit, os: Os) -> (String, String) {
+/// The Linux line: `Each 8.7 CPU 24 GiB of 26/72`, what each Linux runner gets of the written
+/// totals; the tooltip has the totals against the caps and the host reserve.
+struct LinuxLine {
+    each: String,
+    total: String,
+    tip: String,
+}
+
+fn linux_line(edit: &Settings, vm: &VmLimit) -> LinuxLine {
     let (cap_cpus, cap_gib) = vm.cap();
-    let (n, cpus, gib) = match os {
-        Os::Linux => (edit.runner_count, edit.job_cpus, edit.job_memory_gib),
-        Os::Windows => (
-            edit.windows_runner_count,
-            cap_cpus.saturating_sub(edit.job_cpus),
-            cap_gib.saturating_sub(edit.job_memory_gib),
-        ),
-    };
-    let each = if n == 0 {
-        "-".to_string()
-    } else {
-        format!(
+    let n = edit.runner_count.max(1);
+    let (cpus, gib) = (edit.job_cpus, edit.job_memory_gib);
+    LinuxLine {
+        each: format!(
             "{} CPU {} GiB",
             settings::one_decimal(settings::cpu_share(cpus, n, edit.sharing == Sharing::Fixed)),
             settings::share_text(gib, n)
-        )
-    };
-    (
-        each,
-        format!("{cpus}/{cap_cpus} CPU \u{b7} {gib}/{cap_gib} GiB"),
-    )
+        ),
+        total: format!("of {cpus}/{gib}"),
+        tip: format!(
+            "Total {cpus}/{cap_cpus} CPU \u{b7} {gib}/{cap_gib} GiB against the caps. \
+             The host keeps {HOST_CPUS} CPU {HOST_GIB} GiB for Windows and WSL."
+        ),
+    }
 }
 
-/// `keeps 2 CPU 8 GiB`: the reserve the caps leave for Windows and WSL itself.
-fn host_line() -> String {
-    format!("keeps {HOST_CPUS} CPU {HOST_GIB} GiB")
+/// The Windows line: `not installed`, and with Windows runners chosen the prospective even
+/// share each would get, `not installed · 5 CPU 14 GiB`. Prospective only: nothing is written
+/// for Windows and the Linux pool keeps the whole caps while no backend exists.
+struct WindowsLine {
+    text: String,
+    tip: String,
+}
+
+fn windows_line(edit: &Settings, windows: u32, vm: &VmLimit) -> WindowsLine {
+    if windows == 0 {
+        return WindowsLine {
+            text: "not installed".into(),
+            tip: WINDOWS_INERT.into(),
+        };
+    }
+    let (cap_cpus, cap_gib) = vm.cap();
+    let (cpus, gib) = settings::each_part(vm.cap(), edit.runner_count, windows);
+    WindowsLine {
+        text: format!("not installed \u{b7} {cpus} CPU {gib} GiB"),
+        tip: format!(
+            "Prospective, once the native Windows backend is installed: every runner gets \
+             {cpus} CPU {gib} GiB, {} CPU {} GiB of {cap_cpus}/{cap_gib} for these {windows} \
+             Windows runners. Today they start nothing and the Linux pool keeps the whole caps.",
+            cpus * windows,
+            gib * windows
+        ),
+    }
 }
 
 /// IO cap moves in steps of 5.
@@ -586,6 +599,15 @@ fn now_each(running: Option<Applied>, fixed: bool) -> String {
             settings::share_text(g, r)
         ),
         _ => NONE.into(),
+    }
+}
+
+/// `now 3 · 4.8 CPU 14.4 GiB`: the applied Linux count and each runner's share, one line.
+fn now_linux(running: Option<Applied>, fixed: bool) -> String {
+    let (count, each) = (now_runners(running), now_each(running, fixed));
+    match each.strip_prefix("now ") {
+        Some(each) if count != NONE && each != "-" => format!("{count} \u{b7} {each}"),
+        _ => count,
     }
 }
 
@@ -662,30 +684,20 @@ mod tests {
         let vm = VmLimit::ASSUMED;
         let line = |runners| {
             let e = edited(&Settings::default(), runners, 0, false, &vm);
-            profile_lines(&e, &vm, Os::Linux)
+            let l = linux_line(&e, &vm);
+            (l.each, l.total)
         };
+        let of = || "of 26/72".to_string();
+        assert_eq!(line(1), ("26 CPU 72 GiB".into(), of()));
+        assert_eq!(line(2), ("13 CPU 36 GiB".into(), of()));
+        assert_eq!(line(3), ("8.7 CPU 24 GiB".into(), of()));
+        assert_eq!(line(4), ("6.5 CPU 18 GiB".into(), of()));
+        assert_eq!(line(5), ("5.2 CPU 14.4 GiB".into(), of()));
+        let tip = linux_line(&edited(&Settings::default(), 3, 0, false, &vm), &vm).tip;
         assert_eq!(
-            line(1),
-            ("26 CPU 72 GiB".into(), "26/26 CPU \u{b7} 72/72 GiB".into())
-        );
-        assert_eq!(
-            line(2),
-            ("13 CPU 36 GiB".into(), "26/26 CPU \u{b7} 72/72 GiB".into())
-        );
-        assert_eq!(
-            line(3),
-            ("8.7 CPU 24 GiB".into(), "26/26 CPU \u{b7} 72/72 GiB".into())
-        );
-        assert_eq!(
-            line(4),
-            ("6.5 CPU 18 GiB".into(), "26/26 CPU \u{b7} 72/72 GiB".into())
-        );
-        assert_eq!(
-            line(5),
-            (
-                "5.2 CPU 14.4 GiB".into(),
-                "26/26 CPU \u{b7} 72/72 GiB".into()
-            )
+            tip,
+            "Total 26/26 CPU \u{b7} 72/72 GiB against the caps. The host keeps 2 CPU 8 GiB \
+             for Windows and WSL."
         );
     }
 
@@ -701,7 +713,7 @@ mod tests {
             ..Settings::default()
         };
         let e = edited(&keep, 5, 0, false, &vm);
-        assert_eq!(profile_lines(&e, &vm, Os::Linux).0, "4 CPU 14.4 GiB");
+        assert_eq!(linux_line(&e, &vm).each, "4 CPU 14.4 GiB");
     }
 
     #[test]
@@ -834,48 +846,77 @@ mod tests {
     }
 
     #[test]
-    fn each_profile_shows_its_part_of_the_caps() {
+    fn windows_line_is_inert_with_a_prospective_even_share() {
         let vm = VmLimit::ASSUMED;
         let e = edited(&Settings::default(), 3, 2, false, &vm);
         assert_eq!(
-            profile_lines(&e, &vm, Os::Linux),
-            ("5 CPU 14.3 GiB".into(), "15/26 CPU \u{b7} 43/72 GiB".into())
+            (e.job_cpus, e.job_memory_gib),
+            (26, 72),
+            "inert: Linux keeps the whole caps"
         );
+        let l = linux_line(&e, &vm);
         assert_eq!(
-            profile_lines(&e, &vm, Os::Windows),
-            (
-                "5.5 CPU 14.5 GiB".into(),
-                "11/26 CPU \u{b7} 29/72 GiB".into()
-            )
+            (l.each, l.total),
+            ("8.7 CPU 24 GiB".into(), "of 26/72".into())
         );
-        let e = edited(&Settings::default(), 3, 0, false, &vm);
+        let w = windows_line(&e, 2, &vm);
+        assert_eq!(w.text, "not installed \u{b7} 5 CPU 14 GiB");
+        assert!(w.tip.starts_with("Prospective"), "{}", w.tip);
+        assert!(w.tip.contains("10 CPU 28 GiB of 26/72"), "{}", w.tip);
+        let w = windows_line(&e, 0, &vm);
         assert_eq!(
-            profile_lines(&e, &vm, Os::Windows),
-            ("-".into(), "0/26 CPU \u{b7} 0/72 GiB".into())
+            (w.text.as_str(), w.tip.as_str()),
+            ("not installed", WINDOWS_INERT)
         );
-        assert_eq!(host_line(), "keeps 2 CPU 8 GiB");
     }
 
     #[test]
-    fn apply_writes_the_windows_count_and_linux_part() {
+    fn now_linux_joins_count_and_share() {
+        let a = |r, c, g| {
+            Some(Applied {
+                runner_count: r,
+                job_cpus: c,
+                job_memory_gib: g,
+            })
+        };
+        assert_eq!(
+            now_linux(a(Some(5), Some(24), Some(72)), false),
+            "now 5 \u{b7} 4.8 CPU 14.4 GiB"
+        );
+        assert_eq!(now_linux(a(Some(3), None, Some(72)), false), "now 3");
+        assert_eq!(now_linux(a(None, Some(24), Some(72)), false), NONE);
+        assert_eq!(now_linux(None, false), NONE);
+    }
+
+    /// A Windows-only Apply rewrites only `windows_runner_count`: the keys the supervisor
+    /// applies keep their exact values while no Windows backend exists.
+    #[test]
+    fn apply_of_a_windows_only_change_keeps_the_linux_keys() {
         let base = crate::state::temp_base("settings-panel-windows");
+        let file = crate::state::inbox(&base).join("settings.json");
         let mut panel = SettingsPanel::load(&base);
         panel.vm = VmLimit::ASSUMED;
-        (panel.linux, panel.windows) = (3, 2);
-        assert_eq!(panel.changes(), 2);
+        panel.linux = 3;
         assert!(panel.apply(&base));
-        let s = settings::read_settings(&base);
+        let before = std::fs::read_to_string(&file).unwrap();
+        panel.windows = 2;
+        assert_eq!(panel.changes(), 1);
+        assert!(panel.apply(&base));
         assert_eq!(
-            (
-                s.runner_count,
-                s.windows_runner_count,
-                s.job_cpus,
-                s.job_memory_gib
-            ),
-            (3, 2, 15, 43),
-            "runner_count is the Linux count; the totals are Linux's part"
+            std::fs::read_to_string(&file).unwrap(),
+            before,
+            "settings.json is byte-identical: the count is kept tray-local"
+        );
+        assert_eq!(
+            settings::read_windows_choice(&settings::windows_choice_path(&base)),
+            2
         );
         assert_eq!(panel.windows(), 2);
+        assert_eq!(
+            SettingsPanel::load(&base).windows(),
+            2,
+            "read back on reopen"
+        );
         panel.windows = 0;
         panel.revert();
         assert_eq!((panel.linux, panel.windows, panel.changes()), (3, 2, 0));

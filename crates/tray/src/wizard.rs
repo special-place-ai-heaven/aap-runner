@@ -88,7 +88,7 @@ impl Sizing {
         let (job_cpus, job_memory_gib) = crate::settings::linux_part(
             (self.job_cpus, self.job_memory_gib),
             self.runner_count,
-            self.windows_runner_count,
+            crate::settings::applied_windows(self.windows_runner_count),
         );
         Settings {
             runner_count: self.runner_count,
@@ -443,12 +443,12 @@ pub fn sizing_each(size: &Sizing) -> Vec<String> {
     };
     let mut lines = vec![line("Linux", s.runner_count, s.job_cpus, s.job_memory_gib)];
     if size.windows_runner_count > 0 {
-        lines.push(line(
-            "Windows",
+        let (cpus, gib) = crate::settings::each_part(
+            (size.job_cpus, size.job_memory_gib),
+            size.runner_count,
             size.windows_runner_count,
-            size.job_cpus.saturating_sub(s.job_cpus),
-            size.job_memory_gib.saturating_sub(s.job_memory_gib),
-        ));
+        );
+        lines.push(format!("Windows each: {cpus} CPUs, {gib} GiB"));
     }
     lines
 }
@@ -852,11 +852,15 @@ mod tests {
         };
         assert_eq!(size.check_shape(), Ok(()));
         let s = size.settings();
-        assert_eq!((s.runner_count, s.job_cpus, s.job_memory_gib), (3, 12, 24));
+        assert_eq!(
+            (s.runner_count, s.job_cpus, s.job_memory_gib),
+            (3, 20, 40),
+            "inert: Linux keeps the whole pool"
+        );
         assert_eq!(
             sizing_each(&size),
             [
-                "Linux each: 4 CPUs, 8 GiB".to_string(),
+                "Linux each: 6.7 CPUs, 13.3 GiB".to_string(),
                 "Windows each: 4 CPUs, 8 GiB".to_string()
             ]
         );
@@ -869,7 +873,7 @@ mod tests {
                 linux.job_memory_gib,
                 linux.work_disk_gib
             ),
-            (3, 0, 12, 24, 60)
+            (3, 0, 20, 40, 60)
         );
         assert_eq!(
             sizing_each(&Sizing::default()),
@@ -890,8 +894,8 @@ mod tests {
             ..Sizing::default()
         };
         assert!(
-            thin.check_shape().is_err(),
-            "4 CPUs over 5 runners leave Linux 0"
+            thin.check_shape().is_ok(),
+            "inert: the one Linux runner keeps all 4 CPUs"
         );
     }
 

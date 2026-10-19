@@ -26,8 +26,8 @@
 #   "job_memory_gib":1..80,"paused":true|false} plus optional "schema":2,
 #   "io_percent":0..100, "sharing":"slice"|"fixed" and "windows_runner_count":
 #   0..4 with runner_count plus it at most 5 (schema 2). windows_runner_count
-#   is the tray's stored Windows choice: validated, never applied (no Windows
-#   backend yet); runner_count stays the Linux count. Missing =
+#   is reserved for a tray with a Windows backend: validated, never applied;
+#   runner_count stays the Linux count. Missing =
 #   no override, not paused. Invalid = one logged warning, the last valid
 #   content stays. Both files are parsed strictly. Only validated values
 #   ever reach a command or the limits file.

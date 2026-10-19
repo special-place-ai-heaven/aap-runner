@@ -111,7 +111,7 @@ fn take_request(path: &Path) -> Option<View> {
 }
 
 /// Default inner size. The window cannot shrink below min_size(); nothing scrolls in the left column.
-const SIZE: [f32; 2] = [760.0, 924.0];
+const SIZE: [f32; 2] = [760.0, 760.0];
 
 /// One card per reported slot, and no more than the runner limit.
 fn cards_to_draw(slot_count: usize) -> usize {
@@ -148,6 +148,9 @@ fn legend(ui: &mut egui::Ui, p: &Palette) {
         ui.label(RichText::new(os.name()).color(p.muted).small());
     }
 }
+
+/// The wizard's Windows line while no Windows backend exists.
+const WIZARD_WINDOWS_LATER: &str = "Windows runners: available after the native Windows backend";
 
 /// `Linux 2`, `Windows 1`.
 fn card_name(os: Os, n: u32) -> String {
@@ -2102,6 +2105,9 @@ impl Dash {
                         let previous = w.draft.sizing.clone();
                         let s = &mut w.draft.sizing;
                         let backend = crate::settings::WINDOWS_BACKEND;
+                        // The installer sets up Linux only: without a Windows backend there is no
+                        // Windows count to choose, so none can be lost at install.
+                        if !backend { s.windows_runner_count = 0; }
                         let fits_linux = crate::settings::count_range(Os::Linux, s.windows_runner_count, backend);
                         let fits_windows = crate::settings::count_range(Os::Windows, s.runner_count, backend);
                         ui.horizontal(|ui| {
@@ -2109,12 +2115,18 @@ impl Dash {
                             ui.label("Linux runners");
                             for n in 0..=5 { ui.add_enabled_ui(fits_linux.contains(&n), |ui| ui.selectable_value(&mut s.runner_count, n, n.to_string())); }
                         });
-                        ui.horizontal(|ui| {
-                            os_glyph(ui, &p, Os::Windows, 14.0, p.bg);
-                            ui.label("Windows runners");
-                            for n in 0..=5 { ui.add_enabled_ui(fits_windows.contains(&n), |ui| ui.selectable_value(&mut s.windows_runner_count, n, n.to_string())); }
-                        });
-                        ui.label(RichText::new(crate::settings_panel::WINDOWS_INERT).color(p.over).small());
+                        if backend {
+                            ui.horizontal(|ui| {
+                                os_glyph(ui, &p, Os::Windows, 14.0, p.bg);
+                                ui.label("Windows runners");
+                                for n in 0..=5 { ui.add_enabled_ui(fits_windows.contains(&n), |ui| ui.selectable_value(&mut s.windows_runner_count, n, n.to_string())); }
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                os_glyph(ui, &p, Os::Windows, 14.0, p.bg);
+                                ui.label(RichText::new(WIZARD_WINDOWS_LATER).color(p.muted));
+                            });
+                        }
                         ui.horizontal(|ui| { ui.label("Total CPUs"); ui.add(egui::DragValue::new(&mut s.job_cpus).range(1..=28)); });
                         ui.horizontal(|ui| { ui.label("Total memory (GiB)"); ui.add(egui::DragValue::new(&mut s.job_memory_gib).range(1..=80)); });
                         ui.horizontal(|ui| { ui.label("Work disk (GiB)"); ui.add(egui::DragValue::new(&mut s.work_disk_gib).range(60..=512)); });
@@ -2170,16 +2182,6 @@ impl Dash {
             "{} Linux runners · {} CPUs total · {} GiB total · {} GiB work disk",
             linux.runner_count, linux.job_cpus, linux.job_memory_gib, linux.work_disk_gib
         ));
-        if w.draft.sizing.windows_runner_count > 0 {
-            ui.label(
-                RichText::new(format!(
-                    "{} Windows runners chosen, not installed: they start nothing until the \
-                     native Windows runner exists.",
-                    w.draft.sizing.windows_runner_count
-                ))
-                .color(p.muted),
-            );
-        }
         if let Some(job) = &w.job {
             ui.label(job_status_text(&job.verb, &job.state, job.exit_code));
             ui.label(&job.step);
@@ -2613,19 +2615,15 @@ impl eframe::App for Dash {
 /// No row calls `available_height()` or `available_size()`.
 /// A new row that does not fit grows SIZE[1], never adds a scrollbar.
 fn left_column_height(job_line: bool) -> f32 {
-    // settings (show_top) -- 22 items, 21 auto-gaps
+    // settings (show_top) -- 15 items, 14 auto-gaps
     let settings = 2.0 * INTERACT_H          // Power: label row + Start/Stop row
         + 12.0                                // add_space(12)
-        + INTERACT_H + INTERACT_H             // Linux + now-runners (ui.horizontal)
-        + 4.0                                 // add_space(4)
-        + INTERACT_H + INTERACT_H             // Each + now-each
-        + INTERACT_H                          // Total
-        + 4.0 + INTERACT_H + CAP_ERROR_H      // add_space(4) + Windows + not-installed note
-        + INTERACT_H + INTERACT_H             // Windows Each + Total
-        + 4.0 + INTERACT_H                    // add_space(4) + Host
+        + INTERACT_H + INTERACT_H             // Linux control + Linux Each line
+        + INTERACT_H                          // now-linux (count and share, one line)
+        + 4.0 + INTERACT_H + INTERACT_H       // add_space(4) + Windows control + Windows line
         + 4.0 + INTERACT_H + INTERACT_H      // add_space(4) + IO cap + now-io
         + 4.0 + INTERACT_H + INTERACT_H      // add_space(4) + Sharing + now-sharing
-        + 21.0 * CARD_ITEM_GAP; // 22 items -> 21 auto-gaps
+        + 14.0 * CARD_ITEM_GAP; // 15 items -> 14 auto-gaps
 
     let job_row = if job_line {
         // add_space(12) + changes label + cap error + Apply/Revert + 4 auto-gaps
@@ -2832,9 +2830,11 @@ mod tests {
         let base = state::temp_base("dash-profiles");
         std::fs::write(
             state::inbox(&base).join("settings.json"),
-            r#"{"runner_count":3,"windows_runner_count":2,"job_cpus":15,"job_memory_gib":43}"#,
+            r#"{"runner_count":3,"job_cpus":26,"job_memory_gib":72}"#,
         )
         .unwrap();
+        crate::settings::write_windows_choice(&crate::settings::windows_choice_path(&base), 2)
+            .unwrap();
         let mut panel = SettingsPanel::load(&base);
         assert_eq!(panel.windows(), 2);
         let snap = Snapshot::bare(Status::Idle);
@@ -2854,18 +2854,13 @@ mod tests {
                 _ => None,
             })
             .collect();
-        for want in [
-            "Linux",
-            "Windows",
-            "Windows backend not installed",
-            "keeps 2 CPU 8 GiB",
-        ] {
+        output.textures_delta.clear(); // before any assert: a panic must not leave it set
+        for want in ["Linux", "Windows", "not installed", "of 26/72", "now -"] {
             assert!(
                 texts.iter().any(|t| t.contains(want)),
                 "missing {want}: {texts:?}"
             );
         }
-        output.textures_delta.clear();
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -2935,17 +2930,17 @@ mod tests {
         let max = SIZE;
         let pad = PAD;
         let title = 32.0;
-        // Tall monitor: the preferred 924 height, bottom-right, top inside.
+        // Tall monitor: the preferred 760 height, bottom-right, top inside.
         let (x, y, w, h) = place_window([0.0, 0.0, 1920.0, 1080.0], max, pad, title);
-        assert_eq!((w, h), (760.0, 924.0));
-        assert_eq!(y, 1080.0 - pad - 924.0 - title);
+        assert_eq!((w, h), (760.0, 760.0));
+        assert_eq!(y, 1080.0 - pad - 760.0 - title);
         assert!(y >= 0.0);
         assert_eq!(x, 1920.0 - pad - 760.0);
         // Short work area: height shrinks and the top is the work-area top.
         let (x, y, w, h) = place_window([10.0, 40.0, 1400.0, 500.0], max, pad, title);
         assert_eq!(w, 760.0);
         assert_eq!(h, 500.0 - 40.0 - pad - title);
-        assert!(h < 924.0);
+        assert!(h < 760.0);
         assert_eq!(y, 40.0);
         assert!(x >= 10.0);
         // Too short for the title bar and padding: height is zero, y is the top.
@@ -2968,7 +2963,7 @@ mod tests {
     #[test]
     fn five_cards_fit_clamped_height() {
         let h = right_column_height(5);
-        // 1080 px work area: clamps to SIZE[1] = 924.
+        // 1080 px work area: clamps to SIZE[1] = 760.
         let h_1080 = clamped_window_height(1080.0, 32.0);
         assert_eq!(h_1080, SIZE[1], "sanity: 1080p clamps to default size");
         assert!(
@@ -3020,28 +3015,21 @@ mod tests {
         // The left column has no ScrollArea; a future row that does not fit grows
         // SIZE[1] instead of adding a scrollbar.
         let rows = [
-            INTERACT_H,  // Power label row
-            INTERACT_H,  // Power Start/Stop . Pause/Resume row
-            12.0_f32,    // add_space(12)
-            INTERACT_H,  // Linux control
-            INTERACT_H,  // ui.horizontal in now(): now-runners
-            4.0_f32,     // add_space(4)
-            INTERACT_H,  // Each
-            INTERACT_H,  // ui.horizontal in now(): now-each
-            INTERACT_H,  // Total
-            4.0_f32,     // add_space(4)
-            INTERACT_H,  // Windows control
-            CAP_ERROR_H, // allocate_ui_with_layout: Windows not-installed note, two lines
-            INTERACT_H,  // Windows Each
-            INTERACT_H,  // Windows Total
-            4.0_f32,     // add_space(4)
-            INTERACT_H,  // Host reserve
-            4.0_f32,     // add_space(4)
-            INTERACT_H,  // IO cap
-            INTERACT_H,  // ui.horizontal in now(): now-io
-            4.0_f32,     // add_space(4)
-            INTERACT_H,  // Sharing
-            INTERACT_H,  // ui.horizontal in now(): now-sharing
+            INTERACT_H, // Power label row
+            INTERACT_H, // Power Start/Stop . Pause/Resume row
+            12.0_f32,   // add_space(12)
+            INTERACT_H, // Linux control
+            INTERACT_H, // Linux Each line (share, total, tooltip with the host reserve)
+            INTERACT_H, // ui.horizontal in now(): now-linux
+            4.0_f32,    // add_space(4)
+            INTERACT_H, // Windows control
+            INTERACT_H, // Windows line: "not installed" and the prospective share
+            4.0_f32,    // add_space(4)
+            INTERACT_H, // IO cap
+            INTERACT_H, // ui.horizontal in now(): now-io
+            4.0_f32,    // add_space(4)
+            INTERACT_H, // Sharing
+            INTERACT_H, // ui.horizontal in now(): now-sharing
             // --- pending (job_line=true) ---
             12.0_f32,      // add_space(12)
             PAUSED_LINE_H, // ui.label: "N changes not applied" (bare label)
@@ -3106,6 +3094,12 @@ mod tests {
             "min_size[1]={} < right column 5 cards={}",
             ms[1],
             right_column_height(5)
+        );
+        // 1080p at 125 % leaves about 780 pt of inner height; the left column never scrolls.
+        assert!(
+            left_column_height(true) <= 780.0,
+            "left column worst case {} > 780 pt",
+            left_column_height(true)
         );
         // place_window caps the placed height at SIZE[1]: the left column must fit it.
         assert!(

@@ -896,15 +896,18 @@ Describe 'aap-runner host supervisor' {
             $script:stdin[-1] | Should -Match $line
         }
 
+        # The reserved key on top of a tray-written file, as a future tray with a Windows backend
+        # would write it (the current tray never does: settings::tests::no_write_path_emits_...).
         It 'leaves limits.conf and the manager alone when only windows_runner_count changes' {
+            Write-AapSettingsFile '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":90,"sharing":"slice"}'
             Invoke-AapCycle
-            $AapRt.Applied | Should -Be '2,8,32'
+            $AapRt.Applied | Should -Be '2,8,32,io=90,sharing=slice'
             $script:calls.Clear()
             $AapRt.NextHealth = $script:clock.Now.AddHours(1)
-            Write-AapSettingsFile '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":3}'
+            Write-AapSettingsFile '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":90,"sharing":"slice","windows_runner_count":3}'
             Invoke-AapCycle
             $script:calls.Count | Should -Be 0
-            $AapRt.Applied | Should -Be '2,8,32'
+            $AapRt.Applied | Should -Be '2,8,32,io=90,sharing=slice'
             Get-AapLogText | Should -Not -Match 'WARN'
         }
 
