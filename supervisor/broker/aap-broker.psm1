@@ -9,13 +9,15 @@
 # broker. The tray never loads this module.
 #
 # A reply is checked byte by byte before any text exists: printable ASCII, no
-# backslash, at most one "jit_config" key in compact form. The JIT config is
-# copied into a SecureString and blanked in the buffer, then the rest is parsed
-# by a strict parser (not ConvertFrom-Json: pwsh 7 turns times into DateTime,
-# duplicate keys are not refused, and parse errors can quote the input) and
-# checked against the contract. The buffer is zeroed. Nothing the broker prints
-# is logged, returned as text or written anywhere; callers log Outcome, Reason
-# and ExitCode only, and hand JitConfig to Use-AapBrokerSecret.
+# backslash, at most one "jit_config" key in compact form. The JIT config bytes
+# are copied out and blanked in the buffer, then the rest is parsed by a strict
+# parser (not ConvertFrom-Json: pwsh 7 turns times into DateTime, duplicate keys
+# are not refused, and parse errors can quote the input) and checked against
+# the contract. The buffer is zeroed. Nothing the broker prints is logged,
+# returned as text or written anywhere. The JIT config never becomes a string:
+# callers get an object whose only property is its Length, write it with
+# WriteTo(stream) and zero it with Clear(). Callers log Outcome, Reason and
+# ExitCode only.
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
@@ -65,8 +67,6 @@ $script:Shapes = @{
 $script:NumberRe = [regex]'\G-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?'
 $script:QuoteOrSlash = [char[]]@('"', '\')
 $script:JitKey = [Text.Encoding]::ASCII.GetBytes('"jit_config"')
-$script:JitByte = New-Object bool[] 256
-foreach ($c in [char[]]'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_-') { $script:JitByte[[int]$c] = $true }
 
 # ---- strict JSON -----------------------------------------------------------
 
@@ -92,23 +92,17 @@ function Read-AapJsonString($St) {
         if ($St.I -ge $St.T.Length) { throw 'bad escape' }
         $e = [string]$St.T[$St.I]
         $St.I++
+        # \uXXXX is refused: no broker document needs one.
         switch -CaseSensitive ($e) {
             '"' { [void]$sb.Append('"') }
             '\' { [void]$sb.Append('\') }
             '/' { [void]$sb.Append('/') }
-            'b' { [void]$sb.Append([char]8) }
-            'f' { [void]$sb.Append([char]12) }
-            'n' { [void]$sb.Append([char]10) }
-            'r' { [void]$sb.Append([char]13) }
-            't' { [void]$sb.Append([char]9) }
-            'u' {
-                if ($St.I + 4 -gt $St.T.Length) { throw 'bad escape' }
-                $hex = $St.T.Substring($St.I, 4)
-                if ($hex -notmatch '^[0-9A-Fa-f]{4}\z') { throw 'bad escape' }
-                [void]$sb.Append([char][Convert]::ToInt32($hex, 16))
-                $St.I += 4
-            }
-            default { throw 'bad escape' }
+            'b' { [void]$sb.Append("`b") }
+            'f' { [void]$sb.Append("`f") }
+            'n' { [void]$sb.Append("`n") }
+            'r' { [void]$sb.Append("`r") }
+            't' { [void]$sb.Append("`t") }
+            default { throw 'unsupported escape' }
         }
     }
 }
@@ -420,14 +414,17 @@ function ConvertFrom-AapBrokerReply {
             if ($at -lt $n -and $Bytes[$at] -eq 0x22) {
                 $start = $at + 1
                 $end = $start
-                while ($end -lt $n -and $script:JitByte[$Bytes[$end]]) { $end++ }
-                if ($end -ge $n -or $Bytes[$end] -ne 0x22 -or $end -eq $start -or ($end - $start) -gt $script:MaxJitBytes) { return $null }
-                $jit = New-Object Security.SecureString
-                for ($i = $start; $i -lt $end; $i++) {
-                    $jit.AppendChar([char]$Bytes[$i])
-                    $Bytes[$i] = 0x41
+                # A-Z a-z 0-9 + / = _ - (the schema's jit_config pattern).
+                while ($end -lt $n) {
+                    $b = $Bytes[$end]
+                    if (-not (($b -ge 0x41 -and $b -le 0x5a) -or ($b -ge 0x61 -and $b -le 0x7a) -or ($b -ge 0x30 -and $b -le 0x39) -or
+                            $b -eq 0x2b -or $b -eq 0x2f -or $b -eq 0x3d -or $b -eq 0x5f -or $b -eq 0x2d)) { break }
+                    $end++
                 }
-                $jit.MakeReadOnly()
+                if ($end -ge $n -or $Bytes[$end] -ne 0x22 -or $end -eq $start -or ($end - $start) -gt $script:MaxJitBytes) { return $null }
+                $jit = New-Object byte[] ($end - $start)
+                [Array]::Copy($Bytes, $start, $jit, 0, $jit.Length)
+                for ($i = $start; $i -lt $end; $i++) { $Bytes[$i] = 0x41 }
             } elseif ($at + 4 -gt $n -or [Text.Encoding]::ASCII.GetString($Bytes, $at, 4) -cne 'null') {
                 return $null
             }
@@ -439,8 +436,20 @@ function ConvertFrom-AapBrokerReply {
         return $parsed
     } finally {
         if ($null -ne $Bytes) { [Array]::Clear($Bytes, 0, $Bytes.Length) }
-        if ($null -ne $jit) { $jit.Dispose() }
+        if ($null -ne $jit) { [Array]::Clear($jit, 0, $jit.Length) }
     }
+}
+
+# The JIT config as an object whose only property is Length, so it formats,
+# serializes and logs as nothing else. WriteTo(stream) writes the bytes (to the
+# guest transport's stdin); Clear() zeroes them. Nothing makes it a string.
+function New-AapBrokerSecret([byte[]]$Bytes) {
+    $secret = [pscustomobject]@{ Length = $Bytes.Length }
+    $writeTo = { param([IO.Stream]$Stream) $Stream.Write($Bytes, 0, $Bytes.Length) }.GetNewClosure()
+    $clear = { [Array]::Clear($Bytes, 0, $Bytes.Length) }.GetNewClosure()
+    Add-Member -InputObject $secret -MemberType ScriptMethod -Name WriteTo -Value $writeTo
+    Add-Member -InputObject $secret -MemberType ScriptMethod -Name Clear -Value $clear
+    return $secret
 }
 
 function Get-AapBrokerProperty($Object, [string]$Name) {
@@ -528,12 +537,12 @@ function New-AapBrokerLeaseId {
     return 'l-' + (New-AapBrokerHex 16)
 }
 
-# Leases one runner registration. Outcome: issued (JitConfig is a read-only
-# SecureString; deliver it before ExpiresAt, then dispose it), refused (Reason
-# is the broker's), unavailable (wsl.exe failed, timed out or exited non-zero;
-# ExitCode), bad_reply (exit 0 but the reply broke the contract). Anything but
-# issued means no registration; the slot goes to deleting and its teardown
-# still sends Invoke-AapBrokerRelease with this lease id.
+# Leases one runner registration. Outcome: issued (JitConfig: WriteTo(stream)
+# it into the guest transport before ExpiresAt, then Clear() it), refused
+# (Reason is the broker's), unavailable (wsl.exe failed, timed out or exited
+# non-zero; ExitCode), bad_reply (exit 0 but the reply broke the contract).
+# Anything but issued means no registration; the slot goes to deleting and its
+# teardown still sends Invoke-AapBrokerRelease with this lease id.
 function Invoke-AapBrokerLease {
     [CmdletBinding()]
     param(
@@ -566,7 +575,7 @@ function Invoke-AapBrokerLease {
     $doc = $call.Doc
     $issued = $doc['result'] -ceq 'issued'
     if ($doc['lease_id'] -cne $LeaseId -or ($issued -and $doc['runner_name'] -cne $name)) {
-        if ($null -ne $call.Jit) { $call.Jit.Dispose() }
+        if ($null -ne $call.Jit) { [Array]::Clear($call.Jit, 0, $call.Jit.Length) }
         return (New-AapBrokerResult $LeaseId 'bad_reply' $null 0)
     }
     $result = New-AapBrokerResult $LeaseId $doc['result'] $doc['reason'] 0
@@ -574,7 +583,7 @@ function Invoke-AapBrokerLease {
         $result.RunnerId = $doc['runner_id']
         $result.RunnerName = $doc['runner_name']
         $result.ExpiresAt = $doc['expires_at']
-        $result.JitConfig = $call.Jit
+        $result.JitConfig = New-AapBrokerSecret $call.Jit
     }
     return $result
 }
@@ -628,25 +637,5 @@ function Invoke-AapBrokerStatus {
     return $result
 }
 
-# Runs ScriptBlock with the JIT config as ASCII bytes (for the guest transport's
-# stdin) and zeroes them afterwards. The SecureString is not disposed here.
-function Use-AapBrokerSecret {
-    param(
-        [Parameter(Mandatory = $true)][Security.SecureString]$Secret,
-        [Parameter(Mandatory = $true)][scriptblock]$ScriptBlock
-    )
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secret)
-    $bytes = New-Object byte[] $Secret.Length
-    try {
-        for ($i = 0; $i -lt $bytes.Length; $i++) {
-            $bytes[$i] = [byte][Runtime.InteropServices.Marshal]::ReadInt16($bstr, $i * 2)
-        }
-        & $ScriptBlock $bytes
-    } finally {
-        [Array]::Clear($bytes, 0, $bytes.Length)
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-    }
-}
-
 Export-ModuleMember -Function New-AapBrokerLeaseId, Invoke-AapBrokerLease, Invoke-AapBrokerRelease, Invoke-AapBrokerStatus,
-    Use-AapBrokerSecret, Test-AapBrokerDocument, ConvertFrom-AapBrokerJson
+    Test-AapBrokerDocument, ConvertFrom-AapBrokerJson

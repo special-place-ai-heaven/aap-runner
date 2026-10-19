@@ -73,18 +73,22 @@ supervisor's distro-name pattern. `-Invoker` replaces the process for tests only
 | `Invoke-AapBrokerLease` | `-LeaseId -ReservationId -LeaseGeneration -Slot -RunnerProfile -ImageGeneration`. Outcome `issued` (with `RunnerId`, `RunnerName`, `ExpiresAt`, `JitConfig`), `refused` (`Reason`), `unavailable` (`ExitCode`; `$null` on timeout), `bad_reply` |
 | `Invoke-AapBrokerRelease` | `-LeaseId`. Outcome `deregistered`, `already_gone`, `retry`, `refused`, `unavailable`, `bad_reply` |
 | `Invoke-AapBrokerStatus` | `-LeaseId`. Outcome `ok` (with `RunnerStatus` `online`/`offline`/`absent` and `RunnerBusy`), `refused`, `unavailable`, `bad_reply` |
-| `Use-AapBrokerSecret` | `-Secret $r.JitConfig -ScriptBlock { param([byte[]]$Bytes) ... }`: the JIT config as ASCII bytes for the transport's stdin, zeroed afterwards |
 | `Test-AapBrokerDocument`, `ConvertFrom-AapBrokerJson` | The contract check and strict parser the client uses, for other owners' tests |
+
+`JitConfig` is an object whose only property is `Length`, so it formats, serializes and logs as
+nothing else. `$r.JitConfig.WriteTo($stream)` writes the JIT config's ASCII bytes to a stream
+(the guest transport child's stdin); `$r.JitConfig.Clear()` zeroes them. It never becomes a
+string, a SecureString or a file.
 
 Rules for the callers:
 
 1. Persist the lease id (the journal's intent record) **before** `Invoke-AapBrokerLease`. Every
    teardown releases it, whatever the lease call returned, including `unavailable` and
    `bad_reply`.
-2. Only `issued` registers a runner. Hand `JitConfig` to `Use-AapBrokerSecret` inside the
-   guest-transport call that writes it to the transport child's stdin (guest-transport.md), before
-   `ExpiresAt`, then `Dispose()` it. Never convert it to a string, never log it, never write it to
-   a file, status or the inbox.
+2. Only `issued` registers a runner. Call `JitConfig.WriteTo` inside the guest-transport call that
+   writes the payload to the transport child's stdin (guest-transport.md), before `ExpiresAt`,
+   then `JitConfig.Clear()`. Never turn it into a string, never log it, never write it to a file,
+   status or the inbox.
 3. Any other lease outcome means no registration: the slot goes to `deleting`. A new attempt
    needs a new lease id **and** a new slot generation (see "Stricter readings" below).
 4. Release: `deregistered` and `already_gone` close the lease and are the teardown proof's runner
@@ -96,8 +100,8 @@ Rules for the callers:
 5. Status is read-only, for the heartbeat-quarantine rule in allocator.md: destroy only on
    `offline` or `absent` with `RunnerBusy` false.
 6. Log only `Outcome`, `Reason` and `ExitCode`. The broker's stdout and stderr never reach a log.
-   A result object prints the JIT config as `System.Security.SecureString`. `ConvertTo-Json`
-   writes only its `Length`.
+   A result object prints the JIT config as `@{Length=N}`, and `ConvertTo-Json` and
+   `Export-Clixml` write only that length.
 7. The Windows and WSL clocks must agree within 300 s; otherwise every request is
    `clock_skew` (a WSL clock that lags after host sleep shows up here).
 
@@ -135,7 +139,8 @@ Add `tests/broker` to the Pester run: `$c.Run.Path = @('supervisor', 'tests/pari
 - **Client checks validate.py does not make.** A `release_response` whose result and reason
   disagree, a `status_response` `ok` without runner state, duplicate JSON keys, any backslash or
   non-ASCII byte, and a reply that does not echo the request's lease id and derived runner name
-  are `bad_reply`.
+  are `bad_reply`. The client's parser also refuses `\uXXXX` escapes; no broker document needs
+  one.
 - **validate.py finding.** Its patterns use `$` with `re.search`, which also matches before a
   trailing newline, so `"l-<32 hex>\n"` passes validate.py. The broker (printable ASCII only) and
   the client (`\z`) refuse it. `re.fullmatch` would close it in validate.py.
@@ -143,7 +148,11 @@ Add `tests/broker` to the Pester run: `$c.Run.Path = @('supervisor', 'tests/pari
 ## Notes from building it
 
 - Git Bash cannot run `tests/worker_auth_test.sh` (no `flock`); it runs in CI and in WSL Ubuntu.
-- On the owner's machine, Malwarebytes quarantined an earlier draft of the Pester file as
-  `RiskWare.ObfuscatedPowershell` (hand-concatenated JSON strings). The committed file builds
-  replies as dictionaries and passed on both hosts with no detection. Keep new tests in that
-  style.
+- On the owner's machine, Malwarebytes quarantined an early draft of the Pester file (and the
+  scratch launcher that ran it) as `RiskWare.ObfuscatedPowershell` during an AMSI scan. That
+  draft built `-EncodedCommand` children and hand-concatenated JSON. The committed module and
+  tests use no SecureString or BSTR marshaling, char-code strings, base64, `-EncodedCommand` or
+  `Invoke-Expression`. The module and the Pester suite were run from a copy outside the
+  allow-listed `aap-runner-work\parity` folder, on both hosts, with no detection. Keep new
+  PowerShell in that style: an installed module that trips the heuristic would be quarantined
+  from the supervisor folder.

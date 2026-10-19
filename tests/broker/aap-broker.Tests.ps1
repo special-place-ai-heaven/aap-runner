@@ -11,9 +11,8 @@ BeforeAll {
     $script:Module = Get-Module aap-broker
     $script:Fixtures = Join-Path $script:Repo 'parity\contracts\fixtures\broker'
     $script:System32 = 'C:\Windows\System32'
-    # The synthetic JIT config: base64 of a marker, like the contract fixture.
-    $script:Marker = 'SYNTHETIC-JIT-MARKER-' + [guid]::NewGuid().ToString('n')
-    $script:Jit = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($script:Marker))
+    # The synthetic JIT config: a marker within the schema's jit_config charset.
+    $script:Jit = 'SYNTHETIC-JIT-MARKER-' + [guid]::NewGuid().ToString('n')
     $script:LeaseId = 'l-55555555555555555555555555555555'
     $script:OtherLeaseId = 'l-66666666666666666666666666666666'
     $script:RunnerName = 'aap-w-4-3-1a2b3c4d'
@@ -87,8 +86,11 @@ BeforeAll {
         return Invoke-AapBrokerStatus -LeaseId $script:LeaseId -Invoker $script:Fake
     }
 
-    function Get-Secret($Secure) {
-        return Use-AapBrokerSecret -Secret $Secure -ScriptBlock { param([byte[]]$Bytes) [Text.Encoding]::ASCII.GetString($Bytes) }
+    # What JitConfig.WriteTo writes, as text (tests only).
+    function Get-Secret($Secret) {
+        $ms = New-Object IO.MemoryStream
+        $Secret.WriteTo($ms)
+        return [Text.Encoding]::ASCII.GetString($ms.ToArray())
     }
 
     function Test-Zeroed($Bytes) {
@@ -163,14 +165,14 @@ Describe 'contract fixtures' {
         $deep = '1'
         foreach ($i in 1..5) { $deep = '{"a":' + $deep + '}' }
         $texts = @('', 'null', '[]', '{"a":[1]}', '{"a":1,"a":1}', '{"a":1} x', '{"a":1}{"b":2}', '{"a":NaN}',
-            "{`"a`":`"x`ty`"}", '{"a":1,}', '{a:1}', '{"a":01}', $deep, '{"a":"\x"}')
+            "{`"a`":`"x`ty`"}", '{"a":1,}', '{a:1}', '{"a":01}', $deep, '{"a":"\x"}', '{"a":"\u0041"}')
         foreach ($text in $texts) {
             ConvertFrom-AapBrokerJson $text | Should -BeNullOrEmpty -Because $text
         }
-        $d = ConvertFrom-AapBrokerJson '{ "n" : 3 , "f" : 3.0 , "s" : "a\u0041\n" , "t" : true , "z" : null , "o" : { "k" : false } }'
+        $d = ConvertFrom-AapBrokerJson '{ "n" : 3 , "f" : 3.0 , "s" : "a\/b\n" , "t" : true , "z" : null , "o" : { "k" : false } }'
         $d['n'] | Should -BeOfType [long]
         $d['f'] | Should -BeOfType [double]
-        $d['s'] | Should -BeExactly "aA`n"
+        $d['s'] | Should -BeExactly "a/b`n"
         $d['t'] | Should -BeTrue
         $d['z'] | Should -BeNullOrEmpty
         $d['o']['k'] | Should -BeFalse
@@ -282,7 +284,7 @@ Describe 'requests' {
 Describe 'replies' {
     BeforeEach { Reset-Fake }
 
-    It 'returns an issued lease with the JIT config only as a SecureString' {
+    It 'returns an issued lease whose JIT config shows nothing but its length' {
         $r = Invoke-Lease
         $r.Outcome | Should -Be 'issued'
         $r.Reason | Should -Be 'ok'
@@ -290,19 +292,19 @@ Describe 'replies' {
         $r.RunnerId | Should -Be 23
         $r.RunnerName | Should -BeExactly $script:RunnerName
         $r.ExpiresAt | Should -BeExactly '2026-10-19T18:10:00Z'
-        $r.JitConfig | Should -BeOfType [Security.SecureString]
-        $r.JitConfig.IsReadOnly() | Should -BeTrue
+        @($r.JitConfig.PSObject.Properties | ForEach-Object { $_.Name }) -join ',' | Should -BeExactly 'Length'
+        $r.JitConfig.Length | Should -Be $script:Jit.Length
         Get-Secret $r.JitConfig | Should -BeExactly $script:Jit
         Test-Zeroed $script:LastStdout | Should -BeTrue -Because 'the reply buffer is wiped once parsed'
-        $r.JitConfig.Dispose()
     }
 
-    It 'zeroes the bytes Use-AapBrokerSecret handed out' {
+    It 'zeroes the JIT config on Clear' {
         $r = Invoke-Lease
-        $script:held = $null
-        Use-AapBrokerSecret -Secret $r.JitConfig -ScriptBlock { param([byte[]]$Bytes) $script:held = $Bytes } | Out-Null
-        $script:held.Length | Should -Be $script:Jit.Length
-        Test-Zeroed $script:held | Should -BeTrue
+        $r.JitConfig.Clear()
+        $ms = New-Object IO.MemoryStream
+        $r.JitConfig.WriteTo($ms)
+        $ms.Length | Should -Be $script:Jit.Length
+        Test-Zeroed $ms.ToArray() | Should -BeTrue
     }
 
     It 'returns every refusal reason without registration material' {
@@ -360,7 +362,9 @@ Describe 'replies' {
         $broken.Add($good + ' x')
         $broken.Add($good + $good)
         $broken.Add($good.Insert($good.IndexOf(',') + 1, "`t"))
-        $broken.Add($good.Insert($good.IndexOf(',') + 1, [string][char]0x00E9))
+        $nonAscii = New-Result $good
+        $nonAscii.Stdout[12] = 0xE9
+        $broken.Add($nonAscii)
         $broken.Add($good + (' ' * 20480))
         $broken.Add('')
         foreach ($reply in $broken) {
