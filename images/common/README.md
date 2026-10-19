@@ -30,6 +30,18 @@ somebody else owns, or that lets others write to it or delete from it, is refuse
 the ACL of what they own, so a folder an unprivileged account made before the root was locked stays theirs. Each level is checked
 before anything is created inside it, and a refused folder gets no file, not even a rejection record.
 
+The files get the same owner and ACL check. An entry that applies to files only (object inherit without container inherit) is
+inherit-only on every folder, so the folder checks skip it, and it becomes an ordinary entry on each file created below. A file can
+also carry an ACL of its own, and a hard link shows the owner and ACL of the file it links to. So the tool checks every file it
+reads or publishes in the version folder, and what it does with one that fails depends on the file:
+
+- **A staged file that is already there**, before it is reused or accepted offline. Online it is removed and downloaded again. Offline the run is refused with `AAP_StagingUntrusted` and the file is moved to `<file>.quarantined`.
+- **A downloaded file**, before it replaces anything and again at its final name. One that fails is removed and the run is refused, so a good staged file is not replaced by a bad one.
+- **The first-fetch record** is the trust anchor of its entry. If others can change it, it is neither used nor deleted: the run is refused and a person reviews it and deletes it by hand.
+- **The upstream hash file** is refused. Online, a run over the whole manifest has downloaded it again first, because it is an entry of its own.
+- **An earlier provenance record** is ignored, so nothing is carried over from it.
+- **The provenance, rejection and first-fetch records the tool writes** are new files: an old one is deleted and never opened, so a hard link left at that name is not written through, and the new file takes its owner and ACL from the folder.
+
 While running, the name folder and version folder (checked again right after they are created), the partial download, the
 file, the provenance, rejection and first-fetch records must not be links; nothing is written, replaced or deleted through one.
 A stale partial download is deleted and never opened, and the new one is created with `CreateNew`, so a hard link left at that
@@ -37,15 +49,19 @@ name (a hard link is not a reparse point) cannot be written through.
 A missing root is created one level deep below an existing parent that passes the ancestor checks.
 
 These are the rules of `supervisor/install-supervisor.ps1`: `Test-AapAdminDescriptor` for the root and `Get-AapAncestorProblem`
-for the ancestors (the same three SIDs and the same access masks), `Test-AapFixedLocalPath` for the drive type, and the owner rule
-of `Get-AapDataDirProblem` for the folders below the root (which also get the root's access masks). They are re-implemented in the
-module, not dot-sourced, because that file is an installer script and acquisition tooling must not load or run it. The tests check
-the masks with mocked ACLs and the folder rules against real ACLs set with `icacls`.
+for the ancestors (the same three SIDs and the same access masks), `Test-AapFixedLocalPath` for the drive type, and
+`Get-AapDataDirProblem` for what is below the root. Its rule is an admin owner and no links on everything below its data folder
+(items under its inbox folder are exempt from the owner rule); here the name folder, the version folder and the files listed above
+meet that rule and also get the root's access masks. The difference is the scope: the
+supervisor walks everything below its data folder, while this tool checks per entry, the folders of that entry and the files it reads
+or publishes, and does not walk the folders of other entries. The rules are re-implemented in the module, not dot-sourced, because
+that file is an installer script and acquisition tooling must not load or run it. The tests check the masks with mocked ACLs and the
+folder and file rules against real ACLs set with `icacls`.
 
 | Refusal | Meaning |
 |---|---|
 | `AAP_StagingLink` | A junction or symbolic link at the root, an ancestor, the name or version folder, or in place of a file |
-| `AAP_StagingUntrusted` | Owner, ACL or ancestor rule failed for the root, an ancestor, the name folder or the version folder (the message names the level); the root is not on a fixed local disk; or a file sits where a folder belongs |
+| `AAP_StagingUntrusted` | Owner, ACL or ancestor rule failed for the root, an ancestor, the name folder, the version folder or a file (the message names which); the root is not on a fixed local disk; or a file sits where a folder belongs |
 
 **On the lab host this check fails today.** The staging example `D:\aap-runner\images\staging` is under the image root of
 `parity/contracts/backend-lifecycle.md` and `docs/parity/ARCHITECTURE.md` section 3. It cannot pass until the installer (P19)
@@ -92,13 +108,15 @@ Only failures tagged transient (network errors, timeouts, HTTP 408, 429 and 5xx)
 | `<file>.provenance.json` | Latest accepted result; removed when a later run rejects the file |
 | `<file>.rejected.json` | Latest rejection; removed when a later run accepts the file |
 | `<file>.first-fetch.json` | Trust anchor of a first-fetch entry; rejections never remove it |
-| `<file>.quarantined` | A staged file that failed an offline check, moved away from its final name. When that name is taken, by a file, a folder or a link, the next free `<file>.quarantined.1`, `.2` and so on is used; nothing already there is moved into, overwritten or lost |
+| `<file>.quarantined` | A staged file that failed an offline check (hash, size, or an owner or ACL that lets others change it), moved away from its final name. When that name is taken, by a file, a folder or a link, the next free `<file>.quarantined.1`, `.2` and so on is used; nothing already there is moved into, overwritten or lost |
 
 `New-AapEvidenceRecord` writes an evidence-bundle record for a provenance file. For an accepted file it hashes the staged file again and
 records a failure (`AAP_ArtifactChanged`, `AAP_ArtifactMissing`) when it differs from the recorded `sha256`. `-HeadSha` is required.
 A run that relaxed the staging checks (`staging_check: relaxed` in the provenance) proves nothing about who could change the staged file,
 so what it accepted is reported as `unknown`, never as a pass, and the `command` of every record from such a run ends with
-`staging_check=relaxed`. Only a strict run can produce a pass for an accepted file. A rejection keeps its result (a failure, or a pass
+`staging_check=relaxed`. A record that claims a strict run is checked again: if others can change the provenance or rejection file, no
+evidence is made from it, and if they can change the staged file, the evidence is a failure with `observed-reason=AAP_StagingUntrusted`.
+Only a strict run can produce a pass for an accepted file. A rejection keeps its result (a failure, or a pass
 for a negative test that expected that very reason) because it claims nothing about a staged file. This host fails the strict check
 until P19 locks `D:\aap-runner`, so evidence for accepted files made here before then is `unknown` by design.
 

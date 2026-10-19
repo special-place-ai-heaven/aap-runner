@@ -12,9 +12,10 @@
 #   <file>.first-fetch.json  trust anchor of a first-fetch entry (no upstream hash exists): the hash seen by the
 #                            first accepted download. Later runs, online or offline, must match it. Rejections never
 #                            remove it; delete it by hand only after reviewing why the upstream file changed.
-#   <file>.quarantined       a staged file that failed an offline check, moved away from its final name; when that name is
-#                            taken (a file, a folder, anything) the next free <file>.quarantined.<n> is used, and nothing
-#                            already there is moved into, overwritten or lost
+#   <file>.quarantined       a staged file that failed an offline check (its hash or size, or an owner or ACL that lets
+#                            others change it), moved away from its final name; when that name is taken (a file, a
+#                            folder, anything) the next free <file>.quarantined.<n> is used, and nothing already there
+#                            is moved into, overwritten or lost
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -28,7 +29,7 @@ try {
 } catch { Write-Verbose 'TLS 1.2 flag not settable on this host' }
 Add-Type -AssemblyName System.Net.Http
 
-$script:ToolVersion = '4'
+$script:ToolVersion = '5'
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:Placeholder = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' # SHA-256 of zero bytes; a sums file lists it for itself and it is never a pass
 $script:ReparsePoint = [int][IO.FileAttributes]::ReparsePoint
@@ -74,14 +75,18 @@ function Test-AapLoopback([string]$HostName) {
 # The staging tree is where a verified file waits for a later step to use it, so whoever can write there can swap the
 # file after it was verified, or point a folder at something else with a junction. Before anything is written the
 # root must be a plain folder owned by SYSTEM, Administrators or TrustedInstaller that nobody else can write to or
-# delete, and so must every folder above it and the name and version folders below it (an owner can always rewrite the
-# ACL of what they own, so a folder somebody else owns is refused, not repaired). Links are refused at every level and
-# nothing is written, replaced or deleted through one.
+# delete, and so must every folder above it, the name and version folders below it, and every file the run reads or
+# publishes there (an owner can always rewrite the ACL of what they own, so what somebody else owns is refused, not
+# repaired). Links are refused at every level and nothing is written, replaced or deleted through one.
 #
 # The owner, ACL and ancestor rules are those of supervisor/install-supervisor.ps1 (Test-AapAdminDescriptor,
 # Get-AapAncestorProblem, Get-AapDataDirProblem and Test-AapFixedLocalPath): the same three SIDs, the same access
 # masks and the same drive-type rule. They are re-implemented here, not dot-sourced, because that file is an installer
-# script and images/common must not depend on it or run it. The folders below the root are held to the root's rule.
+# script and images/common must not depend on it or run it. The folders and files below the root are held to the
+# root's rule, per entry: the folders of that entry and the files it reads or publishes, not a walk of every sibling.
+# A file is checked as well as its folders. An entry that applies to files only is inherit-only on every folder, so the
+# folder checks skip it, and it becomes an ordinary entry on each file created below. A file can also carry an ACL of its own,
+# or be a hard link, which shows the owner and ACL of the file it links to.
 # -TrustedSid (more SIDs that count as owners and writers) and -SkipAncestorCheck exist for tests and developer
 # boxes; the provenance records staging_check = relaxed when either was used.
 $script:AdminSids = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
@@ -113,11 +118,16 @@ function Test-AapSafeSegment([string]$Segment) {
     return -not ($Segment.EndsWith('.') -or $Segment.EndsWith(' ') -or $Segment -match $script:ReservedNames)
 }
 
+# A record is written as a new file. An old one is deleted, never opened, so a hard link left at that name is not written
+# through (its other path would change as well), and the new file takes its owner and ACL from the folder it is made in.
 function Write-AapJson($Object, [string]$Path) {
     $full = Resolve-AapPath $Path
     Assert-AapNotLink $full 'file'
     $text = (ConvertTo-Json -InputObject $Object -Depth 8) -replace "`r`n", "`n"
-    [IO.File]::WriteAllText($full, $text + "`n", $script:Utf8NoBom)
+    $bytes = $script:Utf8NoBom.GetBytes($text + "`n")
+    Remove-AapStaged $full
+    $fs = [IO.File]::Open($full, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
 }
 
 function Read-AapJsonFile([string]$Path) {
@@ -186,6 +196,28 @@ function Get-AapAclProblems($Raw, [string]$Where, [int]$Mask, [string[]]$Trusted
     return $p.ToArray()
 }
 
+# The accounts that count as owners and writers: SYSTEM, Administrators, TrustedInstaller, plus any -TrustedSid.
+function Get-AapTrusted([string[]]$TrustedSid) { return @($script:AdminSids) + @($TrustedSid | Where-Object { $_ }) }
+
+# The message to throw for problem texts such as Get-AapFileProblems returns.
+function Format-AapUntrusted([string[]]$Texts) { return Format-AapProblems @($Texts | ForEach-Object { New-AapProblem 'AAP_StagingUntrusted' $_ }) }
+
+# Deletes a file that failed the owner and ACL check and returns the message to throw; a file that cannot be deleted is said so.
+function Remove-AapUntrusted([string]$Path, [string[]]$Problems) {
+    $tail = ''
+    try { Remove-AapStaged $Path } catch { $tail = "; it could not be removed: $(Get-AapRootMessage $_)" }
+    return (Format-AapUntrusted $Problems) + $tail
+}
+
+# Owner and ACL problems of one file the run reads or publishes, as text: the rule of a folder, applied to the file itself.
+# A file made in a folder takes the entries that folder hands down, including ones that apply to files only and that the
+# folder checks therefore skip; a file can carry an ACL of its own; and a hard link shows the owner and ACL of the file it
+# links to, so a link to somebody else's file fails here as well. Who can write to a file can change it after it was checked.
+function Get-AapFileProblems([string]$Path, [string]$What, [string[]]$Trusted) {
+    try { return @(Get-AapAclProblems (Get-AapDescriptor $Path) "$What $Path" $script:RootBadMask $Trusted) }
+    catch { return @("cannot read the ACL of $What ${Path}: $(Get-AapRootMessage $_)") }
+}
+
 function Get-AapAncestorProblems([string]$Path, [string[]]$Trusted) {
     $found = New-Object System.Collections.Generic.List[object]
     $dir = Split-Path -Parent $Path
@@ -224,7 +256,7 @@ function Get-AapStagingProblems {
        Reads attributes and ACLs only. #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root, [string[]]$TrustedSid = @(), [switch]$SkipAncestorCheck)
-    $trusted = @($script:AdminSids) + @($TrustedSid | Where-Object { $_ })
+    $trusted = Get-AapTrusted $TrustedSid
     $found = New-Object System.Collections.Generic.List[object]
     $form = Get-AapRootFormProblem $Root
     if ($form) {
@@ -263,7 +295,7 @@ function Assert-AapStagingRoot {
         $parent = Split-Path -Parent $Root
         if (-not $parent -or (Get-AapAttributes $parent) -eq -1) { throw "AAP_StagingUntrusted: the parent of staging root $Root does not exist; create and lock it first" }
         if (-not $SkipAncestorCheck) {
-            $trusted = @($script:AdminSids) + @($TrustedSid | Where-Object { $_ })
+            $trusted = Get-AapTrusted $TrustedSid
             $up = @(Get-AapAncestorProblems $Root $trusted)
             if ($up.Count) { throw (Format-AapProblems $up) }
         }
@@ -279,7 +311,7 @@ function Assert-AapStagingRoot {
 # change its permissions or take ownership, is refused before anything is created below it.
 function Initialize-AapStagedDir {
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Version, [string[]]$TrustedSid = @())
-    $trusted = @($script:AdminSids) + @($TrustedSid | Where-Object { $_ })
+    $trusted = Get-AapTrusted $TrustedSid
     $cur = $Root
     $levels = @(@('name folder', $Name), @('version folder', $Version))
     foreach ($level in $levels) {
@@ -423,8 +455,9 @@ function Resolve-AapExpectedHash {
        A first-fetch entry with a record resolves to the recorded hash. Throws on a missing or conflicting source.
        Does not assume a validated manifest: an upstream hash file must be exactly one other entry and must itself
        carry a literal hash, which also rules out any chain or cycle. #>
-    param([Parameter(Mandatory)]$Entry, $Manifest, [Parameter(Mandatory)][string]$StagingRoot)
+    param([Parameter(Mandatory)]$Entry, $Manifest, [Parameter(Mandatory)][string]$StagingRoot, [string[]]$TrustedSid = @())
     $StagingRoot = Resolve-AapPath $StagingRoot
+    $trusted = Get-AapTrusted $TrustedSid
     $h = Get-AapProp $Entry 'hash'
     $source = Get-AapProp $h 'source'
     $value = Get-AapProp $h 'value'
@@ -433,6 +466,10 @@ function Resolve-AapExpectedHash {
         $recordPath = (Get-AapStagedPath $StagingRoot $Entry) + '.first-fetch.json'
         if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { return $null }
         Assert-AapNotLink $recordPath 'first-fetch record'
+        # The record is all that such an entry is checked against, so whoever can change it decides what passes. One that
+        # others can change is neither used nor deleted: it is the trust anchor, and a person decides what to do with it.
+        $bad = @(Get-AapFileProblems $recordPath 'first-fetch record' $trusted)
+        if ($bad.Count) { throw ((Format-AapUntrusted $bad) + '; the record is the trust anchor of this entry and is not used. Review it, then delete it by hand') }
         $rec = Read-AapJsonFile $recordPath
         $algo = Get-AapProp $h 'algorithm'
         $len = if ($algo -eq 'sha512') { 128 } else { 64 }
@@ -463,6 +500,8 @@ function Resolve-AapExpectedHash {
     foreach ($seg in @((Get-AapProp $up 'name'), (Get-AapProp $up 'version'))) { $folder = Join-Path $folder $seg; Assert-AapNotLink $folder 'folder of the upstream hash file' }
     if (-not (Test-Path -LiteralPath $upPath -PathType Leaf)) { throw "AAP_HashSourceMissing: upstream hash file '$upName' is not staged at $upPath" }
     Assert-AapNotLink $upPath 'upstream hash file'
+    $bad = @(Get-AapFileProblems $upPath 'upstream hash file' $trusted)
+    if ($bad.Count) { throw (Format-AapUntrusted $bad) }
     # The file is read once; the size bound, the hash and the lines come from the same bytes.
     $max = [long](Get-AapProp $up 'size_max_bytes')
     $exact = Get-AapProp $up 'size_bytes'
@@ -668,6 +707,7 @@ function Get-AapArtifact {
         tool = [ordered]@{ name = 'Get-AapArtifact'; version = $script:ToolVersion }
     }
     $notes = New-Object System.Collections.Generic.List[string]
+    $trusted = Get-AapTrusted $TrustedSid
     $final = $null
     $part = $null
     try {
@@ -679,7 +719,7 @@ function Get-AapArtifact {
         $final = Join-Path $dir (Get-AapProp $Entry 'file_name')
         $part = $final + '.part'
         $recordPath = $final + '.first-fetch.json'
-        $expected = Resolve-AapExpectedHash -Entry $Entry -Manifest $Manifest -StagingRoot $StagingRoot
+        $expected = Resolve-AapExpectedHash -Entry $Entry -Manifest $Manifest -StagingRoot $StagingRoot -TrustedSid $TrustedSid
         if ($expected) { $prov.hash.expected = $expected.Value; $prov.hash.source = $expected.Source } else { $prov.hash.source = 'first-fetch' }
         if (-not $expected) {
             if ($Offline) { throw "AAP_OfflineIncomplete: '$name' has no first-fetch record ($recordPath), so it is not staged" }
@@ -692,6 +732,21 @@ function Get-AapArtifact {
         if ($existing -ne -1) {
             Assert-AapNotLink $final 'staged file'
             if (($existing -band $script:DirectoryAttr) -ne 0) { throw "AAP_StagingUntrusted: $final is a folder where a file belongs" }
+            # Whoever can write to a file can change it after it was checked, whatever its bytes are. A file whose owner
+            # or ACL is not trusted is therefore never accepted or reused: offline it is moved away and the run is
+            # refused, online it is removed and downloaded again.
+            $bad = @(Get-AapFileProblems $final 'staged file' $trusted)
+            if ($bad.Count) {
+                if ($Offline) {
+                    $notes.Add("moved the untrusted file to $(Split-Path -Leaf (Move-AapAside $final))")
+                    throw (Format-AapUntrusted $bad)
+                }
+                $notes.Add("removed the staged file, which others can change: $($bad -join '; ')")
+                Remove-AapStaged $final
+                $existing = -1
+            }
+        }
+        if ($existing -ne -1) {
             if (-not $expected) {
                 # Nobody vouches for this file, and it stays where it is until a download has been checked and replaces it.
                 $replaced = 'replaced a staged file that has no first-fetch record'
@@ -723,7 +778,13 @@ function Get-AapArtifact {
         if ($verified) {
             # No download: keep where the file came from, taken from the earlier accepted record when it describes this very file.
             $prov.mode = $(if ($Offline) { 'offline' } else { 'reuse' })
-            $old = Read-AapJsonFile ($final + '.provenance.json')
+            # The earlier record is only read when others cannot have changed it.
+            $oldPath = $final + '.provenance.json'
+            $old = $null
+            if (Test-Path -LiteralPath $oldPath -PathType Leaf) {
+                if (@(Get-AapFileProblems $oldPath 'provenance record' $trusted).Count) { $notes.Add('ignored an earlier provenance record that others can change') }
+                else { $old = Read-AapJsonFile $oldPath }
+            }
             if ($old -and (Get-AapProp $old 'outcome') -eq 'accepted' -and (Get-AapProp $old 'sha256') -eq $verified.Sha256) {
                 $prov.requested_url = Get-AapProp $old 'requested_url'
                 $prov.url_chain = @(Get-AapProp $old 'url_chain' | Where-Object { $_ })
@@ -767,8 +828,14 @@ function Get-AapArtifact {
             $prov.url_chain = @($got.Chain); $prov.final_url = $got.FinalUrl; $prov.content_type = $got.ContentType
             try { $verified = Confirm-AapFile -Path $part -Entry $Entry -Expected $expected }
             catch { $orig = $_; try { Remove-AapStaged $part } catch { $null = $_ }; throw $orig }
+            # The new file took its owner and ACL from the version folder, which may hand down entries that apply to files
+            # only and that the folder checks skip. It is checked before it replaces anything, and again where it stands.
+            $bad = @(Get-AapFileProblems $part 'downloaded file' $trusted)
+            if ($bad.Count) { throw (Remove-AapUntrusted $part $bad) }
             Assert-AapNotLink $final 'staged file'
             Move-Item -LiteralPath $part -Destination $final -Force
+            $bad = @(Get-AapFileProblems $final 'staged file' $trusted)
+            if ($bad.Count) { throw (Remove-AapUntrusted $final $bad) }
             if ($replaced) { $notes.Add($replaced) }
             $prov.acquired_at = $prov.started_at
             if (-not $expected) {
@@ -897,6 +964,12 @@ function New-AapEvidenceRecord {
     $verified = $accepted -and $p.hash.verified
     # Anything but a recorded strict run counts as relaxed, including a provenance file that does not say.
     $relaxed = (Get-AapProp $p 'staging_check') -ne 'strict'
+    # A record that claims a strict run is only as good as the file it is kept in: if others can change that file, the
+    # claim says nothing, so no evidence is made from it.
+    if (-not $relaxed) {
+        $bad = @(Get-AapFileProblems $ProvenancePath 'provenance record' $script:AdminSids)
+        if ($bad.Count) { throw (Format-AapUntrusted $bad) }
+    }
     $seen = if ($verified -and -not $relaxed) { 'success' } elseif ($accepted) { 'unknown' } else { 'failure' }
     $observedReason = if ($accepted) { 'none' } else { [string]$p.reason }
     $fileName = [string]$p.file_name
@@ -910,6 +983,7 @@ function New-AapEvidenceRecord {
         } else {
             $nowSha = Get-AapLowerHash $artifact 'SHA256'
             if ($nowSha -ne $fileSha) { $seen = 'failure'; $observedReason = 'AAP_ArtifactChanged'; $fileSha = $nowSha; $fileBytes = (Get-Item -LiteralPath $artifact).Length }
+            elseif (-not $relaxed -and @(Get-AapFileProblems $artifact 'staged file' $script:AdminSids).Count) { $seen = 'failure'; $observedReason = 'AAP_StagingUntrusted' }
         }
     }
     if ($ExpectedReason) {
@@ -927,7 +1001,7 @@ function New-AapEvidenceRecord {
     $fixture = ("images/common/$($p.name)-$($p.version)").ToLowerInvariant() -replace '[^a-z0-9._/-]', '.'
     $command = "Get-AapArtifact $($p.name) $($p.version) mode=$($p.mode)"
     if ($ExpectedReason) { $command += " expected-reason=$ExpectedReason observed-reason=$observedReason" }
-    elseif ($observedReason -in @('AAP_ArtifactMissing', 'AAP_ArtifactChanged')) { $command += " observed-reason=$observedReason" }
+    elseif ($observedReason -in @('AAP_ArtifactMissing', 'AAP_ArtifactChanged', 'AAP_StagingUntrusted') -and $accepted) { $command += " observed-reason=$observedReason" }
     if ($relaxed) { $command += ' staging_check=relaxed' }
     $rec = [ordered]@{
         schema = 1; item = $Item; contract_revision = 'evidence-bundle@1'; head_sha = $HeadSha; action_shas = @()

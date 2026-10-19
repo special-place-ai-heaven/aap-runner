@@ -581,6 +581,27 @@ Describe 'evidence record' {
         $rec.result | Should -Be 'unknown'
         $rec.command | Should -Match 'staging_check=relaxed'
     }
+    It 'makes no evidence from a strict provenance record that others can change' {
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl $script:GoodSddl)
+        $a = Invoke-StrictFetch (New-Entry 'ev12' 'e.bin' "$($script:Base)/ok.bin") (New-Staging)
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl ($script:GoodSddl + '(A;;0x2;;;WD)')) -ParameterFilter (New-PathFilter $a.ProvenancePath)
+        $out = Join-Path $TestDrive 'ev12.json'
+        { New-AapEvidenceRecord -ProvenancePath $a.ProvenancePath -OutPath $out -HeadSha $script:Head } | Should -Throw 'AAP_StagingUntrusted: provenance record*grants S-1-1-0*'
+        $out | Should -Not -Exist
+    }
+    It 'reports a strict staged file that others can change as a failure, never a pass' -Skip:(-not $HasPython) {
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl $script:GoodSddl)
+        $a = Invoke-StrictFetch (New-Entry 'ev13' 'e.bin' "$($script:Base)/ok.bin") (New-Staging)
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl ($script:GoodSddl + '(A;;0x2;;;WD)')) -ParameterFilter (New-PathFilter $a.Path)
+        $out = Join-Path $TestDrive 'ev13.json'
+        [void](New-AapEvidenceRecord -ProvenancePath $a.ProvenancePath -OutPath $out -HeadSha $script:Head)
+        $v = Test-Evidence $out
+        $v.Exit | Should -Be 0 -Because $v.Out
+        $rec = Get-Content -Raw -LiteralPath $out | ConvertFrom-Json
+        $rec.result | Should -Be 'fail'
+        $rec.oracle.observed | Should -Be 'failure'
+        $rec.command | Should -Match 'observed-reason=AAP_StagingUntrusted'
+    }
     It 'a rejected acquisition validates as a failed record, and as a pass when failure was the expectation' -Skip:(-not $HasPython) {
         $st = New-Staging
         $e = New-Entry 'ev2' 'e.bin' "$($script:Base)/ok.bin" ('0' * 64)
@@ -1018,6 +1039,17 @@ Describe 'staging trust' {
             & "$env:SystemRoot\System32\icacls.exe" $Path /grant '*S-1-1-0:(OI)(CI)F' | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "icacls failed for $Path (exit $LASTEXITCODE)" }
         }
+        # One file that every local account can do anything with, one that only the trusted accounts can use, and how many
+        # entries for Everyone a file or folder carries.
+        function Grant-EveryoneFile([string]$Path) {
+            & "$env:SystemRoot\System32\icacls.exe" $Path /grant '*S-1-1-0:F' | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "icacls failed for $Path (exit $LASTEXITCODE)" }
+        }
+        function Lock-File([string]$Path) {
+            & "$env:SystemRoot\System32\icacls.exe" $Path /inheritance:r /grant:r "*$($script:Me):F" '*S-1-5-18:F' '*S-1-5-32-544:F' | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "icacls failed for $Path (exit $LASTEXITCODE)" }
+        }
+        function Get-EveryoneEntries([string]$Path) { @((Get-Acl -LiteralPath $Path).Access | Where-Object { $_.IdentityReference.Value -eq 'Everyone' }).Count }
         function New-TofuEntry2([string]$Name) {
             New-Entry $Name 'a.bin' "$($script:Base)/ok.bin" -Over @{ hash = [ordered]@{ algorithm = 'sha256'; source = 'first-fetch'; value = $null; upstream_entry = $null; upstream_key = $null } }
         }
@@ -1333,6 +1365,166 @@ Describe 'staging trust' {
         Assert-Untouched $victim
         $a.Path | Should -Not -Exist
         (Get-Sha ([IO.File]::ReadAllBytes($a.Path + '.quarantined.1'))) | Should -Be (Get-Sha (Get-Ascii 'tampered'))
+    }
+
+    # ---- the files: whoever can write to a file can change it after it was checked, whatever its bytes are ----
+    It 'refuses a folder that inherits an entry meant for subfolders, at the name folder' {
+        $root = New-Staging
+        & "$env:SystemRoot\System32\icacls.exe" $root /grant '*S-1-1-0:(CI)(IO)M' | Out-Null
+        { Invoke-Fetch (New-Entry 'subonly' 'a.bin' "$($script:Base)/ok.bin") $root } | Should -Throw 'AAP_StagingUntrusted: name folder*grants S-1-1-0*'
+        $script:State.Hits.Count | Should -Be 0
+    }
+    It 'refuses a file that inherits an entry meant for files only, which every folder check skips, and publishes nothing' {
+        $root = New-Staging
+        & "$env:SystemRoot\System32\icacls.exe" $root /grant '*S-1-1-0:(OI)(IO)M' | Out-Null
+        @(Get-AapStagingProblems -Root $root -SkipAncestorCheck -TrustedSid $script:Me).Count | Should -Be 0 -Because 'an inherit-only entry does not apply to the folder itself'
+        $e = New-Entry 'fileonly' 'a.bin' "$($script:Base)/ok.bin"
+        $f = Get-AapStagedPath $root $e
+        { Invoke-Fetch $e $root } | Should -Throw 'AAP_StagingUntrusted: downloaded file*grants S-1-1-0*'
+        $f | Should -Not -Exist
+        "$f.part" | Should -Not -Exist
+        ($f + '.provenance.json') | Should -Not -Exist
+        $script:State.Hits['/ok.bin'] | Should -Be 1 -Because 'a refusal is not retried'
+        (Get-Rejected $root $e).reason | Should -Be 'AAP_StagingUntrusted'
+    }
+    It 'leaves no file with an untrusted ACL under the final name when its replacement is refused too' {
+        $root = New-Staging
+        $e = New-Entry 'nobadfile' 'a.bin' "$($script:Base)/ok.bin"
+        $a = Invoke-Fetch $e $root
+        Grant-EveryoneFile $a.Path
+        & "$env:SystemRoot\System32\icacls.exe" $root /grant '*S-1-1-0:(OI)(IO)M' | Out-Null
+        # the old file is removed first, then the new one is refused
+        { Invoke-Fetch $e $root } | Should -Throw 'AAP_StagingUntrusted: downloaded file*'
+        $a.Path | Should -Not -Exist
+        ($a.Path + '.part') | Should -Not -Exist
+    }
+    It 'keeps a good first-fetch file when its replacement is refused for an entry meant for others' {
+        $root = New-Staging
+        $e = New-TofuEntry2 'keepgood'
+        $a = Invoke-Fetch $e $root @{ RecordFirstFetch = $true }
+        # A change to the ACL of the root reaches the files that already exist, unless they do not inherit; these two do not.
+        Lock-File $a.Path
+        Lock-File ($a.Path + '.first-fetch.json')
+        & "$env:SystemRoot\System32\icacls.exe" $root /grant '*S-1-1-0:(OI)(IO)M' | Out-Null
+        { Invoke-Fetch $e $root } | Should -Throw 'AAP_StagingUntrusted: downloaded file*'
+        (Get-Sha ([IO.File]::ReadAllBytes($a.Path))) | Should -Be $script:OkSha -Because 'the new file is checked before it replaces anything'
+        ($a.Path + '.part') | Should -Not -Exist
+    }
+    It 'checks a new file again where it stands, and removes it when it is not what the partial file was' {
+        $root = New-Staging
+        $e = New-Entry 'afterwards' 'a.bin' "$($script:Base)/ok.bin"
+        $f = Get-AapStagedPath $root $e
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl $script:GoodSddl)
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl ($script:GoodSddl + '(A;;0x2;;;WD)')) -ParameterFilter (New-PathFilter $f)
+        { Get-AapArtifact -Entry $e -StagingRoot $root -AllowLoopbackHttp -TrustedSid @() -SkipAncestorCheck } | Should -Throw 'AAP_StagingUntrusted: staged file*grants S-1-1-0*'
+        $f | Should -Not -Exist
+        ($f + '.provenance.json') | Should -Not -Exist
+        (Get-Rejected $root $e).reason | Should -Be 'AAP_StagingUntrusted'
+    }
+    It 'removes a staged file that has an entry of its own for Everyone, and downloads it again online' {
+        $root = New-Staging
+        $e = New-Entry 'ownacl' 'a.bin' "$($script:Base)/ok.bin"
+        $a = Invoke-Fetch $e $root
+        Grant-EveryoneFile $a.Path
+        Get-EveryoneEntries $a.Path | Should -BeGreaterThan 0
+        $script:State.Hits.Clear()
+        $b = Invoke-Fetch $e $root
+        $b.Provenance.mode | Should -Be 'online' -Because 'a file that others can change is not reused'
+        $b.Verified | Should -BeTrue
+        $script:State.Hits['/ok.bin'] | Should -Be 1
+        $b.Provenance.detail | Should -Match 'removed the staged file, which others can change'
+        Get-EveryoneEntries $b.Path | Should -Be 0
+    }
+    It 'refuses a staged file that has an entry of its own for Everyone offline, and moves it away' {
+        $root = New-Staging
+        $e = New-Entry 'ownacl2' 'a.bin' "$($script:Base)/ok.bin"
+        $a = Invoke-Fetch $e $root
+        Grant-EveryoneFile $a.Path
+        $script:State.Hits.Clear()
+        { Get-AapArtifact -Entry $e -StagingRoot $root -Offline -AllowLoopbackHttp } | Should -Throw 'AAP_StagingUntrusted: staged file*grants S-1-1-0*'
+        $a.Path | Should -Not -Exist
+        ($a.Path + '.quarantined') | Should -Exist
+        $a.ProvenancePath | Should -Not -Exist
+        (Get-Rejected $root $e).detail | Should -Match 'moved the untrusted file to a\.bin\.quarantined'
+        $script:State.Hits.Count | Should -Be 0
+    }
+    It 'refuses a staged file that someone else owns offline, however its ACL looks' {
+        $root = New-Staging
+        $e = New-Entry 'ownowner' 'a.bin' "$($script:Base)/ok.bin"
+        $a = Invoke-Fetch $e $root
+        $stranger = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl $script:GoodSddl)
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl "O:${stranger}G:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)") -ParameterFilter (New-PathFilter $a.Path)
+        $expected = [WildcardPattern]::Escape("AAP_StagingUntrusted: owner $stranger of staged file $($a.Path) is not SYSTEM, Administrators or TrustedInstaller")
+        { Get-AapArtifact -Entry $e -StagingRoot $root -Offline -AllowLoopbackHttp -TrustedSid @() -SkipAncestorCheck } | Should -Throw $expected
+        $a.Path | Should -Not -Exist
+    }
+    It 'reuses a staged file that only the trusted accounts can write' {
+        $root = New-Staging
+        $e = New-Entry 'lockedfile' 'a.bin' "$($script:Base)/ok.bin"
+        $a = Invoke-Fetch $e $root
+        Lock-File $a.Path
+        $script:State.Hits.Clear()
+        $b = Invoke-Fetch $e $root
+        $b.Provenance.mode | Should -Be 'reuse'
+        $b.Verified | Should -BeTrue
+        $script:State.Hits.Count | Should -Be 0
+        $c = Get-AapArtifact -Entry $e -StagingRoot $root -Offline -AllowLoopbackHttp
+        $c.Provenance.mode | Should -Be 'offline'
+        $c.Verified | Should -BeTrue
+    }
+    It 'does not use a first-fetch record that others can change, and does not delete it' {
+        $root = New-Staging
+        $e = New-TofuEntry2 'badrecord'
+        $a = Invoke-Fetch $e $root @{ RecordFirstFetch = $true }
+        $record = $a.Path + '.first-fetch.json'
+        Grant-EveryoneFile $record
+        $before = Get-Content -Raw -LiteralPath $record
+        $script:State.Hits.Clear()
+        { Invoke-Fetch $e $root @{ RecordFirstFetch = $true } } | Should -Throw 'AAP_StagingUntrusted: first-fetch record*grants S-1-1-0*trust anchor*'
+        { Get-AapArtifact -Entry $e -StagingRoot $root -Offline -AllowLoopbackHttp } | Should -Throw 'AAP_StagingUntrusted: first-fetch record*'
+        $record | Should -Exist
+        (Get-Content -Raw -LiteralPath $record) | Should -BeExactly $before
+        $script:State.Hits.Count | Should -Be 0 -Because 'nothing is downloaded against an anchor that cannot be trusted'
+        $a.ProvenancePath | Should -Not -Exist
+    }
+    It 'does not read an upstream hash file that others can change, and downloads it again first online' {
+        $script:State.Sums = ('{0}  {1}' -f $script:OkSha, 'archive-a.bin') + "`n"
+        $sums = New-Entry 'sumsfile' 'SUMS' "$($script:Base)/sums.txt" (Get-Sha (Get-Ascii $script:State.Sums)) -Over @{ content_types = @('text/plain') }
+        $up = [ordered]@{ algorithm = 'sha256'; source = 'upstream-file'; value = $null; upstream_entry = 'sumsfile'; upstream_key = 'archive-a.bin' }
+        $arc = New-Entry 'archivefile' 'archive-a.bin' "$($script:Base)/ok.bin" -Over @{ hash = $up }
+        $m = [pscustomobject]@{ schema = 1; entries = @($sums, $arc); not_reproducible = @() }
+        $root = New-Staging
+        (Invoke-AapManifest -Manifest $m -StagingRoot $root -AllowLoopbackHttp).Complete | Should -BeTrue
+        $sumsPath = Get-AapStagedPath $root $sums
+        Grant-EveryoneFile $sumsPath
+        { Get-AapArtifact -Entry $arc -StagingRoot $root -Manifest $m -Offline -AllowLoopbackHttp } | Should -Throw 'AAP_StagingUntrusted: upstream hash file*grants S-1-1-0*'
+        $r = Invoke-AapManifest -Manifest $m -StagingRoot $root -AllowLoopbackHttp
+        $r.Complete | Should -BeTrue -Because (($r.Results.Message) -join ';')
+        Get-EveryoneEntries $sumsPath | Should -Be 0
+    }
+    It 'does not read an earlier provenance record that others can change, and writes the new one as a new file' {
+        $root = New-Staging
+        $e = New-Entry 'oldprov' 'a.bin' "$($script:Base)/ok.bin"
+        $a = Invoke-Fetch $e $root
+        Grant-EveryoneFile $a.ProvenancePath
+        $b = Invoke-Fetch $e $root
+        $b.Provenance.mode | Should -Be 'reuse'
+        $b.Provenance.requested_url | Should -BeNullOrEmpty -Because 'where a file came from is taken from a record only when nobody else could have written it'
+        $b.Provenance.detail | Should -Match 'ignored an earlier provenance record'
+        Get-EveryoneEntries $b.ProvenancePath | Should -Be 0 -Because 'a record that is written over keeps the entries of the old one'
+    }
+    It 'writes the <kind> record as a new file and does not write through a hard link left at its name' -ForEach @(@{ kind = 'provenance' }, @{ kind = 'rejection' }) {
+        $victim = New-Victim; $root = New-Staging
+        $sha = if ($kind -eq 'rejection') { '0' * 64 } else { $script:OkSha }
+        $e = New-Entry "jrec$kind" 'a.bin' "$($script:Base)/ok.bin" $sha
+        $f = Get-AapStagedPath $root $e
+        New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null
+        $record = $f + $(if ($kind -eq 'rejection') { '.rejected.json' } else { '.provenance.json' })
+        New-Item -ItemType HardLink -Path $record -Value $victim.Sentinel | Out-Null
+        if ($kind -eq 'rejection') { { Invoke-Fetch $e $root } | Should -Throw 'AAP_HashMismatch*' } else { (Invoke-Fetch $e $root).Verified | Should -BeTrue }
+        [IO.File]::ReadAllText($victim.Sentinel) | Should -Be 'untouched'
+        (Get-Content -Raw -LiteralPath $record | ConvertFrom-Json).schema | Should -Be 'aap-provenance/1'
     }
 }
 
@@ -1713,6 +1905,15 @@ Describe 'documentation' {
         $readme | Should -Match 'self-declared'
         $readme | Should -Match 'moby/moby'
     }
+    It 'documents the file checks and says exactly how far the likeness to the supervisor walk goes' {
+        $readme = Get-Content -Raw -LiteralPath (Join-Path $script:Common 'README.md')
+        $readme | Should -Match 'The files get the same owner and ACL check'
+        $readme | Should -Match 'object inherit without container inherit'
+        $readme | Should -Match 'trust anchor'
+        $readme | Should -Match 'Get-AapDataDirProblem'
+        $readme | Should -Match 'does not walk the folders of other entries'
+        $readme | Should -Match 'observed-reason=AAP_StagingUntrusted'
+    }
 }
 
 Describe 'real download (integration)' -Tag Network {
@@ -1750,7 +1951,7 @@ Describe 'real download (integration)' -Tag Network {
         @($p.url_chain).Count | Should -BeGreaterThan 1
         Write-Host "zccache SHA256SUMS: bytes=$($p.bytes) sha256=$($p.sha256) final_host=$(([Uri]$p.final_url).Host) type=$($p.content_type)"
         foreach ($e in @($m.entries | Where-Object { $_.hash.source -eq 'upstream-file' -and $_.hash.upstream_entry -eq 'zccache-sha256sums' })) {
-            $x = Resolve-AapExpectedHash -Entry $e -Manifest $m -StagingRoot $st
+            $x = Resolve-AapExpectedHash -Entry $e -Manifest $m -StagingRoot $st -TrustedSid $script:Me
             $x.Value | Should -Be $e.hash.value -Because $e.name
         }
     }
