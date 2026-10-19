@@ -28,8 +28,13 @@ Each generation records:
 - `artifacts`: every file with role, relative path under `base/<generation_id>/`, bytes, SHA-256.
 - `overlays`: guest agent, actions-runner, zccache, cache config, each with version and hash.
 - `provenance`: building item, builder commit, the P03 inputs manifest hash, build time.
-- `secret_scan`: result and evidence for "no credential, token, key or registration material in
-  the sealed image".
+- `secret_scan`: result and evidence (`evidence_ref` under `evidence/`, required unless the
+  result is `not_run`) for "no credential, token, key or registration material in the sealed
+  image". Scan targets at minimum: PEM blocks; `ghs_`, `ghp_`, `gho_`, `ghu_`, `ghr_` and
+  `github_pat_` shapes; runner `.credentials*` and `.runner` files; `Panther` and `unattend*.xml`;
+  LSA `DefaultPassword` and autologon registry values; SSH host keys and `authorized_keys`;
+  cloud-init seeds and instance data; shell and PowerShell history (including PSReadLine); the
+  build user's password and any build-time credential; the synthetic lab marker.
 - `certification`: the P24 certificate path once issued; `approved_by`.
 - `retention`: owner (`P21`, `P25` or the owner), purpose, expiry.
 
@@ -48,8 +53,13 @@ ARCHITECTURE.md section 6.
 4. `retired`: files stay in `base\<profile>\<generation>\`; kept as the single rollback generation (default 1, budget field
    `rollback_retained_generations`). Rollback is the same atomic switch in reverse.
 5. `quarantined`: never re-activated; a fix is a new `aap.<n>`. Kept until its evidence is copied.
-6. A create re-hashes the base (or verifies a hash recorded with a read-only, unchanged file
-   identity; the P21 implementation picks one and proves tamper detection).
+   Image root protection (owner, ACL, reparse, ancestors) is ARCHITECTURE.md section 3.
+6. Every `create` re-hashes the base and compares it with the hash pinned **outside** the image
+   root: the P24 certificate pins every artifact hash, and the supervisor keeps an admin-only copy
+   in `C:\ProgramData\aap-runner\capacity\approved-images.json`. The catalog's own hashes are
+   not trusted alone, and there is no "unchanged file identity" shortcut.
+7. Activation on the live install needs the owner's approval record (`live_activation`, gate D5);
+   `validate.py` rejects an `active` generation without it.
 
 ## Evaluation media (owner decision 2026-10-19)
 
@@ -69,5 +79,6 @@ installers and clones are not catalog content and are cleaned through P00 manife
 
 An active generation without a certificate, two active generations, an active pointer naming a
 quarantined generation, a short hash, an artifact path that escapes `base/`, an artifact in a
-`rollback/` folder, an artifact stored under another generation's folder, an active
+`rollback/` folder, an artifact stored under another generation's folder, an active generation without the owner's
+live activation record, a clean scan without evidence, a certificate path with `..`, an active
 generation whose secret scan found something.

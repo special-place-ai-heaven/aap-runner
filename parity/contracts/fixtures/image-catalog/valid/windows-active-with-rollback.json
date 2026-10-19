@@ -63,6 +63,7 @@
         "certified_at": "2026-10-19T18:00:00Z"
       },
       "approved_by": "owner",
+      "live_activation": null,
       "retention": {
         "owner": "P25",
         "purpose": "rollback",
@@ -121,6 +122,11 @@
         "certified_at": "2026-10-19T18:00:00Z"
       },
       "approved_by": "owner",
+      "live_activation": {
+        "approved_by": "owner",
+        "approved_at": "2026-10-19T18:00:00Z",
+        "record_ref": "evidence/D5/win25-vs2026-x64_20261007.264.1-aap.2.json"
+      },
       "retention": {
         "owner": "P25",
         "purpose": "active",
@@ -179,6 +185,7 @@
         "certified_at": null
       },
       "approved_by": null,
+      "live_activation": null,
       "retention": {
         "owner": "P25",
         "purpose": "candidate",

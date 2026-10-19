@@ -16,7 +16,17 @@ marker, not a credential).
   JSON document on stdout, at most 20 KiB. Any other output, size or exit code is a refusal.
   Timeout: 60 s per call.
 - No socket, port, named pipe or file drop. Guests cannot reach the distro (network rule,
-  ARCHITECTURE.md boundary 4), so the only caller is the elevated supervisor.
+  ARCHITECTURE.md boundary 4).
+- **Access is not controlled by the broker** (security review M1): WSL sessions belong to the
+  user's SID and `wsl.exe` needs no elevation, so any process running as the operator account can
+  run `wsl -d aap-runner -u root`, call the broker and read `app.pem` directly. Replay, lease-limit
+  and ledger rules are integrity controls against confused or crashed callers, not access control;
+  the App's narrow permission (self-hosted runners only) and the runner group's repository list
+  bound the damage. `distro/README.md`'s threat-model row needs the same correction; that file is
+  owned by P16 (recorded as a P16 todo in the contracts README).
+- Stdout handling: the supervisor reads at most 20 KiB of broker stdout into memory, parses it,
+  and never logs it, not even on a refusal or parse error (it logs only the exit code and the
+  `reason` field when that parses).
 - The broker stays a one-shot process: it holds GitHub tokens only for one request.
 - Availability: the distro and its keep-alive run whenever Linux + Windows >= 1 (owner decision
   2026-10-19), so a VM profile never waits on a stopped distro; see status-settings.md.
@@ -45,23 +55,30 @@ The broker derives:
 (`pending`, with the derived runner name) and after it (`issued` with runner id and name, or
 `refused`), and closed by a release (`released`). Rules:
 
-- A `lease_id` that already has a ledger file is refused with `replay` for `lease_request`,
-  whatever its state.
+- The replay check is the ledger file's **atomic exclusive create** (`O_CREAT|O_EXCL`); a
+  `lease_id` whose file already exists is refused with `replay`, whatever its state. All ledger
+  reads and writes, including the outstanding count, run under one `flock` on
+  `/var/lib/aap-runner/broker/lock`.
 - `issued_at` more than 300 s from the broker clock: `clock_skew`. A lease must be delivered and
   its runner started before `expires_at`, 10 minutes after issue.
 - Stale generation: the broker keeps the highest `lease_generation` seen per **slot**. A request
   with a lower generation for that slot is refused with `stale_generation`.
-- Outstanding limit: more than 5 leases not yet `released` (pending or issued) gives `lease_limit`.
-  A crash therefore cannot let leases pile up beyond the slot count.
+- Outstanding limit: more than 5 leases not yet `released` (pending or issued) gives `lease_limit`,
+  counted under the lock. A crash therefore cannot let leases pile up beyond the slot count.
+- Sweep: on every run, before handling the request, the broker deletes the GitHub runner of every
+  expired lease that is not yet `released` (by the ledger's runner id, or by derived name when the
+  id was never stored) and marks it `released`. A `wsl.exe` timeout or crash before the runner id is
+  stored therefore cannot strand a lease or a registration.
 - `release_request` is **mandatory at every teardown**, whatever the reason, including a runner
   that ran its job. The broker resolves the runner id from the ledger; for a lease still `pending`
   after a crash it looks the runner up by its derived name
   (`GET /orgs/{org}/actions/runners?name=<name>`). It deletes the runner
   (`DELETE /orgs/{org}/actions/runners/{id}`) and answers `deregistered`; a 404 or no match is
   `already_gone`. Both close the lease and are accepted as the teardown proof's runner part. Its
-  `nonce` must be new for that lease. `retry` means GitHub failed; the slot stays `deleting`.
-- `status_request` reports the runner's GitHub `status` (`online`, `offline`) and `busy`, or
-  `absent`; the allocator uses it to decide when a heartbeat-quarantined slot may be destroyed.
+  `nonce` must be new for that lease. Only the ledger-recorded runner is ever deleted; a request
+  cannot name a different one. `retry` means GitHub failed; the slot stays `deleting`.
+- `status_request` is read-only: it looks up the ledger-recorded runner id and reports its GitHub
+  `status` (`online`, `offline`) and `busy`, or `absent`; the allocator uses it to decide when a heartbeat-quarantined slot may be destroyed.
 - The ledger never stores the JIT config, a token, a JWT or a hash of them.
 
 ## JIT config delivery (DECIDED mechanism, lab proof CANDIDATE D2)
@@ -92,6 +109,10 @@ schema forbids any other field, and `validate.py` rejects secret-shaped field na
 | supervisor crashes after `issued` | on restart the lease is spent: `release_request` with that lease id, then a new reservation generation |
 
 ## Tests P08 must ship
+
+Security review L4: the secret-marker test samples every distro process's argv (`/proc/*/cmdline`)
+during a broker run; the broker reuses `manager.sh`'s stdin pattern for every bearer token (curl
+reads headers from stdin) and never passes the JIT value through argv, including `jq --arg`.
 
 Expired, replayed, stale-generation (per slot), outstanding-limit, oversized, unknown-field
 (including `command`, `path`, `work_folder`, `labels`, `runner_id`), release of a pending lease by

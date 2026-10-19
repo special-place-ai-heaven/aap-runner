@@ -6,108 +6,446 @@
   "x-owner": "P12 (supervisor writer and supervisor/README.md); P20 (tray reader); P09 supplies capacity, P21/P25 generation, P13 cache state",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "state", "updated", "detail", "settings_schemas", "applied_settings_schema", "capacity", "profiles", "slots", "legacy_pool"],
+  "required": [
+    "schema",
+    "state",
+    "updated",
+    "detail",
+    "settings_schemas",
+    "applied_settings_schema",
+    "capacity",
+    "profiles",
+    "slots",
+    "legacy_pool"
+  ],
   "properties": {
-    "schema": {"const": 5},
-    "state": {"enum": ["off", "starting", "idle", "running", "draining", "paused", "error"]},
-    "updated": {"$ref": "#/$defs/time"},
-    "detail": {"type": "string", "maxLength": 300, "pattern": "^[ -~]*$"},
-    "settings_schemas": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": [1, 2, 3]}},
-    "applied_settings_schema": {"enum": [null, 1, 2, 3]},
+    "schema": {
+      "const": 5
+    },
+    "state": {
+      "enum": [
+        "off",
+        "starting",
+        "idle",
+        "running",
+        "draining",
+        "paused",
+        "error"
+      ]
+    },
+    "updated": {
+      "$ref": "#/$defs/time"
+    },
+    "detail": {
+      "type": "string",
+      "maxLength": 300,
+      "pattern": "^[ -~]*$"
+    },
+    "settings_schemas": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    "applied_settings_schema": {
+      "enum": [
+        null,
+        1,
+        2,
+        3
+      ]
+    },
     "capacity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["max_slots", "used_slots", "free_slots", "host_reserve_percent", "share_mode", "host"],
+      "required": [
+        "max_slots",
+        "used_slots",
+        "free_slots",
+        "host_reserve_percent",
+        "share_mode",
+        "host"
+      ],
       "properties": {
-        "max_slots": {"const": 5},
-        "used_slots": {"type": "integer", "minimum": 0, "maximum": 5},
-        "free_slots": {"type": "integer", "minimum": 0, "maximum": 5},
-        "host_reserve_percent": {"type": "integer", "minimum": 10, "maximum": 90},
-        "share_mode": {"enum": ["even", "per_profile"]},
-        "host": {"$ref": "#/$defs/res"}
+        "max_slots": {
+          "const": 5
+        },
+        "used_slots": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "free_slots": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "host_reserve_percent": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 90
+        },
+        "share_mode": {
+          "enum": [
+            "even",
+            "per_profile"
+          ]
+        },
+        "host": {
+          "$ref": "#/$defs/res"
+        }
       }
     },
-    "profiles": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/profile"}},
-    "slots": {"type": "array", "maxItems": 5, "items": {"$ref": "#/$defs/slot"}},
+    "profiles": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/profile"
+      }
+    },
+    "slots": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "$ref": "#/$defs/slot"
+      }
+    },
     "legacy_pool": {
       "anyOf": [
-        {"type": "null"},
+        {
+          "type": "null"
+        },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["runner_count", "job_cpus", "job_memory_gib", "sharing", "job_io_mbps", "work_disk_gib", "work_disk_free_gb", "work_disk_floor_gb", "cleaning"],
+          "required": [
+            "runner_count",
+            "job_cpus",
+            "job_memory_gib",
+            "sharing",
+            "job_io_mbps",
+            "work_disk_gib",
+            "work_disk_free_gb",
+            "work_disk_floor_gb",
+            "cleaning"
+          ],
           "properties": {
-            "runner_count": {"type": ["integer", "null"], "minimum": 0, "maximum": 5},
-            "job_cpus": {"type": ["integer", "null"], "minimum": 0, "maximum": 1024},
-            "job_memory_gib": {"type": ["integer", "null"], "minimum": 0, "maximum": 4096},
-            "sharing": {"enum": ["slice", "fixed", null]},
-            "job_io_mbps": {"type": ["integer", "null"], "minimum": 0},
-            "work_disk_gib": {"type": ["integer", "null"], "minimum": 0, "maximum": 1024},
-            "work_disk_free_gb": {"type": ["integer", "null"], "minimum": 0, "maximum": 1024},
-            "work_disk_floor_gb": {"type": ["integer", "null"], "minimum": 0, "maximum": 1024},
-            "cleaning": {"type": "boolean"}
+            "runner_count": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 5
+            },
+            "job_cpus": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1024
+            },
+            "job_memory_gib": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 4096
+            },
+            "sharing": {
+              "enum": [
+                "slice",
+                "fixed",
+                null
+              ]
+            },
+            "job_io_mbps": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1000000
+            },
+            "work_disk_gib": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1024
+            },
+            "work_disk_free_gb": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1024
+            },
+            "work_disk_floor_gb": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1024
+            },
+            "cleaning": {
+              "type": "boolean"
+            }
           }
         }
       ]
     }
   },
   "$defs": {
-    "time": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "time": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
     "res": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["cpus", "mem_gib"],
+      "required": [
+        "cpus",
+        "mem_gib"
+      ],
       "properties": {
-        "cpus": {"type": "integer", "minimum": 0, "maximum": 1024},
-        "mem_gib": {"type": "integer", "minimum": 0, "maximum": 4096}
+        "cpus": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "mem_gib": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        }
       }
     },
-    "url_run": {"type": "string", "pattern": "^(|https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+)$"},
+    "url_run": {
+      "type": "string",
+      "pattern": "^(|https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+)$"
+    },
     "profile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["profile", "os", "backend", "count", "share_percent", "per_runner", "profile_cap", "image_generation", "generation_state", "cache", "available", "unavailable_reason"],
+      "required": [
+        "profile",
+        "os",
+        "backend",
+        "count",
+        "share_percent",
+        "per_runner",
+        "profile_cap",
+        "image_generation",
+        "generation_state",
+        "cache",
+        "available",
+        "unavailable_reason"
+      ],
       "properties": {
-        "profile": {"enum": ["linux", "windows"]},
-        "os": {"enum": ["Linux", "Windows"]},
-        "backend": {"enum": ["wsl-legacy", "hyperv-vm", "none"]},
-        "count": {"type": "integer", "minimum": 0, "maximum": 5},
-        "share_percent": {"type": ["integer", "null"], "minimum": 0, "maximum": 90},
-        "per_runner": {"$ref": "#/$defs/res"},
-        "profile_cap": {"$ref": "#/$defs/res"},
-        "image_generation": {"type": ["string", "null"], "maxLength": 80},
-        "generation_state": {"enum": ["active", "draining_old", "stale", "quarantined", null]},
+        "profile": {
+          "enum": [
+            "linux",
+            "windows"
+          ]
+        },
+        "os": {
+          "enum": [
+            "Linux",
+            "Windows"
+          ]
+        },
+        "backend": {
+          "enum": [
+            "wsl-legacy",
+            "hyperv-vm",
+            "none"
+          ]
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "share_percent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 90
+        },
+        "per_runner": {
+          "$ref": "#/$defs/res"
+        },
+        "profile_cap": {
+          "$ref": "#/$defs/res"
+        },
+        "image_generation": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 80
+        },
+        "generation_state": {
+          "enum": [
+            "active",
+            "draining_old",
+            "stale",
+            "quarantined",
+            null
+          ]
+        },
         "cache": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "detail"],
+          "required": [
+            "state",
+            "detail"
+          ],
           "properties": {
-            "state": {"enum": ["qualified", "direct", "disabled", "degraded", "unknown"]},
-            "detail": {"type": "string", "maxLength": 200, "pattern": "^[ -~]*$"}
+            "state": {
+              "enum": [
+                "qualified",
+                "direct",
+                "disabled",
+                "degraded",
+                "unknown"
+              ]
+            },
+            "detail": {
+              "type": "string",
+              "maxLength": 200,
+              "pattern": "^[ -~]*$"
+            }
           }
         },
-        "available": {"type": "boolean"},
-        "unavailable_reason": {"type": "string", "maxLength": 200, "pattern": "^[ -~]*$"}
+        "available": {
+          "type": "boolean"
+        },
+        "unavailable_reason": {
+          "type": "string",
+          "maxLength": 200,
+          "pattern": "^[ -~]*$"
+        }
       }
     },
     "slot": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["slot", "profile", "os", "backend", "lifecycle", "image_generation", "job", "repo", "run_url", "job_url", "started_at", "cpu_cores", "mem_gib"],
+      "required": [
+        "slot",
+        "profile",
+        "os",
+        "backend",
+        "lifecycle",
+        "image_generation",
+        "job",
+        "repo",
+        "run_url",
+        "job_url",
+        "started_at",
+        "cpu_cores",
+        "mem_gib"
+      ],
       "properties": {
-        "slot": {"type": "integer", "minimum": 1, "maximum": 5},
-        "profile": {"enum": ["linux", "windows"]},
-        "os": {"enum": ["Linux", "Windows"]},
-        "backend": {"enum": ["wsl-legacy", "hyperv-vm"]},
-        "lifecycle": {"enum": ["creating", "ready", "busy", "draining", "collecting", "deleting", "quarantined"]},
-        "image_generation": {"type": "string", "maxLength": 80},
-        "job": {"type": "string", "maxLength": 200},
-        "repo": {"type": "string", "pattern": "^(|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$"},
-        "run_url": {"$ref": "#/$defs/url_run"},
-        "job_url": {"type": ["string", "null"], "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+/job/[0-9]+$"},
-        "started_at": {"anyOf": [{"$ref": "#/$defs/time"}, {"type": "null"}]},
-        "cpu_cores": {"type": ["number", "null"], "minimum": 0, "maximum": 1024},
-        "mem_gib": {"type": ["number", "null"], "minimum": 0, "maximum": 4096}
+        "slot": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "profile": {
+          "enum": [
+            "linux",
+            "windows"
+          ]
+        },
+        "os": {
+          "enum": [
+            "Linux",
+            "Windows"
+          ]
+        },
+        "backend": {
+          "enum": [
+            "wsl-legacy",
+            "hyperv-vm"
+          ]
+        },
+        "lifecycle": {
+          "enum": [
+            "creating",
+            "ready",
+            "busy",
+            "draining",
+            "collecting",
+            "deleting",
+            "quarantined"
+          ]
+        },
+        "image_generation": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "job": {
+          "type": "string",
+          "maxLength": 200,
+          "pattern": "^[^\\x00-\\x1f\\x7f\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]*$"
+        },
+        "repo": {
+          "type": "string",
+          "pattern": "^(|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$"
+        },
+        "run_url": {
+          "$ref": "#/$defs/url_run"
+        },
+        "job_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+/job/[0-9]+$"
+        },
+        "started_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cpu_cores": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "mem_gib": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4096
+        }
       }
     }
   }

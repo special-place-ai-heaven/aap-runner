@@ -31,6 +31,9 @@ Same keys as schema 2 with the same meaning, plus `linux_backend`, `host_reserve
   supervisor caps them to the Linux profile cap when it writes `limits.conf` and reports the
   applied values in `legacy_pool`. They are ignored while Linux is 0 or `linux_backend` is
   `hyperv-vm`.
+- `lease_wall_clock_hours` (1..72, default 6): host cap per VM lease. Past it, a quarantined slot
+  whose runner GitHub reports offline is destroyed; a runner GitHub reports busy is never
+  destroyed, only flagged in `status.v5.json` `detail` for the owner.
 - `linux_backend` (`wsl-legacy` default, or `hyperv-vm`) is supervisor-side: the tray offers no
   control for it and writes back the value `status.v5.json` reports. Only the cutover item (P27)
   flips it, and the supervisor refuses `hyperv-vm` (keeping the last valid settings) unless an

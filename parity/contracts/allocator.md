@@ -10,17 +10,20 @@ Architecture: [ARCHITECTURE.md section 2](../../docs/parity/ARCHITECTURE.md#2-al
 Administrators with SYSTEM and Administrators full control and no user write, like the data
 folder root. Only the supervisor writes it: whole-file atomic rename from a temp file in the same
 folder, `revision` + 1 on every write. A reader that already applied a higher revision ignores a
-lower one. The supervisor holds the named mutex `Global\aap-runner-allocator` for every
-read-modify-write, so a second supervisor instance or a helper probe cannot interleave.
+lower one. Every read-modify-write holds an exclusive lock file,
+`C:\ProgramData\aap-runner\capacity\allocator.lock` (opened with no sharing, inside the
+admin-only folder), with a bounded wait of 30 s; a timeout fails the operation visibly (status
+`error`, nothing admitted). A named object in the global namespace is not used because any process
+could squat it.
 
 ## Fields
 
 | Field | Meaning |
 |---|---|
 | `max_slots` | always 5: every registered, warm, listening, busy or cleanup-uncertain runner of every backend counts |
-| `host` | measured logical CPUs, GiB of RAM, the image-root disk admission budget (`disk_gib`: free space on `D:\aap-runner\images` minus replacement and staging headroom from the budget records) and image-root throughput (`io_mbps`, 0 = not measured) |
+| `host` | measured logical CPUs, GiB of RAM, the always-on WSL control VM's resident memory (`control_distro_mem_gib`, taken off the pool first), the image-root disk admission budget (`disk_gib`: free space on `D:\aap-runner\images` minus replacement and staging headroom from the budget records) and image-root throughput (`io_mbps`, 0 = not measured) |
 | `host_reserve_percent` | 10..90, default 10; 10 is the owner-confirmed minimum (2026-10-19). Never allocated |
-| `share_mode` | `even`: each runner gets `floor(pool / (linux + windows))` where `pool = floor(host * (100 - reserve) / 100)` (today's tray rule). `per_profile`: profile cap `floor(host * share / 100)`, each runner `floor(cap / count)` |
+| `share_mode` | `even`: each runner gets `floor(pool / (linux + windows))` where `pool = floor(host * (100 - reserve) / 100)`, minus `control_distro_mem_gib` for memory (today's tray rule, with the control VM paid first). `per_profile`: profile cap `floor(host * share / 100)`, each runner `floor(cap / count)` |
 | `profiles.linux/windows` | `count` 0..5, `share_percent` (null in `even`), `backend`, `active_generation`. The Linux `backend` mirrors settings `linux_backend` (default `wsl-legacy`, flipped only by P27) |
 | `legacy_adopted` | true once every legacy pool slot has a reservation |
 | `slot_generations` | five counters, index 0 = slot 1. The supervisor increments a slot's counter before it creates a reservation in that slot; the reservation's `lease_generation` is that value |
@@ -58,8 +61,8 @@ exactly the VM name `aap-<w|l>-<slot>-<lease_generation>-<first 8 hex of reserva
 9. `wsl-legacy` reservations are Linux, `vm_id` null, generation `legacy-*`. A VM reservation past
    `creating` names its `vm_id`.
 10. `quarantine_kind` and `quarantine_reason` are set exactly when `quarantined`. `teardown_proof`
-    is present exactly when `reconciled`, and its kind matches the backend: `vm` (VM and disks
-    observed absent) or `legacy` (the manager reports the slot gone). `runner_deregistered` is
+    is present exactly when `reconciled`, and its kind matches the backend: `vm` (VM, its
+    configuration/saved-state/checkpoint files and disks observed absent) or `legacy` (the manager reports the slot gone). `runner_deregistered` is
     `true` (broker release), `github-removed` (ephemeral runner removed after its job, confirmed by
     `release_request` answering `already_gone`) or `never_registered` (create or boot failed before
     any lease).
@@ -78,11 +81,12 @@ States: `creating`, `ready` (registered and listening), `busy`, `draining`, `col
 - Three missed intervals (90 s) move `ready` or `busy` to `quarantined`, kind `heartbeat`,
   `cleanup_uncertain: true`, capacity and resources held.
 - A validated heartbeat returns a heartbeat-quarantined slot to `busy` (job running) or `ready`.
-- A heartbeat-quarantined slot is destroyed only when the broker's `status_request` reports its
-  runner `offline` or `absent`, or the job is known to have ended, or the profile's job wall clock
-  plus 60 minutes has passed since the last heartbeat (default 120 + 60 minutes; the wall clock is
-  the existing `AAP_JOB_TIMEOUT_MINUTES`, at most 1440). A running job is never cancelled by
-  the allocator.
+- A heartbeat-quarantined slot is destroyed only when the broker's read-only `status_request`
+  (runner looked up by the ledger's runner id) reports it `offline` or `absent` and not busy, or
+  the job is known to have ended. A VM whose runner GitHub reports `busy` is never destroyed: past
+  the per-lease host wall clock (`lease_wall_clock_hours` in settings, default 6) the slot stays
+  held, `cleanup_uncertain`, and status flags it for the owner. A running job is never cancelled
+  by the allocator.
 - `hostile_guest` is immediate and final: the slot goes straight to `deleting` and the VM is never
   trusted again.
 - Only `reconciled` frees a slot. A late `job_done` for an older `lease_generation` is ignored for
@@ -93,7 +97,9 @@ States: `creating`, `ready` (registered and listening), `busy`, `draining`, `col
 Before the first VM reservation the allocator writes one `wsl-legacy` reservation per configured
 legacy slot (`AAP_RUNNER_COUNT` as the manager reports it in `status.json`), sets
 `legacy_adopted: true`, and from then on derives `AAP_RUNNER_COUNT` in `limits.conf` from the
-Linux legacy reservations it grants. The legacy pool keeps its own `fixed`/`slice` sharing inside
+Linux legacy reservations it grants, and `AAP_JOB_CPUS`/`AAP_JOB_MEMORY` as the minimum of the
+setting and the Linux cap (shares win). Each legacy reservation records the per-slot `cpus` and
+`mem_gib` that `limits.conf` actually grants, so the pool check sees the real footprint. The legacy pool keeps its own `fixed`/`slice` sharing inside
 the Linux share. A legacy slot is released only when the manager reports it gone; a `retired`
 manager slot is `quarantined` until the manager restarts or drains.
 
@@ -121,6 +127,6 @@ even 3L+2W -> 4L+1W while a Windows VM drains (the fourth Linux slot waits).
 Invalid: sixth live reservation, duplicate slot, VM before legacy adoption, shares that give away
 the reserve, reserve under 10, Linux 5 plus Windows 2, a runner over its share, VM memory overhead
 over the share, Linux taking its new share before Windows finished draining, disk budget exceeded,
-IO reserved while unmeasured, stale lease generation, a runner name that is not the VM name, a
+IO reserved while unmeasured, the control VM's memory pushing the pool over, stale lease generation, a runner name that is not the VM name, a
 quarantine without kind, an admission on the wrong backend, reconciled without proof, a legacy
 proof on a VM.

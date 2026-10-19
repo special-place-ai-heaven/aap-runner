@@ -161,6 +161,35 @@ def _same(a, b):
 # ---- semantic rules (part of each contract; see the matching .md) ----------------------------
 
 SECRET_KEY = re.compile(r"(token|secret|password|passwd|private_key|jit_config|credential|pem)", re.I)
+# Value shapes of GitHub tokens and PEM blocks; never valid in any contract document.
+SECRET_VALUE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)")
+
+
+def _no_secret_values(doc, path="$"):
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            _no_secret_values(v, f"{path}.{k}")
+    elif isinstance(doc, list):
+        for i, v in enumerate(doc):
+            _no_secret_values(v, f"{path}[{i}]")
+    elif isinstance(doc, str) and SECRET_VALUE.search(doc):
+        raise Invalid(f"{path}: value has a token or private-key shape")
+
+
+def lint_schema(node, path="$"):
+    """Every integer or number in a contract schema has a maximum (security review L1)."""
+    problems = []
+    if isinstance(node, dict):
+        t = node.get("type")
+        types = t if isinstance(t, list) else [t]
+        if ("integer" in types or "number" in types) and "maximum" not in node and "const" not in node and "enum" not in node:
+            problems.append(f"{path}: numeric without maximum")
+        for k, v in node.items():
+            problems += lint_schema(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            problems += lint_schema(v, f"{path}[{i}]")
+    return problems
 
 
 def _no_secret_keys(doc, path="$"):
@@ -180,7 +209,8 @@ def _no_secret_keys(doc, path="$"):
 def _profile_caps(doc_host, reserve, mode, profiles):
     """Per-profile caps and per-runner share in (cpus, gib). floor everywhere; the reserve is
     never handed out."""
-    pool = (doc_host["cpu_cores"] * (100 - reserve) // 100, doc_host["mem_gib"] * (100 - reserve) // 100)
+    pool = (doc_host["cpu_cores"] * (100 - reserve) // 100,
+            doc_host["mem_gib"] * (100 - reserve) // 100 - doc_host.get("control_distro_mem_gib", 0))
     total = sum(p["count"] for p in profiles.values())
     caps = {}
     for name, p in profiles.items():
@@ -309,6 +339,12 @@ def sem_backend_lifecycle(doc):
     name = doc["vm"]["vm_name"]
     if name is not None and not name.endswith("-" + doc["reservation_id"][2:10]):
         raise Invalid("vm_name must end with the first 8 hex of the reservation_id")
+    rid = doc["reservation_id"]
+    exact = {"base_ref": f"base/{doc['image_generation']}/base.vhdx", "os_diff": f"clones/{rid}/os.avhdx",
+             "seed": f"clones/{rid}/seed.iso", "scratch": f"scratch/{rid}/scratch.vhdx"}
+    for d in doc["disks"]:
+        if d["path"] != exact[d["role"]]:
+            raise Invalid(f"disk {d['role']}: path must be exactly {exact[d['role']]}")
 
 
 def sem_broker(doc):
@@ -333,10 +369,19 @@ def sem_broker(doc):
 
 
 def sem_guest_transport(doc):
+    if doc["kind"] == "exchange":
+        sem_guest_transport(doc["cmd"])
+        sem_guest_transport(doc["reply"])
+        for k in ("vm_id", "reservation_id", "lease_generation", "seq", "nonce"):
+            if doc["cmd"][k] != doc["reply"][k]:
+                raise Invalid(f"reply does not echo {k}: hostile guest")
+        return
     if doc["kind"] == "host_cmd":
         if (doc["cmd"] == "deliver_registration") != (doc["payload_bytes"] > 0):
             raise Invalid("payload_bytes > 0 exactly for deliver_registration")
     else:
+        if len(json.dumps(doc, separators=(",", ":"), ensure_ascii=False).encode()) > 8192:
+            raise Invalid("reply larger than 8192 bytes")
         _no_secret_keys(doc)
 
 
@@ -351,6 +396,8 @@ def sem_image_catalog(doc):
         for a in g["artifacts"]:
             if not a["path"].startswith(f"base/{g['generation_id']}/"):
                 raise Invalid(f"{g['generation_id']}: artifacts live in base/<profile>/<generation>/ and never move")
+        if g["state"] == "active" and g["live_activation"] is None:
+            raise Invalid(f"{g['generation_id']}: active requires the owner's live activation record (gate D5)")
         if g["state"] in ("approved", "active", "retired"):
             if g["certification"]["certificate_ref"] is None or g["approved_by"] is None:
                 raise Invalid(f"{g['generation_id']}: {g['state']} requires a certificate and an approver")
@@ -457,6 +504,7 @@ SEMANTIC = {
 
 def validate(name, schema, instance):
     check(schema, instance, schema)
+    _no_secret_values(instance)
     rule = SEMANTIC[name]
     if rule:
         try:
@@ -509,6 +557,7 @@ def main():
             failures.append(f"{name}: $schema must be draft 2020-12")
         if not isinstance(schema.get("x-contract-version"), int) or not schema.get("x-owner"):
             failures.append(f"{name}: needs integer x-contract-version and x-owner")
+        failures += [f"{name}: {p}" for p in lint_schema(schema)]
         valid = sorted((HERE / "fixtures" / name / "valid").glob("*.json"))
         invalid = sorted((HERE / "fixtures" / name / "invalid").glob("*.json"))
         if len(valid) < 1 or len(invalid) < 3:

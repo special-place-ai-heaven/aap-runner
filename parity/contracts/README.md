@@ -46,8 +46,11 @@ names the error it must produce, so it cannot pass for the wrong reason.
    replay, skew, per-slot stale-generation and outstanding-lease refusals; secret-free audit.
 6. JIT config instead of registration tokens for VM guests, delivered in memory and consumed as
    `ACTIONS_RUNNER_INPUT_JITCONFIG`, never argv or a file.
-7. The fixed management command set, wire framing (agent entrypoints, stdin/stdout, vsock port
-   5222), echo/sequence/nonce replay rules and hostile-reply handling.
+7. The fixed management command set, wire framing (capped child process for PowerShell Direct,
+   agent entrypoints, stdin/stdout only, vsock port 5222, hardened ssh), echo/sequence/nonce replay
+   rules, hostile-reply handling, and the guest network enforcement shape.
+7a. JIT secrecy: no copy outside the runner's root and processes; destroy is the control; `reset`
+   forbidden; the runner starts as `Runner.Listener` directly.
 8. Immutable catalog generations tied to the P01 baselines, one active per profile, one retained
    rollback, quarantine is final.
 9. zccache 1.15.6 only, per-pair qualification, direct compilation otherwise, no sccache.
@@ -70,7 +73,7 @@ and a **test org and repository**, so the lab never uses the production App, key
    private switch per guest.
 4. End-to-end JIT runner behaviour on the pinned runner release: environment input consumed and
    masked, one job, registration gone afterwards, unused runner deletion, no copy left in the guest.
-5. Destroy-and-recreate per job versus a cheaper reset (reset stays unused without proof).
+5. (Removed by the security review: `reset` is forbidden, so there is nothing to prove.)
 6. Measured disk, memory and IO budgets per generation.
 7. hvsocket service registration through the existing elevated helper (P19).
 
@@ -98,6 +101,22 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
    (build) and P25 (operations). The lab host is this machine (Hyper-V enabled). The compute and
    storage budget must still be measured and approved before any VM is created, so D2 stays
    partly met until then.
+
+## Security review (2026-10-19) items carried by other owners
+
+- **P10.0 guest network module** (new ledger item, coordinator adds it): the one shared guest
+  network module for P10 and P11, implementing the enforcement shape in guest-transport.md.
+- **P02.1**: lab cases added for crafted CLIXML, remote host-UI calls, stream floods, a
+  guest-replaced endpoint, IPv6 and host-port reachability, ARP/DHCP/RA spoofing, WSL mirrored
+  mode, host PowerShell 4103/4104 and transcription, and a stolen runner credential; plus the
+  framed-hvsocket comparison for Windows.
+- **P16 todo**: correct the `distro/README.md` threat-model row: any process of the operator
+  account can reach the distro as root and read `app.pem` (WSL session per SID, no elevation), so
+  the broker's rules are integrity controls, not access control.
+- **P19**: installer creates and locks `D:\aap-runner`, registers the hvsocket service GUID, the
+  guest firewall rules and the core-scheduler check through the existing helper.
+- **P21/P24/P25**: image scan targets, hash pins outside the image root, owner live-activation
+  record (D5), runner overlay rebuild inside GitHub's support window.
 
 ## Findings recorded while freezing
 

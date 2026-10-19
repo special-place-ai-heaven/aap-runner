@@ -3,6 +3,7 @@
   "instance": {
     "schema": 3,
     "linux_backend": "wsl-legacy",
+    "lease_wall_clock_hours": 6,
     "runner_count": 3,
     "windows_runner_count": 3,
     "job_cpus": 19,

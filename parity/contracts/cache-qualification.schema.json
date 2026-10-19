@@ -6,23 +6,66 @@
   "x-owner": "P04 (writer); consumers P13, P14, P15, P16, P20 (cache state), P22, P24",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "zccache", "platform", "matrix_revision", "rows"],
+  "required": [
+    "schema",
+    "zccache",
+    "platform",
+    "matrix_revision",
+    "rows"
+  ],
   "properties": {
-    "schema": {"const": 1},
+    "schema": {
+      "const": 1
+    },
     "zccache": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "commit", "archive", "archive_sha256", "binary_sha256"],
+      "required": [
+        "version",
+        "commit",
+        "archive",
+        "archive_sha256",
+        "binary_sha256"
+      ],
       "properties": {
-        "version": {"const": "1.15.6"},
-        "commit": {"const": "15ec9537af0d219e07b72ce2b3f97d5f68d72b5e"},
-        "archive": {"enum": ["zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz", "zccache-v1.15.6-x86_64-pc-windows-msvc.zip"]},
-        "archive_sha256": {"enum": ["885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7", "a9e2b079946d00757a56fea3dacd8a47f9cb4bcbfe8c427ffd719ced59fd949b"]},
-        "binary_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+        "version": {
+          "const": "1.15.6"
+        },
+        "commit": {
+          "const": "15ec9537af0d219e07b72ce2b3f97d5f68d72b5e"
+        },
+        "archive": {
+          "enum": [
+            "zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz",
+            "zccache-v1.15.6-x86_64-pc-windows-msvc.zip"
+          ]
+        },
+        "archive_sha256": {
+          "enum": [
+            "885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7",
+            "a9e2b079946d00757a56fea3dacd8a47f9cb4bcbfe8c427ffd719ced59fd949b"
+          ]
+        },
+        "binary_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        }
       }
     },
-    "platform": {"enum": ["linux-x86_64", "windows-x86_64"]},
-    "matrix_revision": {"type": "integer", "minimum": 1},
+    "platform": {
+      "enum": [
+        "linux-x86_64",
+        "windows-x86_64"
+      ]
+    },
+    "matrix_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000
+    },
     "rows": {
       "type": "array",
       "minItems": 1,
@@ -30,19 +73,114 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["compiler", "compiler_version", "invocation", "mode", "evidence_ref", "reason"],
+        "required": [
+          "compiler",
+          "compiler_version",
+          "invocation",
+          "mode",
+          "evidence_ref",
+          "reason"
+        ],
         "properties": {
-          "compiler": {"enum": ["rustc", "gcc", "g++", "clang", "clang++", "clang-cl", "cl", "link", "lld-link", "ld.lld", "nvcc", "emcc"]},
-          "compiler_version": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[ -~]+$"},
-          "invocation": {"enum": ["rustc-wrapper", "compile-object", "compile-pch", "response-file", "link", "preprocess-only", "depfile", "debug-pdb", "path-with-spaces", "unknown-flag"]},
-          "mode": {"enum": ["qualified", "direct"]},
-          "evidence_ref": {"type": ["string", "null"], "maxLength": 200, "pattern": "^parity/cache/qualification/"},
-          "reason": {"type": "string", "maxLength": 200, "pattern": "^[ -~]*$"}
+          "compiler": {
+            "enum": [
+              "rustc",
+              "gcc",
+              "g++",
+              "clang",
+              "clang++",
+              "clang-cl",
+              "cl",
+              "link",
+              "lld-link",
+              "ld.lld",
+              "nvcc",
+              "emcc"
+            ]
+          },
+          "compiler_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[ -~]+$"
+          },
+          "invocation": {
+            "enum": [
+              "rustc-wrapper",
+              "compile-object",
+              "compile-pch",
+              "response-file",
+              "link",
+              "preprocess-only",
+              "depfile",
+              "debug-pdb",
+              "path-with-spaces",
+              "unknown-flag"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "qualified",
+              "direct"
+            ]
+          },
+          "evidence_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200,
+                "pattern": "^parity/cache/qualification/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$",
+                "not": {
+                  "pattern": "(^|/)\\.\\.?(/|$)"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 200,
+            "pattern": "^[ -~]*$"
+          }
         }
       }
     }
   },
-  "if": {"properties": {"platform": {"const": "linux-x86_64"}}},
-  "then": {"properties": {"zccache": {"properties": {"archive": {"const": "zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz"}, "archive_sha256": {"const": "885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7"}}}}},
-  "else": {"properties": {"zccache": {"properties": {"archive": {"const": "zccache-v1.15.6-x86_64-pc-windows-msvc.zip"}, "archive_sha256": {"const": "a9e2b079946d00757a56fea3dacd8a47f9cb4bcbfe8c427ffd719ced59fd949b"}}}}}
+  "if": {
+    "properties": {
+      "platform": {
+        "const": "linux-x86_64"
+      }
+    }
+  },
+  "then": {
+    "properties": {
+      "zccache": {
+        "properties": {
+          "archive": {
+            "const": "zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz"
+          },
+          "archive_sha256": {
+            "const": "885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7"
+          }
+        }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "zccache": {
+        "properties": {
+          "archive": {
+            "const": "zccache-v1.15.6-x86_64-pc-windows-msvc.zip"
+          },
+          "archive_sha256": {
+            "const": "a9e2b079946d00757a56fea3dacd8a47f9cb4bcbfe8c427ffd719ced59fd949b"
+          }
+        }
+      }
+    }
+  }
 }

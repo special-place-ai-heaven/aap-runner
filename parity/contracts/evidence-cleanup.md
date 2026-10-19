@@ -18,7 +18,8 @@ artifact hashes and the independent verifier.
 - An observed success with an expected success must have `exit_status` 0.
 - `skipped`, `blocked`, `timeout` and `unknown` are reported as such and are never a pass.
 - No raw environment dump, no log body, no field whose name looks like a token, secret, password,
-  key, credential or JIT config (`validate.py` rejects them). Artifacts are referenced by hash.
+  key, credential or JIT config, and no value shaped like a GitHub token or a PEM private key
+  (`validate.py` scans every contract document for both). Artifacts are referenced by hash.
 
 ## Cleanup receipt (DECIDED: both shapes in use are accepted)
 

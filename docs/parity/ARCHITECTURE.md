@@ -28,7 +28,7 @@ Nothing here was provisioned, enabled or run against the live install. No VM was
 | Supervisor (`aap-runner-supervisor.ps1`, task `AAP-CRRR-Supervisor`) | the installing user, elevated, logon task, hidden | admin, in the user's logon session | allocator, backend providers, guest transport, status files | read anything but validated numbers and fixed words from the inbox; show a window |
 | WSL control distro `aap-runner` | root inside the distro | control plane | GitHub App key (`/etc/aap-runner/app.pem`, root 0400), manager, legacy pool, **broker** | expose a network listener for the broker; accept a path or command from a caller |
 | Broker (`/usr/local/sbin/aap-runner-broker`, P08) | root, one process per request | control plane | App JWT, installation token, JIT config minting, runner deregistration, lease ledger | run without a well-formed bounded request; log or persist registration material |
-| Hyper-V backend (supervisor modules `backends/windows`, `backends/linux`) | inside the supervisor process | admin | VM create/boot/reset/destroy, differencing disks, guest management sessions | reuse a VM or disk across reservations; mutate a base image |
+| Hyper-V backend (supervisor modules `backends/windows`, `backends/linux`) | inside the supervisor process | admin | VM create/boot/destroy (no reset), differencing disks, guest management sessions | reuse a VM or disk across reservations; mutate a base image |
 | Guests (Windows Server 2025 / VS2026, Ubuntu 24.04) | guest Administrator / sudo | **untrusted** once a job starts | one Actions job | reach the host, the control distro, the LAN, another guest or a base image |
 | Image catalog (`<image_root>\catalog.json` + images) | written by supervisor image-maintenance (P25) and P21 tooling | admin | immutable generations, hashes, provenance, rollback | change bytes of an approved generation |
 | Legacy WSL/Sysbox pool | root inside the distro | control plane for the manager, untrusted for jobs | existing ephemeral container runners | run autonomously beside new profiles (adopted into the allocator, DECIDED) |
@@ -120,11 +120,8 @@ DECIDED:
 - Heartbeat (one rule everywhere): a validated guest `status` reply, or for a legacy slot the
   manager's slot entry in a fresh `status.json` (sample age <= 90 s), sets `heartbeat_at` at most
   every 30 s. Three missed intervals move `ready`/`busy` to `quarantined` (kind `heartbeat`),
-  capacity held. A later validated heartbeat returns the slot to `busy` or `ready`. A heartbeat
-  quarantine leads to destroy only after the broker reports the runner `offline`/`absent`, or the
-  job ended, or the profile's job wall clock plus 60 minutes has passed since the last heartbeat
-  (default 120 + 60 minutes, the legacy `AAP_JOB_TIMEOUT_MINUTES` range). A running job is never
-  cancelled by this rule. A `hostile_guest` quarantine is immediate and final: straight to
+  capacity held. A later validated heartbeat returns the slot to `busy` or `ready`. A heartbeat quarantine leads to destroy only when the broker reports the runner `offline` or `absent` and not busy, or the job is known to have ended. A VM whose runner GitHub reports `busy` is never destroyed; past the per-lease host wall clock (`lease_wall_clock_hours`, default 6) it stays held and status flags it for the owner.
+  A running job is never cancelled by this rule. A `hostile_guest` quarantine is immediate and final: straight to
   `deleting`.
 - Only `reconciled` with a teardown proof frees a slot: VM and disks observed absent (or, for a
   legacy slot, the manager reporting the slot gone) and the runner deregistered, removed by
@@ -132,7 +129,13 @@ DECIDED:
 - Legacy slots are adopted first: before the first VM reservation the allocator records one
   `wsl-legacy` reservation per configured legacy slot and sets `legacy_adopted`. From then on the
   supervisor writes `AAP_RUNNER_COUNT` from the Linux legacy reservations, so the legacy pool can
-  never run five beside Windows.
+  never run five beside Windows. It writes `AAP_JOB_CPUS`/`AAP_JOB_MEMORY` as the minimum of the
+  setting and the Linux cap, and legacy reservations record exactly what `limits.conf` grants, so
+  the legacy pool cannot eat the host reserve.
+- The always-on WSL control VM's measured memory (`control_distro_mem_gib`) and every VM's
+  measured overhead come off the pool before any runner share.
+- The allocator lock is an exclusive lock file in the admin-only capacity folder with a bounded
+  wait that fails visibly (status `error`), not a named mutex.
 
 ```mermaid
 stateDiagram-v2
@@ -151,7 +154,7 @@ stateDiagram-v2
   busy --> quarantined: 3 heartbeats missed
   quarantined --> busy: validated heartbeat, job running
   quarantined --> ready: validated heartbeat, listening
-  quarantined --> deleting: runner offline, job ended, or wall clock plus 60 min
+  quarantined --> deleting: runner offline and not busy, or job ended
   busy --> deleting: hostile guest reply (immediate, final, any guest state)
   deleting --> quarantined: teardown failed after retries
   quarantined --> reconciled: reconcile observes absence
@@ -164,13 +167,27 @@ before `deleting`.
 
 ## 3. Backend lifecycle (contract: [backend-lifecycle.md](../../parity/contracts/backend-lifecycle.md))
 
-DECIDED: every provider implements `create, boot, ready, run_one, drain, collect, reset|destroy,
+DECIDED: every provider implements `create, boot, ready, run_one, drain, collect, destroy,
 reconcile` with idempotency key `<reservation_id>/<lease_generation>/<op>`. Each op writes an
 `intent` journal record before acting and a `done`/`failed` record after. Recovery after a crash
 replays the journal: an op with intent but no outcome is re-run idempotently (create looks up the
-named VM first; destroy treats "absent" as done). One job per VM; the VM is destroyed, never
-reset for another job, until a lab proves a reset is equivalent (P10/P11 may propose `reset`
-only with that evidence).
+named VM first; destroy treats "absent" as done). One job per VM, then destroy. **`reset` is
+forbidden** (security review M3): destroying the VM is the control that removes every copy of the
+runner credential.
+
+VM files (DECIDED): `New-VM -Path` points inside the reservation's clone folder; checkpoints are
+disabled; `AutomaticStopAction TurnOff`; `AutomaticStartAction Nothing`; enhanced session and the
+Guest Service Interface are off. The teardown proof covers the VM's configuration, saved-state and
+checkpoint paths as well as its disks.
+
+Image root protection (DECIDED, security review H3): at install and at every supervisor start the
+installer and supervisor run the same owner, ACL, reparse-point and ancestor checks on
+`D:\aap-runner\images` that `install-supervisor.ps1` runs on `C:\ProgramData\aap-runner`; any
+failure disables the VM profiles and shows the reason in status. `D:\` grants Everyone full control
+today, so the installer creates `D:\aap-runner` with an Administrators/SYSTEM-only ACL and
+inheritance off; if the ancestor check still fails the owner picks another location. Approved
+artifact hashes are pinned outside the image root (admin-only data folder and the P24
+certificate), and every `create` re-hashes the base against that pin.
 
 DECIDED disk layout under `<image_root>` = `D:\aap-runner\images` (owner, 2026-10-19; not
 `C:\wsl`, not the WSL work disk):
@@ -224,7 +241,10 @@ no runner name, no runner id, no URL. Every teardown sends `release_request` wit
 only (`already_gone` counts as proof); the broker resolves the runner from its own ledger. It derives the runner name and labels from the slot, lease generation and its own
 root-only profile table: Windows `self-hosted,Windows,X64,aap-win25-vs2026`, Ubuntu
 `self-hosted,Linux,X64,aap-ubuntu-24.04`, group `aap-crrr` (owner, 2026-10-19). The legacy pool
-keeps its current labels. DECIDED: the control distro and its keep-alive run whenever
+keeps its current labels. Access note (security review M1): WSL sessions belong to the user's
+SID and `wsl.exe` needs no elevation, so any process of the operator account can run the broker and
+read `app.pem`; replay, lease-limit and ledger rules are integrity controls, not access control.
+DECIDED: the control distro and its keep-alive run whenever
 Linux + Windows >= 1, so the broker is reachable; the supervisor makes no `wsl.exe` call only
 while both counts are 0 or desired is off. One lease id issues at most one JIT config, ever (replay refused).
 
@@ -235,8 +255,10 @@ just-in-time runner for an organization"; body `name`, `runner_group_id`, `label
 one-use: GitHub documents only that it "expires after one hour". Registration tokens remain
 only in the legacy pool's existing flow.
 
-DECIDED (delivery): the JIT config never appears in argv, a file, the inbox, a status file, an
-image or a log. It travels broker stdout -> supervisor memory -> management channel -> guest agent
+DECIDED (delivery): no copy of the JIT config exists outside the runner's own root directory
+and processes, and destroying the VM is the control. It never appears in argv, script text, a
+host file, the inbox, a status file, an image or a log; the supervisor reads at most 20 KiB of
+broker stdout and never logs it, not even on a refusal. It travels broker stdout -> supervisor memory -> management channel -> guest agent
 memory -> the runner's environment as `ACTIONS_RUNNER_INPUT_JITCONFIG`. In `actions/runner`
 (`src/Runner.Listener/CommandSettings.cs`, `main` at `7ce71e54a9affe1daae918a3e2350c1543dfa240`,
 read 2026-10-19) every `ACTIONS_RUNNER_INPUT_<arg>` variable is read as that argument, removed
@@ -286,16 +308,21 @@ CANDIDATE (D2):
   the guest agent accepts `deliver_registration` once per boot.
 - Hostile replies: bounded size, strict schema, printable ASCII diagnostics, time-limited; a
   violation sends the slot straight to `deleting` with code `hostile_guest`.
-- Wire framing: Windows runs a fixed script block in the PowerShell Direct session that starts
-  `C:\Program Files\aap-guest\agent.ps1` with the envelope line and payload on stdin and reads one
-  JSON reply line from stdout; Linux uses an SSH forced command `/usr/local/libexec/aap-guest/agent`
+- Wire framing: Windows runs each command in a short-lived hidden child process (job object
+  with memory, CPU and time caps) that takes the envelope and payload on stdin, passes them as
+  pipeline input to a fixed script block in the PowerShell Direct session, which feeds
+  `C:\Program Files\aap-guest\agent.ps1` on stdin; the child discards every non-output stream and
+  returns one bounded string; Linux uses an SSH forced command `/usr/local/libexec/aap-guest/agent`
   over vsock port 5222 (host service GUID `00001466-facb-11e6-bd58-64006a7986d3`), stdin = envelope
   line then exactly `payload_bytes` bytes, stdout = one reply line. Limits and timeouts:
   guest-transport.md, Wire framing.
-- Network (CANDIDATE D2): one internal switch per profile with Windows NAT for internet egress,
-  host firewall rules denying guest traffic to the host, the WSL subnet, the LAN and the other
-  guests, and per-adapter ACLs between guests; alternative, one private switch per guest. The lab
-  proves internet egress works and every denied path fails.
+- Network: the enforcement shape is DECIDED (no External or Default switch; DHCP guard and router
+  guard on, MAC spoofing off; extended port ACLs denying the host vEthernet addresses, private,
+  link-local, CGNAT, multicast and ULA ranges, the LAN IPv6 prefix and other clones; enhanced
+  session and Guest Service Interface off; host ports blocked on the guest vEthernet). The
+  mechanism (internal switch per profile with NAT, or a private switch per guest) is CANDIDATE D2,
+  owned by the P10.0 guest network module. The lab proves internet egress works and every denied
+  path fails, over IPv4 and IPv6.
 
 ```mermaid
 sequenceDiagram
@@ -403,7 +430,7 @@ flowchart LR
 | VM create/boot | Hyper-V error, timeout | journal `failed`; destroy; reconciled after absence observed |
 | Guest transport | auth fails, no reply | bounded retries, then the heartbeat rule above |
 | Guest transport | hostile reply | immediate `deleting` with `hostile_guest`; final, never back to service |
-| Heartbeat | 3 missed (90 s) | `quarantined` (kind `heartbeat`), capacity held; back to `busy`/`ready` on a validated heartbeat; destroy only once the runner is offline, the job ended, or wall clock + 60 min passed; never cancels the job |
+| Heartbeat | 3 missed (90 s) | `quarantined` (kind `heartbeat`), capacity held; back to `busy`/`ready` on a validated heartbeat; destroy only once GitHub reports the runner offline and not busy, or the job ended; a busy runner past `lease_wall_clock_hours` is held and flagged, never destroyed |
 | Job | cancelled, failed, timed out | normal: `collecting` then `deleting` |
 | Teardown | VM or disk will not go | three retries over 15 s, then `quarantined`; capacity held; status shows it |
 | Unknown VM `aap-*` on the host | no journal | reconcile quarantines it in a free slot or refuses admission until resolved; never adopted silently |
@@ -422,6 +449,20 @@ flowchart LR
 | cache-qualification | P04 | P13, P14, P15, P16, P20, P22, P24 |
 | status-settings | P12 (supervisor and docs), P20 (tray) | P19, P22 |
 | evidence-cleanup | P05, P00 | every item, P24, P26, P28 |
+
+## 12. Hardening notes
+
+- Hyper-V core scheduler on (`bcdedit /set hypervisorschedulertype core`, checked, not changed, by
+  the installer preflight); nested virtualization off for guests by default.
+- Runner self-update: the actions-runner overlay is valid for one boot only; GitHub's support
+  window for runner versions sets the rebuild deadline, so P25 rebuilds the overlay inside it.
+- Cache trust namespace: derived from GitHub data via the broker (repository of the assigned job),
+  never from anything the guest reports.
+- Relative disk paths have exact forms: `base/<generation_id>/base.vhdx`,
+  `clones/<reservation_id>/os.avhdx`, `clones/<reservation_id>/seed.iso`,
+  `scratch/<reservation_id>/scratch.vhdx`; `validate.py` enforces them.
+- Approved image hashes, guest credentials and SSH keys live only in Administrators/SYSTEM folders
+  with inheritance off and no operator entry.
 
 ## References
 

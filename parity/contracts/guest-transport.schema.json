@@ -4,45 +4,193 @@
   "title": "Host-to-guest management envelope (fixed commands) and the guest reply the host accepts",
   "x-contract-version": 1,
   "x-owner": "P10/P11 (host side), P14/P15 (guest agent); lab proof by P08/P10/P11 under gate D2; consumers P22, P26",
-  "oneOf": [{"$ref": "#/$defs/host_cmd"}, {"$ref": "#/$defs/guest_reply"}],
+  "oneOf": [
+    {
+      "$ref": "#/$defs/host_cmd"
+    },
+    {
+      "$ref": "#/$defs/guest_reply"
+    },
+    {
+      "$ref": "#/$defs/exchange"
+    }
+  ],
   "$defs": {
-    "time": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
-    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
-    "nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
-    "reservation_id": {"type": "string", "pattern": "^r-[0-9a-f]{16}$"},
+    "time": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "nonce": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "reservation_id": {
+      "type": "string",
+      "pattern": "^r-[0-9a-f]{16}$"
+    },
     "host_cmd": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "kind", "vm_id", "reservation_id", "lease_generation", "seq", "nonce", "cmd", "payload_bytes", "expires_at"],
+      "required": [
+        "schema",
+        "kind",
+        "vm_id",
+        "reservation_id",
+        "lease_generation",
+        "seq",
+        "nonce",
+        "cmd",
+        "payload_bytes",
+        "expires_at"
+      ],
       "properties": {
-        "schema": {"const": 1},
-        "kind": {"const": "host_cmd"},
-        "vm_id": {"$ref": "#/$defs/uuid"},
-        "reservation_id": {"$ref": "#/$defs/reservation_id"},
-        "lease_generation": {"type": "integer", "minimum": 1},
-        "seq": {"type": "integer", "minimum": 1, "maximum": 2147483647},
-        "nonce": {"$ref": "#/$defs/nonce"},
-        "cmd": {"enum": ["probe", "deliver_registration", "start_runner", "status", "collect", "shutdown"]},
-        "payload_bytes": {"type": "integer", "minimum": 0, "maximum": 16384},
-        "expires_at": {"$ref": "#/$defs/time"}
+        "schema": {
+          "const": 1
+        },
+        "kind": {
+          "const": "host_cmd"
+        },
+        "vm_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "reservation_id": {
+          "$ref": "#/$defs/reservation_id"
+        },
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "nonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "cmd": {
+          "enum": [
+            "probe",
+            "deliver_registration",
+            "start_runner",
+            "status",
+            "collect",
+            "shutdown"
+          ]
+        },
+        "payload_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16384
+        },
+        "expires_at": {
+          "$ref": "#/$defs/time"
+        }
       }
     },
     "guest_reply": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "kind", "vm_id", "reservation_id", "lease_generation", "seq", "nonce", "status", "guest_state", "runner_exit_code", "diag"],
+      "required": [
+        "schema",
+        "kind",
+        "vm_id",
+        "reservation_id",
+        "lease_generation",
+        "seq",
+        "nonce",
+        "status",
+        "guest_state",
+        "runner_exit_code",
+        "diag"
+      ],
       "properties": {
-        "schema": {"const": 1},
-        "kind": {"const": "guest_reply"},
-        "vm_id": {"$ref": "#/$defs/uuid"},
-        "reservation_id": {"$ref": "#/$defs/reservation_id"},
-        "lease_generation": {"type": "integer", "minimum": 1},
-        "seq": {"type": "integer", "minimum": 1, "maximum": 2147483647},
-        "nonce": {"$ref": "#/$defs/nonce"},
-        "status": {"enum": ["ok", "refused", "error"]},
-        "guest_state": {"enum": ["booting", "ready", "registered", "listening", "busy", "job_done", "failed", "shutting_down"]},
-        "runner_exit_code": {"type": ["integer", "null"], "minimum": -2147483648, "maximum": 2147483647},
-        "diag": {"type": "string", "maxLength": 512, "pattern": "^[ -~]*$"}
+        "schema": {
+          "const": 1
+        },
+        "kind": {
+          "const": "guest_reply"
+        },
+        "vm_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "reservation_id": {
+          "$ref": "#/$defs/reservation_id"
+        },
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "nonce": {
+          "$ref": "#/$defs/nonce"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "refused",
+            "error"
+          ]
+        },
+        "guest_state": {
+          "enum": [
+            "booting",
+            "ready",
+            "registered",
+            "listening",
+            "busy",
+            "job_done",
+            "failed",
+            "shutting_down"
+          ]
+        },
+        "runner_exit_code": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "diag": {
+          "type": "string",
+          "maxLength": 512,
+          "pattern": "^[ -~]*$"
+        }
+      }
+    },
+    "exchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "cmd",
+        "reply"
+      ],
+      "properties": {
+        "schema": {
+          "const": 1
+        },
+        "kind": {
+          "const": "exchange"
+        },
+        "cmd": {
+          "$ref": "#/$defs/host_cmd"
+        },
+        "reply": {
+          "$ref": "#/$defs/guest_reply"
+        }
       }
     }
   }

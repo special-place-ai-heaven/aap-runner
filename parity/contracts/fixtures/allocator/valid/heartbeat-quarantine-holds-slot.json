@@ -8,6 +8,7 @@
     "mem_gib": 96,
     "disk_gib": 2000,
     "io_mbps": 1000,
+    "control_distro_mem_gib": 1,
     "measured_at": "2026-10-19T18:00:00Z"
   },
   "host_reserve_percent": 10,
@@ -182,6 +183,7 @@
         "observed_at": "2026-10-19T18:00:00Z",
         "vm_absent": true,
         "disks_absent": true,
+        "vm_files_absent": true,
         "runner_deregistered": "never_registered"
       }
     }
