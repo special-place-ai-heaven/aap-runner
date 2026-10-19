@@ -181,7 +181,8 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
   `D:\aap-runner\images` is superseded.
 - **P04.1**: add the Linux `debug-pdb` (`-g`) rows for every compiler version (8 more rows at
   P04's versions) now that a matrix may hold 256 rows, and align `retention.md` requirement 4
-  with rule 6's job trust class (event, ref and head repository).
+  with rule 6's job trust class (event, ref and head repository). Until then rule 6 supersedes
+  requirement 4's ref-based trust class.
 - **P05.1**: write waivers into the evidence record's `waivers` field and stop appending them to
   `command`; until then `parity-report.json` and `verdict.json` stay authoritative. Nit: the
   harness's `re.match(...$)` checks for workload ids and SHAs accept one trailing newline (Python

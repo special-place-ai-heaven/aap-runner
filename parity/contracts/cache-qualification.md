@@ -52,12 +52,14 @@ matrix stays valid.
    and is bound before any shared root is attached to the guest. When that record is not available
    in time, the job gets no shared root (direct compilation, or a per-job root destroyed with the
    VM). P13 names the source: the broker's App has only the self-hosted runners permission
-   (broker.md), which cannot read a job's event or ref.
+   (broker.md), which cannot read a job's event or ref. This rule replaces the ref-based trust
+   class in retention.md requirement 4; P04.1 aligns that file.
    `ZCCACHE_MODE=COPY` or a proven reflink mode; hardlink delivery and cross-trust or
    cross-job mutable sharing stay off until P04/P13 prove poisoning and concurrency safety.
    Retention is the daemon's (budget via `ZCCACHE_CACHE_SIZE_BYTES` or `_PERCENT`); index, log,
    metadata and temp bytes are counted separately against the guest scratch budget. No
-   manager-side oldest-file eviction. Requirements: [retention.md](../cache/qualification/retention.md).
+   manager-side oldest-file eviction. Requirements: [retention.md](../cache/qualification/retention.md)
+   (retention.md requirement 4 is superseded by rule 6).
 7. A wrapper failure at runtime falls back to the direct compiler for that invocation and reports
    cache state `degraded` in `status.v5.json`; it never fails a build that would pass direct.
 
