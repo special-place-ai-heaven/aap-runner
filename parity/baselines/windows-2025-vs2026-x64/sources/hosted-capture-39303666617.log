@@ -1,0 +1,440 @@
+capture	Set up job	﻿2026-10-19T18:34:55.5719599Z Current runner version: '2.337.0'
+capture	Set up job	2026-10-19T18:34:55.5775498Z ##[group]Runner Image Provisioner
+capture	Set up job	2026-10-19T18:34:55.5776342Z Hosted Compute Agent
+capture	Set up job	2026-10-19T18:34:55.5777499Z Version: 20261002.596
+capture	Set up job	2026-10-19T18:34:55.5778076Z Commit: c3d12f3313a95f25162a1503be624f3b0617f8c0
+capture	Set up job	2026-10-19T18:34:55.5778799Z Build Date: 2026-10-02T22:28:27Z
+capture	Set up job	2026-10-19T18:34:55.5779411Z Worker ID: {2738e55f-740d-461b-b072-848321b9d894}
+capture	Set up job	2026-10-19T18:34:55.5780050Z Region: westcentralus
+capture	Set up job	2026-10-19T18:34:55.5780804Z Cloud: Azure
+capture	Set up job	2026-10-19T18:34:55.5781336Z ##[endgroup]
+capture	Set up job	2026-10-19T18:34:55.5782900Z ##[group]Operating System
+capture	Set up job	2026-10-19T18:34:55.5783545Z Microsoft Windows Server 2025
+capture	Set up job	2026-10-19T18:34:55.5784109Z 10.0.26100
+capture	Set up job	2026-10-19T18:34:55.5784632Z Datacenter
+capture	Set up job	2026-10-19T18:34:55.5785089Z ##[endgroup]
+capture	Set up job	2026-10-19T18:34:55.5785579Z ##[group]Runner Image
+capture	Set up job	2026-10-19T18:34:55.5786150Z Image: windows-2025-vs2026
+capture	Set up job	2026-10-19T18:34:55.5786695Z Version: 20261007.264.1
+capture	Set up job	2026-10-19T18:34:55.5787795Z Included Software: https://github.com/actions/runner-images/blob/win25-vs2026/20261007.264/images/windows/Windows2025-VS2026-Readme.md
+capture	Set up job	2026-10-19T18:34:55.5789728Z Image Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261007.264
+capture	Set up job	2026-10-19T18:34:55.5790652Z ##[endgroup]
+capture	Set up job	2026-10-19T18:34:55.5791603Z ##[group]GITHUB_TOKEN Permissions
+capture	Set up job	2026-10-19T18:34:55.5794022Z Metadata: read
+capture	Set up job	2026-10-19T18:34:55.5795033Z ##[endgroup]
+capture	Set up job	2026-10-19T18:34:55.5797398Z Secret source: Actions
+capture	Set up job	2026-10-19T18:34:55.5798255Z Cache mode: write
+capture	Set up job	2026-10-19T18:34:55.5798965Z Prepare workflow directory
+capture	Set up job	2026-10-19T18:34:55.6189845Z Prepare all required actions
+capture	Set up job	2026-10-19T18:34:55.6271822Z Complete job name: capture
+capture	Image identity (same data the Set up job > Runner Image group prints)	﻿2026-10-19T18:34:55.8141870Z ##[group]Run Get-Content -Raw C:\imagedata.json
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:55.8143571Z ^[[36;1mGet-Content -Raw C:\imagedata.json^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:55.8145178Z ^[[36;1m"ImageOS=$env:ImageOS"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:55.8146163Z ^[[36;1m"ImageVersion=$env:ImageVersion"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:55.8147868Z ^[[36;1m"RUNNER_OS=$env:RUNNER_OS RUNNER_ARCH=$env:RUNNER_ARCH RUNNER_ENVIRONMENT=$env:RUNNER_ENVIRONMENT"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:55.8149767Z ^[[36;1m[System.Environment]::OSVersion.VersionString^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:55.8151833Z ^[[36;1m(Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber | Format-List | Out-String)^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:55.8947408Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:55.8948624Z ##[endgroup]
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3609400Z [
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3610664Z   {
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3611628Z     "group": "Operating System",
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3613058Z     "detail": "Microsoft Windows Server 2025\n10.0.26100\nDatacenter"
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3614759Z   },
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3615595Z   {
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3617055Z     "group": "Runner Image",
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3621135Z     "detail": "Image: windows-2025-vs2026\nVersion: 20261007.264.1\nIncluded Software: https://github.com/actions/runner-images/blob/win25-vs2026/20261007.264/images/windows/Windows2025-VS2026-Readme.md\nImage Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261007.264"
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3625409Z   }
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3626286Z ]
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3629925Z ImageOS=win25-vs2026
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3632483Z ImageVersion=20261007.264.1
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3634865Z RUNNER_OS=Windows RUNNER_ARCH=X64 RUNNER_ENVIRONMENT=github-hosted
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.3697451Z Microsoft Windows NT 10.0.26100.0
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.5182402Z 
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.5184109Z Caption     : Microsoft Windows Server 2025 Datacenter
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.5185459Z Version     : 10.0.26100
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.5186342Z BuildNumber : 26100
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.5186898Z 
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:56.5186915Z 
+capture	Hardware class	﻿2026-10-19T18:34:56.6275440Z ##[group]Run $cpu = Get-CimInstance Win32_Processor
+capture	Hardware class	2026-10-19T18:34:56.6277014Z ^[[36;1m$cpu = Get-CimInstance Win32_Processor^[[0m
+capture	Hardware class	2026-10-19T18:34:56.6278096Z ^[[36;1m"logical_processors=" + ($cpu | Measure-Object NumberOfLogicalProcessors -Sum).Sum^[[0m
+capture	Hardware class	2026-10-19T18:34:56.6281359Z ^[[36;1m"total_ram_bytes=" + (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory^[[0m
+capture	Hardware class	2026-10-19T18:34:56.6282777Z ^[[36;1mGet-PSDrive -PSProvider FileSystem | Select-Object Name, Used, Free | Format-Table | Out-String^[[0m
+capture	Hardware class	2026-10-19T18:34:56.6354136Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+capture	Hardware class	2026-10-19T18:34:56.6355136Z ##[endgroup]
+capture	Hardware class	2026-10-19T18:34:58.3541706Z logical_processors=4
+capture	Hardware class	2026-10-19T18:34:58.3718511Z total_ram_bytes=17174360064
+capture	Hardware class	2026-10-19T18:34:58.6598516Z 
+capture	Hardware class	2026-10-19T18:34:58.6599421Z Name         Used         Free
+capture	Hardware class	2026-10-19T18:34:58.6600261Z ----         ----         ----
+capture	Hardware class	2026-10-19T18:34:58.6600827Z C    127436206080  33031553024
+capture	Hardware class	2026-10-19T18:34:58.6601326Z D      3191169024 157868003328
+capture	Hardware class	2026-10-19T18:34:58.6602400Z Temp 127436206080  33031553024
+capture	Hardware class	2026-10-19T18:34:58.6602692Z 
+capture	Hardware class	2026-10-19T18:34:58.6602791Z 
+capture	User, privileges, UAC	﻿2026-10-19T18:34:58.7461717Z ##[group]Run whoami
+capture	User, privileges, UAC	2026-10-19T18:34:58.7462415Z ^[[36;1mwhoami^[[0m
+capture	User, privileges, UAC	2026-10-19T18:34:58.7463045Z ^[[36;1m$p = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()^[[0m
+capture	User, privileges, UAC	2026-10-19T18:34:58.7463832Z ^[[36;1m"is_administrator=" + $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)^[[0m
+capture	User, privileges, UAC	2026-10-19T18:34:58.7464819Z ^[[36;1m"ConsentPromptBehaviorAdmin=" + (Get-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System).ConsentPromptBehaviorAdmin^[[0m
+capture	User, privileges, UAC	2026-10-19T18:34:58.7465623Z ^[[36;1mGet-ExecutionPolicy -List | Out-String^[[0m
+capture	User, privileges, UAC	2026-10-19T18:34:58.7543086Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+capture	User, privileges, UAC	2026-10-19T18:34:58.7544827Z ##[endgroup]
+capture	User, privileges, UAC	2026-10-19T18:34:59.1362090Z runnervm0xl3a\runneradmin
+capture	User, privileges, UAC	2026-10-19T18:34:59.1614755Z is_administrator=True
+capture	User, privileges, UAC	2026-10-19T18:34:59.2297288Z ConsentPromptBehaviorAdmin=0
+capture	User, privileges, UAC	2026-10-19T18:34:59.3665885Z 
+capture	User, privileges, UAC	2026-10-19T18:34:59.3666676Z         Scope ExecutionPolicy
+capture	User, privileges, UAC	2026-10-19T18:34:59.3667345Z         ----- ---------------
+capture	User, privileges, UAC	2026-10-19T18:34:59.3668132Z MachinePolicy       Undefined
+capture	User, privileges, UAC	2026-10-19T18:34:59.3668664Z    UserPolicy       Undefined
+capture	User, privileges, UAC	2026-10-19T18:34:59.3669245Z       Process       Undefined
+capture	User, privileges, UAC	2026-10-19T18:34:59.3669728Z   CurrentUser       Undefined
+capture	User, privileges, UAC	2026-10-19T18:34:59.3670297Z  LocalMachine    RemoteSigned
+capture	User, privileges, UAC	2026-10-19T18:34:59.3670662Z 
+capture	User, privileges, UAC	2026-10-19T18:34:59.3670812Z 
+capture	Allow-listed environment (names fixed here; never dump the full environment)	﻿2026-10-19T18:34:59.4566707Z ##[group]Run $names = 'ImageOS','ImageVersion','AGENT_TOOLSDIRECTORY','RUNNER_TOOL_CACHE','ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE',
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.4567675Z ^[[36;1m$names = 'ImageOS','ImageVersion','AGENT_TOOLSDIRECTORY','RUNNER_TOOL_CACHE','ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE',^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.4568444Z ^[[36;1m         'JAVA_HOME','JAVA_HOME_17_X64','GOROOT_1_24_X64','VCPKG_INSTALLATION_ROOT','CONDA','ANDROID_HOME','ANDROID_NDK_HOME',^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.4569201Z ^[[36;1m         'CHROMEWEBDRIVER','EDGEWEBDRIVER','GECKOWEBDRIVER','SELENIUM_JAR_PATH','DOTNET_MULTILEVEL_LOOKUP','DOTNET_NOLOGO',^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.4569965Z ^[[36;1m         'DOTNET_SKIP_FIRST_TIME_EXPERIENCE','POWERSHELL_UPDATECHECK','GCM_INTERACTIVE','PIPX_BIN_DIR','PIPX_HOME',^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.4571255Z ^[[36;1m         'PGBIN','PGROOT','PGDATA','PGUSER','VCINSTALLDIR','VSINSTALLDIR','VSCMD_VER','INCLUDE','LIB','LIBPATH','Platform'^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.4572190Z ^[[36;1mforeach ($n in $names) { $v = [Environment]::GetEnvironmentVariable($n); if ($null -ne $v) { "$n=$v" } else { "$n=<unset>" } }^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.4572892Z ^[[36;1m# Credential-bearing variables: record presence only, never the value.^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.4573488Z ^[[36;1m'PGPASSWORD' | ForEach-Object { "$_ present=" + ($null -ne [Environment]::GetEnvironmentVariable($_)) }^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.4642692Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.4643082Z ##[endgroup]
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7797939Z ImageOS=win25-vs2026
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7801872Z ImageVersion=20261007.264.1
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7804041Z AGENT_TOOLSDIRECTORY=C:\hostedtoolcache\windows
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7807020Z RUNNER_TOOL_CACHE=C:\hostedtoolcache\windows
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7808442Z ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=C:\actionarchivecache\
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7809924Z JAVA_HOME=C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7811438Z JAVA_HOME_17_X64=C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7812826Z GOROOT_1_24_X64=C:\hostedtoolcache\windows\go\1.24.13\x64
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7813972Z VCPKG_INSTALLATION_ROOT=C:\vcpkg
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7815320Z CONDA=C:\Miniconda
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7816644Z ANDROID_HOME=C:\Android\android-sdk
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7818079Z ANDROID_NDK_HOME=C:\Android\android-sdk\ndk\27.3.13750724
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7819736Z CHROMEWEBDRIVER=C:\SeleniumWebDrivers\ChromeDriver
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7821529Z EDGEWEBDRIVER=C:\SeleniumWebDrivers\EdgeDriver
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7822995Z GECKOWEBDRIVER=C:\SeleniumWebDrivers\GeckoDriver
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7824406Z SELENIUM_JAR_PATH=C:\selenium\selenium-server.jar
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7832158Z DOTNET_MULTILEVEL_LOOKUP=0
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7836669Z DOTNET_NOLOGO=1
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7840873Z DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7841697Z POWERSHELL_UPDATECHECK=Off
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7842361Z GCM_INTERACTIVE=Never
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7843073Z PIPX_BIN_DIR=C:\Program Files (x86)\pipx_bin
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7843834Z PIPX_HOME=C:\Program Files (x86)\pipx
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7844531Z PGBIN=C:\Program Files\PostgreSQL\17\bin
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7845203Z PGROOT=C:\Program Files\PostgreSQL\17
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7845886Z PGDATA=C:\PostgreSQL\17\data
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7846499Z PGUSER=postgres
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7851482Z VCINSTALLDIR=<unset>
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7853441Z VSINSTALLDIR=<unset>
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7854700Z VSCMD_VER=<unset>
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7856377Z INCLUDE=<unset>
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7857680Z LIB=<unset>
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7859196Z LIBPATH=<unset>
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7860490Z Platform=<unset>
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:34:59.7986487Z PGPASSWORD present=True
+capture	PATH order (job process) and machine PATH order	﻿2026-10-19T18:34:59.9478817Z ##[group]Run "--- process PATH"; $env:PATH -split ';' | ForEach-Object -Begin { $i = 0 } -Process { '{0:D3} {1}' -f $i++, $_ }
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:34:59.9479997Z ^[[36;1m"--- process PATH"; $env:PATH -split ';' | ForEach-Object -Begin { $i = 0 } -Process { '{0:D3} {1}' -f $i++, $_ }^[[0m
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:34:59.9480831Z ^[[36;1m"--- machine PATH"; [Environment]::GetEnvironmentVariable('PATH','Machine') -split ';' | ForEach-Object -Begin { $i = 0 } -Process { '{0:D3} {1}' -f $i++, $_ }^[[0m
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:34:59.9628326Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:34:59.9628906Z ##[endgroup]
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3081045Z --- process PATH
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3262710Z 000 C:\Program Files\PowerShell\7
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3264134Z 001 C:\Program Files\MongoDB\Server\7.0\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3265953Z 002 C:\vcpkg
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3267774Z 003 C:\tools\zstd
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3269528Z 004 C:\hostedtoolcache\windows\stack\3.11.1\x64
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3271008Z 005 C:\cabal\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3272779Z 006 C:\\ghcup\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3274699Z 007 C:\mingw64\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3276212Z 008 C:\Program Files\dotnet
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3277919Z 009 C:\Program Files\MySQL\MySQL Server 8.0\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3279652Z 010 C:\Program Files\R\R-4.6.1\bin\x64
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3281204Z 011 C:\SeleniumWebDrivers\GeckoDriver
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3282900Z 012 C:\SeleniumWebDrivers\EdgeDriver\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3284096Z 013 C:\SeleniumWebDrivers\ChromeDriver
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3285788Z 014 C:\Program Files (x86)\sbt\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3287909Z 015 C:\Program Files (x86)\GitHub CLI
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3289162Z 016 C:\Program Files\Git\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3290759Z 017 C:\Program Files (x86)\pipx_bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3292162Z 018 C:\npm\prefix
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3293827Z 019 C:\hostedtoolcache\windows\go\1.24.13\x64\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3294956Z 020 C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3296224Z 021 C:\hostedtoolcache\windows\Python\3.12.10\x64
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3298026Z 022 C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3299619Z 023 C:\Program Files\OpenSSL\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3301006Z 024 C:\tools\kotlinc\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3302345Z 025 C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3303522Z 026 C:\Program Files\ImageMagick-7.1.2-Q16-HDRI
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3304997Z 027 C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3306499Z 028 C:\ProgramData\kind
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3307984Z 029 C:\ProgramData\Chocolatey\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3309361Z 030 C:\Windows\system32
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3310838Z 031 C:\Windows
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3313453Z 032 C:\Windows\System32\Wbem
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3315399Z 033 C:\Windows\System32\WindowsPowerShell\v1.0\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3317336Z 034 C:\Windows\System32\OpenSSH\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3319011Z 035 C:\Program Files\WSL\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3320455Z 036 C:\Program Files\PowerShell\7\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3322003Z 037 C:\Program Files\Microsoft\Web Platform Installer\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3324186Z 038 C:\Program Files\Microsoft SQL Server\170\Tools\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3325290Z 039 C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3327234Z 040 C:\Program Files\dotnet\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3329479Z 041 C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3331120Z 042 C:\Program Files (x86)\WiX Toolset v3.14\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3333228Z 043 C:\Program Files\Microsoft SQL Server\130\DTS\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3335025Z 044 C:\Program Files\Microsoft SQL Server\140\DTS\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3336292Z 045 C:\Program Files\Microsoft SQL Server\150\DTS\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3338638Z 046 C:\Program Files\Microsoft SQL Server\160\DTS\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3339885Z 047 C:\Program Files\Microsoft SQL Server\170\DTS\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3341953Z 048 C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3346740Z 049 C:\Program Files\CMake\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3347116Z 050 C:\Strawberry\c\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3347529Z 051 C:\Strawberry\perl\site\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3349774Z 052 C:\Strawberry\perl\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3352081Z 053 C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3354266Z 054 C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3356584Z 055 C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3358139Z 056 C:\Program Files\nodejs\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3359987Z 057 C:\Program Files\Git\cmd
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3361704Z 058 C:\Program Files\Git\ucrt64\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3363413Z 059 C:\Program Files\Git\usr\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3365476Z 060 C:\Program Files\GitHub CLI\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3367386Z 061 c:\tools\php
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3368935Z 062 C:\Program Files (x86)\sbt\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3370823Z 063 C:\Program Files\Amazon\AWSCLIV2\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3372360Z 064 C:\Program Files\Amazon\SessionManagerPlugin\bin\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3373691Z 065 C:\Program Files\Amazon\AWSSAMCLI\bin\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3375372Z 066 C:\Program Files\Microsoft SQL Server\130\Tools\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3376677Z 067 C:\Program Files\mongosh\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3378183Z 068 C:\Program Files\LLVM\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3379523Z 069 C:\Program Files (x86)\LLVM\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3381040Z 070 C:\Users\runneradmin\.dotnet\tools
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3382450Z 071 C:\Users\runneradmin\.cargo\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3383913Z 072 C:\Users\runneradmin\AppData\Local\Microsoft\WindowsApps
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3387942Z --- machine PATH
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3447021Z 000 C:\Program Files\MongoDB\Server\7.0\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3448288Z 001 C:\vcpkg
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3450060Z 002 C:\tools\zstd
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3452019Z 003 C:\hostedtoolcache\windows\stack\3.11.1\x64
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3453772Z 004 C:\cabal\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3455254Z 005 C:\\ghcup\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3456945Z 006 C:\mingw64\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3458529Z 007 C:\Program Files\dotnet
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3460272Z 008 C:\Program Files\MySQL\MySQL Server 8.0\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3461852Z 009 C:\Program Files\R\R-4.6.1\bin\x64
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3463409Z 010 C:\SeleniumWebDrivers\GeckoDriver
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3464998Z 011 C:\SeleniumWebDrivers\EdgeDriver\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3466564Z 012 C:\SeleniumWebDrivers\ChromeDriver
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3468005Z 013 C:\Program Files (x86)\sbt\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3469640Z 014 C:\Program Files (x86)\GitHub CLI
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3471097Z 015 C:\Program Files\Git\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3473240Z 016 C:\Program Files (x86)\pipx_bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3475011Z 017 C:\npm\prefix
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3476293Z 018 C:\hostedtoolcache\windows\go\1.24.13\x64\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3478001Z 019 C:\hostedtoolcache\windows\Python\3.12.10\x64\Scripts
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3479564Z 020 C:\hostedtoolcache\windows\Python\3.12.10\x64
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3481082Z 021 C:\hostedtoolcache\windows\Ruby\3.3.12\x64\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3482607Z 022 C:\Program Files\OpenSSL\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3484112Z 023 C:\tools\kotlinc\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3485898Z 024 C:\hostedtoolcache\windows\Java_Temurin-Hotspot_jdk\17.0.20-101\x64\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3487320Z 025 C:\Program Files\ImageMagick-7.1.2-Q16-HDRI
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3488855Z 026 C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3490430Z 027 C:\ProgramData\kind
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3492268Z 028 C:\ProgramData\Chocolatey\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3493674Z 029 C:\Windows\system32
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3495585Z 030 C:\Windows
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3497159Z 031 C:\Windows\System32\Wbem
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3499164Z 032 C:\Windows\System32\WindowsPowerShell\v1.0\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3501589Z 033 C:\Windows\System32\OpenSSH\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3503394Z 034 C:\Program Files\WSL\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3505463Z 035 C:\Program Files\PowerShell\7\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3507573Z 036 C:\Program Files\Microsoft\Web Platform Installer\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3509762Z 037 C:\Program Files\Microsoft SQL Server\170\Tools\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3511722Z 038 C:\Program Files\Microsoft SQL Server\Client SDK\ODBC\170\Tools\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3513670Z 039 C:\Program Files\dotnet\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3516267Z 040 C:\Program Files (x86)\Windows Kits\10\Windows Performance Toolkit\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3518529Z 041 C:\Program Files (x86)\WiX Toolset v3.14\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3520409Z 042 C:\Program Files\Microsoft SQL Server\130\DTS\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3521815Z 043 C:\Program Files\Microsoft SQL Server\140\DTS\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3523439Z 044 C:\Program Files\Microsoft SQL Server\150\DTS\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3525001Z 045 C:\Program Files\Microsoft SQL Server\160\DTS\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3527203Z 046 C:\Program Files\Microsoft SQL Server\170\DTS\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3528816Z 047 C:\ProgramData\chocolatey\lib\pulumi\tools\Pulumi\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3531294Z 048 C:\Program Files\CMake\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3533151Z 049 C:\Strawberry\c\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3534922Z 050 C:\Strawberry\perl\site\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3536668Z 051 C:\Strawberry\perl\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3538484Z 052 C:\ProgramData\chocolatey\lib\maven\apache-maven-3.9.16\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3540303Z 053 C:\Program Files\Microsoft Service Fabric\bin\Fabric\Fabric.Code
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3541945Z 054 C:\Program Files\Microsoft SDKs\Service Fabric\Tools\ServiceFabricLocalClusterManager
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3542807Z 055 C:\Program Files\nodejs\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3544662Z 056 C:\Program Files\Git\cmd
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3546393Z 057 C:\Program Files\Git\ucrt64\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3548337Z 058 C:\Program Files\Git\usr\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3549903Z 059 C:\Program Files\GitHub CLI\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3551882Z 060 c:\tools\php
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3553642Z 061 C:\Program Files (x86)\sbt\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3554740Z 062 C:\Program Files\Amazon\AWSCLIV2\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3556089Z 063 C:\Program Files\Amazon\SessionManagerPlugin\bin\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3557207Z 064 C:\Program Files\Amazon\AWSSAMCLI\bin\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3558477Z 065 C:\Program Files\Microsoft SQL Server\130\Tools\Binn\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3559657Z 066 C:\Program Files\mongosh\
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3560849Z 067 C:\Program Files\LLVM\bin
+capture	PATH order (job process) and machine PATH order	2026-10-19T18:35:00.3562185Z 068 C:\Program Files (x86)\LLVM\bin
+capture	Shells and versions	﻿2026-10-19T18:35:00.4902214Z ##[group]Run $PSVersionTable.PSVersion.ToString()
+capture	Shells and versions	2026-10-19T18:35:00.4902752Z ^[[36;1m$PSVersionTable.PSVersion.ToString()^[[0m
+capture	Shells and versions	2026-10-19T18:35:00.4903188Z ^[[36;1mpowershell.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'^[[0m
+capture	Shells and versions	2026-10-19T18:35:00.4903624Z ^[[36;1mbash --version | Select-Object -First 1^[[0m
+capture	Shells and versions	2026-10-19T18:35:00.4904063Z ^[[36;1mGet-ChildItem C:\shells | Select-Object Name, Target | Format-Table | Out-String^[[0m
+capture	Shells and versions	2026-10-19T18:35:00.4904687Z ^[[36;1mGet-Content "$PSHOME\..\..\WindowsPowerShell\v1.0\profile.ps1" -ErrorAction SilentlyContinue^[[0m
+capture	Shells and versions	2026-10-19T18:35:00.4992275Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+capture	Shells and versions	2026-10-19T18:35:00.4992828Z ##[endgroup]
+capture	Shells and versions	2026-10-19T18:35:00.8281024Z 7.6.6
+capture	Shells and versions	2026-10-19T18:35:03.7957894Z 5.1.26100.33438
+capture	Shells and versions	2026-10-19T18:35:04.6297591Z GNU bash, version 5.3.15(2)-release (x86_64-pc-cygwin)
+capture	Shells and versions	2026-10-19T18:35:04.7016466Z 
+capture	Shells and versions	2026-10-19T18:35:04.7017104Z Name          Target
+capture	Shells and versions	2026-10-19T18:35:04.7017855Z ----          ------
+capture	Shells and versions	2026-10-19T18:35:04.7018312Z gitbash.exe   C:\Program Files\Git\bin\bash.exe
+capture	Shells and versions	2026-10-19T18:35:04.7019246Z msys2bash.cmd 
+capture	Shells and versions	2026-10-19T18:35:04.7019613Z wslbash.exe   C:\Windows\System32\bash.exe
+capture	Shells and versions	2026-10-19T18:35:04.7020243Z 
+capture	Shells and versions	2026-10-19T18:35:04.7020260Z 
+capture	Visual Studio without developer environment	﻿2026-10-19T18:35:04.8023455Z ##[group]Run $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+capture	Visual Studio without developer environment	2026-10-19T18:35:04.8024253Z ^[[36;1m$vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"^[[0m
+capture	Visual Studio without developer environment	2026-10-19T18:35:04.8024759Z ^[[36;1m& $vsw -latest -products * -format json | Out-String^[[0m
+capture	Visual Studio without developer environment	2026-10-19T18:35:04.8025485Z ^[[36;1mGet-Command cl.exe, link.exe, clang-cl.exe, cmake.exe, ninja.exe, msbuild.exe -ErrorAction SilentlyContinue | Select-Object Name, Source | Format-Table | Out-String^[[0m
+capture	Visual Studio without developer environment	2026-10-19T18:35:04.8095292Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+capture	Visual Studio without developer environment	2026-10-19T18:35:04.8095672Z ##[endgroup]
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9573070Z [
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9573446Z   {
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9573725Z     "instanceId": "d2e552a4",
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9574122Z     "installDate": "2026-10-07T22:18:56Z",
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9574572Z     "installationName": "VisualStudio/18.10.3+12224.181",
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9575234Z     "installationPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9576391Z     "installationVersion": "18.10.12224.181",
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9576907Z     "productId": "Microsoft.VisualStudio.Product.Enterprise",
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9579154Z     "productPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\Common7\\IDE\\devenv.exe",
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9580222Z     "state": 4294967295,
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9580561Z     "isComplete": true,
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9580893Z     "isLaunchable": true,
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9581227Z     "isPrerelease": false,
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9581564Z     "isRebootRequired": false,
+capture	Visual Studio without developer environment	2026-10-19T18:35:05.9581973Z     "displayName": "Visual Studio Enterprise 2026",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0182919Z     "description": "Built for scale, security, and speed – the IDE for complex, high-impact development.",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0183547Z     "channelId": "VisualStudio.18.Release",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0183922Z     "channelUri": "https://aka.ms/vs/18/stable/channel",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0184609Z     "enginePath": "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\resources\\app\\ServiceHub\\Services\\Microsoft.VisualStudio.Setup.Service",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0185550Z     "expirationDate": "2027-03-23T17:00:00+00:00",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0185908Z     "installChannelUri": "https://aka.ms/vs/18/stable/channel",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0186284Z     "installedChannelId": "VisualStudio.18.Release",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0186648Z     "installedChannelUri": "https://aka.ms/vs/18/stable/channel",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0187548Z     "releaseNotes": "https://docs.microsoft.com/en-us/visualstudio/releases/18/release-notes-v18.10#18.10.3",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0188496Z     "resolvedInstallationPath": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0189320Z     "thirdPartyNotices": "https://go.microsoft.com/fwlink/?LinkId=661480",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0189911Z     "updateDate": "2026-10-07T22:18:56.6061842Z",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0190341Z     "catalog": {
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0190666Z       "buildBranch": "stable",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0191023Z       "buildVersion": "18.10.12224.181",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0191443Z       "featureReleaseMonth": "09",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0191809Z       "featureReleaseYear": "2026",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0192178Z       "id": "VisualStudio/18.10.3+12224.181",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0192644Z       "includeBuildVersionInDisplayVersion": "False",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0193104Z       "localBuild": "build-lab",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0193491Z       "manifestName": "VisualStudio",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0193884Z       "manifestType": "installer",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0194301Z       "productDisplayVersion": "18.10.3",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0194728Z       "productLine": "Dev18",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0195185Z       "productLineVersion": "18",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0195594Z       "productMilestone": "RTW",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0196051Z       "productMilestoneIsPreRelease": "False",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0196541Z       "productName": "Visual Studio",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0200275Z       "productPatchVersion": "3",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0200688Z       "productPreReleaseMilestoneSuffix": "1.0",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0201083Z       "productRelease": "RTW",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0201340Z       "productSemanticVersion": "18.10.3+12224.181",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0201638Z       "requiredEngineVersion": "4.10.30.62513"
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0201889Z     },
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0202068Z     "properties": {
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0202265Z       "campaignId": "",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0202557Z       "channelManifestId": "VisualStudio.18.Release/18.10.3+12224.181",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0202901Z       "includeRecommended": "1",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0203134Z       "nickname": "",
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0203506Z       "setupEngineFilePath": "C:\\Program Files (x86)\\Microsoft Visual Studio\\Installer\\setup.exe"
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0203916Z     }
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0204078Z   }
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0204234Z ]
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.0204326Z 
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.9222968Z 
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.9223652Z Name         Source
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.9224079Z ----         ------
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.9224493Z link.exe     C:\Program Files\Git\usr\bin\link.exe
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.9225093Z clang-cl.exe C:\Program Files\LLVM\bin\clang-cl.exe
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.9225660Z cmake.exe    C:\Program Files\CMake\bin\cmake.exe
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.9226212Z ninja.exe    C:\ProgramData\Chocolatey\bin\ninja.exe
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.9226572Z 
+capture	Visual Studio without developer environment	2026-10-19T18:35:06.9226580Z 
+capture	Services of interest	﻿2026-10-19T18:35:07.4904512Z ##[group]Run 'wuauserv','DiagTrack','SysMain','docker','postgresql-x64-17','MongoDB','Apache','nginx','wlansvc','WinDefend','WSLService' |
+capture	Services of interest	2026-10-19T18:35:07.4906559Z ^[[36;1m'wuauserv','DiagTrack','SysMain','docker','postgresql-x64-17','MongoDB','Apache','nginx','wlansvc','WinDefend','WSLService' |^[[0m
+capture	Services of interest	2026-10-19T18:35:07.4908707Z ^[[36;1m  ForEach-Object { Get-Service -Name $_ -ErrorAction SilentlyContinue } | Select-Object Name, Status, StartType | Format-Table | Out-String^[[0m
+capture	Services of interest	2026-10-19T18:35:07.5002623Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+capture	Services of interest	2026-10-19T18:35:07.5003195Z ##[endgroup]
+capture	Services of interest	2026-10-19T18:35:08.7359145Z 
+capture	Services of interest	2026-10-19T18:35:08.7360338Z Name               Status StartType
+capture	Services of interest	2026-10-19T18:35:08.7360810Z ----               ------ ---------
+capture	Services of interest	2026-10-19T18:35:08.7361201Z wuauserv          Running    Manual
+capture	Services of interest	2026-10-19T18:35:08.7361561Z DiagTrack         Stopped  Disabled
+capture	Services of interest	2026-10-19T18:35:08.7361933Z SysMain           Stopped  Disabled
+capture	Services of interest	2026-10-19T18:35:08.7362269Z docker            Running Automatic
+capture	Services of interest	2026-10-19T18:35:08.7362731Z postgresql-x64-17 Stopped  Disabled
+capture	Services of interest	2026-10-19T18:35:08.7363081Z MongoDB           Stopped  Disabled
+capture	Services of interest	2026-10-19T18:35:08.7363443Z Apache            Stopped  Disabled
+capture	Services of interest	2026-10-19T18:35:08.7363819Z nginx             Stopped  Disabled
+capture	Services of interest	2026-10-19T18:35:08.7364179Z wlansvc           Stopped    Manual
+capture	Services of interest	2026-10-19T18:35:08.7364461Z WinDefend         Running Automatic
+capture	Services of interest	2026-10-19T18:35:08.7364689Z WSLService        Running Automatic
+capture	Services of interest	2026-10-19T18:35:08.7364845Z 
+capture	Services of interest	2026-10-19T18:35:08.7364853Z 
+capture	Docker state (no cached images are expected on Windows Server 2025)	﻿2026-10-19T18:35:08.8023459Z ##[group]Run docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
+capture	Docker state (no cached images are expected on Windows Server 2025)	2026-10-19T18:35:08.8024204Z ^[[36;1mdocker version --format 'client={{.Client.Version}} server={{.Server.Version}}'^[[0m
+capture	Docker state (no cached images are expected on Windows Server 2025)	2026-10-19T18:35:08.8024678Z ^[[36;1mdocker images --format '{{.Repository}}:{{.Tag}} {{.ID}}'^[[0m
+capture	Docker state (no cached images are expected on Windows Server 2025)	2026-10-19T18:35:08.8092944Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+capture	Docker state (no cached images are expected on Windows Server 2025)	2026-10-19T18:35:08.8093315Z ##[endgroup]
+capture	Docker state (no cached images are expected on Windows Server 2025)	2026-10-19T18:35:12.7519096Z client=29.7.2 server=29.7.2
+capture	Tool cache layout	﻿2026-10-19T18:35:13.0162714Z ##[group]Run Get-ChildItem $env:AGENT_TOOLSDIRECTORY -Directory | ForEach-Object {
+capture	Tool cache layout	2026-10-19T18:35:13.0163407Z ^[[36;1mGet-ChildItem $env:AGENT_TOOLSDIRECTORY -Directory | ForEach-Object {^[[0m
+capture	Tool cache layout	2026-10-19T18:35:13.0163945Z ^[[36;1m  $t = $_.Name; Get-ChildItem $_.FullName -Directory | ForEach-Object { "$t/$($_.Name)" } }^[[0m
+capture	Tool cache layout	2026-10-19T18:35:13.0231456Z shell: C:\Program Files\PowerShell\7\pwsh.EXE -command ". '{0}'"
+capture	Tool cache layout	2026-10-19T18:35:13.0231818Z ##[endgroup]
+capture	Tool cache layout	2026-10-19T18:35:13.3421783Z CodeQL/2.27.1
+capture	Tool cache layout	2026-10-19T18:35:13.3443263Z go/1.24.13
+capture	Tool cache layout	2026-10-19T18:35:13.3445715Z go/1.25.14
+capture	Tool cache layout	2026-10-19T18:35:13.3447648Z go/1.26.8
+capture	Tool cache layout	2026-10-19T18:35:13.3460193Z Java_Temurin-Hotspot_jdk/11.0.32-101
+capture	Tool cache layout	2026-10-19T18:35:13.3462121Z Java_Temurin-Hotspot_jdk/17.0.20-101
+capture	Tool cache layout	2026-10-19T18:35:13.3464039Z Java_Temurin-Hotspot_jdk/21.0.12-101.0
+capture	Tool cache layout	2026-10-19T18:35:13.3465933Z Java_Temurin-Hotspot_jdk/25.0.4-101.0
+capture	Tool cache layout	2026-10-19T18:35:13.3468785Z Java_Temurin-Hotspot_jdk/8.0.504-1
+capture	Tool cache layout	2026-10-19T18:35:13.3480956Z node/22.23.3
+capture	Tool cache layout	2026-10-19T18:35:13.3482905Z node/24.21.0
+capture	Tool cache layout	2026-10-19T18:35:13.3545110Z PyPy/3.10.16
+capture	Tool cache layout	2026-10-19T18:35:13.3547139Z PyPy/3.9.19
+capture	Tool cache layout	2026-10-19T18:35:13.3558633Z Python/3.10.11
+capture	Tool cache layout	2026-10-19T18:35:13.3560638Z Python/3.11.9
+capture	Tool cache layout	2026-10-19T18:35:13.3562751Z Python/3.12.10
+capture	Tool cache layout	2026-10-19T18:35:13.3564652Z Python/3.13.16
+capture	Tool cache layout	2026-10-19T18:35:13.3567390Z Python/3.14.8
+capture	Tool cache layout	2026-10-19T18:35:13.3633964Z Ruby/3.2.11
+capture	Tool cache layout	2026-10-19T18:35:13.3634269Z Ruby/3.3.12
+capture	Tool cache layout	2026-10-19T18:35:13.3634526Z Ruby/3.4.11
+capture	Tool cache layout	2026-10-19T18:35:13.3634790Z Ruby/4.0.7
+capture	Tool cache layout	2026-10-19T18:35:13.3635048Z stack/3.11.1
+capture	Complete job	﻿2026-10-19T18:35:13.4155083Z Cleaning up orphan processes

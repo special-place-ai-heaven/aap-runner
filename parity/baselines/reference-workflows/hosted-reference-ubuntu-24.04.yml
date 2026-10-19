@@ -1,0 +1,80 @@
+# Reference copy. The merged, manual (workflow_dispatch) version lives in .github/workflows of aap-runner;
+# this copy is kept for reference only. Hosted runners only, then archive the log.
+# No secrets, no third-party actions, no checkout, no token permissions.
+# The label must be exactly `ubuntu-24.04`. `ubuntu-latest` is announced to move to Ubuntu 26.04 in
+# November 2026 and must never be used as certification evidence (see ../hosted-reference.md).
+name: hosted-reference-ubuntu-24.04
+on: workflow_dispatch
+permissions: {}
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Image identity (same data the Set up job > Runner Image group prints)
+        run: |
+          cat /imagegeneration/imagedata.json
+          echo "ImageOS=$ImageOS"
+          echo "ImageVersion=$ImageVersion"
+          echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH RUNNER_ENVIRONMENT=$RUNNER_ENVIRONMENT"
+          . /etc/os-release && echo "os=$PRETTY_NAME"
+          uname -r
+          systemctl --version | head -1
+
+      - name: Hardware class
+        run: |
+          echo "nproc=$(nproc)"
+          grep -E 'MemTotal|SwapTotal' /proc/meminfo
+          df -h / /mnt 2>/dev/null
+          lsblk -d -o NAME,SIZE,ROTA,TYPE
+
+      - name: User, privileges, limits
+        run: |
+          id
+          sudo -n true && echo "passwordless_sudo=yes" || echo "passwordless_sudo=no"
+          ulimit -n; ulimit -s
+          sysctl vm.max_map_count fs.inotify.max_user_watches fs.inotify.max_user_instances vm.mmap_rnd_bits 2>&1 || true
+          cat /sys/block/*/queue/read_ahead_kb 2>/dev/null | sort -u
+          findmnt --noheadings --output OPTIONS --target /
+
+      - name: Allow-listed environment (names fixed here; never dump the full environment)
+        run: |
+          for n in ImageOS ImageVersion AGENT_TOOLSDIRECTORY RUNNER_TOOL_CACHE ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE JAVA_HOME JAVA_HOME_17_X64 \
+                   GOROOT_1_24_X64 VCPKG_INSTALLATION_ROOT CONDA ANDROID_HOME ANDROID_NDK_HOME CHROMEWEBDRIVER EDGEWEBDRIVER GECKOWEBDRIVER \
+                   SELENIUM_JAR_PATH DOTNET_NOLOGO DOTNET_MULTILEVEL_LOOKUP DOTNET_SKIP_FIRST_TIME_EXPERIENCE DEBIAN_FRONTEND ACCEPT_EULA \
+                   XDG_CONFIG_HOME PIPX_BIN_DIR PIPX_HOME NVM_DIR GRADLE_HOME ANT_HOME BAZEL_VERSION USE_BAZEL_FALLBACK_VERSION \
+                   HOMEBREW_NO_AUTO_UPDATE CHROME_BIN SWIFT_PATH VCPKG_FORCE_SYSTEM_BINARIES; do
+            printf '%s=%s\n' "$n" "${!n-<unset>}"
+          done
+
+      - name: PATH order (job process) and /etc/environment PATH
+        run: |
+          echo "--- process PATH"; echo "$PATH" | tr ':' '\n' | nl -ba -v0
+          echo "--- /etc/environment PATH"; grep '^PATH=' /etc/environment | cut -d= -f2- | tr ':' '\n' | nl -ba -v0
+
+      - name: Shells and versions
+        run: |
+          bash --version | head -1
+          dash --version 2>&1 | head -1 || true
+          pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+          python3 --version; node --version; docker --version; gcc --version | head -1; clang --version | head -1
+
+      - name: Services of interest
+        run: |
+          for s in docker snapd haveged postgresql mysql apache2 nginx apt-daily.timer apt-daily-upgrade.timer unattended-upgrades; do
+            printf '%s enabled=%s active=%s\n' "$s" "$(systemctl is-enabled "$s" 2>&1)" "$(systemctl is-active "$s" 2>&1)"
+          done
+
+      - name: Docker state (the Readme lists no cached images; the build script pulls several)
+        run: |
+          docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
+          docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}'
+          ls -l /run/docker.sock
+
+      - name: Tool cache layout
+        run: |
+          for d in "$AGENT_TOOLSDIRECTORY"/*/; do for v in "$d"*/; do echo "$(basename "$d")/$(basename "$v")"; done; done
+          ls -la /opt/actionarchivecache 2>/dev/null | head

@@ -1,0 +1,260 @@
+capture	Set up job	﻿2026-10-19T18:48:45.4513079Z Current runner version: '2.337.0'
+capture	Set up job	2026-10-19T18:48:45.4539542Z ##[group]Runner Image Provisioner
+capture	Set up job	2026-10-19T18:48:45.4540532Z Hosted Compute Agent
+capture	Set up job	2026-10-19T18:48:45.4541442Z Version: 20261012.601
+capture	Set up job	2026-10-19T18:48:45.4542104Z Commit: f3dc54e1fb89da6852db922499a0233137369e1d
+capture	Set up job	2026-10-19T18:48:45.4542914Z Build Date: 2026-10-12T17:48:21Z
+capture	Set up job	2026-10-19T18:48:45.4543664Z Worker ID: {21265258-474e-4ed0-b14d-b6dc67b3d102}
+capture	Set up job	2026-10-19T18:48:45.4544372Z Region: canadacentral
+capture	Set up job	2026-10-19T18:48:45.4545010Z Cloud: Azure
+capture	Set up job	2026-10-19T18:48:45.4545545Z ##[endgroup]
+capture	Set up job	2026-10-19T18:48:45.4547085Z ##[group]Operating System
+capture	Set up job	2026-10-19T18:48:45.4547849Z Ubuntu
+capture	Set up job	2026-10-19T18:48:45.4548357Z 24.04.5
+capture	Set up job	2026-10-19T18:48:45.4548932Z LTS
+capture	Set up job	2026-10-19T18:48:45.4549443Z ##[endgroup]
+capture	Set up job	2026-10-19T18:48:45.4550025Z ##[group]Runner Image
+capture	Set up job	2026-10-19T18:48:45.4550709Z Image: ubuntu-24.04
+capture	Set up job	2026-10-19T18:48:45.4551508Z Version: 20261012.334.1
+capture	Set up job	2026-10-19T18:48:45.4552675Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+capture	Set up job	2026-10-19T18:48:45.4554478Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+capture	Set up job	2026-10-19T18:48:45.4555518Z ##[endgroup]
+capture	Set up job	2026-10-19T18:48:45.4556567Z ##[group]GITHUB_TOKEN Permissions
+capture	Set up job	2026-10-19T18:48:45.4558426Z Metadata: read
+capture	Set up job	2026-10-19T18:48:45.4559075Z ##[endgroup]
+capture	Set up job	2026-10-19T18:48:45.4561638Z Secret source: Actions
+capture	Set up job	2026-10-19T18:48:45.4562664Z Cache mode: write
+capture	Set up job	2026-10-19T18:48:45.4563461Z Prepare workflow directory
+capture	Set up job	2026-10-19T18:48:45.5101213Z Prepare all required actions
+capture	Set up job	2026-10-19T18:48:45.5219008Z Complete job name: capture
+capture	Image identity (same data the Set up job > Runner Image group prints)	﻿2026-10-19T18:48:45.6451521Z ##[group]Run cat /imagegeneration/imagedata.json
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.6452477Z ^[[36;1mcat /imagegeneration/imagedata.json^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.6453179Z ^[[36;1mecho "ImageOS=$ImageOS"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.6453981Z ^[[36;1mecho "ImageVersion=$ImageVersion"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.6455129Z ^[[36;1mecho "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH RUNNER_ENVIRONMENT=$RUNNER_ENVIRONMENT"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.6456334Z ^[[36;1m. /etc/os-release && echo "os=$PRETTY_NAME"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.6457040Z ^[[36;1muname -r^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.6457631Z ^[[36;1msystemctl --version | head -1^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7580512Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7582074Z ##[endgroup]
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7804345Z [
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7805108Z   {
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7805853Z     "group": "Operating System",
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7806833Z     "detail": "Ubuntu\n24.04.5\nLTS"
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7807730Z   },
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7808400Z   {
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7809091Z     "group": "Runner Image",
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7812873Z     "detail": "Image: ubuntu-24.04\nVersion: 20261012.334.1\nIncluded Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md\nImage Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334"
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7816280Z   }
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7816970Z ]
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7817624Z ImageOS=ubuntu24
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7818403Z ImageVersion=20261012.334.1
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7819470Z RUNNER_OS=Linux RUNNER_ARCH=X64 RUNNER_ENVIRONMENT=github-hosted
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7820632Z os=Ubuntu 24.04.5 LTS
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7821646Z 6.17.0-1022-azure
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:48:45.7827695Z systemd 255 (255.4-1ubuntu8.17)
+capture	Hardware class	﻿2026-10-19T18:48:45.7952834Z ##[group]Run echo "nproc=$(nproc)"
+capture	Hardware class	2026-10-19T18:48:45.7953480Z ^[[36;1mecho "nproc=$(nproc)"^[[0m
+capture	Hardware class	2026-10-19T18:48:45.7954093Z ^[[36;1mgrep -E 'MemTotal|SwapTotal' /proc/meminfo^[[0m
+capture	Hardware class	2026-10-19T18:48:45.7954743Z ^[[36;1mdf -h / /mnt 2>/dev/null^[[0m
+capture	Hardware class	2026-10-19T18:48:45.7955300Z ^[[36;1mlsblk -d -o NAME,SIZE,ROTA,TYPE^[[0m
+capture	Hardware class	2026-10-19T18:48:45.8016085Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	Hardware class	2026-10-19T18:48:45.8016772Z ##[endgroup]
+capture	Hardware class	2026-10-19T18:48:45.8117944Z nproc=4
+capture	Hardware class	2026-10-19T18:48:45.8130114Z MemTotal:       16373452 kB
+capture	Hardware class	2026-10-19T18:48:45.8131175Z SwapTotal:       3145724 kB
+capture	Hardware class	2026-10-19T18:48:45.8153252Z Filesystem      Size  Used Avail Use% Mounted on
+capture	Hardware class	2026-10-19T18:48:45.8154277Z /dev/root       145G   59G   86G  41% /
+capture	Hardware class	2026-10-19T18:48:45.8155267Z /dev/root       145G   59G   86G  41% /
+capture	Hardware class	2026-10-19T18:48:45.8185575Z NAME  SIZE ROTA TYPE
+capture	Hardware class	2026-10-19T18:48:45.8186140Z sda   150G    1 disk
+capture	User, privileges, limits	﻿2026-10-19T18:48:45.8231714Z ##[group]Run id
+capture	User, privileges, limits	2026-10-19T18:48:45.8232499Z ^[[36;1mid^[[0m
+capture	User, privileges, limits	2026-10-19T18:48:45.8233295Z ^[[36;1msudo -n true && echo "passwordless_sudo=yes" || echo "passwordless_sudo=no"^[[0m
+capture	User, privileges, limits	2026-10-19T18:48:45.8234250Z ^[[36;1mulimit -n; ulimit -s^[[0m
+capture	User, privileges, limits	2026-10-19T18:48:45.8235351Z ^[[36;1msysctl vm.max_map_count fs.inotify.max_user_watches fs.inotify.max_user_instances vm.mmap_rnd_bits 2>&1 || true^[[0m
+capture	User, privileges, limits	2026-10-19T18:48:45.8236576Z ^[[36;1mcat /sys/block/*/queue/read_ahead_kb 2>/dev/null | sort -u^[[0m
+capture	User, privileges, limits	2026-10-19T18:48:45.8237509Z ^[[36;1mfindmnt --noheadings --output OPTIONS --target /^[[0m
+capture	User, privileges, limits	2026-10-19T18:48:45.8296885Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	User, privileges, limits	2026-10-19T18:48:45.8297713Z ##[endgroup]
+capture	User, privileges, limits	2026-10-19T18:48:45.8399019Z uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),118(docker),999(systemd-journal)
+capture	User, privileges, limits	2026-10-19T18:48:45.8469567Z passwordless_sudo=yes
+capture	User, privileges, limits	2026-10-19T18:48:45.8470720Z 65536
+capture	User, privileges, limits	2026-10-19T18:48:45.8471686Z 16384
+capture	User, privileges, limits	2026-10-19T18:48:45.8480273Z vm.max_map_count = 262144
+capture	User, privileges, limits	2026-10-19T18:48:45.8481543Z fs.inotify.max_user_watches = 655360
+capture	User, privileges, limits	2026-10-19T18:48:45.8482375Z fs.inotify.max_user_instances = 1280
+capture	User, privileges, limits	2026-10-19T18:48:45.8483639Z sysctl: permission denied on key 'vm.mmap_rnd_bits'
+capture	User, privileges, limits	2026-10-19T18:48:45.8498671Z 128
+capture	User, privileges, limits	2026-10-19T18:48:45.8499652Z 2560
+capture	User, privileges, limits	2026-10-19T18:48:45.8518006Z rw,relatime,discard,journal_async_commit,nobarrier,errors=remount-ro,commit=30,data=writeback
+capture	Allow-listed environment (names fixed here; never dump the full environment)	﻿2026-10-19T18:48:45.8570735Z ##[group]Run for n in ImageOS ImageVersion AGENT_TOOLSDIRECTORY RUNNER_TOOL_CACHE ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE JAVA_HOME JAVA_HOME_17_X64 \
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8573024Z ^[[36;1mfor n in ImageOS ImageVersion AGENT_TOOLSDIRECTORY RUNNER_TOOL_CACHE ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE JAVA_HOME JAVA_HOME_17_X64 \^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8575023Z ^[[36;1m         GOROOT_1_24_X64 VCPKG_INSTALLATION_ROOT CONDA ANDROID_HOME ANDROID_NDK_HOME CHROMEWEBDRIVER EDGEWEBDRIVER GECKOWEBDRIVER \^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8576746Z ^[[36;1m         SELENIUM_JAR_PATH DOTNET_NOLOGO DOTNET_MULTILEVEL_LOOKUP DOTNET_SKIP_FIRST_TIME_EXPERIENCE DEBIAN_FRONTEND ACCEPT_EULA \^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8578391Z ^[[36;1m         XDG_CONFIG_HOME PIPX_BIN_DIR PIPX_HOME NVM_DIR GRADLE_HOME ANT_HOME BAZEL_VERSION USE_BAZEL_FALLBACK_VERSION \^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8579763Z ^[[36;1m         HOMEBREW_NO_AUTO_UPDATE CHROME_BIN SWIFT_PATH VCPKG_FORCE_SYSTEM_BINARIES; do^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8580722Z ^[[36;1m  printf '%s=%s\n' "$n" "${!n-<unset>}"^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8581909Z ^[[36;1mdone^[[0m
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8640200Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8641349Z ##[endgroup]
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8722912Z ImageOS=ubuntu24
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8723957Z ImageVersion=20261012.334.1
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8725492Z AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8726565Z RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8727467Z ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/opt/actionarchivecache
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8728597Z JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-amd64
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8729838Z JAVA_HOME_17_X64=/usr/lib/jvm/temurin-17-jdk-amd64
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8731343Z GOROOT_1_24_X64=/opt/hostedtoolcache/go/1.24.13/x64
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8732701Z VCPKG_INSTALLATION_ROOT=/usr/local/share/vcpkg
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8733733Z CONDA=/usr/share/miniconda
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8734338Z ANDROID_HOME=/usr/local/lib/android/sdk
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8735178Z ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/27.3.13750724
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8736079Z CHROMEWEBDRIVER=/usr/local/share/chromedriver-linux64
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8736883Z EDGEWEBDRIVER=/usr/local/share/edge_driver
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8737611Z GECKOWEBDRIVER=/usr/local/share/gecko_driver
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8738365Z SELENIUM_JAR_PATH=/usr/share/java/selenium-server.jar
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8739331Z DOTNET_NOLOGO=1
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8739948Z DOTNET_MULTILEVEL_LOOKUP=0
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8740576Z DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8741521Z DEBIAN_FRONTEND=noninteractive
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8742119Z ACCEPT_EULA=Y
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8742726Z XDG_CONFIG_HOME=/home/runner/.config
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8743408Z PIPX_BIN_DIR=/opt/pipx_bin
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8744000Z PIPX_HOME=/opt/pipx
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8744611Z NVM_DIR=/home/runner/.nvm
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8745200Z GRADLE_HOME=/usr/share/gradle-9.8.1
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8745899Z ANT_HOME=/usr/share/ant
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8746483Z BAZEL_VERSION=<unset>
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8747026Z USE_BAZEL_FALLBACK_VERSION=silent:
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8747734Z HOMEBREW_NO_AUTO_UPDATE=1
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8748339Z CHROME_BIN=/usr/bin/google-chrome
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8748992Z SWIFT_PATH=/usr/share/swift/usr/bin
+capture	Allow-listed environment (names fixed here; never dump the full environment)	2026-10-19T18:48:45.8749692Z VCPKG_FORCE_SYSTEM_BINARIES=<unset>
+capture	PATH order (job process) and /etc/environment PATH	﻿2026-10-19T18:48:45.8792450Z ##[group]Run echo "--- process PATH"; echo "$PATH" | tr ':' '\n' | nl -ba -v0
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8793439Z ^[[36;1mecho "--- process PATH"; echo "$PATH" | tr ':' '\n' | nl -ba -v0^[[0m
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8794530Z ^[[36;1mecho "--- /etc/environment PATH"; grep '^PATH=' /etc/environment | cut -d= -f2- | tr ':' '\n' | nl -ba -v0^[[0m
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8851596Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8852272Z ##[endgroup]
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8929484Z --- process PATH
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8951480Z      0	/snap/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8952268Z      1	/home/runner/.local/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8953035Z      2	/opt/pipx_bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8953604Z      3	/home/runner/.cargo/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8954557Z      4	/home/runner/.config/composer/vendor/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8955595Z      5	/usr/local/.ghcup/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8956462Z      6	/home/runner/.dotnet/tools
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8957364Z      7	/usr/local/sbin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8958174Z      8	/usr/local/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8959036Z      9	/usr/sbin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8959805Z     10	/usr/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8960518Z     11	/sbin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8961493Z     12	/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8962174Z     13	/usr/games
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8962901Z     14	/usr/local/games
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8963683Z     15	/snap/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8964477Z --- /etc/environment PATH
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8978735Z      0	/snap/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8979442Z      1	/home/runner/.local/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8979961Z      2	/opt/pipx_bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8980440Z      3	/home/runner/.cargo/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8981324Z      4	/home/runner/.config/composer/vendor/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8982519Z      5	/usr/local/.ghcup/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8983365Z      6	/home/runner/.dotnet/tools
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8983914Z      7	/usr/local/sbin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8984473Z      8	/usr/local/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8984976Z      9	/usr/sbin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8985385Z     10	/usr/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8985859Z     11	/sbin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8986267Z     12	/bin
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8986655Z     13	/usr/games
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8987075Z     14	/usr/local/games
+capture	PATH order (job process) and /etc/environment PATH	2026-10-19T18:48:45.8987531Z     15	/snap/bin
+capture	Shells and versions	﻿2026-10-19T18:48:45.9042569Z ##[group]Run bash --version | head -1
+capture	Shells and versions	2026-10-19T18:48:45.9043206Z ^[[36;1mbash --version | head -1^[[0m
+capture	Shells and versions	2026-10-19T18:48:45.9043780Z ^[[36;1mdash --version 2>&1 | head -1 || true^[[0m
+capture	Shells and versions	2026-10-19T18:48:45.9044559Z ^[[36;1mpwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'^[[0m
+capture	Shells and versions	2026-10-19T18:48:45.9045698Z ^[[36;1mpython3 --version; node --version; docker --version; gcc --version | head -1; clang --version | head -1^[[0m
+capture	Shells and versions	2026-10-19T18:48:45.9103375Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	Shells and versions	2026-10-19T18:48:45.9104052Z ##[endgroup]
+capture	Shells and versions	2026-10-19T18:48:45.9196720Z GNU bash, version 5.2.21(1)-release (x86_64-pc-linux-gnu)
+capture	Shells and versions	2026-10-19T18:48:45.9212020Z dash: 0: Illegal option --
+capture	Shells and versions	2026-10-19T18:48:46.3751850Z 7.6.6
+capture	Shells and versions	2026-10-19T18:48:46.4364966Z Python 3.12.3
+capture	Shells and versions	2026-10-19T18:48:46.5316423Z v22.23.3
+capture	Shells and versions	2026-10-19T18:48:46.6355189Z Docker version 28.0.4, build b8034c0
+capture	Shells and versions	2026-10-19T18:48:46.6445924Z gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+capture	Shells and versions	2026-10-19T18:48:47.8292568Z Ubuntu clang version 18.1.3 (1ubuntu1)
+capture	Services of interest	﻿2026-10-19T18:48:47.8682523Z ##[group]Run for s in docker snapd haveged postgresql mysql apache2 nginx apt-daily.timer apt-daily-upgrade.timer unattended-upgrades; do
+capture	Services of interest	2026-10-19T18:48:47.8685250Z ^[[36;1mfor s in docker snapd haveged postgresql mysql apache2 nginx apt-daily.timer apt-daily-upgrade.timer unattended-upgrades; do^[[0m
+capture	Services of interest	2026-10-19T18:48:47.8687590Z ^[[36;1m  printf '%s enabled=%s active=%s\n' "$s" "$(systemctl is-enabled "$s" 2>&1)" "$(systemctl is-active "$s" 2>&1)"^[[0m
+capture	Services of interest	2026-10-19T18:48:47.8688900Z ^[[36;1mdone^[[0m
+capture	Services of interest	2026-10-19T18:48:47.8754761Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	Services of interest	2026-10-19T18:48:47.8755636Z ##[endgroup]
+capture	Services of interest	2026-10-19T18:48:47.8926316Z docker enabled=enabled active=active
+capture	Services of interest	2026-10-19T18:48:47.9004605Z snapd enabled=enabled active=inactive
+capture	Services of interest	2026-10-19T18:48:47.9136781Z haveged enabled=enabled active=active
+capture	Services of interest	2026-10-19T18:48:47.9234469Z postgresql enabled=disabled active=inactive
+capture	Services of interest	2026-10-19T18:48:47.9342337Z mysql enabled=disabled active=inactive
+capture	Services of interest	2026-10-19T18:48:47.9455188Z apache2 enabled=disabled active=inactive
+capture	Services of interest	2026-10-19T18:48:47.9563512Z nginx enabled=disabled active=inactive
+capture	Services of interest	2026-10-19T18:48:47.9670837Z apt-daily.timer enabled=disabled active=inactive
+capture	Services of interest	2026-10-19T18:48:47.9800489Z apt-daily-upgrade.timer enabled=disabled active=inactive
+capture	Services of interest	2026-10-19T18:48:47.9870037Z unattended-upgrades enabled=not-found active=inactive
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	﻿2026-10-19T18:48:47.9943975Z ##[group]Run docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:47.9945694Z ^[[36;1mdocker version --format 'client={{.Client.Version}} server={{.Server.Version}}'^[[0m
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:47.9947072Z ^[[36;1mdocker images --format '{{.Repository}}:{{.Tag}} {{.ID}}'^[[0m
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:47.9947980Z ^[[36;1mls -l /run/docker.sock^[[0m
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:48.0014503Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:48.0015342Z ##[endgroup]
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:48.0378182Z client=28.0.4 server=28.0.4
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:48.0519862Z ghcr.io/github/gh-aw-firewall/agent:latest 91d6360941a3
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:48.0522428Z ghcr.io/dependabot/dependabot-updater-core:latest 759e96ae5997
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:48.0524573Z ghcr.io/github/gh-aw-firewall/api-proxy:latest 986b9bc056a9
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:48.0526437Z ghcr.io/github/github-mcp-server:latest 9875fef5aa1f
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:48.0528142Z ghcr.io/github/gh-aw-mcpg:latest 808996e3d477
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:48.0529964Z ghcr.io/github/gh-aw-firewall/squid:latest dc17fe424471
+capture	Docker state (the Readme lists no cached images; the build script pulls several)	2026-10-19T18:48:48.0546562Z srw-rw---- 1 root docker 0 Oct 19 18:47 /run/docker.sock
+capture	Tool cache layout	﻿2026-10-19T18:48:48.0603283Z ##[group]Run for d in "$AGENT_TOOLSDIRECTORY"/*/; do for v in "$d"*/; do echo "$(basename "$d")/$(basename "$v")"; done; done
+capture	Tool cache layout	2026-10-19T18:48:48.0605326Z ^[[36;1mfor d in "$AGENT_TOOLSDIRECTORY"/*/; do for v in "$d"*/; do echo "$(basename "$d")/$(basename "$v")"; done; done^[[0m
+capture	Tool cache layout	2026-10-19T18:48:48.0606793Z ^[[36;1mls -la /opt/actionarchivecache 2>/dev/null | head^[[0m
+capture	Tool cache layout	2026-10-19T18:48:48.0674732Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	Tool cache layout	2026-10-19T18:48:48.0675559Z ##[endgroup]
+capture	Tool cache layout	2026-10-19T18:48:48.0808412Z CodeQL/2.27.2
+capture	Tool cache layout	2026-10-19T18:48:48.0835803Z Java_Temurin-Hotspot_jdk/11.0.32-1
+capture	Tool cache layout	2026-10-19T18:48:48.0858294Z Java_Temurin-Hotspot_jdk/17.0.20-1
+capture	Tool cache layout	2026-10-19T18:48:48.0880230Z Java_Temurin-Hotspot_jdk/21.0.12-1
+capture	Tool cache layout	2026-10-19T18:48:48.0902200Z Java_Temurin-Hotspot_jdk/25.0.4-1
+capture	Tool cache layout	2026-10-19T18:48:48.0924155Z Java_Temurin-Hotspot_jdk/8.0.504-1
+capture	Tool cache layout	2026-10-19T18:48:48.1051757Z PyPy/3.10.16
+capture	Tool cache layout	2026-10-19T18:48:48.1074205Z PyPy/3.11.16
+capture	Tool cache layout	2026-10-19T18:48:48.1096041Z PyPy/3.9.19
+capture	Tool cache layout	2026-10-19T18:48:48.1139876Z Python/3.10.22
+capture	Tool cache layout	2026-10-19T18:48:48.1161875Z Python/3.11.17
+capture	Tool cache layout	2026-10-19T18:48:48.1183996Z Python/3.12.15
+capture	Tool cache layout	2026-10-19T18:48:48.1205673Z Python/3.13.16
+capture	Tool cache layout	2026-10-19T18:48:48.1228015Z Python/3.14.8
+capture	Tool cache layout	2026-10-19T18:48:48.1310851Z Ruby/3.2.11
+capture	Tool cache layout	2026-10-19T18:48:48.1333427Z Ruby/3.3.12
+capture	Tool cache layout	2026-10-19T18:48:48.1355347Z Ruby/3.4.11
+capture	Tool cache layout	2026-10-19T18:48:48.1377657Z Ruby/4.0.7
+capture	Tool cache layout	2026-10-19T18:48:48.1406484Z agentic-workflow-firewall-js/0.28.51
+capture	Tool cache layout	2026-10-19T18:48:48.1428993Z agentic-workflow-firewall-js/0.28.52
+capture	Tool cache layout	2026-10-19T18:48:48.1450596Z agentic-workflow-firewall-js/0.28.53
+capture	Tool cache layout	2026-10-19T18:48:48.1513044Z copilot-cli/1.0.95
+capture	Tool cache layout	2026-10-19T18:48:48.1545690Z go/1.24.13
+capture	Tool cache layout	2026-10-19T18:48:48.1567509Z go/1.25.14
+capture	Tool cache layout	2026-10-19T18:48:48.1590007Z go/1.26.9
+capture	Tool cache layout	2026-10-19T18:48:48.1623764Z node/22.23.3
+capture	Tool cache layout	2026-10-19T18:48:48.1646159Z node/24.21.0
+capture	Tool cache layout	2026-10-19T18:48:48.1670464Z total 36
+capture	Tool cache layout	2026-10-19T18:48:48.1671998Z drwxrwxrwx+  9 runner runner 4096 Oct  5 14:12 .
+capture	Tool cache layout	2026-10-19T18:48:48.1675119Z drwxrwxrwx+ 14 root   root   4096 Oct 12 22:12 ..
+capture	Tool cache layout	2026-10-19T18:48:48.1676550Z drwxrwxrwx+  2 runner runner 4096 Oct  5 14:12 actions_cache
+capture	Tool cache layout	2026-10-19T18:48:48.1678152Z drwxrwxrwx+  2 runner runner 4096 Oct  5 14:12 actions_checkout
+capture	Tool cache layout	2026-10-19T18:48:48.1680108Z drwxrwxrwx+  2 runner runner 4096 Oct  5 14:12 actions_setup-node
+capture	Tool cache layout	2026-10-19T18:48:48.1682733Z drwxrwxrwx+  2 runner runner 4096 Oct  5 14:12 actions_setup-python
+capture	Tool cache layout	2026-10-19T18:48:48.1684718Z drwxrwxrwx+  2 runner runner 4096 Oct  5 14:12 actions_upload-artifact
+capture	Tool cache layout	2026-10-19T18:48:48.1686634Z drwxrwxrwx+  2 runner runner 4096 Oct  5 14:12 github_codeql-action
+capture	Tool cache layout	2026-10-19T18:48:48.1688621Z drwxrwxrwx+  2 runner runner 4096 Oct  5 14:12 github_gh-aw-actions
+capture	Complete job	﻿2026-10-19T18:48:48.1795515Z Cleaning up orphan processes

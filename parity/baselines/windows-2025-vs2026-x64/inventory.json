@@ -1,0 +1,4433 @@
+{
+ "schema": 1,
+ "profile": "windows-2025-vs2026-x64",
+ "source": {
+  "readme_url": "https://github.com/actions/runner-images/blob/aee0669dd04510a11756664eb77f5630debabed3/images/windows/Windows2025-VS2026-Readme.md",
+  "runner_images_commit": "aee0669dd04510a11756664eb77f5630debabed3",
+  "readme_sha256": "1be74251a3224d797dd351ce4509c3576a5ad417bed3c923d05a39a5f770bad6",
+  "toolset_sha256": "74afa20f0f390cd230f98900d034c1ad297a071820e5b45c55c5cd7abf2caa8f"
+ },
+ "identity": {
+  "os_title": "Windows Server 2025",
+  "OS Version": {
+   "value": "10.0.26100 Build 33438",
+   "src_line": 7
+  },
+  "Image Version": {
+   "value": "20261007.264.1",
+   "src_line": 8
+  }
+ },
+ "announcements_not_inventory": [
+  "| Announcements |",
+  "|-|",
+  "| [[Windows] The `windows-11-arm` image label will use Windows 11 Arm64 with Visual Studio 2026 image in September 2026](https://github.com/actions/runner-images/issues/14602) |",
+  "| [[Windows] The Windows 11 Arm64 with Visual Studio 2026 is now generally available in GitHub Actions](https://github.com/actions/runner-images/issues/14592) |"
+ ],
+ "toolset_defaults": {
+  "toolcache": [
+   {
+    "name": "Ruby",
+    "arch": "x64",
+    "platform": "win32",
+    "versions": [
+     "3.2",
+     "3.3",
+     "3.4",
+     "4.0"
+    ],
+    "default": "3.3"
+   },
+   {
+    "name": "Python",
+    "url": "https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json",
+    "arch": "x64",
+    "platform": "win32",
+    "versions": [
+     "3.10.*",
+     "3.11.*",
+     "3.12.*",
+     "3.13.*",
+     "3.14.*"
+    ],
+    "default": "3.12.*"
+   },
+   {
+    "name": "PyPy",
+    "arch": "x86",
+    "platform": "win64",
+    "versions": [
+     "3.9",
+     "3.10"
+    ]
+   },
+   {
+    "name": "node",
+    "url": "https://raw.githubusercontent.com/actions/node-versions/main/versions-manifest.json",
+    "arch": "x64",
+    "platform": "win32",
+    "versions": [
+     "22.*",
+     "24.*"
+    ]
+   },
+   {
+    "name": "go",
+    "url": "https://raw.githubusercontent.com/actions/go-versions/main/versions-manifest.json",
+    "arch": "x64",
+    "platform": "win32",
+    "versions": [
+     "1.24.*",
+     "1.25.*",
+     "1.26.*"
+    ],
+    "default": "1.24.*"
+   }
+  ],
+  "java": {
+   "default": "17",
+   "versions": [
+    "8",
+    "11",
+    "17",
+    "21",
+    "25"
+   ]
+  },
+  "node": {
+   "default": "22.*"
+  },
+  "note": "toolset.json at the baseline (build) commit"
+ },
+ "counts": {
+  "Windows features": {
+   "entries": 2,
+   "notes": 0,
+   "versions": 2
+  },
+  "Language and Runtime": {
+   "entries": 10,
+   "notes": 0,
+   "versions": 10
+  },
+  "Package Management": {
+   "entries": 11,
+   "notes": 0,
+   "versions": 11
+  },
+  "Package Management/Environment variables": {
+   "entries": 2,
+   "notes": 0,
+   "versions": 0
+  },
+  "Project Management": {
+   "entries": 4,
+   "notes": 0,
+   "versions": 4
+  },
+  "Tools": {
+   "entries": 38,
+   "notes": 0,
+   "versions": 38
+  },
+  "CLI Tools": {
+   "entries": 6,
+   "notes": 0,
+   "versions": 6
+  },
+  "Rust Tools": {
+   "entries": 4,
+   "notes": 0,
+   "versions": 4
+  },
+  "Rust Tools/Packages": {
+   "entries": 2,
+   "notes": 0,
+   "versions": 2
+  },
+  "Browsers and Drivers": {
+   "entries": 8,
+   "notes": 0,
+   "versions": 8
+  },
+  "Browsers and Drivers/Environment variables": {
+   "entries": 4,
+   "notes": 0,
+   "versions": 0
+  },
+  "Java": {
+   "entries": 5,
+   "notes": 0,
+   "versions": 5
+  },
+  "Shells": {
+   "entries": 3,
+   "notes": 0,
+   "versions": 0
+  },
+  "MSYS2": {
+   "entries": 1,
+   "notes": 0,
+   "versions": 1
+  },
+  "MSYS2/Notes": {
+   "entries": 0,
+   "notes": 1,
+   "versions": 0
+  },
+  "Cached Tools": {
+   "entries": 0,
+   "notes": 0,
+   "versions": 0
+  },
+  "Cached Tools/Go": {
+   "entries": 3,
+   "notes": 0,
+   "versions": 3
+  },
+  "Cached Tools/Node.js": {
+   "entries": 2,
+   "notes": 0,
+   "versions": 2
+  },
+  "Cached Tools/Python": {
+   "entries": 5,
+   "notes": 0,
+   "versions": 5
+  },
+  "Cached Tools/PyPy": {
+   "entries": 2,
+   "notes": 0,
+   "versions": 2
+  },
+  "Cached Tools/Ruby": {
+   "entries": 4,
+   "notes": 0,
+   "versions": 4
+  },
+  "Databases": {
+   "entries": 0,
+   "notes": 0,
+   "versions": 0
+  },
+  "Databases/PostgreSQL": {
+   "entries": 8,
+   "notes": 0,
+   "versions": 0
+  },
+  "Databases/MongoDB": {
+   "entries": 1,
+   "notes": 0,
+   "versions": 1
+  },
+  "Database tools": {
+   "entries": 7,
+   "notes": 0,
+   "versions": 7
+  },
+  "Web Servers": {
+   "entries": 2,
+   "notes": 0,
+   "versions": 2
+  },
+  "Visual Studio Enterprise 2026": {
+   "entries": 1,
+   "notes": 0,
+   "versions": 1
+  },
+  "Visual Studio Enterprise 2026/Workloads, components and extensions": {
+   "entries": 204,
+   "notes": 0,
+   "versions": 204
+  },
+  "Visual Studio Enterprise 2026/Microsoft Visual C++": {
+   "entries": 8,
+   "notes": 0,
+   "versions": 8
+  },
+  "Visual Studio Enterprise 2026/Installed Windows SDKs": {
+   "entries": 1,
+   "notes": 0,
+   "versions": 1
+  },
+  ".NET Core Tools": {
+   "entries": 6,
+   "notes": 0,
+   "versions": 38
+  },
+  "PowerShell Tools": {
+   "entries": 1,
+   "notes": 0,
+   "versions": 1
+  },
+  "PowerShell Tools/Powershell Modules": {
+   "entries": 11,
+   "notes": 0,
+   "versions": 13
+  },
+  "Android": {
+   "entries": 10,
+   "notes": 0,
+   "versions": 36
+  },
+  "Android/Environment variables": {
+   "entries": 6,
+   "notes": 0,
+   "versions": 0
+  }
+ },
+ "categories": {
+  "Windows features": [
+   {
+    "raw": "Windows Subsystem for Linux (WSLv1): Enabled",
+    "name": "Windows Subsystem for Linux (WSLv1)",
+    "versions": [
+     "Enabled"
+    ],
+    "src_line": 11
+   },
+   {
+    "raw": "Windows Subsystem for Linux (Default, WSLv2): 3.0.1.0",
+    "name": "Windows Subsystem for Linux (Default, WSLv2)",
+    "versions": [
+     "3.0.1.0"
+    ],
+    "src_line": 12
+   }
+  ],
+  "Language and Runtime": [
+   {
+    "raw": "Bash 5.3.15(2)-release",
+    "name": "Bash",
+    "versions": [
+     "5.3.15(2)-release"
+    ],
+    "src_line": 17
+   },
+   {
+    "raw": "Go 1.24.13",
+    "name": "Go",
+    "versions": [
+     "1.24.13"
+    ],
+    "src_line": 18
+   },
+   {
+    "raw": "Julia 1.12.0",
+    "name": "Julia",
+    "versions": [
+     "1.12.0"
+    ],
+    "src_line": 19
+   },
+   {
+    "raw": "Kotlin 2.4.20",
+    "name": "Kotlin",
+    "versions": [
+     "2.4.20"
+    ],
+    "src_line": 20
+   },
+   {
+    "raw": "LLVM 20.1.8",
+    "name": "LLVM",
+    "versions": [
+     "20.1.8"
+    ],
+    "src_line": 21
+   },
+   {
+    "raw": "Node 22.23.3",
+    "name": "Node",
+    "versions": [
+     "22.23.3"
+    ],
+    "src_line": 22
+   },
+   {
+    "raw": "Perl 5.42.0",
+    "name": "Perl",
+    "versions": [
+     "5.42.0"
+    ],
+    "src_line": 23
+   },
+   {
+    "raw": "PHP 8.5.11",
+    "name": "PHP",
+    "versions": [
+     "8.5.11"
+    ],
+    "src_line": 24
+   },
+   {
+    "raw": "Python 3.12.10",
+    "name": "Python",
+    "versions": [
+     "3.12.10"
+    ],
+    "src_line": 25
+   },
+   {
+    "raw": "Ruby 3.3.12",
+    "name": "Ruby",
+    "versions": [
+     "3.3.12"
+    ],
+    "src_line": 26
+   }
+  ],
+  "Package Management": [
+   {
+    "raw": "Chocolatey 2.7.4",
+    "name": "Chocolatey",
+    "versions": [
+     "2.7.4"
+    ],
+    "src_line": 29
+   },
+   {
+    "raw": "Composer 2.10.3",
+    "name": "Composer",
+    "versions": [
+     "2.10.3"
+    ],
+    "src_line": 30
+   },
+   {
+    "raw": "Helm 4.1.4",
+    "name": "Helm",
+    "versions": [
+     "4.1.4"
+    ],
+    "src_line": 31
+   },
+   {
+    "raw": "Miniconda 26.7.1 (pre-installed on the image but not added to PATH)",
+    "name": "Miniconda",
+    "versions": [
+     "26.7.1"
+    ],
+    "notes": "(pre-installed on the image but not added to PATH)",
+    "src_line": 32
+   },
+   {
+    "raw": "NPM 10.9.9",
+    "name": "NPM",
+    "versions": [
+     "10.9.9"
+    ],
+    "src_line": 33
+   },
+   {
+    "raw": "NuGet 7.9.0.83",
+    "name": "NuGet",
+    "versions": [
+     "7.9.0.83"
+    ],
+    "src_line": 34
+   },
+   {
+    "raw": "pip 26.2.1 (python 3.12)",
+    "name": "pip",
+    "versions": [
+     "26.2.1"
+    ],
+    "notes": "(python 3.12)",
+    "src_line": 35
+   },
+   {
+    "raw": "Pipx 1.17.12",
+    "name": "Pipx",
+    "versions": [
+     "1.17.12"
+    ],
+    "src_line": 36
+   },
+   {
+    "raw": "RubyGems 3.5.22",
+    "name": "RubyGems",
+    "versions": [
+     "3.5.22"
+    ],
+    "src_line": 37
+   },
+   {
+    "raw": "Vcpkg (build from commit 2750401336)",
+    "name": "Vcpkg",
+    "versions": [
+     "build from commit 2750401336"
+    ],
+    "src_line": 38
+   },
+   {
+    "raw": "Yarn 1.22.22",
+    "name": "Yarn",
+    "versions": [
+     "1.22.22"
+    ],
+    "src_line": 39
+   }
+  ],
+  "Package Management/Environment variables": [
+   {
+    "raw": "| VCPKG_INSTALLATION_ROOT | C:\\vcpkg     |",
+    "name": "VCPKG_INSTALLATION_ROOT",
+    "attrs": {
+     "Name": "VCPKG_INSTALLATION_ROOT",
+     "Value": "C:\\vcpkg"
+    },
+    "src_line": 44
+   },
+   {
+    "raw": "| CONDA                   | C:\\Miniconda |",
+    "name": "CONDA",
+    "attrs": {
+     "Name": "CONDA",
+     "Value": "C:\\Miniconda"
+    },
+    "src_line": 45
+   }
+  ],
+  "Project Management": [
+   {
+    "raw": "Ant 1.10.18",
+    "name": "Ant",
+    "versions": [
+     "1.10.18"
+    ],
+    "src_line": 48
+   },
+   {
+    "raw": "Gradle 9.8",
+    "name": "Gradle",
+    "versions": [
+     "9.8"
+    ],
+    "src_line": 49
+   },
+   {
+    "raw": "Maven 3.9.16",
+    "name": "Maven",
+    "versions": [
+     "3.9.16"
+    ],
+    "src_line": 50
+   },
+   {
+    "raw": "sbt 1.12.12",
+    "name": "sbt",
+    "versions": [
+     "1.12.12"
+    ],
+    "src_line": 51
+   }
+  ],
+  "Tools": [
+   {
+    "raw": "7zip 26.04",
+    "name": "7zip",
+    "versions": [
+     "26.04"
+    ],
+    "src_line": 54
+   },
+   {
+    "raw": "aria2 1.37.0",
+    "name": "aria2",
+    "versions": [
+     "1.37.0"
+    ],
+    "src_line": 55
+   },
+   {
+    "raw": "azcopy 10.32.7",
+    "name": "azcopy",
+    "versions": [
+     "10.32.7"
+    ],
+    "src_line": 56
+   },
+   {
+    "raw": "Bazel 9.3.0",
+    "name": "Bazel",
+    "versions": [
+     "9.3.0"
+    ],
+    "src_line": 57
+   },
+   {
+    "raw": "Bazelisk 1.28.1",
+    "name": "Bazelisk",
+    "versions": [
+     "1.28.1"
+    ],
+    "src_line": 58
+   },
+   {
+    "raw": "Bicep 0.48.1",
+    "name": "Bicep",
+    "versions": [
+     "0.48.1"
+    ],
+    "src_line": 59
+   },
+   {
+    "raw": "Cabal 3.18.1.0",
+    "name": "Cabal",
+    "versions": [
+     "3.18.1.0"
+    ],
+    "src_line": 60
+   },
+   {
+    "raw": "CMake 4.4.4",
+    "name": "CMake",
+    "versions": [
+     "4.4.4"
+    ],
+    "src_line": 61
+   },
+   {
+    "raw": "CodeQL Action Bundle 2.27.1",
+    "name": "CodeQL Action Bundle",
+    "versions": [
+     "2.27.1"
+    ],
+    "src_line": 62
+   },
+   {
+    "raw": "Docker 29.7.2",
+    "name": "Docker",
+    "versions": [
+     "29.7.2"
+    ],
+    "src_line": 63
+   },
+   {
+    "raw": "Docker Compose 2.40.3",
+    "name": "Docker Compose",
+    "versions": [
+     "2.40.3"
+    ],
+    "src_line": 64
+   },
+   {
+    "raw": "Docker-wincred 0.9.9",
+    "name": "Docker-wincred",
+    "versions": [
+     "0.9.9"
+    ],
+    "src_line": 65
+   },
+   {
+    "raw": "ghc 9.14.1",
+    "name": "ghc",
+    "versions": [
+     "9.14.1"
+    ],
+    "src_line": 66
+   },
+   {
+    "raw": "Git 2.56.0.windows.2",
+    "name": "Git",
+    "versions": [
+     "2.56.0.windows.2"
+    ],
+    "src_line": 67
+   },
+   {
+    "raw": "Git LFS 3.8.0",
+    "name": "Git LFS",
+    "versions": [
+     "3.8.0"
+    ],
+    "src_line": 68
+   },
+   {
+    "raw": "ImageMagick 7.1.2-25",
+    "name": "ImageMagick",
+    "versions": [
+     "7.1.2-25"
+    ],
+    "src_line": 69
+   },
+   {
+    "raw": "InnoSetup 6.7.1",
+    "name": "InnoSetup",
+    "versions": [
+     "6.7.1"
+    ],
+    "src_line": 70
+   },
+   {
+    "raw": "jq 1.8.1",
+    "name": "jq",
+    "versions": [
+     "1.8.1"
+    ],
+    "src_line": 71
+   },
+   {
+    "raw": "Kind 0.33.0",
+    "name": "Kind",
+    "versions": [
+     "0.33.0"
+    ],
+    "src_line": 72
+   },
+   {
+    "raw": "Kubectl 1.37.1",
+    "name": "Kubectl",
+    "versions": [
+     "1.37.1"
+    ],
+    "src_line": 73
+   },
+   {
+    "raw": "gcc 15.2.0",
+    "name": "gcc",
+    "versions": [
+     "15.2.0"
+    ],
+    "src_line": 74
+   },
+   {
+    "raw": "gdb 17.1",
+    "name": "gdb",
+    "versions": [
+     "17.1"
+    ],
+    "src_line": 75
+   },
+   {
+    "raw": "GNU Binutils 2.46",
+    "name": "GNU Binutils",
+    "versions": [
+     "2.46"
+    ],
+    "src_line": 76
+   },
+   {
+    "raw": "Newman 6.2.2",
+    "name": "Newman",
+    "versions": [
+     "6.2.2"
+    ],
+    "src_line": 77
+   },
+   {
+    "raw": "OpenSSL 3.6.5",
+    "name": "OpenSSL",
+    "versions": [
+     "3.6.5"
+    ],
+    "src_line": 78
+   },
+   {
+    "raw": "Packer 1.16.0",
+    "name": "Packer",
+    "versions": [
+     "1.16.0"
+    ],
+    "src_line": 79
+   },
+   {
+    "raw": "Pulumi 3.267.0",
+    "name": "Pulumi",
+    "versions": [
+     "3.267.0"
+    ],
+    "src_line": 80
+   },
+   {
+    "raw": "R 4.6.1",
+    "name": "R",
+    "versions": [
+     "4.6.1"
+    ],
+    "src_line": 81
+   },
+   {
+    "raw": "Service Fabric Runtime 11.7.157.1",
+    "name": "Service Fabric Runtime",
+    "versions": [
+     "11.7.157.1"
+    ],
+    "src_line": 82
+   },
+   {
+    "raw": "Service Fabric SDK 8.7.157.1",
+    "name": "Service Fabric SDK",
+    "versions": [
+     "8.7.157.1"
+    ],
+    "src_line": 83
+   },
+   {
+    "raw": "Stack 3.11.1",
+    "name": "Stack",
+    "versions": [
+     "3.11.1"
+    ],
+    "src_line": 84
+   },
+   {
+    "raw": "Swig 4.4.1",
+    "name": "Swig",
+    "versions": [
+     "4.4.1"
+    ],
+    "src_line": 85
+   },
+   {
+    "raw": "VSWhere 3.1.7",
+    "name": "VSWhere",
+    "versions": [
+     "3.1.7"
+    ],
+    "src_line": 86
+   },
+   {
+    "raw": "WinAppDriver 1.2.2009.02003",
+    "name": "WinAppDriver",
+    "versions": [
+     "1.2.2009.02003"
+    ],
+    "src_line": 87
+   },
+   {
+    "raw": "WiX Toolset 3.14.1.8722",
+    "name": "WiX Toolset",
+    "versions": [
+     "3.14.1.8722"
+    ],
+    "src_line": 88
+   },
+   {
+    "raw": "yamllint 1.38.0",
+    "name": "yamllint",
+    "versions": [
+     "1.38.0"
+    ],
+    "src_line": 89
+   },
+   {
+    "raw": "zstd 1.5.7",
+    "name": "zstd",
+    "versions": [
+     "1.5.7"
+    ],
+    "src_line": 90
+   },
+   {
+    "raw": "Ninja 1.13.2",
+    "name": "Ninja",
+    "versions": [
+     "1.13.2"
+    ],
+    "src_line": 91
+   }
+  ],
+  "CLI Tools": [
+   {
+    "raw": "AWS CLI 2.37.9",
+    "name": "AWS CLI",
+    "versions": [
+     "2.37.9"
+    ],
+    "src_line": 94
+   },
+   {
+    "raw": "AWS SAM CLI 1.167.0",
+    "name": "AWS SAM CLI",
+    "versions": [
+     "1.167.0"
+    ],
+    "src_line": 95
+   },
+   {
+    "raw": "AWS Session Manager CLI 1.2.835.0",
+    "name": "AWS Session Manager CLI",
+    "versions": [
+     "1.2.835.0"
+    ],
+    "src_line": 96
+   },
+   {
+    "raw": "Azure CLI 2.91.0",
+    "name": "Azure CLI",
+    "versions": [
+     "2.91.0"
+    ],
+    "src_line": 97
+   },
+   {
+    "raw": "Azure DevOps CLI extension 1.0.8",
+    "name": "Azure DevOps CLI extension",
+    "versions": [
+     "1.0.8"
+    ],
+    "src_line": 98
+   },
+   {
+    "raw": "GitHub CLI 2.102.0",
+    "name": "GitHub CLI",
+    "versions": [
+     "2.102.0"
+    ],
+    "src_line": 99
+   }
+  ],
+  "Rust Tools": [
+   {
+    "raw": "Cargo 1.99.0",
+    "name": "Cargo",
+    "versions": [
+     "1.99.0"
+    ],
+    "src_line": 102
+   },
+   {
+    "raw": "Rust 1.99.0",
+    "name": "Rust",
+    "versions": [
+     "1.99.0"
+    ],
+    "src_line": 103
+   },
+   {
+    "raw": "Rustdoc 1.99.0",
+    "name": "Rustdoc",
+    "versions": [
+     "1.99.0"
+    ],
+    "src_line": 104
+   },
+   {
+    "raw": "Rustup 1.29.1",
+    "name": "Rustup",
+    "versions": [
+     "1.29.1"
+    ],
+    "src_line": 105
+   }
+  ],
+  "Rust Tools/Packages": [
+   {
+    "raw": "Clippy 0.1.99",
+    "name": "Clippy",
+    "versions": [
+     "0.1.99"
+    ],
+    "src_line": 108
+   },
+   {
+    "raw": "Rustfmt 1.10.0",
+    "name": "Rustfmt",
+    "versions": [
+     "1.10.0"
+    ],
+    "src_line": 109
+   }
+  ],
+  "Browsers and Drivers": [
+   {
+    "raw": "Google Chrome 155.0.8059.40",
+    "name": "Google Chrome",
+    "versions": [
+     "155.0.8059.40"
+    ],
+    "src_line": 112
+   },
+   {
+    "raw": "Chrome Driver 155.0.8059.39",
+    "name": "Chrome Driver",
+    "versions": [
+     "155.0.8059.39"
+    ],
+    "src_line": 113
+   },
+   {
+    "raw": "Microsoft Edge 154.0.4258.62",
+    "name": "Microsoft Edge",
+    "versions": [
+     "154.0.4258.62"
+    ],
+    "src_line": 114
+   },
+   {
+    "raw": "Microsoft Edge Driver 154.0.4258.62",
+    "name": "Microsoft Edge Driver",
+    "versions": [
+     "154.0.4258.62"
+    ],
+    "src_line": 115
+   },
+   {
+    "raw": "Mozilla Firefox 157.0.1",
+    "name": "Mozilla Firefox",
+    "versions": [
+     "157.0.1"
+    ],
+    "src_line": 116
+   },
+   {
+    "raw": "Gecko Driver 0.37.1",
+    "name": "Gecko Driver",
+    "versions": [
+     "0.37.1"
+    ],
+    "src_line": 117
+   },
+   {
+    "raw": "IE Driver 4.14.0.0",
+    "name": "IE Driver",
+    "versions": [
+     "4.14.0.0"
+    ],
+    "src_line": 118
+   },
+   {
+    "raw": "Selenium server 4.50.0",
+    "name": "Selenium server",
+    "versions": [
+     "4.50.0"
+    ],
+    "src_line": 119
+   }
+  ],
+  "Browsers and Drivers/Environment variables": [
+   {
+    "raw": "| CHROMEWEBDRIVER   | C:\\SeleniumWebDrivers\\ChromeDriver |",
+    "name": "CHROMEWEBDRIVER",
+    "attrs": {
+     "Name": "CHROMEWEBDRIVER",
+     "Value": "C:\\SeleniumWebDrivers\\ChromeDriver"
+    },
+    "src_line": 124
+   },
+   {
+    "raw": "| EDGEWEBDRIVER     | C:\\SeleniumWebDrivers\\EdgeDriver   |",
+    "name": "EDGEWEBDRIVER",
+    "attrs": {
+     "Name": "EDGEWEBDRIVER",
+     "Value": "C:\\SeleniumWebDrivers\\EdgeDriver"
+    },
+    "src_line": 125
+   },
+   {
+    "raw": "| GECKOWEBDRIVER    | C:\\SeleniumWebDrivers\\GeckoDriver  |",
+    "name": "GECKOWEBDRIVER",
+    "attrs": {
+     "Name": "GECKOWEBDRIVER",
+     "Value": "C:\\SeleniumWebDrivers\\GeckoDriver"
+    },
+    "src_line": 126
+   },
+   {
+    "raw": "| SELENIUM_JAR_PATH | C:\\selenium\\selenium-server.jar    |",
+    "name": "SELENIUM_JAR_PATH",
+    "attrs": {
+     "Name": "SELENIUM_JAR_PATH",
+     "Value": "C:\\selenium\\selenium-server.jar"
+    },
+    "src_line": 127
+   }
+  ],
+  "Java": [
+   {
+    "raw": "| 8.0.504+1             | JAVA_HOME_8_X64      |",
+    "name": "Java",
+    "versions": [
+     "8.0.504+1"
+    ],
+    "attrs": {
+     "Environment Variable": "JAVA_HOME_8_X64"
+    },
+    "src_line": 132
+   },
+   {
+    "raw": "| 11.0.32+101           | JAVA_HOME_11_X64     |",
+    "name": "Java",
+    "versions": [
+     "11.0.32+101"
+    ],
+    "attrs": {
+     "Environment Variable": "JAVA_HOME_11_X64"
+    },
+    "src_line": 133
+   },
+   {
+    "raw": "| 17.0.20+101 (default) | JAVA_HOME_17_X64     |",
+    "name": "Java",
+    "versions": [
+     "17.0.20+101"
+    ],
+    "default": true,
+    "default_versions": [
+     "17.0.20+101"
+    ],
+    "attrs": {
+     "Environment Variable": "JAVA_HOME_17_X64"
+    },
+    "src_line": 134
+   },
+   {
+    "raw": "| 21.0.12+101.0         | JAVA_HOME_21_X64     |",
+    "name": "Java",
+    "versions": [
+     "21.0.12+101.0"
+    ],
+    "attrs": {
+     "Environment Variable": "JAVA_HOME_21_X64"
+    },
+    "src_line": 135
+   },
+   {
+    "raw": "| 25.0.4+101.0          | JAVA_HOME_25_X64     |",
+    "name": "Java",
+    "versions": [
+     "25.0.4+101.0"
+    ],
+    "attrs": {
+     "Environment Variable": "JAVA_HOME_25_X64"
+    },
+    "src_line": 136
+   }
+  ],
+  "Shells": [
+   {
+    "raw": "| gitbash.exe   | C:\\Program Files\\Git\\bin\\bash.exe |",
+    "name": "gitbash.exe",
+    "attrs": {
+     "Name": "gitbash.exe",
+     "Target": "C:\\Program Files\\Git\\bin\\bash.exe"
+    },
+    "src_line": 141
+   },
+   {
+    "raw": "| msys2bash.cmd | C:\\msys64\\usr\\bin\\bash.exe        |",
+    "name": "msys2bash.cmd",
+    "attrs": {
+     "Name": "msys2bash.cmd",
+     "Target": "C:\\msys64\\usr\\bin\\bash.exe"
+    },
+    "src_line": 142
+   },
+   {
+    "raw": "| wslbash.exe   | C:\\Windows\\System32\\bash.exe      |",
+    "name": "wslbash.exe",
+    "attrs": {
+     "Name": "wslbash.exe",
+     "Target": "C:\\Windows\\System32\\bash.exe"
+    },
+    "src_line": 143
+   }
+  ],
+  "MSYS2": [
+   {
+    "raw": "Pacman 6.1.0",
+    "name": "Pacman",
+    "versions": [
+     "6.1.0"
+    ],
+    "src_line": 146
+   }
+  ],
+  "MSYS2/Notes": [
+   {
+    "kind": "note",
+    "name": "note",
+    "raw": "Location: C:\\msys64\n\nNote: MSYS2 is pre-installed on image but not added to PATH.",
+    "src_lines": [
+     149,
+     153
+    ]
+   }
+  ],
+  "Cached Tools": [],
+  "Cached Tools/Go": [
+   {
+    "raw": "1.24.13",
+    "name": "Go",
+    "versions": [
+     "1.24.13"
+    ],
+    "src_line": 158,
+    "default": true,
+    "default_source": "toolset.toolcache[go].default=1.24.*"
+   },
+   {
+    "raw": "1.25.14",
+    "name": "Go",
+    "versions": [
+     "1.25.14"
+    ],
+    "src_line": 159
+   },
+   {
+    "raw": "1.26.8",
+    "name": "Go",
+    "versions": [
+     "1.26.8"
+    ],
+    "src_line": 160
+   }
+  ],
+  "Cached Tools/Node.js": [
+   {
+    "raw": "22.23.3",
+    "name": "Node.js",
+    "versions": [
+     "22.23.3"
+    ],
+    "src_line": 163
+   },
+   {
+    "raw": "24.21.0",
+    "name": "Node.js",
+    "versions": [
+     "24.21.0"
+    ],
+    "src_line": 164
+   }
+  ],
+  "Cached Tools/Python": [
+   {
+    "raw": "3.10.11",
+    "name": "Python",
+    "versions": [
+     "3.10.11"
+    ],
+    "src_line": 167
+   },
+   {
+    "raw": "3.11.9",
+    "name": "Python",
+    "versions": [
+     "3.11.9"
+    ],
+    "src_line": 168
+   },
+   {
+    "raw": "3.12.10",
+    "name": "Python",
+    "versions": [
+     "3.12.10"
+    ],
+    "src_line": 169,
+    "default": true,
+    "default_source": "toolset.toolcache[Python].default=3.12.*"
+   },
+   {
+    "raw": "3.13.16",
+    "name": "Python",
+    "versions": [
+     "3.13.16"
+    ],
+    "src_line": 170
+   },
+   {
+    "raw": "3.14.8",
+    "name": "Python",
+    "versions": [
+     "3.14.8"
+    ],
+    "src_line": 171
+   }
+  ],
+  "Cached Tools/PyPy": [
+   {
+    "raw": "3.9.19 [PyPy 7.3.16]",
+    "name": "PyPy",
+    "versions": [
+     "3.9.19 [PyPy 7.3.16]"
+    ],
+    "src_line": 174
+   },
+   {
+    "raw": "3.10.16 [PyPy 7.3.19]",
+    "name": "PyPy",
+    "versions": [
+     "3.10.16 [PyPy 7.3.19]"
+    ],
+    "src_line": 175
+   }
+  ],
+  "Cached Tools/Ruby": [
+   {
+    "raw": "3.2.11",
+    "name": "Ruby",
+    "versions": [
+     "3.2.11"
+    ],
+    "src_line": 178
+   },
+   {
+    "raw": "3.3.12",
+    "name": "Ruby",
+    "versions": [
+     "3.3.12"
+    ],
+    "src_line": 179,
+    "default": true,
+    "default_source": "toolset.toolcache[Ruby].default=3.3"
+   },
+   {
+    "raw": "3.4.11",
+    "name": "Ruby",
+    "versions": [
+     "3.4.11"
+    ],
+    "src_line": 180
+   },
+   {
+    "raw": "4.0.7",
+    "name": "Ruby",
+    "versions": [
+     "4.0.7"
+    ],
+    "src_line": 181
+   }
+  ],
+  "Databases": [],
+  "Databases/PostgreSQL": [
+   {
+    "raw": "| ServiceName          | postgresql-x64-17                                                                                                      |",
+    "name": "ServiceName",
+    "attrs": {
+     "Property": "ServiceName",
+     "Value": "postgresql-x64-17"
+    },
+    "src_line": 188
+   },
+   {
+    "raw": "| Version              | 17.11                                                                                                                  |",
+    "name": "Version",
+    "attrs": {
+     "Property": "Version",
+     "Value": "17.11"
+    },
+    "src_line": 189
+   },
+   {
+    "raw": "| ServiceStatus        | Stopped                                                                                                                |",
+    "name": "ServiceStatus",
+    "attrs": {
+     "Property": "ServiceStatus",
+     "Value": "Stopped"
+    },
+    "src_line": 190
+   },
+   {
+    "raw": "| ServiceStartType     | Disabled                                                                                                               |",
+    "name": "ServiceStartType",
+    "attrs": {
+     "Property": "ServiceStartType",
+     "Value": "Disabled"
+    },
+    "src_line": 191
+   },
+   {
+    "raw": "| EnvironmentVariables | PGBIN=C:\\Program Files\\PostgreSQL\\17\\bin <br> PGDATA=C:\\PostgreSQL\\17\\data <br> PGROOT=C:\\Program Files\\PostgreSQL\\17  |",
+    "name": "EnvironmentVariables",
+    "attrs": {
+     "Property": "EnvironmentVariables",
+     "Value": "PGBIN=C:\\Program Files\\PostgreSQL\\17\\bin <br> PGDATA=C:\\PostgreSQL\\17\\data <br> PGROOT=C:\\Program Files\\PostgreSQL\\17"
+    },
+    "src_line": 192
+   },
+   {
+    "raw": "| Path                 | C:\\Program Files\\PostgreSQL\\17                                                                                         |",
+    "name": "Path",
+    "attrs": {
+     "Property": "Path",
+     "Value": "C:\\Program Files\\PostgreSQL\\17"
+    },
+    "src_line": 193
+   },
+   {
+    "raw": "| UserName             | postgres                                                                                                               |",
+    "name": "UserName",
+    "attrs": {
+     "Property": "UserName",
+     "Value": "postgres"
+    },
+    "src_line": 194
+   },
+   {
+    "raw": "| Password | <<REDACTED: upstream-documented credential, see source line>> |",
+    "name": "Password",
+    "redacted": true,
+    "attrs": {
+     "Property": "Password",
+     "Value": "<<REDACTED: upstream-documented credential, see source line>>"
+    },
+    "src_line": 195
+   }
+  ],
+  "Databases/MongoDB": [
+   {
+    "raw": "| 7.0.43.0 | MongoDB     | Stopped       | Disabled         |",
+    "name": "MongoDB",
+    "versions": [
+     "7.0.43.0"
+    ],
+    "attrs": {
+     "ServiceName": "MongoDB",
+     "ServiceStatus": "Stopped",
+     "ServiceStartType": "Disabled"
+    },
+    "src_line": 200
+   }
+  ],
+  "Database tools": [
+   {
+    "raw": "Azure CosmosDb Emulator 2.14.28.0",
+    "name": "Azure CosmosDb Emulator",
+    "versions": [
+     "2.14.28.0"
+    ],
+    "src_line": 203
+   },
+   {
+    "raw": "DacFx 170.4.83.3",
+    "name": "DacFx",
+    "versions": [
+     "170.4.83.3"
+    ],
+    "src_line": 204
+   },
+   {
+    "raw": "MySQL 8.0.46.0",
+    "name": "MySQL",
+    "versions": [
+     "8.0.46.0"
+    ],
+    "src_line": 205
+   },
+   {
+    "raw": "SQL OLEDB Driver 18 18.7.5.0",
+    "name": "SQL OLEDB Driver 18",
+    "versions": [
+     "18.7.5.0"
+    ],
+    "src_line": 206
+   },
+   {
+    "raw": "SQL OLEDB Driver 19 19.4.1.0",
+    "name": "SQL OLEDB Driver 19",
+    "versions": [
+     "19.4.1.0"
+    ],
+    "src_line": 207
+   },
+   {
+    "raw": "SQLPS 1.0",
+    "name": "SQLPS",
+    "versions": [
+     "1.0"
+    ],
+    "src_line": 208
+   },
+   {
+    "raw": "MongoDB Shell (mongosh) 2.13.0",
+    "name": "MongoDB Shell (mongosh)",
+    "versions": [
+     "2.13.0"
+    ],
+    "src_line": 209
+   }
+  ],
+  "Web Servers": [
+   {
+    "raw": "| Apache | 2.4.55  | C:\\tools\\Apache24\\conf\\httpd.conf     | Apache      | Stopped       | 80         |",
+    "name": "Apache",
+    "versions": [
+     "2.4.55"
+    ],
+    "attrs": {
+     "Name": "Apache",
+     "ConfigFile": "C:\\tools\\Apache24\\conf\\httpd.conf",
+     "ServiceName": "Apache",
+     "ServiceStatus": "Stopped",
+     "ListenPort": "80"
+    },
+    "src_line": 214
+   },
+   {
+    "raw": "| Nginx  | 1.31.6  | C:\\tools\\nginx-1.31.6\\conf\\nginx.conf | nginx       | Stopped       | 80         |",
+    "name": "Nginx",
+    "versions": [
+     "1.31.6"
+    ],
+    "attrs": {
+     "Name": "Nginx",
+     "ConfigFile": "C:\\tools\\nginx-1.31.6\\conf\\nginx.conf",
+     "ServiceName": "nginx",
+     "ServiceStatus": "Stopped",
+     "ListenPort": "80"
+    },
+    "src_line": 215
+   }
+  ],
+  "Visual Studio Enterprise 2026": [
+   {
+    "raw": "| Visual Studio Enterprise 2026 | 18.10.12224.181 | C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise |",
+    "name": "Visual Studio Enterprise 2026",
+    "versions": [
+     "18.10.12224.181"
+    ],
+    "attrs": {
+     "Name": "Visual Studio Enterprise 2026",
+     "Path": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise"
+    },
+    "src_line": 220
+   }
+  ],
+  "Visual Studio Enterprise 2026/Workloads, components and extensions": [
+   {
+    "raw": "| android                                                                   | 36.1.69.0       |",
+    "name": "android",
+    "versions": [
+     "36.1.69.0"
+    ],
+    "attrs": {
+     "Package": "android"
+    },
+    "src_line": 225
+   },
+   {
+    "raw": "| Component.Android.NDK.R27C                                                | 18.10.12020.329 |",
+    "name": "Component.Android.NDK.R27C",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.Android.NDK.R27C"
+    },
+    "src_line": 226
+   },
+   {
+    "raw": "| Component.Android.SDK.MAUI                                                | 18.10.12020.329 |",
+    "name": "Component.Android.SDK.MAUI",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.Android.SDK.MAUI"
+    },
+    "src_line": 227
+   },
+   {
+    "raw": "| Component.Linux.CMake                                                     | 18.10.12020.329 |",
+    "name": "Component.Linux.CMake",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.Linux.CMake"
+    },
+    "src_line": 228
+   },
+   {
+    "raw": "| Component.Linux.RemoteFileExplorer                                        | 18.10.12020.329 |",
+    "name": "Component.Linux.RemoteFileExplorer",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.Linux.RemoteFileExplorer"
+    },
+    "src_line": 229
+   },
+   {
+    "raw": "| Component.MDD.Linux                                                       | 18.10.12020.329 |",
+    "name": "Component.MDD.Linux",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.MDD.Linux"
+    },
+    "src_line": 230
+   },
+   {
+    "raw": "| Component.Microsoft.NET.AppModernization                                  | 18.10.12106.194 |",
+    "name": "Component.Microsoft.NET.AppModernization",
+    "versions": [
+     "18.10.12106.194"
+    ],
+    "attrs": {
+     "Package": "Component.Microsoft.NET.AppModernization"
+    },
+    "src_line": 231
+   },
+   {
+    "raw": "| Component.Microsoft.VisualStudio.RazorExtension                           | 18.10.12020.329 |",
+    "name": "Component.Microsoft.VisualStudio.RazorExtension",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.Microsoft.VisualStudio.RazorExtension"
+    },
+    "src_line": 232
+   },
+   {
+    "raw": "| Component.Microsoft.VisualStudio.Tools.Applications.amd64                 | 17.1.37110.1    |",
+    "name": "Component.Microsoft.VisualStudio.Tools.Applications.amd64",
+    "versions": [
+     "17.1.37110.1"
+    ],
+    "attrs": {
+     "Package": "Component.Microsoft.VisualStudio.Tools.Applications.amd64"
+    },
+    "src_line": 233
+   },
+   {
+    "raw": "| Component.Microsoft.VisualStudio.Web.AzureFunctions                       | 18.10.12020.329 |",
+    "name": "Component.Microsoft.VisualStudio.Web.AzureFunctions",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.Microsoft.VisualStudio.Web.AzureFunctions"
+    },
+    "src_line": 234
+   },
+   {
+    "raw": "| Component.Microsoft.Web.LibraryManager                                    | 18.10.12020.329 |",
+    "name": "Component.Microsoft.Web.LibraryManager",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.Microsoft.Web.LibraryManager"
+    },
+    "src_line": 235
+   },
+   {
+    "raw": "| Component.Microsoft.Windows.DriverKit                                     | 18.10.12020.329 |",
+    "name": "Component.Microsoft.Windows.DriverKit",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.Microsoft.Windows.DriverKit"
+    },
+    "src_line": 236
+   },
+   {
+    "raw": "| Component.OpenJDK                                                         | 18.10.12020.329 |",
+    "name": "Component.OpenJDK",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.OpenJDK"
+    },
+    "src_line": 237
+   },
+   {
+    "raw": "| Component.UnityEngine.x64                                                 | 18.10.12020.329 |",
+    "name": "Component.UnityEngine.x64",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.UnityEngine.x64"
+    },
+    "src_line": 238
+   },
+   {
+    "raw": "| Component.Unreal.Debugger                                                 | 18.10.12020.329 |",
+    "name": "Component.Unreal.Debugger",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.Unreal.Debugger"
+    },
+    "src_line": 239
+   },
+   {
+    "raw": "| Component.Unreal.Ide                                                      | 18.10.12020.329 |",
+    "name": "Component.Unreal.Ide",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.Unreal.Ide"
+    },
+    "src_line": 240
+   },
+   {
+    "raw": "| Component.VisualStudio.GitHub.Copilot                                     | 18.10.12020.329 |",
+    "name": "Component.VisualStudio.GitHub.Copilot",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Component.VisualStudio.GitHub.Copilot"
+    },
+    "src_line": 241
+   },
+   {
+    "raw": "| Component.VSInstallerProjects2022                                         | 3.0.0           |",
+    "name": "Component.VSInstallerProjects2022",
+    "versions": [
+     "3.0.0"
+    ],
+    "attrs": {
+     "Package": "Component.VSInstallerProjects2022"
+    },
+    "src_line": 242
+   },
+   {
+    "raw": "| Component.WixToolset.VisualStudioExtension.Dev17                          | 1.0.0.22        |",
+    "name": "Component.WixToolset.VisualStudioExtension.Dev17",
+    "versions": [
+     "1.0.0.22"
+    ],
+    "attrs": {
+     "Package": "Component.WixToolset.VisualStudioExtension.Dev17"
+    },
+    "src_line": 243
+   },
+   {
+    "raw": "| Component.WixToolset.VisualStudioExtension.Schemas3                       | 1.0.0.22        |",
+    "name": "Component.WixToolset.VisualStudioExtension.Schemas3",
+    "versions": [
+     "1.0.0.22"
+    ],
+    "attrs": {
+     "Package": "Component.WixToolset.VisualStudioExtension.Schemas3"
+    },
+    "src_line": 244
+   },
+   {
+    "raw": "| ComponentGroup.Copilot.Azure.Skills                                       | 18.10.12020.329 |",
+    "name": "ComponentGroup.Copilot.Azure.Skills",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "ComponentGroup.Copilot.Azure.Skills"
+    },
+    "src_line": 245
+   },
+   {
+    "raw": "| ComponentGroup.Copilot.DotNet.Skills                                      | 18.10.12020.329 |",
+    "name": "ComponentGroup.Copilot.DotNet.Skills",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "ComponentGroup.Copilot.DotNet.Skills"
+    },
+    "src_line": 246
+   },
+   {
+    "raw": "| ComponentGroup.Microsoft.NET.AppModernization                             | 18.10.12020.329 |",
+    "name": "ComponentGroup.Microsoft.NET.AppModernization",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "ComponentGroup.Microsoft.NET.AppModernization"
+    },
+    "src_line": 247
+   },
+   {
+    "raw": "| ios                                                                       | 26.5.10301      |",
+    "name": "ios",
+    "versions": [
+     "26.5.10301"
+    ],
+    "attrs": {
+     "Package": "ios"
+    },
+    "src_line": 248
+   },
+   {
+    "raw": "| maccatalyst                                                               | 26.5.10301      |",
+    "name": "maccatalyst",
+    "versions": [
+     "26.5.10301"
+    ],
+    "attrs": {
+     "Package": "maccatalyst"
+    },
+    "src_line": 249
+   },
+   {
+    "raw": "| maui.blazor                                                               | 10.0.20.7528    |",
+    "name": "maui.blazor",
+    "versions": [
+     "10.0.20.7528"
+    ],
+    "attrs": {
+     "Package": "maui.blazor"
+    },
+    "src_line": 250
+   },
+   {
+    "raw": "| maui.core                                                                 | 10.0.20.7528    |",
+    "name": "maui.core",
+    "versions": [
+     "10.0.20.7528"
+    ],
+    "attrs": {
+     "Package": "maui.core"
+    },
+    "src_line": 251
+   },
+   {
+    "raw": "| maui.windows                                                              | 10.0.20.7528    |",
+    "name": "maui.windows",
+    "versions": [
+     "10.0.20.7528"
+    ],
+    "attrs": {
+     "Package": "maui.windows"
+    },
+    "src_line": 252
+   },
+   {
+    "raw": "| Microsoft.Component.Azure.DataLake.Tools                                  | 18.10.12020.329 |",
+    "name": "Microsoft.Component.Azure.DataLake.Tools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Component.Azure.DataLake.Tools"
+    },
+    "src_line": 253
+   },
+   {
+    "raw": "| Microsoft.Component.ClickOnce                                             | 18.10.12020.329 |",
+    "name": "Microsoft.Component.ClickOnce",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Component.ClickOnce"
+    },
+    "src_line": 254
+   },
+   {
+    "raw": "| Microsoft.Component.CodeAnalysis.SDK                                      | 18.10.12020.329 |",
+    "name": "Microsoft.Component.CodeAnalysis.SDK",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Component.CodeAnalysis.SDK"
+    },
+    "src_line": 255
+   },
+   {
+    "raw": "| Microsoft.Component.MSBuild                                               | 18.10.12020.329 |",
+    "name": "Microsoft.Component.MSBuild",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Component.MSBuild"
+    },
+    "src_line": 256
+   },
+   {
+    "raw": "| Microsoft.Component.NetFX.Native                                          | 18.10.12020.329 |",
+    "name": "Microsoft.Component.NetFX.Native",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Component.NetFX.Native"
+    },
+    "src_line": 257
+   },
+   {
+    "raw": "| Microsoft.Component.PythonTools                                           | 18.10.12020.329 |",
+    "name": "Microsoft.Component.PythonTools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Component.PythonTools"
+    },
+    "src_line": 258
+   },
+   {
+    "raw": "| Microsoft.Component.PythonTools.Web                                       | 18.10.12020.329 |",
+    "name": "Microsoft.Component.PythonTools.Web",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Component.PythonTools.Web"
+    },
+    "src_line": 259
+   },
+   {
+    "raw": "| Microsoft.ComponentGroup.Blend                                            | 18.10.12020.329 |",
+    "name": "Microsoft.ComponentGroup.Blend",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.ComponentGroup.Blend"
+    },
+    "src_line": 260
+   },
+   {
+    "raw": "| Microsoft.ComponentGroup.ClickOnce.Publish                                | 18.10.12020.329 |",
+    "name": "Microsoft.ComponentGroup.ClickOnce.Publish",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.ComponentGroup.ClickOnce.Publish"
+    },
+    "src_line": 261
+   },
+   {
+    "raw": "| Microsoft.Net.Component.4.6.2.TargetingPack                               | 18.10.12020.329 |",
+    "name": "Microsoft.Net.Component.4.6.2.TargetingPack",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.Component.4.6.2.TargetingPack"
+    },
+    "src_line": 262
+   },
+   {
+    "raw": "| Microsoft.Net.Component.4.7.1.TargetingPack                               | 18.10.12020.329 |",
+    "name": "Microsoft.Net.Component.4.7.1.TargetingPack",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.Component.4.7.1.TargetingPack"
+    },
+    "src_line": 263
+   },
+   {
+    "raw": "| Microsoft.Net.Component.4.7.2.TargetingPack                               | 18.10.12020.329 |",
+    "name": "Microsoft.Net.Component.4.7.2.TargetingPack",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.Component.4.7.2.TargetingPack"
+    },
+    "src_line": 264
+   },
+   {
+    "raw": "| Microsoft.Net.Component.4.7.TargetingPack                                 | 18.10.12020.329 |",
+    "name": "Microsoft.Net.Component.4.7.TargetingPack",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.Component.4.7.TargetingPack"
+    },
+    "src_line": 265
+   },
+   {
+    "raw": "| Microsoft.Net.Component.4.8.1.SDK                                         | 18.10.12020.329 |",
+    "name": "Microsoft.Net.Component.4.8.1.SDK",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.Component.4.8.1.SDK"
+    },
+    "src_line": 266
+   },
+   {
+    "raw": "| Microsoft.Net.Component.4.8.1.TargetingPack                               | 18.10.12020.329 |",
+    "name": "Microsoft.Net.Component.4.8.1.TargetingPack",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.Component.4.8.1.TargetingPack"
+    },
+    "src_line": 267
+   },
+   {
+    "raw": "| Microsoft.Net.Component.4.8.SDK                                           | 18.10.12020.329 |",
+    "name": "Microsoft.Net.Component.4.8.SDK",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.Component.4.8.SDK"
+    },
+    "src_line": 268
+   },
+   {
+    "raw": "| Microsoft.Net.Component.4.8.TargetingPack                                 | 18.10.12020.329 |",
+    "name": "Microsoft.Net.Component.4.8.TargetingPack",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.Component.4.8.TargetingPack"
+    },
+    "src_line": 269
+   },
+   {
+    "raw": "| Microsoft.Net.ComponentGroup.4.8.DeveloperTools                           | 18.10.12020.329 |",
+    "name": "Microsoft.Net.ComponentGroup.4.8.DeveloperTools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.ComponentGroup.4.8.DeveloperTools"
+    },
+    "src_line": 270
+   },
+   {
+    "raw": "| Microsoft.Net.ComponentGroup.DevelopmentPrerequisites                     | 18.10.12020.329 |",
+    "name": "Microsoft.Net.ComponentGroup.DevelopmentPrerequisites",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.ComponentGroup.DevelopmentPrerequisites"
+    },
+    "src_line": 271
+   },
+   {
+    "raw": "| Microsoft.Net.ComponentGroup.TargetingPacks.Common                        | 18.10.12020.329 |",
+    "name": "Microsoft.Net.ComponentGroup.TargetingPacks.Common",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.Net.ComponentGroup.TargetingPacks.Common"
+    },
+    "src_line": 272
+   },
+   {
+    "raw": "| microsoft.net.runtime.android                                             | 10.1.1226.41902 |",
+    "name": "microsoft.net.runtime.android",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.runtime.android"
+    },
+    "src_line": 273
+   },
+   {
+    "raw": "| microsoft.net.runtime.android.aot                                         | 10.1.1226.41902 |",
+    "name": "microsoft.net.runtime.android.aot",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.runtime.android.aot"
+    },
+    "src_line": 274
+   },
+   {
+    "raw": "| microsoft.net.runtime.android.aot.net9                                    | 10.1.1226.41902 |",
+    "name": "microsoft.net.runtime.android.aot.net9",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.runtime.android.aot.net9"
+    },
+    "src_line": 275
+   },
+   {
+    "raw": "| microsoft.net.runtime.android.net9                                        | 10.1.1226.41902 |",
+    "name": "microsoft.net.runtime.android.net9",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.runtime.android.net9"
+    },
+    "src_line": 276
+   },
+   {
+    "raw": "| microsoft.net.runtime.ios                                                 | 10.1.1226.41902 |",
+    "name": "microsoft.net.runtime.ios",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.runtime.ios"
+    },
+    "src_line": 277
+   },
+   {
+    "raw": "| microsoft.net.runtime.ios.net9                                            | 10.1.1226.41902 |",
+    "name": "microsoft.net.runtime.ios.net9",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.runtime.ios.net9"
+    },
+    "src_line": 278
+   },
+   {
+    "raw": "| microsoft.net.runtime.maccatalyst                                         | 10.1.1226.41902 |",
+    "name": "microsoft.net.runtime.maccatalyst",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.runtime.maccatalyst"
+    },
+    "src_line": 279
+   },
+   {
+    "raw": "| microsoft.net.runtime.maccatalyst.net9                                    | 10.1.1226.41902 |",
+    "name": "microsoft.net.runtime.maccatalyst.net9",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.runtime.maccatalyst.net9"
+    },
+    "src_line": 280
+   },
+   {
+    "raw": "| microsoft.net.runtime.mono.tooling                                        | 10.1.1226.41902 |",
+    "name": "microsoft.net.runtime.mono.tooling",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.runtime.mono.tooling"
+    },
+    "src_line": 281
+   },
+   {
+    "raw": "| microsoft.net.runtime.mono.tooling.net9                                   | 10.1.1226.41902 |",
+    "name": "microsoft.net.runtime.mono.tooling.net9",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.runtime.mono.tooling.net9"
+    },
+    "src_line": 282
+   },
+   {
+    "raw": "| microsoft.net.sdk.emscripten                                              | 10.1.1226.41902 |",
+    "name": "microsoft.net.sdk.emscripten",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "microsoft.net.sdk.emscripten"
+    },
+    "src_line": 283
+   },
+   {
+    "raw": "| Microsoft.NetCore.Component.DevelopmentTools                              | 18.10.12020.329 |",
+    "name": "Microsoft.NetCore.Component.DevelopmentTools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.NetCore.Component.DevelopmentTools"
+    },
+    "src_line": 284
+   },
+   {
+    "raw": "| Microsoft.NetCore.Component.Runtime.10.0                                  | 18.10.12131.486 |",
+    "name": "Microsoft.NetCore.Component.Runtime.10.0",
+    "versions": [
+     "18.10.12131.486"
+    ],
+    "attrs": {
+     "Package": "Microsoft.NetCore.Component.Runtime.10.0"
+    },
+    "src_line": 285
+   },
+   {
+    "raw": "| Microsoft.NetCore.Component.Runtime.8.0                                   | 18.10.12131.486 |",
+    "name": "Microsoft.NetCore.Component.Runtime.8.0",
+    "versions": [
+     "18.10.12131.486"
+    ],
+    "attrs": {
+     "Package": "Microsoft.NetCore.Component.Runtime.8.0"
+    },
+    "src_line": 286
+   },
+   {
+    "raw": "| Microsoft.NetCore.Component.SDK                                           | 18.10.12131.486 |",
+    "name": "Microsoft.NetCore.Component.SDK",
+    "versions": [
+     "18.10.12131.486"
+    ],
+    "attrs": {
+     "Package": "Microsoft.NetCore.Component.SDK"
+    },
+    "src_line": 287
+   },
+   {
+    "raw": "| Microsoft.NetCore.Component.Web                                           | 18.10.12020.329 |",
+    "name": "Microsoft.NetCore.Component.Web",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.NetCore.Component.Web"
+    },
+    "src_line": 288
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.AppInsights.Tools                        | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.AppInsights.Tools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.AppInsights.Tools"
+    },
+    "src_line": 289
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.AspNet                                   | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.AspNet",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.AspNet"
+    },
+    "src_line": 290
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.AspNet45                                 | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.AspNet45",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.AspNet45"
+    },
+    "src_line": 291
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.ClassDesigner                            | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.ClassDesigner",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.ClassDesigner"
+    },
+    "src_line": 292
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.CodeMap                                  | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.CodeMap",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.CodeMap"
+    },
+    "src_line": 293
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.CoreEditor                               | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.CoreEditor",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.CoreEditor"
+    },
+    "src_line": 294
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.CppBuildInsights                         | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.CppBuildInsights",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.CppBuildInsights"
+    },
+    "src_line": 295
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Debugger.JustInTime                      | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Debugger.JustInTime",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Debugger.JustInTime"
+    },
+    "src_line": 296
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.DiagnosticTools                          | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.DiagnosticTools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.DiagnosticTools"
+    },
+    "src_line": 297
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.DockerTools                              | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.DockerTools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.DockerTools"
+    },
+    "src_line": 298
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.DotNetModelBuilder                       | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.DotNetModelBuilder",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.DotNetModelBuilder"
+    },
+    "src_line": 299
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.DslTools                                 | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.DslTools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.DslTools"
+    },
+    "src_line": 300
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.EntityFramework                          | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.EntityFramework",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.EntityFramework"
+    },
+    "src_line": 301
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.FSharp                                   | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.FSharp",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.FSharp"
+    },
+    "src_line": 302
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.FSharp.Desktop                           | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.FSharp.Desktop",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.FSharp.Desktop"
+    },
+    "src_line": 303
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.FSharp.WebTemplates                      | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.FSharp.WebTemplates",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.FSharp.WebTemplates"
+    },
+    "src_line": 304
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.GraphDocument                            | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.GraphDocument",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.GraphDocument"
+    },
+    "src_line": 305
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Graphics                                 | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Graphics",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Graphics"
+    },
+    "src_line": 306
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Graphics.Tools                           | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Graphics.Tools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Graphics.Tools"
+    },
+    "src_line": 307
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.HLSL                                     | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.HLSL",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.HLSL"
+    },
+    "src_line": 308
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.IISExpress                               | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.IISExpress",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.IISExpress"
+    },
+    "src_line": 309
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.IntelliCode                              | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.IntelliCode",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.IntelliCode"
+    },
+    "src_line": 310
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.IntelliTrace.FrontEnd                    | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.IntelliTrace.FrontEnd",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.IntelliTrace.FrontEnd"
+    },
+    "src_line": 311
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.JavaScript.Diagnostics                   | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.JavaScript.Diagnostics",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.JavaScript.Diagnostics"
+    },
+    "src_line": 312
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.JavaScript.TypeScript                    | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.JavaScript.TypeScript",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.JavaScript.TypeScript"
+    },
+    "src_line": 313
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.LinqToSql                                | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.LinqToSql",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.LinqToSql"
+    },
+    "src_line": 314
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.LiveUnitTesting                          | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.LiveUnitTesting",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.LiveUnitTesting"
+    },
+    "src_line": 315
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.ManagedDesktop.Core                      | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.ManagedDesktop.Core",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.ManagedDesktop.Core"
+    },
+    "src_line": 316
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.ManagedDesktop.Prerequisites             | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.ManagedDesktop.Prerequisites",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.ManagedDesktop.Prerequisites"
+    },
+    "src_line": 317
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.MSODBC.SQL                               | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.MSODBC.SQL",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.MSODBC.SQL"
+    },
+    "src_line": 318
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.MSSQL.CMDLnUtils                         | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.MSSQL.CMDLnUtils",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.MSSQL.CMDLnUtils"
+    },
+    "src_line": 319
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Node.Tools                               | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Node.Tools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Node.Tools"
+    },
+    "src_line": 320
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.NuGet                                    | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.NuGet",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.NuGet"
+    },
+    "src_line": 321
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.NuGet.BuildTools                         | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.NuGet.BuildTools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.NuGet.BuildTools"
+    },
+    "src_line": 322
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.PortableLibrary                          | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.PortableLibrary",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.PortableLibrary"
+    },
+    "src_line": 323
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Roslyn.Compiler                          | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Roslyn.Compiler",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Roslyn.Compiler"
+    },
+    "src_line": 324
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Roslyn.LanguageServices                  | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Roslyn.LanguageServices",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Roslyn.LanguageServices"
+    },
+    "src_line": 325
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Sharepoint.Tools                         | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Sharepoint.Tools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Sharepoint.Tools"
+    },
+    "src_line": 326
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.SQL.CLR                                  | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.SQL.CLR",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.SQL.CLR"
+    },
+    "src_line": 327
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.SQL.DataSources                          | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.SQL.DataSources",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.SQL.DataSources"
+    },
+    "src_line": 328
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.SQL.LocalDB.Runtime                      | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.SQL.LocalDB.Runtime",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.SQL.LocalDB.Runtime"
+    },
+    "src_line": 329
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.SQL.SSDT                                 | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.SQL.SSDT",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.SQL.SSDT"
+    },
+    "src_line": 330
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.TeamOffice                               | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.TeamOffice",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.TeamOffice"
+    },
+    "src_line": 331
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.TextTemplating                           | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.TextTemplating",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.TextTemplating"
+    },
+    "src_line": 332
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.TypeScript.TSServer                      | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.TypeScript.TSServer",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.TypeScript.TSServer"
+    },
+    "src_line": 333
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Unity                                    | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Unity",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Unity"
+    },
+    "src_line": 334
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.UWP.VC.ARM64                             | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.UWP.VC.ARM64",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.UWP.VC.ARM64"
+    },
+    "src_line": 335
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.UWP.VC.ARM64EC                           | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.UWP.VC.ARM64EC",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.UWP.VC.ARM64EC"
+    },
+    "src_line": 336
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.14.29.16.11.ARM                       | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.14.29.16.11.ARM",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.14.29.16.11.ARM"
+    },
+    "src_line": 337
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.14.29.16.11.ARM64                     | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.14.29.16.11.ARM64",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.14.29.16.11.ARM64"
+    },
+    "src_line": 338
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64                   | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64"
+    },
+    "src_line": 339
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.ASAN                                  | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.ASAN",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.ASAN"
+    },
+    "src_line": 340
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.ATL                                   | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.ATL",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.ATL"
+    },
+    "src_line": 341
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.ATL.ARM64                             | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.ATL.ARM64",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.ATL.ARM64"
+    },
+    "src_line": 342
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.ATL.ARM64.Spectre                     | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.ATL.ARM64.Spectre",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.ATL.ARM64.Spectre"
+    },
+    "src_line": 343
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.ATL.Spectre                           | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.ATL.Spectre",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.ATL.Spectre"
+    },
+    "src_line": 344
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.ATLMFC                                | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.ATLMFC",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.ATLMFC"
+    },
+    "src_line": 345
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.ATLMFC.Spectre                        | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.ATLMFC.Spectre",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.ATLMFC.Spectre"
+    },
+    "src_line": 346
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.CLI.Support                           | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.CLI.Support",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.CLI.Support"
+    },
+    "src_line": 347
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.CMake.Project                         | 18.10.12106.194 |",
+    "name": "Microsoft.VisualStudio.Component.VC.CMake.Project",
+    "versions": [
+     "18.10.12106.194"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.CMake.Project"
+    },
+    "src_line": 348
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.CoreIde                               | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.CoreIde",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.CoreIde"
+    },
+    "src_line": 349
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.DiagnosticTools                       | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.DiagnosticTools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.DiagnosticTools"
+    },
+    "src_line": 350
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.Llvm.Clang                            | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.Llvm.Clang",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.Llvm.Clang"
+    },
+    "src_line": 351
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset                     | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
+    },
+    "src_line": 352
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.MFC.ARM64                             | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.MFC.ARM64",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.MFC.ARM64"
+    },
+    "src_line": 353
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.MFC.ARM64.Spectre                     | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.MFC.ARM64.Spectre",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.MFC.ARM64.Spectre"
+    },
+    "src_line": 354
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.Redist.14.Latest                      | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.Redist.14.Latest",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.Redist.14.Latest"
+    },
+    "src_line": 355
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.Redist.MSM                            | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.Redist.MSM",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.Redist.MSM"
+    },
+    "src_line": 356
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre                | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64.Spectre"
+    },
+    "src_line": 357
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.Runtimes.ARM64EC.Spectre              | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64EC.Spectre",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.Runtimes.ARM64EC.Spectre"
+    },
+    "src_line": 358
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre              | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre"
+    },
+    "src_line": 359
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.TestAdapterForBoostTest               | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.TestAdapterForBoostTest",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.TestAdapterForBoostTest"
+    },
+    "src_line": 360
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.TestAdapterForGoogleTest              | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.TestAdapterForGoogleTest",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.TestAdapterForGoogleTest"
+    },
+    "src_line": 361
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.Tools.ARM64                           | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+    },
+    "src_line": 362
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.Tools.ARM64EC                         | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.Tools.ARM64EC",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.Tools.ARM64EC"
+    },
+    "src_line": 363
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VC.Tools.x86.x64                         | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+    },
+    "src_line": 364
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Vcpkg                                    | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Vcpkg",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Vcpkg"
+    },
+    "src_line": 365
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.VSSDK                                    | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.VSSDK",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.VSSDK"
+    },
+    "src_line": 366
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Wcf.Tooling                              | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Wcf.Tooling",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Wcf.Tooling"
+    },
+    "src_line": 367
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Web                                      | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Web",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Web"
+    },
+    "src_line": 368
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.WebDeploy                                | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.WebDeploy",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.WebDeploy"
+    },
+    "src_line": 369
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Windows10SDK                             | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Windows10SDK",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Windows10SDK"
+    },
+    "src_line": 370
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Windows11SDK.26100                       | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Windows11SDK.26100",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Windows11SDK.26100"
+    },
+    "src_line": 371
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Windows11Sdk.WindowsPerformanceToolkit   | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Windows11Sdk.WindowsPerformanceToolkit",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Windows11Sdk.WindowsPerformanceToolkit"
+    },
+    "src_line": 372
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.WindowsAppSdkSupport.CSharp              | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.WindowsAppSdkSupport.CSharp",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.WindowsAppSdkSupport.CSharp"
+    },
+    "src_line": 373
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.Workflow                                 | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.Workflow",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.Workflow"
+    },
+    "src_line": 374
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Component.WslDebugging                             | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.Component.WslDebugging",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Component.WslDebugging"
+    },
+    "src_line": 375
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.ArchitectureTools.Native            | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.ArchitectureTools.Native",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.ArchitectureTools.Native"
+    },
+    "src_line": 376
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.Azure.Prerequisites                 | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.Azure.Prerequisites",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.Azure.Prerequisites"
+    },
+    "src_line": 377
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.AzureFunctions                      | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.AzureFunctions",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.AzureFunctions"
+    },
+    "src_line": 378
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.Maui.All                            | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.Maui.All",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.Maui.All"
+    },
+    "src_line": 379
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.Maui.Android                        | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.Maui.Android",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.Maui.Android"
+    },
+    "src_line": 380
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.Maui.Blazor                         | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.Maui.Blazor",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.Maui.Blazor"
+    },
+    "src_line": 381
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.Maui.iOS                            | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.Maui.iOS",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.Maui.iOS"
+    },
+    "src_line": 382
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.Maui.MacCatalyst                    | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.Maui.MacCatalyst",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.Maui.MacCatalyst"
+    },
+    "src_line": 383
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.Maui.Shared                         | 18.10.12106.194 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.Maui.Shared",
+    "versions": [
+     "18.10.12106.194"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.Maui.Shared"
+    },
+    "src_line": 384
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.Maui.Windows                        | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.Maui.Windows",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.Maui.Windows"
+    },
+    "src_line": 385
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.MSIX.Packaging                      | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.MSIX.Packaging",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.MSIX.Packaging"
+    },
+    "src_line": 386
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core                  | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Core"
+    },
+    "src_line": 387
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Llvm.Clang            | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Llvm.Clang",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.NativeDesktop.Llvm.Clang"
+    },
+    "src_line": 388
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.UWP.NetCoreAndStandard              | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.UWP.NetCoreAndStandard",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.UWP.NetCoreAndStandard"
+    },
+    "src_line": 389
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.UWP.VC.v142                         | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.UWP.VC.v142",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.UWP.VC.v142"
+    },
+    "src_line": 390
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.VC.Tools.142.x86.x64                | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.VC.Tools.142.x86.x64",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.VC.Tools.142.x86.x64"
+    },
+    "src_line": 391
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.VisualStudioExtension.Prerequisites | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.VisualStudioExtension.Prerequisites",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.VisualStudioExtension.Prerequisites"
+    },
+    "src_line": 392
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.Web                                 | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.Web",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.Web"
+    },
+    "src_line": 393
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.Web.CloudTools                      | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.Web.CloudTools",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.Web.CloudTools"
+    },
+    "src_line": 394
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions                  | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions"
+    },
+    "src_line": 395
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.CMake            | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.CMake",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.CMake"
+    },
+    "src_line": 396
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.TemplateEngine   | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.TemplateEngine",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.WebToolsExtensions.TemplateEngine"
+    },
+    "src_line": 397
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.ComponentGroup.WindowsAppDevelopment.Prerequisites | 18.10.12020.329 |",
+    "name": "Microsoft.VisualStudio.ComponentGroup.WindowsAppDevelopment.Prerequisites",
+    "versions": [
+     "18.10.12020.329"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.ComponentGroup.WindowsAppDevelopment.Prerequisites"
+    },
+    "src_line": 398
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.Azure                                     | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.Azure",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.Azure"
+    },
+    "src_line": 399
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.CoreEditor                                | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.CoreEditor",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.CoreEditor"
+    },
+    "src_line": 400
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.Data                                      | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.Data",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.Data"
+    },
+    "src_line": 401
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.DataScience                               | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.DataScience",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.DataScience"
+    },
+    "src_line": 402
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.ManagedDesktop                            | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.ManagedDesktop",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.ManagedDesktop"
+    },
+    "src_line": 403
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.ManagedGame                               | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.ManagedGame",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.ManagedGame"
+    },
+    "src_line": 404
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.NativeCrossPlat                           | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.NativeCrossPlat",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.NativeCrossPlat"
+    },
+    "src_line": 405
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.NativeDesktop                             | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.NativeDesktop",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.NativeDesktop"
+    },
+    "src_line": 406
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.NativeGame                                | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.NativeGame",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.NativeGame"
+    },
+    "src_line": 407
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.NativeMobile                              | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.NativeMobile",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.NativeMobile"
+    },
+    "src_line": 408
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.NetCrossPlat                              | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.NetCrossPlat",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.NetCrossPlat"
+    },
+    "src_line": 409
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.NetWeb                                    | 18.10.12020.418 |",
+    "name": "Microsoft.VisualStudio.Workload.NetWeb",
+    "versions": [
+     "18.10.12020.418"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.NetWeb"
+    },
+    "src_line": 410
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.Node                                      | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.Node",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.Node"
+    },
+    "src_line": 411
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.Office                                    | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.Office",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.Office"
+    },
+    "src_line": 412
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.Python                                    | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.Python",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.Python"
+    },
+    "src_line": 413
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.Universal                                 | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.Universal",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.Universal"
+    },
+    "src_line": 414
+   },
+   {
+    "raw": "| Microsoft.VisualStudio.Workload.VisualStudioExtension                     | 18.9.11915.232  |",
+    "name": "Microsoft.VisualStudio.Workload.VisualStudioExtension",
+    "versions": [
+     "18.9.11915.232"
+    ],
+    "attrs": {
+     "Package": "Microsoft.VisualStudio.Workload.VisualStudioExtension"
+    },
+    "src_line": 415
+   },
+   {
+    "raw": "| runtimes.ios                                                              | 10.1.1226.41902 |",
+    "name": "runtimes.ios",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "runtimes.ios"
+    },
+    "src_line": 416
+   },
+   {
+    "raw": "| runtimes.ios.net9                                                         | 10.1.1226.41902 |",
+    "name": "runtimes.ios.net9",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "runtimes.ios.net9"
+    },
+    "src_line": 417
+   },
+   {
+    "raw": "| runtimes.maccatalyst                                                      | 10.1.1226.41902 |",
+    "name": "runtimes.maccatalyst",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "runtimes.maccatalyst"
+    },
+    "src_line": 418
+   },
+   {
+    "raw": "| runtimes.maccatalyst.net9                                                 | 10.1.1226.41902 |",
+    "name": "runtimes.maccatalyst.net9",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "runtimes.maccatalyst.net9"
+    },
+    "src_line": 419
+   },
+   {
+    "raw": "| wasm.tools                                                                | 10.1.1226.41902 |",
+    "name": "wasm.tools",
+    "versions": [
+     "10.1.1226.41902"
+    ],
+    "attrs": {
+     "Package": "wasm.tools"
+    },
+    "src_line": 420
+   },
+   {
+    "raw": "| ms-azuretools.MicrosoftVisualStudioAzureFabricVsix                        | 18.0.20260523.1 |",
+    "name": "ms-azuretools.MicrosoftVisualStudioAzureFabricVsix",
+    "versions": [
+     "18.0.20260523.1"
+    ],
+    "attrs": {
+     "Package": "ms-azuretools.MicrosoftVisualStudioAzureFabricVsix"
+    },
+    "src_line": 421
+   },
+   {
+    "raw": "| ProBITools.MicrosoftAnalysisServicesModelingProjects2022                  | 4.0.0           |",
+    "name": "ProBITools.MicrosoftAnalysisServicesModelingProjects2022",
+    "versions": [
+     "4.0.0"
+    ],
+    "attrs": {
+     "Package": "ProBITools.MicrosoftAnalysisServicesModelingProjects2022"
+    },
+    "src_line": 422
+   },
+   {
+    "raw": "| ProBITools.MicrosoftReportProjectsforVisualStudio2022                     | 4.0.0           |",
+    "name": "ProBITools.MicrosoftReportProjectsforVisualStudio2022",
+    "versions": [
+     "4.0.0"
+    ],
+    "attrs": {
+     "Package": "ProBITools.MicrosoftReportProjectsforVisualStudio2022"
+    },
+    "src_line": 423
+   },
+   {
+    "raw": "| SSIS.MicrosoftDataToolsIntegrationServices                                | 2.2             |",
+    "name": "SSIS.MicrosoftDataToolsIntegrationServices",
+    "versions": [
+     "2.2"
+    ],
+    "attrs": {
+     "Package": "SSIS.MicrosoftDataToolsIntegrationServices"
+    },
+    "src_line": 424
+   },
+   {
+    "raw": "| VisualStudioClient.MicrosoftVisualStudio2022InstallerProjects             | 3.0.0           |",
+    "name": "VisualStudioClient.MicrosoftVisualStudio2022InstallerProjects",
+    "versions": [
+     "3.0.0"
+    ],
+    "attrs": {
+     "Package": "VisualStudioClient.MicrosoftVisualStudio2022InstallerProjects"
+    },
+    "src_line": 425
+   },
+   {
+    "raw": "| Windows Driver Kit Visual Studio Extension                                | 10.0.26586.0    |",
+    "name": "Windows Driver Kit Visual Studio Extension",
+    "versions": [
+     "10.0.26586.0"
+    ],
+    "attrs": {
+     "Package": "Windows Driver Kit Visual Studio Extension"
+    },
+    "src_line": 426
+   },
+   {
+    "raw": "| Windows Software Development Kit                                          | 10.1.26100.8249 |",
+    "name": "Windows Software Development Kit",
+    "versions": [
+     "10.1.26100.8249"
+    ],
+    "attrs": {
+     "Package": "Windows Software Development Kit"
+    },
+    "src_line": 427
+   },
+   {
+    "raw": "| WixToolset.WixToolsetVisualStudio2022Extension                            | 1.0.0.22        |",
+    "name": "WixToolset.WixToolsetVisualStudio2022Extension",
+    "versions": [
+     "1.0.0.22"
+    ],
+    "attrs": {
+     "Package": "WixToolset.WixToolsetVisualStudio2022Extension"
+    },
+    "src_line": 428
+   }
+  ],
+  "Visual Studio Enterprise 2026/Microsoft Visual C++": [
+   {
+    "raw": "| Microsoft Visual C++ 2013 Additional Runtime | x64          | 12.0.40660  |",
+    "name": "Microsoft Visual C++ 2013 Additional Runtime",
+    "versions": [
+     "12.0.40660"
+    ],
+    "attrs": {
+     "Name": "Microsoft Visual C++ 2013 Additional Runtime",
+     "Architecture": "x64"
+    },
+    "src_line": 433
+   },
+   {
+    "raw": "| Microsoft Visual C++ 2013 Minimum Runtime    | x64          | 12.0.40660  |",
+    "name": "Microsoft Visual C++ 2013 Minimum Runtime",
+    "versions": [
+     "12.0.40660"
+    ],
+    "attrs": {
+     "Name": "Microsoft Visual C++ 2013 Minimum Runtime",
+     "Architecture": "x64"
+    },
+    "src_line": 434
+   },
+   {
+    "raw": "| Microsoft Visual C++ 2022 Additional Runtime | x64          | 14.51.36247 |",
+    "name": "Microsoft Visual C++ 2022 Additional Runtime",
+    "versions": [
+     "14.51.36247"
+    ],
+    "attrs": {
+     "Name": "Microsoft Visual C++ 2022 Additional Runtime",
+     "Architecture": "x64"
+    },
+    "src_line": 435
+   },
+   {
+    "raw": "| Microsoft Visual C++ 2022 Debug Runtime      | x64          | 14.51.36247 |",
+    "name": "Microsoft Visual C++ 2022 Debug Runtime",
+    "versions": [
+     "14.51.36247"
+    ],
+    "attrs": {
+     "Name": "Microsoft Visual C++ 2022 Debug Runtime",
+     "Architecture": "x64"
+    },
+    "src_line": 436
+   },
+   {
+    "raw": "| Microsoft Visual C++ 2022 Minimum Runtime    | x64          | 14.51.36247 |",
+    "name": "Microsoft Visual C++ 2022 Minimum Runtime",
+    "versions": [
+     "14.51.36247"
+    ],
+    "attrs": {
+     "Name": "Microsoft Visual C++ 2022 Minimum Runtime",
+     "Architecture": "x64"
+    },
+    "src_line": 437
+   },
+   {
+    "raw": "| Microsoft Visual C++ 2022 Additional Runtime | x86          | 14.51.36247 |",
+    "name": "Microsoft Visual C++ 2022 Additional Runtime",
+    "versions": [
+     "14.51.36247"
+    ],
+    "attrs": {
+     "Name": "Microsoft Visual C++ 2022 Additional Runtime",
+     "Architecture": "x86"
+    },
+    "src_line": 438
+   },
+   {
+    "raw": "| Microsoft Visual C++ 2022 Debug Runtime      | x86          | 14.51.36247 |",
+    "name": "Microsoft Visual C++ 2022 Debug Runtime",
+    "versions": [
+     "14.51.36247"
+    ],
+    "attrs": {
+     "Name": "Microsoft Visual C++ 2022 Debug Runtime",
+     "Architecture": "x86"
+    },
+    "src_line": 439
+   },
+   {
+    "raw": "| Microsoft Visual C++ 2022 Minimum Runtime    | x86          | 14.51.36247 |",
+    "name": "Microsoft Visual C++ 2022 Minimum Runtime",
+    "versions": [
+     "14.51.36247"
+    ],
+    "attrs": {
+     "Name": "Microsoft Visual C++ 2022 Minimum Runtime",
+     "Architecture": "x86"
+    },
+    "src_line": 440
+   }
+  ],
+  "Visual Studio Enterprise 2026/Installed Windows SDKs": [
+   {
+    "raw": "10.0.26100.0",
+    "name": "Installed Windows SDKs",
+    "versions": [
+     "10.0.26100.0"
+    ],
+    "src_line": 443
+   }
+  ],
+  ".NET Core Tools": [
+   {
+    "raw": ".NET Core SDK: 8.0.131, 8.0.206, 8.0.319, 8.0.425, 9.0.121, 9.0.205, 9.0.318, 10.0.112, 10.0.204, 10.0.303, 10.0.401",
+    "name": ".NET Core SDK",
+    "versions": [
+     "8.0.131",
+     "8.0.206",
+     "8.0.319",
+     "8.0.425",
+     "9.0.121",
+     "9.0.205",
+     "9.0.318",
+     "10.0.112",
+     "10.0.204",
+     "10.0.303",
+     "10.0.401"
+    ],
+    "src_line": 446
+   },
+   {
+    "raw": ".NET Framework: 4.8, 4.8.1",
+    "name": ".NET Framework",
+    "versions": [
+     "4.8",
+     "4.8.1"
+    ],
+    "src_line": 447
+   },
+   {
+    "raw": "Microsoft.AspNetCore.App: 8.0.6, 8.0.22, 8.0.31, 9.0.6, 9.0.20, 10.0.8, 10.0.11, 10.0.12",
+    "name": "Microsoft.AspNetCore.App",
+    "versions": [
+     "8.0.6",
+     "8.0.22",
+     "8.0.31",
+     "9.0.6",
+     "9.0.20",
+     "10.0.8",
+     "10.0.11",
+     "10.0.12"
+    ],
+    "src_line": 448
+   },
+   {
+    "raw": "Microsoft.NETCore.App: 8.0.6, 8.0.22, 8.0.31, 9.0.6, 9.0.20, 10.0.8, 10.0.11, 10.0.12",
+    "name": "Microsoft.NETCore.App",
+    "versions": [
+     "8.0.6",
+     "8.0.22",
+     "8.0.31",
+     "9.0.6",
+     "9.0.20",
+     "10.0.8",
+     "10.0.11",
+     "10.0.12"
+    ],
+    "src_line": 449
+   },
+   {
+    "raw": "Microsoft.WindowsDesktop.App: 8.0.6, 8.0.22, 8.0.31, 9.0.6, 9.0.20, 10.0.8, 10.0.11, 10.0.12",
+    "name": "Microsoft.WindowsDesktop.App",
+    "versions": [
+     "8.0.6",
+     "8.0.22",
+     "8.0.31",
+     "9.0.6",
+     "9.0.20",
+     "10.0.8",
+     "10.0.11",
+     "10.0.12"
+    ],
+    "src_line": 450
+   },
+   {
+    "raw": "nbgv 3.10.94+dea9a6c17c",
+    "name": "nbgv",
+    "versions": [
+     "3.10.94+dea9a6c17c"
+    ],
+    "src_line": 451
+   }
+  ],
+  "PowerShell Tools": [
+   {
+    "raw": "PowerShell 7.6.6",
+    "name": "PowerShell",
+    "versions": [
+     "7.6.6"
+    ],
+    "src_line": 454
+   }
+  ],
+  "PowerShell Tools/Powershell Modules": [
+   {
+    "raw": "Az: 15.6.1",
+    "name": "Az",
+    "versions": [
+     "15.6.1"
+    ],
+    "src_line": 457
+   },
+   {
+    "raw": "AWSPowershell: 5.0.313",
+    "name": "AWSPowershell",
+    "versions": [
+     "5.0.313"
+    ],
+    "src_line": 458
+   },
+   {
+    "raw": "DockerMsftProvider: 1.0.0.8",
+    "name": "DockerMsftProvider",
+    "versions": [
+     "1.0.0.8"
+    ],
+    "src_line": 459
+   },
+   {
+    "raw": "MarkdownPS: 1.10",
+    "name": "MarkdownPS",
+    "versions": [
+     "1.10"
+    ],
+    "src_line": 460
+   },
+   {
+    "raw": "Microsoft.Graph: 2.41.1",
+    "name": "Microsoft.Graph",
+    "versions": [
+     "2.41.1"
+    ],
+    "src_line": 461
+   },
+   {
+    "raw": "Pester: 3.4.0, 5.9.0",
+    "name": "Pester",
+    "versions": [
+     "3.4.0",
+     "5.9.0"
+    ],
+    "src_line": 462
+   },
+   {
+    "raw": "PowerShellGet: 1.0.0.1, 2.2.5",
+    "name": "PowerShellGet",
+    "versions": [
+     "1.0.0.1",
+     "2.2.5"
+    ],
+    "src_line": 463
+   },
+   {
+    "raw": "PSScriptAnalyzer: 1.25.0",
+    "name": "PSScriptAnalyzer",
+    "versions": [
+     "1.25.0"
+    ],
+    "src_line": 464
+   },
+   {
+    "raw": "PSWindowsUpdate: 2.2.1.5",
+    "name": "PSWindowsUpdate",
+    "versions": [
+     "2.2.1.5"
+    ],
+    "src_line": 465
+   },
+   {
+    "raw": "SqlServer: 22.4.5.1",
+    "name": "SqlServer",
+    "versions": [
+     "22.4.5.1"
+    ],
+    "src_line": 466
+   },
+   {
+    "raw": "VSSetup: 2.2.16",
+    "name": "VSSetup",
+    "versions": [
+     "2.2.16"
+    ],
+    "src_line": 467
+   }
+  ],
+  "Android": [
+   {
+    "raw": "| Android Command Line Tools | 19.0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |",
+    "name": "Android Command Line Tools",
+    "versions": [
+     "19.0"
+    ],
+    "attrs": {
+     "Package Name": "Android Command Line Tools"
+    },
+    "src_line": 472
+   },
+   {
+    "raw": "| Android Emulator           | 37.2.12                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |",
+    "name": "Android Emulator",
+    "versions": [
+     "37.2.12"
+    ],
+    "attrs": {
+     "Package Name": "Android Emulator"
+    },
+    "src_line": 473
+   },
+   {
+    "raw": "| Android SDK Build-tools    | 37.0.0<br>36.0.0 36.1.0<br>35.0.0 35.0.1<br>34.0.0                                                                                                                                                                                                                                                                                                                                                                                                                                      |",
+    "name": "Android SDK Build-tools",
+    "versions": [
+     "37.0.0",
+     "36.0.0",
+     "36.1.0",
+     "35.0.0",
+     "35.0.1",
+     "34.0.0"
+    ],
+    "attrs": {
+     "Package Name": "Android SDK Build-tools"
+    },
+    "src_line": 474
+   },
+   {
+    "raw": "| Android SDK Platforms      | android-37.2-beta3 (rev 3)<br>android-37.2-beta2 (rev 2)<br>android-37.2-beta1 (rev 1)<br>android-37.2 (rev 1)<br>android-37.1 (rev 1)<br>android-37.0 (rev 2)<br>android-36.1 (rev 1)<br>android-36-ext19 (rev 1)<br>android-36-ext18 (rev 1)<br>android-36 (rev 2)<br>android-35-ext15 (rev 1)<br>android-35-ext14 (rev 1)<br>android-35 (rev 2)<br>android-34-ext8 (rev 1)<br>android-34-ext12 (rev 1)<br>android-34-ext11 (rev 1)<br>android-34-ext10 (rev 1)<br>android-34 (rev 3) |",
+    "name": "Android SDK Platforms",
+    "versions": [
+     "android-37.2-beta3 (rev 3)",
+     "android-37.2-beta2 (rev 2)",
+     "android-37.2-beta1 (rev 1)",
+     "android-37.2 (rev 1)",
+     "android-37.1 (rev 1)",
+     "android-37.0 (rev 2)",
+     "android-36.1 (rev 1)",
+     "android-36-ext19 (rev 1)",
+     "android-36-ext18 (rev 1)",
+     "android-36 (rev 2)",
+     "android-35-ext15 (rev 1)",
+     "android-35-ext14 (rev 1)",
+     "android-35 (rev 2)",
+     "android-34-ext8 (rev 1)",
+     "android-34-ext12 (rev 1)",
+     "android-34-ext11 (rev 1)",
+     "android-34-ext10 (rev 1)",
+     "android-34 (rev 3)"
+    ],
+    "attrs": {
+     "Package Name": "Android SDK Platforms"
+    },
+    "src_line": 475
+   },
+   {
+    "raw": "| Android SDK Platform-Tools | 37.0.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |",
+    "name": "Android SDK Platform-Tools",
+    "versions": [
+     "37.0.1"
+    ],
+    "attrs": {
+     "Package Name": "Android SDK Platform-Tools"
+    },
+    "src_line": 476
+   },
+   {
+    "raw": "| Android Support Repository | 47.0.0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |",
+    "name": "Android Support Repository",
+    "versions": [
+     "47.0.0"
+    ],
+    "attrs": {
+     "Package Name": "Android Support Repository"
+    },
+    "src_line": 477
+   },
+   {
+    "raw": "| CMake                      | 3.30.5<br>3.31.5<br>4.1.2                                                                                                                                                                                                                                                                                                                                                                                                                                                               |",
+    "name": "CMake",
+    "versions": [
+     "3.30.5",
+     "3.31.5",
+     "4.1.2"
+    ],
+    "attrs": {
+     "Package Name": "CMake"
+    },
+    "src_line": 478
+   },
+   {
+    "raw": "| Google Play services       | 49                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |",
+    "name": "Google Play services",
+    "versions": [
+     "49"
+    ],
+    "attrs": {
+     "Package Name": "Google Play services"
+    },
+    "src_line": 479
+   },
+   {
+    "raw": "| Google Repository          | 58                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |",
+    "name": "Google Repository",
+    "versions": [
+     "58"
+    ],
+    "attrs": {
+     "Package Name": "Google Repository"
+    },
+    "src_line": 480
+   },
+   {
+    "raw": "| NDK                        | 27.3.13750724<br>29.0.14206865<br>30.0.16248370                                                                                                                                                                                                                                                                                                                                                                                                                                         |",
+    "name": "NDK",
+    "versions": [
+     "27.3.13750724",
+     "29.0.14206865",
+     "30.0.16248370"
+    ],
+    "attrs": {
+     "Package Name": "NDK"
+    },
+    "src_line": 481
+   }
+  ],
+  "Android/Environment variables": [
+   {
+    "raw": "| ANDROID_HOME            | C:\\Android\\android-sdk                   |",
+    "name": "ANDROID_HOME",
+    "attrs": {
+     "Name": "ANDROID_HOME",
+     "Value": "C:\\Android\\android-sdk"
+    },
+    "src_line": 486
+   },
+   {
+    "raw": "| ANDROID_NDK             | C:\\Android\\android-sdk\\ndk\\27.3.13750724 |",
+    "name": "ANDROID_NDK",
+    "attrs": {
+     "Name": "ANDROID_NDK",
+     "Value": "C:\\Android\\android-sdk\\ndk\\27.3.13750724"
+    },
+    "src_line": 487
+   },
+   {
+    "raw": "| ANDROID_NDK_HOME        | C:\\Android\\android-sdk\\ndk\\27.3.13750724 |",
+    "name": "ANDROID_NDK_HOME",
+    "attrs": {
+     "Name": "ANDROID_NDK_HOME",
+     "Value": "C:\\Android\\android-sdk\\ndk\\27.3.13750724"
+    },
+    "src_line": 488
+   },
+   {
+    "raw": "| ANDROID_NDK_LATEST_HOME | C:\\Android\\android-sdk\\ndk\\30.0.16248370 |",
+    "name": "ANDROID_NDK_LATEST_HOME",
+    "attrs": {
+     "Name": "ANDROID_NDK_LATEST_HOME",
+     "Value": "C:\\Android\\android-sdk\\ndk\\30.0.16248370"
+    },
+    "src_line": 489
+   },
+   {
+    "raw": "| ANDROID_NDK_ROOT        | C:\\Android\\android-sdk\\ndk\\27.3.13750724 |",
+    "name": "ANDROID_NDK_ROOT",
+    "attrs": {
+     "Name": "ANDROID_NDK_ROOT",
+     "Value": "C:\\Android\\android-sdk\\ndk\\27.3.13750724"
+    },
+    "src_line": 490
+   },
+   {
+    "raw": "| ANDROID_SDK_ROOT        | C:\\Android\\android-sdk                   |",
+    "name": "ANDROID_SDK_ROOT",
+    "attrs": {
+     "Name": "ANDROID_SDK_ROOT",
+     "Value": "C:\\Android\\android-sdk"
+    },
+    "src_line": 491
+   }
+  ]
+ },
+ "category_meta": {
+  "Windows features": {
+   "heading_line": 10,
+   "level": 2
+  },
+  "Language and Runtime": {
+   "heading_line": 16,
+   "level": 3
+  },
+  "Package Management": {
+   "heading_line": 28,
+   "level": 3
+  },
+  "Package Management/Environment variables": {
+   "heading_line": 41,
+   "level": 4,
+   "columns": [
+    "Name",
+    "Value"
+   ],
+   "columns_line": 42
+  },
+  "Project Management": {
+   "heading_line": 47,
+   "level": 3
+  },
+  "Tools": {
+   "heading_line": 53,
+   "level": 3
+  },
+  "CLI Tools": {
+   "heading_line": 93,
+   "level": 3
+  },
+  "Rust Tools": {
+   "heading_line": 101,
+   "level": 3
+  },
+  "Rust Tools/Packages": {
+   "heading_line": 107,
+   "level": 4
+  },
+  "Browsers and Drivers": {
+   "heading_line": 111,
+   "level": 3
+  },
+  "Browsers and Drivers/Environment variables": {
+   "heading_line": 121,
+   "level": 4,
+   "columns": [
+    "Name",
+    "Value"
+   ],
+   "columns_line": 122
+  },
+  "Java": {
+   "heading_line": 129,
+   "level": 3,
+   "columns": [
+    "Version",
+    "Environment Variable"
+   ],
+   "columns_line": 130
+  },
+  "Shells": {
+   "heading_line": 138,
+   "level": 3,
+   "columns": [
+    "Name",
+    "Target"
+   ],
+   "columns_line": 139
+  },
+  "MSYS2": {
+   "heading_line": 145,
+   "level": 3
+  },
+  "MSYS2/Notes": {
+   "heading_line": 148,
+   "level": 4
+  },
+  "Cached Tools": {
+   "heading_line": 155,
+   "level": 3
+  },
+  "Cached Tools/Go": {
+   "heading_line": 157,
+   "level": 4
+  },
+  "Cached Tools/Node.js": {
+   "heading_line": 162,
+   "level": 4
+  },
+  "Cached Tools/Python": {
+   "heading_line": 166,
+   "level": 4
+  },
+  "Cached Tools/PyPy": {
+   "heading_line": 173,
+   "level": 4
+  },
+  "Cached Tools/Ruby": {
+   "heading_line": 177,
+   "level": 4
+  },
+  "Databases": {
+   "heading_line": 183,
+   "level": 3
+  },
+  "Databases/PostgreSQL": {
+   "heading_line": 185,
+   "level": 4,
+   "columns": [
+    "Property",
+    "Value"
+   ],
+   "columns_line": 186
+  },
+  "Databases/MongoDB": {
+   "heading_line": 197,
+   "level": 4,
+   "columns": [
+    "Version",
+    "ServiceName",
+    "ServiceStatus",
+    "ServiceStartType"
+   ],
+   "columns_line": 198
+  },
+  "Database tools": {
+   "heading_line": 202,
+   "level": 3
+  },
+  "Web Servers": {
+   "heading_line": 211,
+   "level": 3,
+   "columns": [
+    "Name",
+    "Version",
+    "ConfigFile",
+    "ServiceName",
+    "ServiceStatus",
+    "ListenPort"
+   ],
+   "columns_line": 212
+  },
+  "Visual Studio Enterprise 2026": {
+   "heading_line": 217,
+   "level": 3,
+   "columns": [
+    "Name",
+    "Version",
+    "Path"
+   ],
+   "columns_line": 218
+  },
+  "Visual Studio Enterprise 2026/Workloads, components and extensions": {
+   "heading_line": 222,
+   "level": 4,
+   "columns": [
+    "Package",
+    "Version"
+   ],
+   "columns_line": 223
+  },
+  "Visual Studio Enterprise 2026/Microsoft Visual C++": {
+   "heading_line": 430,
+   "level": 4,
+   "columns": [
+    "Name",
+    "Architecture",
+    "Version"
+   ],
+   "columns_line": 431
+  },
+  "Visual Studio Enterprise 2026/Installed Windows SDKs": {
+   "heading_line": 442,
+   "level": 4
+  },
+  ".NET Core Tools": {
+   "heading_line": 445,
+   "level": 3
+  },
+  "PowerShell Tools": {
+   "heading_line": 453,
+   "level": 3
+  },
+  "PowerShell Tools/Powershell Modules": {
+   "heading_line": 456,
+   "level": 4
+  },
+  "Android": {
+   "heading_line": 469,
+   "level": 3,
+   "columns": [
+    "Package Name",
+    "Version"
+   ],
+   "columns_line": 470
+  },
+  "Android/Environment variables": {
+   "heading_line": 483,
+   "level": 4,
+   "columns": [
+    "Name",
+    "Value"
+   ],
+   "columns_line": 484
+  }
+ },
+ "unexpected_lines": []
+}
