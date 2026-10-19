@@ -352,6 +352,7 @@ anchored to the P01 baselines (Windows `aee0669` / `20261007.264.1`, Ubuntu `7e7
 `20261012.334.1`) and their `inventory.json` hashes. One `active` generation per profile;
 the previous one is `retired` and kept as the single rollback generation. New admissions use the
 active generation; running jobs finish on theirs. A `quarantined` generation is never re-activated.
+The live supervisor refuses, and admits nothing from, a catalog at `D:\aap-runner\images` whose scope is not `live`. Lab catalogs never live under the live image root.
 
 ```mermaid
 stateDiagram-v2

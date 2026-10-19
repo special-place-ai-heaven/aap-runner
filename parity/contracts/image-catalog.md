@@ -62,6 +62,7 @@ ARCHITECTURE.md section 6.
    installation). In a `live` catalog an `active` generation needs the owner's approval record
    (`live_activation`, gate D5); `validate.py` rejects it without one. A `lab` catalog may activate
    without it.
+   The live supervisor refuses, and admits nothing from, a catalog at `D:\aap-runner\images` whose scope is not `live`. Lab catalogs never live under the live image root. (supervisor rule for P12/P21.)
 
 ## Evaluation media (owner decision 2026-10-19)
 
