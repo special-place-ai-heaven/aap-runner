@@ -9,7 +9,7 @@ wire, and where P08 reads the frozen contract more strictly than its text.
 | `distro/worker-auth.sh` | The broker. Installed in the `aap-runner` distro as `/usr/local/sbin/aap-runner-broker` |
 | `supervisor/broker/aap-broker.psm1` | The supervisor's client: builds requests, runs the hidden `wsl.exe`, checks replies |
 | `tests/worker_auth_test.sh` | Bash suite (Linux only: `flock`, `/proc`, `jq`, `openssl`, `python3`) |
-| `tests/broker/aap-broker.Tests.ps1` | Pester 5 suite, Windows PowerShell 5.1 and PowerShell 7 |
+| `tests/broker/*.Tests.ps1` | Pester 5 suite by topic, Windows PowerShell 5.1 and PowerShell 7 (see `tests/broker/README.md`) |
 
 ## Distro side (P16 owns `bootstrap.sh`, `manager.sh`, `staging.sha256`, `README.md`; P19 the installer)
 
@@ -155,4 +155,5 @@ Add `tests/broker` to the Pester run: `$c.Run.Path = @('supervisor', 'tests/pari
   `Invoke-Expression`. The module and the Pester suite were run from a copy outside the
   allow-listed `aap-runner-work\parity` folder, on both hosts, with no detection. Keep new
   PowerShell in that style: an installed module that trips the heuristic would be quarantined
-  from the supervisor folder.
+  from the supervisor folder. The patterns to avoid and how to check a file are in
+  `tests/broker/README.md`.
