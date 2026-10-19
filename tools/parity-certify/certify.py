@@ -932,9 +932,15 @@ def load_defs(p):
                 and (codes == [0] or 0 not in codes)):
             die(f"{wid}: expected_exit_codes must be [0] or a list of nonzero codes")
         for i in range(len(variants_of(d))):
-            cmds = spec_of(d, i).get("commands")
+            spec = spec_of(d, i)
+            cmds = spec.get("commands")
             if not (isinstance(cmds, list) and cmds and all(isinstance(c, list) and c and all(isinstance(a, str) for a in c) for c in cmds)):
                 die(f"{wid}: every variant needs commands as a list of argv lists")
+            mode = spec.get("compare_artifacts", "sha256")
+            if mode not in ("sha256", "names"):
+                die(f"{wid}: compare_artifacts must be 'sha256' (default) or 'names'")
+            if mode == "names" and not (isinstance(spec.get("compare_artifacts_reason"), str) and spec["compare_artifacts_reason"].strip()):
+                die(f"{wid}: compare_artifacts 'names' waives the artifact hash comparison and needs a non-empty compare_artifacts_reason")
     return defs
 
 
@@ -975,6 +981,12 @@ def _judge(d, r, results_path):
     return evaluate(d, r, text)
 
 
+def _spec_for(d, r):
+    """The definition's effective settings for the variant a result ran (variant 0 when there is no usable result)."""
+    i = r.get("variant_index") if r else None
+    return spec_of(d, i if isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(variants_of(d)) else 0)
+
+
 def _fail(row, why):
     if row["status"] == "pass":
         row["status"] = "fail"
@@ -987,9 +999,10 @@ def behaviour_section(defs, results_path, ref_path=None):
         return {"status": "missing", "results": [], "reasons": ["no workloads defined; inventory cannot substitute for behaviour"]}, {}
     by, dup = _results(results_path)
     refs, rdup = _results(ref_path) if ref_path else (None, set())
-    rows, internal = [], {}
+    rows, internal, waivers = [], {}, []
     for d in defs:
         wid, r = d["id"], by.get(d["id"])
+        sp = _spec_for(d, r)
         if r is None:
             row = {"id": wid, "status": "skipped", "expected": "success" if d.get("expected_exit_codes", [0]) == [0] else "failure",
                    "observed": "skipped", "reasons": ["no result for this workload"]}
@@ -1014,7 +1027,7 @@ def behaviour_section(defs, results_path, ref_path=None):
                         if (rr.get("exit_code"), (rev["first_error"] or {}).get("message")) != (r.get("exit_code"), (ev["first_error"] or {}).get("message")):
                             _fail(row, "exit code or first causal error differs from the reference run")
                         ra, ca = rr.get("artifacts") or [], r.get("artifacts") or []
-                        if spec_of(d, 0).get("compare_artifacts") == "names":
+                        if sp.get("compare_artifacts", "sha256") == "names":
                             same = sorted(x["name"] for x in ra) == sorted(x["name"] for x in ca)
                         else:
                             same = {x["name"]: x["sha256"] for x in ra} == {x["name"]: x["sha256"] for x in ca}
@@ -1023,15 +1036,26 @@ def behaviour_section(defs, results_path, ref_path=None):
             if row["status"] == "pass" and r.get("variant_index") != 0:
                 if not (rr is not None and rr.get("variant_index") == r.get("variant_index")):
                     _fail(row, f"variant {r.get('variant_index')} ran; only the first declared variant (or the reference run's variant) can certify")
+        if sp.get("compare_artifacts", "sha256") == "names":  # every waiver stays visible to P24/P26
+            row["compare_artifacts"], row["compare_artifacts_reason"] = "names", sp["compare_artifacts_reason"]
+            waivers.append({"workload": wid, "waiver": "compare_artifacts=names", "reason": sp["compare_artifacts_reason"]})
         rows.append(row)
         internal[wid] = (row, r)
-    return {"status": "pass" if all(x["status"] == "pass" for x in rows) else "fail", "results": rows}, internal
+    return {"status": "pass" if all(x["status"] == "pass" for x in rows) else "fail", "results": rows, "waivers": waivers}, internal
 
 
 # ---------------------------------------------------------------- evidence
 
 def _ascii(s, n):
     return re.sub(r"[^ -~]", "?", str(s))[:n]
+
+
+def _command(cmd, row):
+    """The record's command line. The evidence schema has no notes field, so a compare_artifacts waiver rides here."""
+    if row.get("compare_artifacts") != "names":
+        return _ascii(cmd, 500)
+    suffix = _ascii(" [waiver compare_artifacts=names: " + row["compare_artifacts_reason"], 220) + "]"
+    return _ascii(cmd, 500 - len(suffix)) + suffix
 
 
 def _art(path, name=None):
@@ -1071,7 +1095,7 @@ def build_records(a, ref, cand, pin, report, internal, defs, out):
         exp, obs, st = row["expected"], row["observed"], row["status"]
         fid = "workload/" + d["id"]
         if r is None or st == "skipped":
-            recs.append({**base, "fixture_id": fid, "command": "(not run)", "started_at": t, "ended_at": t, "exit_status": None,
+            recs.append({**base, "fixture_id": fid, "command": _command("(not run)", row), "started_at": t, "ended_at": t, "exit_status": None,
                          "oracle": {"expected": exp, "observed": "skipped"}, "result": "skipped", "artifacts": []})
             continue
         result = "pass" if st == "pass" else "timeout" if obs == "timeout" else "fail"
@@ -1086,7 +1110,7 @@ def build_records(a, ref, cand, pin, report, internal, defs, out):
         lp = os.path.join(os.path.dirname(os.path.abspath(a.results)), "logs", log_name(d["id"]))
         if os.path.isfile(lp) and sha256_file(lp) == r.get("log_sha256"):
             a2.append(_art(lp, log_name(d["id"])))
-        recs.append({**base, "fixture_id": fid, "command": _ascii(r.get("command") or "", 500) or "(none)",
+        recs.append({**base, "fixture_id": fid, "command": _command(r.get("command") or "(none)", row),
                      "started_at": r["started_at"], "ended_at": r["ended_at"], "exit_status": r.get("exit_code"),
                      "oracle": {"expected": exp, "observed": obs}, "result": result, "artifacts": a2[:64]})
     return recs
@@ -1137,7 +1161,8 @@ def cmd_certify(a):
     sections_ok = inv["status"] == "pass" and beh["status"] == "pass"
     verdict = "pass" if sections_ok and validation == "pass" else "fail"
     dump({"schema": SCHEMA, "kind": "parity-verdict", "verdict": verdict, "inventory": inv["status"], "behaviour": beh["status"],
-          "evidence_validation": validation, "report_sha256": sha256_file(os.path.join(out, "parity-report.json")),
+          "evidence_validation": validation, "waivers": beh.get("waivers", []),
+          "report_sha256": sha256_file(os.path.join(out, "parity-report.json")),
           "evidence_records": sorted(os.path.basename(f) for f in files)}, os.path.join(out, "verdict.json"))
     print(f"inventory: {inv['status']} {inv['counts']}; identity: {inv['identity']['status']}; behaviour: {beh['status']}; "
           f"evidence: {validation}; verdict: {verdict}")

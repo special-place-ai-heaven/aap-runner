@@ -706,16 +706,118 @@ Describe 'Certify recomputes behaviour from the definitions; results.json status
         (Report $r.Dir).behaviour.results[0].reasons -join ';' | Should -Match 'reference result does not match its own oracle'
         (Full $WinRef $Cand $WinPin $candRun.ResFile 'refgood' -DefsDir $d -RefResults $refRun2.ResFile).Code | Should -Be 0
     }
-    It 'a candidate that differs from a valid reference run fails; artifact compare can be limited to names' {
+    It 'a candidate that differs from a valid reference run fails (sha256, the default and the explicit mode)' {
         $code = "import os; open('o.bin','wb').write(os.urandom(8))"
-        $hashDefs = NewDefs 'cmphash' @((PyDef 'cmp/random' $code @{ artifact_globs = @('o.bin') }))
-        $nameDefs = NewDefs 'cmpname' @((PyDef 'cmp/random' $code @{ artifact_globs = @('o.bin'); compare_artifacts = 'names' }))
-        $a = RunWl $hashDefs 'cmph-a'; $b = RunWl $hashDefs 'cmph-b'
-        $r = Full $WinRef $Cand $WinPin $a.ResFile 'cmph' -DefsDir $hashDefs -RefResults $b.ResFile
+        foreach ($mode in 'default', 'sha256') {
+            $extra = @{ artifact_globs = @('o.bin') }
+            if ($mode -eq 'sha256') { $extra.compare_artifacts = 'sha256' }
+            $hashDefs = NewDefs "cmphash-$mode" @((PyDef 'cmp/random' $code $extra))
+            $a = RunWl $hashDefs "cmph-a-$mode"; $b = RunWl $hashDefs "cmph-b-$mode"
+            $r = Full $WinRef $Cand $WinPin $a.ResFile "cmph-$mode" -DefsDir $hashDefs -RefResults $b.ResFile
+            $r.Code | Should -Be 1 -Because $mode
+            (Report $r.Dir).behaviour.results[0].reasons -join ';' | Should -Match 'artifacts differ'
+        }
+    }
+}
+
+Describe 'compare_artifacts is validated and every waiver stays visible' {
+    BeforeAll {
+        Mut $WinRef (Join-Path $T 'cand.json') 'copy'
+        $script:Cand = Join-Path $T 'cand.json'
+        $script:Why = 'random bytes differ on every run; the artifact name is still compared'
+        $script:RandCode = "import os; open('o.bin','wb').write(os.urandom(8))"
+        $script:NameCode = "import os; open(os.environ.get('AAP_NAME', 'o') + '.bin', 'wb').write(b'x')"
+    }
+    It 'names without a non-empty reason is refused by run-workloads and certify (exit 2)' {
+        $cases = @(
+            @{ compare_artifacts = 'names' },
+            @{ compare_artifacts = 'names'; compare_artifacts_reason = '' },
+            @{ compare_artifacts = 'names'; compare_artifacts_reason = '   ' },
+            @{ compare_artifacts = 'names'; compare_artifacts_reason = 5 }
+        )
+        $i = 0
+        foreach ($extra in $cases) {
+            $i++
+            $d = NewDefs "wn$i" @((PyDef 'w/noreason' 'pass' $extra))
+            $r = RunWl $d "wn$i"
+            $r.Code | Should -Be 2 -Because "case $i"
+            $r.Out | Should -Match 'compare_artifacts'
+            (Full $WinRef $Cand $WinPin $GoodRes "wn$i" -DefsDir $d).Code | Should -Be 2 -Because "certify case $i"
+        }
+    }
+    It 'a variant that waives the comparison without a reason is refused too' {
+        $d = NewDefs 'wnvar' @(@{ id = 'w/variant'; variants = @(@{ requires = $null; commands = @(, @('{python}', '-c', 'pass')); compare_artifacts = 'names' }) })
+        (RunWl $d 'wnvar').Code | Should -Be 2
+    }
+    It 'any other mode is refused (exit 2), including a wrong case and an explicit null' {
+        $i = 0
+        foreach ($mode in 'md5', 'hash', 'NAMES', 'none', $null) {
+            $i++
+            $d = NewDefs "wm$i" @((PyDef 'w/mode' 'pass' @{ compare_artifacts = $mode; compare_artifacts_reason = 'because' }))
+            $r = RunWl $d "wm$i"
+            $r.Code | Should -Be 2 -Because "mode $mode"
+            $r.Out | Should -Match "sha256"
+        }
+    }
+    It 'the explicit sha256 mode is accepted' {
+        $d = NewDefs 'wsha' @((PyDef 'w/sha' 'pass' @{ compare_artifacts = 'sha256' }))
+        (RunWl $d 'wsha').Code | Should -Be 0
+    }
+    It 'the shipped c-hello fixture carries a real reason for its waiver' {
+        $f = J (Join-Path $FixDefs 'fixture-c-hello.json')
+        $f.compare_artifacts | Should -Be 'names'
+        $f.compare_artifacts_reason | Should -Match 'timestamps'
+    }
+    It 'a names waiver with a reason limits the comparison to artifact names and is visible in the report, the verdict and the evidence record' {
+        $nameDefs = NewDefs 'cmpname' @((PyDef 'cmp/random' $RandCode @{ artifact_globs = @('o.bin'); compare_artifacts = 'names'; compare_artifacts_reason = $Why }))
+        $a = RunWl $nameDefs 'cmpn-a'; $b = RunWl $nameDefs 'cmpn-b'
+        $r = Full $WinRef $Cand $WinPin $a.ResFile 'cmpn' -DefsDir $nameDefs -RefResults $b.ResFile
+        $r.Code | Should -Be 0 -Because $r.Out
+        $rep = Report $r.Dir
+        $rep.behaviour.results[0].compare_artifacts | Should -Be 'names'
+        $rep.behaviour.results[0].compare_artifacts_reason | Should -Be $Why
+        $rep.behaviour.PSObject.Properties.Name | Should -Contain 'waivers'
+        @($rep.behaviour.waivers).Count | Should -Be 1
+        $rep.behaviour.waivers[0].workload | Should -Be 'cmp/random'
+        $rep.behaviour.waivers[0].reason | Should -Be $Why
+        (Verdict $r.Dir).waivers[0].reason | Should -Be $Why
+        $rec = J (Join-Path $r.Dir 'evidence\workload__cmp__random.json')
+        $rec.command | Should -Match 'waiver compare_artifacts=names: random bytes differ on every run'
+        $rec.command.Length | Should -BeLessOrEqual 500
+        $rec.result | Should -Be 'pass'
+        # a definition with no waiver carries none
+        $plain = Report (Join-Path $T 'ok1')
+        @($plain.behaviour.waivers).Count | Should -Be 0
+        (J (Join-Path $T 'ok1\evidence\workload__fixture__py-hello.json')).command | Should -Not -Match 'waiver'
+    }
+    It 'names mode still compares the artifact names' {
+        $nameDefs = NewDefs 'cmpname2' @((PyDef 'cmp/named' $NameCode @{ artifact_globs = @('*.bin'); compare_artifacts = 'names'; compare_artifacts_reason = $Why }))
+        $old = $env:AAP_NAME
+        try {
+            $env:AAP_NAME = 'one'; $a = RunWl $nameDefs 'cmpn2-a'
+            $env:AAP_NAME = 'two'; $b = RunWl $nameDefs 'cmpn2-b'
+        }
+        finally { if ($null -ne $old) { $env:AAP_NAME = $old } else { Remove-Item Env:AAP_NAME -ErrorAction SilentlyContinue } }
+        $r = Full $WinRef $Cand $WinPin $a.ResFile 'cmpn2' -DefsDir $nameDefs -RefResults $b.ResFile
         $r.Code | Should -Be 1
         (Report $r.Dir).behaviour.results[0].reasons -join ';' | Should -Match 'artifacts differ'
-        $a = RunWl $nameDefs 'cmpn-a'; $b = RunWl $nameDefs 'cmpn-b'
-        (Full $WinRef $Cand $WinPin $a.ResFile 'cmpn' -DefsDir $nameDefs -RefResults $b.ResFile).Code | Should -Be 0
+    }
+    It 'expected_hashes still apply in names mode' {
+        $d = NewDefs 'cmpexp' @((PyDef 'cmp/expected' "open('out.txt','wb').write(b'x')" @{ artifact_globs = @('out.txt'); compare_artifacts = 'names'; compare_artifacts_reason = $Why
+                    expected_hashes = @{ 'out.txt' = ('0' * 64) } }))
+        $r = RunWl $d 'cmpexp'
+        $r.Code | Should -Be 1
+        ((J $r.ResFile).results[0].reasons -join ';') | Should -Match 'artifact hash mismatch: out.txt'
+    }
+    It 'names mode is inert without --reference-results: the waiver is listed but nothing is compared' {
+        $nameDefs = NewDefs 'cmpname3' @((PyDef 'cmp/random' $RandCode @{ artifact_globs = @('o.bin'); compare_artifacts = 'names'; compare_artifacts_reason = $Why }))
+        $a = RunWl $nameDefs 'cmpn3-a'
+        $r = Full $WinRef $Cand $WinPin $a.ResFile 'cmpn3' -DefsDir $nameDefs
+        $r.Code | Should -Be 0 -Because $r.Out
+        $rep = Report $r.Dir
+        $rep.behaviour.PSObject.Properties.Name | Should -Contain 'waivers'
+        @($rep.behaviour.waivers).Count | Should -Be 1
+        $rep.behaviour.waivers[0].reason | Should -Be $Why
     }
 }
 
@@ -804,7 +906,7 @@ Describe 'Windows probe: this host, safe mode, writes only under tmp' {
     It 'wrote nothing outside the output directory' {
         $after = @(Get-ChildItem $T -Recurse -File | ForEach-Object { $_.FullName })
         $new = @($after | Where-Object { $Before -notcontains $_ })
-        $new | Should -HaveCount 1
+        @($new).Count | Should -Be 1
         $new[0] | Should -Be $POut
     }
     It 'never executes a bash that resolves to the WSL launcher or WindowsApps' -Skip:(-not (($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows)) {
@@ -825,6 +927,29 @@ Describe 'Windows probe: this host, safe mode, writes only under tmp' {
         $r = Cert @('compare', '--reference', $WinRef, '--candidate', $out, '--sections', 'shells')
         $r.Code | Should -Be 1
         $r.Out | Should -Match 'shells\.bash'
+    }
+    It 'falls back to %windir% for the System32 guard when SystemRoot is unset' -Skip:(-not (($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows)) {
+        # Windows PowerShell 5.1 cannot even start without SystemRoot (CLR load error 8009001d), so the child is pwsh here
+        $childExe = (Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+        if (-not $childExe) { Set-ItResult -Skipped -Because 'pwsh is not installed'; return }
+        $fakeRoot = Join-Path $T 'fakewin'
+        $sys32 = Join-Path $fakeRoot 'System32'
+        New-Item -ItemType Directory -Path $sys32 -Force | Out-Null
+        $sentinel = Join-Path $fakeRoot 'bash-was-run.txt'
+        [IO.File]::WriteAllText((Join-Path $sys32 'bash.cmd'), "@echo off`r`necho ran> `"$sentinel`"`r`necho GNU bash, version 9.9.9(1)-release`r`n")
+        $out = Join-Path $fakeRoot 'inv.json'
+        $oldPath = $env:PATH; $oldRoot = $env:SystemRoot; $oldWin = $env:windir; $oldEap = $ErrorActionPreference
+        try {
+            $env:PATH = $sys32 + ';' + $oldPath
+            Remove-Item Env:SystemRoot
+            $env:windir = $fakeRoot
+            $ErrorActionPreference = 'Continue'   # the probe's own powershell.exe call prints to stderr without SystemRoot
+            & $childExe -NoProfile -File $Probe -OutFile $out -Safe 2>&1 | Out-Null
+        }
+        finally { $ErrorActionPreference = $oldEap; $env:PATH = $oldPath; $env:SystemRoot = $oldRoot; $env:windir = $oldWin }
+        Test-Path $out | Should -BeTrue
+        Test-Path $sentinel | Should -BeFalse
+        (J $out).shells.bash | Should -Be '<not-run:wsl-launcher>'
     }
 }
 
@@ -868,6 +993,11 @@ Describe 'README states the limits reviewers asked to keep visible' {
         $Readme | Should -Match 'limits\.mount_options'
         $Readme | Should -Match 'P07'
         $Readme | Should -Match 'P11'
+    }
+    It 'carries the P17/P18 review checklist for compare_artifacts waivers' {
+        $Readme | Should -Match 'grep -rn compare_artifacts parity/workloads'
+        $Readme | Should -Match 'expected_hashes. still apply in .names. mode'
+        $Readme | Should -Match 'reachable only through .--reference-results'
     }
     It 'says the Readme inventory cannot be compared against a probe candidate and that P24 owns full reconciliation' {
         $Readme | Should -Match 'Readme inventory cannot be compared against a probe candidate'

@@ -101,6 +101,7 @@ if ($bash) {
     # record a marker so the comparison fails honestly instead of passing on an absent value.
     $bsrc = [string]$bash.Source
     $sysRoot = $env:SystemRoot
+    if (-not $sysRoot) { $sysRoot = $env:windir }
     if (($sysRoot -and $bsrc.StartsWith($sysRoot, [StringComparison]::OrdinalIgnoreCase)) -or ($bsrc -like '*\WindowsApps\*')) {
         $shells.bash = '<not-run:wsl-launcher>'
     }
