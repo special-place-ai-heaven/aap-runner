@@ -65,15 +65,76 @@ Describe 'initialize and read' {
         Test-Path -LiteralPath $root | Should -BeFalse
     }
 
-    It 'stores a new host measurement only when the live reservations still fit' {
+    It 'stores a new host measurement as is while the live reservations still fit' {
         $root = New-CapAllocator -Linux 1 -Windows 1 -LegacySlots 1
         [void](New-CapVm $root)
         (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Disk 1500)).Ok | Should -BeTrue
         (Get-CapDoc $root).host.disk_gib | Should -Be 1500
         $rev = (Get-CapDoc $root).revision
-        (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Ctl 20)).Reason | Should -Be 'pool_over_live'
         (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Cpu 0)).Reason | Should -Be 'bad_request'
         (Get-CapDoc $root).revision | Should -Be $rev
+    }
+
+    It 'a smaller disk or IO measurement is stored clamped to the live reservations, so the next VM is refused' {
+        $root = New-CapAllocator -Linux 1 -Windows 3 -HostInfo (New-CapHostInfo -Disk 600)
+        [void](New-CapVm $root)
+        [void](New-CapVm $root)
+        $r = Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Disk 200 -Io 100)
+        $r.Status | Should -Be 'refused'
+        $r.Reason | Should -Be 'pool_over_live'
+        @($r.Clamped) | Should -Be @('disk_gib', 'io_mbps')
+        (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
+        $h = (Get-CapDoc $root).host
+        $h.disk_gib | Should -Be 380
+        $h.io_mbps | Should -Be 223
+        $h.cpu_cores | Should -Be 32
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'disk'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 0 -IoMbps 100).Reason | Should -Be 'io'
+        (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Disk 600)).Ok | Should -BeTrue
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Ok | Should -BeTrue
+    }
+
+    It 'a larger control VM is stored cut to what the live reservations leave, so nothing more is admitted' {
+        $root = New-CapAllocator -Mode per_profile -Linux 1 -Windows 2 -LinuxShare 30 -WindowsShare 60
+        [void](New-CapVm $root)
+        [void](New-CapVm $root)
+        $r = Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Ctl 40)
+        $r.Reason | Should -Be 'pool_over_live'
+        @($r.Clamped) | Should -Be @('control_distro_mem_gib')
+        $s = Get-AapAllocatorState -Root $root
+        $s.State.host.control_distro_mem_gib | Should -Be 30
+        $s.UsedMemGib | Should -Be $s.PoolMemGib
+        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2' -Cpus 1 -MemGib 1).Reason | Should -Be 'memory'
+    }
+
+    It 'a smaller CPU or RAM measurement is raised only to the least the admitted runners still fit' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        [void](New-CapVm $root)
+        $r = Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Cpu 8 -Mem 16)
+        $r.Reason | Should -Be 'pool_over_live'
+        @($r.Clamped) | Should -Be @('cpu_cores', 'mem_gib', 'control_distro_mem_gib')
+        $h = (Get-CapDoc $root).host
+        $h.cpu_cores | Should -Be 32
+        $h.mem_gib | Should -Be 94
+        $h.control_distro_mem_gib | Should -Be 0
+        (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
+    }
+
+    It 'never starts again at revision 1 over lost state: a missing allocator.json beside its log or backup is refused' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        $doc = Get-CapDoc $root
+        (Read-CapJson (Join-Path $root 'allocator.json.bak')).revision | Should -Be ($doc.revision - 1)
+        Remove-Item -LiteralPath (Join-Path $root 'allocator.json')
+        $r = Initialize-AapAllocator -Root $root -HostInfo (New-CapHostInfo) -Linux 1 -Windows 1
+        $r.Status | Should -Be 'error'
+        $r.Reason | Should -Be 'invalid_state'
+        $r.Detail | Should -BeLike '*allocator.json.bak, allocator.log*'
+        Test-Path -LiteralPath (Join-Path $root 'allocator.json') | Should -BeFalse
+        Remove-Item -LiteralPath (Join-Path $root 'allocator.json.bak')
+        (Initialize-AapAllocator -Root $root -HostInfo (New-CapHostInfo)).Reason | Should -Be 'invalid_state'
+        Remove-Item -LiteralPath (Join-Path $root 'allocator.log')
+        Write-CapText (Join-Path $root 'allocator.json.tmp') ([IO.File]::ReadAllText((Join-Path (New-CapAllocator) 'allocator.json')))
+        (Initialize-AapAllocator -Root $root -HostInfo (New-CapHostInfo)).Detail | Should -BeLike '*allocator.json.tmp exist*'
     }
 
     It 'refuses a state whose revision went backwards in this process' {
@@ -397,12 +458,34 @@ Describe 'heartbeats and quarantine' {
     It 'a hostile guest is final: never back to service, only torn down' {
         $root = New-CapAllocator -Linux 1 -Windows 1
         $w = New-CapVm $root -Busy
+        (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State deleting).Reason | Should -Be 'illegal_edge'
         $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'reply did not echo the nonce'
         $r.Ok | Should -BeTrue
         (Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning).Reason | Should -Be 'quarantine_final'
         (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State ready).Reason | Should -Be 'illegal_edge'
         (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State deleting).Ok | Should -BeTrue
         (Complete-AapTeardown -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -Proof (New-CapProof 'vm')).Ok | Should -BeTrue
+    }
+
+    It 'a heartbeat or crash quarantine can still turn hostile, and a heartbeat never lifts that' {
+        $root = New-CapAllocator -Linux 1 -Windows 2
+        $a = New-CapVm $root -Busy
+        $b = New-CapVm $root
+        Add-CapSeconds 100
+        [void](Set-AapSlotState -Root $root -ReservationId $b.reservation_id -LeaseGeneration $b.lease_generation -State quarantined -QuarantineKind crash -Reason 'journal unreadable')
+        [void](Invoke-AapReconcile -Root $root)
+        (Get-CapRes (Get-CapDoc $root) $a.reservation_id).quarantine_kind | Should -Be 'heartbeat'
+        foreach ($w in @($a, $b)) {
+            $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'reply did not echo the nonce'
+            $r.Ok | Should -BeTrue
+            $r.Reservation.quarantine_kind | Should -Be 'hostile_guest'
+            (Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning).Reason | Should -Be 'quarantine_final'
+            (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind heartbeat -Reason 'x').Reason | Should -Be 'illegal_edge'
+            $q = Get-CapRes (Get-CapDoc $root) $w.reservation_id
+            $q.state | Should -Be 'quarantined'
+            $q.quarantine_kind | Should -Be 'hostile_guest'
+        }
+        (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
     }
 }
 

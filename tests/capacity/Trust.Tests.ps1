@@ -72,6 +72,18 @@ Describe 'capacity folder trust' {
         $r.Detail | Should -BeLike '*S-1-5-11*'
     }
 
+    It 'refuses read for anyone but the admins too, on the folder or on the lock file' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        Invoke-CapIcacls @($root, '/grant', '*S-1-5-32-545:(OI)(CI)R')
+        $r = Get-AapAllocatorState -Root $root
+        $r.Reason | Should -Be 'untrusted_folder'
+        $r.Detail | Should -BeLike '*S-1-5-32-545 read or write*'
+        Invoke-CapIcacls @($root, '/remove:g', '*S-1-5-32-545')
+        (Get-AapAllocatorState -Root $root).Ok | Should -BeTrue
+        Invoke-CapIcacls @((Join-Path $root 'allocator.lock'), '/grant', '*S-1-5-32-545:R')
+        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2').Detail | Should -BeLike '*allocator.lock grants S-1-5-32-545*'
+    }
+
     It 'refuses a folder that inherits Authenticated Users modify, as any folder under this scratch tree does' {
         $root = Join-Path $TestDrive ('inherit-' + [guid]::NewGuid().ToString('n').Substring(0, 8))
         [void](New-Item -ItemType Directory -Path $root)

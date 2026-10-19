@@ -42,7 +42,8 @@ Describe 'the allocator contract fixtures' {
     It 'the schema next to the module is a byte copy of the contract schema' {
         $a = [IO.File]::ReadAllBytes((Join-Path $script:RepoRoot 'parity\contracts\allocator.schema.json'))
         $b = [IO.File]::ReadAllBytes((Join-Path $script:RepoRoot 'supervisor\capacity\allocator.schema.json'))
-        [Convert]::ToBase64String($b) | Should -BeExactly ([Convert]::ToBase64String($a))
+        $b.Length | Should -Be $a.Length
+        for ($i = 0; $i -lt $a.Length; $i++) { if ($b[$i] -ne $a[$i]) { throw "the schema copy differs at byte $i" } }
     }
 
     It 'valid/<Name>: both validators accept it' -ForEach $ValidCases {

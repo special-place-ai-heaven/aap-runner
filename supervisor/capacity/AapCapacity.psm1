@@ -22,11 +22,13 @@ $ErrorActionPreference = 'Stop'
 $script:AdminSids = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
 $script:LiveStates = @('creating', 'ready', 'busy', 'draining', 'collecting', 'deleting', 'quarantined')
 # ARCHITECTURE.md section 2. reconciled is reached only through Complete-AapTeardown (or the
-# legacy release), quarantined -> ready/busy only through a validated heartbeat.
+# legacy release), quarantined -> ready/busy only through a validated heartbeat. busy -> deleting
+# is not offered: a hostile reply goes busy -> quarantined (hostile_guest) -> deleting, and only
+# reconcile moves a busy slot whose VM is gone straight to deleting (Move-AapDown).
 $script:Edges = @{
     creating    = @('ready', 'deleting', 'quarantined')
     ready       = @('busy', 'draining', 'quarantined')
-    busy        = @('draining', 'collecting', 'quarantined', 'deleting')
+    busy        = @('draining', 'collecting', 'quarantined')
     draining    = @('collecting', 'quarantined')
     collecting  = @('deleting', 'quarantined')
     deleting    = @('quarantined')
@@ -39,6 +41,8 @@ $script:QuarantineFrom = @{
     crash           = @('creating', 'ready', 'busy', 'draining', 'collecting')
     teardown_failed = @('deleting')
 }
+# A quarantine that may still turn hostile: hostile_guest is immediate and final from any guest state.
+$script:HostileOver = @('heartbeat', 'crash')
 # Legal edge paths down to deleting (draining always passes through collecting).
 $script:ToDeleting = @{
     creating = @('deleting'); ready = @('draining', 'collecting', 'deleting'); busy = @('deleting')
@@ -64,6 +68,9 @@ $script:Warned = @{}
 $script:Relaxed = $false         # the current call's relaxed-trust flag (one call at a time)
 $script:Schema = $null
 $script:DateKind = $null
+# Every file this module keeps in the capacity folder (trust-checked on every call).
+$script:StateFiles = @('allocator.json', 'allocator.json.tmp', 'allocator.json.bak', 'allocator.lock', 'allocator.log', 'allocator.log.1',
+    'unresolved.json', 'unresolved.json.tmp', 'unresolved.json.bak')
 
 # ---- small helpers ----------------------------------------------------------------------------
 
@@ -514,20 +521,23 @@ function Get-AapRawSd([string]$Path) {
 # Test-AapAdminDescriptor in install-supervisor.ps1: an admin owner, a DACL, plain allow/deny ACEs,
 # and no other SID with write, append, write-attributes, delete, delete-child, write-DAC,
 # write-owner or generic write/all. Unlike there, inherit-only ACEs count too: the files this
-# module writes inherit them.
+# module writes inherit them. Read data, execute and generic read/execute are refused as well: a
+# reader could open allocator.lock or allocator.json with no sharing and stall every call or the
+# replace.
 function Get-AapLeafProblem([string]$Path, [string[]]$Trusted) {
     if (Test-AapReparse $Path) { return "reparse point $Path" }
     try { $raw = Get-AapRawSd $Path } catch { return "cannot read the ACL of $Path" }
     if ($null -eq $raw.Owner -or $Trusted -notcontains $raw.Owner.Value) { return "owner $($raw.Owner) of $Path is not an admin" }
     if ($null -eq $raw.DiscretionaryAcl) { return "$Path has no DACL (everyone has full control)" }
     $bad = 0x2 -bor 0x4 -bor 0x100 -bor 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
+    $bad = $bad -bor 0x1 -bor 0x20 -bor 0x20000000 -bor [int]::MinValue
     foreach ($ace in $raw.DiscretionaryAcl) {
         $type = [int]$ace.AceType
         if ($type -ne 0 -and $type -ne 1) { return "$Path has an ACE that is not a plain allow or deny" }
         if ($type -ne 0) { continue }
         $sid = $ace.SecurityIdentifier.Value
         if ($Trusted -contains $sid) { continue }
-        if (([int]$ace.AccessMask -band $bad) -ne 0) { return "$Path grants $sid write access (0x$('{0:x}' -f [int]$ace.AccessMask))" }
+        if (([int]$ace.AccessMask -band $bad) -ne 0) { return "$Path grants $sid read or write access (0x$('{0:x}' -f [int]$ace.AccessMask))" }
     }
     return $null
 }
@@ -587,7 +597,7 @@ function Get-AapTrustProblem([string]$Root, [bool]$Relaxed, [bool]$MayBeMissing)
     }
     $p = Get-AapLeafProblem $Root $trusted
     if ($p) { $problems.Add($p); return , $problems }
-    foreach ($name in @('allocator.json', 'allocator.json.tmp', 'allocator.lock', 'allocator.log', 'allocator.log.1', 'unresolved.json', 'unresolved.json.tmp')) {
+    foreach ($name in $script:StateFiles) {
         $f = Join-Path $Root $name
         if (Test-AapReparse $f) { $problems.Add("reparse point $f"); continue }
         if ([IO.File]::Exists($f)) {
@@ -624,7 +634,7 @@ function Write-AapAtomic([string]$Root, [string]$Name, [string]$Text) {
     $fs = [IO.File]::Open($tmp, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) } finally { $fs.Dispose() }
     Invoke-AapFault "after-temp $Name"
-    if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
+    if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, "$path.bak") } else { [IO.File]::Move($tmp, $path) }
 }
 
 function Write-AapCapLog([string]$Root, [string]$Text) {
@@ -642,6 +652,22 @@ function Write-AapCapLog([string]$Root, [string]$Text) {
 }
 
 function Get-AapKey([string]$Root) { $Root.ToLowerInvariant() }
+
+# Files that show allocator.json once existed. A temp file counts unless it is an interrupted first
+# initialize (revision 1: nothing admitted, no generation spent).
+function Get-AapLostEvidence([string]$Root) {
+    $found = @($script:StateFiles | Where-Object { $_ -cne 'allocator.json' -and $_ -cne 'allocator.json.tmp' -and $_ -cne 'allocator.lock' -and [IO.File]::Exists((Join-Path $Root $_)) })
+    $tmp = Join-Path $Root 'allocator.json.tmp'
+    if ([IO.File]::Exists($tmp)) {
+        $first = $false
+        try {
+            $d = ConvertFrom-AapJson (Read-AapText $tmp 65536)
+            $first = ($null -eq (Test-AapDoc $d)) -and [long]$d.revision -eq 1
+        } catch { $first = $false }
+        if (-not $first) { $found += 'allocator.json.tmp' }
+    }
+    , $found
+}
 
 function Read-AapDoc([string]$Root) {
     $path = Join-Path $Root 'allocator.json'
@@ -901,6 +927,10 @@ function Initialize-AapAllocator {
     if ($null -eq $lock) { return (New-AapResult 'error' 'lock_timeout' "allocator lock busy for $LockTimeoutSeconds s; nothing written") }
     try {
         if ([IO.File]::Exists((Join-Path $Root 'allocator.json'))) { return (New-AapResult 'unchanged' 'already_initialized' 'initialized by another process') }
+        $lost = Get-AapLostEvidence $Root
+        if ($lost.Count) {
+            return (New-AapResult 'error' 'invalid_state' "allocator.json is missing but $($lost -join ', ') exist in ${Root}: the state was lost while slots may be running; restore allocator.json (allocator.json.bak is the previous revision) instead of starting at revision 1 with generation 0")
+        }
         $now = Format-AapTime (Get-AapUtcNow)
         $doc = [pscustomobject][ordered]@{
             schema = 1; revision = 0; written_at = $now; max_slots = 5
@@ -917,12 +947,13 @@ function Initialize-AapAllocator {
         if ($e) { return (New-AapResult 'refused' 'bad_request' $e) }
         $e = Test-AapDoc (ConvertFrom-AapJson (ConvertTo-AapJson $doc))
         if ($e) { return (New-AapResult 'refused' 'bad_request' $e) }
+        # The log is written only after allocator.json exists: a log without it means lost state.
+        Save-AapDoc $Root $doc 'initialized'
         if ($script:Relaxed) {
             Write-Warning "AapCapacity: folder trust checks are RELAXED FOR TESTS on $Root (current user trusted, ancestor ACLs not checked)"
             Write-AapCapLog $Root 'WARNING folder trust checks relaxed for tests'
             $script:Warned[(Get-AapKey $Root)] = $true
         }
-        Save-AapDoc $Root $doc 'initialized'
         New-AapResult 'ok' $null 'initialized' ([ordered]@{ State = $doc })
     } catch {
         New-AapResult 'error' 'failed' $_.Exception.Message
@@ -956,17 +987,77 @@ function Get-AapAllocatorState {
         })
 }
 
+# Smallest v in Lo..Hi for which Holds is true; Holds(Hi) is true and Holds only grows with v.
+function Find-AapLeast([long]$Lo, [long]$Hi, [scriptblock]$Holds) {
+    while ($Lo -lt $Hi) {
+        $mid = $Lo + [long][Math]::Floor(($Hi - $Lo) / 2)
+        if (& $Holds $mid) { $Hi = $mid } else { $Lo = $mid + 1 }
+    }
+    $Lo
+}
+
+# Doc.host is a measurement the live reservations no longer fit; Old is the stored host they fit.
+# Each measured value moves the least that holds them again: disk and IO up to the live sums,
+# CPUs up, the control VM's memory down (then RAM up). Every budget under pressure is then exactly
+# full, so nothing more is admitted until reservations leave. Returns the clamped field names.
+function Limit-AapHost($Doc, $Old) {
+    $h = $Doc.host
+    $clamped = New-Object System.Collections.Generic.List[string]
+    $live = @(Get-AapLive $Doc)
+    $keep = 100 - [long]$Doc.host_reserve_percent
+    $fits = { $null -eq (Test-AapSemantic $Doc) }
+    $disk = Get-AapSum $live { $args[0].disk_gib }
+    if ([long]$h.disk_gib -lt $disk) { $h.disk_gib = $disk; $clamped.Add('disk_gib') }
+    $io = Get-AapSum $live { $args[0].io_mbps }
+    if ($io -gt 0 -and (Get-AapFloorDiv ([long]$h.io_mbps * $keep) 100) -lt $io) {
+        $h.io_mbps = Find-AapLeast ([long]$h.io_mbps) ([long]$Old.io_mbps) { param($v) (Get-AapFloorDiv ($v * $keep) 100) -ge $io }
+        $clamped.Add('io_mbps')
+    }
+    # CPU checks do not read memory: settle CPUs with the old (holding) memory values in place.
+    $mem = [long]$h.mem_gib
+    $ctl = [long]$h.control_distro_mem_gib
+    $h.mem_gib = [long]$Old.mem_gib
+    $h.control_distro_mem_gib = [long]$Old.control_distro_mem_gib
+    if (-not (& $fits)) {
+        $h.cpu_cores = Find-AapLeast ([long]$h.cpu_cores) ([long]$Old.cpu_cores) { param($v) $h.cpu_cores = $v; & $fits }
+        $clamped.Add('cpu_cores')
+    }
+    $h.mem_gib = $mem
+    $h.control_distro_mem_gib = $ctl
+    if (-not (& $fits)) {
+        $h.control_distro_mem_gib = 0
+        if (& $fits) {
+            $cut = Find-AapLeast 0 $ctl { param($v) $h.control_distro_mem_gib = $ctl - $v; & $fits }
+            $h.control_distro_mem_gib = $ctl - $cut
+        } else {
+            $h.mem_gib = Find-AapLeast $mem ([long]$Old.mem_gib) { param($v) $h.mem_gib = $v; & $fits }
+            $clamped.Add('mem_gib')
+        }
+        if ([long]$h.control_distro_mem_gib -ne $ctl) { $clamped.Add('control_distro_mem_gib') }
+    }
+    , $clamped.ToArray()
+}
+
+# A measurement the live reservations still fit is stored as is. One they no longer fit is stored
+# clamped to them (Limit-AapHost) and refused ('pool_over_live'): admission then runs against
+# the clamped host, never against the older, larger one.
 function Set-AapHostMeasurement {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)]$HostInfo, [int]$LockTimeoutSeconds = 30, [switch]$RelaxedTrustForTests)
     Invoke-AapLocked $Root ([bool]$RelaxedTrustForTests) $LockTimeoutSeconds {
         param($doc)
+        $old = $doc.host
         $doc.host = ConvertTo-AapHost $HostInfo (Format-AapTime (Get-AapUtcNow))
         $e = Test-AapDoc (ConvertFrom-AapJson (ConvertTo-AapJson $doc))
         if ($e -and $e.StartsWith('$.host', [StringComparison]::Ordinal)) { return (New-AapResult 'refused' 'bad_request' $e) }
-        if ($e) { return (New-AapResult 'refused' 'pool_over_live' "the new measurement does not hold the live reservations: $e") }
-        Save-AapDoc $Root $doc "host $(ConvertTo-AapJson $doc.host)"
-        New-AapResult 'ok' $null 'host measurement stored'
+        if (-not $e) {
+            Save-AapDoc $Root $doc "host $(ConvertTo-AapJson $doc.host)"
+            return (New-AapResult 'ok' $null 'host measurement stored')
+        }
+        $measured = ConvertTo-AapJson $doc.host
+        $clamped = Limit-AapHost $doc $old
+        Save-AapDoc $Root $doc "host measured $measured does not hold the live reservations ($e); stored clamped $(ConvertTo-AapJson $doc.host)"
+        New-AapResult 'refused' 'pool_over_live' "the new measurement does not hold the live reservations ($e); stored with $($clamped -join ', ') clamped to them, so nothing more is admitted until they leave" ([ordered]@{ Clamped = $clamped; Host = $doc.host })
     }
 }
 
@@ -1306,9 +1397,10 @@ function Set-AapSlotState {
         $r = $f.Reservation
         $from = $r.state
         if ($from -ceq $State -and ($State -cne 'quarantined' -or $r.quarantine_kind -ceq $QuarantineKind)) { return (New-AapResult 'unchanged' $null "already $State") }
-        if ($script:Edges[$from] -cnotcontains $State) { return (New-AapResult 'refused' 'illegal_edge' "$from -> $State is not an edge of the slot state machine") }
+        $toHostile = $from -ceq 'quarantined' -and $State -ceq 'quarantined' -and $QuarantineKind -ceq 'hostile_guest' -and $script:HostileOver -ccontains $r.quarantine_kind
+        if (-not $toHostile -and $script:Edges[$from] -cnotcontains $State) { return (New-AapResult 'refused' 'illegal_edge' "$from -> $State is not an edge of the slot state machine") }
         if ($State -ceq 'quarantined') {
-            if (-not $QuarantineKind -or $script:QuarantineFrom[$QuarantineKind] -cnotcontains $from) { return (New-AapResult 'refused' 'illegal_edge' "$from -> quarantined ($QuarantineKind) is not allowed") }
+            if (-not $QuarantineKind -or (-not $toHostile -and $script:QuarantineFrom[$QuarantineKind] -cnotcontains $from)) { return (New-AapResult 'refused' 'illegal_edge' "$from -> quarantined ($QuarantineKind) is not allowed") }
             if (-not $Reason -or $Reason -match '[\x00-\x1f]' -or $Reason.Length -gt 200) { return (New-AapResult 'refused' 'bad_request' 'a quarantine needs a one-line -Reason of at most 200 characters') }
         }
         if ($VmId) {

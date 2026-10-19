@@ -24,26 +24,37 @@ tray yet.
   - `error`: the operation could not run. Show status `error` and admit nothing.
 - Each operation is one validated read-modify-write under `<Root>\allocator.lock`, which is opened
   with no sharing and waited for at most `-LockTimeoutSeconds` (30 by default). The state is
-  written to `allocator.json.tmp` and swapped in with `File.Replace`. A document that fails the
-  contract is never written.
+  written to `allocator.json.tmp` and swapped in with `File.Replace`, which keeps the previous
+  revision as `allocator.json.bak`, so a failed replace never removes the state. A document that
+  fails the contract is never written.
+- A lost `allocator.json` is never recreated over the remains of a running pool.
+  `Initialize-AapAllocator` returns `error`/`invalid_state` when `allocator.json` is missing but
+  `allocator.json.bak`, `allocator.log`, `unresolved.json` or an `allocator.json.tmp` of a revision
+  above 1 exists. Starting again at revision 1 would reuse lease generations while VMs still run.
+  The owner restores the state, usually from `allocator.json.bak`. Only the temp file of an
+  initialize that was killed before its first replace is written over.
 - `<Root>\allocator.log` gets one line per state change and per ignored late event.
   `<Root>\unresolved.json` lists unknown VMs and folders; it is written only by reconcile.
 - The folder is checked before every call, with the rules and SIDs of `install-supervisor.ps1`:
   - The leaf rule of `Test-AapAdminDescriptor`, also applied to inherit-only ACEs, because the
-    files this module writes inherit them.
+    files this module writes inherit them. Read data, execute and generic read or execute for
+    any other SID are refused too, on the folder and on every state file.
   - The ancestor rule of `Get-AapAncestorProblem`, up to the drive root.
   - No reparse point on the folder, above it, or at any file name the module uses.
   - A fixed local drive and a normalized absolute path.
 - `-RelaxedTrustForTests` exists for tests only. It trusts the current user and skips the
   ancestor ACL check. Every other check stays. It prints a warning and writes a log line, and
   every result reports `TrustRelaxed`. Production code must never pass it.
+- The crash tests use a fault hook, `Invoke-AapFault`. It does nothing unless the module-private
+  variable `$script:Fault` names the point. No parameter, environment variable or file sets it;
+  only code running inside the module's scope can. It stays as it is.
 
 | Function | Use |
 |---|---|
 | `Initialize-AapAllocator -HostInfo @{cpu_cores; mem_gib; disk_gib; io_mbps; control_distro_mem_gib} -Linux -Windows [-ShareMode -LinuxShare -WindowsShare -HostReservePercent -LinuxBackend]` | Creates the folder if missing and writes revision 1 once; never overwrites an existing state |
 | `Get-AapAllocatorState` | The state plus `UsedSlots`, `FreeSlots`, `PoolCpus`, `PoolMemGib`, `UsedCpus`, `UsedMemGib`, and per profile `Count`, `Admitted`, `Live`, `EachCpus`, `EachMemGib`, `CapCpus`, `CapMemGib` |
 | `Set-AapProfileCounts -Linux -Windows [-ShareMode -LinuxShare -WindowsShare -HostReservePercent -LinuxBackend -LinuxGeneration -WindowsGeneration]` | The two live controls and the shares; returns `Drained` and `Cancelled` |
-| `Set-AapHostMeasurement -HostInfo` | A new host measurement, stored only if the live reservations still fit |
+| `Set-AapHostMeasurement -HostInfo` | A new host measurement. One the live reservations no longer fit is stored clamped to them and refused (`pool_over_live`, with `Clamped` and `Host`) |
 | `Request-AapReservation -Profile linux\|windows [-Cpus -MemGib -MemOverheadMib -DiskGib -IoMbps -ImageGeneration]` | Admission. Returns `Reservation`, `VmName`, `RunnerName` and `IdempotencyKey` |
 | `Register-AapLegacySlots -ManagerStatus <status.json object> -ManagerVersion` or `-ManagerStopped` | Adopts the legacy pool, once |
 | `Get-AapLegacyLimits [-JobCpus -JobMemoryGib]` | What `limits.conf` must say, and the size of the next legacy grant |
@@ -75,7 +86,7 @@ tray yet.
 | refused | `generation` | A VM request not on the profile's active generation |
 | refused | `unresolved_unknown` | An unknown VM or folder has no slot yet |
 | refused | `resize_waits` | A heartbeat quarantine, or a VM still creating without a vm id, would have to leave admission. Retry next tick |
-| refused | `pool_over_live` | New settings or a new host measurement cannot hold the live reservations |
+| refused | `pool_over_live` | New settings cannot hold the live reservations, and nothing changed. Or a new host measurement cannot hold them: then the host was stored clamped to them (see P12 item 3) |
 | refused | `legacy_status_stale`, `legacy_over_count`, `legacy_over_share`, `legacy_over_pool` | Adoption refused. `Target` carries the most `limits.conf` may grant |
 | refused | `illegal_edge`, `invalid_proof`, `not_found`, `bad_request` | The caller's request is wrong |
 | ignored | `stale_generation` | The lease is not the slot's live one (a late `job_done`, an old heartbeat) |
@@ -86,15 +97,26 @@ tray yet.
 1. **Import and deploy.** Import `capacity\AapCapacity.psm1` from the supervisor folder. P19
    copies `supervisor\capacity\` beside `aap-runner-supervisor.ps1`.
 2. **Create the folder at install (P19), not on first use.** Use owner Administrators, full
-   control for SYSTEM and Administrators, inheritance off, and no entry for the operator. The
-   module accepts operator read, as the contract allows. But any unelevated process that can read
-   `allocator.lock` can open it with no sharing and make every allocator call wait 30 s and
-   fail. The tray reads `status.v5.json` instead.
+   control for SYSTEM and Administrators, inheritance off, and no entry for anyone else. The
+   module refuses read for any other SID, the operator included. A reader could open
+   `allocator.lock` with no sharing and make every allocator call wait 30 s and fail. It could
+   also hold `allocator.json` open and make the replace fail. The tray reads `status.v5.json`
+   instead.
 3. **Start order.** Run these before the first admission:
    1. `Initialize-AapAllocator`, with the measured host. `cpu_cores` is logical CPUs.
       `mem_gib` is RAM. `disk_gib` is the image-root free space minus one `replacement_gib`, and
       minus `staging_gib` while a build runs. `io_mbps` is 0 until measured.
       `control_distro_mem_gib` is the control VM's resident memory.
+      - An `invalid_state` here means `allocator.json` was lost while files of a running pool
+        remain. Stop, show status `error`, and leave the restore to the owner.
+      - Later measurements go through `Set-AapHostMeasurement`. On `pool_over_live` it has
+        stored the host clamped to the live reservations: disk and IO up to their sums, CPUs up,
+        and the control VM's memory down, then RAM up. Each value moves the least that still
+        holds the live reservations.
+      - Disk, IO and the memory pool are then exactly full. In `even` mode each admitted runner
+        must keep its share, and the share is computed from the pool. So a clamped CPU or RAM
+        pool can still leave room on paper. Admit nothing while the last measurement was
+        refused, and show the reason in `detail`.
    2. `Invoke-AapReconcile` with the providers' `-Inventory` and `-BrokerStatus`. This repairs a
       reservation a crashed predecessor persisted before the supervisor asks for another one,
       so it is never counted twice.
@@ -116,6 +138,9 @@ tray yet.
 6. **`limits.conf`.** Write `RunnerCount`, `JobCpus` and `JobMemoryGib` from
    `Get-AapLegacyLimits` when they differ.
    - `Stop = $true`: drain and stop the manager, and write no `limits.conf` with 0.
+   - Expect `Stop = $true` in `even` mode whenever a count increase drains every admitted legacy
+     slot. The larger total shrinks each runner's share, so slots granted at the old share leave
+     admission. Stop, then grant again at the new share once they are released (P16).
    - Once the unit is inactive, call `Update-AapHeartbeat -ManagerStopped`.
 7. **Reconcile every 10 minutes.**
    - `Actions` with `destroy`: the provider destroys, then calls `Complete-AapTeardown`.
@@ -158,7 +183,10 @@ tray yet.
    on it.
 5. **Quarantines.**
    - Hostile reply: `-State quarantined -QuarantineKind hostile_guest -Reason ...`, then destroy.
-     The quarantine is final; heartbeats are ignored.
+     This works from any guest state, including a `heartbeat` or `crash` quarantine. The
+     quarantine is final, and heartbeats are ignored (`quarantine_final`).
+   - `busy -> deleting` is not offered. A hostile reply goes through `quarantined`. A busy job
+     otherwise ends through `collecting`.
    - Teardown failed after the retries: from `deleting`, `-QuarantineKind teardown_failed`.
    - Unreadable journal: `-QuarantineKind crash`.
 6. **Cancelled boot.** A resize may move a `creating` VM that has a `vm_id` to `deleting`. If a
@@ -168,6 +196,10 @@ tray yet.
    - `vms` lists every VM named `^aap-(w|l)-[1-5]-`.
    - `folders` lists the ids that own a `clones\` or `scratch\` folder.
    - `journaled` lists the ids with any journal record.
+   - **Throw on any listing error.** Never return a partial list. Reconcile treats a returned
+     inventory as complete. A VM missing from it is moved to `deleting`, and a `creating`
+     reservation without a VM, folder or journal is reconciled as never registered. A throw makes
+     the whole reconcile return `error` and write nothing.
 8. **`-BrokerStatus`** is `param($Reservation)` and returns `@{ status = 'online' | 'offline' |
    'absent'; busy = $true | $false; job_ended = $true | $false }`, read with the broker's
    read-only `status_request`. Return `$null`, or throw, when the broker is unavailable.
@@ -224,7 +256,10 @@ tray yet.
    `Set-AapSlotState` does not offer it.
 2. **`hostile_guest`.** Rule 10 forbids a quarantine kind on `deleting`. So the slot goes to
    `quarantined` (kind `hostile_guest`, final, never back to service), then to `deleting` or
-   straight to `reconciled` with a proof.
+   straight to `reconciled` with a proof. ARCHITECTURE.md's `busy --> deleting: hostile guest
+   reply` edge is therefore not offered by `Set-AapSlotState`. A `heartbeat` or `crash`
+   quarantine may turn into `hostile_guest`; this is the only quarantine-to-quarantine edge.
+   Reconcile alone moves a busy slot whose VM is gone straight to `deleting`.
 3. **Wall clock.** `allocator.json` has no lease issue time, so the wall clock counts from
    `acquired_at`, which is earlier: the flag never comes later than the contract asks. Behaviour
    follows `allocator.md`: a busy runner is never destroyed. The contracts README's "wall clock +
