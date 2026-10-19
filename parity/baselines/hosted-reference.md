@@ -3,7 +3,7 @@
 How to capture the real GitHub-hosted "Set up job" image identity for each certified profile, and what
 counts as valid evidence. Facts were fetched on 2026-10-19. Source IDs are defined at the end.
 
-**Status: captured 2026-10-19.** Windows run 39303666617 succeeded. Ubuntu run 39303673044 failed at the privilege step (`sysctl vm.mmap_rnd_bits` is denied to the unprivileged user), so it holds the identity, hardware and user only. Both reported the frozen image versions. Logs: `windows-2025-vs2026-x64/sources/hosted-capture-39303666617.log` and `ubuntu-24.04-x64/sources/hosted-capture-39303673044.log`. Observed values are in each profile README, section "Observed on the hosted reference". The Ubuntu workflow needs a one-line fix and a re-run.
+**Status: captured 2026-10-19.** Windows run 39303666617 succeeded. Ubuntu run 39303673044 failed at the privilege step (`sysctl vm.mmap_rnd_bits` is denied to the unprivileged user); after the fix merged, Ubuntu run 39305649952 succeeded in full. Both reported the frozen image versions. Logs: `windows-2025-vs2026-x64/sources/hosted-capture-39303666617.log`, `ubuntu-24.04-x64/sources/hosted-capture-39303673044.log` (partial) and `ubuntu-24.04-x64/sources/hosted-capture-39305649952.log`. Observed values are in each profile README, section "Observed on the hosted reference".
 
 **Original status line:** P01 wrote the capture procedure and the inert workflows. No hosted job was
 dispatched, so no observed image version string exists yet. The coordinator or owner must dispatch the two

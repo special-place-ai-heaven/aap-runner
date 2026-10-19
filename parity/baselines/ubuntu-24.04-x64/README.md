@@ -28,7 +28,7 @@ Files in this directory: `inventory.json` (machine readable, every Readme entry)
 | Azure source image (build input) | `canonical:ubuntu-24_04-lts:server`, OS disk 75 GB, selected by the key `ubuntu24`. The pipeline value for the key is not in the repository. | U14 |
 | Build VM size (build time, not hosted runtime) | `Standard_D4s_v4` | U14 |
 | Runner application version | `2.337.0` (observed 2026-10-19) | R1 |
-| Hosted capture of the "Set up job" lines | Captured (run partial). Image and version equal the frozen values. See "Observed on the hosted reference". | R1 |
+| Hosted capture of the "Set up job" lines | Captured (run 2 complete, run 1 partial). Image and version equal the frozen values. See "Observed on the hosted reference". | R1, R2 |
 
 ### Pin drift, resolved by pinning to the build commit
 
@@ -331,13 +331,13 @@ Windows features. They exist only in the Windows Readme.
 content lines in Readme: 255, covered by entries: 255
 Result: OK, all counts and line coverage match (exit code 0).
 
-## Observed on the hosted reference (run 39303673044, partial)
+## Observed on the hosted reference (run 39303673044 partial; run 39305649952 complete)
 
 Source R1: [https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303673044](https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303673044), workflow `hosted-reference-ubuntu-24.04`, label `ubuntu-24.04`, dispatched
 2026-10-19T18:34:50Z from commit `f682e03a4386fd52010fb9640c41c50fad67de75`, repository public. **Conclusion: failure.** The
 step "User, privileges, limits" exited 1 because `sysctl vm.mmap_rnd_bits` is denied for the unprivileged user, and the six
 later steps were skipped. The inert copy of the workflow under `reference-workflows/` now ends that command with `|| true`.
-The copy in `.github/workflows` still needs the same one-line fix and a second run. Raw log:
+The fix merged to main (PR 27) and run 39305649952 completed (below). Raw log:
 `sources/hosted-capture-39303673044.log`. Nothing scrubbed.
 
 | Item | Observed |
@@ -351,9 +351,31 @@ The copy in `.github/workflows` still needs the same one-line fix and a second r
 | User and privileges | `uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),118(docker),999(systemd-journal)`. Passwordless sudo: yes. |
 | Limits and sysctls | `ulimit -n` 65536, `ulimit -s` 16384. `vm.max_map_count=262144`, `fs.inotify.max_user_watches=655360`, `fs.inotify.max_user_instances=1280`. `vm.mmap_rnd_bits` unreadable without privilege. |
 
-NOT FETCHED (steps skipped by the failure): allow-listed environment, PATH order, shell versions, service states,
-Docker state and image list, tool cache layout, `read_ahead_kb`, root mount options. Keep these NOT VERIFIED until the
-fixed workflow is re-run.
+### Complete capture (run 39305649952)
+
+Source R2: [https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39305649952](https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39305649952), same workflow and label, dispatched 2026-10-19T18:48:40Z from main commit
+`5272fb36005c1c4b00fdda4bce27f795ef4743e1` after the `|| true` fix merged. **Conclusion: success, all 11 steps green.**
+Raw log: `sources/hosted-capture-39305649952.log`. Nothing scrubbed; the environment step is an allow-list of names and
+no allow-listed variable carries a credential. The "Set up job" identity equals run 1: `Image: ubuntu-24.04`,
+`Version: 20261012.334.1`, runner `2.337.0`, Hosted Compute Agent `20261012.601`, `RUNNER_ENVIRONMENT=github-hosted`.
+
+| Item | Observed in R2 |
+|---|---|
+| Root mount | `rw,relatime,discard,journal_async_commit,nobarrier,errors=remount-ro,commit=30,data=writeback`. |
+| Block device read-ahead | `read_ahead_kb` values present: 128 and 2560 (the two distinct values across `/sys/block/*`). |
+| Sysctl | `vm.mmap_rnd_bits`: `permission denied` for the unprivileged user, so still NOT VERIFIED. |
+| Environment (allow-list) | `ImageOS=ubuntu24`, `ImageVersion=20261012.334.1`, `AGENT_TOOLSDIRECTORY=RUNNER_TOOL_CACHE=/opt/hostedtoolcache`, `ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/opt/actionarchivecache`, `JAVA_HOME=JAVA_HOME_17_X64=/usr/lib/jvm/temurin-17-jdk-amd64`, `GOROOT_1_24_X64=/opt/hostedtoolcache/go/1.24.13/x64`, `VCPKG_INSTALLATION_ROOT=/usr/local/share/vcpkg`, `CONDA=/usr/share/miniconda`, `ANDROID_HOME=/usr/local/lib/android/sdk`, `ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/27.3.13750724`, `CHROMEWEBDRIVER=/usr/local/share/chromedriver-linux64`, `EDGEWEBDRIVER=/usr/local/share/edge_driver`, `GECKOWEBDRIVER=/usr/local/share/gecko_driver`, `SELENIUM_JAR_PATH=/usr/share/java/selenium-server.jar`, `DOTNET_NOLOGO=1`, `DOTNET_MULTILEVEL_LOOKUP=0`, `DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1`, `DEBIAN_FRONTEND=noninteractive`, `ACCEPT_EULA=Y`, `XDG_CONFIG_HOME=/home/runner/.config`, `PIPX_BIN_DIR=/opt/pipx_bin`, `PIPX_HOME=/opt/pipx`, `NVM_DIR=/home/runner/.nvm`, `GRADLE_HOME=/usr/share/gradle-9.8.1`, `ANT_HOME=/usr/share/ant`, `USE_BAZEL_FALLBACK_VERSION=silent:`, `HOMEBREW_NO_AUTO_UPDATE=1`, `CHROME_BIN=/usr/bin/google-chrome`, `SWIFT_PATH=/usr/share/swift/usr/bin`. Unset: `BAZEL_VERSION`, `VCPKG_FORCE_SYSTEM_BINARIES`. |
+| PATH order (job process, identical to `/etc/environment`) | 0 `/snap/bin`, 1 `/home/runner/.local/bin`, 2 `/opt/pipx_bin`, 3 `/home/runner/.cargo/bin`, 4 `/home/runner/.config/composer/vendor/bin`, 5 `/usr/local/.ghcup/bin`, 6 `/home/runner/.dotnet/tools`, 7 `/usr/local/sbin`, 8 `/usr/local/bin`, 9 `/usr/sbin`, 10 `/usr/bin`, 11 `/sbin`, 12 `/bin`, 13 `/usr/games`, 14 `/usr/local/games`, 15 `/snap/bin`. |
+| Shells and tools | GNU bash 5.2.21(1)-release; `dash --version` is an illegal option (dash has no version flag, so dash is only known to exist as the binary that answered); PowerShell 7.6.6; Python 3.12.3; Node v22.23.3; Docker 28.0.4 build b8034c0; gcc 13.3.0 (Ubuntu 13.3.0-6ubuntu2~24.04.1); Ubuntu clang 18.1.3 (1ubuntu1). |
+| Services (enabled / active) | `docker` enabled/active; `snapd` enabled/inactive; `haveged` enabled/active; `postgresql`, `mysql`, `apache2`, `nginx`, `apt-daily.timer`, `apt-daily-upgrade.timer` all disabled/inactive; `unattended-upgrades` not-found/inactive. |
+| Docker | client and server 28.0.4. `/run/docker.sock` is `srw-rw---- root docker`. Six images are present although the Readme lists none, all `:latest`: `ghcr.io/github/gh-aw-firewall/agent`, `ghcr.io/github/gh-aw-firewall/api-proxy`, `ghcr.io/github/gh-aw-firewall/squid`, `ghcr.io/github/gh-aw-mcpg`, `ghcr.io/github/github-mcp-server`, `ghcr.io/dependabot/dependabot-updater-core`. Image IDs are in the log. |
+| Tool cache (`/opt/hostedtoolcache`) | CodeQL 2.27.2; Java_Temurin-Hotspot_jdk 8.0.504-1, 11.0.32-1, 17.0.20-1, 21.0.12-1, 25.0.4-1; PyPy 3.9.19, 3.10.16, 3.11.16; Python 3.10.22, 3.11.17, 3.12.15, 3.13.16, 3.14.8; Ruby 3.2.11, 3.3.12, 3.4.11, 4.0.7; agentic-workflow-firewall-js 0.28.51, 0.28.52, 0.28.53; copilot-cli 1.0.95; go 1.24.13, 1.25.14, 1.26.9; node 22.23.3, 24.21.0. |
+| Action archive cache (`/opt/actionarchivecache`) | World-writable directories (`drwxrwxrwx+`, owner `runner`, dated Oct 5): `actions_cache`, `actions_checkout`, `actions_setup-node`, `actions_setup-python`, `actions_upload-artifact`, `github_codeql-action`, `github_gh-aw-actions`. |
+
+Notes: the swap is 3 GiB (the build script configures 4096 MB), six floating `:latest` images are in the Docker store, and the
+default `python3` is the system 3.12.3 while the tool cache holds Python 3.10 to 3.14, the range the build-commit Readme records.
+Still NOT VERIFIED on this profile: `vm.mmap_rnd_bits`, and per-package versions beyond the ones printed above (the
+Readme inventory remains the source for those).
 
 ## Upstream image tests (part of the baseline)
 
@@ -367,8 +389,8 @@ larger than the file list suggests.
 ## Open items for the coordinator
 
 1. Pin drift is resolved by pinning to the build commit (above). Nothing open.
-2. Hosted "Set up job" identity captured (R1). The run failed after the privilege step; fix the workflow and re-run for the rest.
-3. `haveged` state, PATH, environment, services, `docker images` and tool cache layout remain NOT VERIFIED until the re-run.
+2. Hosted capture complete (R1 partial, R2 complete). Only `vm.mmap_rnd_bits` stays NOT VERIFIED (denied to the unprivileged user).
+3. Nothing else open for the hosted capture.
 4. Licensed and unreproducible inputs are listed in `inputs.md`. The Ubuntu profile has fewer licensed components than
    Windows, but it depends on the Azure Marketplace Canonical image, many `latest` vendor feeds and six floating
    `:latest` container images.
@@ -398,5 +420,6 @@ larger than the file list suggests.
 - G1: [pin commit](https://api.github.com/repos/actions/runner-images/commits/ee1ff4569e381a9649b400338bdc8ceb7e18a80e).
 - G2: [release ubuntu24/20261012.334](https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334) and the releases list, read through the API on 2026-10-19.
 - G3: [compare 7e7dc1b...ee1ff45](https://github.com/actions/runner-images/compare/7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe...ee1ff4569e381a9649b400338bdc8ceb7e18a80e) (histories diverge; merge base `2c421200c9e6873283a7b1d63bb122bc906139a1`, pin is 17 commits ahead, release commit 1 commit ahead).
-- R1: [https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303673044](https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303673044), log `sources/hosted-capture-39303673044.log`.
+- R1: [https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303673044](https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303673044), log `sources/hosted-capture-39303673044.log` (failed at the privilege step).
+- R2: [https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39305649952](https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39305649952), log `sources/hosted-capture-39305649952.log` (success).
 - H1: `../hosted-reference.md`. H2: GitHub docs `github/docs` commit `497671ebee089b38c8dc13ee9d09422405556ef3`, `content/actions/reference/runners/github-hosted-runners.md` and `data/reusables/actions/supported-github-runners.md`.

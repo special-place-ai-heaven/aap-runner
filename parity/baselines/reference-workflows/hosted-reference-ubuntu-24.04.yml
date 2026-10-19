@@ -36,7 +36,7 @@ jobs:
           id
           sudo -n true && echo "passwordless_sudo=yes" || echo "passwordless_sudo=no"
           ulimit -n; ulimit -s
-          sysctl vm.max_map_count fs.inotify.max_user_watches fs.inotify.max_user_instances vm.mmap_rnd_bits || true
+          sysctl vm.max_map_count fs.inotify.max_user_watches fs.inotify.max_user_instances vm.mmap_rnd_bits 2>&1 || true
           cat /sys/block/*/queue/read_ahead_kb 2>/dev/null | sort -u
           findmnt --noheadings --output OPTIONS --target /
 
