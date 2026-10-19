@@ -1,6 +1,6 @@
 # GitHub runner build parity implementation plan
 
-Revision 2 — 2026-10-18. **Planning only; no implementation or rollout started.**
+Revision 3 — 2026-10-19. Execution authorized (D0); P00 implemented. Live pool, lab and cutover gates unchanged.
 
 ## Outcome and evidence standard
 
@@ -248,6 +248,8 @@ the affected task starts; missing facts do not block independent planning work.
 | D3 | Exact hosted baseline image/release and retrievable inputs/source restrictions recorded | Image promotion and comparison evidence |
 | D4 | zccache release artifacts verified and per-platform compiler matrix measured | Enabling cache wrappers for that mode; direct compiler path stays required |
 | D5 | Owner explicitly approves canary/cutover plan after all prior evidence and cleanup | Any change to the live installation |
+
+Gate status 2026-10-19: D0 authorized. D2 partially met — Hyper-V is enabled and running on the host; Windows Server 2025 media, activation and an explicit lab budget are still open. The owner's priority is the native Windows profile: after P02, dispatch the Windows chain first. Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop).
 
 Do not purchase services/media, enable host features, alter networking, create test
 VMs or dispatch paid reference workloads merely because a plan mentions them.
