@@ -1,0 +1,89 @@
+capture	Set up job	﻿2026-10-19T18:34:54.2852818Z Current runner version: '2.337.0'
+capture	Set up job	2026-10-19T18:34:54.2880603Z ##[group]Runner Image Provisioner
+capture	Set up job	2026-10-19T18:34:54.2881604Z Hosted Compute Agent
+capture	Set up job	2026-10-19T18:34:54.2882254Z Version: 20261012.601
+capture	Set up job	2026-10-19T18:34:54.2882911Z Commit: f3dc54e1fb89da6852db922499a0233137369e1d
+capture	Set up job	2026-10-19T18:34:54.2883717Z Build Date: 2026-10-12T17:48:21Z
+capture	Set up job	2026-10-19T18:34:54.2884481Z Worker ID: {df55a824-ead6-457c-b2fb-3c5c142ba76e}
+capture	Set up job	2026-10-19T18:34:54.2885364Z Region: northcentralus
+capture	Set up job	2026-10-19T18:34:54.2886012Z Cloud: Azure
+capture	Set up job	2026-10-19T18:34:54.2886586Z ##[endgroup]
+capture	Set up job	2026-10-19T18:34:54.2888384Z ##[group]Operating System
+capture	Set up job	2026-10-19T18:34:54.2889057Z Ubuntu
+capture	Set up job	2026-10-19T18:34:54.2889625Z 24.04.5
+capture	Set up job	2026-10-19T18:34:54.2890237Z LTS
+capture	Set up job	2026-10-19T18:34:54.2890791Z ##[endgroup]
+capture	Set up job	2026-10-19T18:34:54.2891403Z ##[group]Runner Image
+capture	Set up job	2026-10-19T18:34:54.2892143Z Image: ubuntu-24.04
+capture	Set up job	2026-10-19T18:34:54.2892764Z Version: 20261012.334.1
+capture	Set up job	2026-10-19T18:34:54.2893926Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md
+capture	Set up job	2026-10-19T18:34:54.2895771Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334
+capture	Set up job	2026-10-19T18:34:54.2896819Z ##[endgroup]
+capture	Set up job	2026-10-19T18:34:54.2898016Z ##[group]GITHUB_TOKEN Permissions
+capture	Set up job	2026-10-19T18:34:54.2900344Z Metadata: read
+capture	Set up job	2026-10-19T18:34:54.2900968Z ##[endgroup]
+capture	Set up job	2026-10-19T18:34:54.2903149Z Secret source: Actions
+capture	Set up job	2026-10-19T18:34:54.2904347Z Cache mode: write
+capture	Set up job	2026-10-19T18:34:54.2905193Z Prepare workflow directory
+capture	Set up job	2026-10-19T18:34:54.3308226Z Prepare all required actions
+capture	Set up job	2026-10-19T18:34:54.3388172Z Complete job name: capture
+capture	Image identity (same data the Set up job > Runner Image group prints)	﻿2026-10-19T18:34:54.4327154Z ##[group]Run cat /imagegeneration/imagedata.json
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.4328221Z ^[[36;1mcat /imagegeneration/imagedata.json^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.4328965Z ^[[36;1mecho "ImageOS=$ImageOS"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.4329690Z ^[[36;1mecho "ImageVersion=$ImageVersion"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.4330944Z ^[[36;1mecho "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH RUNNER_ENVIRONMENT=$RUNNER_ENVIRONMENT"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.4332077Z ^[[36;1m. /etc/os-release && echo "os=$PRETTY_NAME"^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.4332855Z ^[[36;1muname -r^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.4333469Z ^[[36;1msystemctl --version | head -1^[[0m
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5087210Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5088252Z ##[endgroup]
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5313080Z [
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5313846Z   {
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5314559Z     "group": "Operating System",
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5315458Z     "detail": "Ubuntu\n24.04.5\nLTS"
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5316328Z   },
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5316957Z   {
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5317869Z     "group": "Runner Image",
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5321028Z     "detail": "Image: ubuntu-24.04\nVersion: 20261012.334.1\nIncluded Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md\nImage Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334"
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5324297Z   }
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5325008Z ]
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5325695Z ImageOS=ubuntu24
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5326360Z ImageVersion=20261012.334.1
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5327577Z RUNNER_OS=Linux RUNNER_ARCH=X64 RUNNER_ENVIRONMENT=github-hosted
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5328739Z os=Ubuntu 24.04.5 LTS
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5329481Z 6.17.0-1022-azure
+capture	Image identity (same data the Set up job > Runner Image group prints)	2026-10-19T18:34:54.5335322Z systemd 255 (255.4-1ubuntu8.17)
+capture	Hardware class	﻿2026-10-19T18:34:54.5461979Z ##[group]Run echo "nproc=$(nproc)"
+capture	Hardware class	2026-10-19T18:34:54.5462604Z ^[[36;1mecho "nproc=$(nproc)"^[[0m
+capture	Hardware class	2026-10-19T18:34:54.5463214Z ^[[36;1mgrep -E 'MemTotal|SwapTotal' /proc/meminfo^[[0m
+capture	Hardware class	2026-10-19T18:34:54.5464065Z ^[[36;1mdf -h / /mnt 2>/dev/null^[[0m
+capture	Hardware class	2026-10-19T18:34:54.5464636Z ^[[36;1mlsblk -d -o NAME,SIZE,ROTA,TYPE^[[0m
+capture	Hardware class	2026-10-19T18:34:54.5531275Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	Hardware class	2026-10-19T18:34:54.5531968Z ##[endgroup]
+capture	Hardware class	2026-10-19T18:34:54.5825933Z nproc=4
+capture	Hardware class	2026-10-19T18:34:54.5839868Z MemTotal:       16373452 kB
+capture	Hardware class	2026-10-19T18:34:54.5840724Z SwapTotal:       3145724 kB
+capture	Hardware class	2026-10-19T18:34:54.5857792Z Filesystem      Size  Used Avail Use% Mounted on
+capture	Hardware class	2026-10-19T18:34:54.5858624Z /dev/root       145G   59G   86G  41% /
+capture	Hardware class	2026-10-19T18:34:54.5859506Z /dev/root       145G   59G   86G  41% /
+capture	Hardware class	2026-10-19T18:34:54.5887488Z NAME  SIZE ROTA TYPE
+capture	Hardware class	2026-10-19T18:34:54.5888118Z sda   150G    1 disk
+capture	User, privileges, limits	﻿2026-10-19T18:34:54.5934202Z ##[group]Run id
+capture	User, privileges, limits	2026-10-19T18:34:54.5934699Z ^[[36;1mid^[[0m
+capture	User, privileges, limits	2026-10-19T18:34:54.5935373Z ^[[36;1msudo -n true && echo "passwordless_sudo=yes" || echo "passwordless_sudo=no"^[[0m
+capture	User, privileges, limits	2026-10-19T18:34:54.5936180Z ^[[36;1mulimit -n; ulimit -s^[[0m
+capture	User, privileges, limits	2026-10-19T18:34:54.5937260Z ^[[36;1msysctl vm.max_map_count fs.inotify.max_user_watches fs.inotify.max_user_instances vm.mmap_rnd_bits^[[0m
+capture	User, privileges, limits	2026-10-19T18:34:54.5938330Z ^[[36;1mcat /sys/block/*/queue/read_ahead_kb 2>/dev/null | sort -u^[[0m
+capture	User, privileges, limits	2026-10-19T18:34:54.5939114Z ^[[36;1mfindmnt --noheadings --output OPTIONS --target /^[[0m
+capture	User, privileges, limits	2026-10-19T18:34:54.6004505Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+capture	User, privileges, limits	2026-10-19T18:34:54.6005192Z ##[endgroup]
+capture	User, privileges, limits	2026-10-19T18:34:54.6108133Z uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),118(docker),999(systemd-journal)
+capture	User, privileges, limits	2026-10-19T18:34:54.6185666Z passwordless_sudo=yes
+capture	User, privileges, limits	2026-10-19T18:34:54.6186494Z 65536
+capture	User, privileges, limits	2026-10-19T18:34:54.6187196Z 16384
+capture	User, privileges, limits	2026-10-19T18:34:54.6196624Z sysctl: permission denied on key 'vm.mmap_rnd_bits'
+capture	User, privileges, limits	2026-10-19T18:34:54.6198065Z vm.max_map_count = 262144
+capture	User, privileges, limits	2026-10-19T18:34:54.6198845Z fs.inotify.max_user_watches = 655360
+capture	User, privileges, limits	2026-10-19T18:34:54.6199718Z fs.inotify.max_user_instances = 1280
+capture	User, privileges, limits	2026-10-19T18:34:54.6211616Z ##[error]Process completed with exit code 1.
+capture	Complete job	﻿2026-10-19T18:34:54.6351412Z Cleaning up orphan processes
