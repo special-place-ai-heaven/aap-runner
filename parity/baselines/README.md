@@ -23,7 +23,7 @@ planning candidate only. Both toolset versions remain under each profile's `sour
    while the Readmes record 3.10 to 3.14, and the Windows template orders `Install-LLVM.ps1` differently. The baseline
    is the build commit, where these agree with the Readmes. See "Pin drift" in each profile README.
 2. **The hosted fleet has already moved on.** Newer releases than both pinned images exist (2026-10-19). Moving
-   labels cannot select the pinned releases. The hosted "Set up job" capture is still open.
+   labels cannot select the pinned releases. The hosted "Set up job" capture ran on 2026-10-19: both labels still served the frozen images (`20261007.264.1`, `20261012.334.1`). Windows is fully captured. Ubuntu is partial and needs a workflow fix and re-run.
 3. **Label conflict (finding).** The runner-images README at the candidate lists `windows-latest` and `windows-2025` on the VS2026
    row. The GitHub docs source links them to the VS2022 image. Certification uses `windows-2025-vs2026` and `ubuntu-24.04` only.
 4. **Unreproducible and licensed inputs** are listed in each `inputs.md` (Azure Marketplace base images, Windows

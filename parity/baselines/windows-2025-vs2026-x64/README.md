@@ -25,8 +25,8 @@ Files in this directory: `inventory.json` (machine readable, every Readme entry)
 | Newest release on 2026-10-19 | `win25-vs2026/20261018.275`, published 2026-10-19T16:55Z. The pin is already one release behind the fleet. | G2 |
 | Azure source image (build input) | `MicrosoftWindowsServer:WindowsServer:2025-Datacenter-g2`, OS disk 150 GB, selected by the key `win25-vs2026`. The pipeline value for the key is not in the repository. | S2, S7 |
 | Build VM size (build time, not hosted runtime) | `Standard_F8s_v2` | S7 |
-| Runner application version | NOT IN PINNED SOURCES. Capture from `Set up job` (see `../hosted-reference.md`). | n/a |
-| Hosted capture of the "Set up job" lines | NOT CAPTURED yet. | `../hosted-reference.md` |
+| Runner application version | `2.337.0` (observed 2026-10-19) | R1 |
+| Hosted capture of the "Set up job" lines | Captured. Image and version equal the frozen values. See "Observed on the hosted reference". | R1 |
 
 ### Pin drift, resolved by pinning to the build commit
 
@@ -52,8 +52,8 @@ Both versions of the template and toolset are stored under `sources/` (`pin/` an
 | Public (standard Windows x64) | 4 | 16 GB | 14 GB | H2 |
 | Private (standard Windows x64) | 2 | 8 GB | 14 GB | H2 |
 
-The AAP consumer is private (see `../consumers.md`). The 14 GB figure is the documented value. Observe the
-real free space on `C:` and `D:` with the reference workflow. The build image OS disk is 150 GB (S7).
+The AAP consumer is private (see `../consumers.md`). The 14 GB figure is the documented value. Observed on the public-repo
+runner (R1): 4 logical processors, 16 GiB RAM, `C:` 33.0 GB free of about 160 GB, `D:` 157.9 GB free. The build image OS disk is 150 GB (S7).
 
 ## Default user, privileges and lifecycle
 
@@ -62,11 +62,11 @@ real free space on `C:` and `D:` with the reference workflow. The build image OS
 - Every standard hosted runner is a new VM per job (H2).
 - Build user `installer` (variable default) is created with administrator rights for provisioning and is
   deleted with its profile at the end of `Configure-User.ps1` on Windows Server 2025 (S7, S5).
-- The runtime user name is not in the pinned sources. Observe it with the reference workflow.
-- Local execution policy is `Unrestricted` (Configure-BaseImage.ps1) (S4). `$ErrorActionPreference="Stop"`
+- The runtime user is `runneradmin`, an administrator (observed, R1).
+- The build script sets local execution policy `Unrestricted` (Configure-BaseImage.ps1) (S4). The hosted image reports `RemoteSigned` (R1). `$ErrorActionPreference="Stop"`
   is appended to the `AllUsersAllHosts` PowerShell profile (S4). Long paths are enabled (S4).
 - Windows Defender real-time protection and related features are disabled, and Defender is set to
-  passive mode when the policy key exists (Configure-WindowsDefender.ps1) (S8). Windows Update is disabled
+  passive mode when the policy key exists (Configure-WindowsDefender.ps1) (S8). The hosted `WinDefend` service is Running, Automatic (R1). Windows Update is disabled by policy
   (S4, S9).
 - Telemetry and customer-experience policies are disabled by registry (Configure-System.ps1) (S9).
   `C:\Windows\Temp` is granted `Users:F` for MSI (S9). Dynamic port range is 49152, 16384 ports, for IPv4 and IPv6,
@@ -154,14 +154,14 @@ Java (S1 table): 8.0.504+1, 11.0.32+101, **17.0.20+101 (default)**, 21.0.12+101.
 | MongoDB 7.0.43.0 | Stopped, Disabled | S1 |
 | Apache 2.4.55 | Stopped (port 80); script sets Disabled | S1, Install-Apache.ps1 |
 | Nginx 1.31.6 | Stopped (port 80); script sets Disabled | S1, Install-Nginx.ps1 |
-| Windows Update `wuauserv`, `DiagTrack`, `dmwappushservice`, `SysMain`, `gupdate`, `gupdatem` | Stopped, Disabled. `PcaSvc` and `StorSvc` are left alone on Windows Server 2025. | S9 |
+| Windows Update `wuauserv`, `DiagTrack`, `dmwappushservice`, `SysMain`, `gupdate`, `gupdatem` | Build script: Stopped, Disabled. `PcaSvc` and `StorSvc` are left alone on Windows Server 2025. Observed: `wuauserv` Running, Manual; `DiagTrack` and `SysMain` Stopped, Disabled. | S9, R1 |
 | Windows Update Medic (`WaaSMedicSvc`) | Start type 4 (disabled) | S4 |
 | `wlansvc` | Manual, stopped if running | S2 template step 7 |
-| Windows Defender | Real-time protection and many features disabled, passive mode when the policy key exists | S8 |
+| Windows Defender | Build script: real-time protection and many features disabled, passive mode when the policy key exists. Observed: `WinDefend` Running, Automatic; preference values not read. | S8, R1 |
 | Scheduled tasks | Many Windows, Visual Studio and Azure tasks disabled (list in Configure-System.ps1) | S9 |
 | WSL | WSL1 enabled; default WSL2 version `3.0.1.0` | S1 |
 | Windows features enabled | Containers, WSL, VirtualMachinePlatform, `NET-Framework-45-Features` and `NET-Framework-Features` (all sub-features), Client-ProjFS, Hyper-V (all sub-features), HypervisorPlatform, Hyper-V-PowerShell, Wireless-Networking | S3 `windowsFeatures` |
-| Docker engine | Moby 29.7.2 from the static Docker CE build plus a pinned Install-DockerCE script. Start state NOT IN PINNED SOURCES; observe. | S1, Install-Docker.ps1 |
+| Docker engine | Moby 29.7.2 from the static Docker CE build plus a pinned Install-DockerCE script. Observed: service `docker` Running, Automatic; client and server 29.7.2. | S1, Install-Docker.ps1, R1 |
 | Cached Docker images | None. Image pulls are skipped on Windows Server 2025 and the toolset list is empty. | Install-Docker.ps1, S3 |
 
 ## What is explicitly not present
@@ -173,7 +173,7 @@ Java (S1 table): 8.0.504+1, 11.0.32+101, **17.0.20+101 (default)**, 21.0.12+101.
 - No TortoiseSVN on Windows Server 2025 (comment in Configure-User.ps1).
 - No cached Docker images (above). No Visual Studio developer environment in the global environment (above).
 - Miniconda and MSYS2 are not on PATH (S1).
-- No Windows Update, no Defender real-time scanning (above).
+- Windows Update installs are disabled by policy (service Running, Manual). Defender real-time scanning is disabled by the build script; the observed service runs and the preference was not read.
 - Not part of this profile: Windows Server 2022, Windows Server 2025 with Visual Studio 2022, Windows 11 Arm64,
   Ubuntu 26.04 and other architectures. They need their own baseline (PLAN).
 
@@ -368,6 +368,38 @@ and `<br>` table cells count once per version.
 content lines in Readme: 401, covered by entries: 401
 Result: OK, all counts and line coverage match (exit code 0).
 
+## Observed on the hosted reference (run 39303666617)
+
+Source R1: [https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303666617](https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303666617), workflow `hosted-reference-windows-2025-vs2026`, label `windows-2025-vs2026`,
+dispatched 2026-10-19T18:34:47Z from commit `f682e03a4386fd52010fb9640c41c50fad67de75`, repository public, conclusion
+success. Raw log: `sources/hosted-capture-39303666617.log` (nothing scrubbed; the workflow printed only the presence of
+`PGPASSWORD`). Everything in this section is observed, not derived.
+
+| Item | Observed |
+|---|---|
+| Image (Runner Image group) | `Image: windows-2025-vs2026`, `Version: 20261007.264.1`, Included Software `.../blob/win25-vs2026/20261007.264/images/windows/Windows2025-VS2026-Readme.md`, Image Release `.../releases/tag/win25-vs2026%2F20261007.264`. **Equals the frozen identity.** |
+| Operating System group | Microsoft Windows Server 2025, 10.0.26100, Datacenter. `ImageOS=win25-vs2026`, `ImageVersion=20261007.264.1`. |
+| Runner application | `Current runner version: '2.337.0'` |
+| Runner Image Provisioner group | Hosted Compute Agent version `20261002.596`, commit `c3d12f3313a95f25162a1503be624f3b0617f8c0`, build date 2026-10-02T22:28:27Z, region `westcentralus`, cloud Azure |
+| Environment | `RUNNER_OS=Windows`, `RUNNER_ARCH=X64`, `RUNNER_ENVIRONMENT=github-hosted` |
+| Hardware | 4 logical processors, 17174360064 bytes RAM (16 GiB). `C:` 127436206080 used and 33031553024 free bytes (about 160 GB total, 33 GB free). `D:` 3191169024 used and 157868003328 free bytes. The documented 14 GB figure does not describe the real volumes. |
+| Windows PowerShell | 5.1.26100.33438. pwsh 7.6.6. Bash (Git) 5.3.15(2)-release (x86_64-pc-cygwin). |
+| User and privileges | `runnervm0xl3a\runneradmin`, administrator, `ConsentPromptBehaviorAdmin=0`. |
+| Execution policy | LocalMachine `RemoteSigned`; all other scopes Undefined. The build script set `Unrestricted`, so the shipped image differs from the build script. |
+| Visual Studio | Enterprise 2026, `18.10.12224.181` (`VisualStudio/18.10.3+12224.181`), `C:\Program Files\Microsoft Visual Studio\18\Enterprise`, channel `VisualStudio.18.Release`, installed 2026-10-07T22:18:56Z, channel URI `https://aka.ms/vs/18/stable/channel`. |
+| VS developer environment | `VCINSTALLDIR`, `VSINSTALLDIR`, `VSCMD_VER`, `INCLUDE`, `LIB`, `LIBPATH`, `Platform` are all unset. `cl.exe` and `msbuild.exe` are not on PATH. `clang-cl.exe` is `C:\Program Files\LLVM\bin\clang-cl.exe`. `cmake.exe` and `ninja.exe` resolve. **`link.exe` resolves to `C:\Program Files\Git\usr\bin\link.exe` (the GNU coreutils tool), not the MSVC linker.** |
+| Services | `docker` Running, Automatic. `wuauserv` Running, **Manual**. `WinDefend` Running, Automatic. `WSLService` Running, Automatic. `DiagTrack`, `SysMain`, `postgresql-x64-17`, `MongoDB`, `Apache`, `nginx` Stopped, Disabled. `wlansvc` Stopped, Manual. |
+| Docker | client 29.7.2, server 29.7.2. The workflow listed no images (no cached images). |
+| PATH | Process PATH has 73 entries, machine PATH 69. Order is in the raw log. First machine entries: MongoDB, `C:\vcpkg`, zstd, stack, cabal, ghcup, `C:\mingw64\bin`, dotnet, MySQL, R, driver folders, sbt, GitHub CLI, Git `bin`, pipx, npm prefix, Go `bin`, Python `Scripts` then Python 3.12.10, Ruby 3.3.12, OpenSSL, kotlinc, Java 17, ImageMagick, Azure CLI, kind, Chocolatey, then `C:\Windows\system32`. The job process PATH adds `C:\Program Files\PowerShell\7` first and the `runneradmin` `.dotnet\tools` and `.cargo\bin` entries last. |
+| Variables | `AGENT_TOOLSDIRECTORY` and `RUNNER_TOOL_CACHE` are `C:\hostedtoolcache\windows`. `JAVA_HOME` and `JAVA_HOME_17_X64` point into the tool cache (`Java_Temurin-Hotspot_jdk\17.0.20-101\x64`). `GOROOT_1_24_X64`, `ANDROID_NDK_HOME` (27.3.13750724), `PGUSER=postgres`, `PGBIN`, `PGROOT`, `PGDATA`, `PIPX_*`, `DOTNET_*`, `POWERSHELL_UPDATECHECK=Off`, `GCM_INTERACTIVE=Never` match the scripts. `PGPASSWORD` is present (value not printed). |
+| Tool cache layout | `C:\hostedtoolcache\windows`: CodeQL/2.27.1, go 1.24.13 1.25.14 1.26.8, Java_Temurin-Hotspot_jdk 8.0.504-1 11.0.32-101 17.0.20-101 21.0.12-101.0 25.0.4-101.0, node 22.23.3 24.21.0, PyPy 3.9.19 3.10.16, Python 3.10.11 3.11.9 3.12.10 3.13.16 3.14.8, Ruby 3.2.11 3.3.12 3.4.11 4.0.7, stack 3.11.1. Matches the Readme. CodeQL and stack are cached entries the Readme lists only as tools. |
+| Shells | `C:\shells`: `gitbash.exe`, `msys2bash.cmd` (the target column is empty because it is a wrapper file, not a link), `wslbash.exe`. |
+
+Still NOT VERIFIED on this profile: TESTSIGNING after sysprep, Defender real-time preference values (only the service
+state was read), the scheduled-task states, and the full registry settings from the build scripts. The hosted job
+reported the pinned image `20261007.264.1` on 2026-10-19 even though a newer release was published that day, so the
+rollout lags the release date. Do not rely on that staying true.
+
 ## Upstream image tests (part of the baseline)
 
 The image build runs `scripts/tests/RunAll-Tests.ps1` (template step 14) and requires `testResults.xml` (step 15).
@@ -381,9 +413,8 @@ P06/P07 reconcile each test with a probe (S13).
 ## Open items for the coordinator
 
 1. Pin drift is resolved by pinning to the build commit (above). Nothing open.
-2. Hosted "Set up job" identity not captured yet (`../hosted-reference.md`).
-3. Runtime user, Docker start state, TESTSIGNING after sysprep, Windows PowerShell 5.1 version and real free disk are
-   not defined by the pinned sources. Observe them live.
+2. Hosted "Set up job" identity captured (R1). Re-capture before certification.
+3. TESTSIGNING after sysprep and the Defender preference values remain NOT VERIFIED.
 4. Licensed and unreproducible inputs are listed in `inputs.md` (Windows Server 2025 media and activation, the Visual
    Studio 2026 channel, Azure Marketplace image).
 
@@ -406,4 +437,5 @@ P06/P07 reconcile each test with a probe (S13).
 - G1: [pin commit](https://api.github.com/repos/actions/runner-images/commits/ee1ff4569e381a9649b400338bdc8ceb7e18a80e).
 - G2: [release win25-vs2026/20261007.264](https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261007.264) and the releases list, read through the API on 2026-10-19.
 - G3: [compare aee0669...ee1ff45](https://github.com/actions/runner-images/compare/aee0669dd04510a11756664eb77f5630debabed3...ee1ff4569e381a9649b400338bdc8ceb7e18a80e) (histories diverge; merge base `573fa3ad959907712ce8bf6a5f91ab82b03e7f2d`, pin is 15 commits ahead, release commit 1 commit ahead).
+- R1: [https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303666617](https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303666617), log `sources/hosted-capture-39303666617.log`.
 - H1: `../hosted-reference.md`. H2: GitHub docs `github/docs` commit `497671ebee089b38c8dc13ee9d09422405556ef3`, `content/actions/reference/runners/github-hosted-runners.md` and `data/reusables/actions/supported-github-runners.md`.

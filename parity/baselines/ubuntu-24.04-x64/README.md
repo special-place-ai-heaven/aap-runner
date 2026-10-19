@@ -27,8 +27,8 @@ Files in this directory: `inventory.json` (machine readable, every Readme entry)
 | Newest release on 2026-10-19 | `ubuntu24/20261018.339`, published 2026-10-19T11:58Z. The pin is already one release behind the fleet. | G2 |
 | Azure source image (build input) | `canonical:ubuntu-24_04-lts:server`, OS disk 75 GB, selected by the key `ubuntu24`. The pipeline value for the key is not in the repository. | U14 |
 | Build VM size (build time, not hosted runtime) | `Standard_D4s_v4` | U14 |
-| Runner application version | NOT IN PINNED SOURCES. Capture from `Set up job`. | n/a |
-| Hosted capture of the "Set up job" lines | NOT CAPTURED yet. | `../hosted-reference.md` |
+| Runner application version | `2.337.0` (observed 2026-10-19) | R1 |
+| Hosted capture of the "Set up job" lines | Captured (run partial). Image and version equal the frozen values. See "Observed on the hosted reference". | R1 |
 
 ### Pin drift, resolved by pinning to the build commit
 
@@ -55,13 +55,13 @@ release commit.
 | Private (standard Linux x64) | 2 | 8 GB | 14 GB | H2 |
 
 The AAP consumer is private (see `../consumers.md`). The image configures a 4096 MB swap file on the Azure
-resource disk (`/mnt`) through `waagent` settings (U4). Observe real free space and swap with the reference workflow.
+resource disk (`/mnt`) through `waagent` settings (U4). Observed (R1): 4 vCPU, 16 GiB RAM, 3 GiB swap, `/` 145G with 86G free.
 
 ## Default user, privileges and lifecycle
 
 - Linux hosted VMs run with passwordless `sudo` (H2). Every standard hosted runner is a new VM per job (H2).
 - The runtime user name, UID and groups are not in the pinned sources. The build deprovisions with
-  `waagent -force -deprovision+user` (U2). Observe the user with the reference workflow. The current rig image
+  `waagent -force -deprovision+user` (U2). Observed user: `runner`, uid 1001 (R1). The current rig image
   rejects sudo for its runner user, which is a known difference (see `../consumers.md`).
 - `loginctl enable-linger` is applied to the last user in `/etc/passwd` after generation (U15), so the user
   session exists from boot.
@@ -331,6 +331,30 @@ Windows features. They exist only in the Windows Readme.
 content lines in Readme: 255, covered by entries: 255
 Result: OK, all counts and line coverage match (exit code 0).
 
+## Observed on the hosted reference (run 39303673044, partial)
+
+Source R1: [https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303673044](https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303673044), workflow `hosted-reference-ubuntu-24.04`, label `ubuntu-24.04`, dispatched
+2026-10-19T18:34:50Z from commit `f682e03a4386fd52010fb9640c41c50fad67de75`, repository public. **Conclusion: failure.** The
+step "User, privileges, limits" exited 1 because `sysctl vm.mmap_rnd_bits` is denied for the unprivileged user, and the six
+later steps were skipped. The inert copy of the workflow under `reference-workflows/` now ends that command with `|| true`.
+The copy in `.github/workflows` still needs the same one-line fix and a second run. Raw log:
+`sources/hosted-capture-39303673044.log`. Nothing scrubbed.
+
+| Item | Observed |
+|---|---|
+| Image (Runner Image group) | `Image: ubuntu-24.04`, `Version: 20261012.334.1`, Included Software `.../blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md`, Image Release `.../releases/tag/ubuntu24%2F20261012.334`. **Equals the frozen identity.** |
+| Operating System group | Ubuntu 24.04.5 LTS; kernel `6.17.0-1022-azure`; systemd 255 (255.4-1ubuntu8.17). `ImageOS=ubuntu24`, `ImageVersion=20261012.334.1`. |
+| Runner application | `Current runner version: '2.337.0'` |
+| Runner Image Provisioner group | Hosted Compute Agent version `20261012.601`, commit `f3dc54e1fb89da6852db922499a0233137369e1d`, build date 2026-10-12T17:48:21Z, region `northcentralus`, cloud Azure |
+| Environment | `RUNNER_OS=Linux`, `RUNNER_ARCH=X64`, `RUNNER_ENVIRONMENT=github-hosted` |
+| Hardware | `nproc` 4, MemTotal 16373452 kB, **SwapTotal 3145724 kB (3 GiB, not the 4096 MB the build script configures)**. `/` is `/dev/root` 145G, 59G used, 86G available. Disk `sda` 150G, rotational flag 1. `/mnt` was not mounted separately. |
+| User and privileges | `uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),118(docker),999(systemd-journal)`. Passwordless sudo: yes. |
+| Limits and sysctls | `ulimit -n` 65536, `ulimit -s` 16384. `vm.max_map_count=262144`, `fs.inotify.max_user_watches=655360`, `fs.inotify.max_user_instances=1280`. `vm.mmap_rnd_bits` unreadable without privilege. |
+
+NOT FETCHED (steps skipped by the failure): allow-listed environment, PATH order, shell versions, service states,
+Docker state and image list, tool cache layout, `read_ahead_kb`, root mount options. Keep these NOT VERIFIED until the
+fixed workflow is re-run.
+
 ## Upstream image tests (part of the baseline)
 
 The build runs `scripts/tests/RunAll-Tests.ps1`. At the pin the folder `images/ubuntu/scripts/tests/` holds 18 files:
@@ -343,9 +367,8 @@ larger than the file list suggests.
 ## Open items for the coordinator
 
 1. Pin drift is resolved by pinning to the build commit (above). Nothing open.
-2. Hosted "Set up job" identity not captured yet (`../hosted-reference.md`).
-3. Runtime user, `haveged` state, real free disk, swap size and the `docker images` list are not fixed by the pinned
-   sources. Observe them live.
+2. Hosted "Set up job" identity captured (R1). The run failed after the privilege step; fix the workflow and re-run for the rest.
+3. `haveged` state, PATH, environment, services, `docker images` and tool cache layout remain NOT VERIFIED until the re-run.
 4. Licensed and unreproducible inputs are listed in `inputs.md`. The Ubuntu profile has fewer licensed components than
    Windows, but it depends on the Azure Marketplace Canonical image, many `latest` vendor feeds and six floating
    `:latest` container images.
@@ -375,4 +398,5 @@ larger than the file list suggests.
 - G1: [pin commit](https://api.github.com/repos/actions/runner-images/commits/ee1ff4569e381a9649b400338bdc8ceb7e18a80e).
 - G2: [release ubuntu24/20261012.334](https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334) and the releases list, read through the API on 2026-10-19.
 - G3: [compare 7e7dc1b...ee1ff45](https://github.com/actions/runner-images/compare/7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe...ee1ff4569e381a9649b400338bdc8ceb7e18a80e) (histories diverge; merge base `2c421200c9e6873283a7b1d63bb122bc906139a1`, pin is 17 commits ahead, release commit 1 commit ahead).
+- R1: [https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303673044](https://github.com/special-place-ai-heaven/aap-runner/actions/runs/39303673044), log `sources/hosted-capture-39303673044.log`.
 - H1: `../hosted-reference.md`. H2: GitHub docs `github/docs` commit `497671ebee089b38c8dc13ee9d09422405556ef3`, `content/actions/reference/runners/github-hosted-runners.md` and `data/reusables/actions/supported-github-runners.md`.
