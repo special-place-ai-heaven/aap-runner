@@ -15,6 +15,7 @@ and end, exit status, the oracle (`expected` success or failure, `observed`), re
 artifact hashes and the independent verifier.
 
 - `pass` means observed equals expected. A deliberate failure observed as failure is a pass.
+- An observed success with an expected success must have `exit_status` 0.
 - `skipped`, `blocked`, `timeout` and `unknown` are reported as such and are never a pass.
 - No raw environment dump, no log body, no field whose name looks like a token, secret, password,
   key, credential or JIT config (`validate.py` rejects them). Artifacts are referenced by hash.
@@ -45,6 +46,6 @@ That receipt belongs to the coordinator; this contract does not edit it.
 
 ## Negative fixtures
 
-Evidence: pass with a mismatched oracle, skipped reported as pass, a token-named field, a raw
+Evidence: pass with a mismatched oracle, a success with a non-zero exit status, skipped reported as pass, a token-named field, a raw
 `env` dump, a short head SHA. Receipt: self-verified, absence not observed, missing merge SHA, a
 recorded secret, a protected path that vanished.

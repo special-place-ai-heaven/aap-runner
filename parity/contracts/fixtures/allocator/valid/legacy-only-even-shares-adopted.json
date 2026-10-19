@@ -6,6 +6,8 @@
   "host": {
     "cpu_cores": 32,
     "mem_gib": 96,
+    "disk_gib": 2000,
+    "io_mbps": 1000,
     "measured_at": "2026-10-19T18:00:00Z"
   },
   "host_reserve_percent": 10,
@@ -24,7 +26,14 @@
       "active_generation": null
     }
   },
-  "legacy_adopted": false,
+  "legacy_adopted": true,
+  "slot_generations": [
+    4,
+    4,
+    1,
+    0,
+    0
+  ],
   "reservations": [
     {
       "reservation_id": "r-00000000000000c1",
@@ -32,19 +41,21 @@
       "profile": "linux",
       "backend": "wsl-legacy",
       "image_generation": "legacy-manager-2",
-      "lease_generation": 3,
+      "lease_generation": 4,
       "state": "busy",
-      "idempotency_key": "r-00000000000000c1/3",
+      "idempotency_key": "r-00000000000000c1/4",
       "acquired_at": "2026-10-19T18:00:00Z",
       "state_changed_at": "2026-10-19T18:00:00Z",
       "heartbeat_at": "2026-10-19T18:00:00Z",
       "cpus": 14,
       "mem_gib": 43,
+      "mem_overhead_mib": 0,
       "disk_gib": 0,
       "io_mbps": 0,
       "vm_id": null,
       "runner_name": null,
       "cleanup_uncertain": false,
+      "quarantine_kind": null,
       "quarantine_reason": null,
       "teardown_proof": null
     },
@@ -54,21 +65,52 @@
       "profile": "linux",
       "backend": "wsl-legacy",
       "image_generation": "legacy-manager-2",
-      "lease_generation": 3,
+      "lease_generation": 4,
       "state": "ready",
-      "idempotency_key": "r-00000000000000c2/3",
+      "idempotency_key": "r-00000000000000c2/4",
       "acquired_at": "2026-10-19T18:00:00Z",
       "state_changed_at": "2026-10-19T18:00:00Z",
       "heartbeat_at": "2026-10-19T18:00:00Z",
       "cpus": 14,
       "mem_gib": 43,
+      "mem_overhead_mib": 0,
       "disk_gib": 0,
       "io_mbps": 0,
       "vm_id": null,
       "runner_name": null,
       "cleanup_uncertain": false,
+      "quarantine_kind": null,
       "quarantine_reason": null,
       "teardown_proof": null
+    },
+    {
+      "reservation_id": "r-00000000000000c3",
+      "slot": 3,
+      "profile": "linux",
+      "backend": "wsl-legacy",
+      "image_generation": "legacy-manager-2",
+      "lease_generation": 1,
+      "state": "reconciled",
+      "idempotency_key": "r-00000000000000c3/1",
+      "acquired_at": "2026-10-19T18:00:00Z",
+      "state_changed_at": "2026-10-19T18:00:00Z",
+      "heartbeat_at": "2026-10-19T18:00:00Z",
+      "cpus": 9,
+      "mem_gib": 28,
+      "mem_overhead_mib": 0,
+      "disk_gib": 0,
+      "io_mbps": 0,
+      "vm_id": null,
+      "runner_name": null,
+      "cleanup_uncertain": false,
+      "quarantine_kind": null,
+      "quarantine_reason": null,
+      "teardown_proof": {
+        "kind": "legacy",
+        "observed_at": "2026-10-19T18:00:00Z",
+        "manager_reports_slot_gone": true,
+        "runner_deregistered": true
+      }
     }
   ]
 }

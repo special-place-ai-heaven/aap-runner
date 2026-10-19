@@ -4,7 +4,7 @@
     "schema": 1,
     "kind": "lease_request",
     "lease_id": "l-55555555555555555555555555555555",
-    "reservation_id": "r-00000000000000b1",
+    "reservation_id": "r-1a2b3c4d000000b1",
     "lease_generation": 3,
     "slot": 4,
     "profile": "win25-vs2026-x64",

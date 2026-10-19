@@ -215,6 +215,16 @@ def _counts(linux, windows):
 
 
 LIVE = {"creating", "ready", "busy", "draining", "collecting", "deleting", "quarantined"}
+ADMITTED = {"creating", "ready", "busy"}
+
+
+def _mem(r):
+    """Reserved memory in GiB including the measured VM overhead, rounded up."""
+    return r["mem_gib"] + -(-r["mem_overhead_mib"] // 1024)
+
+
+def vm_name(profile, slot, lease_generation, reservation_id):
+    return f"aap-{'w' if profile == 'windows' else 'l'}-{slot}-{lease_generation}-{reservation_id[2:10]}"
 
 
 def sem_allocator(doc):
@@ -237,30 +247,52 @@ def sem_allocator(doc):
         raise Invalid("a VM reservation exists before legacy slots were adopted")
     pool, caps = _profile_caps(doc["host"], doc["host_reserve_percent"], doc["share_mode"], profiles)
     for name in ("linux", "windows"):
-        mine = [r for r in live if r["profile"] == name]
-        admitted = [r for r in mine if r["state"] not in ("draining", "deleting", "quarantined", "collecting")]
+        admitted = [r for r in live if r["profile"] == name and r["state"] in ADMITTED]
         if len(admitted) > profiles[name]["count"]:
             raise Invalid(f"{name}: more admitted reservations than the profile count")
         each = caps[name]["each"]
-        for r in mine:
-            if r["cpus"] > each[0] or r["mem_gib"] > each[1]:
+        for r in admitted:
+            if r["backend"] != profiles[name]["backend"]:
+                raise Invalid(f"{r['reservation_id']}: admitted on a backend other than the profile's")
+            if r["cpus"] > each[0] or _mem(r) > each[1]:
                 raise Invalid(f"{r['reservation_id']}: exceeds the per-runner share of {name}")
-        if sum(r["cpus"] for r in mine) > caps[name]["cap"][0] or sum(r["mem_gib"] for r in mine) > caps[name]["cap"][1]:
-            raise Invalid(f"{name}: reservations exceed the profile cap")
-    if sum(r["cpus"] for r in live) > pool[0] or sum(r["mem_gib"] for r in live) > pool[1]:
+        if sum(r["cpus"] for r in admitted) > caps[name]["cap"][0] or sum(_mem(r) for r in admitted) > caps[name]["cap"][1]:
+            raise Invalid(f"{name}: admitted reservations exceed the profile cap")
+    # Draining overhang still occupies the pool: the other profile is admitted only into what is left.
+    if sum(r["cpus"] for r in live) > pool[0] or sum(_mem(r) for r in live) > pool[1]:
         raise Invalid("reservations exceed the pool; the host reserve is never given away")
+    host = doc["host"]
+    if sum(r["disk_gib"] for r in live) > host["disk_gib"]:
+        raise Invalid("reservations exceed the image-root disk budget")
+    if host["io_mbps"] == 0:
+        if any(r["io_mbps"] for r in live):
+            raise Invalid("io_mbps reserved while host IO is unmeasured")
+    elif sum(r["io_mbps"] for r in live) > host["io_mbps"] * (100 - doc["host_reserve_percent"]) // 100:
+        raise Invalid("reservations exceed the IO budget")
+    gens = doc["slot_generations"]
     for r in doc["reservations"]:
+        rid = r["reservation_id"]
+        if r["state"] in LIVE and r["lease_generation"] != gens[r["slot"] - 1]:
+            raise Invalid(f"{rid}: lease_generation is not the slot's current generation")
+        if r["lease_generation"] > gens[r["slot"] - 1]:
+            raise Invalid(f"{rid}: lease_generation ahead of the slot counter")
         if r["backend"] == "wsl-legacy":
             if r["profile"] != "linux" or r["vm_id"] is not None or not r["image_generation"].startswith("legacy-"):
-                raise Invalid(f"{r['reservation_id']}: legacy reservations are linux, vm_id null, generation legacy-*")
-        elif r["state"] not in ("creating", "reconciled") and r["vm_id"] is None:
-            raise Invalid(f"{r['reservation_id']}: a VM reservation past creating names its vm_id")
-        if (r["state"] == "quarantined") != (r["quarantine_reason"] is not None):
-            raise Invalid(f"{r['reservation_id']}: quarantine_reason is set exactly when quarantined")
-        if r["state"] == "reconciled" and r["teardown_proof"] is None:
-            raise Invalid(f"{r['reservation_id']}: reconciled without teardown_proof")
-        if r["idempotency_key"] != f"{r['reservation_id']}/{r['lease_generation']}":
-            raise Invalid(f"{r['reservation_id']}: idempotency_key must be <reservation_id>/<lease_generation>")
+                raise Invalid(f"{rid}: legacy reservations are linux, vm_id null, generation legacy-*")
+        else:
+            if r["state"] not in ("creating", "reconciled") and r["vm_id"] is None:
+                raise Invalid(f"{rid}: a VM reservation past creating names its vm_id")
+            if r["runner_name"] is not None and r["runner_name"] != vm_name(r["profile"], r["slot"], r["lease_generation"], rid):
+                raise Invalid(f"{rid}: runner_name must be the VM name aap-<w|l>-<slot>-<generation>-<reservation hex>")
+        if (r["state"] == "quarantined") != (r["quarantine_kind"] is not None) or (r["quarantine_kind"] is None) != (r["quarantine_reason"] is None):
+            raise Invalid(f"{rid}: quarantine_kind and quarantine_reason are set exactly when quarantined")
+        proof = r["teardown_proof"]
+        if (r["state"] == "reconciled") != (proof is not None):
+            raise Invalid(f"{rid}: teardown_proof is present exactly when reconciled")
+        if proof is not None and proof["kind"] != ("legacy" if r["backend"] == "wsl-legacy" else "vm"):
+            raise Invalid(f"{rid}: teardown_proof kind does not match the backend")
+        if r["idempotency_key"] != f"{rid}/{r['lease_generation']}":
+            raise Invalid(f"{rid}: idempotency_key must be <reservation_id>/<lease_generation>")
 
 
 def sem_backend_lifecycle(doc):
@@ -274,11 +306,14 @@ def sem_backend_lifecycle(doc):
         raise Invalid("phase done requires result ok or absent")
     if doc["backend"] == "hyperv-vm" and doc["op"] != "create" and doc["vm"]["vm_id"] is None:
         raise Invalid("every op after create names the vm_id")
+    name = doc["vm"]["vm_name"]
+    if name is not None and not name.endswith("-" + doc["reservation_id"][2:10]):
+        raise Invalid("vm_name must end with the first 8 hex of the reservation_id")
 
 
 def sem_broker(doc):
     kind = doc["kind"]
-    if kind in ("lease_request", "release_request"):
+    if kind.endswith("_request"):
         if len(json.dumps(doc, separators=(",", ":")).encode()) > 4096:
             raise Invalid("request larger than 4096 bytes")
     if kind == "lease_response":
@@ -288,6 +323,11 @@ def sem_broker(doc):
             raise Invalid("an issued lease carries reason ok, jit_config, runner_id, runner_name and expires_at")
         if not issued and (doc["reason"] == "ok" or any(f is not None for f in fields)):
             raise Invalid("a refused lease carries a refusal reason and no registration material")
+    if kind == "status_response":
+        if (doc["result"] == "ok") != (doc["reason"] == "ok"):
+            raise Invalid("status result ok exactly when reason ok")
+        if doc["result"] != "ok" and doc["runner"] is not None:
+            raise Invalid("a refused status carries no runner state")
     if kind == "audit":
         _no_secret_keys(doc)
 
@@ -308,6 +348,9 @@ def sem_image_catalog(doc):
         gens[g["generation_id"]] = g
         if not g["generation_id"].startswith(g["profile"] + "/"):
             raise Invalid(f"{g['generation_id']}: id must start with its profile")
+        for a in g["artifacts"]:
+            if not a["path"].startswith(f"base/{g['generation_id']}/"):
+                raise Invalid(f"{g['generation_id']}: artifacts live in base/<profile>/<generation>/ and never move")
         if g["state"] in ("approved", "active", "retired"):
             if g["certification"]["certificate_ref"] is None or g["approved_by"] is None:
                 raise Invalid(f"{g['generation_id']}: {g['state']} requires a certificate and an approver")
@@ -333,7 +376,12 @@ def sem_image_catalog(doc):
 def sem_cache_qualification(doc):
     if "sccache" in json.dumps(doc).lower():
         raise Invalid("sccache is not a permitted mode, fallback or path")
+    seen = set()
     for row in doc["rows"]:
+        key = (row["compiler"], row["compiler_version"], row["invocation"])
+        if key in seen:
+            raise Invalid(f"duplicate row for {key}")
+        seen.add(key)
         if row["mode"] == "qualified" and row["evidence_ref"] is None:
             raise Invalid(f"{row['compiler']}/{row['invocation']}: qualified requires evidence_ref")
         if row["compiler"] == "nvcc" and row["mode"] != "direct":
@@ -355,6 +403,8 @@ def sem_status_v5(doc):
     for p in doc["profiles"]:
         if p["os"] != os_of[p["profile"]]:
             raise Invalid(f"profile {p['profile']} reports os {p['os']}")
+        if (p["image_generation"] is None) != (p["generation_state"] is None):
+            raise Invalid(f"profile {p['profile']}: generation_state is null exactly when image_generation is null")
     slots = [s["slot"] for s in doc["slots"]]
     if len(slots) != len(set(slots)):
         raise Invalid("duplicate slot number")
@@ -376,6 +426,8 @@ def sem_evidence_bundle(doc):
         raise Invalid("result fail with a matching oracle")
     if doc["result"] in ("skipped", "blocked", "timeout", "unknown") and o["observed"] != doc["result"]:
         raise Invalid("skipped, blocked, timeout and unknown are reported as observed, never as pass")
+    if o["expected"] == "success" and o["observed"] == "success" and doc["exit_status"] != 0:
+        raise Invalid("an observed success must have exit_status 0")
 
 
 def sem_cleanup_receipt(doc):
@@ -432,7 +484,7 @@ def check_files(name, paths):
         try:
             validate(name, schema, load(Path(p)))
             print(f"ok    {p}")
-        except (Invalid, ValueError) as e:
+        except (Invalid, ValueError, OSError) as e:
             bad += 1
             print(f"FAIL  {p}: {e}")
     return 1 if bad else 0

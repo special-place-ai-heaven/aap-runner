@@ -3,13 +3,13 @@
   "instance": {
     "schema": 1,
     "kind": "op",
-    "reservation_id": "r-00000000000000b1",
+    "reservation_id": "r-1a2b3c4d000000b1",
     "lease_generation": 3,
     "backend": "hyperv-vm",
     "profile": "windows",
     "image_generation": "win25-vs2026-x64/20261007.264.1-aap.1",
     "op": "create",
-    "idempotency_key": "r-00000000000000b1/3/create",
+    "idempotency_key": "r-1a2b3c4d000000b1/3/create",
     "phase": "done",
     "at": "2026-10-19T18:00:00Z",
     "vm": {
@@ -19,7 +19,7 @@
     "disks": [
       {
         "role": "base_ref",
-        "path": "images/win25-vs2026-x64/20261007.264.1-aap.1/base.vhdx",
+        "path": "base/win25-vs2026-x64/20261007.264.1-aap.1/base.vhdx",
         "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
       },
       {
@@ -29,7 +29,7 @@
       },
       {
         "role": "scratch",
-        "path": "clones/r-00000000000000b1/scratch.vhdx",
+        "path": "scratch/r-1a2b3c4d000000b1/scratch.vhdx",
         "sha256": null
       }
     ],

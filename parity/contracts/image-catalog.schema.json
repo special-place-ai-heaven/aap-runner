@@ -65,7 +65,7 @@
             "required": ["role", "path", "bytes", "sha256"],
             "properties": {
               "role": {"enum": ["base_vhdx", "overlay_bundle", "seed_template"]},
-              "path": {"type": "string", "maxLength": 200, "pattern": "^images/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$", "not": {"pattern": "(^|/)\\.\\.?(/|$)"}},
+              "path": {"type": "string", "maxLength": 200, "pattern": "^base/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$", "not": {"pattern": "(^|/)\\.\\.?(/|$)"}},
               "bytes": {"type": "integer", "minimum": 1},
               "sha256": {"$ref": "#/$defs/sha256"}
             }

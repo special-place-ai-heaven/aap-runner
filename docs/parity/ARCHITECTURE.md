@@ -9,11 +9,13 @@ Every rule below carries one marker:
 
 - **DECIDED**: frozen. A later item that needs a change files a ledger revision first.
 - **CANDIDATE (D2)**: the chosen mechanism, not yet proven. It stays a candidate until the
-  lab plan in [guest-transport.md](../../parity/contracts/guest-transport.md#lab-proof-plan-p08-p10-p11)
-  passes in an owner-authorized disposable lab (gate D2). Gate D2 is only partly met:
-  Hyper-V is enabled on the host; Windows Server 2025 media, activation and a lab budget are open.
-- **OWNER**: an interface decision this item could not make. Listed in
-  [the contracts README](../../parity/contracts/README.md#open-decisions).
+  lab plan in [guest-transport.md](../../parity/contracts/guest-transport.md#lab-proof-plan-p021-executed-for-p08-p10-p11)
+  passes in an owner-authorized disposable lab (gate D2). Gate D2 is partly met: the lab host
+  is this machine with Hyper-V enabled, and the owner provides a Windows Server 2025 Evaluation
+  ISO (180-day). The compute and storage budget is still to be measured and approved before any VM.
+- **RESOLVED 2026-10-19**: the owner decisions this item first left open (labels, image volume,
+  distro uptime, reserve floor, D2 media). See
+  [the contracts README](../../parity/contracts/README.md#resolved-2026-10-19).
 
 Nothing here was provisioned, enabled or run against the live install. No VM was created.
 
@@ -90,7 +92,8 @@ Trust boundaries, each with its rule:
    only; the host, the WSL distro, the LAN and other guests are unreachable, mirroring today's
    Sysbox network evidence (`distro/README.md`, Evidence).
 5. **Catalog to provider** (DECIDED): a provider boots only a catalog generation in state
-   `active` (or `approved` for certification runs) whose base hash matches on every create.
+   `active` for production admissions, or `candidate` for certification runs (P24 certifies a
+   candidate before it can be approved), whose base hash matches on every create.
 
 ## 2. Allocator and capacity (contract: [allocator.md](../../parity/contracts/allocator.md))
 
@@ -100,15 +103,32 @@ DECIDED:
   legacy WSL pool. Its state is `C:\ProgramData\aap-runner\capacity\allocator.json`
   (Administrators/SYSTEM only), rewritten by atomic rename with a strictly increasing `revision`.
 - Two live controls: Linux 0-5 and Windows 0-5, Linux + Windows in 1..5. 0 + 0 is not a
-  setting; "off" is `inbox\state.json`.
-- The host reserve (default 10 %, floor 10 %) is never handed out. `share_mode: even` gives every
-  runner `floor(pool / (linux + windows))` (today's tray rule); `per_profile` gives each profile
-  its configured percent and each runner `floor(profile cap / profile count)`. The owner's example,
-  2 Windows = 30 %, 3 Linux = 60 %, 10 % host, is the per-profile fixture.
+  setting; "off" is `inbox\state.json`. Linux 0 means the legacy pool is drained and stopped (the
+  manager accepts only 1..5); Windows 0 means no Windows VM is admitted.
+- The host reserve (10 %, owner-confirmed minimum) is never handed out. `share_mode: even` gives
+  every runner `floor(pool / (linux + windows))` (today's tray rule); `per_profile` gives each
+  profile its configured percent and each runner `floor(profile cap / profile count)`. The owner's
+  example, 2 Windows = 30 %, 3 Linux = 60 %, 10 % host, is the per-profile fixture.
+- Admission (`creating`, `ready`, `busy` are the admitted states) checks the per-runner share and
+  the profile cap, counting each VM's measured memory overhead against its profile share. The
+  pool check, the image-root disk budget and the IO budget count **every live** reservation,
+  including draining and quarantined ones, so a resize admits the other profile only into what the
+  draining overhang leaves free.
 - A reservation is acquired and persisted **before** any VM create, legacy slot start or
-  registration. It is bound to a `lease_generation` that increases on every reuse of the slot.
-- Lost heartbeat never frees a slot. Only `reconciled` with a teardown proof (VM absent, disks
-  absent, runner deregistered or removed by GitHub) frees it.
+  registration. Its `lease_generation` is the slot's counter (`slot_generations`), incremented
+  before each new reservation of that slot.
+- Heartbeat (one rule everywhere): a validated guest `status` reply, or for a legacy slot the
+  manager's slot entry in a fresh `status.json` (sample age <= 90 s), sets `heartbeat_at` at most
+  every 30 s. Three missed intervals move `ready`/`busy` to `quarantined` (kind `heartbeat`),
+  capacity held. A later validated heartbeat returns the slot to `busy` or `ready`. A heartbeat
+  quarantine leads to destroy only after the broker reports the runner `offline`/`absent`, or the
+  job ended, or the profile's job wall clock plus 60 minutes has passed since the last heartbeat
+  (default 120 + 60 minutes, the legacy `AAP_JOB_TIMEOUT_MINUTES` range). A running job is never
+  cancelled by this rule. A `hostile_guest` quarantine is immediate and final: straight to
+  `deleting`.
+- Only `reconciled` with a teardown proof frees a slot: VM and disks observed absent (or, for a
+  legacy slot, the manager reporting the slot gone) and the runner deregistered, removed by
+  GitHub, or never registered (create/boot failure).
 - Legacy slots are adopted first: before the first VM reservation the allocator records one
   `wsl-legacy` reservation per configured legacy slot and sets `legacy_adopted`. From then on the
   supervisor writes `AAP_RUNNER_COUNT` from the Linux legacy reservations, so the legacy pool can
@@ -121,22 +141,26 @@ stateDiagram-v2
   creating --> deleting: create or boot failed
   ready --> busy: job assigned
   ready --> draining: drain, pause, resize down, generation retire
-  busy --> collecting: job finished or cancelled
-  draining --> deleting: runner deregistered
+  busy --> draining: drain, pause, resize down (job keeps running)
+  busy --> collecting: job finished or cancelled by GitHub
+  draining --> collecting: job finished, or idle runner released
   collecting --> deleting: evidence collected
   deleting --> reconciled: teardown proof observed
   creating --> quarantined: crash or uncertainty
-  ready --> quarantined: heartbeat lost
-  busy --> quarantined: heartbeat lost
-  collecting --> quarantined: guest hostile or timed out
+  ready --> quarantined: 3 heartbeats missed
+  busy --> quarantined: 3 heartbeats missed
+  quarantined --> busy: validated heartbeat, job running
+  quarantined --> ready: validated heartbeat, listening
+  quarantined --> deleting: runner offline, job ended, or wall clock plus 60 min
+  busy --> deleting: hostile guest reply (immediate, final, any guest state)
   deleting --> quarantined: teardown failed after retries
-  quarantined --> deleting: reconcile finds VM and retries
   quarantined --> reconciled: reconcile observes absence
   reconciled --> [*]: slot free
 ```
 
 `draining` from `busy` waits for the job (graceful, never cancelled). Off, pause and resizing
-never cancel a running job (existing rule, kept).
+never cancel a running job (existing rule, kept). `draining` always passes through `collecting`
+before `deleting`.
 
 ## 3. Backend lifecycle (contract: [backend-lifecycle.md](../../parity/contracts/backend-lifecycle.md))
 
@@ -148,15 +172,21 @@ named VM first; destroy treats "absent" as done). One job per VM; the VM is dest
 reset for another job, until a lab proves a reset is equivalent (P10/P11 may propose `reset`
 only with that evidence).
 
-DECIDED disk layout under a configured fixed local `<image_root>` (not `C:\wsl`, not the WSL work disk):
+DECIDED disk layout under `<image_root>` = `D:\aap-runner\images` (owner, 2026-10-19; not
+`C:\wsl`, not the WSL work disk):
 
 ```text
-<image_root>\catalog.json
-<image_root>\images\<profile>\<image_version>-aap.<n>\base.vhdx   read-only ACL, hash-checked
-<image_root>\clones\<reservation_id>\os.avhdx                     differencing child of base
-<image_root>\clones\<reservation_id>\scratch.vhdx                 job scratch, per reservation
-<image_root>\clones\<reservation_id>\seed.iso                     Linux cloud-init seed, if used
+D:\aap-runner\images\catalog.json
+D:\aap-runner\images\base\<profile>\<image_version>-aap.<n>\base.vhdx   one folder per generation, read-only, never moves
+D:\aap-runner\images\clones\<reservation_id>\os.avhdx                    differencing child of its base
+D:\aap-runner\images\clones\<reservation_id>\seed.iso                    Linux cloud-init seed, if used
+D:\aap-runner\images\scratch\<reservation_id>\scratch.vhdx               job scratch, per reservation
 ```
+
+Rollback is catalog state only (`retired` plus the profile's `rollback` pointer); no file moves,
+so a differencing child's recorded parent path stays valid. VM names are
+`aap-<w|l>-<slot>-<lease_generation>-<first 8 hex of reservation_id>` (create precedes any lease);
+the broker registers the runner under the same name.
 
 Budgets are **measured** per generation (base, clone peak, scratch peak, staging, replacement,
 rollback, boot memory overhead) and stored as a `budget` record with an evidence reference.
@@ -180,7 +210,7 @@ sequenceDiagram
   A->>A: ready
   P->>P: run_one: lease, deliver JIT, start runner
   A->>A: busy then collecting
-  P->>H: Stop-VM, Remove-VM, delete clone dir (destroy)
+  P->>P: release_request (lease id), then Stop-VM, Remove-VM, delete clone and scratch (destroy)
   P->>J: done destroy (absent observed)
   A->>A: reconciled with teardown proof
 ```
@@ -189,9 +219,14 @@ sequenceDiagram
 
 DECIDED: the App key stays root-only in the control distro. The broker is a fixed-path root
 program in that distro, invoked once per request by the supervisor. It accepts only
-`lease_request` and `release_request` documents: no path, no command, no label, no runner name,
-no URL. It derives the runner name and labels from the slot, lease generation and its own
-root-only profile table. One lease id issues at most one JIT config, ever (replay refused).
+`lease_request`, `release_request` and `status_request` documents: no path, no command, no label,
+no runner name, no runner id, no URL. Every teardown sends `release_request` with the lease id
+only (`already_gone` counts as proof); the broker resolves the runner from its own ledger. It derives the runner name and labels from the slot, lease generation and its own
+root-only profile table: Windows `self-hosted,Windows,X64,aap-win25-vs2026`, Ubuntu
+`self-hosted,Linux,X64,aap-ubuntu-24.04`, group `aap-crrr` (owner, 2026-10-19). The legacy pool
+keeps its current labels. DECIDED: the control distro and its keep-alive run whenever
+Linux + Windows >= 1, so the broker is reachable; the supervisor makes no `wsl.exe` call only
+while both counts are 0 or desired is off. One lease id issues at most one JIT config, ever (replay refused).
 
 DECIDED: VM guests get **JIT runner configuration** from
 `POST /orgs/{org}/actions/runners/generate-jitconfig` (GitHub REST, "Create configuration for a
@@ -229,7 +264,8 @@ sequenceDiagram
   S->>V: deliver_registration over management channel
   V->>R: start runner with ACTIONS_RUNNER_INPUT_JITCONFIG
   R->>G: one job
-  S->>B: release_request if the runner never took a job
+  S->>B: status_request while quarantined (runner online or offline)
+  S->>B: release_request at every teardown (lease id only)
 ```
 
 ## 5. Guest management transport (contract: [guest-transport.md](../../parity/contracts/guest-transport.md))
@@ -249,7 +285,17 @@ CANDIDATE (D2):
 - Replay: every command carries reservation id, lease generation, a sequence number and a nonce;
   the guest agent accepts `deliver_registration` once per boot.
 - Hostile replies: bounded size, strict schema, printable ASCII diagnostics, time-limited; a
-  violation quarantines the slot with code `hostile_guest`.
+  violation sends the slot straight to `deleting` with code `hostile_guest`.
+- Wire framing: Windows runs a fixed script block in the PowerShell Direct session that starts
+  `C:\Program Files\aap-guest\agent.ps1` with the envelope line and payload on stdin and reads one
+  JSON reply line from stdout; Linux uses an SSH forced command `/usr/local/libexec/aap-guest/agent`
+  over vsock port 5222 (host service GUID `00001466-facb-11e6-bd58-64006a7986d3`), stdin = envelope
+  line then exactly `payload_bytes` bytes, stdout = one reply line. Limits and timeouts:
+  guest-transport.md, Wire framing.
+- Network (CANDIDATE D2): one internal switch per profile with Windows NAT for internet egress,
+  host firewall rules denying guest traffic to the host, the WSL subnet, the LAN and the other
+  guests, and per-adapter ACLs between guests; alternative, one private switch per guest. The lab
+  proves internet egress works and every denied path fails.
 
 ```mermaid
 sequenceDiagram
@@ -355,8 +401,9 @@ flowchart LR
 | Broker call | wsl fails, timeout, malformed reply, `refused` | no registration; slot goes `deleting`; retry only with a new lease id |
 | GitHub API | 404/409/422/rate limit | broker returns `refused` with a reason; no partial runner left (delete by id if one was created) |
 | VM create/boot | Hyper-V error, timeout | journal `failed`; destroy; reconciled after absence observed |
-| Guest transport | auth fails, no reply, hostile reply | bounded retries; then `quarantined` with `hostile_guest` or `timeout`; destroy |
-| Heartbeat | lost | state unchanged; `cleanup_uncertain`; capacity held until reconcile proves absence |
+| Guest transport | auth fails, no reply | bounded retries, then the heartbeat rule above |
+| Guest transport | hostile reply | immediate `deleting` with `hostile_guest`; final, never back to service |
+| Heartbeat | 3 missed (90 s) | `quarantined` (kind `heartbeat`), capacity held; back to `busy`/`ready` on a validated heartbeat; destroy only once the runner is offline, the job ended, or wall clock + 60 min passed; never cancels the job |
 | Job | cancelled, failed, timed out | normal: `collecting` then `deleting` |
 | Teardown | VM or disk will not go | three retries over 15 s, then `quarantined`; capacity held; status shows it |
 | Unknown VM `aap-*` on the host | no journal | reconcile quarantines it in a free slot or refuses admission until resolved; never adopted silently |

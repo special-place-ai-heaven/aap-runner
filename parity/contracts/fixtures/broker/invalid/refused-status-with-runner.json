@@ -1,0 +1,14 @@
+{
+  "expect": "a refused status carries no runner state",
+  "instance": {
+    "schema": 1,
+    "kind": "status_response",
+    "lease_id": "l-55555555555555555555555555555555",
+    "result": "refused",
+    "reason": "not_found",
+    "runner": {
+      "status": "offline",
+      "busy": false
+    }
+  }
+}

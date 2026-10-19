@@ -2,7 +2,7 @@
   "schema": 1,
   "kind": "guest_reply",
   "vm_id": "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b",
-  "reservation_id": "r-00000000000000b1",
+  "reservation_id": "r-1a2b3c4d000000b1",
   "lease_generation": 3,
   "seq": 2,
   "nonce": "99999999999999999999999999999999",

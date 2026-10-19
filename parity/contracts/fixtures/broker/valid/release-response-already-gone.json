@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "kind": "release_response",
+  "lease_id": "l-55555555555555555555555555555555",
+  "result": "already_gone",
+  "reason": "ok"
+}

@@ -32,16 +32,22 @@ names the error it must produce, so it cannot pass for the wrong reason.
    WSL pool, which is adopted before any VM registers.
 2. Two live controls (Linux 0-5, Windows 0-5, sum 1-5), a never-allocated host reserve (floor 10 %),
    `even` shares by default and `per_profile` shares on request (the owner's 30/60/10 example).
-3. Reservations persist before boot or registration, carry a lease generation, and are freed only
-   by observed teardown; lost heartbeat holds capacity.
+3. Reservations persist before boot or registration, carry the slot's lease generation, and are
+   freed only by observed teardown. Admission checks shares at admission; pool, disk and IO budgets
+   count every live reservation, so draining overhang delays the other profile. Three missed
+   heartbeats quarantine with capacity held; a heartbeat restores the slot; destroy waits for the
+   runner to go offline, the job to end, or wall clock + 60 min; hostile guests go straight to
+   deletion.
 4. Provider interface, idempotency keys, intent/outcome journal, crash recovery, disk layout and
    measured-only budgets.
 5. App key stays root-only in the control distro; the broker is a fixed-path one-shot root program
    called over `wsl.exe` stdin/stdout with bounded, attacker-choice-free requests; one JIT config
-   per lease id; replay, skew, stale-generation and lease-limit refusals; secret-free audit.
+   per lease id; release by lease id at every teardown; runner status for quarantine decisions;
+   replay, skew, per-slot stale-generation and outstanding-lease refusals; secret-free audit.
 6. JIT config instead of registration tokens for VM guests, delivered in memory and consumed as
    `ACTIONS_RUNNER_INPUT_JITCONFIG`, never argv or a file.
-7. The fixed management command set, echo/sequence/nonce replay rules and hostile-reply handling.
+7. The fixed management command set, wire framing (agent entrypoints, stdin/stdout, vsock port
+   5222), echo/sequence/nonce replay rules and hostile-reply handling.
 8. Immutable catalog generations tied to the P01 baselines, one active per profile, one retained
    rollback, quarantine is final.
 9. zccache 1.15.6 only, per-pair qualification, direct compilation otherwise, no sccache.
@@ -51,30 +57,47 @@ names the error it must produce, so it cannot pass for the wrong reason.
 
 ## Candidate pending D2 lab proof
 
+The transport lab proof is a **single-owner ledger child, P02.1**, which gates P10/P11 fan-out
+(the coordinator adds it to the ledger). Its prerequisites are gate D2 plus a **lab GitHub App**
+and a **test org and repository**, so the lab never uses the production App, key or org. Plan:
+[guest-transport.md](guest-transport.md#lab-proof-plan-p021-executed-for-p08-p10-p11).
+
 1. PowerShell Direct as the Windows management channel, including credential bootstrap by offline
    unattend or KVP, and safe handling of hostile deserialized output.
 2. SSH over a Hyper-V socket for Ubuntu with KVP host-key pinning (fallback: per-clone isolated switch).
-3. Guest network isolation (internet only; no host, WSL distro, LAN or other guests) on Hyper-V.
+3. Guest network isolation (internet only; no host, WSL distro, LAN or other guests): one
+   internal switch per profile with Windows NAT, host firewall rules and per-adapter ACLs, or one
+   private switch per guest.
 4. End-to-end JIT runner behaviour on the pinned runner release: environment input consumed and
    masked, one job, registration gone afterwards, unused runner deletion, no copy left in the guest.
 5. Destroy-and-recreate per job versus a cheaper reset (reset stays unused without proof).
 6. Measured disk, memory and IO budgets per generation.
 7. hvsocket service registration through the existing elevated helper (P19).
 
-## Open decisions
+## Resolved 2026-10-19
 
-These need the owner (or a coordinator ledger revision) before the named item starts:
+The five open decisions, settled by the owner and coordinator on 2026-10-19:
 
-1. **Runner labels and group for the VM profiles** (blocks P08, P23). Proposal: Windows
-   `self-hosted, Windows, X64, aap-win25-vs2026`; Ubuntu `self-hosted, Linux, X64, aap-ubuntu-24.04`;
-   group `aap-crrr`. Labels decide routing for every consumer workflow.
-2. **`<image_root>` volume** for base, clone, scratch and rollback disks (blocks P06, P10). Must be
-   a fixed local NTFS or ReFS volume with the measured budget free.
-3. **Control distro uptime.** The broker lives in the WSL distro, so the distro (and Vmmem) must
-   run whenever a VM profile is on, even with Linux at 0. The current supervisor makes no
-   `wsl.exe` call while off; that stays true only while both profiles are off.
-4. **Host reserve floor.** 10 % follows the owner's example; confirm it as the minimum.
-5. **Gate D2** itself: Windows Server 2025 media and activation, lab host and budget.
+1. **Runner labels and group for the VM profiles.** Windows
+   `self-hosted,Windows,X64,aap-win25-vs2026`; Ubuntu `self-hosted,Linux,X64,aap-ubuntu-24.04`;
+   runner group `aap-crrr` for both. The legacy WSL pool keeps its current labels
+   (`self-hosted,linux,<base>[,extras]`). These live in the broker's root-only profile table
+   (broker.md); requests can never choose them.
+2. **Image root volume.** `<image_root>` is `D:\aap-runner\images` (about 2.3 TB free on
+   2026-10-19), flat: `base\<profile>\<generation>\` (one folder per generation, never moves),
+   `clones\<reservation>\`, `scratch\<reservation>\`, plus `catalog.json`. Rollback is catalog
+   state only (coordinator decision on the architecture review). The
+   budget is measured in P06 and stored as `budget` records before any admission.
+3. **Control distro uptime.** The distro and its keep-alive run whenever Linux + Windows >= 1,
+   because the broker that holds the App key lives there. "No `wsl.exe` call while Off" holds only
+   when both counts are 0 or desired is off. Recorded in status-settings.md, Supervisor states.
+4. **Host reserve floor.** 10 % is confirmed as the minimum (schemas already enforce it).
+5. **Gate D2.** The owner provides a Windows Server 2025 Evaluation ISO (180-day) for the golden
+   image. The evaluation build is sufficient to prove parity; a licensed production image is a
+   later owner decision. The rearm or rebuild cycle before evaluation expiry is defined in P06
+   (build) and P25 (operations). The lab host is this machine (Hyper-V enabled). The compute and
+   storage budget must still be measured and approved before any VM is created, so D2 stays
+   partly met until then.
 
 ## Findings recorded while freezing
 

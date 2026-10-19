@@ -20,15 +20,21 @@ These are DRAFTS frozen for shape: P12 lands them, updates the versioned contrac
 
 ## Settings schema 3 (DRAFT)
 
-Same keys as schema 2 with the same meaning, plus `host_reserve_percent` (10..90),
+Same keys as schema 2 with the same meaning, plus `linux_backend`, `host_reserve_percent` (10..90),
 `share_mode` (`even` | `per_profile`), `linux_share_percent`, `windows_share_percent`
 (null in `even`). Every key is required in schema 3. Changes in range:
 
 - `runner_count` (Linux) 0..5 and `windows_runner_count` 0..5, sum 1..5 (owner rule; schema 2's
   Windows 0..4 and Linux >= 1 existed only because no Windows backend did).
 - `per_profile`: shares + reserve = 100; a profile with count 0 has share 0.
-- `job_cpus`/`job_memory_gib` stay the legacy WSL pool totals and are ignored while Linux is 0
-  or the Linux profile runs on VMs.
+- `job_cpus`/`job_memory_gib` stay the legacy WSL pool totals. Precedence: shares win; the
+  supervisor caps them to the Linux profile cap when it writes `limits.conf` and reports the
+  applied values in `legacy_pool`. They are ignored while Linux is 0 or `linux_backend` is
+  `hyperv-vm`.
+- `linux_backend` (`wsl-legacy` default, or `hyperv-vm`) is supervisor-side: the tray offers no
+  control for it and writes back the value `status.v5.json` reports. Only the cutover item (P27)
+  flips it, and the supervisor refuses `hyperv-vm` (keeping the last valid settings) unless an
+  Ubuntu generation is `active` in the catalog.
 
 ## Status schema 5 (DRAFT): a new file, not a new `status.json`
 
@@ -41,6 +47,25 @@ and profile caps, image generation and its state, cache state, availability), up
 (profile, OS, backend, allocator lifecycle state, generation, job, repo, run and job URLs under
 the existing strict patterns, usage), and `legacy_pool` (the schema 4 pool numbers). Every value
 is re-validated before it is written, as today.
+
+`generation_state` per profile, from the catalog and allocator (null exactly when
+`image_generation` is null, for example the legacy pool):
+
+| Catalog / allocator situation | `generation_state` |
+|---|---|
+| the profile's admissions use the catalog `active` generation and every live slot runs it | `active` |
+| a newer generation is `active` while some live slots still run a `retired` one | `draining_old` |
+| the `active` generation is past its evaluation expiry or flagged by P25 drift detection, admissions continue until replaced | `stale` |
+| the profile's last generation was `quarantined` and no `active` one exists; no admissions | `quarantined` |
+
+## Supervisor states and control distro uptime (DECIDED, owner 2026-10-19)
+
+The WSL control distro and its keep-alive child run whenever desired is on and
+Linux + Windows >= 1, because the broker (and the App key) live there. With Linux at 0 and
+Windows >= 1 the distro still runs, the legacy manager is drained and stopped, and VM slots use
+the broker. The existing rule "while Off the supervisor makes no `wsl.exe` call, so Vmmem can
+exit" holds only when desired is off or both counts are 0. P12 writes this into
+`supervisor/README.md` and its Pester tests.
 
 ## Compatibility rules (DECIDED)
 

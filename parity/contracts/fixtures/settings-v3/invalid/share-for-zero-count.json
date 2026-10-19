@@ -2,6 +2,7 @@
   "expect": "share 0 exactly when its count is 0",
   "instance": {
     "schema": 3,
+    "linux_backend": "wsl-legacy",
     "runner_count": 3,
     "windows_runner_count": 0,
     "job_cpus": 19,

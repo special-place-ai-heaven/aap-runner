@@ -4,7 +4,7 @@
   "at": "2026-10-19T18:00:00Z",
   "op": "lease",
   "lease_id": "l-55555555555555555555555555555555",
-  "reservation_id": "r-00000000000000b1",
+  "reservation_id": "r-1a2b3c4d000000b1",
   "lease_generation": 3,
   "profile": "win25-vs2026-x64",
   "image_generation": "win25-vs2026-x64/20261007.264.1-aap.1",

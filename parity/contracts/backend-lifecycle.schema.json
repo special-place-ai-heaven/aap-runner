@@ -13,7 +13,7 @@
     "relpath": {
       "type": "string",
       "maxLength": 200,
-      "pattern": "^(images|clones)/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(vhdx|avhdx|iso)$",
+      "pattern": "^(base|clones|scratch)/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(vhdx|avhdx|iso)$",
       "not": {"pattern": "(^|/)\\.\\.?(/|$)"}
     },
     "op": {
@@ -53,9 +53,14 @@
               "path": {"$ref": "#/$defs/relpath"},
               "sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
             },
-            "if": {"properties": {"role": {"const": "base_ref"}}},
-            "then": {"properties": {"sha256": {"$ref": "#/$defs/sha256"}, "path": {"pattern": "^images/"}}},
-            "else": {"properties": {"path": {"pattern": "^clones/"}}}
+            "allOf": [
+              {"if": {"properties": {"role": {"const": "base_ref"}}},
+               "then": {"properties": {"sha256": {"$ref": "#/$defs/sha256"}, "path": {"pattern": "^base/"}}}},
+              {"if": {"properties": {"role": {"enum": ["os_diff", "seed"]}}},
+               "then": {"properties": {"path": {"pattern": "^clones/"}}}},
+              {"if": {"properties": {"role": {"const": "scratch"}}},
+               "then": {"properties": {"path": {"pattern": "^scratch/"}}}}
+            ]
           }
         },
         "result": {

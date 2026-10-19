@@ -16,7 +16,7 @@ Pin and interface facts: [parity/baselines/zccache.md](../baselines/zccache.md).
    never moved or modified.
 2. **No sccache**: no sccache binary, renamed wrapper, variable, cache format, path or fallback in
    any mode. `validate.py` rejects a matrix that mentions it.
-3. Every compiler and invocation pair is `qualified` (with `evidence_ref` under
+3. Rows are unique per (compiler, compiler_version, invocation). Every compiler and invocation pair is `qualified` (with `evidence_ref` under
    `parity/cache/qualification/`) or `direct`. A pair missing from the matrix is `direct`.
    `direct` means the native compiler with no wrapper; full parity must hold with every pair direct.
 4. `qualified` needs, per platform and compiler version: uncached, cold and warm builds with equal
@@ -50,5 +50,5 @@ Pin and interface facts: [parity/baselines/zccache.md](../baselines/zccache.md).
 
 ## Negative fixtures
 
-`qualified` without evidence, a reason that falls back to sccache, release 1.15.5, and a Linux
+`qualified` without evidence, a duplicate row, a reason that falls back to sccache, release 1.15.5, and a Linux
 matrix that names the Windows archive.

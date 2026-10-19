@@ -9,6 +9,8 @@
     {"$ref": "#/$defs/lease_response"},
     {"$ref": "#/$defs/release_request"},
     {"$ref": "#/$defs/release_response"},
+    {"$ref": "#/$defs/status_request"},
+    {"$ref": "#/$defs/status_response"},
     {"$ref": "#/$defs/audit"}
   ],
   "$defs": {
@@ -56,14 +58,51 @@
     "release_request": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "kind", "lease_id", "runner_id", "nonce", "issued_at"],
+      "required": ["schema", "kind", "lease_id", "nonce", "issued_at"],
       "properties": {
         "schema": {"const": 1},
         "kind": {"const": "release_request"},
         "lease_id": {"$ref": "#/$defs/lease_id"},
-        "runner_id": {"type": "integer", "minimum": 1},
         "nonce": {"$ref": "#/$defs/nonce"},
         "issued_at": {"$ref": "#/$defs/time"}
+      }
+    },
+    "status_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "lease_id", "nonce", "issued_at"],
+      "properties": {
+        "schema": {"const": 1},
+        "kind": {"const": "status_request"},
+        "lease_id": {"$ref": "#/$defs/lease_id"},
+        "nonce": {"$ref": "#/$defs/nonce"},
+        "issued_at": {"$ref": "#/$defs/time"}
+      }
+    },
+    "status_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "lease_id", "result", "reason", "runner"],
+      "properties": {
+        "schema": {"const": 1},
+        "kind": {"const": "status_response"},
+        "lease_id": {"$ref": "#/$defs/lease_id"},
+        "result": {"enum": ["ok", "refused"]},
+        "reason": {"anyOf": [{"const": "ok"}, {"$ref": "#/$defs/refusal"}]},
+        "runner": {
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "busy"],
+              "properties": {
+                "status": {"enum": ["online", "offline", "absent"]},
+                "busy": {"type": "boolean"}
+              }
+            }
+          ]
+        }
       }
     },
     "release_response": {
@@ -86,13 +125,13 @@
         "schema": {"const": 1},
         "kind": {"const": "audit"},
         "at": {"$ref": "#/$defs/time"},
-        "op": {"enum": ["lease", "release", "expire"]},
+        "op": {"enum": ["lease", "release", "status", "expire"]},
         "lease_id": {"$ref": "#/$defs/lease_id"},
         "reservation_id": {"anyOf": [{"$ref": "#/$defs/reservation_id"}, {"type": "null"}]},
         "lease_generation": {"type": ["integer", "null"], "minimum": 1},
         "profile": {"anyOf": [{"$ref": "#/$defs/profile"}, {"type": "null"}]},
         "image_generation": {"anyOf": [{"$ref": "#/$defs/generation"}, {"type": "null"}]},
-        "outcome": {"enum": ["issued", "refused", "deregistered", "already_gone", "retry"]},
+        "outcome": {"enum": ["issued", "refused", "deregistered", "already_gone", "retry", "online", "offline", "absent"]},
         "reason": {"anyOf": [{"const": "ok"}, {"$ref": "#/$defs/refusal"}]},
         "runner_id": {"type": ["integer", "null"], "minimum": 1},
         "runner_name": {"anyOf": [{"$ref": "#/$defs/runner_name"}, {"type": "null"}]}

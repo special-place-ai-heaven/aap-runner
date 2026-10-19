@@ -2,6 +2,7 @@
   "expect": "runner counts must be 1..5",
   "instance": {
     "schema": 3,
+    "linux_backend": "wsl-legacy",
     "runner_count": 0,
     "windows_runner_count": 0,
     "job_cpus": 19,
