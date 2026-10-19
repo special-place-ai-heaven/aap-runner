@@ -145,6 +145,37 @@
         "mem_gib": 0.4
       }
     ],
+    "storage": {
+      "state": "ok",
+      "detail": "",
+      "volume_floor_gib": 30,
+      "tiers": [
+        {
+          "tier": "base",
+          "root": "X:\\aap-example\\base",
+          "volume_free_gib": 412,
+          "state": "ok"
+        },
+        {
+          "tier": "clone",
+          "root": "X:\\aap-example\\clones",
+          "volume_free_gib": 412,
+          "state": "ok"
+        },
+        {
+          "tier": "scratch",
+          "root": "X:\\aap-example\\scratch",
+          "volume_free_gib": 412,
+          "state": "ok"
+        },
+        {
+          "tier": "staging",
+          "root": "X:\\aap-example\\base\\staging",
+          "volume_free_gib": 412,
+          "state": "ok"
+        }
+      ]
+    },
     "legacy_pool": {
       "runner_count": 3,
       "job_cpus": 19,

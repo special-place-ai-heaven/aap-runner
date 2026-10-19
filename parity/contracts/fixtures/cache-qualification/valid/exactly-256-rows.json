@@ -1,0 +1,2062 @@
+{
+  "schema": 1,
+  "zccache": {
+    "version": "1.15.6",
+    "commit": "15ec9537af0d219e07b72ce2b3f97d5f68d72b5e",
+    "archive": "zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz",
+    "archive_sha256": "885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7",
+    "binary_sha256": "f97ae874042ab5c80fc2e35342e406972437f1fd45ec81372be33c0f5cbb18cc"
+  },
+  "platform": "linux-x86_64",
+  "matrix_revision": 2,
+  "rows": [
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.0",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.0-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.1",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.1-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.2",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.2-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.3",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.3-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.4",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.4-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.5",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.5-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.6",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.6-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.7",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.7-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.8",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.8-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.9",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.9-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.10",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.10-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.11",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.11-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.12",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.12-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.13",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.13-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.14",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.14-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.15",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.15-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.16",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.16-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.17",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.17-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.18",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.18-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.19",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.19-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.20",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.20-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.21",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.21-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.22",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.22-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.23",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.23-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.24",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.24-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.25",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.25-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.26",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.26-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.27",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.27-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.28",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.28-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.29",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.29-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.30",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.30-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.31",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.31-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.32",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.32-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.33",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.33-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.34",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.34-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.35",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.35-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.36",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.36-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.37",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.37-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.38",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.38-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.39",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.39-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.40",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.40-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.41",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.41-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.42",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.42-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.43",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.43-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.44",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.44-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.45",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.45-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.46",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.46-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.47",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.47-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.48",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.48-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.49",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.49-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.50",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.50-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.51",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.51-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.52",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.52-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.53",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.53-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.54",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.54-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.55",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.55-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.56",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.56-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.57",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.57-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.58",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.58-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.59",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.59-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.60",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.60-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.61",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.61-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.62",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.62-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.63",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.63-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.64",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.64-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.65",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.65-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.66",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.66-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.67",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.67-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.68",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.68-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.69",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.69-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.70",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.70-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.71",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.71-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.72",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.72-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.73",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.73-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.74",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.74-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.75",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.75-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.76",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.76-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.77",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.77-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.78",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.78-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.79",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.79-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.80",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.80-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.81",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.81-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.82",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.82-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.83",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.83-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.84",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.84-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.85",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.85-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.86",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.86-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.87",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.87-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.88",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.88-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.89",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.89-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.90",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.90-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.91",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.91-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.92",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.92-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.93",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.93-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.94",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.94-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.95",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.95-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.96",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.96-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.97",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.97-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.98",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.98-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.99",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.99-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.100",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.100-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.101",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.101-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.102",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.102-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.103",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.103-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.104",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.104-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.105",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.105-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.106",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.106-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.107",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.107-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.108",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.108-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.109",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.109-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.110",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.110-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.111",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.111-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.112",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.112-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.113",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.113-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.114",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.114-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.115",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.115-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.116",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.116-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.117",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.117-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.118",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.118-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.119",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.119-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.120",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.120-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.121",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.121-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.122",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.122-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.123",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.123-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.124",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.124-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.125",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.125-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.126",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.126-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.127",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.127-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.128",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.128-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.129",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.129-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.130",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.130-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.131",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.131-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.132",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.132-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.133",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.133-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.134",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.134-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.135",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.135-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.136",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.136-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.137",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.137-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.138",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.138-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.139",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.139-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.140",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.140-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.141",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.141-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.142",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.142-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.143",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.143-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.144",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.144-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.145",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.145-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.146",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.146-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.147",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.147-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.148",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.148-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.149",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.149-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.150",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.150-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.151",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.151-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.152",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.152-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.153",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.153-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.154",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.154-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.155",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.155-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.156",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.156-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.157",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.157-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.158",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.158-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.159",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.159-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.160",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.160-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.161",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.161-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.162",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.162-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.163",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.163-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.164",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.164-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.165",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.165-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.166",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.166-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.167",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.167-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.168",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.168-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.169",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.169-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.170",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.170-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.171",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.171-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.172",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.172-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.173",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.173-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.174",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.174-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.175",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.175-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.176",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.176-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.177",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.177-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.178",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.178-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.179",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.179-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.180",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.180-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.181",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.181-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.182",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.182-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.183",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.183-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.184",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.184-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.185",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.185-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.186",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.186-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.187",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.187-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.188",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.188-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.189",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.189-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.190",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.190-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.191",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.191-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.192",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.192-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.193",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.193-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.194",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.194-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.195",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.195-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.196",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.196-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.197",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.197-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.198",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.198-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.199",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.199-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.200",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.200-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.201",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.201-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.202",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.202-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.203",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.203-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.204",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.204-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.205",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.205-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.206",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.206-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.207",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.207-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.208",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.208-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.209",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.209-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.210",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.210-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.211",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.211-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.212",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.212-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.213",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.213-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.214",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.214-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.215",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.215-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.216",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.216-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.217",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.217-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.218",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.218-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.219",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.219-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.220",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.220-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.221",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.221-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.222",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.222-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.223",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.223-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.224",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.224-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.225",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.225-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.226",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.226-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.227",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.227-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.228",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.228-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.229",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.229-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.230",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.230-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.231",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.231-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.232",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.232-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.233",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.233-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.234",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.234-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.235",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.235-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.236",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.236-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.237",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.237-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.238",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.238-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.239",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.239-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.240",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.240-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.241",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.241-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.242",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.242-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.243",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.243-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.244",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.244-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.245",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.245-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.246",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.246-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.247",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.247-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.248",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.248-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.249",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.249-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.250",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.250-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.251",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.251-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.252",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.252-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.253",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.253-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.254",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.254-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "1.0.255",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-1.0.255-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); synthetic row for the 256-row bound"
+    }
+  ]
+}

@@ -1,10 +1,13 @@
-# Status and settings contract (settings schema 3 and status schema 5 drafts)
+# Status and settings contract (settings schema 3 and status schema 5 drafts, revision 2)
 
 Owners: **P12** (supervisor side, `supervisor/README.md`, both-side tests) and **P20** (tray).
 Readers: P19, P22. Schemas: [`settings-v3.schema.json`](settings-v3.schema.json),
 [`status-v5.schema.json`](status-v5.schema.json), [`tray-windows-choice.schema.json`](tray-windows-choice.schema.json).
 These are DRAFTS frozen for shape: P12 lands them, updates the versioned contract docs
 (`supervisor/README.md`, `crates/tray/README.md`) and both sides' tests in one PR, as CLAUDE.md requires.
+
+Revision 2 (P02.2, 2026-10-20): `status.v5.json` reports the storage tiers; settings schema 3 is
+unchanged and carries no path.
 
 ## What exists today (unchanged by P02)
 
@@ -32,7 +35,12 @@ Same keys as schema 2 with the same meaning, plus `linux_backend`, `host_reserve
   applied values in `legacy_pool`. They are ignored while Linux is 0 or `linux_backend` is
   `hyperv-vm`.
 - `lease_wall_clock_hours` (1..72, default 6), host cap per VM lease. Wall-clock rule (same text
-  in allocator.md): past `lease_wall_clock_hours` (default 6) since the lease was issued, a heartbeat-quarantined slot is destroyed only when GitHub reports its runner `offline` (or `absent`) and not busy; a runner GitHub reports `busy` is never destroyed, the slot stays held and `cleanup_uncertain`, and `status.v5.json` `detail` flags it for the owner.
+  in allocator.md):
+  `lease_wall_clock_hours` (default 6) counts from the reservation's `acquired_at`. Past it the
+  slot is only flagged: `status.v5.json` `detail` names it for the owner. The wall clock never
+  destroys a slot: a heartbeat-quarantined slot is destroyed only when GitHub reports its runner
+  `offline` (or `absent`) and not busy, or the job is known to have ended; a runner GitHub reports
+  `busy` is never destroyed, and its slot stays held and `cleanup_uncertain`.
 - `linux_backend` (`wsl-legacy` default, or `hyperv-vm`) is supervisor-side: the tray offers no
   control for it and writes back the value `status.v5.json` reports. Only the cutover item (P27)
   flips it, and the supervisor refuses `hyperv-vm` (keeping the last valid settings) unless an
@@ -61,6 +69,42 @@ is re-validated before it is written, as today.
 | the generation reached its evaluation expiry: the catalog moves it to `quarantined` (never `active`) and admissions stop | `quarantined` |
 | the profile's last generation was `quarantined` and no `active` one exists; no admissions | `quarantined` |
 
+## Storage in status schema 5 (DRAFT, revision 2)
+
+`status.v5.json` has a `storage` object built from the admin-only storage document
+(backend-lifecycle.md, Storage tiers): `state`, `detail`, `volume_floor_gib` and, per tier
+(`base`, `clone`, `scratch`, `staging`), the root, the free GiB of the volume that holds it and the
+tier state. `unconfigured` means there is no storage document: no tiers and no floor. Otherwise all
+four tiers are listed (`staging` with its effective root) and the overall state is the worst tier
+state, in the order `missing`, `untrusted`, `low`, `ok`:
+
+| Tier state | Meaning | Effect |
+|---|---|---|
+| `ok` | trust checks pass; free space at or above the floor | none |
+| `low` | trust checks pass; free space below the floor | no new VM admission; running VMs continue within their admitted caps |
+| `untrusted` | an owner, ACL, reparse, ancestor, drive-type or volume check fails; free space is reported when it can be read, otherwise null | VM profiles disabled |
+| `missing` | the root or its recorded volume is absent; free space is null | VM profiles disabled |
+
+While `storage.state` is not `ok`, every `hyperv-vm` profile reports `available: false` with the
+reason. The tray shows the roots and free space and never changes them: the roots change only
+through the elevated helper (a P19 verb, offered by the tray in P20) with the existing UAC prompt.
+**Settings schema 3 carries no path.** `inbox\settings.json` is user-writable and the supervisor
+reads only validated numbers and fixed words from it (`supervisor/README.md`); a root there would
+let any process of the operator steer where the elevated supervisor writes and deletes.
+
+`storage.detail` is empty or lists one `<tier>: <code>` entry per failing tier, joined by `; `,
+with the codes `owner`, `acl`, `reparse`, `ancestor`, `drive-type`, `volume`, `missing` and `low`
+(schema-enforced). It never carries an ACE dump or a path; the full reason goes to
+`logs\supervisor.log`. The tray reads at most 64 KiB of `status.v5.json`.
+
+## Allocator reasons in status detail (DECIDED, P09 review 2026-10-20)
+
+When the allocator holds back, the top-level `detail` of `status.v5.json` starts with a fixed
+reason word followed by a short ASCII explanation: `resize_waits` (a smaller count waits for its
+running jobs to drain) or `pool_over_live` (a host measurement no longer holds the live
+reservations; the stored host is clamped and nothing more is admitted). See allocator.md, Resize
+and host measurement.
+
 ## Supervisor states and control distro uptime (DECIDED, owner 2026-10-19)
 
 The WSL control distro and its keep-alive child run whenever desired is on and
@@ -85,4 +129,9 @@ exit" holds only when desired is off or both counts are 0. P12 writes this into
 
 Settings: 3 + 3, 0 + 0, schema 4, a string count, reserve 5, shares summing to 95, a share for a
 zero count. Status: six slots, a Windows slot labelled Linux, a non-GitHub run URL, schema 6, a
-supervisor that stops accepting schema 2. Tray-local: count 5, schema 2, a string, a missing count.
+supervisor that stops accepting schema 2, a VM profile available while storage is untrusted, a tier
+below the floor reported `ok`, a UNC root, unconfigured storage that lists tiers, a tier listed
+twice or not at all, a `missing` tier with free space, a tier above the floor reported `low`, an
+overall `ok` beside a `low` tier, and a storage detail carrying an ACE dump. Valid storage examples:
+unconfigured (VM profile unavailable), and `missing` with an `untrusted` tier that reports free
+space and one that cannot. Tray-local: count 5, schema 2, a string, a missing count.

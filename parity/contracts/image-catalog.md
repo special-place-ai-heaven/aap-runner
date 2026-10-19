@@ -1,4 +1,4 @@
-# Image catalog contract (version 1)
+# Image catalog contract (version 2)
 
 Owners: **P21** (assembly, catalog writer) and **P25** (promotion, rollback, retention).
 Readers: P06, P07, P10, P11, P12, P19, P20, P24. Schema: [`image-catalog.schema.json`](image-catalog.schema.json).
@@ -7,10 +7,13 @@ commits, image versions and inventory hashes are the real P01 values).
 
 ## Location
 
-`D:\aap-runner\images\catalog.json` (owner decision 2026-10-19), beside one folder per
-generation, `base\<profile>\<generation>\`, which never moves. Rollback is catalog state only.
-Clones and scratch (`clones\`, `scratch\`) are per-reservation disposables, not catalog content. Administrators/SYSTEM only, written by
-atomic rename with `revision` + 1. Base disks are read-only for everyone after sealing.
+`<base_root>\catalog.json` (storage tiers, owner decision 2026-10-20; backend-lifecycle.md),
+beside one folder per generation, `<base_root>\<profile>\<image_version>-aap.<n>\`, which never
+moves. Rollback is catalog state only. Clones and scratch (`<clone_root>`, `<scratch_root>`) are
+per-reservation disposables, not catalog content. Administrators/SYSTEM only, written by atomic
+rename with `revision` + 1. Base disks are read-only for everyone after sealing. Revision 2
+(P02.2): catalog `schema` 2, artifact paths relative to `base_root` (revision 1 prefixed them with
+`base/`).
 
 ## Generation identity (DECIDED)
 
@@ -25,7 +28,8 @@ Each generation records:
   inventory `cf842a07fd309da0100d955383883f9423bb2b7524e78bd33a67ecdcfc953f25`; Ubuntu
   `7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe`, `20261012.334.1`, inventory
   `48608655281529b27f298ea92cc8ad63e52f847fa2fb8b03d1e0ddd5e2a192ed`.
-- `artifacts`: every file with role, relative path under `base/<generation_id>/`, bytes, SHA-256.
+- `artifacts`: every file with role, path relative to `base_root` inside `<generation_id>/`, bytes,
+  SHA-256.
 - `overlays`: guest agent, actions-runner, zccache, cache config, each with version and hash.
 - `provenance`: building item, builder commit, the P03 inputs manifest hash, build time.
 - `secret_scan`: result and evidence (`evidence_ref` under `evidence/`, required unless the
@@ -50,19 +54,19 @@ ARCHITECTURE.md section 6.
 3. `active`: one per profile. Promotion is one atomic catalog write that sets the profile's
    `active` pointer and moves the previous active to `retired` and the `rollback` pointer. New
    admissions use the new active; running reservations keep their generation (allocator records it).
-4. `retired`: files stay in `base\<profile>\<generation>\`; kept as the single rollback generation (default 1, budget field
+4. `retired`: files stay in `<base_root>\<profile>\<generation>\`; kept as the single rollback generation (default 1, budget field
    `rollback_retained_generations`). Rollback is the same atomic switch in reverse.
 5. `quarantined`: never re-activated; a fix is a new `aap.<n>`. Kept until its evidence is copied.
-   Image root protection (owner, ACL, reparse, ancestors) is ARCHITECTURE.md section 3.
-6. Every `create` re-hashes the base and compares it with the hash pinned **outside** the image
-   root: the P24 certificate pins every artifact hash, and the supervisor keeps an admin-only copy
+   Storage root protection (owner, ACL, reparse, ancestors) is backend-lifecycle.md, Storage tiers.
+6. Every `create` re-hashes the base and compares it with the hash pinned **outside** every
+   storage root: the P24 certificate pins every artifact hash, and the supervisor keeps an admin-only copy
    in `C:\ProgramData\aap-runner\capacity\approved-images.json`. The catalog's own hashes are
    not trusted alone, and there is no "unchanged file identity" shortcut.
 7. The catalog has a `scope`: `lab` (a disposable lab catalog) or `live` (the owner's
    installation). In a `live` catalog an `active` generation needs the owner's approval record
    (`live_activation`, gate D5); `validate.py` rejects it without one. A `lab` catalog may activate
    without it.
-   The live supervisor refuses, and admits nothing from, a catalog at `D:\aap-runner\images` whose scope is not `live`. Lab catalogs never live under the live image root. A catalog at that path that says `lab` (or anything but `live`) disables the VM profiles, with the reason in status. Defense in depth: each entry in the admin-only `C:\ProgramData\aap-runner\capacity\approved-images.json` pins the generation's artifact hashes **and** carries the reference to the owner's `live_activation` record; the live supervisor admits an `active` generation only when the catalog and that entry both have it. (Supervisor rules for P12/P21.)
+   The live supervisor refuses, and admits nothing from, a catalog at its configured `base_root` whose scope is not `live`. Lab catalogs never live under the live base root (lab roots are never equal to or inside live roots). A catalog at that path that says `lab` (or anything but `live`) disables the VM profiles, with the reason in status. Defense in depth: each entry in the admin-only `C:\ProgramData\aap-runner\capacity\approved-images.json` pins the generation's artifact hashes **and** carries the reference to the owner's `live_activation` record; the live supervisor admits an `active` generation only when the catalog and that entry both have it. (Supervisor rules for P12/P21.)
 
 ## Evaluation media (owner decision 2026-10-19)
 
@@ -74,6 +78,15 @@ drift) is reported as `stale` in `status.v5.json` while admissions continue; **r
 moves the generation to `quarantined`, never kept `active`, and admissions for that profile stop
 until a new generation is active.
 
+## Acceptance input for P07 and P11 (from P05)
+
+`tools/parity-certify` deliberately does not allowlist `image.kernel`, `limits.read_ahead_kb` or
+`limits.mount_options` (its README and `allowlist.json`). The hosted Ubuntu reference runs the
+Azure kernel with its own block read-ahead and mount options, so these stay failing differences.
+A Ubuntu generation can be `approved` only when P07 (the image: kernel flavour, read-ahead
+defaults) and P11 (the backend: how job disks are attached and mounted) match them, or when a
+reviewed `allowlist.json` entry with an owner-approved reason justifies each remaining difference.
+
 ## Owners and retention
 
 Product images, the retained rollback generation and their evidence are accounted assets with a
@@ -83,7 +96,7 @@ installers and clones are not catalog content and are cleaned through P00 manife
 ## Negative fixtures
 
 An active generation without a certificate, two active generations, an active pointer naming a
-quarantined generation, a short hash, an artifact path that escapes `base/`, an artifact in a
+quarantined generation, a short hash, an artifact path that escapes `base_root`, an artifact in a
 `rollback/` folder, an artifact stored under another generation's folder, an active generation without the owner's
 live activation record, a clean scan without evidence, a certificate path with `..`, an active
 generation whose secret scan found something.

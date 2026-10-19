@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "revision": 7,
   "scope": "lab",
   "profiles": {
@@ -27,7 +27,7 @@
       "artifacts": [
         {
           "role": "base_vhdx",
-          "path": "base/win25-vs2026-x64/20261007.264.1-aap.1/base.vhdx",
+          "path": "win25-vs2026-x64/20261007.264.1-aap.1/base.vhdx",
           "bytes": 139586437120,
           "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
         }
@@ -86,7 +86,7 @@
       "artifacts": [
         {
           "role": "base_vhdx",
-          "path": "base/win25-vs2026-x64/20261007.264.1-aap.2/base.vhdx",
+          "path": "win25-vs2026-x64/20261007.264.1-aap.2/base.vhdx",
           "bytes": 139586437120,
           "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
         }
@@ -145,7 +145,7 @@
       "artifacts": [
         {
           "role": "base_vhdx",
-          "path": "base/ubuntu-24.04-x64/20261012.334.1-aap.1/base.vhdx",
+          "path": "ubuntu-24.04-x64/20261012.334.1-aap.1/base.vhdx",
           "bytes": 139586437120,
           "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
         }

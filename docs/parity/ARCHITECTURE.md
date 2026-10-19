@@ -1,21 +1,26 @@
 # Parity architecture (frozen by P02)
 
-Revision 1, 2026-10-19. Ledger item P02. This document freezes the components, trust
-boundaries, data flows, state machines and failure handling that every later parity
-item builds on. The machine-checkable shapes live in [`parity/contracts/`](../../parity/contracts/README.md);
-`python -I parity/contracts/validate.py` checks every example and negative fixture.
+Revision 2, 2026-10-20 (ledger item P02.2; revision 1, P02, 2026-10-19). This document freezes
+the components, trust boundaries, data flows, state machines and failure handling that every
+later parity item builds on. The machine-checkable shapes live in [`parity/contracts/`](../../parity/contracts/README.md);
+`python -B -I parity/contracts/validate.py` checks every example and negative fixture.
 
 Every rule below carries one marker:
 
 - **DECIDED**: frozen. A later item that needs a change files a ledger revision first.
 - **CANDIDATE (D2)**: the chosen mechanism, not yet proven. It stays a candidate until the
   lab plan in [guest-transport.md](../../parity/contracts/guest-transport.md#lab-proof-plan-p021-executed-for-p08-p10-p11)
-  passes in an owner-authorized disposable lab (gate D2). Gate D2 is partly met: the lab host
-  is this machine with Hyper-V enabled, and the owner provides a Windows Server 2025 Evaluation
-  ISO (180-day). The compute and storage budget is still to be measured and approved before any VM.
+  passes in an owner-authorized disposable lab (gate D2). Gate D2's owner inputs are met: the lab
+  host is this machine with Hyper-V enabled, and the owner provided a Windows Server 2025
+  Evaluation ISO (180-day) and the dedicated volume `E:` and approved the lab budget on 2026-10-20
+  ([README](../../parity/contracts/README.md#resolved-2026-10-20)). Before the first VM, the
+  Windows image builder (P06) must be merged and the elevated step that creates the internal
+  switch and NAT must run.
 - **RESOLVED 2026-10-19**: the owner decisions this item first left open (labels, image volume,
   distro uptime, reserve floor, D2 media). See
-  [the contracts README](../../parity/contracts/README.md#resolved-2026-10-19).
+  [the contracts README](../../parity/contracts/README.md#resolved-2026-10-19). On 2026-10-20 the
+  owner replaced the single image volume with configurable storage tiers
+  ([README](../../parity/contracts/README.md#resolved-2026-10-20)).
 
 Nothing here was provisioned, enabled or run against the live install. No VM was created.
 
@@ -30,7 +35,7 @@ Nothing here was provisioned, enabled or run against the live install. No VM was
 | Broker (`/usr/local/sbin/aap-runner-broker`, P08) | root, one process per request | control plane | App JWT, installation token, JIT config minting, runner deregistration, lease ledger | run without a well-formed bounded request; log or persist registration material |
 | Hyper-V backend (supervisor modules `backends/windows`, `backends/linux`) | inside the supervisor process | admin | VM create/boot/destroy (no reset), differencing disks, guest management sessions | reuse a VM or disk across reservations; mutate a base image |
 | Guests (Windows Server 2025 / VS2026, Ubuntu 24.04) | guest Administrator / sudo | **untrusted** once a job starts | one Actions job | reach the host, the control distro, the LAN, another guest or a base image |
-| Image catalog (`<image_root>\catalog.json` + images) | written by supervisor image-maintenance (P25) and P21 tooling | admin | immutable generations, hashes, provenance, rollback | change bytes of an approved generation |
+| Image catalog (`<base_root>\catalog.json` + images) | written by supervisor image-maintenance (P25) and P21 tooling | admin | immutable generations, hashes, provenance, rollback | change bytes of an approved generation |
 | Legacy WSL/Sysbox pool | root inside the distro | control plane for the manager, untrusted for jobs | existing ephemeral container runners | run autonomously beside new profiles (adopted into the allocator, DECIDED) |
 
 DECIDED: no new elevation path, no named-pipe service, no Rust service rewrite, no autologon,
@@ -94,14 +99,20 @@ Trust boundaries, each with its rule:
 5. **Catalog to provider** (DECIDED): a provider boots only a catalog generation in state
    `active` for production admissions, or `candidate` for certification runs (P24 certifies a
    candidate before it can be approved), whose base hash matches on every create.
+6. **Owner to storage roots** (DECIDED, 2026-10-20): the roots come only from the admin-only
+   storage document that the elevated helper writes, never from the inbox; each root passes the
+   ProgramData trust checks at install, at every supervisor start and before every `create`, or
+   the VM profiles stay off.
 
 ## 2. Allocator and capacity (contract: [allocator.md](../../parity/contracts/allocator.md))
 
 DECIDED:
 
 - One allocator inside the supervisor owns all five slots, for every backend, including the
-  legacy WSL pool. Its state is `C:\ProgramData\aap-runner\capacity\allocator.json`
-  (Administrators/SYSTEM only), rewritten by atomic rename with a strictly increasing `revision`.
+  legacy WSL pool. Its state is `C:\ProgramData\aap-runner\capacity\allocator.json` (admin-only:
+  owner Administrators, SYSTEM and Administrators full control, protected DACL, no other ACE, so no
+  reader can hold `allocator.lock`), rewritten by atomic rename with a strictly increasing
+  `revision`.
 - Two live controls: Linux 0-5 and Windows 0-5, Linux + Windows in 1..5. 0 + 0 is not a
   setting; "off" is `inbox\state.json`. Linux 0 means the legacy pool is drained and stopped (the
   manager accepts only 1..5); Windows 0 means no Windows VM is admitted.
@@ -112,17 +123,18 @@ DECIDED:
 - Admission (`creating`, `ready`, `busy`, and a heartbeat quarantine, which may still run its
   job, are the admitted states) checks the per-runner share and
   the profile cap, counting each VM's measured memory overhead against its profile share. The
-  pool check, the image-root disk budget and the IO budget count **every live** reservation,
-  including draining and quarantined ones, so a resize admits the other profile only into what the
-  draining overhang leaves free.
+  pool check, the per-volume disk budgets of the storage tiers and the IO budget count **every
+  live** reservation, including draining and quarantined ones, so a resize admits the other
+  profile only into what the draining overhang leaves free.
 - A reservation is acquired and persisted **before** any VM create, legacy slot start or
   registration. Its `lease_generation` is the slot's counter (`slot_generations`), incremented
   before each new reservation of that slot.
 - Heartbeat (one rule everywhere): a validated guest `status` reply, or for a legacy slot the
   manager's slot entry in a fresh `status.json` (sample age <= 90 s), sets `heartbeat_at` at most
   every 30 s. Three missed intervals move `ready`/`busy` to `quarantined` (kind `heartbeat`),
-  capacity held. A later validated heartbeat returns the slot to `busy` or `ready`. A heartbeat quarantine leads to destroy only when the broker reports the runner `offline` or `absent` and not busy, or the job is known to have ended. A VM whose runner GitHub reports `busy` is never destroyed; past the per-lease host wall clock (`lease_wall_clock_hours`, default 6) it stays held and status flags it for the owner.
-  A running job is never cancelled by this rule. A `hostile_guest` quarantine is immediate and final: straight to
+  capacity held. A later validated heartbeat returns the slot to `busy` or `ready`. A heartbeat quarantine leads to destroy only when the broker reports the runner `offline` or `absent` and not busy, or the job is known to have ended. A VM whose runner GitHub reports `busy` is never destroyed; once `lease_wall_clock_hours` (default 6) have passed since the reservation's `acquired_at`, the slot is only flagged in status for the owner.
+  A running job is never cancelled by this rule. A hostile guest reply is immediate and final from any guest
+  state, a heartbeat or crash quarantine included: the kind becomes `hostile_guest`, then
   `deleting`.
 - Only `reconciled` with a teardown proof frees a slot: VM and disks observed absent (or, for a
   legacy slot, the manager reporting the slot gone) and the runner deregistered, removed by
@@ -137,6 +149,17 @@ DECIDED:
   measured overhead come off the pool before any runner share.
 - The allocator lock is an exclusive lock file in the admin-only capacity folder with a bounded
   wait that fails visibly (status `error`), not a named mutex.
+- Nothing admitted is ever evicted (allocator.md, Resize and host measurement). A smaller count
+  drains the excess (`resize_waits`); a host measurement that no longer holds the live
+  reservations is stored clamped to them (`pool_over_live`), so nothing more is admitted. In
+  `even` mode a count increase lowers every share, so every admitted runner drains, the legacy
+  pool with a full stop and start (an open owner decision). An unknown clone or scratch folder
+  blocks admission, and a provider's inventory listing is complete or throws (allocator.md,
+  Reconcile).
+- Provider rules (allocator.md): `JobRunning` comes from the broker's record of the job GitHub
+  assigned, never from the guest; a heartbeat is bound to its reservation by the host-side channel,
+  not by an id in the guest payload; the `hostile_guest` reason is a fixed host code, never guest
+  text; legacy status is only as trustworthy as root in the control distro.
 
 ```mermaid
 stateDiagram-v2
@@ -155,8 +178,10 @@ stateDiagram-v2
   busy --> quarantined: 3 heartbeats missed
   quarantined --> busy: validated heartbeat, job running
   quarantined --> ready: validated heartbeat, listening
-  quarantined --> deleting: runner offline and not busy, or job ended
-  busy --> deleting: hostile guest reply (immediate, final, any guest state)
+  quarantined --> quarantined: hostile reply in a heartbeat or crash quarantine (kind hostile_guest)
+  quarantined --> deleting: runner offline and not busy, job ended, or kind hostile_guest
+  busy --> deleting: hostile guest reply only (immediate, final, any guest state)
+  busy --> ready: legacy pool slot only, next job (never hyperv-vm)
   deleting --> quarantined: teardown failed after retries
   quarantined --> reconciled: reconcile observes absence
   reconciled --> [*]: slot free
@@ -176,31 +201,47 @@ named VM first; destroy treats "absent" as done). One job per VM, then destroy. 
 forbidden** (security review M3): destroying the VM is the control that removes every copy of the
 runner credential.
 
-VM files (DECIDED): `New-VM -Path` points inside the reservation's clone folder; checkpoints are
-disabled; `AutomaticStopAction TurnOff`; `AutomaticStartAction Nothing`; enhanced session and the
-Guest Service Interface are off. The teardown proof covers the VM's configuration, saved-state and
+VM files (DECIDED): `New-VM -Path` points inside the reservation's folder under `clone_root`;
+checkpoints are disabled; `AutomaticStopAction TurnOff`; `AutomaticStartAction Nothing`; enhanced
+session and the Guest Service Interface are off. The teardown proof covers the VM's configuration, saved-state and
 checkpoint paths as well as its disks.
 
-Image root protection (DECIDED, security review H3): at install and at every supervisor start the
-installer and supervisor run the same owner, ACL, reparse-point and ancestor checks on
-`D:\aap-runner\images` that `install-supervisor.ps1` runs on `C:\ProgramData\aap-runner`; any
-failure disables the VM profiles and shows the reason in status. `D:\` today grants Everyone full
-control, including delete-child, so the ancestor check **fails** on `D:\` itself even after the
-installer creates `D:\aap-runner` with an Administrators/SYSTEM-only ACL and inheritance off. The
-VM profiles therefore stay off (fail closed) until the owner tightens the ACL on `D:\` or relocates
-the image root. Approved
-artifact hashes are pinned outside the image root (admin-only data folder and the P24
-certificate), and every `create` re-hashes the base against that pin.
+Storage tiers (DECIDED, owner 2026-10-20; contract: backend-lifecycle.md, Storage tiers). There is
+no hard-coded image root. The installer and the owner choose `base_root` (catalog, base
+generations, installation media copies), `clone_root` (per-reservation differencing disks, seed
+media and VM files), `scratch_root` (per-reservation job scratch disks) and optionally
+`staging_root` (P03 acquisition and image builds; default `<base_root>\staging`). The roots may
+share one volume or use several; the owner decided that nothing for the Windows runner lives on
+the NVMe system volume. They are kept in an admin-only storage document that only the elevated
+helper writes; the supervisor never takes a path from the user-writable inbox. There are no
+defaults: without a valid storage document the VM profiles stay disabled.
 
-DECIDED disk layout under `<image_root>` = `D:\aap-runner\images` (owner, 2026-10-19; not
-`C:\wsl`, not the WSL work disk):
+Root protection (DECIDED, security review H3, per root): at install, at every supervisor start
+and before every `create`, each root independently passes the owner, ACL, reparse-point and
+ancestor checks that `install-supervisor.ps1` runs on `C:\ProgramData\aap-runner`, on a fixed
+drive and on the volume recorded for it; any failure disables the VM profiles and shows the tier
+and reason in status. The capacity folder, `storage.json`, `clone_root` and `scratch_root` are
+admin-only: owner Administrators, SYSTEM and Administrators full control, a protected DACL and no
+other ACE, not even read. `D:\` fails the ancestor check (Everyone full control) and is never
+used; the owner locked `E:\` to Administrators on 2026-10-20
+([README, Resolved 2026-10-20](../../parity/contracts/README.md#resolved-2026-10-20)). Whether a
+root on `E:` passes is shown by running the check (P19, P02.1), not by this note. No item
+changes a partition, a volume or a volume root's ACL. Approved artifact hashes are pinned outside
+every root (admin-only data folder and the P24 certificate), and every `create` re-hashes the
+base against that pin.
+
+DECIDED disk layout (no drive letter is fixed; the `X:`, `Y:` and `Z:` paths in fixtures are
+synthetic):
 
 ```text
-D:\aap-runner\images\catalog.json
-D:\aap-runner\images\base\<profile>\<image_version>-aap.<n>\base.vhdx   one folder per generation, read-only, never moves
-D:\aap-runner\images\clones\<reservation_id>\os.avhdx                    differencing child of its base
-D:\aap-runner\images\clones\<reservation_id>\seed.iso                    Linux cloud-init seed, if used
-D:\aap-runner\images\scratch\<reservation_id>\scratch.vhdx               job scratch, per reservation
+<base_root>\catalog.json
+<base_root>\<profile>\<image_version>-aap.<n>\base.vhdx   one folder per generation, read-only, never moves
+<base_root>\media\                                        verified installation media copies (P06 input)
+<staging_root>\   (default <base_root>\staging)           P03 acquisition, P06/P07 build staging
+<clone_root>\<reservation_id>\os.avhdx                    differencing child of its base
+<clone_root>\<reservation_id>\seed.iso                    Linux cloud-init seed, if used
+<clone_root>\<reservation_id>\   (New-VM -Path)           VM configuration and runtime files
+<scratch_root>\<reservation_id>\scratch.vhdx              job scratch, per reservation
 ```
 
 Rollback is catalog state only (`retired` plus the profile's `rollback` pointer); no file moves,
@@ -208,11 +249,16 @@ so a differencing child's recorded parent path stays valid. VM names are
 `aap-<w|l>-<slot>-<lease_generation>-<first 8 hex of reservation_id>` (create precedes any lease);
 the broker registers the runner under the same name.
 
-Budgets are **measured** per generation (base, clone peak, scratch peak, staging, replacement,
-rollback, boot memory overhead) and stored as a `budget` record with an evidence reference.
-Admission refuses a profile whose generation has no measured budget. The hosted reference
-reports about 160 GB on `C:` and 158 GB free on `D:` for Windows; the 60 GiB Linux work-disk
-default is not a Windows budget.
+Budgets are **measured** per generation and tier (base size; clone and scratch peaks and the caps
+admission counts; staging; replacement; rollback; boot memory overhead) and stored as a `budget`
+record with an evidence reference. Admission refuses a profile whose generation has no measured
+budget, and counts each reservation's clone and scratch caps on the volume of that tier, above the
+volume's free-space floor. The scratch cap is the VHDX maximum size; the clone cap is enforced by
+sampling at every heartbeat and destroying a VM that passes it. Sizing evidence from the hosted
+Windows image at job start (run 39303666617): `C:` 127,436,206,080 bytes used and 33,031,553,024
+free (about 160 GB), `D:` 3.2 GB used and 157.9 GB free, 4 vCPU and 16 GiB. Planning estimate:
+130-140 GB per base generation plus build headroom, 20-50 GB per running job, plus one rollback
+generation. The 60 GiB Linux work-disk default is not a Windows budget.
 
 ```mermaid
 sequenceDiagram
@@ -356,7 +402,11 @@ anchored to the P01 baselines (Windows `aee0669` / `20261007.264.1`, Ubuntu `7e7
 `20261012.334.1`) and their `inventory.json` hashes. One `active` generation per profile;
 the previous one is `retired` and kept as the single rollback generation. New admissions use the
 active generation; running jobs finish on theirs. A `quarantined` generation is never re-activated.
-The live supervisor refuses, and admits nothing from, a catalog at `D:\aap-runner\images` whose scope is not `live`. Lab catalogs never live under the live image root. A catalog at that path that says `lab` (or anything but `live`) disables the VM profiles, with the reason in status. Defense in depth: each entry in the admin-only `C:\ProgramData\aap-runner\capacity\approved-images.json` pins the generation's artifact hashes **and** carries the reference to the owner's `live_activation` record; the live supervisor admits an `active` generation only when the catalog and that entry both have it.
+The live supervisor refuses, and admits nothing from, a catalog at its configured `base_root` whose scope is not `live`. Lab catalogs never live under the live base root. A catalog at that path that says `lab` (or anything but `live`) disables the VM profiles, with the reason in status. Defense in depth: each entry in the admin-only `C:\ProgramData\aap-runner\capacity\approved-images.json` pins the generation's artifact hashes **and** carries the reference to the owner's `live_activation` record; the live supervisor admits an `active` generation only when the catalog and that entry both have it.
+
+Acceptance input from P05: a Ubuntu generation is approved only when P07 and P11 match the hosted
+kernel, `read_ahead_kb` and mount options, or a reviewed allowlist entry justifies each difference
+(image-catalog.md).
 
 ```mermaid
 stateDiagram-v2
@@ -374,11 +424,15 @@ stateDiagram-v2
 
 ## 7. Cache (contract: [cache-qualification.md](../../parity/contracts/cache-qualification.md))
 
-DECIDED: zccache 1.15.6 (tag `1.15.6`, commit `15ec9537`) replaces sccache entirely. Each
-compiler and invocation on each platform is `qualified` (with evidence) or `direct` (no wrapper).
-No sccache fallback, binary, variable or format reuse. Native `cl.exe`/`link.exe` start `direct`
-(the pinned feature matrix marks them partial). Isolated per-trust cache roots and copy or reflink
-delivery by default; hardlink delivery and cross-trust sharing stay off until P04/P13 prove them.
+DECIDED: zccache 1.15.6 (tag `1.15.6`, commit `15ec9537`) replaces sccache entirely. Each compiler
+and invocation on each platform is `qualified` (with evidence) or `direct` (no wrapper). No sccache
+fallback, binary, variable or format reuse. Native `cl.exe`/`link.exe` start `direct` (the pinned
+feature matrix marks them partial). Isolated cache roots per trust namespace (the repository plus
+the job's trust class: only push, schedule or workflow_dispatch on the default branch with the
+repository as head repository is trusted, every other event or ref is untrusted; a root is shared
+only among jobs whose writers are at least as trusted as every reader; no shared root when the class
+is not known from GitHub before the root is attached) and copy or reflink delivery by default;
+hardlink delivery and cross-trust sharing stay off until P04/P13 prove them.
 
 ```mermaid
 flowchart LR
@@ -395,13 +449,15 @@ schema 4 keep their meaning. The supervisor adds `status.v5.json` beside `status
 current tray reports any `status.json` schema above 4 as an error, so schema 5 must not replace
 it). The tray writes `settings.json` schema 3 only after `status.v5.json` lists 3 in
 `settings_schemas`; until then it keeps the Windows count in its tray-local file.
+`status.v5.json` also reports the storage tiers (root, volume free space, floor, state); the tray
+shows them and never changes them, and settings schema 3 carries no path.
 
 ```mermaid
 flowchart TB
   T[Tray] -- "schema 2, or 3 once advertised" --> I[inbox settings.json]
   I --> S[Supervisor]
   S --> S4[status.json schema 4, legacy pool view]
-  S --> S5[status.v5.json: profiles, slots, generations, cache]
+  S --> S5[status.v5.json: profiles, slots, generations, cache, storage]
   S5 -- "settings_schemas lists 3" --> T
   S4 --> T
   TL[(tray-local windows-runners.json)] <--> T
@@ -441,6 +497,9 @@ flowchart LR
 | Teardown | VM or disk will not go | three retries over 15 s, then `quarantined`; capacity held; status shows it |
 | Unknown VM `aap-*` on the host | no journal | reconcile quarantines it in a free slot or refuses admission until resolved; never adopted silently |
 | Image | hash mismatch, quarantined generation | refuse create; status shows the generation state |
+| Storage root or volume | a trust check fails, the volume changed or is missing | VM profiles `available: false` with tier and reason; no admission; nothing created or repaired; a reservation whose disks are gone is quarantined (`crash`) until reconcile observes absence |
+| Storage volume | free space below the floor | no new VM admission; running VMs continue within their admitted caps |
+| Clone growth | clone folder passes `clone_gib_max`, or Hyper-V pauses the VM for lack of space | destroy (`fatal`, journaled); the job fails |
 | Control distro down | no broker | VM profiles report `available: false`; running guests finish their jobs |
 
 ## 11. Responsibilities by later item
@@ -448,7 +507,7 @@ flowchart LR
 | Contract | Writer | Readers |
 |---|---|---|
 | allocator | P09 | P10, P11, P12, P16, P20, P22 |
-| backend-lifecycle | P10, P11 | P09, P12, P19, P22, P25 |
+| backend-lifecycle | P10, P11; storage document P19 | P09, P12, P19, P20, P22, P25 |
 | broker | P08 | P10, P11, P14, P15, P16, P26 |
 | guest-transport | P10, P11 host side; P14, P15 guest agent; lab proof P08/P10/P11 | P22, P26 |
 | image-catalog | P21, P25 | P06, P07, P10, P11, P12, P19, P20, P24 |
@@ -462,11 +521,18 @@ flowchart LR
   the installer preflight); nested virtualization off for guests by default.
 - Runner self-update: the actions-runner overlay is valid for one boot only; GitHub's support
   window for runner versions sets the rebuild deadline, so P25 rebuilds the overlay inside it.
-- Cache trust namespace: derived from GitHub data via the broker (repository of the assigned job),
-  never from anything the guest reports.
-- Relative disk paths have exact forms: `base/<generation_id>/base.vhdx`,
-  `clones/<reservation_id>/os.avhdx`, `clones/<reservation_id>/seed.iso`,
-  `scratch/<reservation_id>/scratch.vhdx`; `validate.py` enforces them.
+- Cache trust namespace: the repository plus the job's trust class. Trusted only for `push`,
+  `schedule` or `workflow_dispatch` on the default branch with the repository as head repository;
+  `pull_request`, `pull_request_target`, `workflow_run`, `issue_comment`, `merge_group`, other
+  branches, tags and unknown events are untrusted. The class is bound from GitHub's record of the
+  assigned job before any shared root attaches, never from the guest; when that record is
+  unavailable the job gets no shared root.
+- Relative disk paths have exact forms, relative to their tier root: `<generation_id>/base.vhdx`
+  (base_root), `<reservation_id>/os.avhdx` and `<reservation_id>/seed.iso` (clone_root),
+  `<reservation_id>/scratch.vhdx` (scratch_root); `validate.py` enforces them.
+- Storage roots are absolute drive-letter folders below the volume root, never UNC or device
+  paths, never nested, each on its recorded volume; set only through the elevated helper, never
+  from the inbox. No VM file uses Hyper-V's default host folders.
 - Approved image hashes, guest credentials and SSH keys live only in Administrators/SYSTEM folders
   with inheritance off and no operator entry.
 

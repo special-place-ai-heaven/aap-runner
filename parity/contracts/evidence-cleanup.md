@@ -1,4 +1,4 @@
-# Evidence and cleanup contract (version 1)
+# Evidence and cleanup contract (evidence record version 2, cleanup receipt version 1)
 
 Owners: **P05** (evidence harness) and **P00** (cleanup receipts; P00.1 hardening). Every item
 records its results with the evidence shape; P24 certificates, P26 review and P28 closure consume
@@ -21,6 +21,21 @@ artifact hashes and the independent verifier.
   key, credential or JIT config, and no value shaped like a GitHub token or a PEM private key
   (`validate.py` scans every contract document for both). Artifacts are referenced by hash.
 
+### Waivers (revision 2, P02.2)
+
+A record may carry an optional `waivers` list (at most 16). Each waiver names its `kind`,
+`compare_artifacts` (the definition compares artifact names, not hashes), the `definition_id` of the
+workload definition whose oracle it weakens (always the record's own workload: `validate.py`
+requires `fixture_id` to be `workload/<definition_id>` for every waiver), and a `reason` of 1-500
+printable ASCII characters that is not blank. One waiver per kind and definition. A record with a
+waiver can still be a pass; P24 and P26 list every waiver they find, rebuild the expected waiver set
+from `parity/workloads/**` at the record's `head_sha`, and reject a record whose waivers differ
+(missing or extra). Records keep `schema` 1, so every revision-1 record stays valid.
+
+Until **P05.1** moves the writer to this field, `tools/parity-certify` still appends
+` [waiver compare_artifacts=names: <reason>]` to `command`, cut to fit its 500 characters, and its
+`parity-report.json` and `verdict.json` remain the authoritative waiver record.
+
 ## Cleanup receipt (DECIDED: both shapes in use are accepted)
 
 Two shapes exist on 2026-10-19 and the schema accepts exactly these:
@@ -40,13 +55,15 @@ Both require full 40-hex SHAs, a verifier that is not the implementer or cleanup
 `observed_absent: true` for every disposed resource. Lab VMs from guest-transport proofs are listed
 by VM id and must be observed absent.
 
-`python -I parity/contracts/validate.py cleanup-receipt <file>...` checks real receipts. Run on
-2026-10-19 against the evidence store: P00 and P20.0 pass; **P01 fails** because its
-`reviewed_head` is `"99d2734 (worker fixes after review at b0407c2)"`, a short SHA with prose.
-That receipt belongs to the coordinator; this contract does not edit it.
+`python -B -I parity/contracts/validate.py cleanup-receipt <file>...` checks real receipts. Run on
+2026-10-20 against the evidence store: all six receipts (P00, P01, P02, P04, P05, P20.0) pass. The
+P01 receipt failed on 2026-10-19 (a short `reviewed_head` with prose); the coordinator has since
+recorded the full SHA.
 
 ## Negative fixtures
 
 Evidence: pass with a mismatched oracle, a success with a non-zero exit status, skipped reported as pass, a token-named field, a raw
-`env` dump, a short head SHA. Receipt: self-verified, absence not observed, missing merge SHA, a
-recorded secret, a protected path that vanished.
+`env` dump, a short head SHA; waivers with an unknown kind, a blank reason, a reason over 500
+characters, a definition id with `..`, a duplicate, a waiver for another
+definition, and a waiver on a record that is not a workload. Receipt: self-verified, absence not
+observed, missing merge SHA, a recorded secret, a protected path that vanished.

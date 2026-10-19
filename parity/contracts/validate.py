@@ -1,7 +1,7 @@
-"""Validate the P02 shared-contract fixtures. Standard library only; run with `python -I`.
+"""Validate the P02 shared-contract fixtures. Standard library only; run with `python -B -I`.
 
-    python -I parity/contracts/validate.py                      # every fixture
-    python -I parity/contracts/validate.py <contract> <file>...  # real documents
+    python -B -I parity/contracts/validate.py                      # every fixture
+    python -B -I parity/contracts/validate.py <contract> <file>...  # real documents
 
 For every `<name>.schema.json` next to this file:
   * fixtures/<name>/valid/*.json must pass the schema and the contract's semantic rules;
@@ -15,6 +15,8 @@ minimum, maximum, minLength, maxLength, pattern, $ref (local "#/$defs/..."), one
 allOf, not, if/then/else. Unknown keywords in a schema are an error, so a schema can never
 rely on a keyword this validator silently ignores. Cross-field rules JSON Schema cannot
 express (sums, cross-references) live in SEMANTIC below and are part of the contract.
+A pattern's `$` means end of input, as in ECMA-262: Python's `$` would also match before a final
+newline, so check() anchors at the end of the string instead. Documents are bounded to 256 KiB.
 Exit 0 when everything holds, 1 otherwise.
 """
 import json
@@ -86,7 +88,7 @@ def check(schema, value, root, path="$"):
             raise Invalid(f"{path}: shorter than {schema['minLength']}")
         if "maxLength" in schema and len(value) > schema["maxLength"]:
             raise Invalid(f"{path}: longer than {schema['maxLength']}")
-        if "pattern" in schema and not re.search(schema["pattern"], value):
+        if "pattern" in schema and not re.search(_ecma(schema["pattern"]), value):
             raise Invalid(f"{path}: does not match pattern {schema['pattern']}")
     if isinstance(value, list):
         if "minItems" in schema and len(value) < schema["minItems"]:
@@ -142,6 +144,11 @@ def check(schema, value, root, path="$"):
             check(branch, value, root, path)
 
 
+def _ecma(pattern):
+    """ECMA-262 `$` is the end of input; Python's `$` also matches before a final newline."""
+    return re.sub(r"(?<!\\)\$", r"\\Z", pattern)
+
+
 def _try_all(subs, value, root, path):
     errors = []
     for sub in subs:
@@ -176,19 +183,56 @@ def _no_secret_values(doc, path="$"):
         raise Invalid(f"{path}: value has a token or private-key shape")
 
 
-def lint_schema(node, path="$"):
-    """Every integer or number in a contract schema has a maximum (security review L1)."""
+# _ecma rewrites every `$` not preceded by a backslash to `\Z`. It would miss an anchor after an
+# escaped backslash and break a `$` inside a character class, so schemas may use neither form.
+ECMA_UNSAFE = re.compile(r"(?<!\\)(?:\\\\)+\$|\[[^\]]*\$")
+ENDS_ANCHORED = re.compile(r"(?<!\\)(?:\\\\)*\$\Z")
+
+
+def _unanchored(pattern):
+    """True when a pattern would rely on search semantics: it must start with `^`, end with an
+    unescaped `$` and have no `|` outside a group (`^a|b$` matches any string ending in b)."""
+    if not pattern.startswith("^") or not ENDS_ANCHORED.search(pattern):
+        return True
+    depth, i, in_class = 0, 0, False
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            continue
+        if in_class:
+            in_class = c != "]"
+        elif c == "[":
+            in_class = True
+        elif c in "()":
+            depth += 1 if c == "(" else -1
+        elif c == "|" and depth == 0:
+            return True
+        i += 1
+    return False
+
+
+def lint_schema(node, path="$", negated=False):
+    """Every integer or number in a contract schema has a maximum (security review L1). No
+    pattern puts `$` after an escaped backslash or inside a character class (see _ecma), and
+    every pattern outside a `not` matches the whole string; under `not` a pattern is a
+    deliberate "contains" check (for example a `..` component)."""
     problems = []
     if isinstance(node, dict):
+        p = node.get("pattern")
+        if isinstance(p, str) and ECMA_UNSAFE.search(p):
+            problems.append(f"{path}: pattern form _ecma cannot translate")
+        if isinstance(p, str) and not negated and _unanchored(p):
+            problems.append(f"{path}: pattern is not anchored as a full-string match")
         t = node.get("type")
         types = t if isinstance(t, list) else [t]
         if ("integer" in types or "number" in types) and "maximum" not in node and "const" not in node and "enum" not in node:
             problems.append(f"{path}: numeric without maximum")
         for k, v in node.items():
-            problems += lint_schema(v, f"{path}.{k}")
+            problems += lint_schema(v, f"{path}.{k}", negated or k == "not")
     elif isinstance(node, list):
         for i, v in enumerate(node):
-            problems += lint_schema(v, f"{path}[{i}]")
+            problems += lint_schema(v, f"{path}[{i}]", negated)
     return problems
 
 
@@ -257,6 +301,28 @@ def vm_name(profile, slot, lease_generation, reservation_id):
     return f"aap-{'w' if profile == 'windows' else 'l'}-{slot}-{lease_generation}-{reservation_id[2:10]}"
 
 
+def _volumes(volumes, live):
+    """Allocator rule 5 for disk: every live reservation's clone and scratch caps count on the volume
+    that holds that tier, within available_gib - floor_gib - held_gib of that volume (available_gib is
+    measured at admission)."""
+    if len(volumes) != len({v["volume_guid"] for v in volumes}):
+        raise Invalid("a volume is listed twice")
+    tiers = set()
+    for v in volumes:
+        for t in v["tiers"]:
+            if t in tiers:
+                raise Invalid(f"tier {t} is on more than one volume")
+            tiers.add(t)
+    if any(r["backend"] == "hyperv-vm" for r in live) and not {"base", "clone", "scratch"} <= tiers:
+        raise Invalid("a VM reservation needs the base, clone and scratch tiers in host.volumes")
+    for v in volumes:
+        if not {"clone", "scratch"} & set(v["tiers"]):
+            continue  # a base or staging volume carries no reservation cap; builds check their own space
+        need = sum(r["clone_gib"] * ("clone" in v["tiers"]) + r["scratch_gib"] * ("scratch" in v["tiers"]) for r in live)
+        if need > v["available_gib"] - v["floor_gib"] - v["held_gib"]:
+            raise Invalid(f"volume {v['volume_guid']}: reservations exceed its disk budget (available minus floor minus held)")
+
+
 def sem_allocator(doc):
     profiles = doc["profiles"]
     _counts(profiles["linux"]["count"], profiles["windows"]["count"])
@@ -294,8 +360,7 @@ def sem_allocator(doc):
     if sum(r["cpus"] for r in live) > pool[0] or sum(_mem(r) for r in live) > pool[1]:
         raise Invalid("reservations exceed the pool; the host reserve is never given away")
     host = doc["host"]
-    if sum(r["disk_gib"] for r in live) > host["disk_gib"]:
-        raise Invalid("reservations exceed the image-root disk budget")
+    _volumes(host["volumes"], live)
     if host["io_mbps"] == 0:
         if any(r["io_mbps"] for r in live):
             raise Invalid("io_mbps reserved while host IO is unmeasured")
@@ -311,7 +376,11 @@ def sem_allocator(doc):
         if r["backend"] == "wsl-legacy":
             if r["profile"] != "linux" or r["vm_id"] is not None or not r["image_generation"].startswith("legacy-"):
                 raise Invalid(f"{rid}: legacy reservations are linux, vm_id null, generation legacy-*")
+            if r["clone_gib"] or r["scratch_gib"]:
+                raise Invalid(f"{rid}: legacy reservations reserve no VM disk")
         else:
+            if r["clone_gib"] < 1:
+                raise Invalid(f"{rid}: a VM reservation reserves at least 1 GiB of clone disk")
             if r["state"] not in ("creating", "reconciled") and r["vm_id"] is None:
                 raise Invalid(f"{rid}: a VM reservation past creating names its vm_id")
             if r["runner_name"] is not None and r["runner_name"] != vm_name(r["profile"], r["slot"], r["lease_generation"], rid):
@@ -327,8 +396,46 @@ def sem_allocator(doc):
             raise Invalid(f"{rid}: idempotency_key must be <reservation_id>/<lease_generation>")
 
 
+RESERVED_NAMES = {"con", "prn", "aux", "nul"} | {f"{p}{i}" for p in ("com", "lpt") for i in range(10)}
+
+
+DATA_DIR = "c:\\programdata\\aap-runner"
+
+
+def _storage_roots(roots):
+    """Storage tier roots (backend-lifecycle.md, Storage tiers): no reserved device name, no root equal
+    to, inside or containing the data folder (%SystemRoot% and C:\\wsl are runtime checks), no two
+    roots the same folder or nested, and drive letters and volume GUIDs map one to one.
+    Case-insensitive, as NTFS is."""
+    named = {k: v for k, v in roots.items() if v is not None}
+    for name, r in named.items():
+        for part in r["path"].split("\\")[1:]:
+            if part.split(".")[0].rstrip(" ").lower() in RESERVED_NAMES:  # "aux .d" is AUX to Win32
+                raise Invalid(f"roots.{name}: {part} is a reserved device name")
+        p = r["path"].lower()
+        if p == DATA_DIR or p.startswith(DATA_DIR + "\\") or DATA_DIR.startswith(p + "\\"):
+            raise Invalid(f"roots.{name} overlaps the data folder C:\\ProgramData\\aap-runner")
+    names = sorted(named)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            pa, pb = named[a]["path"].lower(), named[b]["path"].lower()
+            if pa == pb:
+                raise Invalid(f"roots.{a} and roots.{b} are the same folder")
+            for inner, outer, pi, po in ((a, b, pa, pb), (b, a, pb, pa)):
+                if pi.startswith(po + "\\"):
+                    raise Invalid(f"roots.{inner} is inside roots.{outer}")
+            if (pa[0] == pb[0]) != (named[a]["volume_guid"] == named[b]["volume_guid"]):
+                raise Invalid(f"roots.{a} and roots.{b}: drive letters and volume GUIDs map one to one")
+
+
 def sem_backend_lifecycle(doc):
+    if doc["kind"] == "storage":
+        _storage_roots(doc["roots"])
+        return
     if doc["kind"] == "budget":
+        for tier in ("clone", "scratch"):
+            if doc[f"{tier}_gib_max"] < doc[f"{tier}_peak_gib"]:
+                raise Invalid(f"{tier}_gib_max is below the measured {tier}_peak_gib")
         return
     if doc["idempotency_key"] != f"{doc['reservation_id']}/{doc['lease_generation']}/{doc['op']}":
         raise Invalid("idempotency_key must be <reservation_id>/<lease_generation>/<op>")
@@ -342,8 +449,9 @@ def sem_backend_lifecycle(doc):
     if name is not None and not name.endswith("-" + doc["reservation_id"][2:10]):
         raise Invalid("vm_name must end with the first 8 hex of the reservation_id")
     rid = doc["reservation_id"]
-    exact = {"base_ref": f"base/{doc['image_generation']}/base.vhdx", "os_diff": f"clones/{rid}/os.avhdx",
-             "seed": f"clones/{rid}/seed.iso", "scratch": f"scratch/{rid}/scratch.vhdx"}
+    # Relative to the role's tier root: base_root, clone_root (os_diff, seed) or scratch_root.
+    exact = {"base_ref": f"{doc['image_generation']}/base.vhdx", "os_diff": f"{rid}/os.avhdx",
+             "seed": f"{rid}/seed.iso", "scratch": f"{rid}/scratch.vhdx"}
     for d in doc["disks"]:
         if d["path"] != exact[d["role"]]:
             raise Invalid(f"disk {d['role']}: path must be exactly {exact[d['role']]}")
@@ -396,8 +504,9 @@ def sem_image_catalog(doc):
         if not g["generation_id"].startswith(g["profile"] + "/"):
             raise Invalid(f"{g['generation_id']}: id must start with its profile")
         for a in g["artifacts"]:
-            if not a["path"].startswith(f"base/{g['generation_id']}/"):
-                raise Invalid(f"{g['generation_id']}: artifacts live in base/<profile>/<generation>/ and never move")
+            if not a["path"].startswith(g["generation_id"] + "/"):
+                raise Invalid(f"{g['generation_id']}: artifact {a['path']} is outside its generation folder; "
+                              "artifacts stay in <base_root>/<generation_id>/ and never move")
         if doc["scope"] == "live" and g["state"] == "active" and g["live_activation"] is None:
             raise Invalid(f"{g['generation_id']}: active in a live catalog requires the owner's live activation record (gate D5)")
         if g["state"] in ("approved", "active", "retired"):
@@ -464,6 +573,32 @@ def sem_status_v5(doc):
         raise Invalid("settings_schemas must keep accepting schema 2")
     if doc["capacity"]["used_slots"] + doc["capacity"]["free_slots"] != doc["capacity"]["max_slots"]:
         raise Invalid("used_slots + free_slots must equal max_slots")
+    _status_storage(doc["storage"], doc["profiles"])
+
+
+def _status_storage(st, profiles):
+    tiers, floor = st["tiers"], st["volume_floor_gib"]
+    if st["state"] == "unconfigured":
+        if tiers or floor is not None:
+            raise Invalid("unconfigured storage reports no tiers and no floor")
+    else:
+        if sorted(t["tier"] for t in tiers) != ["base", "clone", "scratch", "staging"] or floor is None:
+            raise Invalid("configured storage reports the floor and base, clone, scratch and staging once each")
+        for t in tiers:
+            free = t["volume_free_gib"]
+            if (t["state"] == "missing") != (free is None) and t["state"] != "untrusted":
+                raise Invalid(f"tier {t['tier']}: free space is null exactly when the tier is missing")
+            if t["state"] == "ok" and free < floor:
+                raise Invalid(f"tier {t['tier']} is below the floor but reported ok")
+            if t["state"] == "low" and free >= floor:
+                raise Invalid(f"tier {t['tier']} is above the floor but reported low")
+        worst = next((s for s in ("missing", "untrusted", "low") if any(t["state"] == s for t in tiers)), "ok")
+        if st["state"] != worst:
+            raise Invalid(f"storage state must be {worst}, the worst tier state")
+    if st["state"] != "ok":
+        for p in profiles:
+            if p["backend"] == "hyperv-vm" and p["available"]:
+                raise Invalid(f"hyperv-vm profile {p['profile']} is available while storage is {st['state']}")
 
 
 def sem_evidence_bundle(doc):
@@ -477,6 +612,12 @@ def sem_evidence_bundle(doc):
         raise Invalid("skipped, blocked, timeout and unknown are reported as observed, never as pass")
     if o["expected"] == "success" and o["observed"] == "success" and doc["exit_status"] != 0:
         raise Invalid("an observed success must have exit_status 0")
+    waivers = [(w["kind"], w["definition_id"]) for w in doc.get("waivers", [])]
+    if len(waivers) != len(set(waivers)):
+        raise Invalid("duplicate waiver for one kind and definition")
+    for _, definition in waivers:
+        if doc["fixture_id"] != "workload/" + definition:
+            raise Invalid(f"waiver for {definition} on fixture {doc['fixture_id']}: a record waives only its own workload")
 
 
 def sem_cleanup_receipt(doc):
@@ -517,9 +658,9 @@ def validate(name, schema, instance):
 
 def load(path):
     with open(path, "rb") as f:
-        raw = f.read()
-    if len(raw) > 65536:
-        raise Invalid(f"{path.name}: fixture over 64 KiB")
+        raw = f.read(262145)  # one byte past the bound, never the whole file
+    if len(raw) > 262144:
+        raise Invalid(f"{path.name}: document over 256 KiB")
     return json.loads(raw.decode("utf-8-sig"))
 
 
@@ -549,6 +690,10 @@ def main():
     names = {p.name[: -len(".schema.json")] for p in schemas}
     if names != set(SEMANTIC):
         failures.append(f"schema set {sorted(names)} differs from SEMANTIC {sorted(SEMANTIC)}")
+    for bad, good in ((r"^a\\$", r"^a\$$"), (r"^[a$]+$", r"^[a\]]+$"), (r"^a|b$", r"^(a|b)$"),
+                      (r"a$", r"^[|]a$"), (r"^a\$", r"^(a)$")):
+        if not lint_schema({"pattern": bad}) or lint_schema({"pattern": good}):
+            failures.append(f"lint_schema self-check failed on {bad!r} / {good!r}")
     for spath in schemas:
         name = spath.name[: -len(".schema.json")]
         if name not in SEMANTIC:

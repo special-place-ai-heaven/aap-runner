@@ -1,0 +1,23 @@
+{
+  "expect": "$.volume_floor_gib: below minimum 10",
+  "instance": {
+    "schema": 2,
+    "kind": "storage",
+    "volume_floor_gib": 5,
+    "roots": {
+      "base_root": {
+        "path": "X:\\aap-example\\base",
+        "volume_guid": "00000000-0000-4000-8000-0000000000e1"
+      },
+      "clone_root": {
+        "path": "X:\\aap-example\\clones",
+        "volume_guid": "00000000-0000-4000-8000-0000000000e1"
+      },
+      "scratch_root": {
+        "path": "X:\\aap-example\\scratch",
+        "volume_guid": "00000000-0000-4000-8000-0000000000e1"
+      },
+      "staging_root": null
+    }
+  }
+}

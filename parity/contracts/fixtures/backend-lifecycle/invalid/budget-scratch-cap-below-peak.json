@@ -1,0 +1,21 @@
+{
+  "expect": "scratch_gib_max is below the measured scratch_peak_gib",
+  "instance": {
+    "schema": 2,
+    "kind": "budget",
+    "profile": "windows",
+    "image_generation": "win25-vs2026-x64/20261007.264.1-aap.1",
+    "measured": true,
+    "evidence_ref": "evidence/P06/budget-20261007.264.1-aap.1.json",
+    "measured_at": "2026-10-19T18:00:00Z",
+    "base_gib": 135,
+    "clone_peak_gib": 25,
+    "clone_gib_max": 25,
+    "scratch_peak_gib": 22,
+    "scratch_gib_max": 20,
+    "staging_gib": 150,
+    "replacement_gib": 135,
+    "rollback_retained_generations": 1,
+    "boot_mem_overhead_mib": 512
+  }
+}

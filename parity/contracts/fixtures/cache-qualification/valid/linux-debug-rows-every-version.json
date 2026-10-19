@@ -1,0 +1,566 @@
+{
+  "schema": 1,
+  "zccache": {
+    "version": "1.15.6",
+    "commit": "15ec9537af0d219e07b72ce2b3f97d5f68d72b5e",
+    "archive": "zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz",
+    "archive_sha256": "885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7",
+    "binary_sha256": "f97ae874042ab5c80fc2e35342e406972437f1fd45ec81372be33c0f5cbb18cc"
+  },
+  "platform": "linux-x86_64",
+  "matrix_revision": 2,
+  "rows": [
+    {
+      "compiler": "rustc",
+      "compiler_version": "1.99.0",
+      "invocation": "rustc-wrapper",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/rustc-1.99.0-rustc-wrapper.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L15 yes"
+    },
+    {
+      "compiler": "rustc",
+      "compiler_version": "1.99.0",
+      "invocation": "link",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/rustc-1.99.0-link.json",
+      "reason": "direct per upstream binary-crate pass-through (README 400-403)"
+    },
+    {
+      "compiler": "rustc",
+      "compiler_version": "1.99.0",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/rustc-1.99.0-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L15 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "16.0.6",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-16.0.6-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "16.0.6",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-16.0.6-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "16.0.6",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-16.0.6-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "16.0.6",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-16.0.6-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "16.0.6",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-16.0.6-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "17.0.6",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-17.0.6-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "17.0.6",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-17.0.6-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "17.0.6",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-17.0.6-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "17.0.6",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-17.0.6-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "17.0.6",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-17.0.6-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "18.1.3",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-18.1.3-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "18.1.3",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-18.1.3-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "18.1.3",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-18.1.3-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "18.1.3",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-18.1.3-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "18.1.3",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-18.1.3-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "18.1.3",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-18.1.3-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "16.0.6",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-16.0.6-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "16.0.6",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-16.0.6-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "16.0.6",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-16.0.6-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "16.0.6",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-16.0.6-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "16.0.6",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-16.0.6-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "17.0.6",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-17.0.6-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "17.0.6",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-17.0.6-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "17.0.6",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-17.0.6-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "17.0.6",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-17.0.6-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "17.0.6",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-17.0.6-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "18.1.3",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-18.1.3-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "18.1.3",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-18.1.3-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "18.1.3",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-18.1.3-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "18.1.3",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-18.1.3-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "18.1.3",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-18.1.3-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "18.1.3",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-18.1.3-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "12.4.0",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-12.4.0-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "12.4.0",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-12.4.0-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "12.4.0",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-12.4.0-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "12.4.0",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-12.4.0-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "13.3.0",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-13.3.0-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "13.3.0",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-13.3.0-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "13.3.0",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-13.3.0-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "13.3.0",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-13.3.0-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "14.2.0",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-14.2.0-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "14.2.0",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-14.2.0-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "14.2.0",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-14.2.0-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "14.2.0",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-14.2.0-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "13.3.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-13.3.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "12.4.0",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-12.4.0-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "12.4.0",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-12.4.0-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "12.4.0",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-12.4.0-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "12.4.0",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-12.4.0-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "13.3.0",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-13.3.0-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "13.3.0",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-13.3.0-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "13.3.0",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-13.3.0-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "13.3.0",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-13.3.0-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "14.2.0",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-14.2.0-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "14.2.0",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-14.2.0-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "14.2.0",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-14.2.0-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "14.2.0",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-14.2.0-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "13.3.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-13.3.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "16.0.6",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-16.0.6-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "17.0.6",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-17.0.6-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "16.0.6",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-16.0.6-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "17.0.6",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-17.0.6-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "12.4.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-12.4.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "14.2.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-14.2.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "12.4.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-12.4.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "14.2.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-14.2.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    }
+  ]
+}
