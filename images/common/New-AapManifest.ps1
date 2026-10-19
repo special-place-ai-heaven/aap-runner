@@ -2,6 +2,9 @@
 # the pinned upstream scripts they point at (runner-images at the profile build commits), read as text on 2026-10-19.
 # Nothing here fetches anything. A tool-name list in a blocker is for people; the `scripts` arrays are what the
 # tests check against the script tables of both inputs.md files, so a sourced script cannot be silently dropped.
+# Literal hashes with no upstream-committed value (docker-ce-install-helper, android-commandlinetools-linux,
+# containernetworking-plugins) were computed from one download on 2026-10-19 and cross-checked as each note says.
+# Only docker-engine-windows-static is still first-fetch: no hash and no immutable source exist for it.
 # Usage: pwsh -File New-AapManifest.ps1 [-OutPath <file>]   (default: artifacts.manifest.json beside this script)
 param([string]$OutPath = (Join-Path $PSScriptRoot 'artifacts.manifest.json'))
 Set-StrictMode -Version 2.0
@@ -55,22 +58,22 @@ $entries = @(
     (Zcc 'zccache-v1.15.6-x86_64-pc-windows-msvc-debug.zip' $win '619e41467ea832454c0a5fa8ab009497274279f8bbfe8ad4a39bc18784901ceb' 34900341)
 
     (Entry -Name 'android-commandlinetools-win' -Version '13114758' -Profiles @($win) -File 'commandlinetools-win-13114758_latest.zip' -Url 'https://dl.google.com/android/repository/commandlinetools-win-13114758_latest.zip' `
-        -Source 'literal' -Value '98B565CB657B012DAE6794CEFC0F66AE1EFB4690C699B78A614B4A6A3505B003' -Max 268435456 -Types @('application/zip') `
+        -Source 'literal' -Value '98B565CB657B012DAE6794CEFC0F66AE1EFB4690C699B78A614B4A6A3505B003' -Size 143040480 -Max 268435456 -Types @('application/zip') `
         -License (Lic 'proprietary-eula' 'unknown' 'Android SDK terms; the terms were not read or recorded. The scripts also write the SDK licence acceptances, which the operator inherits.') -Timeout 1800 -Ref $winInputs `
-        -Note 'The file name contains "latest" but the version is the build number 13114758 and the hash pins the content.' -Scripts @('Install-AndroidSDK.ps1'))
+        -Note 'The file name contains "latest" but the version is the build number 13114758 and the hash pins the content. Size and SHA-1 54a582f3bf73e04253602f2d1c80bd5868aac115 match Google''s SDK index https://dl.google.com/android/repository/repository2-1.xml (checked 2026-10-19; the archive was downloaded and hashed).' -Scripts @('Install-AndroidSDK.ps1'))
     (Entry -Name 'mysql-vcredist-x64' -Version 'h20e2645b7cd5' -Profiles @($win) -File 'vcredist_x64.exe' -Url 'https://download.microsoft.com/download/0/5/6/056dcda9-d667-4e27-8001-8a0c6971d6b1/vcredist_x64.exe' `
         -Source 'literal' -Value '20E2645B7CD5873B1FA3462B99A665AC8D6E14AAE83DED9D875FEA35FFDD7D7E' -Max 33554432 -Types $octet `
         -License (Lic 'vendor-redistributable' 'unknown' 'Microsoft Visual C++ redistributable; the Microsoft terms were not read or recorded. Record them before shipping inside an image.') -Timeout 300 -Ref $winInputs `
         -Note 'Helper for the MySQL CLI install; the literal SHA-256 is committed upstream in Install-MysqlCli.ps1. Upstream records no version, so the version label is the first 12 hex digits of the hash behind an h; the hash is the identity.' -Scripts @('Install-MysqlCli.ps1'))
     (Entry -Name 'docker-ce-install-helper' -Version '8ea2a92d8dfa7815abcf5cc44a756a0ac3d0f513' -Profiles @($win) -File 'install-docker-ce.ps1' `
         -Url 'https://raw.githubusercontent.com/microsoft/Windows-Containers/8ea2a92d8dfa7815abcf5cc44a756a0ac3d0f513/helpful_tools/Install-DockerCE/install-docker-ce.ps1' `
-        -Source 'first-fetch' -Max 1048576 -Types @('text/plain') `
+        -Source 'literal' -Value '16e1e920eca45ead4dcb41b55bb6721b87d590452372bfebd2aad6aca9d2fca1' -Size 22265 -Max 1048576 -Types @('text/plain') `
         -License (Lic 'open-source' 'allowed' 'MIT License, Copyright Microsoft Corporation (LICENSE of microsoft/Windows-Containers at the pinned commit 8ea2a92, read 2026-10-19). Keep the notice when redistributing.') -Timeout 120 -Ref $winInputs `
-        -Note 'Pinned to a commit, no upstream hash. Download needs -RecordFirstFetch and is recorded unverified. Data only: never executed by this tooling.' -Scripts @('Install-Docker.ps1'))
+        -Note 'Pinned to commit 8ea2a92 of microsoft/Windows-Containers, so the URL names immutable content. No hash is published; the SHA-256 was computed from one fetch of that URL on 2026-10-19 (22265 bytes). Data only: never executed by this tooling.' -Scripts @('Install-Docker.ps1'))
     (Entry -Name 'docker-engine-windows-static' -Version '29.7.2' -Profiles @($win) -File 'docker-29.7.2.zip' -Url 'https://download.docker.com/win/static/stable/x86_64/docker-29.7.2.zip' `
         -Source 'first-fetch' -Max 134217728 -Types @('application/zip') `
         -License (Lic 'unknown' 'unknown' 'Static archive of Docker Engine and CLI binaries; the licences of the bundled components were not read.') -Timeout 600 -Ref $winInputs `
-        -Note 'Version from the toolset (docker.components.docker). URL pattern docker-<version>.zip from Install-Docker.ps1 at aee0669; the server answered 200 application/zip on 2026-10-19. No upstream hash is published, so the download needs -RecordFirstFetch.' -Scripts @('Install-Docker.ps1'))
+        -Note 'Version from the toolset (docker.components.docker). URL pattern docker-<version>.zip from Install-Docker.ps1 at aee0669; the server answered 200 application/zip on 2026-10-19. No hash and no immutable source exist, so this stays first-fetch: it needs -RecordFirstFetch, is downloaded again on every online run, never follows a redirect and is always reported unverified.' -Scripts @('Install-Docker.ps1'))
     (Entry -Name 'docker-compose-windows-sha256' -Version '2.40.3' -Profiles @($win) -File 'docker-compose-windows-x86_64.exe.sha256' `
         -Url 'https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-windows-x86_64.exe.sha256' -Redirect $ghHosts -Source 'literal' `
         -Value '1be534e9e4ec6afee06babcfbd154cd4f1ce89f8c1c846f2b8036ee4c2af14fe' -Size 100 -Max 4096 -Types @('application/octet-stream', 'text/plain') -License $composeLic -Timeout 120 -Ref $winInputs `
@@ -103,13 +106,13 @@ $entries = @(
         -Note 'SHA-512 as committed in configure-dpkg.sh upstream.' -Scripts @('configure-dpkg.sh'))
     (Entry -Name 'containernetworking-plugins' -Version '1.1.1+ds1-3build1' -Profiles @($ubu) -File 'containernetworking-plugins_1.1.1+ds1-3build1_amd64.deb' `
         -Url 'https://archive.ubuntu.com/ubuntu/pool/universe/g/golang-github-containernetworking-plugins/containernetworking-plugins_1.1.1+ds1-3build1_amd64.deb' `
-        -Source 'first-fetch' -Max 33554432 -Types @('application/vnd.debian.binary-package') `
+        -Source 'literal' -Value 'ce5852960eec1b1026c0f4ef8dee383cb99906ce54c12158d65e46417ba2decf' -Size 7045220 -Max 33554432 -Types @('application/vnd.debian.binary-package') `
         -License (Lic 'open-source' 'allowed' 'Apache-2.0 (Debian copyright file of golang-github-containernetworking-plugins 1.1.1+ds1-3, read 2026-10-19).') -Timeout 300 -Ref $ubuInputs `
-        -Note 'No upstream hash seen. Needs -RecordFirstFetch; recorded unverified.' -Scripts @('install-container-tools.sh'))
+        -Note 'SHA-256 from the Ubuntu noble Packages index (universe/binary-amd64), checked 2026-10-19: InRelease https://archive.ubuntu.com/ubuntu/dists/noble/InRelease lists Packages.gz by hash and has a good signature from the Ubuntu Archive Automatic Signing Key (2018), fingerprint F6EC B376 2474 EDA9 D21B 7022 8719 20D1 991B C93C. The downloaded .deb matches that size and hash.' -Scripts @('install-container-tools.sh'))
     (Entry -Name 'android-commandlinetools-linux' -Version '11076708' -Profiles @($ubu) -File 'commandlinetools-linux-11076708_latest.zip' -Url 'https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip' `
-        -Source 'first-fetch' -Max 268435456 -Types @('application/zip') `
+        -Source 'literal' -Value '2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258' -Size 153607504 -Max 268435456 -Types @('application/zip') `
         -License (Lic 'proprietary-eula' 'unknown' 'Android SDK terms; the terms were not read or recorded.') -Timeout 1800 -Ref $ubuInputs `
-        -Note 'Toolset gives the file name without a hash. URL derived from the Windows pin path on the same host and answered with HTTP 200 on 2026-10-19 (headers only). Needs -RecordFirstFetch.' -Scripts @('install-android-sdk.sh'))
+        -Note 'The toolset gives the file name without a hash. SHA-256 computed from one download on 2026-10-19. Google''s SDK index https://dl.google.com/android/repository/repository2-1.xml (also repository2-3.xml) lists this archive at this URL with the same size and SHA-1 d313adb7aedccf6cf0cfca51ec180f0059f5f8f8, which the download matches. The build number 11076708 is the version.' -Scripts @('install-android-sdk.sh'))
 )
 
 $bothTools = 'parity/baselines/*/inputs.md, "Tool cache manifests" and "Drift since the pin"'

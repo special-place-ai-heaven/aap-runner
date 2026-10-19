@@ -1,19 +1,34 @@
 # P03 verified artifact acquisition. Pester 5 on Windows PowerShell 5.1 and PowerShell 7.
-# Fixture files are served by a local loopback HttpListener or read from the temp directory; one optional
-# test fetches a real small file (tagged Network) and is skipped when github.com does not resolve.
+# Fixture files are served by a local HttpListener on the loopback addresses 127.0.0.1 and 127.0.0.2 or read from the
+# temp directory. Two optional tests fetch real small files (tagged Network); they are skipped unless an HTTPS request
+# to the real host gets an answer. Python tests use a python 3 that really runs (not the Microsoft Store stub) and
+# are skipped when there is none.
+# Every staging folder the tests create is locked to the current user, SYSTEM and Administrators, and the tests pass
+# -TrustedSid (the current user) and -SkipAncestorCheck by default, because the ACLs above a temp folder are not ours.
+# The 'staging trust' tests turn that off or use mocked ACLs to test the real rules.
 
 BeforeDiscovery {
-    $script:HasPython = [bool](Get-Command python -ErrorAction SilentlyContinue)
-    $script:HasNet = $false
-    try { [void][Net.Dns]::GetHostAddresses('github.com'); $script:HasNet = $true } catch { $script:HasNet = $false }
+    . (Join-Path $PSScriptRoot 'TestHelpers.ps1')
+    $script:HasPython = [bool](Find-RealPython)
+    $script:HasNetGallery = Test-HttpsReachable 'https://www.powershellgallery.com/api/v2/package/Pester/5.9.0'
+    $script:HasNetGitHub = Test-HttpsReachable 'https://github.com/zackees/zccache/releases/download/1.15.6/SHA256SUMS'
 }
 
 BeforeAll {
+    . (Join-Path $PSScriptRoot 'TestHelpers.ps1')
+    $script:Py = Find-RealPython
     $script:Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
     $script:Common = Join-Path $script:Repo 'images\common'
     $script:ManifestPath = Join-Path $script:Common 'artifacts.manifest.json'
     $script:Validator = Join-Path $script:Repo 'parity\contracts\validate.py'
     Import-Module (Join-Path $script:Common 'AapArtifact.psm1') -Force
+    $script:Me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $script:Exe = (Get-Process -Id $PID).Path
+    $script:DefaultKeys = @('Get-AapArtifact', 'Invoke-AapManifest') | ForEach-Object { "${_}:TrustedSid"; "${_}:SkipAncestorCheck" }
+    foreach ($c in 'Get-AapArtifact', 'Invoke-AapManifest') {
+        $global:PSDefaultParameterValues["${c}:TrustedSid"] = @($script:Me)
+        $global:PSDefaultParameterValues["${c}:SkipAncestorCheck"] = $true
+    }
 
     function Get-Sha([byte[]]$Bytes, [string]$Algo = 'SHA256') {
         $h = [Security.Cryptography.HashAlgorithm]::Create($Algo)
@@ -36,7 +51,15 @@ BeforeAll {
         foreach ($k in $Over.Keys) { $e[$k] = $Over[$k] }
         [pscustomobject]$e
     }
-    function New-Staging { $p = Join-Path $TestDrive ([guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $p | Out-Null; $p }
+    # A folder only the current user, SYSTEM and Administrators can use: what a locked staging root looks like.
+    # -AlsoSid adds Modify for more principals, to build a root that is not locked. icacls is used instead of Set-Acl
+    # because a second Set-Acl on the same folder failed here with a missing SeSecurityPrivilege.
+    function Lock-Dir([string]$Path, [string[]]$AlsoSid = @()) {
+        $grants = @("*$($script:Me):(OI)(CI)F", '*S-1-5-18:(OI)(CI)F', '*S-1-5-32-544:(OI)(CI)F') + @($AlsoSid | ForEach-Object { "*${_}:(OI)(CI)M" })
+        & "$env:SystemRoot\System32\icacls.exe" $Path /inheritance:r /grant:r @grants | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "icacls failed for $Path (exit $LASTEXITCODE)" }
+    }
+    function New-Staging { $p = Join-Path $TestDrive ([guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Path $p | Out-Null; Lock-Dir $p; $p }
     function Get-Rejected($Staging, $Entry) { Get-Content -Raw -LiteralPath ((Get-AapStagedPath $Staging $Entry) + '.rejected.json') | ConvertFrom-Json }
     function Invoke-Fetch($Entry, $Staging, [hashtable]$More = @{}) {
         Get-AapArtifact -Entry $Entry -StagingRoot $Staging -AllowLoopbackHttp @More
@@ -53,8 +76,9 @@ BeforeAll {
 
     $script:State = [hashtable]::Synchronized(@{ Hits = @{}; Sums = ''; Release = $false })
     $script:Listener = New-Object Net.HttpListener
+    # Loopback addresses only: 127.0.0.1 is the artifact host, 127.0.0.2 plays "another host". Never "localhost" or a wildcard.
     $script:Listener.Prefixes.Add("http://127.0.0.1:$($script:Port)/")
-    $script:Listener.Prefixes.Add("http://localhost:$($script:Port)/")
+    $script:Listener.Prefixes.Add("http://127.0.0.2:$($script:Port)/")
     $script:Listener.Start()
     $server = {
         param($listener, $state, $port)
@@ -77,7 +101,7 @@ BeforeAll {
                     '/gone' { Send $res $ok 'text/plain' 404 }
                     '/flaky.bin' { if ($state.Hits[$p] -eq 1) { Send $res $ok 'text/plain' 503 } else { Send $res $ok 'application/octet-stream' } }
                     '/redir-same' { $res.StatusCode = 302; $res.RedirectLocation = '/ok.bin'; $res.Close() }
-                    '/redir-other' { $res.StatusCode = 302; $res.RedirectLocation = "http://localhost:$port/ok.bin"; $res.Close() }
+                    '/redir-other' { $res.StatusCode = 302; $res.RedirectLocation = "http://127.0.0.2:$port/ok.bin"; $res.Close() }
                     '/big-announced' { $res.ContentType = 'application/octet-stream'; $res.ContentLength64 = 5000000; $res.OutputStream.Write($ok, 0, 5); $res.Abort() }
                     '/big-chunked' {
                         $res.ContentType = 'application/octet-stream'; $res.SendChunked = $true
@@ -110,6 +134,7 @@ BeforeAll {
 AfterAll {
     try { $script:Listener.Stop(); $script:Listener.Close() } catch { $null = $_ }
     try { $script:Ps.Stop(); $script:Ps.Dispose() } catch { $null = $_ }
+    foreach ($k in $script:DefaultKeys) { $global:PSDefaultParameterValues.Remove($k) }
 }
 
 Describe 'manifest' {
@@ -144,7 +169,7 @@ Describe 'manifest' {
         (& $norm $tmp) | Should -BeExactly (& $norm $script:ManifestPath)
     }
     It 'validates against its schema with the contract validator' -Skip:(-not $HasPython) {
-        $out = & python -I (Join-Path $PSScriptRoot 'validate_manifest.py') $script:Validator (Join-Path $script:Common 'artifacts.manifest.schema.json') $script:ManifestPath
+        $out = & $script:Py -I (Join-Path $PSScriptRoot 'validate_manifest.py') $script:Validator (Join-Path $script:Common 'artifacts.manifest.schema.json') $script:ManifestPath
         $LASTEXITCODE | Should -Be 0 -Because "$out"
     }
     It 'the schema validator rejects a floating version and an http url' -Skip:(-not $HasPython) {
@@ -152,12 +177,12 @@ Describe 'manifest' {
         $doc.entries[0].version = 'latest'
         $bad = Join-Path $TestDrive 'bad1.json'
         $doc | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $bad
-        $null = & python -I (Join-Path $PSScriptRoot 'validate_manifest.py') $script:Validator (Join-Path $script:Common 'artifacts.manifest.schema.json') $bad
+        $null = & $script:Py -I (Join-Path $PSScriptRoot 'validate_manifest.py') $script:Validator (Join-Path $script:Common 'artifacts.manifest.schema.json') $bad
         $LASTEXITCODE | Should -Be 1
         $doc = Get-Content -Raw -LiteralPath $script:ManifestPath | ConvertFrom-Json
         $doc.entries[0].urls = @('http://example.com/x')
         $doc | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $bad
-        $null = & python -I (Join-Path $PSScriptRoot 'validate_manifest.py') $script:Validator (Join-Path $script:Common 'artifacts.manifest.schema.json') $bad
+        $null = & $script:Py -I (Join-Path $PSScriptRoot 'validate_manifest.py') $script:Validator (Join-Path $script:Common 'artifacts.manifest.schema.json') $bad
         $LASTEXITCODE | Should -Be 1
     }
     It 'rejects a manifest whose upstream hash file is missing or has no literal hash' {
@@ -191,9 +216,12 @@ Describe 'version and source policy' {
         $a = Invoke-Fetch $e (New-Staging) @{ AllowFileSource = $true }
         $a.Provenance.outcome | Should -Be 'accepted'
     }
-    It 'rejects credentials in a url' {
+    It 'rejects credentials in a url with the manifest error, and not as a scheme or host problem' {
         $e = New-Entry 'cred' 'a.bin' 'https://user:pw@example.com/a.bin'
-        { Get-AapArtifact -Entry $e -StagingRoot (New-Staging) } | Should -Throw 'AAP_*'
+        { Get-AapArtifact -Entry $e -StagingRoot (New-Staging) } | Should -Throw 'AAP_ManifestInvalid: url carries credentials'
+        $problems = @(Test-AapEntry -Entry $e)
+        $problems.Count | Should -Be 1
+        $problems[0] | Should -BeExactly 'AAP_ManifestInvalid: url carries credentials'
     }
 }
 
@@ -279,9 +307,9 @@ Describe 'acquisition' {
         $a.Provenance.final_url | Should -Be "$($script:Base)/ok.bin"
     }
     It 'follows a redirect to an allowlisted host' {
-        $e = New-Entry 'allow' 'r.bin' "$($script:Base)/redir-other" -Over @{ redirect_hosts = @('localhost') }
+        $e = New-Entry 'allow' 'r.bin' "$($script:Base)/redir-other" -Over @{ redirect_hosts = @('127.0.0.2') }
         $a = Invoke-Fetch $e (New-Staging)
-        $a.Provenance.final_url | Should -Be "http://localhost:$($script:Port)/ok.bin"
+        $a.Provenance.final_url | Should -Be "http://127.0.0.2:$($script:Port)/ok.bin"
     }
     It 'treats an interrupted download as unavailable after the bounded retries' {
         $st = New-Staging
@@ -423,7 +451,8 @@ Describe 'offline staging' {
             $sums = New-Entry 'sums' 'SUMS' "$dead/sums.txt" (Get-Sha (Get-Ascii $sumsText)) -Over @{ content_types = @('text/plain') }
             $lit = New-Entry 'lit' 'l.bin' "$dead/l.bin"
             $up = New-Entry 'up' 'a.bin' "$dead/a.bin" -Over @{ hash = [ordered]@{ algorithm = 'sha256'; source = 'upstream-file'; value = $null; upstream_entry = 'sums'; upstream_key = 'a.bin' } }
-            $m = [pscustomobject]@{ schema = 1; entries = @($sums, $lit, $up); not_reproducible = @([pscustomobject]@{ id = 'media'; owner_action = 'owner supplies the ISO' }) }
+            $blocker = [pscustomobject]@{ id = 'media'; name = 'installation media'; profiles = @('ubuntu-24.04-x64'); blocker_kind = 'licensed-media'; reason = 'fixture'; owner_action = 'owner supplies the ISO'; scripts = @(); evidence_ref = 'fixture' }
+            $m = [pscustomobject]@{ schema = 1; entries = @($sums, $lit, $up); not_reproducible = @($blocker) }
             $st = New-Staging
             foreach ($x in @(@($sums, (Get-Ascii $sumsText)), @($lit, $script:OkBytes), @($up, $script:OkBytes))) {
                 $f = Get-AapStagedPath $st $x[0]
@@ -481,7 +510,7 @@ Describe 'offline staging' {
 Describe 'evidence record' {
     BeforeAll {
         function Test-Evidence([string]$Path) {
-            $out = & python -I $script:Validator evidence-bundle $Path 2>&1
+            $out = & $script:Py -I $script:Validator evidence-bundle $Path 2>&1
             [pscustomobject]@{ Exit = $LASTEXITCODE; Out = "$out" }
         }
     }
@@ -642,7 +671,7 @@ Describe 'first-fetch records' {
         (Get-Sha ([IO.File]::ReadAllBytes($f))) | Should -Be $script:OkSha
         (Get-Content -Raw -LiteralPath (Get-RecordPath $st $e) | ConvertFrom-Json).hash | Should -Be $script:OkSha
     }
-    It 'offline and reuse accept a file that matches the record, as unverified, and keep where it came from' {
+    It 'offline accepts a file that matches the record, as unverified, and keeps where it came from; online never reuses it' {
         $st = New-Staging; $e = New-FirstFetchEntry
         $a = Invoke-Fetch $e $st @{ RecordFirstFetch = $true }
         $firstStart = Get-RawField $a.ProvenancePath 'started_at'
@@ -650,14 +679,17 @@ Describe 'first-fetch records' {
         $off.Provenance.mode | Should -Be 'offline'
         $off.Provenance.hash.source | Should -Be 'first-fetch-recorded'
         $off.Provenance.hash.verified | Should -BeFalse
+        $off.Verified | Should -BeFalse
         $off.Provenance.requested_url | Should -Be "$($script:Base)/ok.bin"
         @($off.Provenance.url_chain).Count | Should -Be 1
         (Get-RawField $off.ProvenancePath 'acquired_at') | Should -Be $firstStart
         $script:State.Hits.Clear()
         $re = Invoke-Fetch $e $st
-        $re.Provenance.mode | Should -Be 'reuse'
-        $script:State.Hits.Count | Should -Be 0
-        (Get-RawField $re.ProvenancePath 'acquired_at') | Should -Be $firstStart
+        $re.Provenance.mode | Should -Be 'online'
+        $script:State.Hits['/ok.bin'] | Should -Be 1 -Because 'a first-fetch entry is downloaded again on every online run'
+        $re.Provenance.detail | Should -Match 'downloaded again'
+        $re.Verified | Should -BeFalse
+        @($re.Provenance.url_chain).Count | Should -BeGreaterThan 0
     }
     It 'a deleted record makes offline report the file as not staged' {
         $st = New-Staging; $e = New-FirstFetchEntry
@@ -840,10 +872,585 @@ Describe 'coverage of the P01 inputs' {
         }
         ($script:Man.entries | Where-Object { $_.name -eq 'docker-ce-install-helper' }).license.note | Should -Match 'MIT License'
     }
+    It 'pins every input that has an immutable source, and leaves only the Docker engine zip as first-fetch' {
+        $ff = @($script:Man.entries | Where-Object { $_.hash.source -eq 'first-fetch' } | ForEach-Object name)
+        $ff.Count | Should -Be 1
+        $ff[0] | Should -Be 'docker-engine-windows-static'
+        foreach ($n in 'docker-ce-install-helper', 'android-commandlinetools-linux', 'containernetworking-plugins') {
+            $en = $script:Man.entries | Where-Object name -eq $n
+            $en.hash.source | Should -Be 'literal' -Because $n
+            $en.size_bytes | Should -BeGreaterThan 0 -Because $n
+        }
+    }
+    It 'carries the exact archive sizes and cites the SDK index for both Android command-line tools' {
+        $win = $script:Man.entries | Where-Object name -eq 'android-commandlinetools-win'
+        $lin = $script:Man.entries | Where-Object name -eq 'android-commandlinetools-linux'
+        $win.size_bytes | Should -Be 143040480
+        $lin.size_bytes | Should -Be 153607504
+        $win.note | Should -Match 'repository2-1\.xml'
+        $win.note | Should -Match '54a582f3bf73e04253602f2d1c80bd5868aac115'
+        $lin.note | Should -Match 'repository2-1\.xml'
+        $lin.note | Should -Match 'd313adb7aedccf6cf0cfca51ec180f0059f5f8f8'
+    }
+    It 'cites the signed Ubuntu archive chain for the containernetworking-plugins pin' {
+        $en = $script:Man.entries | Where-Object name -eq 'containernetworking-plugins'
+        $en.hash.value | Should -Be 'ce5852960eec1b1026c0f4ef8dee383cb99906ce54c12158d65e46417ba2decf'
+        $en.size_bytes | Should -Be 7045220
+        $en.note | Should -Match 'dists/noble/InRelease'
+        $en.note | Should -Match 'F6EC B376 2474 EDA9 D21B 7022 8719 20D1 991B C93C'
+    }
+}
+
+Describe 'staging trust' {
+    BeforeAll {
+        $script:Links = New-Object System.Collections.Generic.List[string]
+        $script:GoodSddl = 'O:BAG:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)'
+        function New-Victim {
+            $v = Join-Path $TestDrive ('victim-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $v | Out-Null
+            $s = Join-Path $v 'sentinel.txt'
+            [IO.File]::WriteAllText($s, 'untouched')
+            [pscustomobject]@{ Dir = $v; Sentinel = $s }
+        }
+        function New-Junction([string]$Link, [string]$Target) {
+            $null = & "$env:SystemRoot\System32\cmd.exe" /d /c mklink /J "$Link" "$Target"
+            if ($LASTEXITCODE -ne 0) { throw "mklink /J failed for $Link" }
+            $script:Links.Add($Link)
+        }
+        function Assert-Untouched($Victim) {
+            (@(Get-ChildItem -LiteralPath $Victim.Dir -Force | ForEach-Object Name) -join ',') | Should -Be 'sentinel.txt'
+            [IO.File]::ReadAllText($Victim.Sentinel) | Should -Be 'untouched'
+        }
+        # A mock body cannot see variables of the test, so the ACL it returns is built from SDDL text embedded in the body.
+        function New-MockAcl([string]$Sddl) {
+            [scriptblock]::Create("`$a = New-Object System.Security.AccessControl.DirectorySecurity; `$a.SetSecurityDescriptorSddlForm('$Sddl'); `$a")
+        }
+        function New-PathFilter([string]$Path) { [scriptblock]::Create("`$LiteralPath -eq '$($Path.Replace("'", "''"))'") }
+        function New-TofuEntry2([string]$Name) {
+            New-Entry $Name 'a.bin' "$($script:Base)/ok.bin" -Over @{ hash = [ordered]@{ algorithm = 'sha256'; source = 'first-fetch'; value = $null; upstream_entry = $null; upstream_key = $null } }
+        }
+    }
+    BeforeEach { $script:State.Hits.Clear() }
+    AfterEach {
+        # rmdir removes a junction without touching its target.
+        foreach ($l in $script:Links) { $null = & "$env:SystemRoot\System32\cmd.exe" /d /c rmdir "$l" }
+        $script:Links.Clear()
+    }
+
+    It 'refuses a staging root that is a junction, and nothing is written through it' {
+        $victim = New-Victim
+        $root = Join-Path $TestDrive 'root-link'
+        New-Junction $root $victim.Dir
+        $e = New-Entry 'jroot' 'a.bin' "$($script:Base)/ok.bin"
+        { Invoke-Fetch $e $root } | Should -Throw 'AAP_StagingLink: staging root*is a junction or symbolic link'
+        $man = [pscustomobject]@{ schema = 1; entries = @($e); not_reproducible = @() }
+        { Invoke-AapManifest -Manifest $man -StagingRoot $root -AllowLoopbackHttp } | Should -Throw 'AAP_StagingLink: staging root*'
+        Assert-Untouched $victim
+        $script:State.Hits.Count | Should -Be 0 -Because 'nothing is fetched for a root that cannot be trusted'
+    }
+    It 'refuses a name folder that is a junction' {
+        $victim = New-Victim; $root = New-Staging
+        $e = New-Entry 'jname' 'a.bin' "$($script:Base)/ok.bin"
+        New-Junction (Join-Path $root 'jname') $victim.Dir
+        { Invoke-Fetch $e $root } | Should -Throw 'AAP_StagingLink: name folder*is a junction or symbolic link*'
+        Assert-Untouched $victim
+        $script:State.Hits.Count | Should -Be 0
+    }
+    It 'refuses a version folder that is a junction' {
+        $victim = New-Victim; $root = New-Staging
+        $e = New-Entry 'jver' 'a.bin' "$($script:Base)/ok.bin"
+        New-Item -ItemType Directory -Path (Join-Path $root 'jver') | Out-Null
+        New-Junction (Join-Path $root 'jver\1.0.0') $victim.Dir
+        { Invoke-Fetch $e $root } | Should -Throw 'AAP_StagingLink: version folder*is a junction or symbolic link*'
+        Assert-Untouched $victim
+        $script:State.Hits.Count | Should -Be 0
+    }
+    It 'refuses a link in place of <what> and writes nothing through it' -ForEach @(
+        @{ what = 'the staged file'; suffix = ''; tofu = $false }
+        @{ what = 'the partial download'; suffix = '.part'; tofu = $false }
+        @{ what = 'the provenance record'; suffix = '.provenance.json'; tofu = $false }
+        @{ what = 'the first-fetch record'; suffix = '.first-fetch.json'; tofu = $true }
+    ) {
+        $victim = New-Victim; $root = New-Staging
+        $e = if ($tofu) { New-TofuEntry2 'jitem' } else { New-Entry 'jitem' 'a.bin' "$($script:Base)/ok.bin" }
+        $f = Get-AapStagedPath $root $e
+        New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null
+        New-Junction ($f + $suffix) $victim.Dir
+        { Invoke-Fetch $e $root @{ RecordFirstFetch = $true } } | Should -Throw 'AAP_StagingLink*'
+        Assert-Untouched $victim
+    }
+    It 'refuses a symbolic link planted in place of the staged file, online and offline' {
+        $victim = New-Victim; $root = New-Staging
+        $e = New-Entry 'jsym' 'a.bin' "$($script:Base)/ok.bin"
+        $f = Get-AapStagedPath $root $e
+        New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null
+        & "$env:SystemRoot\System32\cmd.exe" /d /c mklink "$f" "$($victim.Sentinel)" | Out-Null
+        if ($LASTEXITCODE -ne 0) { Set-ItResult -Skipped -Because 'creating a symbolic link needs Developer Mode or elevation'; return }
+        try {
+            { Invoke-Fetch $e $root } | Should -Throw 'AAP_StagingLink: staged file*'
+            { Get-AapArtifact -Entry $e -StagingRoot $root -Offline -AllowLoopbackHttp } | Should -Throw 'AAP_StagingLink: staged file*'
+            [IO.File]::ReadAllText($victim.Sentinel) | Should -Be 'untouched'
+        } finally { [IO.File]::Delete($f) }
+    }
+    It 'refuses a staging root that lets Everyone write, and creates nothing in it' {
+        $root = New-Staging
+        Lock-Dir $root -AlsoSid 'S-1-1-0'
+        $e = New-Entry 'jacl' 'a.bin' "$($script:Base)/ok.bin"
+        { Invoke-Fetch $e $root } | Should -Throw 'AAP_StagingUntrusted: staging root*grants S-1-1-0*'
+        @(Get-ChildItem -LiteralPath $root -Force).Count | Should -Be 0
+        $script:State.Hits.Count | Should -Be 0
+    }
+    It 'trusts only SYSTEM, Administrators and TrustedInstaller unless an account is named' {
+        if ($script:Me -in @('S-1-5-18', 'S-1-5-32-544')) { Set-ItResult -Skipped -Because 'the tests run as an account that is trusted by default'; return }
+        $root = New-Staging
+        $e = New-Entry 'jown' 'a.bin' "$($script:Base)/ok.bin"
+        { Get-AapArtifact -Entry $e -StagingRoot $root -AllowLoopbackHttp -TrustedSid @() -SkipAncestorCheck } | Should -Throw "AAP_StagingUntrusted: *$($script:Me)*"
+        { Get-AapArtifact -Entry $e -StagingRoot $root -AllowLoopbackHttp -TrustedSid $script:Me -SkipAncestorCheck } | Should -Not -Throw
+        (Get-Content -Raw -LiteralPath ((Get-AapStagedPath $root $e) + '.provenance.json') | ConvertFrom-Json).staging_check | Should -Be 'relaxed'
+    }
+
+    It 'refuses a root that grants <who> the right to <what>' -ForEach @(
+        @{ who = 'Everyone'; what = 'write data'; ace = '(A;;0x2;;;WD)'; sid = 'S-1-1-0' }
+        @{ who = 'Users'; what = 'create folders'; ace = '(A;;0x4;;;BU)'; sid = 'S-1-5-32-545' }
+        @{ who = 'Users'; what = 'write attributes'; ace = '(A;;0x100;;;BU)'; sid = 'S-1-5-32-545' }
+        @{ who = 'Authenticated Users'; what = 'delete children'; ace = '(A;;0x40;;;AU)'; sid = 'S-1-5-11' }
+        @{ who = 'Everyone'; what = 'delete the root'; ace = '(A;;0x10000;;;WD)'; sid = 'S-1-1-0' }
+        @{ who = 'Users'; what = 'change permissions'; ace = '(A;;0x40000;;;BU)'; sid = 'S-1-5-32-545' }
+        @{ who = 'Users'; what = 'take ownership'; ace = '(A;;0x80000;;;BU)'; sid = 'S-1-5-32-545' }
+        @{ who = 'Everyone'; what = 'do anything (GENERIC_ALL)'; ace = '(A;;GA;;;WD)'; sid = 'S-1-1-0' }
+        @{ who = 'Everyone'; what = 'write (GENERIC_WRITE)'; ace = '(A;;GW;;;WD)'; sid = 'S-1-1-0' }
+    ) {
+        $root = New-Staging
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl ($script:GoodSddl + $ace))
+        $p = @(Get-AapStagingProblems -Root $root -SkipAncestorCheck)
+        $p.Count | Should -Be 1
+        $p[0].Code | Should -Be 'AAP_StagingUntrusted'
+        $p[0].Text | Should -Match ([regex]::Escape("staging root $root grants $sid"))
+    }
+    It 'accepts a root only SYSTEM and Administrators can use, and skips deny entries and inherit-only entries' {
+        $root = New-Staging
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl ($script:GoodSddl + '(D;;0x10000;;;WD)(A;OICIIO;GA;;;WD)(A;;0x1200a9;;;BU)'))
+        @(Get-AapStagingProblems -Root $root -SkipAncestorCheck).Count | Should -Be 0
+    }
+    It 'accepts a real folder that the operating system locks (the Windows folder), so the rules are not only tested on mocks' {
+        @(Get-AapStagingProblems -Root $env:SystemRoot -SkipAncestorCheck).Count | Should -Be 0
+    }
+    It 'refuses a root owned by someone else unless that account is trusted explicitly' {
+        $root = New-Staging
+        $stranger = 'S-1-5-21-1111111111-2222222222-3333333333-1001'
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl "O:${stranger}G:BAD:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)")
+        $p = @(Get-AapStagingProblems -Root $root -SkipAncestorCheck)
+        $p.Count | Should -Be 1
+        $p[0].Text | Should -Match 'owner S-1-5-21-1111111111-2222222222-3333333333-1001 of staging root .* is not SYSTEM, Administrators or TrustedInstaller'
+        @(Get-AapStagingProblems -Root $root -SkipAncestorCheck -TrustedSid $stranger).Count | Should -Be 0
+    }
+    It 'refuses a root with no DACL and a root with an ACE that is not a plain allow or deny' {
+        $root = New-Staging
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl 'O:BAG:BA')
+        (@(Get-AapStagingProblems -Root $root -SkipAncestorCheck) | ForEach-Object Text) -join "`n" | Should -Match 'has no DACL'
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl 'O:BAG:BAD:(OA;;RPWP;c9651a32-5a0b-4e8c-9a55-6b9a0a0a0a0a;;BU)')
+        (@(Get-AapStagingProblems -Root $root -SkipAncestorCheck) | ForEach-Object Text) -join "`n" | Should -Match 'not a plain allow or deny'
+    }
+    It 'refuses an ancestor that grants <who> the right to <what>' -ForEach @(
+        @{ who = 'Everyone'; what = 'delete it'; ace = '(A;;0x10000;;;WD)'; sid = 'S-1-1-0' }
+        @{ who = 'Authenticated Users'; what = 'delete its children'; ace = '(A;;0x40;;;AU)'; sid = 'S-1-5-11' }
+        @{ who = 'Users'; what = 'change its permissions'; ace = '(A;;0x40000;;;BU)'; sid = 'S-1-5-32-545' }
+        @{ who = 'Users'; what = 'take ownership'; ace = '(A;;0x80000;;;BU)'; sid = 'S-1-5-32-545' }
+        @{ who = 'Everyone'; what = 'do anything (GENERIC_ALL)'; ace = '(A;;GA;;;WD)'; sid = 'S-1-1-0' }
+    ) {
+        $root = New-Staging
+        $parent = Split-Path -Parent $root
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl $script:GoodSddl)
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl ($script:GoodSddl + $ace)) -ParameterFilter (New-PathFilter $parent)
+        $p = @(Get-AapStagingProblems -Root $root)
+        $p.Count | Should -Be 1
+        $p[0].Code | Should -Be 'AAP_StagingUntrusted'
+        $p[0].Text | Should -Match ([regex]::Escape("ancestor $parent grants $sid"))
+    }
+    It 'accepts the default drive-root entries and write-attributes on an ancestor' {
+        $root = New-Staging
+        $parent = Split-Path -Parent $root
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl $script:GoodSddl)
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl ($script:GoodSddl + '(A;;0x4;;;AU)(A;OICIIO;0x1301bf;;;AU)(A;OICI;0x1200a9;;;BU)(A;;0x100;;;BU)')) -ParameterFilter (New-PathFilter $parent)
+        @(Get-AapStagingProblems -Root $root).Count | Should -Be 0
+    }
+    It 'refuses an ancestor owned by someone else, and one with no DACL' {
+        $root = New-Staging
+        $parent = Split-Path -Parent $root
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl $script:GoodSddl)
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl 'O:S-1-5-21-1111111111-2222222222-3333333333-1001G:BAD:PAI(A;OICI;FA;;;BA)') -ParameterFilter (New-PathFilter $parent)
+        (@(Get-AapStagingProblems -Root $root) | ForEach-Object Text) -join "`n" | Should -Match 'is not SYSTEM, Administrators or TrustedInstaller'
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl 'O:BAG:BA') -ParameterFilter (New-PathFilter $parent)
+        (@(Get-AapStagingProblems -Root $root) | ForEach-Object Text) -join "`n" | Should -Match "ancestor $([regex]::Escape($parent)) has no DACL"
+    }
+    It 'refuses an ancestor that is a junction without reading its ACL' {
+        $victim = New-Victim
+        $link = Join-Path $TestDrive 'anc-link'
+        New-Junction $link $victim.Dir
+        New-Item -ItemType Directory -Path (Join-Path $victim.Dir 'stage') | Out-Null
+        $root = Join-Path $link 'stage'
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl $script:GoodSddl)
+        $p = @(Get-AapStagingProblems -Root $root)
+        @($p | Where-Object { $_.Code -eq 'AAP_StagingLink' -and $_.Text -eq "ancestor $link is a junction or symbolic link" }).Count | Should -Be 1
+        Should -Invoke Get-Acl -ModuleName AapArtifact -Times 0 -Exactly -ParameterFilter (New-PathFilter $link)
+    }
+    It 'does not create a missing root below an ancestor that others can delete' {
+        $root = Join-Path $TestDrive 'not-yet'
+        Mock Get-Acl -ModuleName AapArtifact -MockWith (New-MockAcl ($script:GoodSddl + '(A;;0x10000;;;WD)'))
+        { Assert-AapStagingRoot -Root $root } | Should -Throw 'AAP_StagingUntrusted: ancestor*grants S-1-1-0*'
+        Test-Path -LiteralPath $root | Should -BeFalse
+    }
+    It 'creates a missing root one level deep below an existing parent, then checks it like any other' {
+        $parent = New-Staging
+        $root = Join-Path $parent 'new-root'
+        Assert-AapStagingRoot -Root $root -TrustedSid $script:Me -SkipAncestorCheck
+        Test-Path -LiteralPath $root | Should -BeTrue
+        { Assert-AapStagingRoot -Root (Join-Path $parent 'a\b\c') -TrustedSid $script:Me -SkipAncestorCheck } | Should -Throw 'AAP_StagingUntrusted: the parent of staging root*does not exist*'
+        Test-Path -LiteralPath (Join-Path $parent 'a') | Should -BeFalse
+    }
+    It 'refuses a share or device path before touching it' {
+        { Assert-AapStagingRoot -Root '\\server\share\stage' } | Should -Throw 'AAP_StagingUntrusted: staging root*is not a local drive path'
+        { Assert-AapStagingRoot -Root '\\?\C:\stage' } | Should -Throw 'AAP_StagingUntrusted: staging root*is not a local drive path'
+    }
+}
+
+Describe 'verified results and first-fetch policy' {
+    BeforeAll {
+        function New-TofuEntry([string]$Name = 'tofu', [string]$Url = "$($script:Base)/ok.bin") {
+            New-Entry $Name 't.bin' $Url -Over @{ hash = [ordered]@{ algorithm = 'sha256'; source = 'first-fetch'; value = $null; upstream_entry = $null; upstream_key = $null } }
+        }
+    }
+    BeforeEach { $script:State.Hits.Clear() }
+
+    It 'marks a hash-checked entry Verified and a first-fetch entry not' {
+        (Invoke-Fetch (New-Entry 'ver1' 'v.bin' "$($script:Base)/ok.bin") (New-Staging)).Verified | Should -BeTrue
+        (Invoke-Fetch (New-TofuEntry) (New-Staging) @{ RecordFirstFetch = $true }).Verified | Should -BeFalse
+    }
+    It 'is not Complete while an accepted entry is unverified, and names it' {
+        $lit = New-Entry 'lit' 'l.bin' "$($script:Base)/ok.bin"
+        $m = [pscustomobject]@{ schema = 1; entries = @($lit, (New-TofuEntry)); not_reproducible = @() }
+        $st = New-Staging
+        $r = Invoke-AapManifest -Manifest $m -StagingRoot $st -AllowLoopbackHttp -RecordFirstFetch
+        $r.Complete | Should -BeFalse
+        @($r.Rejected).Count | Should -Be 0
+        @($r.Unverified).Count | Should -Be 1
+        $r.Unverified | Should -Contain 'tofu'
+        ($r.Results | Where-Object Name -eq 'lit').Verified | Should -BeTrue
+        ($r.Results | Where-Object Name -eq 'tofu').Verified | Should -BeFalse
+        (Invoke-AapManifest -Manifest $m -StagingRoot $st -AllowLoopbackHttp).Unverified | Should -Contain 'tofu'
+        (Invoke-AapManifest -Manifest $m -StagingRoot $st -AllowLoopbackHttp -Name 'lit').Complete | Should -BeTrue
+    }
+    It 'never accepts a file planted under a first-fetch entry whose source is unreachable' {
+        $st = New-Staging
+        $e = New-TofuEntry 'planted' "$($script:ClosedBase)/ok.bin"
+        $f = Get-AapStagedPath $st $e
+        New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null
+        [IO.File]::WriteAllBytes($f, (Get-Ascii 'planted bytes'))
+        { Get-AapArtifact -Entry $e -StagingRoot $st -Offline -AllowLoopbackHttp } | Should -Throw 'AAP_OfflineIncomplete*'
+        $m = [pscustomobject]@{ schema = 1; entries = @($e); not_reproducible = @() }
+        $r = Invoke-AapManifest -Manifest $m -StagingRoot $st -AllowLoopbackHttp -RecordFirstFetch
+        $r.Complete | Should -BeFalse
+        $r.Results[0].Status | Should -Be 'rejected'
+        $r.Results[0].Reason | Should -Be 'AAP_SourceUnavailable'
+        ($f + '.first-fetch.json') | Should -Not -Exist
+        ($f + '.provenance.json') | Should -Not -Exist
+    }
+    It 'accepts a planted file with a planted record only as unverified, and the next online run exposes it' {
+        $st = New-Staging
+        $e = New-TofuEntry 'planted2'
+        $f = Get-AapStagedPath $st $e
+        New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null
+        $planted = Get-Ascii 'planted bytes'
+        [IO.File]::WriteAllBytes($f, $planted)
+        ([ordered]@{ schema = 'aap-first-fetch/1'; name = 'planted2'; version = '1.0.0'; file_name = 't.bin'; algorithm = 'sha256'; hash = (Get-Sha $planted) } | ConvertTo-Json) | Set-Content -LiteralPath ($f + '.first-fetch.json') -Encoding UTF8
+        $off = Get-AapArtifact -Entry $e -StagingRoot $st -Offline -AllowLoopbackHttp
+        $off.Verified | Should -BeFalse
+        { Invoke-Fetch $e $st } | Should -Throw 'AAP_HashMismatch*first-fetch-recorded*'
+    }
+    It 'does not follow a redirect for a first-fetch entry' {
+        $e = New-TofuEntry 'tofuredir' "$($script:Base)/redir-same"
+        { Invoke-Fetch $e (New-Staging) @{ RecordFirstFetch = $true } } | Should -Throw 'AAP_RedirectRejected*never follows a redirect'
+        $script:State.Hits.ContainsKey('/ok.bin') | Should -BeFalse
+    }
+    It 'does not let a first-fetch entry name redirect hosts' {
+        $e = New-TofuEntry 'tofuhosts'
+        $e.redirect_hosts = @('127.0.0.2')
+        (@(Test-AapEntry -Entry $e -AllowTestSources) -join "`n") | Should -Match 'first-fetch entry may not allow redirect hosts'
+    }
+}
+
+Describe 'command-line script exit codes' {
+    BeforeAll {
+        $tofuHash = [ordered]@{ algorithm = 'sha256'; source = 'first-fetch'; value = $null; upstream_entry = $null; upstream_key = $null }
+        $script:CliLit = New-Entry 'clilit' 'l.bin' 'https://example.invalid/l.bin'
+        $script:CliTofu = New-Entry 'clitofu' 't.bin' 'https://example.invalid/t.bin' -Over @{ hash = $tofuHash }
+        $script:CliManifest = Join-Path $TestDrive 'cli-manifest.json'
+        ([pscustomobject]@{ schema = 1; generated_from = 'fixture'; entries = @($script:CliLit, $script:CliTofu); not_reproducible = @() } | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $script:CliManifest -Encoding UTF8
+        function Invoke-Cli([string[]]$ArgList) {
+            $saved = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'   # Windows PowerShell 5.1 turns merged native stderr into a terminating error under 'Stop'
+            try { $out = & $script:Exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $script:Common 'Get-AapArtifact.ps1') -Manifest $script:CliManifest @ArgList 2>&1 | Out-String }
+            finally { $ErrorActionPreference = $saved }
+            [pscustomobject]@{ Exit = $LASTEXITCODE; Out = $out }
+        }
+        function Set-CliFile($Stage, $Entry, [byte[]]$Bytes) {
+            $f = Get-AapStagedPath $Stage $Entry
+            New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null
+            [IO.File]::WriteAllBytes($f, $Bytes)
+            $f
+        }
+        $script:Relax = @('-TrustedSid', $script:Me, '-SkipAncestorCheck')
+    }
+    It 'exits 0 when every selected entry is accepted and verified' {
+        $st = New-Staging
+        [void](Set-CliFile $st $script:CliLit $script:OkBytes)
+        $r = Invoke-Cli (@('-Staging', $st, '-Name', 'clilit', '-Offline') + $script:Relax)
+        $r.Exit | Should -Be 0 -Because $r.Out
+        $r.Out | Should -Match 'WARNING +staging trust checks relaxed'
+    }
+    It 'exits 3 when nothing is rejected but a first-fetch entry is accepted unverified' {
+        $st = New-Staging
+        $f = Set-CliFile $st $script:CliTofu $script:OkBytes
+        ([ordered]@{ schema = 'aap-first-fetch/1'; name = 'clitofu'; version = '1.0.0'; file_name = 't.bin'; algorithm = 'sha256'; hash = $script:OkSha } | ConvertTo-Json) | Set-Content -LiteralPath ($f + '.first-fetch.json') -Encoding UTF8
+        $r = Invoke-Cli (@('-Staging', $st, '-Name', 'clitofu', '-Offline') + $script:Relax)
+        $r.Exit | Should -Be 3 -Because $r.Out
+        $r.Out | Should -Match 'unverified'
+    }
+    It 'exits 1 when an entry is rejected' {
+        $st = New-Staging
+        $r = Invoke-Cli (@('-Staging', $st, '-Offline') + $script:Relax)
+        $r.Exit | Should -Be 1 -Because $r.Out
+        $r.Out | Should -Match 'rejected +clilit'
+    }
+    It 'exits 1 and writes nothing when the staging folder is not trusted' {
+        if ($script:Me -in @('S-1-5-18', 'S-1-5-32-544')) { Set-ItResult -Skipped -Because 'the tests run as an account that is trusted by default'; return }
+        $st = New-Staging
+        $r = Invoke-Cli @('-Staging', $st, '-Offline')
+        $r.Exit | Should -Be 1 -Because $r.Out
+        $r.Out | Should -Match 'AAP_StagingUntrusted'
+        @(Get-ChildItem -LiteralPath $st -Force).Count | Should -Be 0
+    }
+}
+
+Describe 'quarantine and evidence re-hash' {
+    BeforeAll {
+        function Test-Evidence2([string]$Path) {
+            if (-not $script:Py) { return [pscustomobject]@{ Exit = 0; Out = 'no python' } }
+            $out = & $script:Py -I $script:Validator evidence-bundle $Path 2>&1
+            [pscustomobject]@{ Exit = $LASTEXITCODE; Out = "$out" }
+        }
+    }
+    BeforeEach { $script:State.Hits.Clear() }
+
+    It 'moves a staged file that fails an offline check away from its final name' {
+        $st = New-Staging; $e = New-Entry 'quar' 'q.bin' "$($script:Base)/ok.bin"
+        $a = Invoke-Fetch $e $st
+        [IO.File]::WriteAllBytes($a.Path, (Get-Ascii 'tampered'))
+        { Get-AapArtifact -Entry $e -StagingRoot $st -Offline -AllowLoopbackHttp } | Should -Throw 'AAP_HashMismatch*'
+        $a.Path | Should -Not -Exist
+        ($a.Path + '.quarantined') | Should -Exist
+        (Get-Sha ([IO.File]::ReadAllBytes($a.Path + '.quarantined'))) | Should -Be (Get-Sha (Get-Ascii 'tampered'))
+        $a.ProvenancePath | Should -Not -Exist
+        (Get-Rejected $st $e).detail | Should -Match 'moved the failing file to q\.bin\.quarantined'
+        { Get-AapArtifact -Entry $e -StagingRoot $st -Offline -AllowLoopbackHttp } | Should -Throw 'AAP_OfflineIncomplete*'
+    }
+    It 'leaves a file in place when the failure is not about the file (the hash source is missing)' {
+        $sums = New-Entry 'sums' 'SUMS' "$($script:ClosedBase)/sums.txt" ('0' * 64) -Over @{ content_types = @('text/plain') }
+        $arc = New-Entry 'arc' 'a.bin' "$($script:ClosedBase)/a.bin" -Over @{ hash = [ordered]@{ algorithm = 'sha256'; source = 'upstream-file'; value = $null; upstream_entry = 'sums'; upstream_key = 'a.bin' } }
+        $m = [pscustomobject]@{ schema = 1; entries = @($sums, $arc); not_reproducible = @() }
+        $st = New-Staging
+        $f = Get-AapStagedPath $st $arc
+        New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null
+        [IO.File]::WriteAllBytes($f, $script:OkBytes)
+        $r = Invoke-AapManifest -Manifest $m -StagingRoot $st -Offline -AllowLoopbackHttp
+        ($r.Results | Where-Object Name -eq 'arc').Reason | Should -Be 'AAP_HashSourceMissing'
+        $f | Should -Exist
+        ($f + '.quarantined') | Should -Not -Exist
+    }
+    It 'hashes the staged file again for the evidence record: a changed or missing file is a failure, never a pass' {
+        $st = New-Staging; $e = New-Entry 'rehash' 'r.bin' "$($script:Base)/ok.bin"
+        $a = Invoke-Fetch $e $st
+        $ok = Join-Path $TestDrive 'rehash-ok.json'
+        [void](New-AapEvidenceRecord -ProvenancePath $a.ProvenancePath -OutPath $ok -HeadSha $script:Head)
+        (Get-Content -Raw -LiteralPath $ok | ConvertFrom-Json).result | Should -Be 'pass'
+        [IO.File]::WriteAllBytes($a.Path, (Get-Ascii 'changed after acceptance'))
+        $changed = Join-Path $TestDrive 'rehash-changed.json'
+        [void](New-AapEvidenceRecord -ProvenancePath $a.ProvenancePath -OutPath $changed -HeadSha $script:Head)
+        $r = Get-Content -Raw -LiteralPath $changed | ConvertFrom-Json
+        $r.result | Should -Be 'fail'
+        $r.oracle.observed | Should -Be 'failure'
+        $r.command | Should -Match 'observed-reason=AAP_ArtifactChanged'
+        $r.artifacts[0].sha256 | Should -Be (Get-Sha (Get-Ascii 'changed after acceptance'))
+        (Test-Evidence2 $changed).Exit | Should -Be 0
+        $other = Join-Path $TestDrive 'rehash-other.json'
+        [void](New-AapEvidenceRecord -ProvenancePath $a.ProvenancePath -OutPath $other -HeadSha $script:Head -ExpectedReason 'AAP_HashMismatch')
+        (Get-Content -Raw -LiteralPath $other | ConvertFrom-Json).result | Should -Be 'unknown'
+        Remove-Item -LiteralPath $a.Path
+        $gone = Join-Path $TestDrive 'rehash-gone.json'
+        [void](New-AapEvidenceRecord -ProvenancePath $a.ProvenancePath -OutPath $gone -HeadSha $script:Head)
+        $g = Get-Content -Raw -LiteralPath $gone | ConvertFrom-Json
+        $g.result | Should -Be 'fail'
+        $g.command | Should -Match 'observed-reason=AAP_ArtifactMissing'
+        (Test-Evidence2 $gone).Exit | Should -Be 0
+    }
+    It 'does not report a pass from an old accepted record once the file was rejected' {
+        $st = New-Staging; $e = New-Entry 'stale2' 's.bin' "$($script:Base)/ok.bin"
+        $a = Invoke-Fetch $e $st
+        $old = Get-Content -Raw -LiteralPath $a.ProvenancePath
+        [IO.File]::WriteAllBytes($a.Path, (Get-Ascii 'tampered'))
+        { Get-AapArtifact -Entry $e -StagingRoot $st -Offline -AllowLoopbackHttp } | Should -Throw 'AAP_HashMismatch*'
+        $a.ProvenancePath | Should -Not -Exist
+        { New-AapEvidenceRecord -ProvenancePath $a.ProvenancePath -OutPath (Join-Path $TestDrive 'stale-none.json') -HeadSha $script:Head } | Should -Throw
+        # the old accepted record comes back (a restored backup, a copy): the file is gone from its final name, so it proves nothing
+        [IO.File]::WriteAllText($a.ProvenancePath, $old)
+        $out = Join-Path $TestDrive 'stale-back.json'
+        [void](New-AapEvidenceRecord -ProvenancePath $a.ProvenancePath -OutPath $out -HeadSha $script:Head)
+        $r = Get-Content -Raw -LiteralPath $out | ConvertFrom-Json
+        $r.result | Should -Be 'fail'
+        $r.command | Should -Match 'observed-reason=AAP_ArtifactMissing'
+    }
+}
+
+Describe 'manifest guards' {
+    BeforeAll {
+        function New-UpEntry([string]$Name, [string]$Up, $Hash = $null) {
+            $h = if ($Hash) { $Hash } else { [ordered]@{ algorithm = 'sha256'; source = 'upstream-file'; value = $null; upstream_entry = $Up; upstream_key = 'a.bin' } }
+            New-Entry $Name 'a.bin' "$($script:Base)/ok.bin" -Over @{ hash = $h }
+        }
+        $script:Tofu = [ordered]@{ algorithm = 'sha256'; source = 'first-fetch'; value = $null; upstream_entry = $null; upstream_key = $null }
+        $script:ViaUp = [ordered]@{ algorithm = 'sha256'; source = 'upstream-file'; value = $null; upstream_entry = 'other'; upstream_key = 'a.bin' }
+    }
+    It 'refuses an entry that lists itself as its upstream hash file' {
+        $m = [pscustomobject]@{ schema = 1; entries = @((New-UpEntry 'selfref' 'selfref')); not_reproducible = @() }
+        (@(Test-AapManifest -Manifest $m -AllowTestSources) -join "`n") | Should -Match 'lists itself as its upstream hash file'
+        { Invoke-AapManifest -Manifest $m -StagingRoot (New-Staging) -AllowLoopbackHttp } | Should -Throw 'AAP_ManifestInvalid*lists itself*'
+        { Resolve-AapExpectedHash -Entry $m.entries[0] -Manifest $m -StagingRoot (New-Staging) } | Should -Throw 'AAP_ManifestInvalid*lists itself*'
+    }
+    It 'refuses an upstream hash file that is itself first-fetch or taken from another file' -ForEach @(
+        @{ kind = 'first-fetch'; hash = 'Tofu' }, @{ kind = 'upstream-file'; hash = 'ViaUp' }
+    ) {
+        $h = if ($hash -eq 'Tofu') { $script:Tofu } else { $script:ViaUp }
+        $up = New-UpEntry 'other' 'x' $h
+        $m = [pscustomobject]@{ schema = 1; entries = @((New-UpEntry 'arc' 'other'), $up); not_reproducible = @() }
+        (@(Test-AapManifest -Manifest $m -AllowTestSources) -join "`n") | Should -Match 'upstream file must itself have a literal hash'
+        { Invoke-AapManifest -Manifest $m -StagingRoot (New-Staging) -AllowLoopbackHttp } | Should -Throw 'AAP_ManifestInvalid*'
+        { Resolve-AapExpectedHash -Entry $m.entries[0] -Manifest $m -StagingRoot (New-Staging) } | Should -Throw 'AAP_ManifestInvalid*literal sha256*'
+    }
+    It 'refuses an upstream name that matches more than one entry' {
+        $s1 = New-Entry 'sums' 'SUMS' "$($script:Base)/sums.txt" -Over @{ content_types = @('text/plain') }
+        $s2 = New-Entry 'sums' 'SUMS' "$($script:Base)/sums.txt" -Over @{ version = '2.0.0'; content_types = @('text/plain') }
+        $m = [pscustomobject]@{ schema = 1; entries = @($s1, $s2, (New-UpEntry 'arc' 'sums')); not_reproducible = @() }
+        (@(Test-AapManifest -Manifest $m -AllowTestSources) -join "`n") | Should -Match "upstream_entry 'sums' names more than one entry"
+        { Resolve-AapExpectedHash -Entry $m.entries[2] -Manifest $m -StagingRoot (New-Staging) } | Should -Throw 'AAP_ManifestInvalid*more than one entry*'
+    }
+    It 'validates the whole manifest before it touches the staging folder' {
+        $bad = New-Entry 'floaty2' 'f.bin' "$($script:Base)/ok.bin" -Over @{ version = 'latest' }
+        $m = [pscustomobject]@{ schema = 1; entries = @($bad); not_reproducible = @() }
+        $st = New-Staging
+        { Invoke-AapManifest -Manifest $m -StagingRoot $st -AllowLoopbackHttp } | Should -Throw 'AAP_ManifestInvalid*AAP_VersionNotExact*'
+        @(Get-ChildItem -LiteralPath $st -Force).Count | Should -Be 0
+    }
+}
+
+Describe 'folder and file name rules' {
+    It 'rejects <field> <value> as an unsafe Windows name' -ForEach @(
+        @{ field = 'name'; value = 'nul' }, @{ field = 'name'; value = 'con' }, @{ field = 'name'; value = 'prn' }, @{ field = 'name'; value = 'aux' }
+        @{ field = 'name'; value = 'com1' }, @{ field = 'name'; value = 'lpt9' }, @{ field = 'name'; value = 'nul.txt' }, @{ field = 'name'; value = 'foo.' }
+        @{ field = 'version'; value = 'com1' }, @{ field = 'version'; value = '1.0.' }
+        @{ field = 'file_name'; value = 'NUL' }, @{ field = 'file_name'; value = 'Aux.txt' }, @{ field = 'file_name'; value = 'a.' }, @{ field = 'file_name'; value = 'CON.tar.gz' }
+    ) {
+        $e = New-Entry 'okname' 'ok.bin' "$($script:Base)/ok.bin"
+        $e.$field = $value
+        @(Test-AapEntry -Entry $e -AllowTestSources).Count | Should -BeGreaterThan 0
+        { Invoke-Fetch $e (New-Staging) } | Should -Throw 'AAP_ManifestInvalid*'
+    }
+    It 'accepts <value>, which only looks like a device name' -ForEach @(
+        @{ value = 'console' }, @{ value = 'com10' }, @{ value = 'null' }, @{ value = 'a.b' }
+    ) {
+        @(Test-AapEntry -Entry (New-Entry $value 'ok.bin' "$($script:Base)/ok.bin") -AllowTestSources).Count | Should -Be 0
+    }
+    It 'the manifest schema rejects <field> <value> as well' -Skip:(-not $HasPython) -ForEach @(
+        @{ field = 'name'; value = 'nul' }, @{ field = 'name'; value = 'foo.' }, @{ field = 'version'; value = 'lpt1' }, @{ field = 'version'; value = '1.0.' },
+        @{ field = 'file_name'; value = 'COM1.txt' }, @{ field = 'file_name'; value = 'a.' }
+    ) {
+        $doc = Get-Content -Raw -LiteralPath $script:ManifestPath | ConvertFrom-Json
+        $doc.entries[0].$field = $value
+        $bad = Join-Path $TestDrive 'unsafe.json'
+        $doc | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $bad
+        $null = & $script:Py -I (Join-Path $PSScriptRoot 'validate_manifest.py') $script:Validator (Join-Path $script:Common 'artifacts.manifest.schema.json') $bad
+        $LASTEXITCODE | Should -Be 1
+    }
+    It 'the manifest schema rejects redirect hosts on a first-fetch entry' -Skip:(-not $HasPython) {
+        $doc = Get-Content -Raw -LiteralPath $script:ManifestPath | ConvertFrom-Json
+        $e = $doc.entries | Where-Object { $_.hash.source -eq 'first-fetch' } | Select-Object -First 1
+        $e.redirect_hosts = @('example.com')
+        $bad = Join-Path $TestDrive 'ffhosts.json'
+        $doc | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $bad
+        $null = & $script:Py -I (Join-Path $PSScriptRoot 'validate_manifest.py') $script:Validator (Join-Path $script:Common 'artifacts.manifest.schema.json') $bad
+        $LASTEXITCODE | Should -Be 1
+    }
+}
+
+Describe 'smaller review items' {
+    BeforeEach { $script:State.Hits.Clear() }
+
+    It 'does not retry a local write failure and does not call it an unavailable source' {
+        $st = New-Staging
+        $e = New-Entry 'locked' 'l.bin' "$($script:Base)/ok.bin" -Over @{ retry = [ordered]@{ max_attempts = 3; backoff_seconds = 0; timeout_seconds = 5 } }
+        $f = Get-AapStagedPath $st $e
+        New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null
+        $hold = [IO.File]::Open("$f.part", [IO.FileMode]::Create, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $err = $null
+        try { try { Invoke-Fetch $e $st } catch { $err = $_.Exception.Message } } finally { $hold.Dispose() }
+        $err | Should -Not -BeNullOrEmpty
+        $err | Should -Not -Match 'AAP_SourceUnavailable'
+        $script:State.Hits['/ok.bin'] | Should -Be 1 -Because 'a local write failure is not retried'
+        (Get-Rejected $st $e).reason | Should -Be 'AAP_Unexpected'
+    }
+    It 'does not narrow the process-wide TLS setting when the host follows the system default, and adds TLS 1.2 when it does not' {
+        $probe = Join-Path $TestDrive 'tls-probe.ps1'
+        Set-Content -LiteralPath $probe -Value 'param($Module, $Start); [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]$Start; Import-Module $Module -Force; [string][Net.ServicePointManager]::SecurityProtocol'
+        $mod = Join-Path $script:Common 'AapArtifact.psm1'
+        $saved = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $default = (& $script:Exe -NoProfile -ExecutionPolicy Bypass -File $probe $mod SystemDefault 2>&1 | Out-String).Trim()
+            $old = (& $script:Exe -NoProfile -ExecutionPolicy Bypass -File $probe $mod Tls 2>&1 | Out-String).Trim()
+        } finally { $ErrorActionPreference = $saved }
+        $default | Should -BeExactly 'SystemDefault'
+        $old | Should -Match 'Tls12'
+        $old | Should -Match '(^|, )Tls(,|$)'
+    }
+    It 'requires -HeadSha because the staging folder is not a git work tree' {
+        $p = (Get-Command New-AapEvidenceRecord).Parameters['HeadSha']
+        @($p.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] } | ForEach-Object Mandatory) | Should -Contain $true
+    }
+    It 'refuses a file source on a network share (<u>)' -ForEach @(@{ u = 'file://server/share/a.bin' }, @{ u = 'file:////server/share/a.bin' }) {
+        $e = New-Entry 'unc' 'a.bin' $u
+        { Invoke-Fetch $e (New-Staging) @{ AllowFileSource = $true } } | Should -Throw 'AAP_SchemeRejected: a file source must be a local path*'
+    }
+}
+
+Describe 'documentation' {
+    It 'lists the zccache release files that are deliberately not acquired, each with a reason' {
+        $readme = Get-Content -Raw -LiteralPath (Join-Path $script:Common 'README.md')
+        foreach ($f in 'install.sh', 'install.ps1', 'manifest.json') {
+            $readme | Should -Match ('(?m)^\|\s*`' + [regex]::Escape($f) + '`\s*\|.{20,}\|') -Because "$f needs a table row with a reason"
+        }
+        $man = Read-AapManifest -Path $script:ManifestPath
+        foreach ($en in $man.entries) { $en.file_name | Should -Not -BeIn @('install.sh', 'install.ps1', 'manifest.json') }
+    }
+    It 'documents the exit codes and what the staging folder check needs' {
+        $readme = Get-Content -Raw -LiteralPath (Join-Path $script:Common 'README.md')
+        $readme | Should -Match 'D:\\aap-runner\\images'
+        $readme | Should -Match 'P19'
+        $readme | Should -Match '(?m)^\|\s*3\s*\|'
+        $readme | Should -Match 'TrustedSid'
+    }
 }
 
 Describe 'real download (integration)' -Tag Network {
-    It 'fetches Pester 5.9.0 from the PowerShell Gallery and verifies its SHA-512' -Skip:(-not $HasNet) {
+    It 'fetches Pester 5.9.0 from the PowerShell Gallery and verifies its SHA-512' -Skip:(-not $HasNetGallery) {
         $m = Read-AapManifest -Path $script:ManifestPath
         $st = New-Staging
         $r = Invoke-AapManifest -Manifest $m -StagingRoot $st -Name 'pester'
@@ -856,7 +1463,7 @@ Describe 'real download (integration)' -Tag Network {
         $p.sha256 | Should -Be '5a0fd80b361600bf4bbd4c307c1fd01b17f11668bab19e657add41b00ad22ab9'
         ([Uri]$p.final_url).Host | Should -Be 'cdn.powershellgallery.com'
     }
-    It 'fetches the zccache 1.15.6 SHA256SUMS from GitHub and confirms every pinned archive hash against it' -Skip:(-not $HasNet) {
+    It 'fetches the zccache 1.15.6 SHA256SUMS from GitHub and confirms every pinned archive hash against it' -Skip:(-not $HasNetGitHub) {
         $m = Read-AapManifest -Path $script:ManifestPath
         $st = New-Staging
         $r = Invoke-AapManifest -Manifest $m -StagingRoot $st -Name 'zccache-sha256sums'

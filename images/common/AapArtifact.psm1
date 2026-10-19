@@ -3,7 +3,8 @@
 # Every rejection throws a message that starts with AAP_<Reason>: so callers and tests can match it.
 # Reasons: ManifestInvalid VersionNotExact SchemeRejected RedirectRejected SourceUnavailable
 #          SizeExceeded SizeMismatch ContentTypeRejected HashSourceMissing HashSourceConflict
-#          HashMismatch OfflineIncomplete
+#          HashMismatch OfflineIncomplete StagingLink StagingUntrusted
+# An error that is none of these (a full disk, a permission error) is recorded as AAP_Unexpected and is never retried.
 #
 # Files next to a staged artifact <file>:
 #   <file>.provenance.json   latest accepted result; removed when a later run rejects the file
@@ -11,17 +12,25 @@
 #   <file>.first-fetch.json  trust anchor of a first-fetch entry (no upstream hash exists): the hash seen by the
 #                            first accepted download. Later runs, online or offline, must match it. Rejections never
 #                            remove it; delete it by hand only after reviewing why the upstream file changed.
+#   <file>.quarantined       a staged file that failed an offline check, moved away from its final name
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 can start with SSL3 and TLS 1.0 only, so TLS 1.2 is added there. A host that already follows
+# the system default is left alone: OR-ing TLS 1.2 onto "system default" would narrow the whole process to TLS 1.2.
 try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $protocols = [Net.ServicePointManager]::SecurityProtocol
+    if ($protocols -ne [Net.SecurityProtocolType]::SystemDefault) {
+        [Net.ServicePointManager]::SecurityProtocol = $protocols -bor [Net.SecurityProtocolType]::Tls12
+    }
 } catch { Write-Verbose 'TLS 1.2 flag not settable on this host' }
 Add-Type -AssemblyName System.Net.Http
 
-$script:ToolVersion = '2'
+$script:ToolVersion = '3'
 $script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:Placeholder = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' # SHA-256 of zero bytes; a sums file lists it for itself and it is never a pass
+$script:ReparsePoint = [int][IO.FileAttributes]::ReparsePoint
+$script:DirectoryAttr = [int][IO.FileAttributes]::Directory
 
 function Get-AapProp($Object, [string]$Name) {
     if ($null -eq $Object) { return $null }
@@ -49,9 +58,62 @@ function Get-AapRootMessage($ErrorRecord) {
     $ex.Message
 }
 
+function Get-AapLowerHash([string]$Path, [string]$Algorithm) {
+    (Get-FileHash -Algorithm $Algorithm -LiteralPath $Path).Hash.ToLowerInvariant()
+}
+
+function Test-AapLoopback([string]$HostName) {
+    if ($HostName -in @('localhost', '[::1]', '::1')) { return $true }
+    $ip = $null
+    return ([Net.IPAddress]::TryParse($HostName, [ref]$ip) -and [Net.IPAddress]::IsLoopback($ip))
+}
+
+# ---- staging trust ---------------------------------------------------------------------------
+# The staging tree is where a verified file waits for a later step to use it, so whoever can write there can swap the
+# file after it was verified, or point a folder at something else with a junction. Before anything is written the
+# root must be a plain folder owned by SYSTEM, Administrators or TrustedInstaller that nobody else can write to or
+# delete, and so must every folder above it. Links are refused at every level and nothing is written, replaced or
+# deleted through one.
+#
+# The owner, ACL and ancestor rules are those of supervisor/install-supervisor.ps1 (Test-AapAdminDescriptor and
+# Get-AapAncestorProblem): the same three SIDs and the same access masks. They are re-implemented here, not
+# dot-sourced, because that file is an installer script and images/common must not depend on it or run it.
+# -TrustedSid (more SIDs that count as owners and writers) and -SkipAncestorCheck exist for tests and developer
+# boxes; the provenance records staging_check = relaxed when either was used.
+$script:AdminSids = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+# Root: write data, append data, write attributes, delete child, delete, write DAC, write owner, GENERIC_WRITE, GENERIC_ALL.
+$script:RootBadMask = 0x2 -bor 0x4 -bor 0x100 -bor 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40000000 -bor 0x10000000
+# Ancestors: delete, delete child, write DAC, write owner, GENERIC_ALL. Create rights are absent on purpose: C:\ grants
+# Authenticated Users "create folders" by default and that cannot replace an existing child. Write attributes on a
+# parent does not replace the child either.
+$script:AncestorBadMask = 0x10000 -bor 0x40 -bor 0x40000 -bor 0x80000 -bor 0x10000000
+$script:ReservedNames = '^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)'
+
+# Attributes of the item itself: a link is not followed, a missing path gives -1 and so does a path that cannot be
+# read. Test-Path would call a dangling link missing.
+function Get-AapAttributes([string]$Path) {
+    try { return [int](New-Object IO.FileInfo $Path).Attributes } catch { return -1 }
+}
+
+function Test-AapLink([string]$Path) {
+    $a = Get-AapAttributes $Path
+    return (($a -ne -1) -and (($a -band $script:ReparsePoint) -ne 0))
+}
+
+function Assert-AapNotLink([string]$Path, [string]$What) {
+    if (Test-AapLink $Path) { throw "AAP_StagingLink: $What $Path is a junction or symbolic link; nothing is written, replaced or deleted through it" }
+}
+
+# Windows resolves a trailing dot to the name without it and treats these names as devices, with or without an extension.
+function Test-AapSafeSegment([string]$Segment) {
+    return -not ($Segment.EndsWith('.') -or $Segment.EndsWith(' ') -or $Segment -match $script:ReservedNames)
+}
+
 function Write-AapJson($Object, [string]$Path) {
+    $full = Resolve-AapPath $Path
+    Assert-AapNotLink $full 'file'
     $text = (ConvertTo-Json -InputObject $Object -Depth 8) -replace "`r`n", "`n"
-    [IO.File]::WriteAllText((Resolve-AapPath $Path), $text + "`n", $script:Utf8NoBom)
+    [IO.File]::WriteAllText($full, $text + "`n", $script:Utf8NoBom)
 }
 
 function Read-AapJsonFile([string]$Path) {
@@ -59,12 +121,145 @@ function Read-AapJsonFile([string]$Path) {
     try { return ([IO.File]::ReadAllText($Path) | ConvertFrom-Json) } catch { return $null }
 }
 
-function Get-AapLowerHash([string]$Path, [string]$Algorithm) {
-    (Get-FileHash -Algorithm $Algorithm -LiteralPath $Path).Hash.ToLowerInvariant()
+# Deletes one staged file. A missing path is fine; a link or a folder is refused (a link would be deleted, not its target,
+# but a link in a staging folder means the folder is not what it should be).
+function Remove-AapStaged([string]$Path) {
+    $a = Get-AapAttributes $Path
+    if ($a -eq -1) { return }
+    Assert-AapNotLink $Path 'staged file'
+    if (($a -band $script:DirectoryAttr) -ne 0) { throw "AAP_StagingUntrusted: $Path is a folder where a file belongs" }
+    Remove-Item -LiteralPath $Path -Force
 }
 
-function Test-AapLoopback([string]$HostName) {
-    $HostName -in @('127.0.0.1', 'localhost', '[::1]', '::1')
+# A staged file that failed an offline check leaves its final name, so nothing that looks for the file finds it.
+function Move-AapAside([string]$Path) {
+    $to = $Path + '.quarantined'
+    Assert-AapNotLink $Path 'staged file'
+    Assert-AapNotLink $to 'quarantine file'
+    Move-Item -LiteralPath $Path -Destination $to -Force
+    return $to
+}
+
+function New-AapProblem([string]$Code, [string]$Text) { [pscustomobject]@{ Code = $Code; Text = $Text } }
+
+function Format-AapProblems($Problems) {
+    $list = @($Problems)
+    $texts = @($list | ForEach-Object { $_.Text })
+    $shown = @($texts | Select-Object -First 5)
+    return "$($list[0].Code): $($shown -join '; ')" + $(if ($texts.Count -gt 5) { "; and $($texts.Count - 5) more" } else { '' })
+}
+
+function Get-AapDescriptor([string]$Path) {
+    $acl = Get-Acl -LiteralPath $Path
+    return (New-Object System.Security.AccessControl.RawSecurityDescriptor($acl.GetSecurityDescriptorBinaryForm(), 0))
+}
+
+# Owner and DACL problems of one folder, as text. Only plain allow and deny entries are understood; deny entries and
+# inherit-only entries (they do not apply to the folder itself) are skipped; any other principal with a bad right is a problem.
+function Get-AapAclProblems($Raw, [string]$Where, [int]$Mask, [string[]]$Trusted) {
+    $p = New-Object System.Collections.Generic.List[string]
+    if ($null -eq $Raw.Owner -or $Trusted -notcontains $Raw.Owner.Value) {
+        $p.Add("owner $(if ($null -eq $Raw.Owner) { 'none' } else { $Raw.Owner.Value }) of $Where is not SYSTEM, Administrators or TrustedInstaller")
+    }
+    if ($null -eq $Raw.DiscretionaryAcl) {
+        $p.Add("$Where has no DACL, so everyone has full control")
+        return $p.ToArray()
+    }
+    foreach ($ace in $Raw.DiscretionaryAcl) {
+        $type = [int]$ace.AceType
+        if ($type -ne 0 -and $type -ne 1) { $p.Add("$Where has an ACE that is not a plain allow or deny"); continue }
+        if ($type -ne 0) { continue }
+        if (([int]$ace.AceFlags -band 8) -ne 0) { continue }
+        $sid = $ace.SecurityIdentifier.Value
+        if ($Trusted -contains $sid) { continue }
+        if (([int]$ace.AccessMask -band $Mask) -ne 0) { $p.Add("$Where grants $sid access $($ace.AccessMask)") }
+    }
+    return $p.ToArray()
+}
+
+function Get-AapAncestorProblems([string]$Path, [string[]]$Trusted) {
+    $found = New-Object System.Collections.Generic.List[object]
+    $dir = Split-Path -Parent $Path
+    while ($dir) {
+        # A link ancestor is refused before its target's ACL is read.
+        if (Test-AapLink $dir) {
+            $found.Add((New-AapProblem 'AAP_StagingLink' "ancestor $dir is a junction or symbolic link"))
+        } else {
+            try {
+                foreach ($t in @(Get-AapAclProblems (Get-AapDescriptor $dir) "ancestor $dir" $script:AncestorBadMask $Trusted)) { $found.Add((New-AapProblem 'AAP_StagingUntrusted' $t)) }
+            } catch { $found.Add((New-AapProblem 'AAP_StagingUntrusted' "cannot read the ACL of ancestor ${dir}: $(Get-AapRootMessage $_)")) }
+        }
+        $dir = Split-Path -Parent $dir
+    }
+    return $found.ToArray()
+}
+
+function Get-AapStagingProblems {
+    <# Everything that makes an existing staging root unfit to hold verified files, as @{ Code; Text } pairs; empty when fit.
+       Reads attributes and ACLs only. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Root, [string[]]$TrustedSid = @(), [switch]$SkipAncestorCheck)
+    $trusted = @($script:AdminSids) + @($TrustedSid | Where-Object { $_ })
+    $found = New-Object System.Collections.Generic.List[object]
+    if ($Root -notmatch '^[A-Za-z]:\\') {
+        $found.Add((New-AapProblem 'AAP_StagingUntrusted' "staging root $Root is not a local drive path"))
+        return $found.ToArray()
+    }
+    $attr = Get-AapAttributes $Root
+    if ($attr -eq -1) {
+        $found.Add((New-AapProblem 'AAP_StagingUntrusted' "staging root $Root does not exist or cannot be read"))
+        return $found.ToArray()
+    }
+    if (($attr -band $script:ReparsePoint) -ne 0) {
+        $found.Add((New-AapProblem 'AAP_StagingLink' "staging root $Root is a junction or symbolic link"))
+        return $found.ToArray()
+    }
+    if (($attr -band $script:DirectoryAttr) -eq 0) {
+        $found.Add((New-AapProblem 'AAP_StagingUntrusted' "staging root $Root is a file, not a folder"))
+        return $found.ToArray()
+    }
+    try {
+        foreach ($t in @(Get-AapAclProblems (Get-AapDescriptor $Root) "staging root $Root" $script:RootBadMask $trusted)) { $found.Add((New-AapProblem 'AAP_StagingUntrusted' $t)) }
+    } catch { $found.Add((New-AapProblem 'AAP_StagingUntrusted' "cannot read the ACL of staging root ${Root}: $(Get-AapRootMessage $_)")) }
+    if (-not $SkipAncestorCheck) { foreach ($p in @(Get-AapAncestorProblems $Root $trusted)) { $found.Add($p) } }
+    return $found.ToArray()
+}
+
+function Assert-AapStagingRoot {
+    <# Throws AAP_StagingLink or AAP_StagingUntrusted unless the staging root may hold verified files. A missing root is
+       created (one level, below an existing parent that passes the ancestor checks) and then checked like any other. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Root, [string[]]$TrustedSid = @(), [switch]$SkipAncestorCheck)
+    # Before any I/O: a share or device path would be probed over the network, and its ACLs are not ours to trust.
+    if ($Root -notmatch '^[A-Za-z]:\\') { throw "AAP_StagingUntrusted: staging root $Root is not a local drive path" }
+    if ((Get-AapAttributes $Root) -eq -1) {
+        $parent = Split-Path -Parent $Root
+        if (-not $parent -or (Get-AapAttributes $parent) -eq -1) { throw "AAP_StagingUntrusted: the parent of staging root $Root does not exist; create and lock it first" }
+        if (-not $SkipAncestorCheck) {
+            $trusted = @($script:AdminSids) + @($TrustedSid | Where-Object { $_ })
+            $up = @(Get-AapAncestorProblems $Root $trusted)
+            if ($up.Count) { throw (Format-AapProblems $up) }
+        }
+        [void][IO.Directory]::CreateDirectory($Root)
+    }
+    $problems = @(Get-AapStagingProblems -Root $Root -TrustedSid $TrustedSid -SkipAncestorCheck:$SkipAncestorCheck)
+    if ($problems.Count) { throw (Format-AapProblems $problems) }
+}
+
+# Creates <root>\<name>\<version> one level at a time and refuses a link or a file at any level, including a level that
+# was there already and one created a moment ago.
+function Initialize-AapStagedDir {
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Version)
+    $cur = $Root
+    $levels = @(@('name folder', $Name), @('version folder', $Version))
+    foreach ($level in $levels) {
+        $cur = Join-Path $cur $level[1]
+        $a = Get-AapAttributes $cur
+        if ($a -eq -1) { [void][IO.Directory]::CreateDirectory($cur); $a = Get-AapAttributes $cur }
+        if (($a -band $script:ReparsePoint) -ne 0) { throw "AAP_StagingLink: $($level[0]) $cur is a junction or symbolic link; nothing is written, replaced or deleted through it" }
+        if (($a -band $script:DirectoryAttr) -eq 0) { throw "AAP_StagingUntrusted: $($level[0]) $cur is a file, not a folder" }
+    }
+    return $cur
 }
 
 # ---- manifest validation ---------------------------------------------------------------------
@@ -74,19 +269,29 @@ function Test-AapEntry {
     param([Parameter(Mandatory)]$Entry, [switch]$AllowTestSources)
     $e = New-Object System.Collections.Generic.List[string]
     $name = Get-AapProp $Entry 'name'
-    if ($name -isnot [string] -or $name -cnotmatch '^[a-z0-9][a-z0-9._-]{0,79}$') { $e.Add('AAP_ManifestInvalid: name must match ^[a-z0-9][a-z0-9._-]{0,79}$') }
+    if ($name -isnot [string] -or $name -cnotmatch '^[a-z0-9][a-z0-9._-]{0,79}$' -or -not (Test-AapSafeSegment $name)) {
+        $e.Add('AAP_ManifestInvalid: name must match ^[a-z0-9][a-z0-9._-]{0,79}$, must not end with a dot and must not be a reserved Windows device name')
+    }
     $v = Get-AapProp $Entry 'version'
     if ($v -isnot [string] -or $v -cnotmatch '^[0-9A-Za-z][0-9A-Za-z._+-]{0,79}$' -or $v -match '(?i)latest|stable|nightly|current|^(head|main|master|lts|newest)$') {
         $e.Add("AAP_VersionNotExact: version '$v' is not an exact pinned version")
+    } elseif (-not (Test-AapSafeSegment $v)) {
+        $e.Add("AAP_ManifestInvalid: version '$v' ends with a dot or is a reserved Windows device name")
     }
     $fn = Get-AapProp $Entry 'file_name'
-    if ($fn -isnot [string] -or $fn -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+~-]{0,199}$') { $e.Add('AAP_ManifestInvalid: file_name must be a plain file name') }
+    if ($fn -isnot [string] -or $fn -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+~-]{0,199}$' -or -not (Test-AapSafeSegment $fn)) {
+        $e.Add('AAP_ManifestInvalid: file_name must be a plain file name that does not end with a dot and is not a reserved Windows device name')
+    }
     $urls = @(Get-AapProp $Entry 'urls')
     if ($urls.Count -lt 1 -or $urls.Count -gt 8) { $e.Add('AAP_ManifestInvalid: urls needs 1 to 8 entries') }
     foreach ($u in $urls) {
         $uri = $null
         if ($u -isnot [string] -or -not [Uri]::TryCreate($u, [UriKind]::Absolute, [ref]$uri)) { $e.Add("AAP_ManifestInvalid: url is not absolute: $u"); continue }
         if ($uri.UserInfo) { $e.Add('AAP_ManifestInvalid: url carries credentials') }
+        if ($uri.Scheme -eq 'file' -and ($uri.Host -or $uri.IsUnc -or $uri.LocalPath.StartsWith('\\'))) {
+            $e.Add("AAP_SchemeRejected: a file source must be a local path, not a network share: $u")
+            continue
+        }
         $ok = ($uri.Scheme -eq 'https') -or ($AllowTestSources -and (($uri.Scheme -eq 'file') -or ($uri.Scheme -eq 'http' -and (Test-AapLoopback $uri.Host))))
         if (-not $ok) { $e.Add("AAP_SchemeRejected: only https sources are allowed: $($uri.Scheme)://$($uri.Host)") }
     }
@@ -100,6 +305,11 @@ function Test-AapEntry {
     if ($null -ne $val -and ($val -isnot [string] -or $val -cnotmatch "^[0-9a-f]{$len}$")) { $e.Add("AAP_ManifestInvalid: hash.value must be $len lowercase hex digits") }
     if ($src -eq 'literal' -and $null -eq $val) { $e.Add('AAP_HashSourceMissing: literal hash source needs hash.value') }
     if ($src -eq 'first-fetch' -and $null -ne $val) { $e.Add('AAP_ManifestInvalid: first-fetch carries no hash.value') }
+    if ($src -eq 'first-fetch' -and @(Get-AapProp $Entry 'redirect_hosts' | Where-Object { $_ }).Count) {
+        # With no hash to bind the content to a source, the host allowlist (which ignores the path) is all there is: a
+        # redirect to another path on an allowlisted host could be someone else's file.
+        $e.Add('AAP_ManifestInvalid: a first-fetch entry may not allow redirect hosts; it never follows a redirect')
+    }
     if ($src -eq 'upstream-file') {
         if (-not (Get-AapProp $h 'upstream_entry') -or -not (Get-AapProp $h 'upstream_key')) { $e.Add('AAP_HashSourceMissing: upstream-file needs upstream_entry and upstream_key') }
         if ($algo -ne 'sha256') { $e.Add('AAP_ManifestInvalid: upstream sums files are read as sha256') }
@@ -136,9 +346,12 @@ function Test-AapManifest {
         $seen[$id] = $true
         $h = Get-AapProp $en 'hash'
         if ((Get-AapProp $h 'source') -eq 'upstream-file') {
-            $up = $entries | Where-Object { (Get-AapProp $_ 'name') -eq (Get-AapProp $h 'upstream_entry') } | Select-Object -First 1
-            if (-not $up) { $e.Add("AAP_ManifestInvalid: $id upstream_entry not in manifest") }
-            elseif ((Get-AapProp (Get-AapProp $up 'hash') 'source') -ne 'literal') { $e.Add("AAP_ManifestInvalid: $id upstream file must itself have a literal hash") }
+            $upName = Get-AapProp $h 'upstream_entry'
+            $ups = @($entries | Where-Object { (Get-AapProp $_ 'name') -eq $upName })
+            if ($ups.Count -eq 0) { $e.Add("AAP_ManifestInvalid: $id upstream_entry not in manifest") }
+            elseif ($ups.Count -gt 1) { $e.Add("AAP_ManifestInvalid: $id upstream_entry '$upName' names more than one entry") }
+            elseif ((Get-AapProp $en 'name') -eq $upName) { $e.Add("AAP_ManifestInvalid: $id lists itself as its upstream hash file") }
+            elseif ((Get-AapProp (Get-AapProp $ups[0] 'hash') 'source') -ne 'literal') { $e.Add("AAP_ManifestInvalid: $id upstream file must itself have a literal hash") }
         }
     }
     $nr = @(Get-AapProp $Manifest 'not_reproducible')
@@ -165,9 +378,16 @@ function Get-AapStagedPath([string]$StagingRoot, $Entry) {
     Join-Path (Join-Path (Join-Path (Resolve-AapPath $StagingRoot) (Get-AapProp $Entry 'name')) (Get-AapProp $Entry 'version')) (Get-AapProp $Entry 'file_name')
 }
 
+function Get-AapHexDigest([byte[]]$Bytes, [string]$Algorithm) {
+    $h = if ($Algorithm -eq 'sha512') { [Security.Cryptography.SHA512]::Create() } else { [Security.Cryptography.SHA256]::Create() }
+    try { return ([BitConverter]::ToString($h.ComputeHash($Bytes)) -replace '-', '').ToLowerInvariant() } finally { $h.Dispose() }
+}
+
 function Resolve-AapExpectedHash {
     <# Returns @{ Value; Source } or $null when no hash is known yet (a first-fetch entry with no record).
-       A first-fetch entry with a record resolves to the recorded hash. Throws on a missing or conflicting source. #>
+       A first-fetch entry with a record resolves to the recorded hash. Throws on a missing or conflicting source.
+       Does not assume a validated manifest: an upstream hash file must be exactly one other entry and must itself
+       carry a literal hash, which also rules out any chain or cycle. #>
     param([Parameter(Mandatory)]$Entry, $Manifest, [Parameter(Mandatory)][string]$StagingRoot)
     $StagingRoot = Resolve-AapPath $StagingRoot
     $h = Get-AapProp $Entry 'hash'
@@ -177,6 +397,7 @@ function Resolve-AapExpectedHash {
     if ($source -eq 'first-fetch') {
         $recordPath = (Get-AapStagedPath $StagingRoot $Entry) + '.first-fetch.json'
         if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) { return $null }
+        Assert-AapNotLink $recordPath 'first-fetch record'
         $rec = Read-AapJsonFile $recordPath
         $algo = Get-AapProp $h 'algorithm'
         $len = if ($algo -eq 'sha512') { 128 } else { 64 }
@@ -188,17 +409,36 @@ function Resolve-AapExpectedHash {
         }
         return @{ Value = $recorded; Source = 'first-fetch-recorded' }
     }
+    if ($source -ne 'upstream-file') { throw "AAP_ManifestInvalid: unknown hash source '$source'" }
     $upName = Get-AapProp $h 'upstream_entry'
     $key = Get-AapProp $h 'upstream_key'
-    $up = $null
-    if ($Manifest) { $up = @(Get-AapProp $Manifest 'entries') | Where-Object { (Get-AapProp $_ 'name') -eq $upName } | Select-Object -First 1 }
-    if (-not $up) { throw "AAP_HashSourceMissing: upstream hash file entry '$upName' is not in the manifest" }
+    $ups = @()
+    if ($Manifest) { $ups = @(@(Get-AapProp $Manifest 'entries') | Where-Object { (Get-AapProp $_ 'name') -eq $upName }) }
+    if ($ups.Count -eq 0) { throw "AAP_HashSourceMissing: upstream hash file entry '$upName' is not in the manifest" }
+    if ($ups.Count -gt 1) { throw "AAP_ManifestInvalid: upstream hash file entry '$upName' names more than one entry" }
+    $up = $ups[0]
+    if ((Get-AapProp $up 'name') -eq (Get-AapProp $Entry 'name')) { throw "AAP_ManifestInvalid: '$upName' lists itself as its upstream hash file" }
+    $upHash = Get-AapProp $up 'hash'
+    $upValue = Get-AapProp $upHash 'value'
+    if ((Get-AapProp $upHash 'source') -ne 'literal' -or $upValue -isnot [string] -or $upValue -cnotmatch '^[0-9a-f]{64}$' -or (Get-AapProp $upHash 'algorithm') -ne 'sha256') {
+        throw "AAP_ManifestInvalid: upstream hash file '$upName' must carry a literal sha256 hash"
+    }
     $upPath = Get-AapStagedPath $StagingRoot $up
+    $folder = $StagingRoot
+    foreach ($seg in @((Get-AapProp $up 'name'), (Get-AapProp $up 'version'))) { $folder = Join-Path $folder $seg; Assert-AapNotLink $folder 'folder of the upstream hash file' }
     if (-not (Test-Path -LiteralPath $upPath -PathType Leaf)) { throw "AAP_HashSourceMissing: upstream hash file '$upName' is not staged at $upPath" }
-    $upExpected = Resolve-AapExpectedHash -Entry $up -Manifest $Manifest -StagingRoot $StagingRoot
-    [void](Confirm-AapFile -Path $upPath -Entry $up -Expected $upExpected)
+    Assert-AapNotLink $upPath 'upstream hash file'
+    # The file is read once; the size bound, the hash and the lines come from the same bytes.
+    $max = [long](Get-AapProp $up 'size_max_bytes')
+    $exact = Get-AapProp $up 'size_bytes'
+    if ((Get-Item -LiteralPath $upPath).Length -gt $max) { throw "AAP_SizeExceeded: upstream hash file '$upName' is larger than its bound of $max" }
+    $bytes = [IO.File]::ReadAllBytes($upPath)
+    if ($bytes.Length -gt $max) { throw "AAP_SizeExceeded: upstream hash file '$upName' is larger than its bound of $max" }
+    if ($null -ne $exact -and $bytes.Length -ne [long]$exact) { throw "AAP_SizeMismatch: upstream hash file '$upName' has $($bytes.Length) bytes, manifest says $exact" }
+    $actual = Get-AapHexDigest $bytes 'sha256'
+    if ($actual -ne $upValue) { throw "AAP_HashMismatch: upstream hash file '$upName' is $actual, expected $upValue (literal)" }
     $found = @()
-    foreach ($line in [IO.File]::ReadAllLines($upPath)) {
+    foreach ($line in ([Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xFEFF) -split "`r?`n")) {
         if ($line -match '^([0-9A-Fa-f]{64})[ \t]+\*?(.+?)\s*$' -and ($Matches[2] -replace '^\./', '') -eq $key -and $Matches[1].ToLowerInvariant() -ne $script:Placeholder) { $found += $Matches[1].ToLowerInvariant() }
     }
     if ($found.Count -ne 1) { throw "AAP_HashSourceMissing: '$key' appears $($found.Count) times in upstream file '$upName'" }
@@ -206,20 +446,42 @@ function Resolve-AapExpectedHash {
     return @{ Value = $found[0]; Source = "upstream-file:$upName" + $(if ($null -ne $value) { '+literal' } else { '' }) }
 }
 
+# One pass over the file: SHA-256 always, SHA-512 when asked, and the number of bytes those digests cover.
+function Get-AapDigest {
+    param([Parameter(Mandatory)][string]$Path, [switch]$Sha512)
+    $a = [Security.Cryptography.SHA256]::Create()
+    $b = if ($Sha512) { [Security.Cryptography.SHA512]::Create() } else { $null }
+    $total = 0L
+    $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $buf = New-Object byte[] 1048576
+        while (($n = $fs.Read($buf, 0, $buf.Length)) -gt 0) {
+            $total += $n
+            [void]$a.TransformBlock($buf, 0, $n, $null, 0)
+            if ($b) { [void]$b.TransformBlock($buf, 0, $n, $null, 0) }
+        }
+        [void]$a.TransformFinalBlock($buf, 0, 0)
+        if ($b) { [void]$b.TransformFinalBlock($buf, 0, 0) }
+    } finally { $fs.Dispose() }
+    $hex = { param($alg) ([BitConverter]::ToString($alg.Hash) -replace '-', '').ToLowerInvariant() }
+    return @{ Bytes = $total; Sha256 = (& $hex $a); Sha512 = $(if ($b) { & $hex $b } else { $null }) }
+}
+
 function Confirm-AapFile {
     <# Size bound, exact size and hash. Returns bytes and both digests, or throws. $Expected $null means first-fetch (record only). #>
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)]$Entry, $Expected)
     $Path = Resolve-AapPath $Path
-    $bytes = (Get-Item -LiteralPath $Path).Length
     $max = [long](Get-AapProp $Entry 'size_max_bytes')
     $exact = Get-AapProp $Entry 'size_bytes'
-    if ($bytes -gt $max) { throw "AAP_SizeExceeded: $bytes bytes exceeds the bound of $max" }
-    if ($null -ne $exact -and $bytes -ne [long]$exact) { throw "AAP_SizeMismatch: $bytes bytes, manifest says $exact" }
+    $length = (Get-Item -LiteralPath $Path).Length
+    if ($length -gt $max) { throw "AAP_SizeExceeded: $length bytes exceeds the bound of $max" }
     $algo = Get-AapProp (Get-AapProp $Entry 'hash') 'algorithm'
-    $sha256 = Get-AapLowerHash $Path 'SHA256'
-    $actual = if ($algo -eq 'sha512') { Get-AapLowerHash $Path 'SHA512' } else { $sha256 }
+    $d = Get-AapDigest -Path $Path -Sha512:($algo -eq 'sha512')
+    if ($d.Bytes -gt $max) { throw "AAP_SizeExceeded: $($d.Bytes) bytes exceeds the bound of $max" }
+    if ($null -ne $exact -and $d.Bytes -ne [long]$exact) { throw "AAP_SizeMismatch: $($d.Bytes) bytes, manifest says $exact" }
+    $actual = if ($algo -eq 'sha512') { $d.Sha512 } else { $d.Sha256 }
     if ($null -ne $Expected -and $actual -ne $Expected.Value) { throw "AAP_HashMismatch: $algo is $actual, expected $($Expected.Value) ($($Expected.Source))" }
-    return @{ Bytes = $bytes; Sha256 = $sha256; Actual = $actual; Algorithm = $algo }
+    return @{ Bytes = $d.Bytes; Sha256 = $d.Sha256; Actual = $actual; Algorithm = $algo }
 }
 
 # ---- download --------------------------------------------------------------------------------
@@ -233,7 +495,7 @@ function Assert-AapSource {
 }
 
 function Invoke-AapHttpAttempt {
-    param($Entry, [string]$Url, [string]$Part, [string[]]$Hosts, [bool]$Loopback)
+    param($Entry, [string]$Url, [string]$Part, [string[]]$Hosts, [bool]$Loopback, [bool]$NoRedirect)
     $max = [long](Get-AapProp $Entry 'size_max_bytes')
     $timeout = [int](Get-AapProp (Get-AapProp $Entry 'retry') 'timeout_seconds')
     $types = @(Get-AapProp $Entry 'content_types' | ForEach-Object { $_.ToLowerInvariant() })
@@ -254,6 +516,7 @@ function Invoke-AapHttpAttempt {
             $code = [int]$resp.StatusCode
             [void]$chain.Add([ordered]@{ url = (Format-AapUrl $uri); status = $code })
             if ($code -ge 300 -and $code -lt 400) {
+                if ($NoRedirect) { throw "AAP_RedirectRejected: HTTP $code from $($uri.Host); an entry with no published hash never follows a redirect" }
                 $loc = $resp.Headers.Location
                 if (-not $loc) { throw 'AAP_SourceUnavailable: redirect without a Location header' }
                 $hop++
@@ -276,6 +539,7 @@ function Invoke-AapHttpAttempt {
         # blocks below then dispose the stream, response and client, which aborts a stalled read.
         $deadline = [DateTime]::UtcNow.AddSeconds($timeout)
         $in = $resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        Assert-AapNotLink $Part 'partial download'
         $out = [IO.File]::Open($Part, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::None)
         $total = 0L
         try {
@@ -306,9 +570,12 @@ function Invoke-AapHttpAttempt {
 
 function Copy-AapFileSource {
     param($Entry, [string]$Url, [string]$Part)
-    $src = ([Uri]$Url).LocalPath
+    $uri = [Uri]$Url
+    if ($uri.Host -or $uri.IsUnc -or $uri.LocalPath.StartsWith('\\')) { throw "AAP_SchemeRejected: a file source must be a local path, not a network share: $Url" }
+    $src = $uri.LocalPath
     if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { throw "AAP_Transient: file source missing: $src" }
     if ((Get-Item -LiteralPath $src).Length -gt [long](Get-AapProp $Entry 'size_max_bytes')) { throw 'AAP_SizeExceeded: file source is larger than the bound' }
+    Assert-AapNotLink $Part 'partial download'
     Copy-Item -LiteralPath $src -Destination $Part -Force
     return @{ Chain = @([ordered]@{ url = $Url; status = 200 }); FinalUrl = $Url; ContentType = 'file' }
 }
@@ -320,11 +587,14 @@ function Get-AapArtifact {
     .SYNOPSIS
       Fetch (or, with -Offline, verify) one manifest entry into <StagingRoot>/<name>/<version>/<file_name>.
     .DESCRIPTION
+      The staging root must pass the trust checks first (see "staging trust" above); a root that does not, a link at
+      any level, or a link in place of a file stops the run before anything is written.
       The file is published into staging only after size and hash verification; a partial or rejected
       download never appears under its final name. A provenance record is written beside it
       (<file>.provenance.json on acceptance, <file>.rejected.json on rejection; the other one is removed)
-      and also returned. A first-fetch entry (no upstream hash) is recorded once in <file>.first-fetch.json and
-      every later run, online or offline, must match that record.
+      and also returned. A first-fetch entry (no upstream hash) is never reused: every online run downloads it again,
+      and the first accepted download is recorded once in <file>.first-fetch.json; every later run, online or
+      offline, must match that record. Such an entry is accepted but never verified: the result says Verified = $false.
     #>
     [CmdletBinding()]
     param(
@@ -334,16 +604,20 @@ function Get-AapArtifact {
         [switch]$Offline,
         [switch]$RecordFirstFetch,
         [switch]$AllowLoopbackHttp,
-        [switch]$AllowFileSource
+        [switch]$AllowFileSource,
+        [string[]]$TrustedSid = @(),
+        [switch]$SkipAncestorCheck
     )
     $StagingRoot = Resolve-AapPath $StagingRoot
     $started = [DateTime]::UtcNow
     $name = [string](Get-AapProp $Entry 'name')
     $version = [string](Get-AapProp $Entry 'version')
     $lic = Get-AapProp $Entry 'license'
+    $isFirstFetch = ((Get-AapProp (Get-AapProp $Entry 'hash') 'source') -eq 'first-fetch')
     $prov = [ordered]@{
         schema = 'aap-provenance/1'; name = $name; version = $version; file_name = Get-AapProp $Entry 'file_name'
         outcome = 'rejected'; reason = $null; detail = $null; mode = $(if ($Offline) { 'offline' } else { 'online' })
+        staging_check = $(if (@($TrustedSid | Where-Object { $_ }).Count -or $SkipAncestorCheck) { 'relaxed' } else { 'strict' })
         requested_url = $null; url_chain = @(); final_url = $null; content_type = $null; attempts = 0
         acquired_at = $null; started_at = $started.ToString('yyyy-MM-ddTHH:mm:ssZ'); ended_at = $null; bytes = $null; sha256 = $null
         hash = [ordered]@{ algorithm = Get-AapProp (Get-AapProp $Entry 'hash') 'algorithm'; expected = $null; source = $null; verified = $false }
@@ -357,11 +631,12 @@ function Get-AapArtifact {
     try {
         $errs = @(Test-AapEntry -Entry $Entry -AllowTestSources:($AllowLoopbackHttp -or $AllowFileSource))
         if ($errs.Count) { throw $errs[0] }
-        $final = Get-AapStagedPath $StagingRoot $Entry
-        $dir = Split-Path -Parent $final
+        # Nothing is written, and no rejection record either, until the root and every level below it are known to be plain folders.
+        Assert-AapStagingRoot -Root $StagingRoot -TrustedSid $TrustedSid -SkipAncestorCheck:$SkipAncestorCheck
+        $dir = Initialize-AapStagedDir -Root $StagingRoot -Name $name -Version $version
+        $final = Join-Path $dir (Get-AapProp $Entry 'file_name')
         $part = $final + '.part'
         $recordPath = $final + '.first-fetch.json'
-        New-Item -ItemType Directory -Force -Path $dir | Out-Null
         $expected = Resolve-AapExpectedHash -Entry $Entry -Manifest $Manifest -StagingRoot $StagingRoot
         if ($expected) { $prov.hash.expected = $expected.Value; $prov.hash.source = $expected.Source } else { $prov.hash.source = 'first-fetch' }
         if (-not $expected) {
@@ -370,16 +645,28 @@ function Get-AapArtifact {
         }
 
         $verified = $null
-        if (Test-Path -LiteralPath $final -PathType Leaf) {
+        $existing = Get-AapAttributes $final
+        if ($existing -ne -1) {
+            Assert-AapNotLink $final 'staged file'
+            if (($existing -band $script:DirectoryAttr) -ne 0) { throw "AAP_StagingUntrusted: $final is a folder where a file belongs" }
             if (-not $expected) {
                 $notes.Add('replaced a staged file that has no first-fetch record')
-                Remove-Item -LiteralPath $final -Force
+                Remove-AapStaged $final
+            } elseif ($isFirstFetch -and -not $Offline) {
+                # Nothing but a recorded guess vouches for such a file, so it is never reused: it is downloaded again and compared.
+                $notes.Add('replaced an existing staged file: a first-fetch entry is downloaded again on every online run')
+                Remove-AapStaged $final
             } else {
                 try { $verified = Confirm-AapFile -Path $final -Entry $Entry -Expected $expected }
                 catch {
-                    if ($Offline) { throw }
-                    $notes.Add("replaced an existing staged file that failed verification: $($_.Exception.Message)")
-                    Remove-Item -LiteralPath $final -Force
+                    $orig = $_
+                    $why = $orig.Exception.Message
+                    if ($Offline) {
+                        if ($why -match '^AAP_(HashMismatch|SizeExceeded|SizeMismatch):') { $notes.Add("moved the failing file to $(Split-Path -Leaf (Move-AapAside $final))") }
+                        throw $orig
+                    }
+                    $notes.Add("replaced an existing staged file that failed verification: $why")
+                    Remove-AapStaged $final
                 }
             }
         } elseif ($Offline) { throw "AAP_OfflineIncomplete: $final is not staged" }
@@ -414,20 +701,24 @@ function Get-AapArtifact {
                         if (-not $AllowFileSource) { throw "AAP_SchemeRejected: file sources need -AllowFileSource" }
                         $got = Copy-AapFileSource -Entry $Entry -Url $url -Part $part
                     } else {
-                        $got = Invoke-AapHttpAttempt -Entry $Entry -Url $url -Part $part -Hosts $hosts -Loopback ([bool]$AllowLoopbackHttp)
+                        $got = Invoke-AapHttpAttempt -Entry $Entry -Url $url -Part $part -Hosts $hosts -Loopback ([bool]$AllowLoopbackHttp) -NoRedirect $isFirstFetch
                     }
                 } catch {
-                    $msg = $_.Exception.Message
-                    if (Test-Path -LiteralPath $part) { Remove-Item -LiteralPath $part -Force }
-                    if ($msg -notlike 'AAP_Transient:*' -and $msg -like 'AAP_*') { throw }
-                    $last = $msg -replace '^AAP_Transient: ', ''
+                    $orig = $_
+                    try { Remove-AapStaged $part } catch { $null = $_ }
+                    # Only a failure tagged as transient is retried. A refusal, a full disk or a permission error ends
+                    # the run at once and is not reported as an unavailable source.
+                    if ($orig.Exception.Message -notlike 'AAP_Transient:*') { throw $orig }
+                    $last = $orig.Exception.Message -replace '^AAP_Transient: ', ''
                     if ($i -lt $max) { Start-Sleep -Seconds ([int](Get-AapProp $retry 'backoff_seconds') * $i) }
                 }
             }
             if (-not $got) { throw "AAP_SourceUnavailable: $max attempt(s) failed, last: $last" }
+            if ($isFirstFetch -and @($got.Chain).Count -eq 0) { throw 'AAP_HashSourceMissing: no download is on record for this first-fetch entry, so its hash is not recorded' }
             $prov.url_chain = @($got.Chain); $prov.final_url = $got.FinalUrl; $prov.content_type = $got.ContentType
             try { $verified = Confirm-AapFile -Path $part -Entry $Entry -Expected $expected }
-            catch { Remove-Item -LiteralPath $part -Force; throw }
+            catch { $orig = $_; try { Remove-AapStaged $part } catch { $null = $_ }; throw $orig }
+            Assert-AapNotLink $final 'staged file'
             Move-Item -LiteralPath $part -Destination $final -Force
             $prov.acquired_at = $prov.started_at
             if (-not $expected) {
@@ -446,36 +737,45 @@ function Get-AapArtifact {
         $prov.detail = $(if ($notes.Count) { $notes -join '; ' } else { $null })
         $prov.outcome = 'accepted'
     } catch {
-        $m = $_.Exception.Message
+        $orig = $_
+        $m = $orig.Exception.Message
         $prov.reason = if ($m -match '^(AAP_[A-Za-z]+):') { $Matches[1] } else { 'AAP_Unexpected' }
-        $prov.detail = $m
+        $prov.detail = $m + $(if ($notes.Count) { ' [' + ($notes -join '; ') + ']' } else { '' })
         $prov.ended_at = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
         if ($final) {
-            # An accepted record must not outlive a rejection of the same file.
-            if (Test-Path -LiteralPath ($final + '.provenance.json')) { Remove-Item -LiteralPath ($final + '.provenance.json') -Force }
-            Write-AapJson $prov ($final + '.rejected.json')
+            # An accepted record must not outlive a rejection of the same file. A failure to write the record (a link,
+            # a full disk) must not hide the error that is being reported.
+            try {
+                Remove-AapStaged ($final + '.provenance.json')
+                Write-AapJson $prov ($final + '.rejected.json')
+            } catch { $null = $_ }
         }
-        throw
+        throw $orig
     }
     $prov.ended_at = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
-    if (Test-Path -LiteralPath ($final + '.rejected.json')) { Remove-Item -LiteralPath ($final + '.rejected.json') -Force }
+    Remove-AapStaged ($final + '.rejected.json')
     $provPath = $final + '.provenance.json'
     Write-AapJson $prov $provPath
-    return [pscustomobject]@{ Path = $final; ProvenancePath = $provPath; Provenance = $prov }
+    return [pscustomobject]@{ Path = $final; ProvenancePath = $provPath; Provenance = $prov; Verified = [bool]$prov.hash.verified }
 }
 
 function Invoke-AapManifest {
     <# Acquire (or with -Offline verify) every entry, or only -Name. Never stops at the first rejection.
-       A -Name that is not an entry of the manifest is an error. Unreproducible inputs are returned as blockers;
-       Complete says nothing about them. #>
+       The manifest is validated first, and the staging root is checked once before any entry is touched; either failing
+       is an error, not a list of rejections. A -Name that is not an entry of the manifest is an error.
+       Unreproducible inputs are returned as blockers. Complete is true only when nothing was rejected and nothing was
+       accepted without verification (a first-fetch entry); Rejected and Unverified name the entries. #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Manifest,
         [Parameter(Mandatory)][string]$StagingRoot,
         [string[]]$Name,
-        [switch]$Offline, [switch]$RecordFirstFetch, [switch]$AllowLoopbackHttp, [switch]$AllowFileSource
+        [switch]$Offline, [switch]$RecordFirstFetch, [switch]$AllowLoopbackHttp, [switch]$AllowFileSource,
+        [string[]]$TrustedSid = @(), [switch]$SkipAncestorCheck
     )
     $StagingRoot = Resolve-AapPath $StagingRoot
+    $problems = @(Test-AapManifest -Manifest $Manifest -AllowTestSources:($AllowLoopbackHttp -or $AllowFileSource))
+    if ($problems.Count) { throw "AAP_ManifestInvalid: $($problems.Count) problem(s)`n$($problems -join "`n")" }
     $all = @(Get-AapProp $Manifest 'entries')
     $entries = $all
     if ($Name) {
@@ -489,19 +789,24 @@ function Invoke-AapManifest {
         $entries = @($all | Where-Object { (Get-AapProp $_ 'name') -in $Name })
     }
     if ($entries.Count -eq 0) { throw 'AAP_ManifestInvalid: the manifest has no entries to acquire' }
+    Assert-AapStagingRoot -Root $StagingRoot -TrustedSid $TrustedSid -SkipAncestorCheck:$SkipAncestorCheck
     $ordered = @($entries | Where-Object { (Get-AapProp (Get-AapProp $_ 'hash') 'source') -ne 'upstream-file' }) + @($entries | Where-Object { (Get-AapProp (Get-AapProp $_ 'hash') 'source') -eq 'upstream-file' })
     $results = foreach ($en in $ordered) {
         try {
-            $a = Get-AapArtifact -Entry $en -StagingRoot $StagingRoot -Manifest $Manifest -Offline:$Offline -RecordFirstFetch:$RecordFirstFetch -AllowLoopbackHttp:$AllowLoopbackHttp -AllowFileSource:$AllowFileSource
-            [pscustomobject]@{ Name = Get-AapProp $en 'name'; Status = 'accepted'; Reason = $null; Path = $a.Path; Message = $null }
+            $a = Get-AapArtifact -Entry $en -StagingRoot $StagingRoot -Manifest $Manifest -Offline:$Offline -RecordFirstFetch:$RecordFirstFetch -AllowLoopbackHttp:$AllowLoopbackHttp -AllowFileSource:$AllowFileSource -TrustedSid $TrustedSid -SkipAncestorCheck:$SkipAncestorCheck
+            [pscustomobject]@{ Name = Get-AapProp $en 'name'; Status = 'accepted'; Verified = [bool]$a.Verified; Reason = $null; Path = $a.Path; Message = $null }
         } catch {
             $m = $_.Exception.Message
-            [pscustomobject]@{ Name = Get-AapProp $en 'name'; Status = 'rejected'; Reason = $(if ($m -match '^(AAP_[A-Za-z]+):') { $Matches[1] } else { 'AAP_Unexpected' }); Path = $null; Message = $m }
+            [pscustomobject]@{ Name = Get-AapProp $en 'name'; Status = 'rejected'; Verified = $false; Reason = $(if ($m -match '^(AAP_[A-Za-z]+):') { $Matches[1] } else { 'AAP_Unexpected' }); Path = $null; Message = $m }
         }
     }
     $results = @($results)
+    $rejected = @($results | Where-Object Status -eq 'rejected' | ForEach-Object Name)
+    $unverified = @($results | Where-Object { $_.Status -eq 'accepted' -and -not $_.Verified } | ForEach-Object Name)
     [pscustomobject]@{
-        Complete = (@($results | Where-Object Status -eq 'rejected').Count -eq 0)
+        Complete = ($rejected.Count -eq 0 -and $unverified.Count -eq 0)
+        Rejected = $rejected
+        Unverified = $unverified
         Results = $results
         Blockers = @(Get-AapProp $Manifest 'not_reproducible')
     }
@@ -512,13 +817,17 @@ function Invoke-AapManifest {
 function New-AapEvidenceRecord {
     <# Writes an evidence-bundle record (parity/contracts/evidence-bundle.schema.json) for one provenance file.
        The provenance file itself is listed as an artifact by hash, so URL chain and license class stay retrievable.
+       For an accepted record the staged file is hashed again now and compared with the recorded sha256: a provenance
+       file alone proves nothing, and a file that changed or went missing is a failure (AAP_ArtifactChanged,
+       AAP_ArtifactMissing), never a pass.
        -ExpectedReason AAP_<Reason> records a deliberate negative test: the record passes only when the candidate was
-       rejected for exactly that reason; a rejection for any other reason is reported as unknown. #>
+       rejected for exactly that reason; a rejection for any other reason is reported as unknown.
+       -HeadSha is required: the staging folder is not a git work tree, so there is nothing to infer it from. #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$ProvenancePath,
         [Parameter(Mandatory)][string]$OutPath,
-        [string]$HeadSha,
+        [Parameter(Mandatory)][string]$HeadSha,
         [string]$ManifestPath,
         [string]$Item = 'P03',
         [string]$Verifier = 'pending-independent-verifier',
@@ -528,13 +837,25 @@ function New-AapEvidenceRecord {
     $OutPath = Resolve-AapPath $OutPath
     if ($ManifestPath) { $ManifestPath = Resolve-AapPath $ManifestPath }
     $p = [IO.File]::ReadAllText($ProvenancePath) | ConvertFrom-Json
-    if (-not $HeadSha) { $HeadSha = (& git -C (Split-Path -Parent $ProvenancePath) rev-parse HEAD 2>$null) }
     if ($HeadSha -cnotmatch '^[0-9a-f]{40}$') { throw 'New-AapEvidenceRecord: pass -HeadSha, a full 40-hex commit' }
     $san = { param($s) ($s -replace '[^A-Za-z0-9._-]', '_') }
     $accepted = $p.outcome -eq 'accepted'
     $verified = $accepted -and $p.hash.verified
     $seen = if ($verified) { 'success' } elseif ($accepted) { 'unknown' } else { 'failure' }
     $observedReason = if ($accepted) { 'none' } else { [string]$p.reason }
+    $fileName = [string]$p.file_name
+    $fileBytes = if ($accepted) { [long]$p.bytes } else { 0L }
+    $fileSha = if ($accepted) { [string]$p.sha256 } else { $null }
+    if ($accepted) {
+        if ($ProvenancePath -notmatch '\.provenance\.json$') { throw 'New-AapEvidenceRecord: an accepted record must be named <file>.provenance.json so the file can be hashed again' }
+        $artifact = $ProvenancePath -replace '\.provenance\.json$', ''
+        if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
+            $seen = 'failure'; $observedReason = 'AAP_ArtifactMissing'; $fileSha = $null
+        } else {
+            $nowSha = Get-AapLowerHash $artifact 'SHA256'
+            if ($nowSha -ne $fileSha) { $seen = 'failure'; $observedReason = 'AAP_ArtifactChanged'; $fileSha = $nowSha; $fileBytes = (Get-Item -LiteralPath $artifact).Length }
+        }
+    }
     if ($ExpectedReason) {
         $expected = 'failure'
         $observed = if ($seen -eq 'failure' -and $observedReason -ne $ExpectedReason) { 'unknown' } else { $seen }
@@ -545,11 +866,12 @@ function New-AapEvidenceRecord {
     $result = if ($observed -eq 'unknown') { 'unknown' } elseif ($observed -eq $expected) { 'pass' } else { 'fail' }
     $exit = if ($observed -eq 'success') { 0 } elseif ($observed -eq 'failure') { 1 } else { $null }
     $artifacts = @([ordered]@{ name = (& $san ([IO.Path]::GetFileName($ProvenancePath))); bytes = (Get-Item -LiteralPath $ProvenancePath).Length; sha256 = Get-AapLowerHash $ProvenancePath 'SHA256' })
-    if ($accepted) { $artifacts = @([ordered]@{ name = (& $san $p.file_name); bytes = [long]$p.bytes; sha256 = $p.sha256 }) + $artifacts }
+    if ($accepted -and $fileSha) { $artifacts = @([ordered]@{ name = (& $san $fileName); bytes = $fileBytes; sha256 = $fileSha }) + $artifacts }
     $manifestHash = if ($ManifestPath) { Get-AapLowerHash $ManifestPath 'SHA256' } else { $null }
     $fixture = ("images/common/$($p.name)-$($p.version)").ToLowerInvariant() -replace '[^a-z0-9._/-]', '.'
     $command = "Get-AapArtifact $($p.name) $($p.version) mode=$($p.mode)"
     if ($ExpectedReason) { $command += " expected-reason=$ExpectedReason observed-reason=$observedReason" }
+    elseif ($observedReason -in @('AAP_ArtifactMissing', 'AAP_ArtifactChanged')) { $command += " observed-reason=$observedReason" }
     $rec = [ordered]@{
         schema = 1; item = $Item; contract_revision = 'evidence-bundle@1'; head_sha = $HeadSha; action_shas = @()
         reference_image = $null; candidate_image = $null; inputs_manifest_sha256 = $manifestHash; fixture_id = $fixture
@@ -564,4 +886,4 @@ function New-AapEvidenceRecord {
     return $OutPath
 }
 
-Export-ModuleMember -Function Test-AapEntry, Test-AapManifest, Read-AapManifest, Resolve-AapExpectedHash, Confirm-AapFile, Get-AapArtifact, Invoke-AapManifest, New-AapEvidenceRecord, Get-AapStagedPath
+Export-ModuleMember -Function Test-AapEntry, Test-AapManifest, Read-AapManifest, Resolve-AapExpectedHash, Confirm-AapFile, Get-AapArtifact, Invoke-AapManifest, New-AapEvidenceRecord, Get-AapStagedPath, Get-AapStagingProblems, Assert-AapStagingRoot

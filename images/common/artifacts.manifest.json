@@ -222,7 +222,7 @@
         "upstream_entry": null,
         "upstream_key": null
       },
-      "size_bytes": null,
+      "size_bytes": 143040480,
       "size_max_bytes": 268435456,
       "content_types": [
         "application/zip"
@@ -241,7 +241,7 @@
         "Install-AndroidSDK.ps1"
       ],
       "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, \"Version- or hash-pinned values\"",
-      "note": "The file name contains \"latest\" but the version is the build number 13114758 and the hash pins the content."
+      "note": "The file name contains \"latest\" but the version is the build number 13114758 and the hash pins the content. Size and SHA-1 54a582f3bf73e04253602f2d1c80bd5868aac115 match Google's SDK index https://dl.google.com/android/repository/repository2-1.xml (checked 2026-10-19; the archive was downloaded and hashed)."
     },
     {
       "name": "mysql-vcredist-x64",
@@ -295,12 +295,12 @@
       "redirect_hosts": [],
       "hash": {
         "algorithm": "sha256",
-        "source": "first-fetch",
-        "value": null,
+        "source": "literal",
+        "value": "16e1e920eca45ead4dcb41b55bb6721b87d590452372bfebd2aad6aca9d2fca1",
         "upstream_entry": null,
         "upstream_key": null
       },
-      "size_bytes": null,
+      "size_bytes": 22265,
       "size_max_bytes": 1048576,
       "content_types": [
         "text/plain"
@@ -319,7 +319,7 @@
         "Install-Docker.ps1"
       ],
       "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, \"Version- or hash-pinned values\"",
-      "note": "Pinned to a commit, no upstream hash. Download needs -RecordFirstFetch and is recorded unverified. Data only: never executed by this tooling."
+      "note": "Pinned to commit 8ea2a92 of microsoft/Windows-Containers, so the URL names immutable content. No hash is published; the SHA-256 was computed from one fetch of that URL on 2026-10-19 (22265 bytes). Data only: never executed by this tooling."
     },
     {
       "name": "docker-engine-windows-static",
@@ -358,7 +358,7 @@
         "Install-Docker.ps1"
       ],
       "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, \"Version- or hash-pinned values\"",
-      "note": "Version from the toolset (docker.components.docker). URL pattern docker-<version>.zip from Install-Docker.ps1 at aee0669; the server answered 200 application/zip on 2026-10-19. No upstream hash is published, so the download needs -RecordFirstFetch."
+      "note": "Version from the toolset (docker.components.docker). URL pattern docker-<version>.zip from Install-Docker.ps1 at aee0669; the server answered 200 application/zip on 2026-10-19. No hash and no immutable source exist, so this stays first-fetch: it needs -RecordFirstFetch, is downloaded again on every online run, never follows a redirect and is always reported unverified."
     },
     {
       "name": "docker-compose-windows-sha256",
@@ -657,12 +657,12 @@
       "redirect_hosts": [],
       "hash": {
         "algorithm": "sha256",
-        "source": "first-fetch",
-        "value": null,
+        "source": "literal",
+        "value": "ce5852960eec1b1026c0f4ef8dee383cb99906ce54c12158d65e46417ba2decf",
         "upstream_entry": null,
         "upstream_key": null
       },
-      "size_bytes": null,
+      "size_bytes": 7045220,
       "size_max_bytes": 33554432,
       "content_types": [
         "application/vnd.debian.binary-package"
@@ -681,7 +681,7 @@
         "install-container-tools.sh"
       ],
       "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, \"Version- or hash-pinned values\"",
-      "note": "No upstream hash seen. Needs -RecordFirstFetch; recorded unverified."
+      "note": "SHA-256 from the Ubuntu noble Packages index (universe/binary-amd64), checked 2026-10-19: InRelease https://archive.ubuntu.com/ubuntu/dists/noble/InRelease lists Packages.gz by hash and has a good signature from the Ubuntu Archive Automatic Signing Key (2018), fingerprint F6EC B376 2474 EDA9 D21B 7022 8719 20D1 991B C93C. The downloaded .deb matches that size and hash."
     },
     {
       "name": "android-commandlinetools-linux",
@@ -696,12 +696,12 @@
       "redirect_hosts": [],
       "hash": {
         "algorithm": "sha256",
-        "source": "first-fetch",
-        "value": null,
+        "source": "literal",
+        "value": "2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258",
         "upstream_entry": null,
         "upstream_key": null
       },
-      "size_bytes": null,
+      "size_bytes": 153607504,
       "size_max_bytes": 268435456,
       "content_types": [
         "application/zip"
@@ -720,7 +720,7 @@
         "install-android-sdk.sh"
       ],
       "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, \"Version- or hash-pinned values\"",
-      "note": "Toolset gives the file name without a hash. URL derived from the Windows pin path on the same host and answered with HTTP 200 on 2026-10-19 (headers only). Needs -RecordFirstFetch."
+      "note": "The toolset gives the file name without a hash. SHA-256 computed from one download on 2026-10-19. Google's SDK index https://dl.google.com/android/repository/repository2-1.xml (also repository2-3.xml) lists this archive at this URL with the same size and SHA-1 d313adb7aedccf6cf0cfca51ec180f0059f5f8f8, which the download matches. The build number 11076708 is the version."
     }
   ],
   "not_reproducible": [
