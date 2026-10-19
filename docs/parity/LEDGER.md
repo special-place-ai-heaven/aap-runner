@@ -170,6 +170,14 @@ Revision 3 (executing since 2026-10-19; D0 authorized). States below are current
 - Acceptance: Active-pool guard, cancellation, partial install/resume, reparse/ACL/input attacks and image-manifest mismatch tested. Preserve source/key gates. All impacted suites pass; refresh staging digests. Shared bootstrap/hash paths are serialized after P16.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
 
+## P20.0 — Two-profile runner controls in the tray (Windows row inert)
+
+- Earliest wave: 2; prerequisites: P00. Pulled forward of P20 on the owner's demand (2026-10-19).
+- Pinned execution lane: Sol high (Claude: Opus high); ownership: `crates/tray/src/**`, `crates/tray/README.md`, `supervisor/aap-runner-supervisor.ps1`, `supervisor/supervisor.Tests.ps1`, `supervisor/README.md`.
+- Deliverable: Linux 0–5 and Windows 0–5 controls (total ≤ 5, never 0+0, over-budget cells disabled live; Linux 0 disabled until a Windows backend exists), per-profile Each/Total and host-reserve lines, green Linux / blue Windows identity with drawn OS glyphs, OS-titled cards with coloured edge, Windows placeholder cards "Not installed", stacked per-profile usage segments in every bar and the 60-min graph, same controls on the wizard sizing page. `inbox/settings.json` stays schema 2 with optional `windows_runner_count`; `runner_count` remains the Linux count; the supervisor validates and drops the key.
+- Acceptance: pure count rule tested for every combination; settings round-trip; supervisor rejects bad values and ignores Windows-only changes (Pester 5.1 + 7); cargo fmt/clippy/test green; both contract READMEs updated. Rollout: safe in any order — the tray keeps the Windows choice tray-local and never writes `windows_runner_count` to the inbox until a backend exists.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: REVIEWED at `13ec2e6`.
+
 ## P20 — Implement dual-profile tray controls and diagnostics
 
 - Earliest wave: 9; prerequisites: P19.

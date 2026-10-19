@@ -348,6 +348,7 @@ impl InstallCheckpoint {
             job_cpus: self.job_cpus,
             job_memory_gib: self.job_memory_gib,
             work_disk_gib: self.work_disk_gib,
+            windows_runner_count: 0,
         }
     }
 }
@@ -545,6 +546,7 @@ impl RawRequest {
             job_cpus: self.job_cpus?,
             job_memory_gib: self.job_memory_gib?,
             work_disk_gib: self.work_disk_gib?,
+            windows_runner_count: 0,
         })
     }
 
@@ -1681,6 +1683,36 @@ mod tests {
             labels: "self-hosted,linux,crrr".into(),
             key_path: r"C:\Users\me\Downloads\k.pem".into(),
         }
+    }
+
+    #[test]
+    fn wizard_install_requests_never_carry_a_windows_count() {
+        let base = temp();
+        fs::create_dir_all(base.join("inbox/jobs")).unwrap();
+        let id = "adadadadadadadad";
+        let draft = crate::wizard::Sizing {
+            runner_count: 2,
+            windows_runner_count: 3,
+            ..crate::wizard::Sizing::default()
+        };
+        // What the wizard sends (`linux()`), and even the raw draft: only the fixed keys.
+        for sizing in [draft.linux(), draft] {
+            write_request_with_size(
+                &base,
+                id,
+                Verb::Install,
+                Some(&identity_fields()),
+                Some(&sizing),
+            )
+            .unwrap();
+            let text = fs::read_to_string(request_path(&base, id)).unwrap();
+            assert!(!text.contains("windows"), "{text}");
+            assert_eq!(
+                parse_request(text.as_bytes(), "install", id).unwrap(),
+                Verb::Install
+            );
+        }
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 use crate::history::{History, Sample, secs};
 use crate::mark::Sym;
 use crate::problem::{self, Action, Class};
+use crate::settings::Os;
 use crate::settings_panel::SettingsPanel;
 use crate::state::{self, Desired, Slot, Snapshot, Status};
 use eframe::egui::{
@@ -115,6 +116,72 @@ const SIZE: [f32; 2] = [760.0, 760.0];
 /// One card per reported slot, and no more than the runner limit.
 fn cards_to_draw(slot_count: usize) -> usize {
     slot_count.min(*crate::settings::RUNNERS.end() as usize)
+}
+
+/// Windows placeholder cards after `linux` runner cards: the stored count, within five cards.
+fn windows_cards_to_draw(linux: usize, windows: u32) -> u32 {
+    windows.min(crate::settings::MAX_RUNNERS.saturating_sub(linux as u32))
+}
+
+/// Per-profile usage `[linux, windows]` as fractions of `share`, stacked Linux first and
+/// clamped so together they never pass 1.
+fn stacked(used: [f64; 2], share: Option<f64>) -> [f32; 2] {
+    let Some(s) = share.filter(|s| *s > 0.0) else {
+        return [0.0, 0.0];
+    };
+    let linux = (used[0].max(0.0) / s).min(1.0);
+    let windows = (used[1].max(0.0) / s).min(1.0 - linux);
+    [linux as f32, windows as f32]
+}
+
+/// Observed usage per profile. ponytail: every sample is the Linux manager's; Windows stays 0
+/// until a Windows backend reports usage.
+fn linux_only(used: Option<f64>) -> Option<[f64; 2]> {
+    used.map(|u| [u, 0.0])
+}
+
+/// `■ Linux ■ Windows`: which colour is which profile, small, on the current row.
+fn legend(ui: &mut egui::Ui, p: &Palette) {
+    for os in [Os::Linux, Os::Windows] {
+        let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+        ui.painter().rect_filled(rect, 1.0, p.os(os));
+        ui.label(RichText::new(os.name()).color(p.muted).small());
+    }
+}
+
+/// The wizard's Windows line while no Windows backend exists.
+const WIZARD_WINDOWS_LATER: &str = "Windows runners: available after the native Windows backend";
+
+/// `Linux 2`, `Windows 1`.
+fn card_name(os: Os, n: u32) -> String {
+    format!("{} {n}", os.name())
+}
+
+/// `Linux 0/3 busy`, and `Windows 2 not installed` while Windows runners are chosen.
+fn header_counts(busy: usize, linux: usize, windows: u32) -> (String, Option<String>) {
+    // ponytail: no Windows backend yet; it brings its own busy count.
+    let windows = (windows > 0).then(|| format!("Windows {windows} not installed"));
+    (format!("Linux {busy}/{linux} busy"), windows)
+}
+
+fn card_frame(p: &Palette) -> egui::Frame {
+    egui::Frame::new()
+        .fill(p.card)
+        .stroke(Stroke::new(1.0, p.border))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(12, CARD_MARGIN_V))
+}
+
+/// The profile's colour down the card's left edge.
+fn card_edge(ui: &egui::Ui, card: Rect, color: Color32) {
+    let edge = Rect::from_min_max(card.min, pos2(card.min.x + 3.0, card.max.y));
+    let round = egui::CornerRadius {
+        nw: 4,
+        sw: 4,
+        ne: 0,
+        se: 0,
+    };
+    ui.painter().rect_filled(edge, round, color);
 }
 
 fn card_height() -> f32 {
@@ -269,6 +336,16 @@ impl Palette {
             Sym::Idle => (0xECECEE, 0x1A1A1A),
             Sym::Running => (0x4CC38A, 0x1A7F4B),
             Sym::Draining => (0xE8B04A, 0x8A5A00),
+        };
+        hex(if self.dark { dark } else { light })
+    }
+
+    /// A profile's colour: its glyph, row label and the card's left edge.
+    pub fn os(&self, os: Os) -> Color32 {
+        let (dark, light) = match os {
+            // Greenish (yellower than Running's green) and blueish, per the owner.
+            Os::Linux => (0x8FD14F, 0x3D7A12),
+            Os::Windows => (0x3AA0F0, 0x0067B8),
         };
         hex(if self.dark { dark } else { light })
     }
@@ -826,6 +903,57 @@ fn a11y(r: &egui::Response, label: String) {
     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &label));
 }
 
+/// A profile glyph, painted like the state symbols: a Tux-style penguin (head, body, `hole`
+/// belly and eyes, feet) for Linux, the four-pane window for Windows.
+fn paint_os(pt: &egui::Painter, rect: Rect, os: Os, color: Color32, hole: Color32) {
+    let s = rect.width();
+    let c = rect.center();
+    match os {
+        Os::Windows => {
+            let (half, gap) = (0.42 * s, (0.08 * s).max(1.0));
+            let pane = (2.0 * half - gap) / 2.0;
+            for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                let min = pos2(
+                    c.x - half + dx * (pane + gap),
+                    c.y - half + dy * (pane + gap),
+                );
+                pt.rect_filled(Rect::from_min_size(min, vec2(pane, pane)), 0.0, color);
+            }
+        }
+        Os::Linux => {
+            let at = |dx: f32, dy: f32| pos2(c.x + dx * s, c.y + dy * s);
+            pt.circle_filled(at(0.0, -0.24), 0.2 * s, color);
+            pt.add(Shape::ellipse_filled(
+                at(0.0, 0.1),
+                vec2(0.3 * s, 0.32 * s),
+                color,
+            ));
+            pt.add(Shape::ellipse_filled(
+                at(0.0, 0.15),
+                vec2(0.17 * s, 0.22 * s),
+                hole,
+            ));
+            for dx in [-0.07, 0.07] {
+                pt.circle_filled(at(dx, -0.27), (0.04 * s).max(0.8), hole);
+            }
+            for dx in [-0.17, 0.17] {
+                pt.add(Shape::ellipse_filled(
+                    at(dx, 0.42),
+                    vec2(0.13 * s, 0.06 * s),
+                    color,
+                ));
+            }
+        }
+    }
+}
+
+/// The profile glyph in the profile's colour, `size` square, over a `hole`-coloured background.
+pub fn os_glyph(ui: &mut egui::Ui, p: &Palette, os: Os, size: f32, hole: Color32) {
+    let (rect, r) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    paint_os(ui.painter(), rect, os, p.os(os), hole);
+    a11y(&r, os.name().into());
+}
+
 /// One state symbol, painted (never a font glyph): `s` = size, stroke `max(1.5, s/12)`.
 fn paint_sym(p: &egui::Painter, rect: Rect, sym: Sym, color: Color32, hole: Color32) {
     let s = rect.width();
@@ -951,13 +1079,14 @@ fn sym_widget(
 }
 
 impl Dash {
-    /// The track (the share), the fill `min(used, share)` and a 6 px over-share segment at the
-    /// right end; `w` wide. No (fresh) sample: the track only.
+    /// The track (the share), the fill `min(used, share)` stacked per profile (Linux green,
+    /// then Windows blue) and a 6 px over-share segment at the right end; `w` wide. No (fresh)
+    /// sample: the track only.
     fn track(
         &self,
         ui: &mut egui::Ui,
         id: egui::Id,
-        used: Option<f64>,
+        used: Option<[f64; 2]>,
         share: Option<f64>,
         over: bool,
         w: f32,
@@ -967,11 +1096,16 @@ impl Dash {
         let track = Rect::from_center_size(row.center(), vec2(w, BAR_H));
         ui.painter().rect_filled(track, 2.0, p.track);
         if let Some(u) = used {
-            let frac = share.map_or(0.0, |s| if s > 0.0 { (u / s).min(1.0) } else { 0.0 });
-            let frac = self.anim(ui.ctx(), id, frac as f32);
-            if frac > 0.0 {
-                let fill = Rect::from_min_size(track.min, vec2(w * frac, BAR_H));
-                ui.painter().rect_filled(fill, 2.0, p.accent);
+            let [linux, windows] = stacked(u, share);
+            let linux = self.anim(ui.ctx(), id, linux);
+            let windows = self.anim(ui.ctx(), id.with("windows"), windows);
+            let mut x = track.min.x;
+            for (os, frac) in [(Os::Linux, linux), (Os::Windows, windows)] {
+                if frac > 0.0 {
+                    let fill = Rect::from_min_size(pos2(x, track.min.y), vec2(w * frac, BAR_H));
+                    ui.painter().rect_filled(fill, 2.0, p.os(os));
+                    x += w * frac;
+                }
             }
             if over {
                 let seg = Rect::from_min_max(pos2(track.max.x - 6.0, track.min.y), track.max);
@@ -1013,7 +1147,7 @@ impl Dash {
         // Row 1: label + track
         ui.horizontal(|ui| {
             fixed_label(ui, label, BAR_ROW_H);
-            let r = self.track(ui, id, used, share, over, track_w);
+            let r = self.track(ui, id, linux_only(used), share, over, track_w);
             a11y(&r, format!("{name} {}", text.replace(" / ", " of ")));
         });
         // Row 2: caption in a fixed-height row -- no available_height() dependency.
@@ -1051,7 +1185,7 @@ impl Dash {
                     None => ("no sample".into(), false),
                 };
                 let track_w = (ui.available_width() - 64.0).max(16.0);
-                let r = self.track(ui, id, used, share, over, track_w);
+                let r = self.track(ui, id, linux_only(used), share, over, track_w);
                 let spoken = text.replace('/', " of ");
                 a11y(
                     &r,
@@ -1096,7 +1230,17 @@ impl Dash {
                 self.snap.status,
                 Status::NotInstalled | Status::Off | Status::Unknown
             ) {
-                ui.label(format!("{}/{} busy", self.snap.busy(), self.snap.runners()));
+                let (linux, windows) = header_counts(
+                    self.snap.busy(),
+                    self.snap.runners(),
+                    self.settings.windows(),
+                );
+                os_glyph(ui, &p, Os::Linux, 14.0, p.bg);
+                ui.label(linux);
+                if let Some(windows) = windows {
+                    os_glyph(ui, &p, Os::Windows, 14.0, p.bg);
+                    ui.label(RichText::new(windows).color(p.muted));
+                }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if problem.is_some() {
@@ -1127,7 +1271,14 @@ impl Dash {
         // Row 1: label + track (cleaning is in the caption)
         ui.horizontal(|ui| {
             fixed_label(ui, "Disk", BAR_ROW_H);
-            let r = self.track(ui, egui::Id::new("pool-disk"), used, share, over, track_w);
+            let r = self.track(
+                ui,
+                egui::Id::new("pool-disk"),
+                linux_only(used),
+                share,
+                over,
+                track_w,
+            );
             a11y(&r, format!("Work disk {text}"));
         });
         // Row 2: caption (includes cleaning when active) -- no available_height().
@@ -1192,12 +1343,16 @@ impl Dash {
             Some(a) => format!("sampled {} ago", problem::ago(a)),
             None => "no sample".into(),
         };
+        // Legend left, sampled-at right, one fixed-height row.
         let row_w = ui.available_width();
         ui.allocate_ui_with_layout(
             vec2(row_w, CAPTION_H),
-            Layout::right_to_left(Align::Center),
+            Layout::left_to_right(Align::Center),
             |ui| {
-                ui.label(RichText::new(&sampled_text).color(p.muted).small());
+                legend(ui, &p);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(&sampled_text).color(p.muted).small());
+                });
             },
         );
     }
@@ -1242,74 +1397,111 @@ impl Dash {
     fn card(&mut self, ui: &mut egui::Ui, slot: &Slot, share: (Option<f64>, Option<f64>)) {
         let p = self.pal();
         let fresh = self.fresh();
-        let name = format!("Runner {}", slot.slot);
-        egui::Frame::new()
-            .fill(p.card)
-            .stroke(Stroke::new(1.0, p.border))
-            .corner_radius(4)
-            .inner_margin(egui::Margin::symmetric(12, CARD_MARGIN_V))
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(&name).font(FontId::new(13.0, semibold())));
-                    ui.add_space(8.0);
-                    let error = slot.state == Sym::Error && self.problem.is_some();
-                    let r = sym_widget(
-                        ui,
-                        CARD_SYM_H,
-                        slot.state,
-                        &p,
-                        p.card,
-                        error,
-                        format!("{name}, {}", slot.state.label()),
-                    );
-                    if r.clicked() && error {
-                        self.show_panel();
-                    }
-                    ui.label(RichText::new(slot.state.label()).color(p.state(slot.state)));
-                    if let Some(start) = slot.started_at.filter(|_| slot.busy()) {
-                        let d = SystemTime::now().duration_since(start).unwrap_or_default();
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(elapsed(d));
-                        });
-                    }
-                });
-                if slot.busy() || !slot.job.is_empty() {
-                    self.title_row(ui, slot);
-                } else {
-                    ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
-                        ui.label(RichText::new("Waiting for a job").color(p.muted));
+        // Every reported slot is the Linux manager's.
+        let name = card_name(Os::Linux, slot.slot);
+        let frame = card_frame(&p).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                os_glyph(ui, &p, Os::Linux, 16.0, p.card);
+                ui.label(RichText::new(&name).font(FontId::new(13.0, semibold())));
+                ui.add_space(8.0);
+                let error = slot.state == Sym::Error && self.problem.is_some();
+                let r = sym_widget(
+                    ui,
+                    CARD_SYM_H,
+                    slot.state,
+                    &p,
+                    p.card,
+                    error,
+                    format!("{name}, {}", slot.state.label()),
+                );
+                if r.clicked() && error {
+                    self.show_panel();
+                }
+                ui.label(RichText::new(slot.state.label()).color(p.state(slot.state)));
+                if let Some(start) = slot.started_at.filter(|_| slot.busy()) {
+                    let d = SystemTime::now().duration_since(start).unwrap_or_default();
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(elapsed(d));
                     });
                 }
-                let idle = !slot.busy();
-                let used = |v: Option<f64>| if idle { Some(0.0) } else { v.filter(|_| fresh) };
-                let gap = 12.0;
-                let half = (ui.available_width() - gap) / 2.0;
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = gap;
-                    self.mini_bar(
-                        ui,
-                        egui::Id::new(("slot-cores", slot.slot)),
-                        "CPU",
-                        used(slot.cpu_cores),
-                        share.0,
-                        true,
-                        half,
-                        format!("{name} cores"),
-                    );
-                    self.mini_bar(
-                        ui,
-                        egui::Id::new(("slot-mem", slot.slot)),
-                        "Mem",
-                        used(slot.mem_gib),
-                        share.1,
-                        false,
-                        half,
-                        format!("{name} memory"),
+            });
+            if slot.busy() || !slot.job.is_empty() {
+                self.title_row(ui, slot);
+            } else {
+                ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
+                    ui.label(RichText::new("Waiting for a job").color(p.muted));
+                });
+            }
+            let idle = !slot.busy();
+            let used = |v: Option<f64>| if idle { Some(0.0) } else { v.filter(|_| fresh) };
+            let gap = 12.0;
+            let half = (ui.available_width() - gap) / 2.0;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                self.mini_bar(
+                    ui,
+                    egui::Id::new(("slot-cores", slot.slot)),
+                    "CPU",
+                    used(slot.cpu_cores),
+                    share.0,
+                    true,
+                    half,
+                    format!("{name} cores"),
+                );
+                self.mini_bar(
+                    ui,
+                    egui::Id::new(("slot-mem", slot.slot)),
+                    "Mem",
+                    used(slot.mem_gib),
+                    share.1,
+                    false,
+                    half,
+                    format!("{name} memory"),
+                );
+            });
+        });
+        card_edge(ui, frame.response.rect, p.os(Os::Linux));
+    }
+
+    /// A chosen Windows runner while no Windows backend exists: the card's three rows at the
+    /// same height as a runner card, saying it is not installed and starts nothing.
+    fn windows_card(&mut self, ui: &mut egui::Ui, n: u32) {
+        let p = self.pal();
+        let name = card_name(Os::Windows, n);
+        let frame = card_frame(&p).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                os_glyph(ui, &p, Os::Windows, 16.0, p.card);
+                ui.label(RichText::new(&name).font(FontId::new(13.0, semibold())));
+                ui.add_space(8.0);
+                sym_widget(
+                    ui,
+                    CARD_SYM_H,
+                    Sym::NotInstalled,
+                    &p,
+                    p.card,
+                    false,
+                    format!("{name}, Not installed"),
+                );
+                ui.label(RichText::new("Not installed").color(p.state(Sym::NotInstalled)));
+            });
+            ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
+                ui.label(RichText::new("Windows backend not installed").color(p.muted));
+            });
+            ui.horizontal(|ui| {
+                ui.allocate_ui(vec2(ui.available_width(), CARD_BARS_H), |ui| {
+                    ui.label(
+                        RichText::new("Coming with the native Windows runner. Starts nothing.")
+                            .color(p.muted)
+                            .small(),
                     );
                 });
             });
+        });
+        card_edge(ui, frame.response.rect, p.os(Os::Windows));
     }
 
     /// `title · repo` on one line with an ellipsis and the full text in a tooltip, a link when
@@ -1382,7 +1574,11 @@ impl Dash {
     fn history(&self, ui: &mut egui::Ui) {
         let p = self.pal();
         ui.add_space(4.0);
-        ui.label(RichText::new("Last 60 min").font(FontId::new(13.0, semibold())));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Last 60 min").font(FontId::new(13.0, semibold())));
+            ui.add_space(8.0);
+            legend(ui, &p);
+        });
         let a = self.snap.applied;
         let now_min = secs(SystemTime::now()) / 60;
         let samples = &self.history.samples;
@@ -1409,13 +1605,20 @@ impl Dash {
                     let x = rect.min.x + i as f32 * col_w;
                     let col = Rect::from_min_max(pos2(x, rect.min.y), pos2(x + col_w, rect.max.y));
                     let Some(s) = at(minute) else { continue };
-                    if let Some(v) = pick(s) {
-                        let h = ((v / top) as f32 * rect.height()).max(1.0);
-                        let bar = Rect::from_min_max(
-                            pos2(x, rect.max.y - h),
-                            pos2(x + col_w - 1.0, rect.max.y),
-                        );
-                        ui.painter().rect_filled(bar, 0.0, p.accent);
+                    if let Some(u) = linux_only(pick(s)) {
+                        // Stacked bottom-up: Linux, then Windows; at least 1 px for a sample.
+                        let mut y = rect.max.y;
+                        for (i, frac) in stacked(u, Some(top)).into_iter().enumerate() {
+                            let h = frac * rect.height();
+                            let h = if i == 0 { h.max(1.0) } else { h };
+                            if h <= 0.0 {
+                                continue;
+                            }
+                            let bar = Rect::from_min_max(pos2(x, y - h), pos2(x + col_w - 1.0, y));
+                            let os = if i == 0 { Os::Linux } else { Os::Windows };
+                            ui.painter().rect_filled(bar, 0.0, p.os(os));
+                            y -= h;
+                        }
                     }
                     let tip = format!(
                         "{} \u{b7} {} cores \u{b7} {} GiB",
@@ -1901,14 +2104,33 @@ impl Dash {
                         let w = self.wizard.as_mut().unwrap();
                         let previous = w.draft.sizing.clone();
                         let s = &mut w.draft.sizing;
+                        let backend = crate::settings::WINDOWS_BACKEND;
+                        // The installer sets up Linux only: without a Windows backend there is no
+                        // Windows count to choose, so none can be lost at install.
+                        if !backend { s.windows_runner_count = 0; }
+                        let fits_linux = crate::settings::count_range(Os::Linux, s.windows_runner_count, backend);
+                        let fits_windows = crate::settings::count_range(Os::Windows, s.runner_count, backend);
                         ui.horizontal(|ui| {
-                            ui.label("Runners");
-                            for n in 1..=5 { ui.selectable_value(&mut s.runner_count, n, n.to_string()); }
+                            os_glyph(ui, &p, Os::Linux, 14.0, p.bg);
+                            ui.label("Linux runners");
+                            for n in 0..=5 { ui.add_enabled_ui(fits_linux.contains(&n), |ui| ui.selectable_value(&mut s.runner_count, n, n.to_string())); }
                         });
+                        if backend {
+                            ui.horizontal(|ui| {
+                                os_glyph(ui, &p, Os::Windows, 14.0, p.bg);
+                                ui.label("Windows runners");
+                                for n in 0..=5 { ui.add_enabled_ui(fits_windows.contains(&n), |ui| ui.selectable_value(&mut s.windows_runner_count, n, n.to_string())); }
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                os_glyph(ui, &p, Os::Windows, 14.0, p.bg);
+                                ui.label(RichText::new(WIZARD_WINDOWS_LATER).color(p.muted));
+                            });
+                        }
                         ui.horizontal(|ui| { ui.label("Total CPUs"); ui.add(egui::DragValue::new(&mut s.job_cpus).range(1..=28)); });
                         ui.horizontal(|ui| { ui.label("Total memory (GiB)"); ui.add(egui::DragValue::new(&mut s.job_memory_gib).range(1..=80)); });
                         ui.horizontal(|ui| { ui.label("Work disk (GiB)"); ui.add(egui::DragValue::new(&mut s.work_disk_gib).range(60..=512)); });
-                        ui.label(format!("Each runner: {} CPUs, {} GiB", crate::settings::share_text(s.job_cpus, s.runner_count), crate::settings::share_text(s.job_memory_gib, s.runner_count)));
+                        for line in crate::wizard::sizing_each(s) { ui.label(line); }
                         if let Some(f) = &w.facts {
                             let (cpus, gib) = f.vm().cap();
                             ui.label(format!("Pool capacity: {cpus} CPUs, {gib} GiB after Windows/WSL headroom."));
@@ -1955,12 +2177,10 @@ impl Dash {
         let valid = self.ident.valid();
         let ready = !active && valid.is_some() && w.draft.sizing.check_shape().is_ok();
         let mut primary = None;
+        let linux = w.draft.sizing.linux();
         ui.label(format!(
-            "{} runners · {} CPUs total · {} GiB total · {} GiB work disk",
-            w.draft.sizing.runner_count,
-            w.draft.sizing.job_cpus,
-            w.draft.sizing.job_memory_gib,
-            w.draft.sizing.work_disk_gib
+            "{} Linux runners · {} CPUs total · {} GiB total · {} GiB work disk",
+            linux.runner_count, linux.job_cpus, linux.job_memory_gib, linux.work_disk_gib
         ));
         if let Some(job) = &w.job {
             ui.label(job_status_text(&job.verb, &job.state, job.exit_code));
@@ -2042,7 +2262,10 @@ impl Dash {
                 w.draft.submitted = false;
                 return;
             }
-            if let Err(e) = crate::helper::launch_install(&self.base, &identity, &w.draft.sizing) {
+            // The installer sets up the Linux pool only: its runners and their part of the totals.
+            if let Err(e) =
+                crate::helper::launch_install(&self.base, &identity, &w.draft.sizing.linux())
+            {
                 w.launch_error = Some(e);
                 w.draft.submitted = false;
                 w.save();
@@ -2140,7 +2363,8 @@ impl Dash {
                     a.job_memory_gib.map(|g| f64::from(g) / f64::from(n.max(1))),
                 );
                 let slots = self.snap.slots.clone();
-                for (i, slot) in slots.iter().take(cards_to_draw(slots.len())).enumerate() {
+                let linux = cards_to_draw(slots.len());
+                for (i, slot) in slots.iter().take(linux).enumerate() {
                     if i > 0 {
                         ui.add_space(CARD_GAP_SPACE);
                     }
@@ -2148,6 +2372,10 @@ impl Dash {
                 }
                 if slots.is_empty() && self.problem.is_none() {
                     ui.label(RichText::new("No runner slots reported.").color(p.muted));
+                }
+                for n in 1..=windows_cards_to_draw(linux, self.settings.windows()) {
+                    ui.add_space(CARD_GAP_SPACE);
+                    self.windows_card(ui, n);
                 }
                 self.history(ui);
                 self.note_line(ui);
@@ -2390,10 +2618,9 @@ fn left_column_height(job_line: bool) -> f32 {
     // settings (show_top) -- 15 items, 14 auto-gaps
     let settings = 2.0 * INTERACT_H          // Power: label row + Start/Stop row
         + 12.0                                // add_space(12)
-        + INTERACT_H + INTERACT_H             // Runners + now-runners (ui.horizontal)
-        + 4.0                                 // add_space(4)
-        + INTERACT_H + INTERACT_H             // Each + now-each
-        + INTERACT_H                          // Total
+        + INTERACT_H + INTERACT_H             // Linux control + Linux Each line
+        + INTERACT_H                          // now-linux (count and share, one line)
+        + 4.0 + INTERACT_H + INTERACT_H       // add_space(4) + Windows control + Windows line
         + 4.0 + INTERACT_H + INTERACT_H      // add_space(4) + IO cap + now-io
         + 4.0 + INTERACT_H + INTERACT_H      // add_space(4) + Sharing + now-sharing
         + 14.0 * CARD_ITEM_GAP; // 15 items -> 14 auto-gaps
@@ -2599,6 +2826,94 @@ mod tests {
     }
 
     #[test]
+    fn left_column_draws_both_profiles_and_the_inert_windows_note() {
+        let base = state::temp_base("dash-profiles");
+        std::fs::write(
+            state::inbox(&base).join("settings.json"),
+            r#"{"runner_count":3,"job_cpus":26,"job_memory_gib":72}"#,
+        )
+        .unwrap();
+        crate::settings::write_windows_choice(&crate::settings::windows_choice_path(&base), 2)
+            .unwrap();
+        let mut panel = SettingsPanel::load(&base);
+        assert_eq!(panel.windows(), 2);
+        let snap = Snapshot::bare(Status::Idle);
+        let mut desired = Desired::On;
+        let context = egui::Context::default();
+        context.set_fonts(fonts()); // binds "semibold", as the window does
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                panel.show_top(ui, &DARK, &base, &snap, &mut desired);
+            });
+        });
+        let texts: Vec<String> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        output.textures_delta.clear(); // before any assert: a panic must not leave it set
+        for want in ["Linux", "Windows", "not installed", "of 26/72", "now -"] {
+            assert!(
+                texts.iter().any(|t| t.contains(want)),
+                "missing {want}: {texts:?}"
+            );
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn bars_stack_linux_then_windows_within_the_share() {
+        assert_eq!(stacked([3.0, 1.0], Some(8.0)), [0.375, 0.125]);
+        assert_eq!(
+            stacked([6.0, 6.0], Some(8.0)),
+            [0.75, 0.25],
+            "never past the share"
+        );
+        assert_eq!(stacked([9.0, 1.0], Some(8.0)), [1.0, 0.0]);
+        assert_eq!(stacked([2.0, 0.0], None), [0.0, 0.0]);
+        assert_eq!(stacked([2.0, 0.0], Some(0.0)), [0.0, 0.0]);
+        assert_eq!(stacked([-1.0, 2.0], Some(4.0)), [0.0, 0.5]);
+        assert_eq!(
+            linux_only(Some(2.5)),
+            Some([2.5, 0.0]),
+            "Windows stays 0, inert"
+        );
+        assert_eq!(linux_only(None), None);
+    }
+
+    #[test]
+    fn cards_and_header_name_each_profile() {
+        assert_eq!(card_name(Os::Linux, 2), "Linux 2");
+        assert_eq!(card_name(Os::Windows, 1), "Windows 1");
+        assert_eq!(header_counts(0, 3, 0), ("Linux 0/3 busy".into(), None));
+        assert_eq!(
+            header_counts(1, 3, 2),
+            (
+                "Linux 1/3 busy".into(),
+                Some("Windows 2 not installed".into())
+            )
+        );
+        assert_eq!(windows_cards_to_draw(3, 2), 2);
+        assert_eq!(windows_cards_to_draw(5, 2), 0, "never more than five cards");
+        assert_eq!(windows_cards_to_draw(4, 2), 1);
+        assert_eq!(windows_cards_to_draw(0, 4), 4);
+        assert_eq!(windows_cards_to_draw(9, 1), 0);
+        for p in [DARK, LIGHT] {
+            let (linux, windows) = (p.os(Os::Linux), p.os(Os::Windows));
+            assert_ne!(linux, windows);
+            for c in [linux, windows] {
+                assert_ne!(c, p.accent);
+                for s in crate::mark::SYMS {
+                    assert_ne!(c, p.state(s), "{s:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn card_count_is_the_slot_count_up_to_five() {
         for n in 0..=5 {
             assert_eq!(cards_to_draw(n), n, "{n}");
@@ -2703,12 +3018,12 @@ mod tests {
             INTERACT_H, // Power label row
             INTERACT_H, // Power Start/Stop . Pause/Resume row
             12.0_f32,   // add_space(12)
-            INTERACT_H, // Runners control
-            INTERACT_H, // ui.horizontal in now(): now-runners
+            INTERACT_H, // Linux control
+            INTERACT_H, // Linux Each line (share, total, tooltip with the host reserve)
+            INTERACT_H, // ui.horizontal in now(): now-linux
             4.0_f32,    // add_space(4)
-            INTERACT_H, // Each
-            INTERACT_H, // ui.horizontal in now(): now-each
-            INTERACT_H, // Total
+            INTERACT_H, // Windows control
+            INTERACT_H, // Windows line: "not installed" and the prospective share
             4.0_f32,    // add_space(4)
             INTERACT_H, // IO cap
             INTERACT_H, // ui.horizontal in now(): now-io
@@ -2779,6 +3094,19 @@ mod tests {
             "min_size[1]={} < right column 5 cards={}",
             ms[1],
             right_column_height(5)
+        );
+        // 1080p at 125 % leaves about 780 pt of inner height; the left column never scrolls.
+        assert!(
+            left_column_height(true) <= 780.0,
+            "left column worst case {} > 780 pt",
+            left_column_height(true)
+        );
+        // place_window caps the placed height at SIZE[1]: the left column must fit it.
+        assert!(
+            SIZE[1] >= left_column_height(true),
+            "SIZE[1]={} < left column worst={}: grow SIZE[1]",
+            SIZE[1],
+            left_column_height(true)
         );
         // The applied default height must be >= min_size.
         let default_h = SIZE[1].max(ms[1]);

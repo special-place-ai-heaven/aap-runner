@@ -758,6 +758,9 @@ Describe 'aap-runner host supervisor' {
             @{ name = 'io_percent 0 only'; text = '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":0}'; key = '2,8,32,io=0' }
             @{ name = 'sharing slice only, no schema'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"sharing":"slice"}'; key = '2,8,32,sharing=slice' }
             @{ name = 'schema only'; text = '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}'; key = '2,8,32' }
+            @{ name = 'windows_runner_count 2, not applied'; text = '{"schema":2,"runner_count":3,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":2}'; key = '3,8,32' }
+            @{ name = 'windows_runner_count 0'; text = '{"schema":2,"runner_count":5,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":0}'; key = '5,8,32' }
+            @{ name = 'windows_runner_count 4'; text = '{"schema":2,"runner_count":1,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":4}'; key = '1,8,32' }
         ) {
             Write-AapSettingsFile $text
             Get-AapLimitsKey (Read-AapSettingsFile).Limits | Should -Be $key
@@ -797,6 +800,13 @@ Describe 'aap-runner host supervisor' {
             @{ name = 'schema 3'; text = '{"schema":3,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
             @{ name = 'schema a string'; text = '{"schema":"2","runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
             @{ name = 'Schema in another case'; text = '{"Schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}' }
+            @{ name = 'windows_runner_count over the total'; text = '{"runner_count":3,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":3}' }
+            @{ name = 'windows_runner_count 5'; text = '{"runner_count":1,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":5}' }
+            @{ name = 'windows_runner_count -1'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":-1}' }
+            @{ name = 'windows_runner_count a string'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":"2"}' }
+            @{ name = 'windows_runner_count a fraction'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":1.5}' }
+            @{ name = 'windows_runner_count null'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":null}' }
+            @{ name = 'Windows_runner_count in another case'; text = '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"Windows_runner_count":2}' }
         ) {
             Write-AapSettingsFile '{"runner_count":3,"job_cpus":12,"job_memory_gib":48,"paused":true}'
             [void](Read-AapSettingsFile)
@@ -884,6 +894,21 @@ Describe 'aap-runner host supervisor' {
             $script:calls | Should -Contain ($script:W + '/usr/local/sbin/aap-runner-manager --undrain')
             $script:calls | Should -Contain ($script:W + '/bin/systemctl start aap-runner-manager')
             $script:stdin[-1] | Should -Match $line
+        }
+
+        # The reserved key on top of a tray-written file, as a future tray with a Windows backend
+        # would write it (the current tray never does: settings::tests::no_write_path_emits_...).
+        It 'leaves limits.conf and the manager alone when only windows_runner_count changes' {
+            Write-AapSettingsFile '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":90,"sharing":"slice"}'
+            Invoke-AapCycle
+            $AapRt.Applied | Should -Be '2,8,32,io=90,sharing=slice'
+            $script:calls.Clear()
+            $AapRt.NextHealth = $script:clock.Now.AddHours(1)
+            Write-AapSettingsFile '{"schema":2,"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false,"io_percent":90,"sharing":"slice","windows_runner_count":3}'
+            Invoke-AapCycle
+            $script:calls.Count | Should -Be 0
+            $AapRt.Applied | Should -Be '2,8,32,io=90,sharing=slice'
+            Get-AapLogText | Should -Not -Match 'WARN'
         }
 
         It 'counts an identical limits.conf as applied after a supervisor start' {
