@@ -348,6 +348,7 @@ impl InstallCheckpoint {
             job_cpus: self.job_cpus,
             job_memory_gib: self.job_memory_gib,
             work_disk_gib: self.work_disk_gib,
+            windows_runner_count: 0,
         }
     }
 }
@@ -545,6 +546,7 @@ impl RawRequest {
             job_cpus: self.job_cpus?,
             job_memory_gib: self.job_memory_gib?,
             work_disk_gib: self.work_disk_gib?,
+            windows_runner_count: 0,
         })
     }
 

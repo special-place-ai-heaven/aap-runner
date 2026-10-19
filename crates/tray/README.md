@@ -15,7 +15,7 @@ admin-written.
 | File | Writer | Content |
 |---|---|---|
 | `inbox\state.json` | tray (atomic: `.tmp` then rename) | `{"desired":"on"}` or `{"desired":"off"}` |
-| `inbox\settings.json` | tray (atomic) | `{"runner_count":1..5,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` |
+| `inbox\settings.json` | tray (atomic) | `{"runner_count":1..5,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` plus schema 2 keys and, only when not 0, `"windows_runner_count":0..4` |
 | `inbox\tray.log` | tray, appended if `inbox\` exists | one line per failed write/spawn |
 | `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`, or the `identity` request below. Install uses schema 2 (First-run wizard). The elevated helper reads it. |
 | `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code` |
@@ -33,6 +33,13 @@ admin-written.
   Runners. Each runner's share of the caps is shown to one decimal (26 / 13 / 8.7 / 6.5 / 5.2 CPUs and
   72 / 36 / 24 / 18 / 14.4 GiB for 1 / 2 / 3 / 4 / 5 runners on a 28 / 80 VM). 24 cores and 72 GiB over
   5 runners is 4.8 cores and 14.4 GiB. The file stores the caps.
+- Two profiles, Linux and Windows, 0..5 each, at most 5 together and never 0 + 0. No Windows
+  backend exists yet, so Linux keeps at least 1 (Windows at most 4) and the Windows count is stored
+  as the optional `windows_runner_count`, written only when not 0, and starts nothing. The
+  supervisor validates it and never applies it. `runner_count` stays the Linux count. Every runner
+  gets `cap / (linux + windows)` whatever its OS: the file's totals are Linux's part, floored to
+  whole CPUs and GiB (3 Linux + 2 Windows on 26 / 72 caps: 15 CPUs, 43 GiB; Windows shows the
+  remaining 11 / 29). With Windows 0 the file is exactly what it was before.
 - Host caps: the VM size comes from `[wsl2]` `processors=` / `memory=` in `%USERPROFILE%\.wslconfig`
   (`GB`/`G`/`MB`/`M`; missing file or key: 28 CPUs / 80 GiB, shown as "assumed"). Totals may use at
   most VM minus 2 CPUs and VM minus 8 GiB (26 / 72 on a 28 / 80 VM).
@@ -79,9 +86,13 @@ tray icon opens it (or closes it when it is the active window). The layout is th
 addendum of the design doc.
 
 - **Left column:** `Power On/Off` (the desired state from `inbox\state.json`), `Start`/`Stop` and
-  `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Then the edits: Runners
-  `1 | 2 | 3 | 4 | 5`, `Each 8.7 CPU 24 GiB` (derived), `Total 26/26 CPU · 72/72 GiB` against the caps, IO cap
-  0..100 % in steps of 5, Sharing `Slice | Fixed`. Each has a muted `now ·` line from `status.json`
+  `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Then the edits: Linux
+  `0 | 1 | 2 | 3 | 4 | 5` with `Each 8.7 CPU 24 GiB` (derived) and `Total 26/26 CPU · 72/72 GiB`
+  (its part against the caps); Windows `0 | … | 5` with the amber note `Windows backend not
+  installed — coming with the native Windows runner. Starts nothing.` and its own Each and Total;
+  cells above the budget the other row leaves are greyed and inert (Linux 0 too, until a Windows
+  backend exists). Each row label carries its OS glyph and colour. `Host keeps 2 CPU 8 GiB`, IO cap
+  0..100 % in steps of 5, Sharing `Slice | Fixed`. Linux, IO cap and Sharing have a muted `now ·` line from `status.json`
   (`now -` when nothing runs). While edits differ from `inbox\settings.json`: `N changes not applied`,
   a cap error inline, and Apply (disabled on an error; writes schema 2 atomically, as the old dialog's
   OK did) and Revert (reloads the file). Below the settings: the pool bars (Cores, Memory, Disk with
@@ -90,16 +101,22 @@ addendum of the design doc.
   `IO cap N pool` / `IO cap M each` (one cap known), `sampled N s ago`) with narrower tracks.
   All rows are fixed height; there is no scroll area in the left column. The footer
   (Verify/Repair/Open logs) follows in the normal top-down flow after a fixed gap.
-  `SIZE[1]` = `MIN_SIZE[1]` = 760 px = max(left worst case 760, five-card right 702);
+  `SIZE[1]` = `MIN_SIZE[1]` = 924 px = max(left worst case 924, five-card right 702);
   a new left-column row that does not fit grows SIZE[1], never adds a scrollbar.
-- **Right column:** only observed values. A pinned header row (symbol, state, `N/M busy`, `All OK` or
+- **Profile identity:** Linux is a Tux-style penguin glyph in orange, Windows the four-pane window
+  in blue (both painted, both themes). The glyph and colour mark the row labels, the header, and
+  every card, which also has a 3 px left edge in its profile's colour.
+- **Right column:** only observed values. A pinned header row (symbol, state, `Linux N/M busy`, and
+  `Windows N not installed` while Windows runners are chosen, `All OK` or
   the `1 problem` button). Below the header (in every state including Off and Not installed): one
   status line for the current Verify/Repair job (format: `Verify · failed · exit 1` on failure,
   `Repair · running…` while active, `Verify · ok` on success; with a `· Open log`
   CollapsingHeader when log lines are available; log panel keyed on a fixed id, not the label text).
-  Then one compact card per runner (state and elapsed; `title · repo` on one line with the full
-  text in a tooltip and a copy button; CPU and Mem bars side by side). Five cards fit the default
-  760 px window height without scrolling. The last 60 minutes follows below (scrolls at small sizes).
+  Then one compact card per runner, titled `Linux 1`… (every reported slot is the Linux manager's;
+  state and elapsed; `title · repo` on one line with the full
+  text in a tooltip and a copy button; CPU and Mem bars side by side), then one `Windows 1`…
+  placeholder per chosen Windows runner, same height, `Not installed` and `Starts nothing`, never
+  shown as running; five cards at most. Five cards fit the default window height without scrolling. The last 60 minutes follows below (scrolls at small sizes).
 - **Error panel:** replaces the right column's cards, with `< Back to runners` on top. It opens by itself
   when the state enters an error class; the `1 problem` button, an error symbol, `--dashboard --problem`
   and a left click in an error state reopen it. It holds the one-liner, raw detail and since, the class's
@@ -163,7 +180,10 @@ Operator-distro curl/jq/sha256sum availability is an explicit manual confirmatio
 registry registration alone does not prove those tools exist. Ubuntu 26.04 is not
 supported. Runners remain available only while the installing user is logged on.
 
-Sizing selects 1..5 runners, total CPUs and memory, and a 60..512 GiB work disk.
+Sizing selects Linux and Windows runner counts (same rule and inert Windows note as the
+window), total CPUs and memory, and a 60..512 GiB work disk. The Windows count stays in the
+draft as optional `windows_runner_count`; the install request carries only the Linux count and
+Linux's even part of the totals.
 Validation reserves the existing VM headroom and also bounds sizing by detected
 physical resources. Disk space must cover the fixed work disk plus installation
 headroom. The current backend requires runner group `aap-crrr` and labels

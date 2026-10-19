@@ -24,7 +24,10 @@
 #   next attempt now; nothing else is taken from it.
 # - inbox\settings.json {"runner_count":1..5,"job_cpus":1..28,
 #   "job_memory_gib":1..80,"paused":true|false} plus optional "schema":2,
-#   "io_percent":0..100 and "sharing":"slice"|"fixed" (schema 2). Missing =
+#   "io_percent":0..100, "sharing":"slice"|"fixed" and "windows_runner_count":
+#   0..4 with runner_count plus it at most 5 (schema 2). windows_runner_count
+#   is the tray's stored Windows choice: validated, never applied (no Windows
+#   backend yet); runner_count stays the Linux count. Missing =
 #   no override, not paused. Invalid = one logged warning, the last valid
 #   content stays. Both files are parsed strictly. Only validated values
 #   ever reach a command or the limits file.
@@ -279,10 +282,11 @@ function Read-AapDesired {
 }
 
 # Returns @{ Limits = $null | @{RunnerCount;JobCpus;JobMemoryGib;IoPercent;
-# Sharing}; Paused }. The four keys, plus optionally schema (2), io_percent
-# and sharing; integers (not 1.0, not "1") inside their ranges; paused a JSON
-# boolean. Anything else keeps the last valid settings. IoPercent and Sharing
-# are $null when absent.
+# Sharing}; Paused }. The four keys, plus optionally schema (2), io_percent,
+# sharing and windows_runner_count; integers (not 1.0, not "1") inside their
+# ranges; paused a JSON boolean. Anything else keeps the last valid settings.
+# IoPercent and Sharing are $null when absent. windows_runner_count is checked
+# and not returned, so it never reaches limits.conf or restarts the manager.
 function Read-AapSettingsFile {
     $obj = Read-AapJsonFile 'settings.json'
     $warn = $null
@@ -293,10 +297,10 @@ function Read-AapSettingsFile {
     } else {
         $names = @($obj.PSObject.Properties.Name)
         $want = @(@($AapSettingRanges.Keys) + 'paused')
-        $optional = @('schema', 'io_percent', 'sharing')
+        $optional = @('schema', 'io_percent', 'sharing', 'windows_runner_count')
         if (@($want | Where-Object { $names -cnotcontains $_ }).Count -gt 0 -or
             @($names | Where-Object { $want -cnotcontains $_ -and $optional -cnotcontains $_ }).Count -gt 0) {
-            $warn = 'settings.json must have runner_count, job_cpus, job_memory_gib, paused and only optionally schema, io_percent, sharing'
+            $warn = 'settings.json must have runner_count, job_cpus, job_memory_gib, paused and only optionally schema, io_percent, sharing, windows_runner_count'
         } else {
             foreach ($key in $AapSettingRanges.Keys) {
                 $v = $obj.$key
@@ -316,6 +320,11 @@ function Read-AapSettingsFile {
             if (-not $warn -and $names -ccontains 'sharing') {
                 $sharing = $obj.sharing
                 if (-not ($sharing -is [string] -and ($sharing -ceq 'slice' -or $sharing -ceq 'fixed'))) { $warn = 'settings.json sharing must be "slice" or "fixed"' }
+            }
+            # Checked so a bad file is caught, then dropped: nothing runs Windows runners yet.
+            if (-not $warn -and $names -ccontains 'windows_runner_count') {
+                $win = $obj.windows_runner_count
+                if (-not ($win -is [int] -or $win -is [long]) -or $win -lt 0 -or $win + $obj.runner_count -gt 5) { $warn = 'settings.json windows_runner_count must be an integer 0..4, with runner_count at most 5 together' }
             }
         }
         if (-not $warn) {

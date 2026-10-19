@@ -1,24 +1,34 @@
 //! The window's left column (the separate `--settings` dialog until 0.5.0): Power, then the
 //! settings `inbox\settings.json` holds. Start/Stop and Pause/Resume act at once, as the menu
-//! does; Runners, IO cap and Sharing are edits that Apply writes. CPUs and memory per runner
-//! are the even share of the caps, shown to one decimal. The file stores the caps.
+//! does; the Linux and Windows counts, IO cap and Sharing are edits that Apply writes. Every
+//! runner gets an even share of the caps whatever its OS, shown to one decimal. The file stores
+//! Linux's part of the caps; the Windows count is stored only, it starts nothing yet.
 
 use crate::dashboard::{CAP_ERROR_H, Palette, button, primary_button, ring, semibold};
 use crate::mark::Sym;
-use crate::settings::{self, IO_PERCENT, Settings, Sharing, VmLimit};
+use crate::settings::{
+    self, HOST_CPUS, HOST_GIB, IO_PERCENT, Os, Settings, Sharing, VmLimit, WINDOWS_BACKEND,
+};
 use crate::state::{Applied, Desired, Snapshot, Status};
 use eframe::egui::{self, Align, FontId, Key, Layout, RichText, Sense, Stroke, StrokeKind, vec2};
 use std::path::Path;
 
-/// Left-column label width ("Runners", "Sharing").
+/// Left-column label width ("Windows", "Sharing").
 const LABEL_W: f32 = 64.0;
 
 const SHARING_TIP: &str = "Slice: idle share can be borrowed. Fixed: hard limit per runner.";
 
+/// Under the Windows row while no Windows backend exists.
+pub const WINDOWS_INERT: &str =
+    "Windows backend not installed \u{2014} coming with the native Windows runner. Starts nothing.";
+
+const COUNTS: [(u32, &str); 6] = [(0, "0"), (1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")];
+
 pub struct SettingsPanel {
     /// `settings.json` as last read.
     stored: Settings,
-    runners: u32,
+    linux: u32,
+    windows: u32,
     io_percent: u32,
     sharing: Sharing,
     vm: VmLimit,
@@ -45,7 +55,8 @@ impl SettingsPanel {
         let stored = settings::read_settings(base);
         SettingsPanel {
             stored,
-            runners: stored.runner_count,
+            linux: stored.runner_count,
+            windows: stored.windows_runner_count,
             io_percent: stored.io_percent,
             sharing: stored.sharing,
             vm: VmLimit::read(),
@@ -62,8 +73,14 @@ impl SettingsPanel {
         }
     }
 
+    /// The stored Windows count (the cards show it; nothing runs it yet).
+    pub fn windows(&self) -> u32 {
+        self.stored.windows_runner_count
+    }
+
     fn revert(&mut self) {
-        self.runners = self.stored.runner_count;
+        self.linux = self.stored.runner_count;
+        self.windows = self.stored.windows_runner_count;
         self.io_percent = self.stored.io_percent;
         self.sharing = self.stored.sharing;
         self.write_error = None;
@@ -77,13 +94,20 @@ impl SettingsPanel {
             sharing: self.sharing,
             ..Settings::default()
         };
-        edited(&keep, self.runners, self.stored.paused, &self.vm)
+        edited(
+            &keep,
+            self.linux,
+            self.windows,
+            self.stored.paused,
+            &self.vm,
+        )
     }
 
     /// Inputs that differ from the file.
     fn changes(&self) -> usize {
         [
-            self.runners != self.stored.runner_count,
+            self.linux != self.stored.runner_count,
+            self.windows != self.stored.windows_runner_count,
             self.io_percent != self.stored.io_percent,
             self.sharing != self.stored.sharing,
         ]
@@ -212,13 +236,18 @@ impl SettingsPanel {
         // From before the inputs: a change shows on the next frame, which egui paints right
         // after the input event.
         let edit = self.edit();
+        let (linux_each, linux_total) = profile_lines(&edit, &vm, Os::Linux);
+        let (windows_each, windows_total) = profile_lines(&edit, &vm, Os::Windows);
+        let fits_linux = settings::count_range(Os::Linux, self.windows, WINDOWS_BACKEND);
+        let fits_windows = settings::count_range(Os::Windows, self.linux, WINDOWS_BACKEND);
         ui.horizontal(|ui| {
-            label(ui, "Runners");
+            os_label(ui, p, Os::Linux);
             segmented(
                 ui,
                 p,
-                &mut self.runners,
-                &[(1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")],
+                &mut self.linux,
+                &COUNTS,
+                |n| fits_linux.contains(&n),
                 focus,
             );
         });
@@ -226,7 +255,7 @@ impl SettingsPanel {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             label(ui, "Each");
-            ui.label(each_line(&edit));
+            ui.label(linux_each);
         });
         now(
             ui,
@@ -235,8 +264,45 @@ impl SettingsPanel {
         );
         ui.horizontal(|ui| {
             label(ui, "Total");
-            ui.label(total_line(&edit, &vm));
+            ui.label(linux_total);
         });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            os_label(ui, p, Os::Windows);
+            segmented(
+                ui,
+                p,
+                &mut self.windows,
+                &COUNTS,
+                |n| fits_windows.contains(&n),
+                focus,
+            )
+            .on_hover_text(WINDOWS_INERT);
+        });
+        let row_w = ui.available_width();
+        ui.allocate_ui_with_layout(
+            vec2(row_w, CAP_ERROR_H),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.set_min_size(vec2(row_w, CAP_ERROR_H));
+                ui.add(egui::Label::new(RichText::new(WINDOWS_INERT).color(p.over).small()).wrap());
+            },
+        );
+        ui.horizontal(|ui| {
+            label(ui, "Each");
+            ui.label(windows_each);
+        });
+        ui.horizontal(|ui| {
+            label(ui, "Total");
+            ui.label(windows_total);
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            label(ui, "Host");
+            ui.label(RichText::new(host_line()).color(p.muted));
+        })
+        .response
+        .on_hover_text("Kept for Windows and WSL; the totals above never use it.");
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             label(ui, "IO cap");
@@ -256,6 +322,7 @@ impl SettingsPanel {
                 p,
                 &mut self.sharing,
                 &[(Sharing::Slice, "Slice"), (Sharing::Fixed, "Fixed")],
+                |_| true,
                 focus,
             )
             .on_hover_text(SHARING_TIP);
@@ -313,6 +380,24 @@ fn label(ui: &mut egui::Ui, text: &str) {
     );
 }
 
+/// The row label for a profile, in its colour with its glyph.
+fn os_label(ui: &mut egui::Ui, p: &Palette, os: Os) {
+    ui.allocate_ui_with_layout(
+        vec2(LABEL_W, 24.0),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.set_min_size(vec2(LABEL_W, 24.0));
+            ui.spacing_mut().item_spacing.x = 3.0;
+            crate::dashboard::os_glyph(ui, p, os, 12.0, p.bg);
+            ui.label(
+                RichText::new(os.name())
+                    .font(FontId::new(13.0, semibold()))
+                    .color(p.os(os)),
+            );
+        },
+    );
+}
+
 /// A muted `now …` line, indented under the input.
 fn now(ui: &mut egui::Ui, p: &Palette, text: String) {
     ui.horizontal(|ui| {
@@ -321,13 +406,16 @@ fn now(ui: &mut egui::Ui, p: &Palette, text: String) {
     });
 }
 
-/// Equal cells, the selected one filled with the accent. Only the selected cell is a Tab stop;
-/// Left and Right move the selection while it has focus. Returns the group's response.
+/// Equal cells, the selected one filled with the accent; cells `allowed` refuses are greyed and
+/// inert. Cells shrink to share the row width. Only the selected cell is a Tab stop; Left and
+/// Right move the selection to an allowed neighbour while it has focus. Returns the group's
+/// response.
 fn segmented<T: Copy + PartialEq>(
     ui: &mut egui::Ui,
     p: &Palette,
     value: &mut T,
     options: &[(T, &str)],
+    allowed: impl Fn(T) -> bool,
     focus: &mut Focus,
 ) -> egui::Response {
     let on_accent = if p.dark {
@@ -336,25 +424,38 @@ fn segmented<T: Copy + PartialEq>(
         crate::dashboard::hex(0xFFFFFF)
     };
     let enabled = ui.is_enabled();
+    let fit = (ui.available_width() / options.len().max(1) as f32).floor();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let mut ids = Vec::with_capacity(options.len());
         let mut focused = None;
         for (i, (v, text)) in options.iter().enumerate() {
             let selected = *value == *v;
-            let color = if selected { on_accent } else { p.text };
+            let ok = allowed(*v);
+            let color = if selected {
+                on_accent
+            } else if ok {
+                p.text
+            } else {
+                p.muted.gamma_multiply(0.5)
+            };
             let galley =
                 ui.painter()
                     .layout_no_wrap((*text).into(), FontId::proportional(13.0), color);
-            let size = vec2((galley.size().x + 20.0).max(32.0), 24.0);
+            let w = galley.size().x;
+            let size = vec2((w + 20.0).max(32.0).min(fit.max(w + 8.0)), 24.0);
             let sense = if selected {
                 Sense::click()
-            } else {
+            } else if ok {
                 Sense::CLICK
+            } else {
+                Sense::hover()
             };
             let (rect, r) = ui.allocate_exact_size(size, sense);
             let fill = if selected {
                 p.accent
+            } else if !ok {
+                p.bg
             } else if r.hovered() && enabled {
                 p.track
             } else {
@@ -366,10 +467,15 @@ fn segmented<T: Copy + PartialEq>(
             ui.painter()
                 .galley(rect.center() - galley.size() / 2.0, galley, color);
             r.widget_info(|| {
-                egui::WidgetInfo::selected(egui::WidgetType::RadioButton, enabled, selected, *text)
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::RadioButton,
+                    enabled && ok,
+                    selected,
+                    *text,
+                )
             });
             focus.track(ui, p, &r);
-            if r.clicked() {
+            if r.clicked() && ok {
                 *value = *v;
             }
             if r.has_focus() {
@@ -388,7 +494,8 @@ fn segmented<T: Copy + PartialEq>(
                 (true, false) => i.checked_sub(1),
                 (false, true) => (i + 1 < options.len()).then_some(i + 1),
                 _ => None,
-            };
+            }
+            .filter(|&j| allowed(options[j].0));
             if let Some(j) = to {
                 *value = options[j].0;
                 ui.memory_mut(|m| m.request_focus(ids[j]));
@@ -398,27 +505,37 @@ fn segmented<T: Copy + PartialEq>(
     .response
 }
 
-/// `8.7 CPU 24 GiB`, `4.8 CPU 14.4 GiB`: each runner's even share of the caps.
-fn each_line(edit: &Settings) -> String {
-    let n = edit.runner_count.max(1);
-    format!(
-        "{} CPU {} GiB",
-        settings::one_decimal(settings::cpu_share(
-            edit.job_cpus,
-            n,
-            edit.sharing == Sharing::Fixed
-        )),
-        settings::share_text(edit.job_memory_gib, n)
+/// One profile's `Each` (`8.7 CPU 24 GiB`, `-` with no runners) and `Total`
+/// (`15/26 CPU · 43/72 GiB`, its part against the caps). Linux's part is what the file stores;
+/// Windows has the rest of the caps.
+fn profile_lines(edit: &Settings, vm: &VmLimit, os: Os) -> (String, String) {
+    let (cap_cpus, cap_gib) = vm.cap();
+    let (n, cpus, gib) = match os {
+        Os::Linux => (edit.runner_count, edit.job_cpus, edit.job_memory_gib),
+        Os::Windows => (
+            edit.windows_runner_count,
+            cap_cpus.saturating_sub(edit.job_cpus),
+            cap_gib.saturating_sub(edit.job_memory_gib),
+        ),
+    };
+    let each = if n == 0 {
+        "-".to_string()
+    } else {
+        format!(
+            "{} CPU {} GiB",
+            settings::one_decimal(settings::cpu_share(cpus, n, edit.sharing == Sharing::Fixed)),
+            settings::share_text(gib, n)
+        )
+    };
+    (
+        each,
+        format!("{cpus}/{cap_cpus} CPU \u{b7} {gib}/{cap_gib} GiB"),
     )
 }
 
-/// `24/26 CPU · 72/72 GiB`: the totals against the caps.
-fn total_line(edit: &Settings, vm: &VmLimit) -> String {
-    let (cap_cpus, cap_gib) = vm.cap();
-    format!(
-        "{}/{cap_cpus} CPU \u{b7} {}/{cap_gib} GiB",
-        edit.job_cpus, edit.job_memory_gib
-    )
+/// `keeps 2 CPU 8 GiB`: the reserve the caps leave for Windows and WSL itself.
+fn host_line() -> String {
+    format!("keeps {HOST_CPUS} CPU {HOST_GIB} GiB")
 }
 
 /// IO cap moves in steps of 5.
@@ -427,11 +544,11 @@ fn step5(v: u32) -> u32 {
 }
 
 /// What Apply writes: the derived limits with the IO cap and sharing mode from `keep`.
-fn edited(keep: &Settings, runners: u32, paused: bool, vm: &VmLimit) -> Settings {
+fn edited(keep: &Settings, linux: u32, windows: u32, paused: bool, vm: &VmLimit) -> Settings {
     Settings {
         io_percent: keep.io_percent,
         sharing: keep.sharing,
-        ..Settings::derived(runners, paused, vm)
+        ..Settings::derived(linux, windows, paused, vm)
     }
 }
 
@@ -540,8 +657,8 @@ mod tests {
     fn derived_lines() {
         let vm = VmLimit::ASSUMED;
         let line = |runners| {
-            let e = edited(&Settings::default(), runners, false, &vm);
-            (each_line(&e), total_line(&e, &vm))
+            let e = edited(&Settings::default(), runners, 0, false, &vm);
+            profile_lines(&e, &vm, Os::Linux)
         };
         assert_eq!(
             line(1),
@@ -579,8 +696,8 @@ mod tests {
             sharing: Sharing::Fixed,
             ..Settings::default()
         };
-        let e = edited(&keep, 5, false, &vm);
-        assert_eq!(each_line(&e), "4 CPU 14.4 GiB");
+        let e = edited(&keep, 5, 0, false, &vm);
+        assert_eq!(profile_lines(&e, &vm, Os::Linux).0, "4 CPU 14.4 GiB");
     }
 
     #[test]
@@ -622,7 +739,7 @@ mod tests {
             sharing: Sharing::Fixed,
             ..Settings::default()
         };
-        let e = edited(&keep, 3, true, &VmLimit::ASSUMED);
+        let e = edited(&keep, 3, 0, true, &VmLimit::ASSUMED);
         assert_eq!(
             (e.io_percent, e.sharing, e.paused, e.per_runner()),
             (40, Sharing::Fixed, true, (8, 24))
@@ -637,7 +754,7 @@ mod tests {
         let mut panel = SettingsPanel::load(&base);
         panel.vm = VmLimit::ASSUMED;
         assert_eq!(panel.changes(), 0);
-        panel.runners = 2;
+        panel.linux = 2;
         panel.io_percent = 55;
         panel.sharing = Sharing::Fixed;
         assert_eq!(panel.changes(), 3);
@@ -657,12 +774,12 @@ mod tests {
             };
             settings::write_settings(&base, &s, &VmLimit::ASSUMED).unwrap();
         };
-        panel.runners = 3;
+        panel.linux = 3;
         pause(true);
         panel.reload(&base);
         assert!(panel.stored.paused);
         assert_eq!(panel.stored.runner_count, 2);
-        assert_eq!((panel.runners, panel.changes()), (3, 1));
+        assert_eq!((panel.linux, panel.changes()), (3, 1));
         assert!(panel.edit().paused, "Apply keeps the stored paused");
 
         // With nothing pending the inputs follow the file.
@@ -670,7 +787,7 @@ mod tests {
         pause(false);
         panel.reload(&base);
         assert!(!panel.stored.paused);
-        assert_eq!((panel.runners, panel.changes()), (2, 0));
+        assert_eq!((panel.linux, panel.changes()), (2, 0));
 
         // A VM too small for one CPU per runner: the same validation refuses, nothing is written.
         panel.vm = VmLimit {
@@ -710,5 +827,54 @@ mod tests {
         ] {
             assert_eq!(running_now(&snap(idle)), None);
         }
+    }
+
+    #[test]
+    fn each_profile_shows_its_part_of_the_caps() {
+        let vm = VmLimit::ASSUMED;
+        let e = edited(&Settings::default(), 3, 2, false, &vm);
+        assert_eq!(
+            profile_lines(&e, &vm, Os::Linux),
+            ("5 CPU 14.3 GiB".into(), "15/26 CPU \u{b7} 43/72 GiB".into())
+        );
+        assert_eq!(
+            profile_lines(&e, &vm, Os::Windows),
+            (
+                "5.5 CPU 14.5 GiB".into(),
+                "11/26 CPU \u{b7} 29/72 GiB".into()
+            )
+        );
+        let e = edited(&Settings::default(), 3, 0, false, &vm);
+        assert_eq!(
+            profile_lines(&e, &vm, Os::Windows),
+            ("-".into(), "0/26 CPU \u{b7} 0/72 GiB".into())
+        );
+        assert_eq!(host_line(), "keeps 2 CPU 8 GiB");
+    }
+
+    #[test]
+    fn apply_writes_the_windows_count_and_linux_part() {
+        let base = crate::state::temp_base("settings-panel-windows");
+        let mut panel = SettingsPanel::load(&base);
+        panel.vm = VmLimit::ASSUMED;
+        (panel.linux, panel.windows) = (3, 2);
+        assert_eq!(panel.changes(), 2);
+        assert!(panel.apply(&base));
+        let s = settings::read_settings(&base);
+        assert_eq!(
+            (
+                s.runner_count,
+                s.windows_runner_count,
+                s.job_cpus,
+                s.job_memory_gib
+            ),
+            (3, 2, 15, 43),
+            "runner_count is the Linux count; the totals are Linux's part"
+        );
+        assert_eq!(panel.windows(), 2);
+        panel.windows = 0;
+        panel.revert();
+        assert_eq!((panel.linux, panel.windows, panel.changes()), (3, 2, 0));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

@@ -59,10 +59,15 @@ impl Step {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Sizing {
+    /// Linux runners.
     pub runner_count: u32,
+    /// Pool totals, shared evenly by Linux and Windows runners.
     pub job_cpus: u32,
     pub job_memory_gib: u32,
     pub work_disk_gib: u32,
+    /// Chosen only: no Windows backend is installed. Omitted from the draft when 0.
+    #[serde(default, skip_serializing_if = "crate::settings::is_zero")]
+    pub windows_runner_count: u32,
 }
 
 impl Default for Sizing {
@@ -72,17 +77,36 @@ impl Default for Sizing {
             job_cpus: 2,
             job_memory_gib: 4,
             work_disk_gib: 60,
+            windows_runner_count: 0,
         }
     }
 }
 
 impl Sizing {
+    /// The settings this sizing makes: the Linux count with Linux's part of the pool totals.
     pub fn settings(&self) -> Settings {
+        let (job_cpus, job_memory_gib) = crate::settings::linux_part(
+            (self.job_cpus, self.job_memory_gib),
+            self.runner_count,
+            self.windows_runner_count,
+        );
         Settings {
             runner_count: self.runner_count,
-            job_cpus: self.job_cpus,
-            job_memory_gib: self.job_memory_gib,
+            windows_runner_count: self.windows_runner_count,
+            job_cpus,
+            job_memory_gib,
             ..Settings::default()
+        }
+    }
+
+    /// What the installer gets: the Linux runners and their part of the pool, nothing Windows.
+    pub fn linux(&self) -> Sizing {
+        let s = self.settings();
+        Sizing {
+            job_cpus: s.job_cpus,
+            job_memory_gib: s.job_memory_gib,
+            windows_runner_count: 0,
+            ..self.clone()
         }
     }
 
@@ -404,6 +428,29 @@ pub fn sizing_rows(size: &Sizing, facts: Option<&Facts>) -> Vec<Row> {
             None,
         ),
     ]
+}
+
+/// `Linux each: 1 CPUs, 2 GiB`, and the Windows line while Windows runners are chosen; every
+/// runner gets an even share of the pool totals whatever its OS.
+pub fn sizing_each(size: &Sizing) -> Vec<String> {
+    let s = size.settings();
+    let line = |os: &str, n: u32, cpus: u32, gib: u32| {
+        format!(
+            "{os} each: {} CPUs, {} GiB",
+            crate::settings::share_text(cpus, n),
+            crate::settings::share_text(gib, n)
+        )
+    };
+    let mut lines = vec![line("Linux", s.runner_count, s.job_cpus, s.job_memory_gib)];
+    if size.windows_runner_count > 0 {
+        lines.push(line(
+            "Windows",
+            size.windows_runner_count,
+            size.job_cpus.saturating_sub(s.job_cpus),
+            size.job_memory_gib.saturating_sub(s.job_memory_gib),
+        ));
+    }
+    lines
 }
 
 pub fn all_met(rows: &[Row]) -> bool {
@@ -792,5 +839,75 @@ mod tests {
         assert!(nat("# networkingMode=mirrored\n[wsl2]\nnetworkingMode=nat"));
         assert!(nat("[experimental]\nnetworkingMode=mirrored"));
         assert!(!nat("[wsl2]\nnetworkingMode=mirrored"));
+    }
+
+    #[test]
+    fn windows_runners_share_the_pool_but_the_installer_gets_linux_only() {
+        let size = Sizing {
+            runner_count: 3,
+            windows_runner_count: 2,
+            job_cpus: 20,
+            job_memory_gib: 40,
+            ..Sizing::default()
+        };
+        assert_eq!(size.check_shape(), Ok(()));
+        let s = size.settings();
+        assert_eq!((s.runner_count, s.job_cpus, s.job_memory_gib), (3, 12, 24));
+        assert_eq!(
+            sizing_each(&size),
+            [
+                "Linux each: 4 CPUs, 8 GiB".to_string(),
+                "Windows each: 4 CPUs, 8 GiB".to_string()
+            ]
+        );
+        let linux = size.linux();
+        assert_eq!(
+            (
+                linux.runner_count,
+                linux.windows_runner_count,
+                linux.job_cpus,
+                linux.job_memory_gib,
+                linux.work_disk_gib
+            ),
+            (3, 0, 12, 24, 60)
+        );
+        assert_eq!(
+            sizing_each(&Sizing::default()),
+            ["Linux each: 2 CPUs, 4 GiB"]
+        );
+        for (l, w) in [(4, 2), (0, 1), (0, 0), (1, 5)] {
+            let bad = Sizing {
+                runner_count: l,
+                windows_runner_count: w,
+                ..Sizing::default()
+            };
+            assert!(bad.check_shape().is_err(), "{l}+{w}");
+        }
+        let thin = Sizing {
+            runner_count: 1,
+            windows_runner_count: 4,
+            job_cpus: 4,
+            ..Sizing::default()
+        };
+        assert!(
+            thin.check_shape().is_err(),
+            "4 CPUs over 5 runners leave Linux 0"
+        );
+    }
+
+    #[test]
+    fn drafts_keep_the_windows_count_and_read_without_it() {
+        let mut draft = Draft::default();
+        let text = serde_json::to_string(&draft).unwrap();
+        assert!(!text.contains("windows_runner_count"), "0 is not written");
+        assert_eq!(parse_draft(&text).unwrap().sizing, Sizing::default());
+        draft.sizing.windows_runner_count = 2;
+        draft.sizing.runner_count = 3;
+        draft.sizing.job_cpus = 10;
+        draft.sizing.job_memory_gib = 20;
+        let back = parse_draft(&serde_json::to_string(&draft).unwrap()).unwrap();
+        assert_eq!(back.sizing, draft.sizing);
+        draft.sizing.windows_runner_count = 3;
+        assert!(parse_draft(&serde_json::to_string(&draft).unwrap()).is_none());
     }
 }

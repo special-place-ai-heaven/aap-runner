@@ -2,6 +2,8 @@
 //! supervisor. The window edits the runner count, the IO cap and the sharing mode, and shows each
 //! runner's even share of the caps to one decimal. The file stores the caps.
 //! Schema 2 adds `schema`, `io_percent` and `sharing`; a schema 1 file reads with their defaults.
+//! The optional `windows_runner_count` (written only when not 0) is the Windows profile's count;
+//! `runner_count` stays the Linux count and the totals stay what the Linux pool gets.
 
 use crate::state::{inbox, read_bounded, write_atomic};
 use serde::{Deserialize, Serialize};
@@ -9,7 +11,56 @@ use std::io;
 use std::ops::RangeInclusive;
 use std::path::Path;
 
+/// The Linux count the supervisor accepts.
 pub const RUNNERS: RangeInclusive<u32> = 1..=5;
+/// Linux plus Windows runners, together.
+pub const MAX_RUNNERS: u32 = 5;
+/// A native Windows runner backend exists. Until it does the Windows count is a stored choice
+/// that starts nothing, and Linux keeps at least one runner so the pool runs something.
+pub const WINDOWS_BACKEND: bool = false;
+
+/// A runner profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Linux,
+    Windows,
+}
+
+impl Os {
+    pub fn name(self) -> &'static str {
+        match self {
+            Os::Linux => "Linux",
+            Os::Windows => "Windows",
+        }
+    }
+}
+
+/// Counts `os` may take when the other profile has `other`: up to the budget the other leaves,
+/// never 0 + 0, and Linux at least 1 while no Windows backend exists (`runner_count` is 1..5).
+pub fn count_range(os: Os, other: u32, windows_backend: bool) -> RangeInclusive<u32> {
+    let floor = u32::from(other == 0 || (os == Os::Linux && !windows_backend));
+    floor..=MAX_RUNNERS.saturating_sub(other)
+}
+
+pub fn counts_valid(linux: u32, windows: u32, windows_backend: bool) -> bool {
+    count_range(Os::Linux, windows, windows_backend).contains(&linux)
+        && count_range(Os::Windows, linux, windows_backend).contains(&windows)
+}
+
+/// Linux's part of the pool `(cpus, gib)`: every runner gets `pool / (linux + windows)` whatever
+/// its OS, floored to whole CPUs and GiB (the file stores integers). Windows keeps the rest.
+pub fn linux_part(pool: (u32, u32), linux: u32, windows: u32) -> (u32, u32) {
+    let (l, n) = (
+        u64::from(linux),
+        (u64::from(linux) + u64::from(windows)).max(1),
+    );
+    let part = |total: u32| (u64::from(total) * l / n).min(u64::from(total)) as u32;
+    (part(pool.0), part(pool.1))
+}
+
+pub(crate) fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
 
 /// `8`, `4.8`, `14.4`: one decimal, dropped when the value is whole.
 pub fn one_decimal(v: f64) -> String {
@@ -67,6 +118,9 @@ pub struct Settings {
     /// Per-job IO cap as a percentage of the work disk's measured throughput.
     pub io_percent: u32,
     pub sharing: Sharing,
+    /// Windows profile count; stored only (no backend yet). Omitted from the file when 0.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub windows_runner_count: u32,
 }
 
 impl Default for Settings {
@@ -79,6 +133,7 @@ impl Default for Settings {
             paused: false,
             io_percent: 90,
             sharing: Sharing::Slice,
+            windows_runner_count: 0,
         }
     }
 }
@@ -96,11 +151,13 @@ impl Settings {
         }
     }
 
-    /// What the window writes: the pool caps. Each runner's share is `cap / runners`.
-    pub fn derived(runners: u32, paused: bool, vm: &VmLimit) -> Settings {
-        let (job_cpus, job_memory_gib) = vm.cap();
+    /// What the window writes: Linux's part of the pool caps (all of them with no Windows
+    /// runners). Each runner's share is `cap / (linux + windows)`.
+    pub fn derived(linux: u32, windows: u32, paused: bool, vm: &VmLimit) -> Settings {
+        let (job_cpus, job_memory_gib) = linux_part(vm.cap(), linux, windows);
         Settings {
-            runner_count: runners,
+            runner_count: linux,
+            windows_runner_count: windows,
             job_cpus,
             job_memory_gib,
             paused,
@@ -130,6 +187,15 @@ impl Settings {
             }
         };
         check("Runners", self.runner_count, &RUNNERS)?;
+        if !counts_valid(
+            self.runner_count,
+            self.windows_runner_count,
+            WINDOWS_BACKEND,
+        ) {
+            return Err(format!(
+                "Linux plus Windows runners must be at most {MAX_RUNNERS}"
+            ));
+        }
         check("Total CPUs", self.job_cpus, &CPUS)?;
         check("Total memory GiB", self.job_memory_gib, &MEMORY_GIB)?;
         check("IO cap percent", self.io_percent, &IO_PERCENT)?;
@@ -302,7 +368,7 @@ mod tests {
     #[test]
     fn cpus_and_memory_derive_from_the_caps() {
         let d = |r, vm: &VmLimit| {
-            let s = Settings::derived(r, false, vm);
+            let s = Settings::derived(r, 0, false, vm);
             (
                 s.per_runner(),
                 (s.job_cpus, s.job_memory_gib),
@@ -321,7 +387,7 @@ mod tests {
             gib: 80,
             assumed: false,
         };
-        let five = Settings::derived(5, false, &wide);
+        let five = Settings::derived(5, 0, false, &wide);
         assert_eq!((five.job_cpus, five.job_memory_gib), (24, 72));
         assert_eq!(share_text(five.job_cpus, 5), "4.8");
         assert_eq!(share_text(five.job_memory_gib, 5), "14.4");
@@ -329,8 +395,8 @@ mod tests {
         assert_eq!(cpu_share(24, 5, true), 4.0);
         assert_eq!(one_decimal(cpu_share(24, 5, true)), "4");
         assert!(five.validate(&wide).is_ok());
-        assert_eq!(Settings::derived(1, false, &VM), Settings::default());
-        assert!(Settings::derived(2, true, &VM).paused);
+        assert_eq!(Settings::derived(1, 0, false, &VM), Settings::default());
+        assert!(Settings::derived(2, 0, true, &VM).paused);
         let small = VmLimit {
             cpus: 16,
             gib: 32,
@@ -585,5 +651,102 @@ mod tests {
     fn toggle_label() {
         assert_eq!(Settings::default().toggle_label(), "Pause");
         assert_eq!(with(|s| s.paused = true).toggle_label(), "Resume");
+    }
+
+    #[test]
+    fn profile_counts_share_a_budget_of_five_and_never_zero() {
+        for backend in [false, true] {
+            for l in 0..=7 {
+                for w in 0..=7 {
+                    let want = (1..=MAX_RUNNERS).contains(&(l + w)) && (backend || l >= 1);
+                    assert_eq!(counts_valid(l, w, backend), want, "{l}+{w} {backend}");
+                }
+            }
+        }
+        let r = count_range;
+        assert_eq!(r(Os::Windows, 3, false), 0..=2, "3 Linux leave 2");
+        assert_eq!(r(Os::Linux, 5, true), 0..=0, "5 Windows leave Linux 0");
+        assert_eq!(r(Os::Linux, 0, true), 1..=5, "never 0 + 0");
+        assert_eq!(r(Os::Windows, 0, true), 1..=5);
+        assert_eq!(
+            r(Os::Linux, 2, false),
+            1..=3,
+            "Linux keeps one without a backend"
+        );
+        assert_eq!(r(Os::Linux, 4, false), 1..=1);
+        assert!(
+            r(Os::Linux, 5, false).is_empty(),
+            "unreachable without a backend"
+        );
+        assert_eq!(r(Os::Windows, 1, false), 0..=4);
+        assert_eq!(r(Os::Windows, 9, true), 0..=0, "saturates, no underflow");
+    }
+
+    #[test]
+    fn every_runner_gets_an_even_part_of_the_pool_whatever_its_os() {
+        assert_eq!(linux_part((26, 72), 3, 0), (26, 72));
+        assert_eq!(
+            linux_part((26, 72), 3, 2),
+            (15, 43),
+            "3/5 of the pool, floored"
+        );
+        assert_eq!(linux_part((26, 72), 1, 4), (5, 14));
+        assert_eq!(linux_part((26, 72), 0, 5), (0, 0));
+        assert_eq!(linux_part((26, 72), 0, 0), (0, 0));
+        assert_eq!(linux_part((u32::MAX, u32::MAX), 5, 0), (u32::MAX, u32::MAX));
+        let s = Settings::derived(3, 2, false, &VM);
+        assert_eq!(
+            (
+                s.runner_count,
+                s.windows_runner_count,
+                s.job_cpus,
+                s.job_memory_gib
+            ),
+            (3, 2, 15, 43)
+        );
+        assert_eq!(s.per_runner(), (5, 14));
+        assert_eq!(s.validate(&VM), Ok(()));
+        assert_eq!(Settings::derived(3, 0, false, &VM).job_cpus, 26);
+        assert!(Settings::derived(3, 3, false, &VM).validate(&VM).is_err());
+        assert!(Settings::derived(1, 4, false, &VM).validate(&VM).is_ok());
+    }
+
+    #[test]
+    fn windows_count_round_trips_and_is_absent_when_zero() {
+        let base = temp_base("settings-windows");
+        let file = inbox(&base).join("settings.json");
+        let raw = || -> serde_json::Value {
+            serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap()
+        };
+        let two = Settings::derived(3, 2, false, &VM);
+        write_settings(&base, &two, &VM).unwrap();
+        assert_eq!(read_settings(&base), two);
+        assert_eq!(raw()["windows_runner_count"], 2);
+        assert_eq!(
+            raw()["runner_count"],
+            3,
+            "runner_count stays the Linux count"
+        );
+        assert_eq!(raw().as_object().unwrap().len(), 8);
+        let none = Settings::derived(3, 0, false, &VM);
+        write_settings(&base, &none, &VM).unwrap();
+        assert!(
+            raw().get("windows_runner_count").is_none(),
+            "0 is not written"
+        );
+        assert_eq!(read_settings(&base).windows_runner_count, 0);
+        for bad in [
+            r#"{"runner_count":4,"windows_runner_count":2}"#,
+            r#"{"runner_count":1,"windows_runner_count":5}"#,
+            r#"{"runner_count":1,"windows_runner_count":-1}"#,
+            r#"{"runner_count":1,"windows_runner_count":"2"}"#,
+        ] {
+            fs::write(&file, bad).unwrap();
+            assert_eq!(read_settings(&base), Settings::default(), "{bad}");
+        }
+        fs::write(&file, r#"{"runner_count":1,"windows_runner_count":4}"#).unwrap();
+        assert_eq!(read_settings(&base).windows_runner_count, 4);
+        assert!(write_settings(&base, &with(|s| s.windows_runner_count = 5), &VM).is_err());
+        fs::remove_dir_all(&base).unwrap();
     }
 }
