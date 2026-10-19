@@ -85,8 +85,8 @@
       "merge_proof": null,
       "cleanup_receipt": null,
       "branch": "parity/p01-baselines",
-      "reviewed_head": "2ffece5",
-      "evidence": "Inventories 382/382 (Windows) and 224/224 (Ubuntu) entries with line coverage verified by scripts; baselines pinned to the build commits aee0669 (Windows 20261007.264.1) and 7e7dc1b (Ubuntu 20261012.334.1); hosted captures runs 39303666617 and 39305649952 on GitHub-hosted runners stored as sources; zccache 1.15.6 pinned at 15ec953",
+      "reviewed_head": "99d2734",
+      "evidence": "Inventories 382/382 (Windows) and 224/224 (Ubuntu) entries with line coverage verified by scripts; baselines pinned to the build commits aee0669 (Windows 20261007.264.1) and 7e7dc1b (Ubuntu 20261012.334.1); hosted captures runs 39303666617 and 39305649952 on GitHub-hosted runners stored as sources; zccache 1.15.6 pinned at 15ec953; independent review at b0407c2 (FIX-THEN-MERGE, docs-only) with fixes in 99d2734; reviewer re-verified counts, source hashes, image identity and zccache assets against upstream",
       "open_inputs": "Azure Marketplace base images; Windows Server 2025 media + activation and the update level behind build 33438; Visual Studio 2026 Enterprise channel/entitlement; vendor latest feeds without stored hashes; six unlisted :latest Docker images on Ubuntu; private consumer repos not fetched; owner's local zccache binary unverified against the release archive"
     },
     {

@@ -24,7 +24,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). States below are current
 - Pinned execution lane: Luna medium; ownership: `parity/baselines/**`.
 - Deliverable: Capture exact Windows Server 2025/VS2026 x64 and Ubuntu 24.04 x64 hosted image identities, upstream commits, full inventories, defaults, source inputs and selected consuming repositories. Capture the real hosted Set up job image reference.
 - Acceptance: Every upstream inventory entry is accounted for; cached versions and environment/service defaults included. Moving labels and mismatched hosted generations invalidate evidence. Exact unresolved source/media/licensing inputs are recorded.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: REVIEWED at `2ffece5` on `parity/p01-baselines` — inventories 382/382 and 224/224 verified, baselines pinned to the build commits (Windows `aee0669` → image 20261007.264.1, Ubuntu `7e7dc1b` → 20261012.334.1), hosted captures recorded; open licensed/unreproducible inputs listed in the profile `inputs.md` files.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: REVIEWED at `99d2734` on `parity/p01-baselines` — inventories 382/382 and 224/224 verified, baselines pinned to the build commits (Windows `aee0669` → image 20261007.264.1, Ubuntu `7e7dc1b` → 20261012.334.1), hosted captures recorded; open licensed/unreproducible inputs listed in the profile `inputs.md` files.
 
 ## P02 — Freeze architecture and shared contracts
 
