@@ -3,6 +3,12 @@
 Frozen hosted baseline for profile `windows-2025-vs2026-x64`. Facts were fetched on 2026-10-19.
 Every fact cites a source ID from the legend at the end. Source IDs `Sn` point at the pinned commit
 `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` unless the legend says otherwise.
+**Baseline commit (coordinator decision, 2026-10-19).** The baseline for this profile is `aee0669dd04510a11756664eb77f5630debabed3`, the commit that built the
+observed image `win25-vs2026/20261007.264`. `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` stays recorded as the planning candidate only.
+The inventory, template and toolset under `sources/build-commit-aee0669/` are the baseline. The scripts under `scripts/` did not change between
+the two commits (the compare lists no file there), so script links at the candidate commit also describe the baseline.
+Where this file says "the pin", it means the candidate `ee1ff45`.
+
 Files in this directory: `inventory.json` (machine readable, every Readme entry), `inputs.md`
 (installer inputs, blockers, drift), `sources/` (byte-exact upstream template and toolset copies with `SHA256SUMS`; the Readme is hashed but not stored).
 
@@ -22,7 +28,7 @@ Files in this directory: `inventory.json` (machine readable, every Readme entry)
 | Runner application version | NOT IN PINNED SOURCES. Capture from `Set up job` (see `../hosted-reference.md`). | n/a |
 | Hosted capture of the "Set up job" lines | NOT CAPTURED yet. | `../hosted-reference.md` |
 
-### Pin versus build commit (blocker for P03 to P07)
+### Pin drift, resolved by pinning to the build commit
 
 The Readme at the pin is byte-identical to the Readme at the release commit `aee0669` (SHA-256
 `1be74251a3224d797dd351ce4509c3576a5ad417bed3c923d05a39a5f770bad6`). The inventory is therefore a
@@ -37,10 +43,7 @@ The pin is 15 commits ahead of the merge base with the release commit (G3). Diff
 
 `scripts/build/*` and `scripts/helpers/*` are unchanged between the two (the compare lists no file there).
 Both versions of the template and toolset are stored under `sources/` (`pin/` and `build-commit-aee0669/`).
-**Decision needed from the coordinator:** keep the pin for scripts and accept that a rebuild yields Python 3.11 to 3.15
-(not 3.10 to 3.14), or move the pin to the release commit. Until then the Readme inventory, not the pinned
-toolset, is the authority for what a hosted VM contains. The PLAN already says a mismatched generation
-invalidates evidence.
+**Resolved:** the baseline is the build commit `aee0669`. A rebuild from `sources/build-commit-aee0669/` reproduces the Readme's Python set.
 
 ## Hardware class of the hosted reference
 
@@ -193,13 +196,11 @@ Records of things a build-parity job can touch that the Readme sections do not l
 
 ## Provisioning order
 
-Generated from `sources/pin/build.windows-2025-vs2026.pkr.hcl` by `../tools/provisioning_order.py`.
+Generated from `sources/build-commit-aee0669/build.windows-2025-vs2026.pkr.hcl` (the baseline) by `../tools/provisioning_order.py`.
 Reboot boundaries are shown as **REBOOT**. The step numbers count provisioner blocks that run scripts or
-inline commands. The block that downloads `C:\software-report.md` and `.json` and the final sysprep step are
-included. Difference at the release commit: `Install-LLVM.ps1` is the first script of step 13 (the elevated
-block, before `Install-PostgreSQL.ps1`) instead of the first script of step 12 (see "Pin versus build commit"). The Packer file and template variables use
-`C:\image` as the image folder, `D:\temp` as the temp directory and `installer` as the install user (S7).
-
+inline commands. The block that downloads the software report and the final sysprep step are included.
+At the candidate commit `ee1ff45`, `Install-LLVM.ps1` moves to the first script of step 12 (pin drift, not part of the baseline).
+The template variables use `C:\image` as the image folder, `D:\temp` as the temp directory and `installer` as the install user (S7).
 
 - Step 1 (powershell inline): New-Item -Path ${var.image_folder} -ItemType Directory -Force | New-Item -Path ${var.temp_dir} -ItemType Directory -Force
 - Step 2 (powershell inline): Move-Item '${var.image_folder}\\assets\\post-gen' 'C:\\post-generation' | Remove-Item -Recurse '${var.image_folder}\\assets' | Move-Item '${var.image_folder}\\scripts\\docs-gen' '${var.image_folder}\\SoftwareReport' | ...
@@ -243,7 +244,6 @@ block, before `Install-PostgreSQL.ps1`) instead of the first script of step 12 (
   - `Install-ServiceFabricSDK.ps1`
 - **REBOOT** (windows-restart, timeout 10m)
 - Step 12 (powershell)
-  - `Install-LLVM.ps1`
   - `Install-ActionsCache.ps1`
   - `Install-Ruby.ps1`
   - `Install-PyPy.ps1`
@@ -287,6 +287,7 @@ block, before `Install-PostgreSQL.ps1`) instead of the first script of step 12 (
   - `Install-CodeQLBundle.ps1`
   - `Configure-Diagnostics.ps1`
 - Step 13 (powershell) [elevated as install user]
+  - `Install-LLVM.ps1`
   - `Install-PostgreSQL.ps1`
   - `Install-WindowsUpdates.ps1`
   - `Configure-DynamicPort.ps1`
@@ -379,7 +380,7 @@ P06/P07 reconcile each test with a probe (S13).
 
 ## Open items for the coordinator
 
-1. Pin versus build commit mismatch (above). A decision is needed before any rebuild work.
+1. Pin drift is resolved by pinning to the build commit (above). Nothing open.
 2. Hosted "Set up job" identity not captured yet (`../hosted-reference.md`).
 3. Runtime user, Docker start state, TESTSIGNING after sysprep, Windows PowerShell 5.1 version and real free disk are
    not defined by the pinned sources. Observe them live.

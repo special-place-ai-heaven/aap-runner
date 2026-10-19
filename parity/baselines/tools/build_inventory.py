@@ -260,7 +260,7 @@ def main():
             "toolcache": ts.get("toolcache"),
             "java": ts.get("java"),
             "node": ts.get("node"),
-            "note": "toolset.json at the pin; see README for pin vs build-commit differences",
+            "note": "toolset.json at the baseline (build) commit",
         },
         "counts": counts,
         "categories": {c: cats[c]["entries"] for c in order},

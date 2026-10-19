@@ -2,10 +2,10 @@
  "schema": 1,
  "profile": "windows-2025-vs2026-x64",
  "source": {
-  "readme_url": "https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/windows/Windows2025-VS2026-Readme.md",
-  "runner_images_commit": "ee1ff4569e381a9649b400338bdc8ceb7e18a80e",
+  "readme_url": "https://github.com/actions/runner-images/blob/aee0669dd04510a11756664eb77f5630debabed3/images/windows/Windows2025-VS2026-Readme.md",
+  "runner_images_commit": "aee0669dd04510a11756664eb77f5630debabed3",
   "readme_sha256": "1be74251a3224d797dd351ce4509c3576a5ad417bed3c923d05a39a5f770bad6",
-  "toolset_sha256": "8216b3727f714c6c51af535e39cd6d1d6586945f1d876292b335cda8d044ba71"
+  "toolset_sha256": "74afa20f0f390cd230f98900d034c1ad297a071820e5b45c55c5cd7abf2caa8f"
  },
  "identity": {
   "os_title": "Windows Server 2025",
@@ -44,11 +44,11 @@
     "arch": "x64",
     "platform": "win32",
     "versions": [
+     "3.10.*",
      "3.11.*",
      "3.12.*",
      "3.13.*",
-     "3.14.*",
-     "3.15.*"
+     "3.14.*"
     ],
     "default": "3.12.*"
    },
@@ -97,7 +97,7 @@
   "node": {
    "default": "22.*"
   },
-  "note": "toolset.json at the pin; see README for pin vs build-commit differences"
+  "note": "toolset.json at the baseline (build) commit"
  },
  "counts": {
   "Windows features": {

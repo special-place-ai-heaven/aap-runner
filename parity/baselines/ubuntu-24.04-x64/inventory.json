@@ -2,10 +2,10 @@
  "schema": 1,
  "profile": "ubuntu-24.04-x64",
  "source": {
-  "readme_url": "https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/Ubuntu2404-Readme.md",
-  "runner_images_commit": "ee1ff4569e381a9649b400338bdc8ceb7e18a80e",
+  "readme_url": "https://github.com/actions/runner-images/blob/7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe/images/ubuntu/Ubuntu2404-Readme.md",
+  "runner_images_commit": "7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe",
   "readme_sha256": "3911b4bc1aa423be7b7469a75f3093f51306c02f2638f2a8b4f5ed31f3ffe791",
-  "toolset_sha256": "72d25917a42635cf9be9105f7d6056b6d56ffcdf63ddc24f82fe6cdf526c6c84"
+  "toolset_sha256": "6ebf0669d768e4cc222d2ae25f9382c86c694e42dc1694db5f5cf50eca611264"
  },
  "identity": {
   "os_title": "Ubuntu 24.04",
@@ -43,11 +43,11 @@
     "platform_version": "24.04",
     "arch": "x64",
     "versions": [
+     "3.10.*",
      "3.11.*",
      "3.12.*",
      "3.13.*",
-     "3.14.*",
-     "3.15.*"
+     "3.14.*"
     ]
    },
    {
@@ -116,7 +116,7 @@
   "node": {
    "default": "22"
   },
-  "note": "toolset.json at the pin; see README for pin vs build-commit differences"
+  "note": "toolset.json at the baseline (build) commit"
  },
  "counts": {
   "Language and Runtime": {

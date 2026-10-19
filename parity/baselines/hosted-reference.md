@@ -3,7 +3,9 @@
 How to capture the real GitHub-hosted "Set up job" image identity for each certified profile, and what
 counts as valid evidence. Facts were fetched on 2026-10-19. Source IDs are defined at the end.
 
-**Status: NOT CAPTURED.** P01 wrote the capture procedure and the inert workflows. No hosted job was
+**Status: NOT CAPTURED in this file yet.** The coordinator added the two workflows to `.github/workflows` as `workflow_dispatch` only, hosted only, `permissions: {}`, and is running them. Logs will be stored as `sources/hosted-capture-<runid>.log` in each profile.
+
+**Original status line:** P01 wrote the capture procedure and the inert workflows. No hosted job was
 dispatched, so no observed image version string exists yet. The coordinator or owner must dispatch the two
 workflows (hosted runners only, no secrets) and attach the logs before P01 closes.
 
@@ -17,7 +19,7 @@ workflows (hosted runners only, no secrets) and attach the logs before P01 close
   `windows-latest`, `windows-2025` and `windows-2025-vs2026` on one Windows Server 2025 row that links to
   the VS2026 Readme (S6). The GitHub docs source on `main` links `windows-latest` and `windows-2025` to
   `Windows2025-Readme.md` (the Visual Studio 2022 image) and only `windows-2025-vs2026` to the VS2026
-  Readme (D2). Use `windows-2025-vs2026` and nothing else.
+  Readme (D2). Use `windows-2025-vs2026` and nothing else. **Finding:** the docs and the README conflict; certification uses the explicit label only.
 - `ubuntu-latest` is announced to move to Ubuntu 26.04 in November 2026 (S1 announcements). Use
   `ubuntu-24.04` and nothing else. Ubuntu 26.04 is out of scope for this plan.
 - A label cannot recover a historical release. Certification must record the exact image version string the
@@ -58,7 +60,7 @@ The image writes `imagedata.json` at build time. The runner prints it under `Set
 1. In a scratch repository (a public one is free for standard runners), copy
    `reference-workflows/hosted-reference-windows-2025-vs2026.yml` and
    `reference-workflows/hosted-reference-ubuntu-24.04.yml` to `.github/workflows/` and push to its default
-   branch. Do this in a scratch repository only. Never in `aap-runner`.
+   branch. Do this in a scratch repository only. The coordinator has since added both workflows to this repository's `.github/workflows`, which CLAUDE.md allows for hosted, dispatch-only, no-secret workflows.
 2. Dispatch each workflow once with `workflow_dispatch`. Both use hosted labels, no secrets, no third-party
    actions, no token permissions.
 3. Save the full raw job log, for example with `gh run view <run-id> --log` or the job logs API. Record from

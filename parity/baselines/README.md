@@ -1,7 +1,11 @@
 # Frozen hosted baselines (ledger item P01)
 
-Reviewed record of the two certified target profiles and their consumers. Upstream pin:
-`actions/runner-images` commit `ee1ff4569e381a9649b400338bdc8ceb7e18a80e`. Facts fetched 2026-10-19.
+Reviewed record of the two certified target profiles and their consumers. Facts fetched 2026-10-19.
+
+**Baseline commits (coordinator decision).** The baseline for each profile is the `actions/runner-images` commit that built the
+observed image: Windows `aee0669dd04510a11756664eb77f5630debabed3` (image `20261007.264.1`), Ubuntu
+`7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe` (image `20261012.334.1`). `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` stays recorded as the
+planning candidate only. Both toolset versions remain under each profile's `sources/`.
 
 | File | Content |
 |---|---|
@@ -13,16 +17,15 @@ Reviewed record of the two certified target profiles and their consumers. Upstre
 | `zccache.md` | zccache 1.15.6 pin, release assets, pinned compiler statements, daemon and retention interface. |
 | `tools/` | Python scripts that build and verify the inventories (`python -I`, standard library only). |
 
-## Findings that need a coordinator decision
+## Findings
 
-1. **The pinned build definition is not the one that built the pinned Readme.** The Readmes are byte-identical to the
-   Readmes at the release commits, but the pinned toolsets list Python 3.11 to 3.15 while the Readmes record
-   Python 3.10 to 3.14, and the Windows template orders `Install-LLVM.ps1` differently. See "Pin versus build commit"
-   in each profile README. Choose to keep the pin or move it to the release commits.
+1. **Pin drift, resolved by pinning to the build commit.** At the candidate `ee1ff45` the toolsets list Python 3.11 to 3.15
+   while the Readmes record 3.10 to 3.14, and the Windows template orders `Install-LLVM.ps1` differently. The baseline
+   is the build commit, where these agree with the Readmes. See "Pin drift" in each profile README.
 2. **The hosted fleet has already moved on.** Newer releases than both pinned images exist (2026-10-19). Moving
    labels cannot select the pinned releases. The hosted "Set up job" capture is still open.
-3. **Label ambiguity.** `windows-latest` and `windows-2025` are not safe labels for the VS2026 image. The GitHub docs
-   and the runner-images README disagree. Use `windows-2025-vs2026` and `ubuntu-24.04`.
+3. **Label conflict (finding).** The runner-images README at the candidate lists `windows-latest` and `windows-2025` on the VS2026
+   row. The GitHub docs source links them to the VS2022 image. Certification uses `windows-2025-vs2026` and `ubuntu-24.04` only.
 4. **Unreproducible and licensed inputs** are listed in each `inputs.md` (Azure Marketplace base images, Windows
    Server 2025 media and activation, Visual Studio 2026 Enterprise entitlement and its moving channel, floating
    vendor feeds, superseded apt versions, six floating `:latest` container images on Ubuntu).

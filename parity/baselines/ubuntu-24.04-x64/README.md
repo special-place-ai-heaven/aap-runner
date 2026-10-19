@@ -3,6 +3,12 @@
 Frozen hosted baseline for profile `ubuntu-24.04-x64`. Facts were fetched on 2026-10-19.
 Every fact cites a source ID from the legend at the end. Source IDs point at the pinned commit
 `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` unless the legend says otherwise.
+**Baseline commit (coordinator decision, 2026-10-19).** The baseline for this profile is `7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe`, the commit that built the
+observed image `ubuntu24/20261012.334`. `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` stays recorded as the planning candidate only.
+The inventory, template and toolset under `sources/build-commit-7e7dc1b/` are the baseline. The scripts under `scripts/` did not change between
+the two commits (the compare lists no file there), so script links at the candidate commit also describe the baseline.
+Where this file says "the pin", it means the candidate `ee1ff45`.
+
 Files in this directory: `inventory.json` (machine readable, every Readme entry), `inputs.md`
 (installer inputs, blockers, drift), `sources/` (byte-exact upstream template and toolset copies with `SHA256SUMS`; the Readme is hashed but not stored).
 
@@ -24,7 +30,7 @@ Files in this directory: `inventory.json` (machine readable, every Readme entry)
 | Runner application version | NOT IN PINNED SOURCES. Capture from `Set up job`. | n/a |
 | Hosted capture of the "Set up job" lines | NOT CAPTURED yet. | `../hosted-reference.md` |
 
-### Pin versus build commit
+### Pin drift, resolved by pinning to the build commit
 
 The Readme at the pin is byte-identical to the Readme at the release commit `7e7dc1b` (SHA-256
 `3911b4bc1aa423be7b7469a75f3093f51306c02f2638f2a8b4f5ed31f3ffe791`). The build template
@@ -336,7 +342,7 @@ larger than the file list suggests.
 
 ## Open items for the coordinator
 
-1. Pin versus build commit: Python cached set differs (above). Decide pin or release commit.
+1. Pin drift is resolved by pinning to the build commit (above). Nothing open.
 2. Hosted "Set up job" identity not captured yet (`../hosted-reference.md`).
 3. Runtime user, `haveged` state, real free disk, swap size and the `docker images` list are not fixed by the pinned
    sources. Observe them live.
