@@ -248,6 +248,7 @@ impl SettingsPanel {
                 &mut self.linux,
                 &COUNTS,
                 |n| fits_linux.contains(&n),
+                p.os(Os::Linux),
                 focus,
             );
         });
@@ -275,6 +276,7 @@ impl SettingsPanel {
                 &mut self.windows,
                 &COUNTS,
                 |n| fits_windows.contains(&n),
+                p.os(Os::Windows),
                 focus,
             )
             .on_hover_text(WINDOWS_INERT);
@@ -323,6 +325,7 @@ impl SettingsPanel {
                 &mut self.sharing,
                 &[(Sharing::Slice, "Slice"), (Sharing::Fixed, "Fixed")],
                 |_| true,
+                p.accent,
                 focus,
             )
             .on_hover_text(SHARING_TIP);
@@ -406,16 +409,17 @@ fn now(ui: &mut egui::Ui, p: &Palette, text: String) {
     });
 }
 
-/// Equal cells, the selected one filled with the accent; cells `allowed` refuses are greyed and
-/// inert. Cells shrink to share the row width. Only the selected cell is a Tab stop; Left and
-/// Right move the selection to an allowed neighbour while it has focus. Returns the group's
-/// response.
+/// Equal cells, the selected one filled with `selected_fill` (a profile colour or the accent);
+/// cells `allowed` refuses are greyed and inert. Cells shrink to share the row width. Only the
+/// selected cell is a Tab stop; Left and Right move the selection to an allowed neighbour while
+/// it has focus. Returns the group's response.
 fn segmented<T: Copy + PartialEq>(
     ui: &mut egui::Ui,
     p: &Palette,
     value: &mut T,
     options: &[(T, &str)],
     allowed: impl Fn(T) -> bool,
+    selected_fill: egui::Color32,
     focus: &mut Focus,
 ) -> egui::Response {
     let on_accent = if p.dark {
@@ -453,7 +457,7 @@ fn segmented<T: Copy + PartialEq>(
             };
             let (rect, r) = ui.allocate_exact_size(size, sense);
             let fill = if selected {
-                p.accent
+                selected_fill
             } else if !ok {
                 p.bg
             } else if r.hovered() && enabled {

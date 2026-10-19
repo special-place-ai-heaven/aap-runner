@@ -103,9 +103,13 @@ addendum of the design doc.
   (Verify/Repair/Open logs) follows in the normal top-down flow after a fixed gap.
   `SIZE[1]` = `MIN_SIZE[1]` = 924 px = max(left worst case 924, five-card right 702);
   a new left-column row that does not fit grows SIZE[1], never adds a scrollbar.
-- **Profile identity:** Linux is a Tux-style penguin glyph in orange, Windows the four-pane window
-  in blue (both painted, both themes). The glyph and colour mark the row labels, the header, and
-  every card, which also has a 3 px left edge in its profile's colour.
+- **Profile identity:** Linux is a Tux-style penguin glyph in green, Windows the four-pane window
+  in blue (both painted, both themes; no image assets). The glyph and colour mark the row labels,
+  the header, the selected cell of each count row, and every card, which also has a 3 px left
+  edge in its profile's colour. Every usage bar (pool Cores/Memory/Disk, card CPU/Mem, the
+  60-minute Cores/Memory columns) stacks a green Linux segment then a blue Windows segment, with a
+  `Linux`/`Windows` legend on the pool's `sampled` row and the `Last 60 min` title. All observed
+  usage is the Linux manager's, so the Windows segment stays empty while no backend exists.
 - **Right column:** only observed values. A pinned header row (symbol, state, `Linux N/M busy`, and
   `Windows N not installed` while Windows runners are chosen, `All OK` or
   the `1 problem` button). Below the header (in every state including Off and Not installed): one

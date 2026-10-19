@@ -123,6 +123,32 @@ fn windows_cards_to_draw(linux: usize, windows: u32) -> u32 {
     windows.min(crate::settings::MAX_RUNNERS.saturating_sub(linux as u32))
 }
 
+/// Per-profile usage `[linux, windows]` as fractions of `share`, stacked Linux first and
+/// clamped so together they never pass 1.
+fn stacked(used: [f64; 2], share: Option<f64>) -> [f32; 2] {
+    let Some(s) = share.filter(|s| *s > 0.0) else {
+        return [0.0, 0.0];
+    };
+    let linux = (used[0].max(0.0) / s).min(1.0);
+    let windows = (used[1].max(0.0) / s).min(1.0 - linux);
+    [linux as f32, windows as f32]
+}
+
+/// Observed usage per profile. ponytail: every sample is the Linux manager's; Windows stays 0
+/// until a Windows backend reports usage.
+fn linux_only(used: Option<f64>) -> Option<[f64; 2]> {
+    used.map(|u| [u, 0.0])
+}
+
+/// `■ Linux ■ Windows`: which colour is which profile, small, on the current row.
+fn legend(ui: &mut egui::Ui, p: &Palette) {
+    for os in [Os::Linux, Os::Windows] {
+        let (rect, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+        ui.painter().rect_filled(rect, 1.0, p.os(os));
+        ui.label(RichText::new(os.name()).color(p.muted).small());
+    }
+}
+
 /// `Linux 2`, `Windows 1`.
 fn card_name(os: Os, n: u32) -> String {
     format!("{} {n}", os.name())
@@ -314,7 +340,8 @@ impl Palette {
     /// A profile's colour: its glyph, row label and the card's left edge.
     pub fn os(&self, os: Os) -> Color32 {
         let (dark, light) = match os {
-            Os::Linux => (0xF0883E, 0xB4540A),
+            // Greenish (yellower than Running's green) and blueish, per the owner.
+            Os::Linux => (0x8FD14F, 0x3D7A12),
             Os::Windows => (0x3AA0F0, 0x0067B8),
         };
         hex(if self.dark { dark } else { light })
@@ -1049,13 +1076,14 @@ fn sym_widget(
 }
 
 impl Dash {
-    /// The track (the share), the fill `min(used, share)` and a 6 px over-share segment at the
-    /// right end; `w` wide. No (fresh) sample: the track only.
+    /// The track (the share), the fill `min(used, share)` stacked per profile (Linux green,
+    /// then Windows blue) and a 6 px over-share segment at the right end; `w` wide. No (fresh)
+    /// sample: the track only.
     fn track(
         &self,
         ui: &mut egui::Ui,
         id: egui::Id,
-        used: Option<f64>,
+        used: Option<[f64; 2]>,
         share: Option<f64>,
         over: bool,
         w: f32,
@@ -1065,11 +1093,16 @@ impl Dash {
         let track = Rect::from_center_size(row.center(), vec2(w, BAR_H));
         ui.painter().rect_filled(track, 2.0, p.track);
         if let Some(u) = used {
-            let frac = share.map_or(0.0, |s| if s > 0.0 { (u / s).min(1.0) } else { 0.0 });
-            let frac = self.anim(ui.ctx(), id, frac as f32);
-            if frac > 0.0 {
-                let fill = Rect::from_min_size(track.min, vec2(w * frac, BAR_H));
-                ui.painter().rect_filled(fill, 2.0, p.accent);
+            let [linux, windows] = stacked(u, share);
+            let linux = self.anim(ui.ctx(), id, linux);
+            let windows = self.anim(ui.ctx(), id.with("windows"), windows);
+            let mut x = track.min.x;
+            for (os, frac) in [(Os::Linux, linux), (Os::Windows, windows)] {
+                if frac > 0.0 {
+                    let fill = Rect::from_min_size(pos2(x, track.min.y), vec2(w * frac, BAR_H));
+                    ui.painter().rect_filled(fill, 2.0, p.os(os));
+                    x += w * frac;
+                }
             }
             if over {
                 let seg = Rect::from_min_max(pos2(track.max.x - 6.0, track.min.y), track.max);
@@ -1111,7 +1144,7 @@ impl Dash {
         // Row 1: label + track
         ui.horizontal(|ui| {
             fixed_label(ui, label, BAR_ROW_H);
-            let r = self.track(ui, id, used, share, over, track_w);
+            let r = self.track(ui, id, linux_only(used), share, over, track_w);
             a11y(&r, format!("{name} {}", text.replace(" / ", " of ")));
         });
         // Row 2: caption in a fixed-height row -- no available_height() dependency.
@@ -1149,7 +1182,7 @@ impl Dash {
                     None => ("no sample".into(), false),
                 };
                 let track_w = (ui.available_width() - 64.0).max(16.0);
-                let r = self.track(ui, id, used, share, over, track_w);
+                let r = self.track(ui, id, linux_only(used), share, over, track_w);
                 let spoken = text.replace('/', " of ");
                 a11y(
                     &r,
@@ -1235,7 +1268,14 @@ impl Dash {
         // Row 1: label + track (cleaning is in the caption)
         ui.horizontal(|ui| {
             fixed_label(ui, "Disk", BAR_ROW_H);
-            let r = self.track(ui, egui::Id::new("pool-disk"), used, share, over, track_w);
+            let r = self.track(
+                ui,
+                egui::Id::new("pool-disk"),
+                linux_only(used),
+                share,
+                over,
+                track_w,
+            );
             a11y(&r, format!("Work disk {text}"));
         });
         // Row 2: caption (includes cleaning when active) -- no available_height().
@@ -1300,12 +1340,16 @@ impl Dash {
             Some(a) => format!("sampled {} ago", problem::ago(a)),
             None => "no sample".into(),
         };
+        // Legend left, sampled-at right, one fixed-height row.
         let row_w = ui.available_width();
         ui.allocate_ui_with_layout(
             vec2(row_w, CAPTION_H),
-            Layout::right_to_left(Align::Center),
+            Layout::left_to_right(Align::Center),
             |ui| {
-                ui.label(RichText::new(&sampled_text).color(p.muted).small());
+                legend(ui, &p);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(&sampled_text).color(p.muted).small());
+                });
             },
         );
     }
@@ -1527,7 +1571,11 @@ impl Dash {
     fn history(&self, ui: &mut egui::Ui) {
         let p = self.pal();
         ui.add_space(4.0);
-        ui.label(RichText::new("Last 60 min").font(FontId::new(13.0, semibold())));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Last 60 min").font(FontId::new(13.0, semibold())));
+            ui.add_space(8.0);
+            legend(ui, &p);
+        });
         let a = self.snap.applied;
         let now_min = secs(SystemTime::now()) / 60;
         let samples = &self.history.samples;
@@ -1554,13 +1602,20 @@ impl Dash {
                     let x = rect.min.x + i as f32 * col_w;
                     let col = Rect::from_min_max(pos2(x, rect.min.y), pos2(x + col_w, rect.max.y));
                     let Some(s) = at(minute) else { continue };
-                    if let Some(v) = pick(s) {
-                        let h = ((v / top) as f32 * rect.height()).max(1.0);
-                        let bar = Rect::from_min_max(
-                            pos2(x, rect.max.y - h),
-                            pos2(x + col_w - 1.0, rect.max.y),
-                        );
-                        ui.painter().rect_filled(bar, 0.0, p.accent);
+                    if let Some(u) = linux_only(pick(s)) {
+                        // Stacked bottom-up: Linux, then Windows; at least 1 px for a sample.
+                        let mut y = rect.max.y;
+                        for (i, frac) in stacked(u, Some(top)).into_iter().enumerate() {
+                            let h = frac * rect.height();
+                            let h = if i == 0 { h.max(1.0) } else { h };
+                            if h <= 0.0 {
+                                continue;
+                            }
+                            let bar = Rect::from_min_max(pos2(x, y - h), pos2(x + col_w - 1.0, y));
+                            let os = if i == 0 { Os::Linux } else { Os::Windows };
+                            ui.painter().rect_filled(bar, 0.0, p.os(os));
+                            y -= h;
+                        }
                     }
                     let tip = format!(
                         "{} \u{b7} {} cores \u{b7} {} GiB",
@@ -2812,6 +2867,26 @@ mod tests {
         }
         output.textures_delta.clear();
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn bars_stack_linux_then_windows_within_the_share() {
+        assert_eq!(stacked([3.0, 1.0], Some(8.0)), [0.375, 0.125]);
+        assert_eq!(
+            stacked([6.0, 6.0], Some(8.0)),
+            [0.75, 0.25],
+            "never past the share"
+        );
+        assert_eq!(stacked([9.0, 1.0], Some(8.0)), [1.0, 0.0]);
+        assert_eq!(stacked([2.0, 0.0], None), [0.0, 0.0]);
+        assert_eq!(stacked([2.0, 0.0], Some(0.0)), [0.0, 0.0]);
+        assert_eq!(stacked([-1.0, 2.0], Some(4.0)), [0.0, 0.5]);
+        assert_eq!(
+            linux_only(Some(2.5)),
+            Some([2.5, 0.0]),
+            "Windows stays 0, inert"
+        );
+        assert_eq!(linux_only(None), None);
     }
 
     #[test]
