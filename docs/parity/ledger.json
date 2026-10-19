@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "plan_revision": 2,
-  "status": "PLANNING_ONLY",
+  "plan_revision": 3,
+  "status": "EXECUTING",
   "baseline_commit": "ae001a60c7e02b23cad2e8bcf43cf52b34ecbf31",
   "m4": {
     "pr": 20,
@@ -22,12 +22,42 @@
       "needs": [],
       "owns": [
         "tools/parity-work/**",
-        "tests/parity-work/**"
+        "tests/parity-work/**",
+        ".github/workflows/ci.yml (pester job Run.Path line only, coordinator-authorized)"
       ],
-      "lane": "Sol high",
-      "delivery_state": "NOT_STARTED",
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "REVIEWED",
       "deliverable": "Implement atomic claims, task resource manifests, merge-proof validation, independent cleanup receipts and a global no-new-dispatch barrier. This prerequisite lands before any other implementation task.",
       "acceptance": "Dirty/unowned files, squash/rebase merges, stale PID, junction/ADS/traversal, locked file, interrupted cleanup and overlapping claims fail closed; a merged-but-unclean prerequisite never unlocks work. Concurrent junction substitution cannot escape a qualified no-follow/protected deletion boundary; static preflight scans alone do not qualify. Parent merge-readiness requires children merged and cleaned without circular parent dependencies.",
+      "merge_proof": null,
+      "cleanup_receipt": null,
+      "branch": "parity/p00-cleanup-gate",
+      "reviewed_head": "5a1ce4e64759b899953c46d1aa6febcedd7d538d",
+      "base_sha": "af9895d270bbd1c3f57466829cf655ea88e8c952",
+      "evidence": "Pester 90/90 on pwsh 7.6.6 and Windows PowerShell 5.1 at 5a1ce4e (coordinator rerun 2026-10-19); independent code and security review at 706d812 (FIX-THEN-MERGE, no critical/high), 8 must-fix findings resolved in 5a1ce4e; follow-ups tracked as P00.1",
+      "declared_gaps": [
+        "build/test/resource tokens and concurrency budgets not enforced at claim (follow-up)",
+        "no real lab provider; registered VM without provider -> HOLD",
+        "real gh provider unexercised against GitHub; tests use a fake",
+        "identities are caller strings",
+        "any worktree inventory entry -> HOLD (no per-file ownership)"
+      ]
+    },
+    {
+      "id": "P00.1",
+      "title": "Harden the cleanup gate (review follow-ups)",
+      "earliest_wave": 2,
+      "needs": [
+        "P00"
+      ],
+      "owns": [
+        "tools/parity-work/**",
+        "tests/parity-work/**"
+      ],
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Land the non-blocking findings from the 2026-10-19 code and security reviews of P00 (706d812): refuse registration after MERGED_CLEANUP_REQUIRED; merge-proof candidates tied to merge shape (2-parent: merge^1 base, merge^2 == accepted head; rebase: step-match); unreadable process start time -> HOLD; Invoke-PwGit separates stderr and checks exit codes; unknown-process scan also matches working directory under the root; transitive child/parent validation; mid-component wildcard overlap; porcelain -z; verifier must differ from cleanup actor; require git >= 2.40 for merge-tree --merge-base; take directory identity from the creating handle (FILE_CREATE); close the worktree-remove window (observe absence immediately before git, or delete the admin entry via SafeTree); init refuses to overwrite config and -DefaultSentinels leaves the CLI; receipt omits hashes of untracked/ignored owner files; SafeTree iterative walk; race-test swap hook between enumeration and open; build/test/resource tokens and the 3-worker/2-compile/1-suite/1-IO budgets enforced at claim (required before wave 4 parallel dispatch).",
+      "acceptance": "Each listed finding has a test that fails without its fix; both PowerShell hosts green; budgets refuse a fourth worker, a third compile-heavy job and a second full suite.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -190,7 +220,7 @@
       "lane": "Sol high",
       "delivery_state": "NOT_STARTED",
       "deliverable": "Acquire durable generation-bound reservations before boot/registration. Count legacy, warm/listening and cleanup-uncertain workers; enforce five total runner slots plus aggregate CPU/RAM/disk/IO and physical-host reserve.",
-      "acceptance": "Sixth worker, duplicate lease, concurrent starts, lost heartbeat, controller crash, late completion, failed reset, memory overhead and storage pressure cannot over-admit or release capacity early. Legacy pool never remains autonomous at five plus Windows.",
+      "acceptance": "Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Sixth worker, duplicate lease, concurrent starts, lost heartbeat, controller crash, late completion, failed reset, memory overhead and storage pressure cannot over-admit or release capacity early. Legacy pool never remains autonomous at five plus Windows.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -250,7 +280,7 @@
       "lane": "Sol high",
       "delivery_state": "NOT_STARTED",
       "deliverable": "Integrate providers into existing PowerShell host task. Add compatible per-profile allocation/status, pool-wide on/off/pause/drain, generation-aware observations and legacy adoption. Update both contract sides/tests in the same PR.",
-      "acceptance": "Old settings/status read safely; unknown future schemas reject safely; mixed state and failure reporting proven with fixtures. Off/pause/resizing never cancels a running job. Rust and both PowerShell suites pass.",
+      "acceptance": "Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Old settings/status read safely; unknown future schemas reject safely; mixed state and failure reporting proven with fixtures. Off/pause/resizing never cancels a running job. Rust and both PowerShell suites pass.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -424,7 +454,7 @@
       "lane": "Luna high",
       "delivery_state": "NOT_STARTED",
       "deliverable": "Expose native OS/profile, image generation, available/reserved capacity, truthful cache state, first-error remediation, image stale/quarantine state and safe on/off/pause/settings through existing inbox/helper boundaries.",
-      "acceptance": "Injected/headless tests plus authorized disposable UI proof; no tray WSL calls or secrets. Five total cap visible. Pending/resume/failure paths never show false readiness or stop active work.",
+      "acceptance": "Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Injected/headless tests plus authorized disposable UI proof; no tray WSL calls or secrets. Five total cap visible. Pending/resume/failure paths never show false readiness or stop active work.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -577,5 +607,15 @@
       "merge_proof": null,
       "cleanup_receipt": null
     }
+  ],
+  "authorization": {
+    "D0": "Owner authorized implementation 2026-10-19 (HANDOVER-CLAUDE-PARITY.md first prompt); P00 bootstrap attempt-1 is manual, registry at C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\registry",
+    "D2": "Host checked read-only 2026-10-19: Hyper-V fully enabled, vmms Automatic/Running, owner in Hyper-V Administrators, 32 LCPU / 94 GiB / >1 TB free. Still missing: Windows Server 2025 media and activation path, and an explicit compute/storage budget for image builds and test VMs."
+  },
+  "decisions": [
+    "2026-10-19 owner: native Windows runner is the critical path; after P02 dispatch the Windows chain first (P03, P06, P08, P09, P10, P13, P14, P17), Ubuntu VM work takes leftover slots.",
+    "2026-10-19 owner: the live five-runner legacy pool keeps serving jobs untouched until certified cutover (D5).",
+    "2026-10-19 owner: Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop).",
+    "2026-10-19 owner: agents merge reviewed green PRs; the owner never merges."
   ]
 }

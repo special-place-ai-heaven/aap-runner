@@ -1,13 +1,21 @@
 # Parity implementation ledger
 
-Revision 2. Planning only: **all items are NOT_STARTED**. `ledger.json` is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in [WORKTREES.md](WORKTREES.md). Only `COMPLETE` dependencies unlock work; merged or gate-verified alone does not.
+Revision 3 (executing since 2026-10-19; D0 authorized). States below are current; everything not listed otherwise is NOT_STARTED. `ledger.json` is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in [WORKTREES.md](WORKTREES.md). Only `COMPLETE` dependencies unlock work; merged or gate-verified alone does not.
 
 ## P00 — Build the worktree, lease and cleanup gate
 
 - Earliest wave: 1; prerequisites: execution authorization only.
-- Pinned execution lane: Sol high; ownership: `tools/parity-work/**`, `tests/parity-work/**`.
+- Pinned execution lane: Sol high (Claude: Opus high); ownership: `tools/parity-work/**`, `tests/parity-work/**`, plus the `pester` job `Run.Path` line of `.github/workflows/ci.yml` (coordinator-authorized).
 - Deliverable: Implement atomic claims, task resource manifests, merge-proof validation, independent cleanup receipts and a global no-new-dispatch barrier. This prerequisite lands before any other implementation task.
 - Acceptance: Dirty/unowned files, squash/rebase merges, stale PID, junction/ADS/traversal, locked file, interrupted cleanup and overlapping claims fail closed; a merged-but-unclean prerequisite never unlocks work. Concurrent junction substitution cannot escape a qualified no-follow/protected deletion boundary; static preflight scans alone do not qualify. Parent merge-readiness requires children merged and cleaned without circular parent dependencies.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: REVIEWED — branch `parity/p00-cleanup-gate`, head `5a1ce4e` (review fixes on 706d812), base `af9895d`; Pester 90/90 on pwsh 7 and Windows PowerShell 5.1; manual bootstrap attempt-1 (its own cleanup is manual and independently verified). Declared gaps: no resource/concurrency tokens at claim, no real lab provider, real `gh` provider unexercised, identities are caller strings, any worktree inventory entry HOLDs.
+
+## P00.1 — Harden the cleanup gate (review follow-ups)
+
+- Earliest wave: 2; prerequisites: P00.
+- Pinned execution lane: Sol high (Claude: Opus high); ownership: `tools/parity-work/**`, `tests/parity-work/**`.
+- Deliverable: Land the non-blocking findings from the 2026-10-19 code and security reviews of P00 (see `ledger.json` P00.1 for the full list), plus the build/test/resource tokens and the 3-worker/2-compile/1-suite/1-IO budgets enforced at claim. The budgets must land before wave 4 dispatches P03/P04/P05 in parallel.
+- Acceptance: Each listed finding has a test that fails without its fix; both PowerShell hosts green; budgets refuse a fourth worker, a third compile-heavy job and a second full suite.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
 
 ## P01 — Freeze hosted baselines and consumer inventory
@@ -79,7 +87,7 @@ Revision 2. Planning only: **all items are NOT_STARTED**. `ledger.json` is the m
 - Earliest wave: 4; prerequisites: P02.
 - Pinned execution lane: Sol high; ownership: `supervisor/capacity/**`, `tests/capacity/**`.
 - Deliverable: Acquire durable generation-bound reservations before boot/registration. Count legacy, warm/listening and cleanup-uncertain workers; enforce five total runner slots plus aggregate CPU/RAM/disk/IO and physical-host reserve.
-- Acceptance: Sixth worker, duplicate lease, concurrent starts, lost heartbeat, controller crash, late completion, failed reset, memory overhead and storage pressure cannot over-admit or release capacity early. Legacy pool never remains autonomous at five plus Windows.
+- Acceptance: Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Sixth worker, duplicate lease, concurrent starts, lost heartbeat, controller crash, late completion, failed reset, memory overhead and storage pressure cannot over-admit or release capacity early. Legacy pool never remains autonomous at five plus Windows.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
 
 ## P10 — Implement Windows VM backend
@@ -103,7 +111,7 @@ Revision 2. Planning only: **all items are NOT_STARTED**. `ledger.json` is the m
 - Earliest wave: 6; prerequisites: P10, P11.
 - Pinned execution lane: Sol high; ownership: `supervisor/aap-runner-supervisor.ps1`, `supervisor/supervisor.Tests.ps1`, `supervisor/README.md`, `crates/tray/src/state.rs`, `crates/tray/src/settings.rs`.
 - Deliverable: Integrate providers into existing PowerShell host task. Add compatible per-profile allocation/status, pool-wide on/off/pause/drain, generation-aware observations and legacy adoption. Update both contract sides/tests in the same PR.
-- Acceptance: Old settings/status read safely; unknown future schemas reject safely; mixed state and failure reporting proven with fixtures. Off/pause/resizing never cancels a running job. Rust and both PowerShell suites pass.
+- Acceptance: Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Old settings/status read safely; unknown future schemas reject safely; mixed state and failure reporting proven with fixtures. Off/pause/resizing never cancels a running job. Rust and both PowerShell suites pass.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
 
 ## P13 — Package zccache guest integration
@@ -167,7 +175,7 @@ Revision 2. Planning only: **all items are NOT_STARTED**. `ledger.json` is the m
 - Earliest wave: 9; prerequisites: P19.
 - Pinned execution lane: Luna high; ownership: `crates/tray/src/dashboard.rs`, `crates/tray/src/settings_panel.rs`, `crates/tray/src/wizard.rs`, `crates/tray/src/main.rs`, `crates/tray/README.md`.
 - Deliverable: Expose native OS/profile, image generation, available/reserved capacity, truthful cache state, first-error remediation, image stale/quarantine state and safe on/off/pause/settings through existing inbox/helper boundaries.
-- Acceptance: Injected/headless tests plus authorized disposable UI proof; no tray WSL calls or secrets. Five total cap visible. Pending/resume/failure paths never show false readiness or stop active work.
+- Acceptance: Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Injected/headless tests plus authorized disposable UI proof; no tray WSL calls or secrets. Five total cap visible. Pending/resume/failure paths never show false readiness or stop active work.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
 
 ## P21 — Assemble and qualify immutable candidate generations
