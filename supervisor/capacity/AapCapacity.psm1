@@ -104,9 +104,13 @@ function Invoke-AapFault([string]$Point) {
     }
 }
 
+# One line of text: control and line-separator characters (an echoed id, a VM name, a broker
+# status) become spaces.
+function ConvertTo-AapLine([string]$Text) { $Text -replace '[\x00-\x1f\x7f\u0085\u2028\u2029]', ' ' }
+
 function New-AapResult {
     param([string]$Status, $Reason = $null, [string]$Detail = '', [Collections.IDictionary]$Data = $null)
-    $o = [ordered]@{ Ok = ($Status -eq 'ok' -or $Status -eq 'unchanged'); Status = $Status; Reason = $Reason; Detail = $Detail; TrustRelaxed = [bool]$script:Relaxed }
+    $o = [ordered]@{ Ok = ($Status -eq 'ok' -or $Status -eq 'unchanged'); Status = $Status; Reason = $Reason; Detail = (ConvertTo-AapLine $Detail); TrustRelaxed = [bool]$script:Relaxed }
     if ($Data) { foreach ($k in $Data.Keys) { $o[$k] = $Data[$k] } }
     [pscustomobject]$o
 }
@@ -577,8 +581,33 @@ function Get-AapAncestorProblem([string]$Path, [bool]$AclToo) {
     , $problems
 }
 
+function Get-AapProcessRole {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($id.User.Value -ceq 'S-1-5-18') { return 'system' }
+    if ((New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { return 'elevated' }
+    'user'
+}
+
+# -RelaxedTrustForTests is refused for SYSTEM, below ProgramData, Program Files or Windows, and in
+# an elevated process outside the temp folder (hosted CI runs tests elevated under TEMP).
+function Get-AapRelaxedProblem([string]$Root) {
+    $under = { param($dir) $dir -and $Root.StartsWith($dir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) }
+    foreach ($d in @($env:ProgramData, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:SystemRoot)) {
+        if (& $under $d) { return "relaxed trust is for test folders only, never below $d" }
+    }
+    $role = Get-AapProcessRole
+    if ($role -eq 'system') { return 'relaxed trust is refused for SYSTEM' }
+    $temp = [IO.Path]::GetTempPath()
+    if ($role -eq 'elevated' -and -not (& $under $temp)) { return "relaxed trust is refused in an elevated process outside $temp" }
+    return $null
+}
+
 function Get-AapTrustProblem([string]$Root, [bool]$Relaxed, [bool]$MayBeMissing) {
     $problems = New-Object System.Collections.Generic.List[string]
+    if ($Relaxed) {
+        $p = Get-AapRelaxedProblem $Root
+        if ($p) { $problems.Add($p); return , $problems }
+    }
     if ($Root -notmatch '^[A-Za-z]:\\.+' -or $Root.EndsWith('\') -or [IO.Path]::GetFullPath($Root) -cne $Root) {
         $problems.Add("$Root is not a normalized absolute path on a drive")
         return , $problems
@@ -652,6 +681,23 @@ function Write-AapCapLog([string]$Root, [string]$Text) {
 }
 
 function Get-AapKey([string]$Root) { $Root.ToLowerInvariant() }
+
+# A new capacity folder gets a protected DACL: SYSTEM and Administrators full control, nothing
+# inherited (the data folder above grants the installing user read). Relaxed mode adds the current
+# user, or an unelevated test could not write. The owner is the creator's default owner
+# (Administrators for an elevated process); the strict check that follows refuses any other.
+function New-AapFolder([string]$Root) {
+    $sddl = 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
+    if ($script:Relaxed) { $sddl += "(A;OICI;FA;;;$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))" }
+    $sec = New-Object Security.AccessControl.DirectorySecurity
+    $sec.SetSecurityDescriptorSddlForm($sddl)
+    $ext = 'System.IO.FileSystemAclExtensions' -as [type]
+    if ($ext -and $ext.GetMethod('Create', [type[]]@([IO.DirectoryInfo], [Security.AccessControl.DirectorySecurity]))) {
+        $ext::Create([IO.DirectoryInfo]$Root, $sec)
+    } else {
+        [void][IO.Directory]::CreateDirectory($Root, $sec)
+    }
+}
 
 # Files that show allocator.json once existed. A temp file counts unless it is an interrupted first
 # initialize (revision 1: nothing admitted, no generation spent).
@@ -876,10 +922,10 @@ function Set-AapSettings($Doc, [hashtable]$Bound) {
 # ---- exported --------------------------------------------------------------------------------
 
 function Get-AapVmName {
-    param([Parameter(Mandatory)][ValidateSet('linux', 'windows')][string]$Profile,
+    param([Parameter(Mandatory)][ValidateSet('linux', 'windows', IgnoreCase = $false)][string]$Profile,
         [Parameter(Mandatory)][ValidateRange(1, 5)][int]$Slot,
         [Parameter(Mandatory)][ValidateRange(1, 999999999)][long]$LeaseGeneration,
-        [Parameter(Mandatory)][ValidatePattern('^r-[0-9a-f]{16}$', Options = 'None')][string]$ReservationId)
+        [Parameter(Mandatory)][ValidatePattern('^r-[0-9a-f]{16}\z', Options = 'None')][string]$ReservationId)
     $letter = 'l'
     if ($Profile -ceq 'windows') { $letter = 'w' }
     "aap-$letter-$Slot-$LeaseGeneration-$($ReservationId.Substring(2, 8))"
@@ -908,16 +954,18 @@ function Initialize-AapAllocator {
     param([Parameter(Mandatory)][string]$Root,
         [Parameter(Mandatory)]$HostInfo,
         [int]$Linux = 1, [int]$Windows = 0,
-        [ValidateSet('even', 'per_profile')][string]$ShareMode = 'even',
+        [ValidateSet('even', 'per_profile', IgnoreCase = $false)][string]$ShareMode = 'even',
         $LinuxShare = $null, $WindowsShare = $null,
         [int]$HostReservePercent = 10,
-        [ValidateSet('wsl-legacy', 'hyperv-vm')][string]$LinuxBackend = 'wsl-legacy',
+        [ValidateSet('wsl-legacy', 'hyperv-vm', IgnoreCase = $false)][string]$LinuxBackend = 'wsl-legacy',
         [int]$LockTimeoutSeconds = 30,
         [switch]$RelaxedTrustForTests)
     $script:Relaxed = [bool]$RelaxedTrustForTests
     $problems = Get-AapTrustProblem $Root $script:Relaxed $true
     if ($problems.Count) { return (New-AapResult 'error' 'untrusted_folder' ($problems -join '; ')) }
-    if (-not [IO.Directory]::Exists($Root)) { [void](New-Item -ItemType Directory -Path $Root) }
+    if (-not [IO.Directory]::Exists($Root)) {
+        try { New-AapFolder $Root } catch { return (New-AapResult 'error' 'failed' "cannot create ${Root}: $($_.Exception.Message)") }
+    }
     if ([IO.File]::Exists((Join-Path $Root 'allocator.json'))) {
         return (Invoke-AapLocked $Root $script:Relaxed $LockTimeoutSeconds { param($doc) New-AapResult 'unchanged' 'already_initialized' 'allocator.json exists; settings and host left as they are' ([ordered]@{ State = $doc }) })
     }
@@ -1071,10 +1119,10 @@ function Set-AapProfileCounts {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root,
         [Parameter(Mandatory)][int]$Linux, [Parameter(Mandatory)][int]$Windows,
-        [ValidateSet('even', 'per_profile')][string]$ShareMode,
+        [ValidateSet('even', 'per_profile', IgnoreCase = $false)][string]$ShareMode,
         $LinuxShare, $WindowsShare,
         [int]$HostReservePercent,
-        [ValidateSet('wsl-legacy', 'hyperv-vm')][string]$LinuxBackend,
+        [ValidateSet('wsl-legacy', 'hyperv-vm', IgnoreCase = $false)][string]$LinuxBackend,
         $LinuxGeneration, $WindowsGeneration,
         [int]$LockTimeoutSeconds = 30, [switch]$RelaxedTrustForTests)
     $bound = @{}
@@ -1134,7 +1182,7 @@ function Set-AapProfileCounts {
 function Request-AapReservation {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root,
-        [Parameter(Mandatory)][ValidateSet('linux', 'windows')][string]$Profile,
+        [Parameter(Mandatory)][ValidateSet('linux', 'windows', IgnoreCase = $false)][string]$Profile,
         $Cpus = $null, $MemGib = $null, $MemOverheadMib = $null, $DiskGib = $null, $IoMbps = $null,
         [string]$ImageGeneration = '',
         [int]$LockTimeoutSeconds = 30, [switch]$RelaxedTrustForTests)
@@ -1191,7 +1239,7 @@ function Register-AapLegacySlots {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root,
         $ManagerStatus = $null,
-        [ValidatePattern('^[a-z0-9.-]{1,40}$', Options = 'None')][string]$ManagerVersion = 'manager',
+        [ValidatePattern('^[a-z0-9.-]{1,40}\z', Options = 'None')][string]$ManagerVersion = 'manager',
         [switch]$ManagerStopped,
         [int]$LockTimeoutSeconds = 30, [switch]$RelaxedTrustForTests)
     Invoke-AapLocked $Root ([bool]$RelaxedTrustForTests) $LockTimeoutSeconds {
@@ -1382,8 +1430,8 @@ function Set-AapSlotState {
     param([Parameter(Mandatory)][string]$Root,
         [Parameter(Mandatory)][string]$ReservationId,
         [Parameter(Mandatory)][long]$LeaseGeneration,
-        [Parameter(Mandatory)][ValidateSet('ready', 'busy', 'draining', 'collecting', 'deleting', 'quarantined')][string]$State,
-        [ValidateSet('heartbeat', 'hostile_guest', 'teardown_failed', 'crash')][string]$QuarantineKind,
+        [Parameter(Mandatory)][ValidateSet('ready', 'busy', 'draining', 'collecting', 'deleting', 'quarantined', IgnoreCase = $false)][string]$State,
+        [ValidateSet('heartbeat', 'hostile_guest', 'teardown_failed', 'crash', IgnoreCase = $false)][string]$QuarantineKind,
         [string]$Reason = '',
         [string]$VmId = '',
         [int]$LockTimeoutSeconds = 30, [switch]$RelaxedTrustForTests)
@@ -1396,12 +1444,19 @@ function Set-AapSlotState {
         }
         $r = $f.Reservation
         $from = $r.state
+        $withheld = ''
         if ($from -ceq $State -and ($State -cne 'quarantined' -or $r.quarantine_kind -ceq $QuarantineKind)) { return (New-AapResult 'unchanged' $null "already $State") }
         $toHostile = $from -ceq 'quarantined' -and $State -ceq 'quarantined' -and $QuarantineKind -ceq 'hostile_guest' -and $script:HostileOver -ccontains $r.quarantine_kind
         if (-not $toHostile -and $script:Edges[$from] -cnotcontains $State) { return (New-AapResult 'refused' 'illegal_edge' "$from -> $State is not an edge of the slot state machine") }
         if ($State -ceq 'quarantined') {
             if (-not $QuarantineKind -or (-not $toHostile -and $script:QuarantineFrom[$QuarantineKind] -cnotcontains $from)) { return (New-AapResult 'refused' 'illegal_edge' "$from -> quarantined ($QuarantineKind) is not allowed") }
             if (-not $Reason -or $Reason -match '[\x00-\x1f]' -or $Reason.Length -gt 200) { return (New-AapResult 'refused' 'bad_request' 'a quarantine needs a one-line -Reason of at most 200 characters') }
+            # A credential-shaped reason would make the whole write fail the contract; the quarantine
+            # matters more than its text.
+            if ($Reason -cmatch $script:SecretValue) { $Reason = 'reason withheld: it looked like a credential'; $withheld = ' (reason withheld: it looked like a credential)' }
+        }
+        if ($from -ceq 'quarantined' -and $State -ceq 'deleting' -and $r.quarantine_kind -ceq 'heartbeat') {
+            return (New-AapResult 'refused' 'illegal_edge' 'a heartbeat quarantine goes to deleting only through Invoke-AapReconcile, on the broker status')
         }
         if ($VmId) {
             if ($r.backend -cne 'hyperv-vm' -or $VmId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z' -or ($null -ne $r.vm_id -and $r.vm_id -cne $VmId)) {
@@ -1422,7 +1477,7 @@ function Set-AapSlotState {
             $r.cleanup_uncertain = $true
         }
         Save-AapDoc $Root $doc "$($r.reservation_id) slot $($r.slot) $from->$State $QuarantineKind $Reason"
-        New-AapResult 'ok' $null "$from -> $State" ([ordered]@{ Reservation = $r })
+        New-AapResult 'ok' $null "$from -> $State$withheld" ([ordered]@{ Reservation = $r })
     }
 }
 
@@ -1443,7 +1498,7 @@ function ConvertTo-AapProof($Proof, $R) {
     $dereg = Get-AapField $Proof 'runner_deregistered'
     if (-not (($dereg -is [bool] -and $dereg) -or ($dereg -is [string] -and ($dereg -ceq 'github-removed' -or $dereg -ceq 'never_registered')))) { return 'runner_deregistered must be true, github-removed or never_registered' }
     $at = Get-AapField $Proof 'observed_at'
-    if (-not ($at -is [string]) -or $at -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$') { return 'observed_at must be YYYY-MM-DDTHH:MM:SSZ' }
+    if (-not ($at -is [string]) -or $at -cnotmatch '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\z') { return 'observed_at must be YYYY-MM-DDTHH:MM:SSZ' }
     $atDt = ConvertFrom-AapTime $at
     if ($atDt -lt (ConvertFrom-AapTime $R.acquired_at) -or $atDt -gt (Get-AapUtcNow).AddSeconds(60)) { return 'observed_at is not between the reservation and now' }
     $o = [ordered]@{}
@@ -1492,6 +1547,23 @@ function Complete-AapTeardown {
 # transitions; quarantines unknown VMs in a free slot, otherwise blocks admission until resolved.
 #   -Inventory     { @{ vms = @(@{ name; vm_id; cpus; mem_gib }); folders = @('r-...'); journaled = @('r-...') } }
 #   -BrokerStatus  { param($Reservation) @{ status = 'online'|'offline'|'absent'; busy = $bool; job_ended = $bool } or $null }
+# $null when Inv is one hashtable or object with the lists vms, folders and journaled.
+function Test-AapInventory($Inv) {
+    if ($null -eq $Inv -or $Inv -is [array] -or $Inv -is [string] -or $Inv -is [ValueType]) { return 'the callback did not return one hashtable or object' }
+    foreach ($k in @('vms', 'folders', 'journaled')) {
+        if ($Inv -is [Collections.IDictionary]) {
+            if (-not $Inv.Contains($k)) { return "no '$k' list" }
+            $v = $Inv[$k]
+        } else {
+            $p = Get-AapProp $Inv $k
+            if ($null -eq $p) { return "no '$k' list" }
+            $v = $p.Value
+        }
+        if (-not ($v -is [Collections.IList])) { return "'$k' is not a list" }
+    }
+    return $null
+}
+
 function Invoke-AapReconcile {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root,
@@ -1508,6 +1580,14 @@ function Invoke-AapReconcile {
         $actions = New-Object System.Collections.Generic.List[object]
         $flags = New-Object System.Collections.Generic.List[string]
         $unresolved = New-Object System.Collections.Generic.List[object]
+        $broker = @{}
+        # The inventory first: a partial or malformed one would free running slots, so it changes nothing.
+        $inv = $null
+        if ($Inventory) {
+            $inv = & $Inventory
+            $bad = Test-AapInventory $inv
+            if ($bad) { return (New-AapResult 'error' 'invalid_inventory' "inventory refused, nothing changed: $bad") }
+        }
         $tmp = Join-Path $Root 'allocator.json.tmp'
         if ([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp); $changes.Add('removed a temp file left by an interrupted write') }
         # 1. Missed heartbeats: capacity held, never freed.
@@ -1528,17 +1608,16 @@ function Invoke-AapReconcile {
             $status = Get-AapField $s 'status'
             $busy = Get-AapField $s 'busy'
             $ended = Get-AapField $s 'job_ended'
+            $broker[$r.reservation_id] = 'unknown'
+            if ($null -ne $s) { $broker[$r.reservation_id] = ConvertTo-AapLine "$status, busy $busy" }
             if ($null -ne $s -and (($ended -is [bool] -and $ended) -or ($status -is [string] -and ($status -ceq 'offline' -or $status -ceq 'absent') -and $busy -is [bool] -and -not $busy))) {
                 Move-AapDown $r $now $null
                 $changes.Add("$($r.reservation_id) slot $($r.slot) quarantined->deleting (runner $status, busy $busy, job ended $ended)")
                 $actions.Add([pscustomobject][ordered]@{ action = 'destroy'; reservation_id = $r.reservation_id; lease_generation = [long]$r.lease_generation; vm_name = (Get-AapVmNameOf $r); vm_id = $r.vm_id })
-            } elseif (($nowDt - (ConvertFrom-AapTime $r.acquired_at)).TotalHours -ge $LeaseWallClockHours) {
-                $flags.Add("slot $($r.slot) ($($r.reservation_id)) is past the $LeaseWallClockHours h lease wall clock without a heartbeat; GitHub reports its runner $(if ($null -eq $s) { 'unknown' } else { "$status, busy $busy" }); held, cleanup uncertain")
             }
         }
         # 3. Inventory join (VMs named aap-(w|l)-<slot>-..., clones\ and scratch\ folders, journals).
         if ($Inventory) {
-            $inv = & $Inventory
             $vms = @(Get-AapField $inv 'vms' | Where-Object { $null -ne $_ })
             $folders = @(Get-AapField $inv 'folders' | Where-Object { $_ })
             $journaled = @(Get-AapField $inv 'journaled' | Where-Object { $_ })
@@ -1570,7 +1649,7 @@ function Invoke-AapReconcile {
             }
             foreach ($vm in $vms) {
                 if ($matched.Contains($vm)) { continue }
-                $name = [string](Get-AapField $vm 'name')
+                $name = ConvertTo-AapLine ([string](Get-AapField $vm 'name'))
                 $vmId = Get-AapField $vm 'vm_id'
                 $cpus = Get-AapField $vm 'cpus'
                 $mem = Get-AapField $vm 'mem_gib'
@@ -1607,6 +1686,15 @@ function Invoke-AapReconcile {
             if ($oldItems -cne (ConvertTo-AapJson $unresolved.ToArray())) {
                 Write-AapAtomic $Root 'unresolved.json' (ConvertTo-AapJson $u)
                 Write-AapCapLog $Root "unresolved: $(@($unresolved | ForEach-Object { "$($_.kind) $($_.name): $($_.reason)" }) -join '; ')"
+            }
+        }
+        # 4. Every live VM past the per-lease wall clock is flagged for the owner, never destroyed for it.
+        $destroying = @($actions | Where-Object { $_.action -ceq 'destroy' } | ForEach-Object { $_.reservation_id })
+        foreach ($r in @(Get-AapLive $doc | Where-Object { $_.backend -ceq 'hyperv-vm' -and $destroying -cnotcontains $_.reservation_id })) {
+            if (($nowDt - (ConvertFrom-AapTime $r.acquired_at)).TotalHours -ge $LeaseWallClockHours) {
+                $gh = 'status not read'
+                if ($broker.ContainsKey($r.reservation_id)) { $gh = $broker[$r.reservation_id] }
+                $flags.Add("slot $($r.slot) ($($r.reservation_id)) is past the $LeaseWallClockHours h lease wall clock in state $($r.state); GitHub reports its runner $gh; held, never destroyed for the wall clock")
             }
         }
         $data = [ordered]@{ Changes = $changes.ToArray(); Actions = $actions.ToArray(); Flags = $flags.ToArray(); Unresolved = $unresolved.ToArray() }

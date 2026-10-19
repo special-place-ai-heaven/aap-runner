@@ -82,6 +82,40 @@ Describe 'capacity folder trust' {
         (Get-AapAllocatorState -Root $root).Ok | Should -BeTrue
         Invoke-CapIcacls @((Join-Path $root 'allocator.lock'), '/grant', '*S-1-5-32-545:R')
         (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2').Detail | Should -BeLike '*allocator.lock grants S-1-5-32-545*'
+        Invoke-CapIcacls @((Join-Path $root 'allocator.lock'), '/remove:g', '*S-1-5-32-545')
+        Invoke-CapIcacls @((Join-Path $root 'allocator.json'), '/grant', '*S-1-5-32-545:RX')
+        (Get-AapAllocatorState -Root $root).Detail | Should -BeLike '*allocator.json grants S-1-5-32-545*'
+    }
+
+    It 'creates a missing capacity folder admin-only even below a parent that lets Users read' {
+        $parent = New-CapRoot
+        Invoke-CapIcacls @($parent, '/grant', '*S-1-5-32-545:(OI)(CI)RX')
+        $root = Join-Path $parent 'capacity'
+        (Initialize-AapAllocator -Root $root -HostInfo (New-CapHostInfo)).Ok | Should -BeTrue
+        $want = @('S-1-5-18', 'S-1-5-32-544', $script:UserSid) | Sort-Object
+        foreach ($path in @($root, (Join-Path $root 'allocator.json'))) {
+            $acl = Get-Acl -LiteralPath $path
+            $sids = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+            $sids | Should -Be $want -Because $path
+        }
+        (Get-Acl -LiteralPath $root).AreAccessRulesProtected | Should -BeTrue
+    }
+
+    It 'refuses relaxed trust for SYSTEM, below ProgramData, and when elevated outside the temp folder' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        Mock -ModuleName AapCapacity Get-AapProcessRole { 'system' }
+        (Get-AapAllocatorState -Root $root).Detail | Should -BeLike '*relaxed trust is refused for SYSTEM*'
+        Mock -ModuleName AapCapacity Get-AapProcessRole { 'elevated' }
+        (Get-AapAllocatorState -Root $root).Ok | Should -BeTrue
+        $outside = 'C:\aap-capacity-relaxed-probe-' + [guid]::NewGuid().ToString('n').Substring(0, 8)
+        (Initialize-AapAllocator -Root $outside -HostInfo (New-CapHostInfo)).Detail | Should -BeLike '*elevated process outside*'
+        Test-Path -LiteralPath $outside | Should -BeFalse
+        Mock -ModuleName AapCapacity Get-AapProcessRole { 'user' }
+        $pd = Join-Path $env:ProgramData ('aap-capacity-relaxed-probe-' + [guid]::NewGuid().ToString('n').Substring(0, 8))
+        $r = Initialize-AapAllocator -Root $pd -HostInfo (New-CapHostInfo)
+        $r.Reason | Should -Be 'untrusted_folder'
+        $r.Detail | Should -BeLike '*relaxed trust is for test folders only*'
+        Test-Path -LiteralPath $pd | Should -BeFalse
     }
 
     It 'refuses a folder that inherits Authenticated Users modify, as any folder under this scratch tree does' {

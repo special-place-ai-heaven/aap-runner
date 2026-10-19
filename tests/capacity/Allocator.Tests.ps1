@@ -152,6 +152,29 @@ Describe 'admission' {
     BeforeAll { Mock -ModuleName AapCapacity Get-AapUtcNow { $script:Now } }
     BeforeEach { Set-CapNow '2026-10-20T10:00:00Z' }
 
+    It 'takes profile names, states and ids exactly as written' {
+        { Get-AapVmName -Profile WINDOWS -Slot 1 -LeaseGeneration 1 -ReservationId 'r-0123456789abcdef' } | Should -Throw
+        { Get-AapVmName -Profile windows -Slot 1 -LeaseGeneration 1 -ReservationId "r-0123456789abcdef`n" } | Should -Throw
+        Get-AapVmName -Profile windows -Slot 1 -LeaseGeneration 1 -ReservationId 'r-0123456789abcdef' | Should -BeExactly 'aap-w-1-1-01234567'
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        { Request-AapReservation -Root $root -Profile LINUX -ImageGeneration 'legacy-manager-2' } | Should -Throw
+        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        { Set-AapSlotState -Root $root -ReservationId $res.reservation_id -LeaseGeneration $res.lease_generation -State Ready -VmId (New-CapVmId) } | Should -Throw
+        (Get-CapRes (Get-CapDoc $root) $res.reservation_id).state | Should -Be 'creating'
+    }
+
+    It 'echoes no control characters from rejected ids in its detail' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $r = Set-AapSlotState -Root $root -ReservationId $res.reservation_id -LeaseGeneration $res.lease_generation -State ready -VmId "evil`r`nstatus: ok"
+        $r.Reason | Should -Be 'bad_request'
+        $r.Detail | Should -Not -Match '[\r\n]'
+        $r.Detail | Should -BeLike '*evil  status: ok*'
+        $n = Set-AapSlotState -Root $root -ReservationId "r-forged`nline" -LeaseGeneration 1 -State ready
+        $n.Reason | Should -Be 'not_found'
+        $n.Detail | Should -Not -Match '[\r\n]'
+    }
+
     It 'persists the reservation, generation first, before it returns the derived VM and runner name' {
         $root = New-CapAllocator
         $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100
@@ -467,6 +490,40 @@ Describe 'heartbeats and quarantine' {
         (Complete-AapTeardown -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -Proof (New-CapProof 'vm')).Ok | Should -BeTrue
     }
 
+    It 'a heartbeat quarantine goes to deleting only through reconcile, never on a provider call' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        $w = New-CapVm $root -Busy
+        Add-CapSeconds 100
+        [void](Invoke-AapReconcile -Root $root)
+        $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State deleting
+        $r.Reason | Should -Be 'illegal_edge'
+        (Get-CapRes (Get-CapDoc $root) $w.reservation_id).state | Should -Be 'quarantined'
+    }
+
+    It 'a credential-shaped hostile reason is withheld, and the quarantine is still recorded' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        $w = New-CapVm $root -Busy
+        $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'guest replied SYNTHETIC-JIT-MARKER'
+        $r.Ok | Should -BeTrue
+        $r.Detail | Should -BeLike '*reason withheld*'
+        $q = Get-CapRes (Get-CapDoc $root) $w.reservation_id
+        $q.quarantine_kind | Should -Be 'hostile_guest'
+        $q.quarantine_reason | Should -Be 'reason withheld: it looked like a credential'
+        (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
+    }
+
+    It 'flags every live VM past the lease wall clock and destroys none for it' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        $w = New-CapVm $root -Busy
+        Add-CapSeconds (7 * 3600)
+        [void](Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning)
+        $r = Invoke-AapReconcile -Root $root
+        @($r.Flags).Count | Should -Be 1
+        $r.Flags[0] | Should -BeLike 'slot 1 *wall clock in state busy*status not read*never destroyed*'
+        @($r.Actions).Count | Should -Be 0
+        (Get-CapRes (Get-CapDoc $root) $w.reservation_id).state | Should -Be 'busy'
+    }
+
     It 'a heartbeat or crash quarantine can still turn hostile, and a heartbeat never lifts that' {
         $root = New-CapAllocator -Linux 1 -Windows 2
         $a = New-CapVm $root -Busy
@@ -693,6 +750,43 @@ Describe 'legacy pool' {
 
 Describe 'reconcile repairs' {
     BeforeAll { Mock -ModuleName AapCapacity Get-AapUtcNow { $script:Now } }
+
+    It 'an inventory callback that returns <Name> changes nothing' -ForEach @(
+        @{ Name = 'nothing'; Reason = 'invalid_inventory'; Inv = { $null } }
+        @{ Name = 'an empty hashtable'; Reason = 'invalid_inventory'; Inv = { @{} } }
+        @{ Name = 'no vms'; Reason = 'invalid_inventory'; Inv = { @{ folders = @(); journaled = @() } } }
+        @{ Name = 'no folders'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(); journaled = @() } } }
+        @{ Name = 'no journaled'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(); folders = @() } } }
+        @{ Name = 'vms as a string'; Reason = 'invalid_inventory'; Inv = { @{ vms = 'none'; folders = @(); journaled = @() } } }
+        @{ Name = 'folders as a hashtable'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(); folders = @{}; journaled = @() } } }
+        @{ Name = 'journaled as null'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(); folders = @(); journaled = $null } } }
+        @{ Name = 'two results'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(); folders = @(); journaled = @() }; @{ vms = @(); folders = @(); journaled = @() } } }
+        @{ Name = 'a throw'; Reason = 'failed'; Inv = { throw 'Get-VM failed' } }
+    ) {
+        Set-CapNow '2026-10-20T10:00:00Z'
+        $root = New-CapAllocator -Linux 1 -Windows 2
+        $w = New-CapVm $root -Busy
+        $c = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $rev = (Get-CapDoc $root).revision
+        $r = Invoke-AapReconcile -Root $root -Inventory $Inv
+        $r.Status | Should -Be 'error'
+        $r.Reason | Should -Be $Reason
+        $doc = Get-CapDoc $root
+        $doc.revision | Should -Be $rev
+        (Get-CapRes $doc $w.reservation_id).state | Should -Be 'busy'
+        (Get-CapRes $doc $c.reservation_id).state | Should -Be 'creating'
+        (Get-CapRes $doc $c.reservation_id).teardown_proof | Should -BeNullOrEmpty
+    }
+
+    It 'takes an inventory object as well as a hashtable' {
+        Set-CapNow '2026-10-20T10:00:00Z'
+        $root = New-CapAllocator -Linux 1 -Windows 2
+        $w = New-CapVm $root -Busy
+        $name = Get-AapVmName -Profile windows -Slot $w.slot -LeaseGeneration $w.lease_generation -ReservationId $w.reservation_id
+        $r = Invoke-AapReconcile -Root $root -Inventory { [pscustomobject]@{ vms = @([pscustomobject]@{ name = $name; vm_id = $w.vm_id; cpus = 9; mem_gib = 28 }); folders = @($w.reservation_id); journaled = @($w.reservation_id) } }.GetNewClosure()
+        $r.Ok | Should -BeTrue
+        (Get-CapRes (Get-CapDoc $root) $w.reservation_id).state | Should -Be 'busy'
+    }
     BeforeEach { Set-CapNow '2026-10-20T10:00:00Z' }
 
     It 'frees a reservation that never reached create (no VM, folder or journal) with a never_registered proof' {

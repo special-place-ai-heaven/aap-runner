@@ -42,9 +42,17 @@ tray yet.
   - The ancestor rule of `Get-AapAncestorProblem`, up to the drive root.
   - No reparse point on the folder, above it, or at any file name the module uses.
   - A fixed local drive and a normalized absolute path.
+- `Initialize-AapAllocator` creates a missing folder with a protected DACL. Only SYSTEM and
+  Administrators get full control, and nothing is inherited. The data folder above grants the
+  installing user read, so a plain `New-Item` would not do.
 - `-RelaxedTrustForTests` exists for tests only. It trusts the current user and skips the
   ancestor ACL check. Every other check stays. It prints a warning and writes a log line, and
   every result reports `TrustRelaxed`. Production code must never pass it.
+  - It is refused for SYSTEM, for any folder below ProgramData, Program Files or Windows, and in
+    an elevated process outside the temp folder. Hosted CI runs the tests elevated, under TEMP.
+- `Detail`, the reconcile `Flags` and unknown VM names carry no control or line-separator
+  characters. Echoed ids, names and broker answers have them replaced by spaces, because the
+  text reaches the status file and the tray.
 - The crash tests use a fault hook, `Invoke-AapFault`. It does nothing unless the module-private
   variable `$script:Fault` names the point. No parameter, environment variable or file sets it;
   only code running inside the module's scope can. It stays as it is.
@@ -73,7 +81,8 @@ tray yet.
 | error | `untrusted_folder` | The folder, an ancestor or a state file failed the trust checks. `Detail` names it |
 | error | `lock_timeout`, `lock_failed` | The lock was busy past the wait, or could not be opened |
 | error | `not_initialized`, `invalid_state` | No state, or a state that fails the contract, is unreadable, or has a revision lower than one already applied |
-| error | `failed` | Unexpected exception. `Detail` has the message |
+| error | `failed` | Unexpected exception, or an `-Inventory` callback that threw. `Detail` has the message |
+| error | `invalid_inventory` | The `-Inventory` callback did not return one object with the lists `vms`, `folders` and `journaled`. Nothing changed |
 | refused | `count` | The profile already has `count` admitted runners, or its count is 0 |
 | refused | `ceiling` | All five slots hold live reservations, draining and quarantined ones included |
 | refused | `share` | Over the per-runner share or the profile cap, VM memory overhead included |
@@ -97,7 +106,8 @@ tray yet.
 1. **Import and deploy.** Import `capacity\AapCapacity.psm1` from the supervisor folder. P19
    copies `supervisor\capacity\` beside `aap-runner-supervisor.ps1`.
 2. **Create the folder at install (P19), not on first use.** Use owner Administrators, full
-   control for SYSTEM and Administrators, inheritance off, and no entry for anyone else. The
+   control for SYSTEM and Administrators, inheritance off, and no entry for anyone else.
+   `Initialize-AapAllocator` creates a missing folder the same way. The
    module refuses read for any other SID, the operator included. A reader could open
    `allocator.lock` with no sharing and make every allocator call wait 30 s and fail. It could
    also hold `allocator.json` open and make the replace fail. The tray reads `status.v5.json`
@@ -145,8 +155,10 @@ tray yet.
 7. **Reconcile every 10 minutes.**
    - `Actions` with `destroy`: the provider destroys, then calls `Complete-AapTeardown`.
    - `Actions` with `replay`: the provider replays its journal.
-   - `Flags`: busy runners past `lease_wall_clock_hours`. Show them in the `status.v5.json`
-     `detail`.
+   - `Flags`: every live VM past `lease_wall_clock_hours`, in any state. It is held, and never
+     destroyed for that. Show the flags in the `status.v5.json` `detail`.
+   - `error`/`invalid_inventory` or `failed`: the inventory was refused or threw, and nothing
+     changed. Show it in `detail` and retry at the next tick.
 8. **Status mapping.**
    - `status.v5.json` `capacity` comes from `Get-AapAllocatorState`: 5 slots, `UsedSlots`,
      `FreeSlots`, reserve, share mode and host.
@@ -181,10 +193,19 @@ tray yet.
    `Update-AapHeartbeat -ReservationId -LeaseGeneration [-JobRunning]`. A heartbeat quarantine
    returns to `busy` or `ready`. `ignored`/`stale_generation` is a late reply: log it, never act
    on it.
+   - The host-side channel to that VM binds a heartbeat to its reservation. Never take a
+     reservation id from the guest payload.
+   - `-JobRunning` comes from the broker's job assignment, never from the guest.
+   - A heartbeat quarantine goes to `deleting` only through `Invoke-AapReconcile`, on the
+     broker's status. `Set-AapSlotState` refuses that edge with `illegal_edge`.
 5. **Quarantines.**
-   - Hostile reply: `-State quarantined -QuarantineKind hostile_guest -Reason ...`, then destroy.
-     This works from any guest state, including a `heartbeat` or `crash` quarantine. The
-     quarantine is final, and heartbeats are ignored (`quarantine_final`).
+   - Hostile reply: `-State quarantined -QuarantineKind hostile_guest -Reason <fixed code>`,
+     then destroy. This works from any guest state, including a `heartbeat` or `crash`
+     quarantine. The quarantine is final, and heartbeats are ignored (`quarantine_final`).
+   - Pass a fixed reason code, such as `nonce_mismatch` or `protocol_violation`, never guest
+     text. A credential-shaped reason is stored as "reason withheld" and the quarantine is
+     still recorded.
+   - Destroy a hostile VM even when the allocator call returns an error.
    - `busy -> deleting` is not offered. A hostile reply goes through `quarantined`. A busy job
      otherwise ends through `collecting`.
    - Teardown failed after the retries: from `deleting`, `-QuarantineKind teardown_failed`.
@@ -196,11 +217,16 @@ tray yet.
    - `vms` lists every VM named `^aap-(w|l)-[1-5]-`.
    - `folders` lists the ids that own a `clones\` or `scratch\` folder.
    - `journaled` lists the ids with any journal record.
+   - All three keys are required, each a list, even when empty. A missing key, a non-list or
+     more than one result returns `error`/`invalid_inventory` and changes nothing.
    - **Throw on any listing error.** Never return a partial list. Reconcile treats a returned
      inventory as complete. A VM missing from it is moved to `deleting`, and a `creating`
      reservation without a VM, folder or journal is reconciled as never registered. A throw makes
      the whole reconcile return `error` and write nothing.
-8. **`-BrokerStatus`** is `param($Reservation)` and returns `@{ status = 'online' | 'offline' |
+8. **Keep the `clones` and `scratch` roots admin-only**, with the same rule as the capacity
+   folder. An unknown folder there blocks admission (`unresolved_unknown`). So anyone who can
+   create one can stop all VM admission.
+9. **`-BrokerStatus`** is `param($Reservation)` and returns `@{ status = 'online' | 'offline' |
    'absent'; busy = $true | $false; job_ended = $true | $false }`, read with the broker's
    read-only `status_request`. Return `$null`, or throw, when the broker is unavailable.
    Destroy happens only for `offline` or `absent` with `busy = $false`, or `job_ended = $true`.
@@ -276,3 +302,7 @@ tray yet.
    - A heartbeat quarantine cannot leave admission, so the resize waits (`resize_waits`).
 6. **A larger reserve** that the live reservations cannot hold is refused (`pool_over_live`)
    until enough slots are reconciled, for example after a pause.
+7. **Heartbeat quarantine of `draining` and `collecting` VMs.** Only `ready` and `busy` are
+   heartbeat-quarantined today, as the contract says. A draining or collecting VM that stops
+   answering stays as it is until the provider moves it on. Quarantining those states too would
+   change the contract. It is recorded for P10 and P02.2 and not implemented here.
