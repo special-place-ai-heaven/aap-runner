@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/allocator.schema.json",
   "title": "Host-wide runner slot allocator state (C:\\ProgramData\\aap-runner\\capacity\\allocator.json)",
-  "x-contract-version": 1,
+  "x-contract-version": 2,
   "x-owner": "P09 (writer: supervisor capacity module); consumers P10, P11, P12, P16, P20, P22",
   "type": "object",
   "additionalProperties": false,
@@ -21,7 +21,7 @@
   ],
   "properties": {
     "schema": {
-      "const": 1
+      "const": 2
     },
     "revision": {
       "type": "integer",
@@ -41,7 +41,7 @@
       "required": [
         "cpu_cores",
         "mem_gib",
-        "disk_gib",
+        "volumes",
         "io_mbps",
         "control_distro_mem_gib",
         "measured_at"
@@ -57,17 +57,64 @@
           "minimum": 1,
           "maximum": 4096
         },
-        "disk_gib": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 1048576,
-          "description": "Admission budget on the image root: measured free space minus replacement and staging headroom."
+        "volumes": {
+          "type": "array",
+          "maxItems": 4,
+          "description": "One entry per volume that holds a storage tier, written only for a storage layout that passed every trust check; empty while storage is unconfigured or failing (no VM admission).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "volume_guid",
+              "tiers",
+              "available_gib",
+              "floor_gib",
+              "held_gib"
+            ],
+            "properties": {
+              "volume_guid": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "tiers": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "base",
+                    "clone",
+                    "scratch",
+                    "staging"
+                  ]
+                }
+              },
+              "available_gib": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1048576,
+                "description": "Measured at each admission: free space plus what live reservations already hold on this volume, so each cap counts once."
+              },
+              "floor_gib": {
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 4096
+              },
+              "held_gib": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1048576,
+                "description": "Replacement and staging headroom held while a generation is built or lands on this volume."
+              }
+            }
+          }
         },
         "io_mbps": {
           "type": "integer",
           "minimum": 0,
           "maximum": 1000000,
-          "description": "Measured image-root throughput; 0 = not measured, then every reservation's io_mbps must be 0 (no IO cap) and VM admission is refused by P09."
+          "description": "Measured throughput of the slowest volume holding the clone or scratch tier; 0 = not measured, then every reservation's io_mbps must be 0 (no IO cap) and VM admission is refused by P09."
         },
         "measured_at": {
           "$ref": "#/$defs/time"
@@ -254,7 +301,8 @@
         "cpus",
         "mem_gib",
         "mem_overhead_mib",
-        "disk_gib",
+        "clone_gib",
+        "scratch_gib",
         "io_mbps",
         "vm_id",
         "runner_name",
@@ -342,10 +390,17 @@
           "maximum": 65536,
           "description": "Measured VM memory beyond mem_gib (budget boot_mem_overhead_mib); counts against the profile share."
         },
-        "disk_gib": {
+        "clone_gib": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 4096
+          "maximum": 4096,
+          "description": "The generation's clone_gib_max, counted on the clone tier's volume; 0 for legacy."
+        },
+        "scratch_gib": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096,
+          "description": "The generation's scratch_gib_max, counted on the scratch tier's volume; 0 for legacy."
         },
         "io_mbps": {
           "type": "integer",

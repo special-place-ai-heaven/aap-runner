@@ -1,10 +1,13 @@
-# Status and settings contract (settings schema 3 and status schema 5 drafts)
+# Status and settings contract (settings schema 3 and status schema 5 drafts, revision 2)
 
 Owners: **P12** (supervisor side, `supervisor/README.md`, both-side tests) and **P20** (tray).
 Readers: P19, P22. Schemas: [`settings-v3.schema.json`](settings-v3.schema.json),
 [`status-v5.schema.json`](status-v5.schema.json), [`tray-windows-choice.schema.json`](tray-windows-choice.schema.json).
 These are DRAFTS frozen for shape: P12 lands them, updates the versioned contract docs
 (`supervisor/README.md`, `crates/tray/README.md`) and both sides' tests in one PR, as CLAUDE.md requires.
+
+Revision 2 (P02.2, 2026-10-20): `status.v5.json` reports the storage tiers; settings schema 3 is
+unchanged and carries no path.
 
 ## What exists today (unchanged by P02)
 
@@ -61,6 +64,29 @@ is re-validated before it is written, as today.
 | the generation reached its evaluation expiry: the catalog moves it to `quarantined` (never `active`) and admissions stop | `quarantined` |
 | the profile's last generation was `quarantined` and no `active` one exists; no admissions | `quarantined` |
 
+## Storage in status schema 5 (DRAFT, revision 2)
+
+`status.v5.json` has a `storage` object built from the admin-only storage document
+(backend-lifecycle.md, Storage tiers): `state`, `detail`, `volume_floor_gib` and, per tier
+(`base`, `clone`, `scratch`, `staging`), the root, the free GiB of the volume that holds it and the
+tier state. `unconfigured` means there is no storage document: no tiers and no floor. Otherwise all
+four tiers are listed (`staging` with its effective root) and the overall state is the worst tier
+state, in the order `missing`, `untrusted`, `low`, `ok`:
+
+| Tier state | Meaning | Effect |
+|---|---|---|
+| `ok` | trust checks pass; free space at or above the floor | none |
+| `low` | trust checks pass; free space below the floor | no new VM admission; running VMs continue within their admitted caps |
+| `untrusted` | an owner, ACL, reparse, ancestor, drive-type or volume check fails | VM profiles disabled |
+| `missing` | the root or its recorded volume is absent; free space is null | VM profiles disabled |
+
+While `storage.state` is not `ok`, every `hyperv-vm` profile reports `available: false` with the
+reason. The tray shows the roots and free space and never changes them: the roots change only
+through the elevated helper (a P19 verb, offered by the tray in P20) with the existing UAC prompt.
+**Settings schema 3 carries no path.** `inbox\settings.json` is user-writable and the supervisor
+reads only validated numbers and fixed words from it (`supervisor/README.md`); a root there would
+let any process of the operator steer where the elevated supervisor writes and deletes.
+
 ## Supervisor states and control distro uptime (DECIDED, owner 2026-10-19)
 
 The WSL control distro and its keep-alive child run whenever desired is on and
@@ -85,4 +111,6 @@ exit" holds only when desired is off or both counts are 0. P12 writes this into
 
 Settings: 3 + 3, 0 + 0, schema 4, a string count, reserve 5, shares summing to 95, a share for a
 zero count. Status: six slots, a Windows slot labelled Linux, a non-GitHub run URL, schema 6, a
-supervisor that stops accepting schema 2. Tray-local: count 5, schema 2, a string, a missing count.
+supervisor that stops accepting schema 2, a VM profile available while storage is untrusted, a
+tier below the floor reported `ok`, and a UNC root. Tray-local: count 5, schema 2, a string, a
+missing count.

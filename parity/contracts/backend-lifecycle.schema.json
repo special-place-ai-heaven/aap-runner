@@ -1,15 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/backend-lifecycle.schema.json",
-  "title": "Backend provider journal record (one JSON line per record) and measured disk budget",
-  "x-contract-version": 1,
-  "x-owner": "P10 (Windows provider), P11 (Linux provider); budgets measured by P06/P07; consumers P09, P12, P19, P22, P25",
+  "title": "Backend provider journal record (one JSON line per record), measured per-tier disk budget, and the storage tier configuration",
+  "x-contract-version": 2,
+  "x-owner": "P10 (Windows provider), P11 (Linux provider); budgets measured by P06/P07; storage document written by the P19 elevated helper; consumers P09, P12, P19, P20, P22, P25",
   "oneOf": [
     {
       "$ref": "#/$defs/op"
     },
     {
       "$ref": "#/$defs/budget"
+    },
+    {
+      "$ref": "#/$defs/storage"
     }
   ],
   "$defs": {
@@ -32,10 +35,11 @@
     "relpath": {
       "type": "string",
       "maxLength": 200,
-      "pattern": "^(base|clones|scratch)/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(vhdx|avhdx|iso)$",
+      "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(vhdx|avhdx|iso)$",
       "not": {
         "pattern": "(^|/)\\.\\.?(/|$)"
-      }
+      },
+      "description": "Relative to the root of the disk role's tier: base_ref -> base_root, os_diff and seed -> clone_root, scratch -> scratch_root."
     },
     "op": {
       "type": "object",
@@ -58,7 +62,7 @@
       ],
       "properties": {
         "schema": {
-          "const": 1
+          "const": 2
         },
         "kind": {
           "const": "op"
@@ -188,44 +192,6 @@
                   "properties": {
                     "sha256": {
                       "$ref": "#/$defs/sha256"
-                    },
-                    "path": {
-                      "pattern": "^base/"
-                    }
-                  }
-                }
-              },
-              {
-                "if": {
-                  "properties": {
-                    "role": {
-                      "enum": [
-                        "os_diff",
-                        "seed"
-                      ]
-                    }
-                  }
-                },
-                "then": {
-                  "properties": {
-                    "path": {
-                      "pattern": "^clones/"
-                    }
-                  }
-                }
-              },
-              {
-                "if": {
-                  "properties": {
-                    "role": {
-                      "const": "scratch"
-                    }
-                  }
-                },
-                "then": {
-                  "properties": {
-                    "path": {
-                      "pattern": "^scratch/"
                     }
                   }
                 }
@@ -280,7 +246,9 @@
         "measured_at",
         "base_gib",
         "clone_peak_gib",
+        "clone_gib_max",
         "scratch_peak_gib",
+        "scratch_gib_max",
         "staging_gib",
         "replacement_gib",
         "rollback_retained_generations",
@@ -288,7 +256,7 @@
       ],
       "properties": {
         "schema": {
-          "const": 1
+          "const": 2
         },
         "kind": {
           "const": "budget"
@@ -326,10 +294,22 @@
           "minimum": 1,
           "maximum": 4096
         },
+        "clone_gib_max": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096,
+          "description": "Per-reservation cap on the clone tier volume (differencing disk, VM files, seed); at least the measured peak. Admission counts it."
+        },
         "scratch_peak_gib": {
           "type": "integer",
           "minimum": 0,
           "maximum": 4096
+        },
+        "scratch_gib_max": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096,
+          "description": "Per-reservation cap on the scratch tier volume (the scratch VHDX maximum size plus its metadata); at least the measured peak. Admission counts it."
         },
         "staging_gib": {
           "type": "integer",
@@ -352,6 +332,84 @@
           "maximum": 65536
         }
       }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "volume_floor_gib",
+        "roots"
+      ],
+      "properties": {
+        "schema": {
+          "const": 2
+        },
+        "kind": {
+          "const": "storage"
+        },
+        "volume_floor_gib": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 4096,
+          "description": "Free space every volume holding a tier keeps; admission never plans below it."
+        },
+        "roots": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base_root",
+            "clone_root",
+            "scratch_root",
+            "staging_root"
+          ],
+          "properties": {
+            "base_root": {
+              "$ref": "#/$defs/root"
+            },
+            "clone_root": {
+              "$ref": "#/$defs/root"
+            },
+            "scratch_root": {
+              "$ref": "#/$defs/root"
+            },
+            "staging_root": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/root"
+                }
+              ],
+              "description": "null means <base_root>\\staging."
+            }
+          }
+        }
+      }
+    },
+    "root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "volume_guid"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/root_path"
+        },
+        "volume_guid": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "root_path": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^[A-Za-z]:(\\\\[A-Za-z0-9_()-]([A-Za-z0-9 ._()-]*[A-Za-z0-9_()-])?)+$",
+      "description": "Absolute folder on a drive-letter volume, at least one level below the volume root. No UNC or device path, no relative path, no `.` or `..` component, no trailing dot or space, no `~` short name, ASCII letters, digits, space, `.`, `_`, `(`, `)` and `-` only."
     }
   }
 }

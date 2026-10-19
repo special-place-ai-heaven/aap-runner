@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/image-catalog.schema.json",
-  "title": "Immutable image generation catalog (<image_root>\\catalog.json, Administrators/SYSTEM only)",
-  "x-contract-version": 1,
+  "title": "Immutable image generation catalog (<base_root>\\catalog.json, Administrators/SYSTEM only)",
+  "x-contract-version": 2,
   "x-owner": "P21 (assembly, catalog writer), P25 (promotion/rollback operations); consumers P06, P07, P10, P11, P12, P19, P20, P24",
   "type": "object",
   "additionalProperties": false,
@@ -15,7 +15,7 @@
   ],
   "properties": {
     "schema": {
-      "const": 1
+      "const": 2
     },
     "revision": {
       "type": "integer",
@@ -193,10 +193,11 @@
               "path": {
                 "type": "string",
                 "maxLength": 200,
-                "pattern": "^base/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$",
+                "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$",
                 "not": {
                   "pattern": "(^|/)\\.\\.?(/|$)"
-                }
+                },
+                "description": "Relative to base_root; validate.py requires the generation's own folder <generation_id>/."
               },
               "bytes": {
                 "type": "integer",

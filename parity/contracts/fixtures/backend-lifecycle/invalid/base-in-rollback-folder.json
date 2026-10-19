@@ -1,7 +1,7 @@
 {
-  "expect": "does not match pattern ^(base|clones|scratch)/",
+  "expect": "disk base_ref: path must be exactly win25-vs2026-x64/20261007.264.1-aap.1/base.vhdx",
   "instance": {
-    "schema": 1,
+    "schema": 2,
     "kind": "op",
     "reservation_id": "r-1a2b3c4d000000b1",
     "lease_generation": 3,
@@ -24,12 +24,12 @@
       },
       {
         "role": "os_diff",
-        "path": "clones/r-1a2b3c4d000000b1/os.avhdx",
+        "path": "r-1a2b3c4d000000b1/os.avhdx",
         "sha256": null
       },
       {
         "role": "scratch",
-        "path": "scratch/r-1a2b3c4d000000b1/scratch.vhdx",
+        "path": "r-1a2b3c4d000000b1/scratch.vhdx",
         "sha256": null
       }
     ],

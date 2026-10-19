@@ -1,8 +1,12 @@
-# Allocator contract (version 1)
+# Allocator contract (version 2)
 
 Owner: **P09** writes it. Readers: P10, P11, P12, P16, P20, P22. Schema:
 [`allocator.schema.json`](allocator.schema.json). Fixtures: `fixtures/allocator/`.
 Architecture: [ARCHITECTURE.md section 2](../../docs/parity/ARCHITECTURE.md#2-allocator-and-capacity-contract-allocatormd).
+
+Revision 2 (P02.2, 2026-10-20): `allocator.json` schema 2 replaces the single image-root disk
+budget with per-volume budgets for the storage tiers (`host.volumes`, reservation `clone_gib` and
+`scratch_gib`); see backend-lifecycle.md, Storage tiers.
 
 ## File
 
@@ -21,7 +25,7 @@ could squat it.
 | Field | Meaning |
 |---|---|
 | `max_slots` | always 5: every registered, warm, listening, busy or cleanup-uncertain runner of every backend counts |
-| `host` | measured logical CPUs, GiB of RAM, the always-on WSL control VM's resident memory (`control_distro_mem_gib`, taken off the pool first), the image-root disk admission budget (`disk_gib`: free space on `D:\aap-runner\images` minus replacement and staging headroom from the budget records) and image-root throughput (`io_mbps`, 0 = not measured) |
+| `host` | measured logical CPUs, GiB of RAM, the always-on WSL control VM's resident memory (`control_distro_mem_gib`, taken off the pool first), `volumes` (one entry per volume that holds a storage tier: `volume_guid`, `tiers`, `available_gib` = free space plus what live reservations already hold there, measured at each admission, `floor_gib` = the storage document's `volume_floor_gib`, `held_gib` = replacement and staging headroom while a build or replacement is planned there; written only for a storage layout that passed every trust check, empty otherwise) and `io_mbps` (measured throughput of the slowest volume holding the clone or scratch tier, 0 = not measured) |
 | `host_reserve_percent` | 10..90, default 10; 10 is the owner-confirmed minimum (2026-10-19). Never allocated |
 | `share_mode` | `even`: each runner gets `floor(pool / (linux + windows))` where `pool = floor(host * (100 - reserve) / 100)`, minus `control_distro_mem_gib` for memory (today's tray rule, with the control VM paid first). `per_profile`: profile cap `floor(host * share / 100)`, each runner `floor(cap / count)` |
 | `profiles.linux/windows` | `count` 0..5, `share_percent` (null in `even`), `backend`, `active_generation`. The Linux `backend` mirrors settings `linux_backend` (default `wsl-legacy`, flipped only by P27) |
@@ -33,7 +37,8 @@ Reservation: `reservation_id` (`r-` + 16 hex, random), `slot` 1..5, `profile`, `
 (`wsl-legacy` or `hyperv-vm`), `image_generation` (`legacy-<manager version>` or a catalog id),
 `lease_generation`, `state`, `idempotency_key` = `<reservation_id>/<lease_generation>`, times,
 `heartbeat_at`, the reserved `cpus`, `mem_gib`, `mem_overhead_mib` (the generation's measured
-`boot_mem_overhead_mib`, 0 for legacy), `disk_gib`, `io_mbps`, `vm_id`, `runner_name` (for a VM:
+`boot_mem_overhead_mib`, 0 for legacy), `clone_gib` and `scratch_gib` (the generation's
+`clone_gib_max` and `scratch_gib_max`, 0 for legacy), `io_mbps`, `vm_id`, `runner_name` (for a VM:
 exactly the VM name `aap-<w|l>-<slot>-<lease_generation>-<first 8 hex of reservation_id>`),
 `cleanup_uncertain`, `quarantine_kind` (`heartbeat`, `hostile_guest`, `teardown_failed`,
 `unknown_vm`, `crash`), `quarantine_reason`, `teardown_proof`.
@@ -53,9 +58,13 @@ exactly the VM name `aap-<w|l>-<slot>-<lease_generation>-<first 8 hex of reserva
    `mem_gib + ceil(mem_overhead_mib / 1024)` as its memory: VM overhead is paid from the profile
    share, never from the host reserve. The admitted sum fits the profile cap.
 5. Every live reservation, admitted or not, counts against the pool (CPU and memory with
-   overhead), the image-root disk budget and the IO budget (`floor(host.io_mbps * (100 - reserve) / 100)`;
+   overhead), the disk budget of each volume and the IO budget (`floor(host.io_mbps * (100 - reserve) / 100)`;
    with `io_mbps` 0 no reservation may reserve IO, and P09 refuses VM admission until it is
-   measured). Admission of one profile therefore waits for the other profile's draining overhang.
+   measured). Disk: on each volume that holds the clone or scratch tier, the sum over live
+   reservations of `clone_gib` (if it holds the clone tier) and `scratch_gib` (if it holds the
+   scratch tier) fits `available_gib - floor_gib - held_gib`. Free space that shrinks between
+   admissions shows as tier state `low` in `status.v5.json`, which stops further VM admission.
+   Admission of one profile therefore waits for the other profile's draining overhang.
 6. `per_profile`: `linux_share + windows_share + reserve = 100`, and a profile has share 0 exactly
    when its count is 0. `even`: shares are null.
 7. A `hyperv-vm` reservation exists only when `legacy_adopted` is true. Windows is always `hyperv-vm`.
@@ -68,6 +77,10 @@ exactly the VM name `aap-<w|l>-<slot>-<lease_generation>-<first 8 hex of reserva
     `true` (broker release), `github-removed` (ephemeral runner removed after its job, confirmed by
     `release_request` answering `already_gone`) or `never_registered` (create or boot failed before
     any lease).
+11. Each volume is listed once and each tier is on at most one volume. A live `hyperv-vm`
+    reservation needs the base, clone and scratch tiers in `host.volumes`, so VM admission requires
+    a storage layout that passed its trust checks. Legacy reservations reserve no VM disk
+    (`clone_gib` and `scratch_gib` 0); the legacy work disk keeps its own floor in the manager.
 
 ## State machine and heartbeat
 
@@ -110,7 +123,7 @@ Supervisor states).
 ## Reconcile
 
 At supervisor start and every 10 minutes: list Hyper-V VMs whose name matches
-`^aap-(w|l)-[1-5]-` and the folders under `D:\aap-runner\images\clones` and `\scratch`, join them
+`^aap-(w|l)-[1-5]-` and the reservation folders under `clone_root` and `scratch_root`, join them
 with reservations and journals. Unknown VM or folder: quarantine it (kind `unknown_vm`) against a
 free slot if one exists, otherwise refuse new admissions until it is resolved; never adopt it as
 healthy and never delete it without a journal entry that names it. A reservation without its VM:
@@ -122,11 +135,13 @@ Valid: Linux 2 / Windows 2 with slot 5 heartbeat-quarantined, and the same after
 `busy`; the owner example (2 Windows 30 %, 3 Linux 60 %, 10 %), legacy-only even shares after
 adoption with a reconciled legacy slot, a heartbeat quarantine holding its slot beside a VM
 reconciled as `never_registered`, Windows 2 -> 0 with slot 4's job still running (draining), and
-even 3L+2W -> 4L+1W while a Windows VM drains (the fourth Linux slot waits).
+even 3L+2W -> 4L+1W while a Windows VM drains (the fourth Linux slot waits), and the owner example
+with base and staging, clones and scratch on three volumes.
 
 Invalid: a Windows admission in slot 3 beside the heartbeat-quarantined slot 5, sixth live reservation, duplicate slot, VM before legacy adoption, shares that give away
 the reserve, reserve under 10, Linux 5 plus Windows 2, a runner over its share, VM memory overhead
 over the share, Linux taking its new share before Windows finished draining, disk budget exceeded,
 IO reserved while unmeasured, the control VM's memory pushing the pool over, stale lease generation, a runner name that is not the VM name, a
 quarantine without kind, an admission on the wrong backend, reconciled without proof, a legacy
-proof on a VM.
+proof on a VM, the clone volume of three over its budget, a VM without storage tiers, a tier on two
+volumes, a volume listed twice, and a legacy reservation that reserves VM disk.

@@ -1,0 +1,192 @@
+{
+  "expect": "tier base is below the floor but reported ok",
+  "instance": {
+    "schema": 5,
+    "state": "running",
+    "updated": "2026-10-19T18:00:00Z",
+    "detail": "",
+    "settings_schemas": [
+      2,
+      3
+    ],
+    "applied_settings_schema": 3,
+    "capacity": {
+      "max_slots": 5,
+      "used_slots": 5,
+      "free_slots": 0,
+      "host_reserve_percent": 10,
+      "share_mode": "per_profile",
+      "host": {
+        "cpus": 32,
+        "mem_gib": 96
+      }
+    },
+    "profiles": [
+      {
+        "profile": "linux",
+        "os": "Linux",
+        "backend": "wsl-legacy",
+        "count": 3,
+        "share_percent": 60,
+        "per_runner": {
+          "cpus": 6,
+          "mem_gib": 19
+        },
+        "profile_cap": {
+          "cpus": 19,
+          "mem_gib": 57
+        },
+        "image_generation": "legacy-manager-2",
+        "generation_state": "active",
+        "cache": {
+          "state": "direct",
+          "detail": "zccache not yet qualified for the legacy pool"
+        },
+        "available": true,
+        "unavailable_reason": ""
+      },
+      {
+        "profile": "windows",
+        "os": "Windows",
+        "backend": "hyperv-vm",
+        "count": 2,
+        "share_percent": 30,
+        "per_runner": {
+          "cpus": 4,
+          "mem_gib": 14
+        },
+        "profile_cap": {
+          "cpus": 9,
+          "mem_gib": 28
+        },
+        "image_generation": "win25-vs2026-x64/20261007.264.1-aap.1",
+        "generation_state": "active",
+        "cache": {
+          "state": "qualified",
+          "detail": "rustc-wrapper qualified; cl/link direct"
+        },
+        "available": true,
+        "unavailable_reason": ""
+      }
+    ],
+    "slots": [
+      {
+        "slot": 1,
+        "profile": "linux",
+        "os": "Linux",
+        "backend": "wsl-legacy",
+        "lifecycle": "busy",
+        "image_generation": "legacy-manager-2",
+        "job": "build",
+        "repo": "special-place-ai-heaven/aap-runner",
+        "run_url": "https://github.com/special-place-ai-heaven/aap-runner/actions/runs/123",
+        "job_url": null,
+        "started_at": "2026-10-19T18:00:00Z",
+        "cpu_cores": 2.5,
+        "mem_gib": 6.0
+      },
+      {
+        "slot": 2,
+        "profile": "linux",
+        "os": "Linux",
+        "backend": "wsl-legacy",
+        "lifecycle": "ready",
+        "image_generation": "legacy-manager-2",
+        "job": "",
+        "repo": "",
+        "run_url": "",
+        "job_url": null,
+        "started_at": null,
+        "cpu_cores": 0.1,
+        "mem_gib": 0.4
+      },
+      {
+        "slot": 3,
+        "profile": "linux",
+        "os": "Linux",
+        "backend": "wsl-legacy",
+        "lifecycle": "ready",
+        "image_generation": "legacy-manager-2",
+        "job": "",
+        "repo": "",
+        "run_url": "",
+        "job_url": null,
+        "started_at": null,
+        "cpu_cores": 0.1,
+        "mem_gib": 0.4
+      },
+      {
+        "slot": 4,
+        "profile": "windows",
+        "os": "Windows",
+        "backend": "hyperv-vm",
+        "lifecycle": "busy",
+        "image_generation": "win25-vs2026-x64/20261007.264.1-aap.1",
+        "job": "test",
+        "repo": "special-place-ai-heaven/aap-runner",
+        "run_url": "https://github.com/special-place-ai-heaven/aap-runner/actions/runs/124",
+        "job_url": null,
+        "started_at": "2026-10-19T18:00:00Z",
+        "cpu_cores": 2.5,
+        "mem_gib": 6.0
+      },
+      {
+        "slot": 5,
+        "profile": "windows",
+        "os": "Windows",
+        "backend": "hyperv-vm",
+        "lifecycle": "creating",
+        "image_generation": "win25-vs2026-x64/20261007.264.1-aap.1",
+        "job": "",
+        "repo": "",
+        "run_url": "",
+        "job_url": null,
+        "started_at": null,
+        "cpu_cores": 0.1,
+        "mem_gib": 0.4
+      }
+    ],
+    "storage": {
+      "state": "ok",
+      "detail": "",
+      "volume_floor_gib": 30,
+      "tiers": [
+        {
+          "tier": "base",
+          "root": "X:\\aap-example\\base",
+          "volume_free_gib": 20,
+          "state": "ok"
+        },
+        {
+          "tier": "clone",
+          "root": "X:\\aap-example\\clones",
+          "volume_free_gib": 412,
+          "state": "ok"
+        },
+        {
+          "tier": "scratch",
+          "root": "X:\\aap-example\\scratch",
+          "volume_free_gib": 412,
+          "state": "ok"
+        },
+        {
+          "tier": "staging",
+          "root": "X:\\aap-example\\base\\staging",
+          "volume_free_gib": 412,
+          "state": "ok"
+        }
+      ]
+    },
+    "legacy_pool": {
+      "runner_count": 3,
+      "job_cpus": 19,
+      "job_memory_gib": 57,
+      "sharing": "slice",
+      "job_io_mbps": 300,
+      "work_disk_gib": 200,
+      "work_disk_free_gb": 120,
+      "work_disk_floor_gb": 15,
+      "cleaning": false
+    }
+  }
+}

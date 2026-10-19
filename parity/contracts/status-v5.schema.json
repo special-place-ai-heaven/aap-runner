@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/status-v5.schema.json",
-  "title": "status.v5.json (DRAFT): per-profile capacity, slots, generation and cache state, written beside schema 4 status.json",
+  "title": "status.v5.json (DRAFT): per-profile capacity, slots, generation, cache and storage state, written beside schema 4 status.json",
   "x-contract-version": 5,
   "x-owner": "P12 (supervisor writer and supervisor/README.md); P20 (tray reader); P09 supplies capacity, P21/P25 generation, P13 cache state",
   "type": "object",
@@ -16,6 +16,7 @@
     "capacity",
     "profiles",
     "slots",
+    "storage",
     "legacy_pool"
   ],
   "properties": {
@@ -116,6 +117,84 @@
       "maxItems": 5,
       "items": {
         "$ref": "#/$defs/slot"
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "detail",
+        "volume_floor_gib",
+        "tiers"
+      ],
+      "description": "Storage tiers from the admin-only storage document (backend-lifecycle.md). unconfigured: no tiers, VM profiles unavailable.",
+      "properties": {
+        "state": {
+          "enum": [
+            "unconfigured",
+            "ok",
+            "low",
+            "untrusted",
+            "missing"
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 200,
+          "pattern": "^[ -~]*$"
+        },
+        "volume_floor_gib": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 10,
+          "maximum": 4096
+        },
+        "tiers": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "tier",
+              "root",
+              "volume_free_gib",
+              "state"
+            ],
+            "properties": {
+              "tier": {
+                "enum": [
+                  "base",
+                  "clone",
+                  "scratch",
+                  "staging"
+                ]
+              },
+              "root": {
+                "$ref": "#/$defs/root_path"
+              },
+              "volume_free_gib": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 1048576
+              },
+              "state": {
+                "enum": [
+                  "ok",
+                  "low",
+                  "untrusted",
+                  "missing"
+                ]
+              }
+            }
+          }
+        }
       }
     },
     "legacy_pool": {
@@ -447,6 +526,12 @@
           "maximum": 4096
         }
       }
+    },
+    "root_path": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^[A-Za-z]:(\\\\[A-Za-z0-9_()-]([A-Za-z0-9 ._()-]*[A-Za-z0-9_()-])?)+$",
+      "description": "Absolute folder on a drive-letter volume, at least one level below the volume root. No UNC or device path, no relative path, no `.` or `..` component, no trailing dot or space, no `~` short name, ASCII letters, digits, space, `.`, `_`, `(`, `)` and `-` only."
     }
   }
 }

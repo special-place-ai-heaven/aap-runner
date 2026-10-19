@@ -1,0 +1,51 @@
+{
+  "expect": "$.waivers[0].reason: does not match pattern",
+  "instance": {
+    "schema": 1,
+    "item": "P05",
+    "contract_revision": "evidence-bundle@2",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "action_shas": [
+      "actions/checkout@cccccccccccccccccccccccccccccccccccccccc"
+    ],
+    "reference_image": {
+      "label": "windows-2025-vs2026",
+      "image_version": "20261007.264.1"
+    },
+    "candidate_image": {
+      "generation_id": "win25-vs2026-x64/20261007.264.1-aap.1",
+      "base_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "inputs_manifest_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "fixture_id": "workload/cmp/random",
+    "os_version": "Microsoft Windows Server 2025 Datacenter 10.0.26100",
+    "tool_versions": {
+      "cl": "19.50",
+      "link": "14.50"
+    },
+    "command": "python3 gen_random.py out.bin",
+    "started_at": "2026-10-19T18:00:00Z",
+    "ended_at": "2026-10-19T18:04:00Z",
+    "exit_status": 0,
+    "oracle": {
+      "expected": "success",
+      "observed": "success"
+    },
+    "result": "pass",
+    "artifacts": [
+      {
+        "name": "summary.json",
+        "bytes": 812,
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+      }
+    ],
+    "verifier": "P17-verify",
+    "waivers": [
+      {
+        "kind": "compare_artifacts",
+        "definition_id": "cmp/random",
+        "reason": "   "
+      }
+    ]
+  }
+}

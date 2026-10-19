@@ -1,12 +1,25 @@
 {
-  "schema": 1,
+  "schema": 2,
   "revision": 42,
   "written_at": "2026-10-19T18:00:00Z",
   "max_slots": 5,
   "host": {
     "cpu_cores": 32,
     "mem_gib": 96,
-    "disk_gib": 2000,
+    "volumes": [
+      {
+        "volume_guid": "00000000-0000-4000-8000-0000000000e1",
+        "tiers": [
+          "base",
+          "clone",
+          "scratch",
+          "staging"
+        ],
+        "available_gib": 2030,
+        "floor_gib": 30,
+        "held_gib": 0
+      }
+    ],
     "io_mbps": 1000,
     "control_distro_mem_gib": 1,
     "measured_at": "2026-10-19T18:00:00Z"
@@ -51,7 +64,8 @@
       "cpus": 7,
       "mem_gib": 21,
       "mem_overhead_mib": 0,
-      "disk_gib": 0,
+      "clone_gib": 0,
+      "scratch_gib": 0,
       "io_mbps": 0,
       "vm_id": null,
       "runner_name": null,
@@ -75,7 +89,8 @@
       "cpus": 7,
       "mem_gib": 21,
       "mem_overhead_mib": 0,
-      "disk_gib": 0,
+      "clone_gib": 0,
+      "scratch_gib": 0,
       "io_mbps": 0,
       "vm_id": null,
       "runner_name": null,
@@ -99,7 +114,8 @@
       "cpus": 7,
       "mem_gib": 20,
       "mem_overhead_mib": 512,
-      "disk_gib": 190,
+      "clone_gib": 30,
+      "scratch_gib": 20,
       "io_mbps": 100,
       "vm_id": "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b",
       "runner_name": "aap-w-4-3-1a2b3c4d",
@@ -123,7 +139,8 @@
       "cpus": 7,
       "mem_gib": 20,
       "mem_overhead_mib": 512,
-      "disk_gib": 190,
+      "clone_gib": 30,
+      "scratch_gib": 20,
       "io_mbps": 100,
       "vm_id": "0d0e0f10-1112-4314-9516-171819202122",
       "runner_name": "aap-w-5-2-5e6f7a8b",
