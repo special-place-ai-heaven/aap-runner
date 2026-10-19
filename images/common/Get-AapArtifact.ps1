@@ -2,6 +2,8 @@
 #   Online : pwsh -File Get-AapArtifact.ps1 -Staging D:\stage [-Name zccache-sha256sums] [-RecordFirstFetch]
 #   Offline: pwsh -File Get-AapArtifact.ps1 -Staging D:\stage -Offline        (no network; verifies pre-fetched files)
 # Exit 0 only when every selected entry is accepted. Unreproducible inputs are always listed as blockers.
+# A -Name that is not an entry of the manifest is an error. An entry with no upstream hash (first-fetch) needs
+# -RecordFirstFetch once; after that it must match <file>.first-fetch.json, online or offline.
 param(
     [string]$Manifest = (Join-Path $PSScriptRoot 'artifacts.manifest.json'),
     [Parameter(Mandatory)][string]$Staging,

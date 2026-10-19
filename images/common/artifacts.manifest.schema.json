@@ -14,10 +14,11 @@
   },
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "scripts": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$" } },
     "entry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "version", "profiles", "file_name", "urls", "redirect_hosts", "hash", "size_bytes", "size_max_bytes", "content_types", "license", "retry", "evidence_ref"],
+      "required": ["name", "version", "profiles", "file_name", "urls", "redirect_hosts", "hash", "size_bytes", "size_max_bytes", "content_types", "license", "retry", "scripts", "evidence_ref"],
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$" },
         "version": {
@@ -67,6 +68,7 @@
             "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 }
           }
         },
+        "scripts": { "$ref": "#/$defs/scripts" },
         "evidence_ref": { "type": "string", "minLength": 1, "maxLength": 300 },
         "note": { "type": "string", "maxLength": 600 }
       }
@@ -74,7 +76,7 @@
     "blocker": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "profiles", "blocker_kind", "reason", "owner_action", "evidence_ref"],
+      "required": ["id", "name", "profiles", "blocker_kind", "reason", "owner_action", "scripts", "evidence_ref"],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$" },
         "name": { "type": "string", "minLength": 1, "maxLength": 200 },
@@ -82,9 +84,10 @@
           "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true,
           "items": { "enum": ["windows-2025-vs2026-x64", "ubuntu-24.04-x64"] }
         },
-        "blocker_kind": { "enum": ["cloud-base-image", "licensed-media", "moving-layout", "vendor-latest-no-hash", "superseded-versions", "vendor-repository", "floating-container", "proprietary-license", "resolve-before-use"] },
+        "blocker_kind": { "enum": ["cloud-base-image", "licensed-media", "moving-layout", "vendor-latest-no-hash", "superseded-versions", "vendor-repository", "floating-container", "proprietary-license", "resolve-before-use", "remote-install-script", "package-manager-install", "version-rule"] },
         "reason": { "type": "string", "minLength": 1, "maxLength": 800 },
         "owner_action": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "scripts": { "$ref": "#/$defs/scripts" },
         "evidence_ref": { "type": "string", "minLength": 1, "maxLength": 300 }
       }
     }
