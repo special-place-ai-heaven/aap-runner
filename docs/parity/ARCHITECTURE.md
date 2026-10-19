@@ -10,9 +10,12 @@ Every rule below carries one marker:
 - **DECIDED**: frozen. A later item that needs a change files a ledger revision first.
 - **CANDIDATE (D2)**: the chosen mechanism, not yet proven. It stays a candidate until the
   lab plan in [guest-transport.md](../../parity/contracts/guest-transport.md#lab-proof-plan-p021-executed-for-p08-p10-p11)
-  passes in an owner-authorized disposable lab (gate D2). Gate D2 is partly met: the lab host
-  is this machine with Hyper-V enabled, and the owner provides a Windows Server 2025 Evaluation
-  ISO (180-day). The compute and storage budget is still to be measured and approved before any VM.
+  passes in an owner-authorized disposable lab (gate D2). Gate D2's owner inputs are met: the lab
+  host is this machine with Hyper-V enabled, and the owner provided a Windows Server 2025
+  Evaluation ISO (180-day) and the dedicated volume `E:` and approved the lab budget on 2026-10-20
+  ([README](../../parity/contracts/README.md#resolved-2026-10-20)). Before the first VM, the
+  Windows image builder (P06) must be merged and the elevated step that creates the internal
+  switch and NAT must run.
 - **RESOLVED 2026-10-19**: the owner decisions this item first left open (labels, image volume,
   distro uptime, reserve floor, D2 media). See
   [the contracts README](../../parity/contracts/README.md#resolved-2026-10-19). On 2026-10-20 the
@@ -127,8 +130,9 @@ DECIDED:
 - Heartbeat (one rule everywhere): a validated guest `status` reply, or for a legacy slot the
   manager's slot entry in a fresh `status.json` (sample age <= 90 s), sets `heartbeat_at` at most
   every 30 s. Three missed intervals move `ready`/`busy` to `quarantined` (kind `heartbeat`),
-  capacity held. A later validated heartbeat returns the slot to `busy` or `ready`. A heartbeat quarantine leads to destroy only when the broker reports the runner `offline` or `absent` and not busy, or the job is known to have ended. A VM whose runner GitHub reports `busy` is never destroyed; past the per-lease host wall clock (`lease_wall_clock_hours`, default 6) it stays held and status flags it for the owner.
-  A running job is never cancelled by this rule. A `hostile_guest` quarantine is immediate and final: straight to
+  capacity held. A later validated heartbeat returns the slot to `busy` or `ready`. A heartbeat quarantine leads to destroy only when the broker reports the runner `offline` or `absent` and not busy, or the job is known to have ended. A VM whose runner GitHub reports `busy` is never destroyed; once `lease_wall_clock_hours` (default 6) have passed since the reservation's `acquired_at`, the slot is only flagged in status for the owner.
+  A running job is never cancelled by this rule. A hostile guest reply is immediate and final from any guest
+  state, a heartbeat or crash quarantine included: the kind becomes `hostile_guest`, then
   `deleting`.
 - Only `reconciled` with a teardown proof frees a slot: VM and disks observed absent (or, for a
   legacy slot, the manager reporting the slot gone) and the runner deregistered, removed by
@@ -143,6 +147,13 @@ DECIDED:
   measured overhead come off the pool before any runner share.
 - The allocator lock is an exclusive lock file in the admin-only capacity folder with a bounded
   wait that fails visibly (status `error`), not a named mutex.
+- Nothing admitted is ever evicted (allocator.md, Resize and host measurement). A smaller count
+  drains the excess (`resize_waits`); a host measurement that no longer holds the live
+  reservations is stored clamped to them (`pool_over_live`), so nothing more is admitted. In
+  `even` mode a count increase lowers every share, so every admitted runner drains, the legacy
+  pool with a full stop and start (an open owner decision). An unknown clone or scratch folder
+  blocks admission, and a provider's inventory listing is complete or throws (allocator.md,
+  Reconcile).
 
 ```mermaid
 stateDiagram-v2
@@ -161,8 +172,10 @@ stateDiagram-v2
   busy --> quarantined: 3 heartbeats missed
   quarantined --> busy: validated heartbeat, job running
   quarantined --> ready: validated heartbeat, listening
-  quarantined --> deleting: runner offline and not busy, or job ended
-  busy --> deleting: hostile guest reply (immediate, final, any guest state)
+  quarantined --> quarantined: hostile reply in a heartbeat or crash quarantine (kind hostile_guest)
+  quarantined --> deleting: runner offline and not busy, job ended, or kind hostile_guest
+  busy --> deleting: hostile guest reply only (immediate, final, any guest state)
+  busy --> ready: legacy pool slot only, next job (never hyperv-vm)
   deleting --> quarantined: teardown failed after retries
   quarantined --> reconciled: reconcile observes absence
   reconciled --> [*]: slot free
@@ -201,10 +214,10 @@ Root protection (DECIDED, security review H3, per root): at install, at every su
 and before every `create`, each root independently passes the owner, ACL, reparse-point and
 ancestor checks that `install-supervisor.ps1` runs on `C:\ProgramData\aap-runner`, on a fixed
 drive and on the volume recorded for it; any failure disables the VM profiles and shows the tier
-and reason in status. On 2026-10-20 both candidate volume roots fail the ancestor check (`D:\`
-grants Everyone full control; `E:\` grants Authenticated Users Modify, which includes delete), so
-the VM profiles stay off (fail closed) until the owner settles it
-([README, Open decisions](../../parity/contracts/README.md#open-decisions-2026-10-20)). No item
+and reason in status. `D:\` fails the ancestor check (Everyone full control) and is never
+used; the owner locked `E:\` to Administrators on 2026-10-20
+([README, Resolved 2026-10-20](../../parity/contracts/README.md#resolved-2026-10-20)). Whether a
+root on `E:` passes is shown by running the check (P19, P02.1), not by this note. No item
 changes a partition, a volume or a volume root's ACL. Approved artifact hashes are pinned outside
 every root (admin-only data folder and the P24 certificate), and every `create` re-hashes the
 base against that pin.
@@ -407,8 +420,9 @@ DECIDED: zccache 1.15.6 (tag `1.15.6`, commit `15ec9537`) replaces sccache entir
 compiler and invocation on each platform is `qualified` (with evidence) or `direct` (no wrapper).
 No sccache fallback, binary, variable or format reuse. Native `cl.exe`/`link.exe` start `direct`
 (the pinned feature matrix marks them partial). Isolated cache roots per trust namespace (the
-repository plus the ref trust class; a root is shared only among jobs whose writers are at least as
-trusted as every reader) and copy or reflink delivery by default; hardlink delivery and
+repository plus the ref trust class: only the default branch is trusted, every other ref is in the
+untrusted class; a root is shared only among jobs whose writers are at least as trusted as every
+reader) and copy or reflink delivery by default; hardlink delivery and
 cross-trust sharing stay off until P04/P13 prove them.
 
 ```mermaid
@@ -498,9 +512,10 @@ flowchart LR
   the installer preflight); nested virtualization off for guests by default.
 - Runner self-update: the actions-runner overlay is valid for one boot only; GitHub's support
   window for runner versions sets the rebuild deadline, so P25 rebuilds the overlay inside it.
-- Cache trust namespace: the repository plus the ref trust class of the job (pull request or fork
-  branch versus default branch), derived from GitHub data via the broker, never from anything the
-  guest reports.
+- Cache trust namespace: the repository plus the ref trust class of the job (the default branch is
+  trusted; every other ref, including a push to another branch, a tag, `workflow_dispatch` or
+  `schedule` on a non-default ref, a pull request or a fork branch, is untrusted), derived from
+  GitHub data via the broker, never from anything the guest reports.
 - Relative disk paths have exact forms, relative to their tier root: `<generation_id>/base.vhdx`
   (base_root), `<reservation_id>/os.avhdx` and `<reservation_id>/seed.iso` (clone_root),
   `<reservation_id>/scratch.vhdx` (scratch_root); `validate.py` enforces them.

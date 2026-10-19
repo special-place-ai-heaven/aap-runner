@@ -79,14 +79,20 @@ exactly the VM name `aap-<w|l>-<slot>-<lease_generation>-<first 8 hex of reserva
     any lease).
 11. Each volume is listed once and each tier is on at most one volume. A live `hyperv-vm`
     reservation needs the base, clone and scratch tiers in `host.volumes`, so VM admission requires
-    a storage layout that passed its trust checks. Legacy reservations reserve no VM disk
-    (`clone_gib` and `scratch_gib` 0); the legacy work disk keeps its own floor in the manager.
+    a storage layout that passed its trust checks, and reserves at least 1 GiB of clone disk
+    (`clone_gib` >= 1). Legacy reservations reserve no VM disk (`clone_gib` and `scratch_gib` 0);
+    the legacy work disk keeps its own floor in the manager. A volume's `floor_gib` equals the
+    storage document's `volume_floor_gib`; the two live in different files and no schema or
+    `validate.py` rule cross-checks them, so the supervisor copies the value at every write.
 
 ## State machine and heartbeat
 
 States: `creating`, `ready` (registered and listening), `busy`, `draining`, `collecting`,
 `deleting`, `quarantined`, `reconciled`. Diagram: ARCHITECTURE.md section 2. Edges: `busy` and
 `ready` can go to `draining`; `draining` always passes through `collecting` before `deleting`.
+A legacy pool slot is a loop: `busy` returns to `ready` when the manager starts the slot's next
+runner, and the reservation stays. A `hyperv-vm` reservation never takes that edge: one job per VM,
+then `collecting`, `deleting` and `reconciled`.
 
 - The reservation is persisted **before** the provider's `create` (and before a legacy slot is
   allowed to start), and before any broker lease.
@@ -98,11 +104,40 @@ States: `creating`, `ready` (registered and listening), `busy`, `draining`, `col
 - A validated heartbeat returns a heartbeat-quarantined slot to `busy` (job running) or `ready`.
 - A heartbeat-quarantined slot is destroyed only when the broker's read-only `status_request`
   (runner looked up by the ledger's runner id) reports it `offline` or `absent` and not busy, or
-  the job is known to have ended. Wall-clock rule (same text in status-settings.md): past `lease_wall_clock_hours` (default 6) since the lease was issued, a heartbeat-quarantined slot is destroyed only when GitHub reports its runner `offline` (or `absent`) and not busy; a runner GitHub reports `busy` is never destroyed, the slot stays held and `cleanup_uncertain`, and `status.v5.json` `detail` flags it for the owner. A running job is never cancelled by the allocator.
-- `hostile_guest` is immediate and final: the slot goes straight to `deleting` and the VM is never
-  trusted again.
+  the job is known to have ended.
+- Wall-clock rule (same text in status-settings.md): `lease_wall_clock_hours` (default 6) counts
+  from the reservation's `acquired_at`. Past it the slot is only flagged: `status.v5.json` `detail` names it for the owner. The wall clock never
+  destroys a slot: a heartbeat-quarantined slot is destroyed only when GitHub reports its runner
+  `offline` (or `absent`) and not busy, or the job is known to have ended; a runner GitHub reports
+  `busy` is never destroyed, and its slot stays held and `cleanup_uncertain`.
+  A running job is never cancelled by the allocator.
+- `hostile_guest` is immediate and final from every state in which the guest runs (`creating`,
+  `ready`, `busy`, `draining`, `collecting`) and from a `heartbeat` or `crash` quarantine: the slot
+  goes straight to `deleting` and the VM is never trusted again. From a quarantine the allocator
+  first rewrites the kind to `hostile_guest` (`quarantined` to `quarantined`, so rule 10 holds at
+  every write), then moves to `deleting`. `busy` goes directly to `deleting` only on a hostile
+  reply; a finished job passes through `collecting`.
 - Only `reconciled` frees a slot. A late `job_done` for an older `lease_generation` is ignored for
   state and logged.
+
+## Resize and host measurement (DECIDED, P09 review 2026-10-20)
+
+Nothing admitted is ever evicted.
+
+- A smaller count moves the excess to `draining` (rule 3); the resize waits for those jobs, and
+  `status.v5.json` `detail` gives the reason `resize_waits`.
+- A new host measurement (CPUs, memory, a volume's `available_gib`, `io_mbps`) that no longer holds
+  the live reservations does not evict them either. The allocator refuses to store it as measured
+  and stores a clamped `host`: each value lowered toward the measurement but never below what the
+  live reservations need under rules 4 and 5. `allocator.json` stays valid, nothing more is
+  admitted until live reservations end, and `detail` gives the reason `pool_over_live`.
+- In `even` mode each runner's share is `floor(pool / (linux + windows))`, so a count increase
+  (for example Linux 2 to 3 beside Windows 1) lowers every runner's share and every admitted
+  runner drains, Windows VMs and the legacy pool alike. The supervisor sends the legacy manager a
+  stop request (`Stop=true`) while the Linux count stays above 0 and restarts it with the new
+  `limits.conf` once its slots are gone: every count increase in `even` mode is a full legacy stop
+  and start. In `per_profile` mode a count change touches only that profile's runners while the
+  shares stay the same. Flagged for the owner ([README, Open decisions](README.md#open-decisions-2026-10-20)).
 
 ## Legacy adoption and Linux 0
 
@@ -124,10 +159,18 @@ Supervisor states).
 
 At supervisor start and every 10 minutes: list Hyper-V VMs whose name matches
 `^aap-(w|l)-[1-5]-` and the reservation folders under `clone_root` and `scratch_root`, join them
-with reservations and journals. Unknown VM or folder: quarantine it (kind `unknown_vm`) against a
-free slot if one exists, otherwise refuse new admissions until it is resolved; never adopt it as
-healthy and never delete it without a journal entry that names it. A reservation without its VM:
-`deleting` then `reconciled` once disks and runner are confirmed gone.
+with reservations and journals. Unknown VM: quarantine it (kind `unknown_vm`) against a free slot
+if one exists, otherwise refuse new admissions until it is resolved. Unknown folder (a folder under
+`clone_root` or `scratch_root` that no reservation or journal names): refuse every new admission
+until it is resolved, because its bytes sit outside every reservation cap. Never adopt either as
+healthy and never delete either without a journal entry that names it. A reservation without its
+VM: `deleting` then `reconciled` once disks and runner are confirmed gone.
+
+Inventory (P10, P11): a provider's inventory callback returns the complete list or throws. Any
+listing error (access denied, a timeout, an enumeration cut short) throws; it never returns a
+partial list. Reconcile treats a list that was returned as complete, so a reservation whose VM is
+not in it has no VM, and treats a thrown listing as unknown: that pass changes no reservation and
+deletes nothing.
 
 ## Fixtures
 
@@ -144,4 +187,5 @@ over the share, Linux taking its new share before Windows finished draining, dis
 IO reserved while unmeasured, the control VM's memory pushing the pool over, stale lease generation, a runner name that is not the VM name, a
 quarantine without kind, an admission on the wrong backend, reconciled without proof, a legacy
 proof on a VM, the clone volume of three over its budget, a VM without storage tiers, a tier on two
-volumes, a volume listed twice, and a legacy reservation that reserves VM disk.
+volumes, a volume listed twice, a legacy reservation that reserves VM disk, and a VM reservation
+with no clone disk.

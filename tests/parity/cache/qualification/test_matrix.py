@@ -31,7 +31,8 @@ TEMPLATE = {
                        "cl": {"compile-object", "compile-pch", "response-file", "debug-pdb"},
                        "link": {"link"}, "lld-link": {"link"}},
 }
-# Linux -g (debug-pdb) rows exist only for the image defaults: the schema caps a matrix at 64 rows.
+# Linux -g (debug-pdb) rows exist only for the image defaults: matrix revision 1 predates the
+# 256-row cap of contract revision 2; P04.1 adds them for every compiler version.
 LINUX_DEBUG = {("clang", "18.1.3"), ("clang++", "18.1.3"), ("gcc", "13.3.0"), ("g++", "13.3.0")}
 
 LAB_GATES = {"concurrency", "daemon_restart", "unsupported_invocations"}

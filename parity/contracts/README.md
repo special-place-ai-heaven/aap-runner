@@ -37,7 +37,9 @@ names the error it must produce, so it cannot pass for the wrong reason.
    count every live reservation, so draining overhang delays the other profile. Three missed
    heartbeats quarantine with capacity held; a heartbeat restores the slot; destroy waits until
    GitHub reports the runner offline and not busy, or the job ends (a busy runner is never
-   destroyed, only flagged past `lease_wall_clock_hours`); hostile guests go straight to deletion.
+   destroyed, only flagged once `lease_wall_clock_hours` have passed since the reservation's
+   `acquired_at`); hostile guests go straight to deletion from any state, a heartbeat quarantine
+   included. Neither a resize nor a new host measurement evicts admitted work.
 4. Provider interface, idempotency keys, intent/outcome journal, crash recovery, the disk layout per
    storage tier, and measured-only budgets with enforced per-tier caps.
 5. App key stays root-only in the control distro; the broker is a fixed-path one-shot root program
@@ -107,8 +109,7 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
    image. The evaluation build is sufficient to prove parity; a licensed production image is a
    later owner decision. The rearm or rebuild cycle before evaluation expiry is defined in P06
    (build) and P25 (operations). The lab host is this machine (Hyper-V enabled). The compute and
-   storage budget must still be measured and approved before any VM is created, so D2 stays
-   partly met until then.
+   storage budget was approved by the owner on 2026-10-20 (Resolved 2026-10-20, item 4).
 
 ## Resolved 2026-10-20
 
@@ -116,31 +117,40 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
    image area is no longer one hard-coded root: the installer and the owner choose `base_root`,
    `clone_root`, `scratch_root` and optionally `staging_root`, which may share one volume or use
    several ([backend-lifecycle.md, Storage tiers](backend-lifecycle.md#storage-tiers-decided-owner-2026-10-20)).
-   The owner is enlarging the dedicated volume `E:` (`winrunner`, 195 GB on 2026-10-20, target
-   about 600 GB), a partition of the USB disk that also holds the owner's data volume `D:`.
+   The owner enlarged the dedicated volume `E:` (`winrunner`) from 195 GB to 585.9 GB on
+   2026-10-20; it is a partition of the USB disk that also holds the owner's data volume `D:`.
    Partitions and volumes are the owner's: no item creates, resizes, formats, relabels or
    re-letters one, or changes a volume root's ACL.
 2. **Sizing evidence.** The hosted Windows image at job start uses 127,436,206,080 bytes of a
    160 GB `C:` with 33,031,553,024 free, and 3.2 GB of a 161 GB `D:` (run 39303666617), on 4 vCPU
    and 16 GiB. Planning estimate: 130-140 GB per base generation plus build headroom, 20-50 GB per
    running job, plus one rollback generation (backend-lifecycle.md, Sizing evidence).
+3. **Volume-root ACLs** (owner). On 2026-10-20 the owner locked `E:\` to Administrators (lab
+   preparation, 01:04). `D:\` is the owner's data volume, still grants Everyone full control and
+   is never used. The strict ancestor rule stands unchanged; whether a root on `E:` passes is shown
+   by running the check (P19, P02.1), not by this record.
+4. **Lab budget** (owner, gate D2), approved on 2026-10-20: lab data only under `E:\aap-runner\`;
+   base generation at most 200 GB; rollback generation at most 200 GB; clone plus scratch at most
+   60 GB per runner; at least 15 % of the 585.9 GB volume kept free; build VM with 4 vCPU and
+   10 GiB static RAM, one at a time. Measuring the real budgets stays lab step 8
+   (guest-transport.md) and P06/P07.
+5. **Floor value**: `volume_floor_gib` is 15 % of the volume, 88 GiB for `E:` (of 585.9). The
+   contract minimum stays 10.
+6. **Where the roots are configured** (coordinator): in the admin-only storage document
+   `C:\ProgramData\aap-runner\capacity\storage.json`, which only the elevated helper writes, and
+   never in settings schema 3, because the inbox is user-writable
+   ([status-settings.md](status-settings.md#storage-in-status-schema-5-draft-revision-2)). The tray
+   shows them from `status.v5.json` and offers a helper verb to change them (P19, P20).
 
 ## Open decisions (2026-10-20)
 
-1. **Volume-root ACLs** (owner, with a security review). A root's ancestors include its volume
-   root. Read on 2026-10-20: `E:\` grants Authenticated Users Modify, which includes delete, and
-   `D:\` grants Everyone full control, so every root on either volume fails the ancestor check and
-   the VM profiles stay off. Either the owner changes the volume root's ACL (an owner action; no
-   item does it), or a reviewed rule change ignores the delete right alone on a volume root
-   directory, which cannot be deleted or renamed, while delete-child, change-permissions,
-   take-ownership and full control still fail. Until then the strict rule holds.
-2. **Floor value** (owner): `volume_floor_gib` for the owner's volume; the contract minimum is 10.
-3. **Where the roots are configured** (coordinator): this revision keeps them out of settings
-   schema 3 and in the admin-only storage document that only the elevated helper writes, because
-   the inbox is user-writable ([status-settings.md](status-settings.md#storage-in-status-schema-5-draft-revision-2)).
-   The tray shows them from `status.v5.json` and offers a helper verb to change them (P19, P20).
-4. **Lab budget** (owner, gate D2): the compute and storage budget for the lab is still to be
-   approved before any VM.
+1. **A count increase in `even` mode drains every runner** (owner). Each runner's share is
+   `floor(pool / (linux + windows))`, so raising either count (for example Linux 2 to 3 beside
+   Windows 1) lowers every share, and every admitted runner drains: the legacy manager gets a stop
+   request while the Linux count stays above 0, so each increase is a full legacy stop and start
+   ([allocator.md, Resize and host measurement](allocator.md#resize-and-host-measurement-decided-p09-review-2026-10-20)).
+   `per_profile` mode confines a count change to its own profile. The owner decides whether that
+   is acceptable in `even` mode or whether the default share mode changes.
 
 ## Security review (2026-10-19) items carried by other owners
 
@@ -173,7 +183,10 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 - **P07, P11**: match the hosted Ubuntu kernel, `read_ahead_kb` and mount options, or justify each
   difference with a reviewed allowlist entry (image-catalog.md, Acceptance input).
 - **P09**: `allocator.json` schema 2 (per-volume disk budgets, reservation `clone_gib` and
-  `scratch_gib`).
+  `scratch_gib`) and the P09 review points: the legacy `busy` to `ready` loop, hostile replies from
+  a quarantine, the wall clock from `acquired_at` that only flags, no eviction (clamped host,
+  `resize_waits`, `pool_over_live`), the `even` mode drain, and unknown folders blocking admission.
+- **P10, P11**: the inventory callback returns a complete list or throws (allocator.md, Reconcile).
 - **P13**: cache roots per repository plus ref trust class (cache-qualification.md rule 6).
 - **P19, P20**: the storage document, its helper verb and the tray's storage view.
 
@@ -197,6 +210,7 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 | 2026-10-20 | P02.2 | evidence-cleanup | evidence 2, receipt 1 | optional bounded `waivers`; records keep `schema` 1 |
 | 2026-10-20 | P02.2 | backend-lifecycle | 2 | storage tiers and the `storage` document; tier-relative disk paths; budget caps `clone_gib_max` and `scratch_gib_max`; records `schema` 2 |
 | 2026-10-20 | P02.2 | allocator | 2 | per-volume disk admission: `host.volumes`, reservation `clone_gib` and `scratch_gib`; `allocator.json` schema 2 |
+| 2026-10-20 | P02.2 review | allocator, backend-lifecycle, status-settings, cache-qualification | unchanged | P09 contract points (allocator.md, Resize and host measurement, Reconcile); a VM reservation reserves clone disk; `COM0`/`LPT0` and trailing-space device names; drive letters and volume GUIDs one to one; only the default branch is a trusted ref; schema patterns linted for `_ecma` |
 | 2026-10-20 | P02.2 | image-catalog | 2 | catalog at `<base_root>\catalog.json`, artifact paths relative to `base_root`, catalog `schema` 2; P07/P11 acceptance input from P05 |
 | 2026-10-20 | P02.2 | status-settings | status 5 draft, revision 2 | `storage` in `status.v5.json`; settings schema 3 unchanged, no paths |
 | 2026-10-20 | P02.2 | guest-transport | 1 (text only) | lab storage preconditions and the budget step (step 8); envelope unchanged |

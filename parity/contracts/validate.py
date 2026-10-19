@@ -183,10 +183,18 @@ def _no_secret_values(doc, path="$"):
         raise Invalid(f"{path}: value has a token or private-key shape")
 
 
+# _ecma rewrites every `$` not preceded by a backslash to `\Z`. It would miss an anchor after an
+# escaped backslash and break a `$` inside a character class, so schemas may use neither form.
+ECMA_UNSAFE = re.compile(r"(?<!\\)(?:\\\\)+\$|\[[^\]]*\$")
+
+
 def lint_schema(node, path="$"):
-    """Every integer or number in a contract schema has a maximum (security review L1)."""
+    """Every integer or number in a contract schema has a maximum (security review L1), and no
+    pattern puts `$` after an escaped backslash or inside a character class (see _ecma)."""
     problems = []
     if isinstance(node, dict):
+        if isinstance(node.get("pattern"), str) and ECMA_UNSAFE.search(node["pattern"]):
+            problems.append(f"{path}: pattern form _ecma cannot translate")
         t = node.get("type")
         types = t if isinstance(t, list) else [t]
         if ("integer" in types or "number" in types) and "maximum" not in node and "const" not in node and "enum" not in node:
@@ -342,6 +350,8 @@ def sem_allocator(doc):
             if r["clone_gib"] or r["scratch_gib"]:
                 raise Invalid(f"{rid}: legacy reservations reserve no VM disk")
         else:
+            if r["clone_gib"] < 1:
+                raise Invalid(f"{rid}: a VM reservation reserves at least 1 GiB of clone disk")
             if r["state"] not in ("creating", "reconciled") and r["vm_id"] is None:
                 raise Invalid(f"{rid}: a VM reservation past creating names its vm_id")
             if r["runner_name"] is not None and r["runner_name"] != vm_name(r["profile"], r["slot"], r["lease_generation"], rid):
@@ -357,7 +367,7 @@ def sem_allocator(doc):
             raise Invalid(f"{rid}: idempotency_key must be <reservation_id>/<lease_generation>")
 
 
-RESERVED_NAMES = {"con", "prn", "aux", "nul"} | {f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)}
+RESERVED_NAMES = {"con", "prn", "aux", "nul"} | {f"{p}{i}" for p in ("com", "lpt") for i in range(10)}
 
 
 def _storage_roots(roots):
@@ -366,7 +376,7 @@ def _storage_roots(roots):
     named = {k: v for k, v in roots.items() if v is not None}
     for name, r in named.items():
         for part in r["path"].split("\\")[1:]:
-            if part.split(".")[0].lower() in RESERVED_NAMES:
+            if part.split(".")[0].rstrip(" ").lower() in RESERVED_NAMES:  # "aux .d" is AUX to Win32
                 raise Invalid(f"roots.{name}: {part} is a reserved device name")
     names = sorted(named)
     for i, a in enumerate(names):
@@ -378,7 +388,7 @@ def _storage_roots(roots):
                 if pi.startswith(po + "\\"):
                     raise Invalid(f"roots.{inner} is inside roots.{outer}")
             if (pa[0] == pb[0]) != (named[a]["volume_guid"] == named[b]["volume_guid"]):
-                raise Invalid(f"roots.{a} and roots.{b}: one drive letter is exactly one volume")
+                raise Invalid(f"roots.{a} and roots.{b}: drive letters and volume GUIDs map one to one")
 
 
 def sem_backend_lifecycle(doc):
@@ -640,6 +650,9 @@ def main():
     names = {p.name[: -len(".schema.json")] for p in schemas}
     if names != set(SEMANTIC):
         failures.append(f"schema set {sorted(names)} differs from SEMANTIC {sorted(SEMANTIC)}")
+    for bad, good in ((r"^a\\$", r"^a\$"), (r"^[a$]+$", r"^[a\]]+$")):
+        if not lint_schema({"pattern": bad}) or lint_schema({"pattern": good}):
+            failures.append(f"lint_schema self-check failed on {bad!r} / {good!r}")
     for spath in schemas:
         name = spath.name[: -len(".schema.json")]
         if name not in SEMANTIC:

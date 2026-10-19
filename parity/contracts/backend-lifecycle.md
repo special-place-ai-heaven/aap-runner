@@ -53,7 +53,7 @@ installer, three absolute roots and optionally a fourth for staging:
 | base | `base_root` | `catalog.json`; one folder per generation, `<profile>\<image_version>-aap.<n>\` (read-only after sealing, never moves); verified copies of installation media in `media\` |
 | clone | `clone_root` | one folder per reservation, `<reservation_id>\`: the differencing `os.avhdx`, the Linux `seed.iso` and every VM file (`New-VM -Path`) |
 | scratch | `scratch_root` | one folder per reservation, `<reservation_id>\scratch.vhdx` |
-| staging | `staging_root`, or `<base_root>\staging` when unset | P03 acquisition and P06/P07 build staging |
+| staging | `staging_root`, or `<base_root>\staging` when it is null | P03 acquisition and P06/P07 build staging |
 
 The roots may share one volume or use several. The pinned hash copy (`approved-images.json`), the
 allocator, the journals and every other control file stay in the admin-only data folder, outside
@@ -74,10 +74,14 @@ hash.
 **Valid roots** (schema and `validate.py`): an absolute folder at least one level below a
 drive-letter volume root (`X:\folder`); no UNC or device path (`\\server\share`, `\\?\`, `\\.\`),
 no relative path, no `.` or `..` component, no trailing dot or space, no `~` short name and no
-reserved device name (`CON`, `NUL`, `COM1` and the like); ASCII letters, digits, space and
-`._()-` only. No root is equal to or inside another, compared case-insensitively, a separately
-configured staging root included. One drive letter is exactly one volume (a `subst` drive has no
-volume GUID and is refused).
+reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, also before an
+extension and with trailing spaces, as in `aux .d`); ASCII letters, digits, space and `._()-`
+only. No root is equal to or inside another, compared case-insensitively, a separately configured
+staging root included: an explicit `staging_root` equal to `<base_root>\staging` is refused as
+inside `base_root`, and a null `staging_root` resolves to exactly that folder. Drive letters and
+volume GUIDs map one to one (`validate.py`: "drive letters and volume GUIDs map one to one"): one
+letter is one volume, and a volume is reached through one letter only, so per-volume accounting
+and the ancestor checks see one path per volume. A `subst` drive has no volume GUID and is refused.
 
 **Trust checks.** At install, at every supervisor start and before every `create`, each root
 independently passes the rules `install-supervisor.ps1` applies to `C:\ProgramData\aap-runner`:
@@ -157,15 +161,18 @@ on 4 vCPU and 16 GiB RAM:
 Planning estimate (coordinator, 2026-10-20): 130-140 GB per base generation plus build headroom,
 20-50 GB per running job for clone and scratch together, plus one retained rollback generation.
 P06 and P07 measure the real budgets, and admission refuses a profile whose generation has no
-measured budget. The 60 GiB Linux work-disk default is not a Windows budget.
+measured budget. The 60 GiB Linux work-disk default is not a Windows budget. The owner approved
+the lab budget on 2026-10-20 ([README, Resolved 2026-10-20](README.md#resolved-2026-10-20), item
+4); the measured budgets must fit inside it.
 
 ## Negative fixtures
 
 Op records: a mismatched idempotency key, a clone path with `..`, a scratch path with the
 revision-1 `scratch/` prefix, a base outside its generation folder, a differencing disk under
 another reservation's folder, a VM name whose suffix is not the reservation's, an `exec` op, a
-`reset` op, and a `done` record with a failure code. Budgets: unmeasured, and a cap below its
-measured peak. Storage: a relative root, a drive root, a UNC path, a device path, a `..`
-component, a trailing newline, a reserved device name, two tiers in one folder, a root inside
-another tier's root, a staging root inside the clone root, a missing tier, one drive letter on two
-volumes, and a floor under 10 GiB.
+`reset` op, and a `done` record with a failure code. Budgets: unmeasured, and a clone or a
+scratch cap below its measured peak. Storage: a relative root, a drive root, a UNC path, a device
+path, a `..` component, a trailing newline, reserved device names (`CON`-style, `LPT0` and
+`aux .d`), two tiers in one folder, a root inside another tier's root, a staging root inside the
+clone root, an explicit staging root equal to `<base_root>\staging`, a missing tier, one drive
+letter on two volumes, two drive letters on one volume, and a floor under 10 GiB.

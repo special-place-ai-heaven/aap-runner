@@ -38,11 +38,12 @@ class. Matrix documents keep `schema` 1, and every revision-1 matrix stays valid
    clang-cl are candidates for P04; GCC as a wrapper target is not listed in the README tool list,
    so it needs its own evidence.
 6. Runtime: one cache root per trust namespace. A trust namespace is the repository **plus the
-   trust class of the ref** that runs the job: pull-request and fork-branch jobs are one class,
-   default-branch jobs another, so a repository alone is not a namespace. A root is shared only
-   among jobs whose writers are at least as trusted as every reader; a pull-request job never
-   writes a root that a default-branch job reads. The namespace comes from GitHub data, never from
-   the guest. `ZCCACHE_MODE=COPY` or a proven reflink mode; hardlink delivery and cross-trust or
+   trust class of the ref** that runs the job. Only the default branch is trusted; every other ref
+   (a push to another branch, a tag, `workflow_dispatch` or `schedule` on a non-default ref, a pull
+   request, a fork branch) is in the untrusted class, so a repository alone is not a namespace. A
+   root is shared only among jobs whose writers are at least as trusted as every reader; no
+   untrusted-class job ever writes a root that a default-branch job reads. The namespace comes
+   from GitHub data, never from the guest. `ZCCACHE_MODE=COPY` or a proven reflink mode; hardlink delivery and cross-trust or
    cross-job mutable sharing stay off until P04/P13 prove poisoning and concurrency safety.
    Retention is the daemon's (budget via `ZCCACHE_CACHE_SIZE_BYTES` or `_PERCENT`); index, log,
    metadata and temp bytes are counted separately against the guest scratch budget. No
