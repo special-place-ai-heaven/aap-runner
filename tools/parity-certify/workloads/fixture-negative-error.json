@@ -1,0 +1,7 @@
+{
+  "id": "fixture/negative-error",
+  "description": "Negative: a deliberate compiler-style error. The nonzero exit and the first causal error are the expected outcome.",
+  "expected_exit_codes": [1],
+  "commands": [["{python}", "-c", "import sys; print('src/bad.c:3:5: error: deliberate parity failure', file=sys.stderr); sys.exit(1)"]],
+  "expected_first_error": {"contains": "deliberate parity failure", "file": "src/bad.c", "line": 3}
+}
