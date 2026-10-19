@@ -1,2 +1,5 @@
 target/
 *.log
+
+# Hosted reference captures are evidence, not logs to discard.
+!parity/baselines/**/*.log
