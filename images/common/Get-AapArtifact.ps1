@@ -1,8 +1,9 @@
 # Fetch or verify the artifacts in a manifest into a staging directory. Downloads data only; executes nothing.
 #   Online : pwsh -File Get-AapArtifact.ps1 -Staging D:\aap-runner\images\staging [-Name zccache-sha256sums] [-RecordFirstFetch]
 #   Offline: pwsh -File Get-AapArtifact.ps1 -Staging D:\aap-runner\images\staging -Offline   (no network; verifies pre-fetched files)
-# The staging folder must be locked: a plain folder owned by SYSTEM, Administrators or TrustedInstaller that nobody else
-# can write to or delete, below ancestors that nobody else can delete or re-permission. Until the installer (P19)
+# The staging folder must be locked: a plain folder on a fixed local disk, owned by SYSTEM, Administrators or
+# TrustedInstaller that nobody else can write to or delete, below ancestors that nobody else can delete or re-permission.
+# The name and version folders under it must pass the same owner and ACL rule, new or not. Until the installer (P19)
 # creates and locks D:\aap-runner, and D:\ itself is tightened, this check fails on the lab host: see README.md.
 # -TrustedSid and -SkipAncestorCheck relax that check for developer boxes and tests only; the provenance records it.
 #

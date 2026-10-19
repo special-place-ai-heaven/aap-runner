@@ -19,23 +19,33 @@ pwsh -File images/common/Get-AapArtifact.ps1 -Staging D:\aap-runner\images\stagi
 A verified file waits in staging for a later step, so whoever can write there can swap it after it was checked, or
 point a folder at somewhere else with a junction. Before anything is written (no file, no rejection record) the root must pass:
 
-- a plain folder (not a junction or symbolic link) on a local drive path, not a share or a device path;
+- a plain folder (not a junction or symbolic link) on a fixed local disk: a drive-letter path whose drive type is Fixed, as the supervisor requires. A share, a device path and a mapped network, removable, optical or RAM drive are refused. A drive made with `subst` reports Fixed and passes;
 - owned by SYSTEM, Administrators or TrustedInstaller;
 - no other principal may write to it, create files or folders in it, delete it or its children, change its permissions or take ownership;
 - every ancestor up to the drive root is a plain folder with a trusted owner that nobody else can delete, delete from, re-permission or take ownership of (create-folder rights, such as the default `C:\` entry for Authenticated Users, are fine).
 
+The name folder and the version folder below the root are held to the same owner and ACL rule as the root, whether they were
+there already or were just created (a new folder inherits from the root, so an inherited bad entry is caught too). A folder that
+somebody else owns, or that lets others write to it or delete from it, is refused and not repaired: an owner can always rewrite
+the ACL of what they own, so a folder an unprivileged account made before the root was locked stays theirs. Each level is checked
+before anything is created inside it, and a refused folder gets no file, not even a rejection record.
+
 While running, the name folder and version folder (checked again right after they are created), the partial download, the
 file, the provenance, rejection and first-fetch records must not be links; nothing is written, replaced or deleted through one.
+A stale partial download is deleted and never opened, and the new one is created with `CreateNew`, so a hard link left at that
+name (a hard link is not a reparse point) cannot be written through.
 A missing root is created one level deep below an existing parent that passes the ancestor checks.
 
-These are the rules of `supervisor/install-supervisor.ps1` (`Test-AapAdminDescriptor` for the root, `Get-AapAncestorProblem`
-for the ancestors): the same three SIDs and the same access masks. They are re-implemented in the module, not dot-sourced,
-because that file is an installer script and acquisition tooling must not load or run it. The tests check the masks with mocked ACLs.
+These are the rules of `supervisor/install-supervisor.ps1`: `Test-AapAdminDescriptor` for the root and `Get-AapAncestorProblem`
+for the ancestors (the same three SIDs and the same access masks), `Test-AapFixedLocalPath` for the drive type, and the owner rule
+of `Get-AapDataDirProblem` for the folders below the root (which also get the root's access masks). They are re-implemented in the
+module, not dot-sourced, because that file is an installer script and acquisition tooling must not load or run it. The tests check
+the masks with mocked ACLs and the folder rules against real ACLs set with `icacls`.
 
 | Refusal | Meaning |
 |---|---|
 | `AAP_StagingLink` | A junction or symbolic link at the root, an ancestor, the name or version folder, or in place of a file |
-| `AAP_StagingUntrusted` | Owner, ACL or ancestor rule failed, the root is not a local drive path, or a file sits where a folder belongs |
+| `AAP_StagingUntrusted` | Owner, ACL or ancestor rule failed for the root, an ancestor, the name folder or the version folder (the message names the level); the root is not on a fixed local disk; or a file sits where a folder belongs |
 
 **On the lab host this check fails today.** The staging example `D:\aap-runner\images\staging` is under the image root of
 `parity/contracts/backend-lifecycle.md` and `docs/parity/ARCHITECTURE.md` section 3. It cannot pass until the installer (P19)
@@ -62,7 +72,7 @@ Every result carries `Verified`: true only when the file matched a hash from a s
 |---|---|
 | `literal` | The manifest holds the hash. Where nothing upstream commits one, the note says how it was computed and cross-checked |
 | `upstream-file` | The hash comes from a staged upstream file (a `SHA256SUMS` or `.sha256`). That file must itself be exactly one other entry with a literal hash; it is read once and hashed and parsed from the same bytes; a pinned value must agree with it |
-| `first-fetch` | No hash and no immutable source exist. Never reused: every online run downloads it again, it never follows a redirect, and it needs `-RecordFirstFetch` once. The first accepted download is recorded in `<file>.first-fetch.json` and every later run, online or offline, must match it. Always reported unverified |
+| `first-fetch` | No hash and no immutable source exist. Never reused: every online run downloads it again, it never follows a redirect, and it needs `-RecordFirstFetch` once. The first accepted download is recorded in `<file>.first-fetch.json` and every later run, online or offline, must match it. The staged file is replaced only after the new download has passed the record, so a network error costs nothing (a staged file that already fails the record is removed at once). Always reported unverified |
 
 Only `docker-engine-windows-static` is first-fetch. The Docker CE install helper (commit-pinned URL), the Android command-line tools
 (Google's SDK index lists size and SHA-1 at the same URL) and the containernetworking-plugins package (signed Ubuntu `InRelease`
@@ -82,14 +92,20 @@ Only failures tagged transient (network errors, timeouts, HTTP 408, 429 and 5xx)
 | `<file>.provenance.json` | Latest accepted result; removed when a later run rejects the file |
 | `<file>.rejected.json` | Latest rejection; removed when a later run accepts the file |
 | `<file>.first-fetch.json` | Trust anchor of a first-fetch entry; rejections never remove it |
-| `<file>.quarantined` | A staged file that failed an offline check, moved away from its final name |
+| `<file>.quarantined` | A staged file that failed an offline check, moved away from its final name. When that name is taken, by a file, a folder or a link, the next free `<file>.quarantined.1`, `.2` and so on is used; nothing already there is moved into, overwritten or lost |
 
 `New-AapEvidenceRecord` writes an evidence-bundle record for a provenance file. For an accepted file it hashes the staged file again and
 records a failure (`AAP_ArtifactChanged`, `AAP_ArtifactMissing`) when it differs from the recorded `sha256`. `-HeadSha` is required.
+A run that relaxed the staging checks (`staging_check: relaxed` in the provenance) proves nothing about who could change the staged file,
+so what it accepted is reported as `unknown`, never as a pass, and the `command` of every record from such a run ends with
+`staging_check=relaxed`. Only a strict run can produce a pass for an accepted file. A rejection keeps its result (a failure, or a pass
+for a negative test that expected that very reason) because it claims nothing about a staged file. This host fails the strict check
+until P19 locks `D:\aap-runner`, so evidence for accepted files made here before then is `unknown` by design.
 
 ## What the manifest covers
 
 - **Entries (18):** the zccache 1.15.6 `SHA256SUMS` and four archives, Android command-line tools (Windows and Linux), the MySQL Visual C++ redistributable, the Docker CE install helper, the Docker engine zip, Docker Compose and its checksum file, Service Fabric runtime and SDK, Cobertura, Pester 5.9.0, `libicu70`, `containernetworking-plugins`.
+- **Script coverage is self-declared.** The `scripts` list of an entry or blocker says which P01 scripts it serves, as the manifest author declares it. One record can cover a whole script: `Install-Docker.ps1` is served by the Docker engine zip and the Docker CE helper, and the `moby/moby` source that script also names (`github:moby/moby` in the P01 inputs) has no record of its own. The coverage test proves that every script with an external source appears in some record, not that every source inside it has its own.
 - **Not reproducible (26 blockers):** each is listed with a reason class, the owner action and the upstream scripts it concerns (licensed media, Azure-only base images, moving channels and feeds, inputs with no hash, version rules, remote install scripts, package-manager installs). They are returned as `BLOCKER` lines and never acquired.
 - **Deliberately not acquired** (zccache 1.15.6 release files that the baseline names but the manifest does not carry):
 
@@ -109,5 +125,7 @@ compliance before any image with zccache leaves the owner's hosts (P04, P21, P22
 
 `tests/images/common/AapArtifact.Tests.ps1` (Pester 5, both PowerShell hosts). Fixtures come from a loopback `HttpListener` on 127.0.0.1 and 127.0.0.2.
 Two tests fetch real small files and carry the `Network` tag; they are skipped unless an HTTPS request to the real host is answered.
+Their reachability probes run inside that block, so a run that excludes the tag (`ExcludeTag = 'Network'`) never contacts the network.
+Child PowerShell processes the tests start use `-NonInteractive`, so a prompt fails the test instead of hanging a CI job.
 Python tests (manifest schema, evidence contract) use a python 3 that really runs and are skipped when there is none.
 `New-AapManifest.ps1` regenerates `artifacts.manifest.json`; a test fails when the committed file differs.

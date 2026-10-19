@@ -319,7 +319,7 @@
         "Install-Docker.ps1"
       ],
       "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, \"Version- or hash-pinned values\"",
-      "note": "Pinned to commit 8ea2a92 of microsoft/Windows-Containers, so the URL names immutable content. No hash is published; the SHA-256 was computed from one fetch of that URL on 2026-10-19 (22265 bytes). Data only: never executed by this tooling."
+      "note": "Pinned to commit 8ea2a92 of microsoft/Windows-Containers, so the URL names immutable content. Its git blob id there is 4c29230619dbe2cb4f90f2c4b637b6db02906332 (git hash-object of the fetched bytes agrees; the code review read the same id from the GitHub API). No hash is published; the SHA-256 was computed from one fetch of that URL on 2026-10-19 (22265 bytes). Data only: never executed by this tooling."
     },
     {
       "name": "docker-engine-windows-static",
