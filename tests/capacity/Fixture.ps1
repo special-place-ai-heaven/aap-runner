@@ -130,13 +130,13 @@ function Export-CapInstance([string]$Fixture, [string]$Out) {
     (Read-CapJson $Fixture).expect
 }
 
-# A hidden child PowerShell of the same edition running Body (a script text) against the module,
+# A hidden child PowerShell of the same edition running Body (saved as a plain .ps1) against the module,
 # optionally after a barrier file and with a fault point; stdout is the body's JSON result.
 function Start-CapChild([string]$Root, [string]$Body, [string]$Fault = '', [string]$Go = '', [string]$Ready = '') {
     $script = Join-Path $TestDrive 'child.ps1'
     if (-not (Test-Path -LiteralPath $script)) {
         Write-CapText $script @'
-param([string]$Module, [string]$Root, [string]$Body64, [string]$Fault, [string]$Go, [string]$Ready)
+param([string]$Module, [string]$Root, [string]$BodyFile, [string]$Fault, [string]$Go, [string]$Ready)
 $ErrorActionPreference = 'Stop'
 $WarningPreference = 'SilentlyContinue'
 Import-Module $Module
@@ -144,15 +144,15 @@ $PSDefaultParameterValues['*-Aap*:RelaxedTrustForTests'] = $true
 if ($Fault) { & (Get-Module AapCapacity) { param($f) $script:Fault = $f } $Fault }
 if ($Ready) { [IO.File]::WriteAllText($Ready, 'ready') }
 if ($Go) { while (-not [IO.File]::Exists($Go)) { Start-Sleep -Milliseconds 2 } }
-$body = [scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Body64)))
-$result = & $body $Root
+$result = & $BodyFile $Root
 [Console]::Out.WriteLine((ConvertTo-Json -InputObject $result -Depth 10 -Compress))
 '@
     }
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = (Get-Process -Id $PID).Path
-    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Body))
-    $argv = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $script, $script:CapModule, $Root, $b64, $Fault, $Go, $Ready)
+    $bodyFile = Join-Path $TestDrive ('body-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    Write-CapText $bodyFile $Body
+    $argv = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $script, $script:CapModule, $Root, $bodyFile, $Fault, $Go, $Ready)
     $psi.Arguments = ($argv | ForEach-Object { if ($_ -eq '') { '""' } else { '"' + $_ + '"' } }) -join ' '
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
