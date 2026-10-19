@@ -1,0 +1,193 @@
+{
+  "expect": "requires a certificate",
+  "instance": {
+    "schema": 1,
+    "revision": 7,
+    "profiles": {
+      "win25-vs2026-x64": {
+        "active": "win25-vs2026-x64/20261007.264.1-aap.2",
+        "rollback": "win25-vs2026-x64/20261007.264.1-aap.1"
+      },
+      "ubuntu-24.04-x64": {
+        "active": null,
+        "rollback": null
+      }
+    },
+    "generations": [
+      {
+        "generation_id": "win25-vs2026-x64/20261007.264.1-aap.1",
+        "profile": "win25-vs2026-x64",
+        "state": "retired",
+        "state_changed_at": "2026-10-19T18:00:00Z",
+        "baseline": {
+          "runner_images_commit": "aee0669dd04510a11756664eb77f5630debabed3",
+          "image_version": "20261007.264.1",
+          "inventory_path": "parity/baselines/windows-2025-vs2026-x64/inventory.json",
+          "inventory_sha256": "cf842a07fd309da0100d955383883f9423bb2b7524e78bd33a67ecdcfc953f25"
+        },
+        "artifacts": [
+          {
+            "role": "base_vhdx",
+            "path": "images/win25-vs2026-x64/20261007.264.1-aap.1/base.vhdx",
+            "bytes": 139586437120,
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        ],
+        "overlays": [
+          {
+            "name": "guest-agent",
+            "version": "1",
+            "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          {
+            "name": "actions-runner",
+            "version": "2.338.0",
+            "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          {
+            "name": "zccache",
+            "version": "1.15.6",
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        ],
+        "provenance": {
+          "built_by_item": "P21",
+          "builder_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inputs_manifest_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "built_at": "2026-10-19T18:00:00Z"
+        },
+        "secret_scan": {
+          "result": "clean",
+          "evidence_ref": "evidence/P21/win25-vs2026-x64_20261007.264.1-aap.1/secret-scan.json"
+        },
+        "certification": {
+          "certificate_ref": "parity/certificates/win25-vs2026-x64_20261007.264.1-aap.1.json",
+          "certified_at": "2026-10-19T18:00:00Z"
+        },
+        "approved_by": "owner",
+        "retention": {
+          "owner": "P25",
+          "purpose": "rollback",
+          "expires_at": null
+        },
+        "quarantine_reason": null
+      },
+      {
+        "generation_id": "win25-vs2026-x64/20261007.264.1-aap.2",
+        "profile": "win25-vs2026-x64",
+        "state": "active",
+        "state_changed_at": "2026-10-19T18:00:00Z",
+        "baseline": {
+          "runner_images_commit": "aee0669dd04510a11756664eb77f5630debabed3",
+          "image_version": "20261007.264.1",
+          "inventory_path": "parity/baselines/windows-2025-vs2026-x64/inventory.json",
+          "inventory_sha256": "cf842a07fd309da0100d955383883f9423bb2b7524e78bd33a67ecdcfc953f25"
+        },
+        "artifacts": [
+          {
+            "role": "base_vhdx",
+            "path": "images/win25-vs2026-x64/20261007.264.1-aap.2/base.vhdx",
+            "bytes": 139586437120,
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        ],
+        "overlays": [
+          {
+            "name": "guest-agent",
+            "version": "1",
+            "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          {
+            "name": "actions-runner",
+            "version": "2.338.0",
+            "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          {
+            "name": "zccache",
+            "version": "1.15.6",
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        ],
+        "provenance": {
+          "built_by_item": "P21",
+          "builder_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inputs_manifest_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "built_at": "2026-10-19T18:00:00Z"
+        },
+        "secret_scan": {
+          "result": "clean",
+          "evidence_ref": "evidence/P21/win25-vs2026-x64_20261007.264.1-aap.2/secret-scan.json"
+        },
+        "certification": {
+          "certificate_ref": null,
+          "certified_at": null
+        },
+        "approved_by": "owner",
+        "retention": {
+          "owner": "P25",
+          "purpose": "active",
+          "expires_at": null
+        },
+        "quarantine_reason": null
+      },
+      {
+        "generation_id": "ubuntu-24.04-x64/20261012.334.1-aap.1",
+        "profile": "ubuntu-24.04-x64",
+        "state": "candidate",
+        "state_changed_at": "2026-10-19T18:00:00Z",
+        "baseline": {
+          "runner_images_commit": "7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe",
+          "image_version": "20261012.334.1",
+          "inventory_path": "parity/baselines/ubuntu-24.04-x64/inventory.json",
+          "inventory_sha256": "48608655281529b27f298ea92cc8ad63e52f847fa2fb8b03d1e0ddd5e2a192ed"
+        },
+        "artifacts": [
+          {
+            "role": "base_vhdx",
+            "path": "images/ubuntu-24.04-x64/20261012.334.1-aap.1/base.vhdx",
+            "bytes": 139586437120,
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        ],
+        "overlays": [
+          {
+            "name": "guest-agent",
+            "version": "1",
+            "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+          },
+          {
+            "name": "actions-runner",
+            "version": "2.338.0",
+            "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+          },
+          {
+            "name": "zccache",
+            "version": "1.15.6",
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        ],
+        "provenance": {
+          "built_by_item": "P21",
+          "builder_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inputs_manifest_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+          "built_at": "2026-10-19T18:00:00Z"
+        },
+        "secret_scan": {
+          "result": "clean",
+          "evidence_ref": "evidence/P21/ubuntu-24.04-x64_20261012.334.1-aap.1/secret-scan.json"
+        },
+        "certification": {
+          "certificate_ref": null,
+          "certified_at": null
+        },
+        "approved_by": null,
+        "retention": {
+          "owner": "P25",
+          "purpose": "candidate",
+          "expires_at": null
+        },
+        "quarantine_reason": null
+      }
+    ]
+  }
+}

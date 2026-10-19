@@ -1,0 +1,19 @@
+{
+  "expect": "$.measured: must be true",
+  "instance": {
+    "schema": 1,
+    "kind": "budget",
+    "profile": "windows",
+    "image_generation": "win25-vs2026-x64/20261007.264.1-aap.1",
+    "measured": false,
+    "evidence_ref": "evidence/P06/budget-20261007.264.1-aap.1.json",
+    "measured_at": "2026-10-19T18:00:00Z",
+    "base_gib": 130,
+    "clone_peak_gib": 40,
+    "scratch_peak_gib": 60,
+    "staging_gib": 150,
+    "replacement_gib": 130,
+    "rollback_retained_generations": 1,
+    "boot_mem_overhead_mib": 512
+  }
+}

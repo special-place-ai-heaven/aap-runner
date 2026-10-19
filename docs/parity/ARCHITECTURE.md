@@ -1,0 +1,386 @@
+# Parity architecture (frozen by P02)
+
+Revision 1, 2026-10-19. Ledger item P02. This document freezes the components, trust
+boundaries, data flows, state machines and failure handling that every later parity
+item builds on. The machine-checkable shapes live in [`parity/contracts/`](../../parity/contracts/README.md);
+`python -I parity/contracts/validate.py` checks every example and negative fixture.
+
+Every rule below carries one marker:
+
+- **DECIDED**: frozen. A later item that needs a change files a ledger revision first.
+- **CANDIDATE (D2)**: the chosen mechanism, not yet proven. It stays a candidate until the
+  lab plan in [guest-transport.md](../../parity/contracts/guest-transport.md#lab-proof-plan-p08-p10-p11)
+  passes in an owner-authorized disposable lab (gate D2). Gate D2 is only partly met:
+  Hyper-V is enabled on the host; Windows Server 2025 media, activation and a lab budget are open.
+- **OWNER**: an interface decision this item could not make. Listed in
+  [the contracts README](../../parity/contracts/README.md#open-decisions).
+
+Nothing here was provisioned, enabled or run against the live install. No VM was created.
+
+## 1. Components and trust boundaries
+
+| Component | Runs as | Trust | Owns | Never does |
+|---|---|---|---|---|
+| Tray (`crates/tray`) | the user, unelevated | user | the only user surface; writes `inbox\*.json`; reads `status.json` / `status.v5.json` | run `wsl.exe` or Hyper-V cmdlets, hold tokens or keys, open a console |
+| Elevated helper (`--helper <verb> <id>`, existing) | Administrators via UAC | admin | install, identity, repair, verify; later image/backend preparation (P19) | gain a new verb without the existing request/ACL contract; persist a secret |
+| Supervisor (`aap-runner-supervisor.ps1`, task `AAP-CRRR-Supervisor`) | the installing user, elevated, logon task, hidden | admin, in the user's logon session | allocator, backend providers, guest transport, status files | read anything but validated numbers and fixed words from the inbox; show a window |
+| WSL control distro `aap-runner` | root inside the distro | control plane | GitHub App key (`/etc/aap-runner/app.pem`, root 0400), manager, legacy pool, **broker** | expose a network listener for the broker; accept a path or command from a caller |
+| Broker (`/usr/local/sbin/aap-runner-broker`, P08) | root, one process per request | control plane | App JWT, installation token, JIT config minting, runner deregistration, lease ledger | run without a well-formed bounded request; log or persist registration material |
+| Hyper-V backend (supervisor modules `backends/windows`, `backends/linux`) | inside the supervisor process | admin | VM create/boot/reset/destroy, differencing disks, guest management sessions | reuse a VM or disk across reservations; mutate a base image |
+| Guests (Windows Server 2025 / VS2026, Ubuntu 24.04) | guest Administrator / sudo | **untrusted** once a job starts | one Actions job | reach the host, the control distro, the LAN, another guest or a base image |
+| Image catalog (`<image_root>\catalog.json` + images) | written by supervisor image-maintenance (P25) and P21 tooling | admin | immutable generations, hashes, provenance, rollback | change bytes of an approved generation |
+| Legacy WSL/Sysbox pool | root inside the distro | control plane for the manager, untrusted for jobs | existing ephemeral container runners | run autonomously beside new profiles (adopted into the allocator, DECIDED) |
+
+DECIDED: no new elevation path, no named-pipe service, no Rust service rewrite, no autologon,
+no owner-password storage, no silent update, no Authenticode requirement. The only
+user-visible prompt is UAC for the existing elevated helper. No component opens a visible
+console or window: Hyper-V and `wsl.exe` calls run inside the hidden supervisor; new
+processes the supervisor starts use the same hidden, absolute-path pattern as today.
+
+```mermaid
+flowchart LR
+  subgraph User["User session, unelevated"]
+    T[Tray]
+  end
+  subgraph Admin["Admin: hidden supervisor task"]
+    S[Supervisor loop]
+    A[Allocator]
+    P[Backend providers]
+    X[Guest transport]
+    S --> A
+    S --> P
+    P --> X
+  end
+  subgraph Ctl["WSL control distro, root"]
+    B[Broker]
+    M[Legacy manager and pool]
+    K[(App key)]
+    B --- K
+    M --- K
+  end
+  subgraph Guests["Disposable guests, untrusted"]
+    W[Windows VM]
+    L[Ubuntu VM]
+  end
+  CAT[(Image catalog)]
+  GH[GitHub]
+  T -- "inbox json files" --> S
+  S -- "status json files" --> T
+  T -- "UAC: helper verbs" --> H[Elevated helper]
+  S -- "wsl.exe stdin and stdout" --> B
+  S -- "limits.conf, drain" --> M
+  X -- "PowerShell Direct" --> W
+  X -- "SSH over hvsocket" --> L
+  CAT --> P
+  B -- "App JWT, JIT config" --> GH
+  W -- "one job" --> GH
+  L -- "one job" --> GH
+  M --> GH
+```
+
+Trust boundaries, each with its rule:
+
+1. **Tray to supervisor** (DECIDED, existing): files in the user-writable `inbox\`, read once,
+   bounded to 4096 bytes, strictly parsed; the supervisor never writes there.
+2. **Supervisor to control distro** (DECIDED): one `wsl.exe -d aap-runner -u root --exec <fixed path>`
+   per broker call, request on stdin, response on stdout, both bounded. No arguments carry data.
+3. **Supervisor to guest** (CANDIDATE D2): PowerShell Direct (Windows) and SSH over hvsocket
+   (Linux); no network path, a fixed command set, bounded hostile-safe replies.
+4. **Guest to the world** (CANDIDATE D2 for the mechanism, DECIDED for the rule): internet egress
+   only; the host, the WSL distro, the LAN and other guests are unreachable, mirroring today's
+   Sysbox network evidence (`distro/README.md`, Evidence).
+5. **Catalog to provider** (DECIDED): a provider boots only a catalog generation in state
+   `active` (or `approved` for certification runs) whose base hash matches on every create.
+
+## 2. Allocator and capacity (contract: [allocator.md](../../parity/contracts/allocator.md))
+
+DECIDED:
+
+- One allocator inside the supervisor owns all five slots, for every backend, including the
+  legacy WSL pool. Its state is `C:\ProgramData\aap-runner\capacity\allocator.json`
+  (Administrators/SYSTEM only), rewritten by atomic rename with a strictly increasing `revision`.
+- Two live controls: Linux 0-5 and Windows 0-5, Linux + Windows in 1..5. 0 + 0 is not a
+  setting; "off" is `inbox\state.json`.
+- The host reserve (default 10 %, floor 10 %) is never handed out. `share_mode: even` gives every
+  runner `floor(pool / (linux + windows))` (today's tray rule); `per_profile` gives each profile
+  its configured percent and each runner `floor(profile cap / profile count)`. The owner's example,
+  2 Windows = 30 %, 3 Linux = 60 %, 10 % host, is the per-profile fixture.
+- A reservation is acquired and persisted **before** any VM create, legacy slot start or
+  registration. It is bound to a `lease_generation` that increases on every reuse of the slot.
+- Lost heartbeat never frees a slot. Only `reconciled` with a teardown proof (VM absent, disks
+  absent, runner deregistered or removed by GitHub) frees it.
+- Legacy slots are adopted first: before the first VM reservation the allocator records one
+  `wsl-legacy` reservation per configured legacy slot and sets `legacy_adopted`. From then on the
+  supervisor writes `AAP_RUNNER_COUNT` from the Linux legacy reservations, so the legacy pool can
+  never run five beside Windows.
+
+```mermaid
+stateDiagram-v2
+  [*] --> creating: reserve slot (persisted first)
+  creating --> ready: VM booted, runner listening
+  creating --> deleting: create or boot failed
+  ready --> busy: job assigned
+  ready --> draining: drain, pause, resize down, generation retire
+  busy --> collecting: job finished or cancelled
+  draining --> deleting: runner deregistered
+  collecting --> deleting: evidence collected
+  deleting --> reconciled: teardown proof observed
+  creating --> quarantined: crash or uncertainty
+  ready --> quarantined: heartbeat lost
+  busy --> quarantined: heartbeat lost
+  collecting --> quarantined: guest hostile or timed out
+  deleting --> quarantined: teardown failed after retries
+  quarantined --> deleting: reconcile finds VM and retries
+  quarantined --> reconciled: reconcile observes absence
+  reconciled --> [*]: slot free
+```
+
+`draining` from `busy` waits for the job (graceful, never cancelled). Off, pause and resizing
+never cancel a running job (existing rule, kept).
+
+## 3. Backend lifecycle (contract: [backend-lifecycle.md](../../parity/contracts/backend-lifecycle.md))
+
+DECIDED: every provider implements `create, boot, ready, run_one, drain, collect, reset|destroy,
+reconcile` with idempotency key `<reservation_id>/<lease_generation>/<op>`. Each op writes an
+`intent` journal record before acting and a `done`/`failed` record after. Recovery after a crash
+replays the journal: an op with intent but no outcome is re-run idempotently (create looks up the
+named VM first; destroy treats "absent" as done). One job per VM; the VM is destroyed, never
+reset for another job, until a lab proves a reset is equivalent (P10/P11 may propose `reset`
+only with that evidence).
+
+DECIDED disk layout under a configured fixed local `<image_root>` (not `C:\wsl`, not the WSL work disk):
+
+```text
+<image_root>\catalog.json
+<image_root>\images\<profile>\<image_version>-aap.<n>\base.vhdx   read-only ACL, hash-checked
+<image_root>\clones\<reservation_id>\os.avhdx                     differencing child of base
+<image_root>\clones\<reservation_id>\scratch.vhdx                 job scratch, per reservation
+<image_root>\clones\<reservation_id>\seed.iso                     Linux cloud-init seed, if used
+```
+
+Budgets are **measured** per generation (base, clone peak, scratch peak, staging, replacement,
+rollback, boot memory overhead) and stored as a `budget` record with an evidence reference.
+Admission refuses a profile whose generation has no measured budget. The hosted reference
+reports about 160 GB on `C:` and 158 GB free on `D:` for Windows; the 60 GiB Linux work-disk
+default is not a Windows budget.
+
+```mermaid
+sequenceDiagram
+  participant A as Allocator
+  participant P as Provider
+  participant H as Hyper-V
+  participant J as Journal
+  A->>A: reserve slot, persist (creating)
+  A->>P: create(key)
+  P->>J: intent create
+  P->>H: New-VHD -Differencing, New-VM (fixed name)
+  P->>J: done create (vm_id)
+  P->>H: Start-VM (boot)
+  P->>P: ready: guest transport probe
+  A->>A: ready
+  P->>P: run_one: lease, deliver JIT, start runner
+  A->>A: busy then collecting
+  P->>H: Stop-VM, Remove-VM, delete clone dir (destroy)
+  P->>J: done destroy (absent observed)
+  A->>A: reconciled with teardown proof
+```
+
+## 4. Registration broker (contract: [broker.md](../../parity/contracts/broker.md))
+
+DECIDED: the App key stays root-only in the control distro. The broker is a fixed-path root
+program in that distro, invoked once per request by the supervisor. It accepts only
+`lease_request` and `release_request` documents: no path, no command, no label, no runner name,
+no URL. It derives the runner name and labels from the slot, lease generation and its own
+root-only profile table. One lease id issues at most one JIT config, ever (replay refused).
+
+DECIDED: VM guests get **JIT runner configuration** from
+`POST /orgs/{org}/actions/runners/generate-jitconfig` (GitHub REST, "Create configuration for a
+just-in-time runner for an organization"; body `name`, `runner_group_id`, `labels`, optional
+`work_folder`; response `runner` and `encoded_jit_config`). A registration token is **not**
+one-use: GitHub documents only that it "expires after one hour". Registration tokens remain
+only in the legacy pool's existing flow.
+
+DECIDED (delivery): the JIT config never appears in argv, a file, the inbox, a status file, an
+image or a log. It travels broker stdout -> supervisor memory -> management channel -> guest agent
+memory -> the runner's environment as `ACTIONS_RUNNER_INPUT_JITCONFIG`. In `actions/runner`
+(`src/Runner.Listener/CommandSettings.cs`, `main` at `7ce71e54a9affe1daae918a3e2350c1543dfa240`,
+read 2026-10-19) every `ACTIONS_RUNNER_INPUT_<arg>` variable is read as that argument, removed
+from the process environment, and `jitconfig` is in the runner's secret list, so its value is
+registered with the secret masker. The documented `./run.sh --jitconfig <value>` form puts the
+secret in argv and is forbidden here. CANDIDATE (D2): that the pinned runner release behaves this
+way end to end, that the guest leaves no copy, and that an unused JIT runner is removed (GitHub
+documents "If JIT runners never run a job, they will automatically be removed"; timing
+unspecified, so the provider deregisters explicitly through `release_request`).
+
+```mermaid
+sequenceDiagram
+  participant S as Supervisor
+  participant B as Broker (root, WSL)
+  participant G as GitHub
+  participant V as Guest agent
+  participant R as Actions runner
+  S->>B: stdin lease_request (bounded)
+  B->>B: validate, check lease ledger and replay
+  B->>G: App JWT, installation token
+  B->>G: POST generate-jitconfig (name, group id, labels)
+  G-->>B: runner id, encoded_jit_config
+  B->>B: ledger: lease issued (no secret)
+  B-->>S: stdout lease_response with jit_config
+  S->>V: deliver_registration over management channel
+  V->>R: start runner with ACTIONS_RUNNER_INPUT_JITCONFIG
+  R->>G: one job
+  S->>B: release_request if the runner never took a job
+```
+
+## 5. Guest management transport (contract: [guest-transport.md](../../parity/contracts/guest-transport.md))
+
+CANDIDATE (D2):
+
+- **Windows**: PowerShell Direct (`Invoke-Command -VMId`, `New-PSSession -VMId`). Microsoft
+  documents it runs "regardless of network configuration", needs the VM to run locally, a Hyper-V
+  administrator on the host and valid guest credentials.
+- **Linux**: OpenSSH over a Hyper-V socket (`AF_VSOCK` in the guest, `CONFIG_VSOCKET` and
+  `CONFIG_HYPERV_VSOCKETS`; host service GUID registered under
+  `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\GuestCommunicationServices`).
+  Fallback candidate: SSH on a per-clone isolated internal switch.
+- Per-clone identity: VM id (Hyper-V GUID) plus the fixed VM name pattern. Per-clone credential:
+  a random Windows local admin password or Linux ed25519 key generated by the supervisor for that
+  reservation only, injected before first boot, never in a base image, discarded at destroy.
+- Replay: every command carries reservation id, lease generation, a sequence number and a nonce;
+  the guest agent accepts `deliver_registration` once per boot.
+- Hostile replies: bounded size, strict schema, printable ASCII diagnostics, time-limited; a
+  violation quarantines the slot with code `hostile_guest`.
+
+```mermaid
+sequenceDiagram
+  participant P as Provider
+  participant D as Clone disk (offline)
+  participant V as Guest
+  P->>P: generate per-clone credential (memory only)
+  P->>D: inject credential (unattend or seed), before first boot
+  P->>V: boot
+  P->>V: probe (vm_id, seq 1, nonce)
+  V-->>P: guest_reply ready (bounded, validated)
+  P->>V: deliver_registration (seq 2, payload in session)
+  V-->>P: listening
+  loop heartbeat
+    P->>V: status
+    V-->>P: busy or job_done
+  end
+  P->>V: collect, shutdown
+  P->>P: destroy VM and clone, drop credential
+```
+
+## 6. Image catalog (contract: [image-catalog.md](../../parity/contracts/image-catalog.md))
+
+DECIDED: generations are immutable and identified as `<profile>/<image_version>-aap.<n>`,
+anchored to the P01 baselines (Windows `aee0669` / `20261007.264.1`, Ubuntu `7e7dc1b` /
+`20261012.334.1`) and their `inventory.json` hashes. One `active` generation per profile;
+the previous one is `retired` and kept as the single rollback generation. New admissions use the
+active generation; running jobs finish on theirs. A `quarantined` generation is never re-activated.
+
+```mermaid
+stateDiagram-v2
+  [*] --> candidate: assembled, hashed, secret-scanned
+  candidate --> approved: certificate and approver recorded
+  candidate --> quarantined: failed test, tamper, secret found
+  approved --> active: atomic pointer switch for new admissions
+  approved --> quarantined
+  active --> retired: newer generation activated (kept as rollback)
+  active --> quarantined: post-activation failure
+  retired --> active: rollback switch
+  retired --> [*]: rollback window ends, deleted by owner P25
+  quarantined --> [*]: deleted after evidence kept
+```
+
+## 7. Cache (contract: [cache-qualification.md](../../parity/contracts/cache-qualification.md))
+
+DECIDED: zccache 1.15.6 (tag `1.15.6`, commit `15ec9537`) replaces sccache entirely. Each
+compiler and invocation on each platform is `qualified` (with evidence) or `direct` (no wrapper).
+No sccache fallback, binary, variable or format reuse. Native `cl.exe`/`link.exe` start `direct`
+(the pinned feature matrix marks them partial). Isolated per-trust cache roots and copy or reflink
+delivery by default; hardlink delivery and cross-trust sharing stay off until P04/P13 prove them.
+
+```mermaid
+flowchart LR
+  J[Job compiler call] --> Q{mode for compiler and invocation on this platform}
+  Q -- qualified --> Z[zccache wrapper, isolated root, daemon retention]
+  Q -- direct --> C[native compiler, no wrapper]
+  Z -- daemon failure --> C
+```
+
+## 8. Status and settings (contract: [status-settings.md](../../parity/contracts/status-settings.md))
+
+DECIDED: existing files stay compatible. `inbox\settings.json` schema 2 and `status.json`
+schema 4 keep their meaning. The supervisor adds `status.v5.json` beside `status.json` (the
+current tray reports any `status.json` schema above 4 as an error, so schema 5 must not replace
+it). The tray writes `settings.json` schema 3 only after `status.v5.json` lists 3 in
+`settings_schemas`; until then it keeps the Windows count in its tray-local file.
+
+```mermaid
+flowchart TB
+  T[Tray] -- "schema 2, or 3 once advertised" --> I[inbox settings.json]
+  I --> S[Supervisor]
+  S --> S4[status.json schema 4, legacy pool view]
+  S --> S5[status.v5.json: profiles, slots, generations, cache]
+  S5 -- "settings_schemas lists 3" --> T
+  S4 --> T
+  TL[(tray-local windows-runners.json)] <--> T
+```
+
+## 9. Evidence and cleanup (contract: [evidence-cleanup.md](../../parity/contracts/evidence-cleanup.md))
+
+DECIDED: every accepted result is one evidence-bundle record; every merged item gets a cleanup
+receipt in the shape P00 writes (automated) or the coordinator's manual shape, both with an
+independent verifier and observed absence. See [WORKTREES.md](WORKTREES.md).
+
+```mermaid
+flowchart LR
+  W[Worker] --> E[evidence-bundle records]
+  E --> V[Independent verifier at exact head]
+  V --> M[Agent merge]
+  M --> C[Cleanup per WORKTREES.md]
+  C --> R[cleanup receipt, verifier is not the actor]
+  R --> N[Barrier opens, next claim]
+```
+
+## 10. Failure handling at every boundary
+
+| Boundary | Failure | Required behaviour |
+|---|---|---|
+| Tray -> inbox | invalid, oversized, future schema | supervisor logs one warning, keeps last valid settings (existing rule) |
+| Supervisor crash | any point | on restart: reload allocator, replay journals, reconcile; no slot freed without proof |
+| Allocator write | crash mid-write | atomic rename; the previous revision stays authoritative |
+| Admission | sixth slot, over share, unmeasured budget, legacy not adopted | refuse; nothing created, nothing registered |
+| Broker call | wsl fails, timeout, malformed reply, `refused` | no registration; slot goes `deleting`; retry only with a new lease id |
+| GitHub API | 404/409/422/rate limit | broker returns `refused` with a reason; no partial runner left (delete by id if one was created) |
+| VM create/boot | Hyper-V error, timeout | journal `failed`; destroy; reconciled after absence observed |
+| Guest transport | auth fails, no reply, hostile reply | bounded retries; then `quarantined` with `hostile_guest` or `timeout`; destroy |
+| Heartbeat | lost | state unchanged; `cleanup_uncertain`; capacity held until reconcile proves absence |
+| Job | cancelled, failed, timed out | normal: `collecting` then `deleting` |
+| Teardown | VM or disk will not go | three retries over 15 s, then `quarantined`; capacity held; status shows it |
+| Unknown VM `aap-*` on the host | no journal | reconcile quarantines it in a free slot or refuses admission until resolved; never adopted silently |
+| Image | hash mismatch, quarantined generation | refuse create; status shows the generation state |
+| Control distro down | no broker | VM profiles report `available: false`; running guests finish their jobs |
+
+## 11. Responsibilities by later item
+
+| Contract | Writer | Readers |
+|---|---|---|
+| allocator | P09 | P10, P11, P12, P16, P20, P22 |
+| backend-lifecycle | P10, P11 | P09, P12, P19, P22, P25 |
+| broker | P08 | P10, P11, P14, P15, P16, P26 |
+| guest-transport | P10, P11 host side; P14, P15 guest agent; lab proof P08/P10/P11 | P22, P26 |
+| image-catalog | P21, P25 | P06, P07, P10, P11, P12, P19, P20, P24 |
+| cache-qualification | P04 | P13, P14, P15, P16, P20, P22, P24 |
+| status-settings | P12 (supervisor and docs), P20 (tray) | P19, P22 |
+| evidence-cleanup | P05, P00 | every item, P24, P26, P28 |
+
+## References
+
+- GitHub REST, self-hosted runners (JIT config, registration token expiry): <https://docs.github.com/en/rest/actions/self-hosted-runners?apiVersion=2022-11-28>
+- GitHub, remove runners (JIT runners run one job; unused JIT runners are removed automatically): <https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/remove-runners>
+- actions/runner `CommandSettings.cs` (environment input, secret masking): <https://github.com/actions/runner/blob/7ce71e54a9affe1daae918a3e2350c1543dfa240/src/Runner.Listener/CommandSettings.cs>; secret argument list in `src/Runner.Common/Constants.cs` at the same commit. Latest release on 2026-10-19: v2.338.0.
+- PowerShell Direct: <https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/powershell-direct>
+- Hyper-V sockets, Linux `AF_VSOCK` guests: <https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/make-integration-service>
+- P01 baselines: [parity/baselines/README.md](../../parity/baselines/README.md); zccache pin: [parity/baselines/zccache.md](../../parity/baselines/zccache.md)

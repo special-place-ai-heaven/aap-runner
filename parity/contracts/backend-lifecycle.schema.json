@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/backend-lifecycle.schema.json",
+  "title": "Backend provider journal record (one JSON line per record) and measured disk budget",
+  "x-contract-version": 1,
+  "x-owner": "P10 (Windows provider), P11 (Linux provider); budgets measured by P06/P07; consumers P09, P12, P19, P22, P25",
+  "oneOf": [{"$ref": "#/$defs/op"}, {"$ref": "#/$defs/budget"}],
+  "$defs": {
+    "time": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "uuid": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "generation": {"type": "string", "pattern": "^(win25-vs2026-x64|ubuntu-24.04-x64)/[0-9]{8}\\.[0-9]+\\.[0-9]+-aap\\.[0-9]+$"},
+    "relpath": {
+      "type": "string",
+      "maxLength": 200,
+      "pattern": "^(images|clones)/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*\\.(vhdx|avhdx|iso)$",
+      "not": {"pattern": "(^|/)\\.\\.?(/|$)"}
+    },
+    "op": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "reservation_id", "lease_generation", "backend", "profile", "image_generation", "op", "idempotency_key", "phase", "at", "vm", "disks", "result"],
+      "properties": {
+        "schema": {"const": 1},
+        "kind": {"const": "op"},
+        "reservation_id": {"type": "string", "pattern": "^r-[0-9a-f]{16}$"},
+        "lease_generation": {"type": "integer", "minimum": 1},
+        "backend": {"enum": ["hyperv-vm", "wsl-legacy"]},
+        "profile": {"enum": ["linux", "windows"]},
+        "image_generation": {"type": "string", "maxLength": 80},
+        "op": {"enum": ["create", "boot", "ready", "run_one", "drain", "collect", "reset", "destroy", "reconcile"]},
+        "idempotency_key": {"type": "string", "maxLength": 80},
+        "phase": {"enum": ["intent", "done", "failed"]},
+        "at": {"$ref": "#/$defs/time"},
+        "vm": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["vm_id", "vm_name"],
+          "properties": {
+            "vm_id": {"anyOf": [{"$ref": "#/$defs/uuid"}, {"type": "null"}]},
+            "vm_name": {"type": ["string", "null"], "pattern": "^aap-(w|l)-[1-5]-[0-9]{1,9}-[0-9a-f]{8}$"}
+          }
+        },
+        "disks": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["role", "path", "sha256"],
+            "properties": {
+              "role": {"enum": ["base_ref", "os_diff", "scratch", "seed"]},
+              "path": {"$ref": "#/$defs/relpath"},
+              "sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+            },
+            "if": {"properties": {"role": {"const": "base_ref"}}},
+            "then": {"properties": {"sha256": {"$ref": "#/$defs/sha256"}, "path": {"pattern": "^images/"}}},
+            "else": {"properties": {"path": {"pattern": "^clones/"}}}
+          }
+        },
+        "result": {
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["code", "detail"],
+              "properties": {
+                "code": {"enum": ["ok", "absent", "retryable", "fatal", "timeout", "hostile_guest"]},
+                "detail": {"type": "string", "maxLength": 200, "pattern": "^[ -~]*$"}
+              }
+            }
+          ]
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "profile", "image_generation", "measured", "evidence_ref", "measured_at", "base_gib", "clone_peak_gib", "scratch_peak_gib", "staging_gib", "replacement_gib", "rollback_retained_generations", "boot_mem_overhead_mib"],
+      "properties": {
+        "schema": {"const": 1},
+        "kind": {"const": "budget"},
+        "profile": {"enum": ["linux", "windows"]},
+        "image_generation": {"$ref": "#/$defs/generation"},
+        "measured": {"const": true},
+        "evidence_ref": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^evidence/"},
+        "measured_at": {"$ref": "#/$defs/time"},
+        "base_gib": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "clone_peak_gib": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "scratch_peak_gib": {"type": "integer", "minimum": 0, "maximum": 4096},
+        "staging_gib": {"type": "integer", "minimum": 0, "maximum": 4096},
+        "replacement_gib": {"type": "integer", "minimum": 0, "maximum": 4096},
+        "rollback_retained_generations": {"type": "integer", "minimum": 0, "maximum": 2},
+        "boot_mem_overhead_mib": {"type": "integer", "minimum": 0, "maximum": 65536}
+      }
+    }
+  }
+}

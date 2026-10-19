@@ -1,0 +1,54 @@
+# Cache qualification contract (version 1)
+
+Owner: **P04** (writes the matrices). Readers: P13 (packaging), P14/P15 (guest wiring), P16
+(legacy retirement of sccache), P20 (cache state in the tray), P22, P24. Schema:
+[`cache-qualification.schema.json`](cache-qualification.schema.json), one document per platform
+at `parity/cache/qualification/<platform>.json`. Fixtures: `fixtures/cache-qualification/`.
+Pin and interface facts: [parity/baselines/zccache.md](../baselines/zccache.md).
+
+## Rules (DECIDED)
+
+1. zccache **1.15.6**, tag `1.15.6`, commit `15ec9537af0d219e07b72ce2b3f97d5f68d72b5e`, release
+   archives `zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz`
+   (`885a109c...28e59f7`) and `zccache-v1.15.6-x86_64-pc-windows-msvc.zip`
+   (`a9e2b079...fd949b`). The schema pins version, commit, archive name and hash per platform.
+   `binary_sha256` is filled by P04 after unpacking; the owner's benchmark binary is compared,
+   never moved or modified.
+2. **No sccache**: no sccache binary, renamed wrapper, variable, cache format, path or fallback in
+   any mode. `validate.py` rejects a matrix that mentions it.
+3. Every compiler and invocation pair is `qualified` (with `evidence_ref` under
+   `parity/cache/qualification/`) or `direct`. A pair missing from the matrix is `direct`.
+   `direct` means the native compiler with no wrapper; full parity must hold with every pair direct.
+4. `qualified` needs, per platform and compiler version: uncached, cold and warm builds with equal
+   exit codes and equivalent outputs (reproducible fixture or documented semantic comparison);
+   deliberate compile errors stay errors; a warm build shows a real hit in sanitized telemetry;
+   response files, paths with spaces, PDB/debug output, depfiles and unknown flags exercised;
+   daemon kill and restart mid-build still produce correct results.
+5. Starting state at the pin: `cl` and `link` are `direct` (feature matrix: native integration
+   "partial"); `nvcc` is `direct` (unsupported); `rustc` through `RUSTC_WRAPPER`, Clang and
+   clang-cl are candidates for P04; GCC as a wrapper target is not listed in the README tool list,
+   so it needs its own evidence.
+6. Runtime: one cache root per trust namespace (default per repository), `ZCCACHE_MODE=COPY` or a
+   proven reflink mode; hardlink delivery and cross-trust or cross-job mutable sharing stay off
+   until P04/P13 prove poisoning and concurrency safety. Retention is the daemon's (budget via
+   `ZCCACHE_CACHE_SIZE_BYTES` or `_PERCENT`); index, log, metadata and temp bytes are counted
+   separately against the guest scratch budget. No manager-side oldest-file eviction.
+7. A wrapper failure at runtime falls back to the direct compiler for that invocation and reports
+   cache state `degraded` in `status.v5.json`; it never fails a build that would pass direct.
+
+## Matrix template (both platforms)
+
+| Compiler | Invocations to qualify | Start mode |
+|---|---|---|
+| rustc | rustc-wrapper, link, path-with-spaces, debug-pdb (Windows) | candidate |
+| clang / clang++ | compile-object, compile-pch, response-file, depfile, path-with-spaces | candidate |
+| gcc / g++ (Linux) | compile-object, compile-pch, response-file, depfile | candidate, evidence required |
+| clang-cl (Windows) | compile-object, response-file, debug-pdb, path-with-spaces | candidate |
+| cl (Windows) | compile-object, compile-pch, response-file, debug-pdb | direct |
+| link / lld-link (Windows) | link | direct |
+| nvcc | any | direct, unsupported |
+
+## Negative fixtures
+
+`qualified` without evidence, a reason that falls back to sccache, release 1.15.5, and a Linux
+matrix that names the Windows archive.

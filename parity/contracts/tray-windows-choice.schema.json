@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/tray-windows-choice.schema.json",
+  "title": "%LOCALAPPDATA%\\aap-runner\\windows-runners.json (tray-local, existing schema 1, frozen as merged in P20.0)",
+  "x-contract-version": 1,
+  "x-owner": "P20.0 (existing, crates/tray/src/settings.rs); P12/P20 retire it once settings schema 3 is accepted",
+  "type": "object",
+  "required": ["schema", "windows_runner_count"],
+  "properties": {
+    "schema": {"const": 1},
+    "windows_runner_count": {"type": "integer", "minimum": 0, "maximum": 4}
+  }
+}

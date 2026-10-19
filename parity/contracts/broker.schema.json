@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/broker.schema.json",
+  "title": "Registration broker messages (stdin/stdout of the root-only broker in the WSL control distro) and its audit record",
+  "x-contract-version": 1,
+  "x-owner": "P08; consumers P10, P11, P12, P14, P15, P16, P26",
+  "oneOf": [
+    {"$ref": "#/$defs/lease_request"},
+    {"$ref": "#/$defs/lease_response"},
+    {"$ref": "#/$defs/release_request"},
+    {"$ref": "#/$defs/release_response"},
+    {"$ref": "#/$defs/audit"}
+  ],
+  "$defs": {
+    "time": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "lease_id": {"type": "string", "pattern": "^l-[0-9a-f]{32}$"},
+    "nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "reservation_id": {"type": "string", "pattern": "^r-[0-9a-f]{16}$"},
+    "profile": {"enum": ["win25-vs2026-x64", "ubuntu-24.04-x64"]},
+    "generation": {"type": "string", "pattern": "^(win25-vs2026-x64|ubuntu-24.04-x64)/[0-9]{8}\\.[0-9]+\\.[0-9]+-aap\\.[0-9]+$"},
+    "runner_name": {"type": "string", "pattern": "^aap-(w|l)-[1-5]-[0-9]{1,9}-[0-9a-f]{8}$"},
+    "refusal": {"enum": ["replay", "expired", "clock_skew", "stale_generation", "malformed", "unknown_profile", "lease_limit", "github_error", "rate_limited", "not_found"]},
+    "lease_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "lease_id", "reservation_id", "lease_generation", "slot", "profile", "image_generation", "nonce", "issued_at"],
+      "properties": {
+        "schema": {"const": 1},
+        "kind": {"const": "lease_request"},
+        "lease_id": {"$ref": "#/$defs/lease_id"},
+        "reservation_id": {"$ref": "#/$defs/reservation_id"},
+        "lease_generation": {"type": "integer", "minimum": 1, "maximum": 999999999},
+        "slot": {"type": "integer", "minimum": 1, "maximum": 5},
+        "profile": {"$ref": "#/$defs/profile"},
+        "image_generation": {"$ref": "#/$defs/generation"},
+        "nonce": {"$ref": "#/$defs/nonce"},
+        "issued_at": {"$ref": "#/$defs/time"}
+      }
+    },
+    "lease_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "lease_id", "result", "reason", "runner_id", "runner_name", "expires_at", "jit_config"],
+      "properties": {
+        "schema": {"const": 1},
+        "kind": {"const": "lease_response"},
+        "lease_id": {"$ref": "#/$defs/lease_id"},
+        "result": {"enum": ["issued", "refused"]},
+        "reason": {"anyOf": [{"const": "ok"}, {"$ref": "#/$defs/refusal"}]},
+        "runner_id": {"type": ["integer", "null"], "minimum": 1},
+        "runner_name": {"anyOf": [{"$ref": "#/$defs/runner_name"}, {"type": "null"}]},
+        "expires_at": {"anyOf": [{"$ref": "#/$defs/time"}, {"type": "null"}]},
+        "jit_config": {"type": ["string", "null"], "minLength": 1, "maxLength": 16384, "pattern": "^[A-Za-z0-9+/=_-]+$"}
+      }
+    },
+    "release_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "lease_id", "runner_id", "nonce", "issued_at"],
+      "properties": {
+        "schema": {"const": 1},
+        "kind": {"const": "release_request"},
+        "lease_id": {"$ref": "#/$defs/lease_id"},
+        "runner_id": {"type": "integer", "minimum": 1},
+        "nonce": {"$ref": "#/$defs/nonce"},
+        "issued_at": {"$ref": "#/$defs/time"}
+      }
+    },
+    "release_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "lease_id", "result", "reason"],
+      "properties": {
+        "schema": {"const": 1},
+        "kind": {"const": "release_response"},
+        "lease_id": {"$ref": "#/$defs/lease_id"},
+        "result": {"enum": ["deregistered", "already_gone", "refused", "retry"]},
+        "reason": {"anyOf": [{"const": "ok"}, {"$ref": "#/$defs/refusal"}]}
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "kind", "at", "op", "lease_id", "reservation_id", "lease_generation", "profile", "image_generation", "outcome", "reason", "runner_id", "runner_name"],
+      "properties": {
+        "schema": {"const": 1},
+        "kind": {"const": "audit"},
+        "at": {"$ref": "#/$defs/time"},
+        "op": {"enum": ["lease", "release", "expire"]},
+        "lease_id": {"$ref": "#/$defs/lease_id"},
+        "reservation_id": {"anyOf": [{"$ref": "#/$defs/reservation_id"}, {"type": "null"}]},
+        "lease_generation": {"type": ["integer", "null"], "minimum": 1},
+        "profile": {"anyOf": [{"$ref": "#/$defs/profile"}, {"type": "null"}]},
+        "image_generation": {"anyOf": [{"$ref": "#/$defs/generation"}, {"type": "null"}]},
+        "outcome": {"enum": ["issued", "refused", "deregistered", "already_gone", "retry"]},
+        "reason": {"anyOf": [{"const": "ok"}, {"$ref": "#/$defs/refusal"}]},
+        "runner_id": {"type": ["integer", "null"], "minimum": 1},
+        "runner_name": {"anyOf": [{"$ref": "#/$defs/runner_name"}, {"type": "null"}]}
+      }
+    }
+  }
+}

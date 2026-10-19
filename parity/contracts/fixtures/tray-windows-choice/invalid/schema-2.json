@@ -1,0 +1,7 @@
+{
+  "expect": "must be 1",
+  "instance": {
+    "schema": 2,
+    "windows_runner_count": 1
+  }
+}

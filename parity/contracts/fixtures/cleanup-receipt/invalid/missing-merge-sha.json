@@ -1,0 +1,48 @@
+{
+  "expect": "missing required property 'merge_sha'",
+  "instance": {
+    "schema": 1,
+    "item": "P02",
+    "attempt": 1,
+    "final_reviewed_head": "dddddddddddddddddddddddddddddddddddddddd",
+    "pr_url": "https://github.com/special-place-ai-heaven/aap-runner/pull/29",
+    "base_sha": "fc3bbc6000000000000000000000000000000000",
+    "origin_main_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "merge_comparison": "second parent equals accepted head",
+    "implementer": "p02-impl",
+    "tested_by": "p02-verify",
+    "reviewed_by": [
+      "p02-review",
+      "p02-sec"
+    ],
+    "protected_state": {
+      "base_clone_initial": [],
+      "base_clone_after": [],
+      "base_before_sha": "ffffffffffffffffffffffffffffffffffffffff",
+      "base_after_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "sentinels": [
+        {
+          "path": "C:\\temp\\aap-cache-benchmark-2026-10-18",
+          "existed": true,
+          "exists": true
+        }
+      ]
+    },
+    "disposed": [
+      {
+        "id": "repo",
+        "path": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\P02\\attempt-1\\repo",
+        "observed_absent": true
+      }
+    ],
+    "retained_assets": [],
+    "process_observations": [],
+    "released_leases": [
+      "parity/contracts/**",
+      "docs/parity/ARCHITECTURE.md"
+    ],
+    "verifier": "p02-cleanup-verify",
+    "cleanup_started": "2026-10-19T18:00:00Z",
+    "verified_at": "2026-10-19T18:00:00Z"
+  }
+}

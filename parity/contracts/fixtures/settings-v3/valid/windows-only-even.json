@@ -1,0 +1,14 @@
+{
+  "schema": 3,
+  "runner_count": 0,
+  "windows_runner_count": 2,
+  "job_cpus": 19,
+  "job_memory_gib": 57,
+  "paused": false,
+  "io_percent": 90,
+  "sharing": "slice",
+  "host_reserve_percent": 10,
+  "share_mode": "even",
+  "linux_share_percent": null,
+  "windows_share_percent": null
+}

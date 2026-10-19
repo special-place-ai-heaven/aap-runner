@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "kind": "audit",
+  "at": "2026-10-19T18:00:00Z",
+  "op": "lease",
+  "lease_id": "l-55555555555555555555555555555555",
+  "reservation_id": "r-00000000000000b1",
+  "lease_generation": 3,
+  "profile": "win25-vs2026-x64",
+  "image_generation": "win25-vs2026-x64/20261007.264.1-aap.1",
+  "outcome": "issued",
+  "reason": "ok",
+  "runner_id": 23,
+  "runner_name": "aap-w-4-3-1a2b3c4d"
+}
