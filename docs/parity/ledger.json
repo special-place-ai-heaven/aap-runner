@@ -112,7 +112,7 @@
       "merge_proof": null,
       "cleanup_receipt": null,
       "branch": "parity/p02-contracts",
-      "reviewed_head": "d73102175b7c018a8112c677e5eb0084c4452bca",
+      "reviewed_head": "3a52d4482dedcf09a44406fb506fb1bf5ab41bd6",
       "evidence": "parity/contracts validate.py PASS (11 schemas, positive and negative fixtures); independent architecture review (FIX-THEN-MERGE, 8 contract defects + ledger gap) and security review (FIX-THEN-MERGE, 3 high / 7 medium / 4 low, all contract text) at ef4251e, fixes applied; delta re-review at the final head",
       "decisions": [
         "labels: Windows self-hosted,Windows,X64,aap-win25-vs2026; Ubuntu self-hosted,Linux,X64,aap-ubuntu-24.04; group aap-crrr",

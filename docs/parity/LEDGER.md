@@ -32,7 +32,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). States below are current
 - Pinned execution lane: Sol high; ownership: `parity/contracts/**`, `docs/parity/ARCHITECTURE.md`.
 - Deliverable: Specify immutable image/catalog, host-wide resource lease, backend lifecycle, guest bootstrap, auth/JIT transport, cache qualification, status/settings compatibility, evidence and cleanup schemas. Prove management transport feasibility in an explicitly authorized disposable lab before backend fan-out.
 - Acceptance: Independent security review; concrete schema examples and negative fixtures; no missing interface decision delegated to two workers. Preserve App key custody in existing control distro. PR20 is merged and reconciled before consumers depend on its helper APIs.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: REVIEWED at `d731021` on `parity/p02-contracts` — ARCHITECTURE.md plus 8 contracts, 11 schemas and fixtures validated; architecture and security reviews applied; owner decisions 2026-10-19 (labels, D:\aap-runner\images, distro uptime, 10 % reserve floor, eval ISO) recorded in parity/contracts/README.md.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: REVIEWED at `3a52d44` on `parity/p02-contracts` — ARCHITECTURE.md plus 8 contracts, 11 schemas and fixtures validated; architecture and security reviews applied; owner decisions 2026-10-19 (labels, D:\aap-runner\images, distro uptime, 10 % reserve floor, eval ISO) recorded in parity/contracts/README.md.
 
 ## P02.1 — Prove guest management transport and isolation in the authorized lab
 
