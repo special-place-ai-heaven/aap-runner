@@ -3,6 +3,7 @@
 Run: python -I -m unittest discover -s tests/parity/cache/qualification -p "test_*.py"
 """
 
+import copy
 import json
 import re
 import subprocess
@@ -16,26 +17,25 @@ VALIDATE = REPO / "parity" / "contracts" / "validate.py"
 PLATFORMS = ("linux-x86_64", "windows-x86_64")
 PENDING = "unqualified - pending lab (P13/P22)"
 MSVC = "partial per upstream matrix - direct-only until proven"
+RUST_BIN = "direct per upstream binary-crate pass-through (README 400-403)"
 
 # Contract template (parity/contracts/cache-qualification.md, "Matrix template").
+CC = {"compile-object", "compile-pch", "response-file", "depfile", "path-with-spaces"}
+GCC = {"compile-object", "compile-pch", "response-file", "depfile"}
 TEMPLATE = {
-    "linux-x86_64": {
-        "rustc": {"rustc-wrapper", "link", "path-with-spaces"},
-        "clang": {"compile-object", "compile-pch", "response-file", "depfile", "path-with-spaces"},
-        "clang++": {"compile-object", "compile-pch", "response-file", "depfile", "path-with-spaces"},
-        "gcc": {"compile-object", "compile-pch", "response-file", "depfile"},
-        "g++": {"compile-object", "compile-pch", "response-file", "depfile"},
-    },
-    "windows-x86_64": {
-        "rustc": {"rustc-wrapper", "link", "path-with-spaces", "debug-pdb"},
-        "clang": {"compile-object", "compile-pch", "response-file", "depfile", "path-with-spaces"},
-        "clang++": {"compile-object", "compile-pch", "response-file", "depfile", "path-with-spaces"},
-        "clang-cl": {"compile-object", "response-file", "debug-pdb", "path-with-spaces"},
-        "cl": {"compile-object", "compile-pch", "response-file", "debug-pdb"},
-        "link": {"link"},
-        "lld-link": {"link"},
-    },
+    "linux-x86_64": {"rustc": {"rustc-wrapper", "link", "path-with-spaces"},
+                     "clang": CC, "clang++": CC, "gcc": GCC, "g++": GCC},
+    "windows-x86_64": {"rustc": {"rustc-wrapper", "link", "path-with-spaces", "debug-pdb"},
+                       "clang": CC, "clang++": CC,
+                       "clang-cl": {"compile-object", "response-file", "debug-pdb", "path-with-spaces"},
+                       "cl": {"compile-object", "compile-pch", "response-file", "debug-pdb"},
+                       "link": {"link"}, "lld-link": {"link"}},
 }
+# Linux -g (debug-pdb) rows exist only for the image defaults: the schema caps a matrix at 64 rows.
+LINUX_DEBUG = {("clang", "18.1.3"), ("clang++", "18.1.3"), ("gcc", "13.3.0"), ("g++", "13.3.0")}
+
+LAB_GATES = {"concurrency", "daemon_restart", "unsupported_invocations"}
+IDENTITY = ("compiler", "compiler_version", "invocation", "evidence_ref")
 
 
 def load(name):
@@ -54,6 +54,30 @@ def raw_versions(inventory, prefix):
     return set(re.findall(r"\d+\.\d+\.\d+(?:\.\d+)?", line.group(1)))
 
 
+def qualified_row_problems(doc, row, record):
+    """Why a `qualified` matrix row is not backed by its harness record; empty means backed.
+
+    The harness always writes mode "direct" (it covers method steps 1-6 only), so the record's row
+    must match the matrix row on identity, not on mode or reason. Steps 7-9 are the lab gates.
+    """
+    problems = []
+    if record.get("platform") != doc["platform"]:
+        problems.append("platform")
+    if any((record.get("row") or {}).get(k) != row[k] for k in IDENTITY):
+        problems.append("row identity")
+    if (record.get("tool_versions") or {}).get("zccache_sha256") != doc["zccache"]["binary_sha256"]:
+        problems.append("zccache binary")
+    if record.get("harness_pass") is not True:
+        problems.append("harness_pass")
+    checks = record.get("checks") or {}
+    if not checks or not all(v is True for v in checks.values()):
+        problems.append("checks")
+    gates = record.get("lab_gates") or {}
+    if set(gates) != LAB_GATES or not all(v is True for v in gates.values()):
+        problems.append("lab gates 7-9")
+    return problems
+
+
 class MatrixTests(unittest.TestCase):
     def test_both_matrices_validate(self):
         r = validate(*(QUAL / f"{p}.json" for p in PLATFORMS))
@@ -64,11 +88,24 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("qualified requires evidence_ref", r.stdout)
 
-    def test_every_row_is_direct_and_pending_lab(self):
+    def test_evidence_refs_are_unique_per_row(self):
+        refs = []
+        for p in PLATFORMS:
+            for row in load(p)["rows"]:
+                self.assertTrue(row["evidence_ref"].startswith(f"parity/cache/qualification/evidence/{p}/"), row)
+                refs.append(row["evidence_ref"])
+        self.assertEqual(len(refs), len(set(refs)), sorted(r for r in refs if refs.count(r) > 1))
+
+    def test_every_row_is_direct_with_its_reason(self):
         for p in PLATFORMS:
             for row in load(p)["rows"]:
                 self.assertEqual(row["mode"], "direct", row)
-                want = MSVC if row["compiler"] in ("cl", "link") else PENDING
+                if row["compiler"] in ("cl", "link"):
+                    want = MSVC
+                elif row["compiler"] == "rustc" and row["invocation"] in ("link", "debug-pdb"):
+                    want = RUST_BIN
+                else:
+                    want = PENDING
                 self.assertTrue(row["reason"].startswith(want), row)
 
     def test_template_covered_for_every_baseline_version(self):
@@ -79,6 +116,8 @@ class MatrixTests(unittest.TestCase):
                 versions.setdefault(row["compiler"], set()).add(row["compiler_version"])
             have = {(r["compiler"], r["compiler_version"], r["invocation"]) for r in rows}
             want = {(c, v, i) for c, invs in TEMPLATE[p].items() for v in versions.get(c, {"MISSING"}) for i in invs}
+            if p == "linux-x86_64":
+                want |= {(c, v, "debug-pdb") for c, v in LINUX_DEBUG}
             self.assertEqual(have, want, p)
 
     def test_versions_come_from_the_p01_baselines(self):
@@ -121,11 +160,43 @@ class MatrixTests(unittest.TestCase):
                     self.assertIn(int(n), lines, row)
         self.assertGreater(cited, 0)
 
-    def test_qualified_rows_have_committed_evidence(self):
+    def test_qualified_rows_are_backed_by_their_records(self):
         for p in PLATFORMS:
-            for row in load(p)["rows"]:
+            doc = load(p)
+            for row in doc["rows"]:
                 if row["mode"] == "qualified":
-                    self.assertTrue((REPO / row["evidence_ref"]).is_file(), row)
+                    path = REPO / row["evidence_ref"]
+                    self.assertTrue(path.is_file(), row)
+                    record = json.loads(path.read_text(encoding="utf-8"))
+                    self.assertEqual(qualified_row_problems(doc, row, record), [], row)
+
+    def test_backing_check_rejects_weak_records(self):
+        doc = load("windows-x86_64")
+        row = dict(doc["rows"][0], mode="qualified", reason="harness and lab steps 7-9 pass")
+        good = {
+            "platform": "windows-x86_64",
+            "tool_versions": {"zccache_sha256": doc["zccache"]["binary_sha256"]},
+            "harness_pass": True,
+            "checks": {"ok_exit_zero": True, "warm_has_hits": True},
+            "lab_gates": {g: True for g in LAB_GATES},
+            "row": {k: row[k] for k in IDENTITY} | {"mode": "direct", "reason": "harness checks pass; lab steps 7-9 pending"},
+        }
+        self.assertEqual(qualified_row_problems(doc, row, good), [])
+        cases = {
+            "platform": lambda r: r.update(platform="linux-x86_64"),
+            "row identity": lambda r: r["row"].update(compiler_version="0.0.0"),
+            "zccache binary": lambda r: r["tool_versions"].update(zccache_sha256="0" * 64),
+            "harness_pass": lambda r: r.update(harness_pass=False),
+            "checks": lambda r: r["checks"].update(warm_has_hits=False),
+            "lab gates 7-9": lambda r: r["lab_gates"].update(daemon_restart=None),
+        }
+        for want, mutate in cases.items():
+            bad = copy.deepcopy(good)
+            mutate(bad)
+            self.assertIn(want, qualified_row_problems(doc, row, bad), want)
+        bad = copy.deepcopy(good)
+        bad["checks"] = {}
+        self.assertIn("checks", qualified_row_problems(doc, row, bad))
 
     def test_pins_agree_with_artifacts_md_and_harnesses(self):
         artifacts = (QUAL / "artifacts.md").read_text(encoding="utf-8")
@@ -136,10 +207,16 @@ class MatrixTests(unittest.TestCase):
             self.assertIn(z["archive_sha256"], artifacts)
             self.assertIn(z["archive_sha256"], zc)
             self.assertIn(z["binary_sha256"], artifacts)
+
+        def member(name):
+            return re.search(r"`" + re.escape(name) + r"`[^\n]*?`([0-9a-f]{64})`", artifacts).group(1)
+
         sh = (QUAL / "harness" / "qualify.sh").read_text(encoding="utf-8")
         ps = (QUAL / "harness" / "qualify.ps1").read_text(encoding="utf-8")
         self.assertIn("ZQ_BINARY_SHA256=" + load("linux-x86_64")["zccache"]["binary_sha256"], sh)
+        self.assertIn("ZQ_FP_SHA256=" + member("zccache-v1.15.6-x86_64-unknown-linux-musl/zccache-fp"), sh)
         self.assertIn("$ZqBinarySha256 = '" + load("windows-x86_64")["zccache"]["binary_sha256"] + "'", ps)
+        self.assertIn("$ZqFpSha256 = '" + member("zccache-v1.15.6-x86_64-pc-windows-msvc/zccache-fp.exe") + "'", ps)
 
 
 if __name__ == "__main__":

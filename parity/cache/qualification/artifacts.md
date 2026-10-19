@@ -18,8 +18,9 @@ Download URL: `https://github.com/zackees/zccache/releases/download/1.15.6/<arch
 
 On 2026-10-19 P04 downloaded both archives into a scratch directory outside the repository. Both
 hashed to the digests above. P04 then read the members in memory with Python's `tarfile` and
-`zipfile`. Nothing was extracted to disk or executed. These values fill `binary_sha256` in the
-two matrices and are pinned in the harnesses.
+`zipfile`. Nothing was extracted to disk or executed. The `zccache` hashes fill `binary_sha256`
+in the two matrices. The harnesses pin both `zccache` and its sibling `zccache-fp`, and refuse to
+run (exit 4) if either differs.
 
 | Archive | Member | Bytes | SHA-256 |
 |---|---|---:|---|

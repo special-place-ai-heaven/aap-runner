@@ -24,7 +24,7 @@
       "invocation": "link",
       "mode": "direct",
       "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/rustc-1.99.0-link.json",
-      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L15 yes"
+      "reason": "direct per upstream binary-crate pass-through (README 400-403)"
     },
     {
       "compiler": "rustc",
@@ -40,7 +40,7 @@
       "invocation": "debug-pdb",
       "mode": "direct",
       "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/rustc-1.99.0-debug-pdb.json",
-      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L15 yes"
+      "reason": "direct per upstream binary-crate pass-through (README 400-403)"
     },
     {
       "compiler": "clang",
@@ -87,7 +87,7 @@
       "compiler_version": "20.1.8",
       "invocation": "compile-object",
       "mode": "direct",
-      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-compile-object.json",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clangxx-20.1.8-compile-object.json",
       "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
     },
     {
@@ -95,7 +95,7 @@
       "compiler_version": "20.1.8",
       "invocation": "compile-pch",
       "mode": "direct",
-      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-compile-pch.json",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clangxx-20.1.8-compile-pch.json",
       "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
     },
     {
@@ -103,7 +103,7 @@
       "compiler_version": "20.1.8",
       "invocation": "response-file",
       "mode": "direct",
-      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-response-file.json",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clangxx-20.1.8-response-file.json",
       "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
     },
     {
@@ -111,7 +111,7 @@
       "compiler_version": "20.1.8",
       "invocation": "depfile",
       "mode": "direct",
-      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-depfile.json",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clangxx-20.1.8-depfile.json",
       "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
     },
     {
@@ -119,7 +119,7 @@
       "compiler_version": "20.1.8",
       "invocation": "path-with-spaces",
       "mode": "direct",
-      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-path-with-spaces.json",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clangxx-20.1.8-path-with-spaces.json",
       "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
     },
     {
@@ -144,7 +144,7 @@
       "invocation": "debug-pdb",
       "mode": "direct",
       "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-cl-20.1.8-debug-pdb.json",
-      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L19 clang-cl via MSVC-style args"
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L19 clang-cl via MSVC-style args; to confirm in lab: /Zi with /c may embed CodeView in the .obj and ignore /Fd (no PDB)"
     },
     {
       "compiler": "clang-cl",

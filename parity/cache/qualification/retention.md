@@ -40,11 +40,17 @@ P16 removes it. No zccache root is ever trimmed by the manager or by any script 
 4. **One root per trust namespace.** Default is one root per repository. Each root has its own
    daemon, endpoint, artifacts and indexes, because `ZCCACHE_CACHE_DIR` isolates all of them
    (R 422-437). `ZCCACHE_ENDPOINT` must not be set, since that would join two roots to one daemon.
+   The qualification harness removes it, with every other inherited `ZCCACHE_*` variable.
    `ZCCACHE_DAEMON_NAMESPACE` or `ZCCACHE_DAEMON_STATE_DIR` (R 464-489) may separate daemon
    identities. They never replace separate roots across trust boundaries.
 5. **No cross-trust or cross-job mutable sharing.** `ZCCACHE_PATH_REMAP=auto` cross-worktree
-   sharing (FM 64-67) stays off between trust namespaces. It is allowed inside one namespace only
-   after a lab concurrency and poisoning run.
+   sharing (FM 64-67) stays off between trust namespaces. Inside one namespace it needs three
+   things first: a lab concurrency run, a poisoning run, and a direct-equivalence run.
+   `ZCCACHE_PATH_REMAP=auto` injects `-ffile-prefix-map` into C/C++ invocations and
+   `--remap-path-prefix` into rustc invocations (FM 65-66). The compiler then no longer runs
+   the command the build asked for. Debug info and diagnostics name the canonical path, not
+   the worktree, so the equivalence run compares those outputs with a direct build of the same
+   tree. The harness relocated check is one example.
 6. **Copy delivery until poisoning is proven.** Set `ZCCACHE_MODE=COPY` (R 548-557). Do not use
    `AUTO`, `LINK` or `REFLINK_OR_LINK_OR_COPY`. `AUTO` hardlinks C/C++ outputs, and the
    hardlink poisoning prevention (FM 50-51, 110) is an upstream claim, not P04 evidence.
