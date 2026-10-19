@@ -65,10 +65,14 @@ The broker derives:
   with a lower generation for that slot is refused with `stale_generation`.
 - Outstanding limit: more than 5 leases not yet `released` (pending or issued) gives `lease_limit`,
   counted under the lock. A crash therefore cannot let leases pile up beyond the slot count.
-- Sweep: on every run, before handling the request, the broker deletes the GitHub runner of every
-  expired lease that is not yet `released` (by the ledger's runner id, or by derived name when the
-  id was never stored) and marks it `released`. A `wsl.exe` timeout or crash before the runner id is
-  stored therefore cannot strand a lease or a registration.
+- Sweep: `expires_at` is only the **delivery** deadline. On every run, before handling the
+  request, the broker looks at leases past `expires_at` that are not yet `released` and acts only
+  on two cases: a lease still `pending` (never confirmed issued, so never delivered; runner found by
+  derived name if one exists), or a runner GitHub reports `offline` and not `busy`. It deletes
+  that runner and marks the lease `released`. It **never deletes a runner GitHub reports busy** and
+  never touches an `online` runner; those leases stay open until the supervisor's
+  `release_request`. A `wsl.exe` timeout or crash before the runner id is stored therefore cannot
+  strand a never-delivered lease, and the sweep cannot end a running job.
 - `release_request` is **mandatory at every teardown**, whatever the reason, including a runner
   that ran its job. The broker resolves the runner id from the ledger; for a lease still `pending`
   after a crash it looks the runner up by its derived name
@@ -114,7 +118,8 @@ Security review L4: the secret-marker test samples every distro process's argv (
 during a broker run; the broker reuses `manager.sh`'s stdin pattern for every bearer token (curl
 reads headers from stdin) and never passes the JIT value through argv, including `jq --arg`.
 
-Expired, replayed, stale-generation (per slot), outstanding-limit, oversized, unknown-field
+Expired, replayed, stale-generation (per slot), outstanding-limit, sweep (deletes a pending lease's
+runner and an offline idle runner; leaves an expired lease whose runner is busy or online untouched), oversized, unknown-field
 (including `command`, `path`, `work_folder`, `labels`, `runner_id`), release of a pending lease by
 derived name, unavailable broker; a secret-marker test that a synthetic JIT value never appears in
 logs, the ledger, audit, status, inbox or evidence. The fixtures cover the shapes: a `command`

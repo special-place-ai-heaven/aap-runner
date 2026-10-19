@@ -9,6 +9,7 @@
   "required": [
     "schema",
     "revision",
+    "scope",
     "profiles",
     "generations"
   ],
@@ -20,6 +21,13 @@
       "type": "integer",
       "minimum": 0,
       "maximum": 2147483647
+    },
+    "scope": {
+      "enum": [
+        "lab",
+        "live"
+      ],
+      "description": "lab: a disposable lab catalog; live: the owner's installation. live_activation (gate D5) is required for an active generation only in live."
     },
     "profiles": {
       "type": "object",

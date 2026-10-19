@@ -109,7 +109,8 @@ DECIDED:
   every runner `floor(pool / (linux + windows))` (today's tray rule); `per_profile` gives each
   profile its configured percent and each runner `floor(profile cap / profile count)`. The owner's
   example, 2 Windows = 30 %, 3 Linux = 60 %, 10 % host, is the per-profile fixture.
-- Admission (`creating`, `ready`, `busy` are the admitted states) checks the per-runner share and
+- Admission (`creating`, `ready`, `busy`, and a heartbeat quarantine, which may still run its
+  job, are the admitted states) checks the per-runner share and
   the profile cap, counting each VM's measured memory overhead against its profile share. The
   pool check, the image-root disk budget and the IO budget count **every live** reservation,
   including draining and quarantined ones, so a resize admits the other profile only into what the

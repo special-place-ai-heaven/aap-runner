@@ -58,7 +58,8 @@ is re-validated before it is written, as today.
 |---|---|
 | the profile's admissions use the catalog `active` generation and every live slot runs it | `active` |
 | a newer generation is `active` while some live slots still run a `retired` one | `draining_old` |
-| the `active` generation is past its evaluation expiry or flagged by P25 drift detection, admissions continue until replaced | `stale` |
+| the `active` generation is flagged by P25 drift detection or is within the warning window before its evaluation expiry; admissions continue until replaced | `stale` |
+| the generation reached its evaluation expiry: the catalog moves it to `quarantined` (never `active`) and admissions stop | `quarantined` |
 | the profile's last generation was `quarantined` and no `active` one exists; no admissions | `quarantined` |
 
 ## Supervisor states and control distro uptime (DECIDED, owner 2026-10-19)

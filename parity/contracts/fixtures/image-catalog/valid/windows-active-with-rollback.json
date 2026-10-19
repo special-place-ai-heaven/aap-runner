@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "revision": 7,
+  "scope": "live",
   "profiles": {
     "win25-vs2026-x64": {
       "active": "win25-vs2026-x64/20261007.264.1-aap.2",

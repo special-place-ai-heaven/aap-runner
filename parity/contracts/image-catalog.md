@@ -58,16 +58,20 @@ ARCHITECTURE.md section 6.
    root: the P24 certificate pins every artifact hash, and the supervisor keeps an admin-only copy
    in `C:\ProgramData\aap-runner\capacity\approved-images.json`. The catalog's own hashes are
    not trusted alone, and there is no "unchanged file identity" shortcut.
-7. Activation on the live install needs the owner's approval record (`live_activation`, gate D5);
-   `validate.py` rejects an `active` generation without it.
+7. The catalog has a `scope`: `lab` (a disposable lab catalog) or `live` (the owner's
+   installation). In a `live` catalog an `active` generation needs the owner's approval record
+   (`live_activation`, gate D5); `validate.py` rejects it without one. A `lab` catalog may activate
+   without it.
 
 ## Evaluation media (owner decision 2026-10-19)
 
 The Windows golden image is built from a Windows Server 2025 Evaluation ISO (180-day), which is
 sufficient to prove parity. A licensed production image is a later owner decision. P06 records the
 evaluation expiry with each generation's provenance evidence and defines the rebuild (or rearm)
-step; P25 schedules it so no active generation reaches expiry; an expired generation is
-`quarantined`, never kept active.
+step; P25 schedules it so no active generation reaches expiry. Approaching expiry (or upstream
+drift) is reported as `stale` in `status.v5.json` while admissions continue; **reaching** expiry
+moves the generation to `quarantined`, never kept `active`, and admissions for that profile stop
+until a new generation is active.
 
 ## Owners and retention
 

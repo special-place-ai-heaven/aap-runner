@@ -43,7 +43,9 @@ exactly the VM name `aap-<w|l>-<slot>-<lease_generation>-<first 8 hex of reserva
 1. `linux.count + windows.count` is 1..5. Each control's maximum is `5 - other`; 0 is valid for
    either (3 Linux gives Windows max 2; 5 Windows gives Linux 0).
 2. At most `max_slots` live reservations (every state but `reconciled`); one live reservation per slot.
-3. Admitted states are `creating`, `ready`, `busy`. A profile never has more admitted reservations
+3. Admitted states are `creating`, `ready`, `busy`, and `quarantined` with kind `heartbeat`
+   (it holds capacity and may still be running its job, so its recovery to `busy` can never push the
+   profile over its count). A profile never has more admitted reservations
    than its count, and every admitted reservation uses the profile's configured backend. Resizing
    down cancels nothing: the excess moves to `draining` (a busy job keeps running) and counts only
    in rule 5.
@@ -119,12 +121,13 @@ healthy and never delete it without a journal entry that names it. A reservation
 
 ## Fixtures
 
-Valid: the owner example (2 Windows 30 %, 3 Linux 60 %, 10 %), legacy-only even shares after
+Valid: Linux 2 / Windows 2 with slot 5 heartbeat-quarantined, and the same after slot 5 recovers to
+`busy`; the owner example (2 Windows 30 %, 3 Linux 60 %, 10 %), legacy-only even shares after
 adoption with a reconciled legacy slot, a heartbeat quarantine holding its slot beside a VM
 reconciled as `never_registered`, Windows 2 -> 0 with slot 4's job still running (draining), and
 even 3L+2W -> 4L+1W while a Windows VM drains (the fourth Linux slot waits).
 
-Invalid: sixth live reservation, duplicate slot, VM before legacy adoption, shares that give away
+Invalid: a Windows admission in slot 3 beside the heartbeat-quarantined slot 5, sixth live reservation, duplicate slot, VM before legacy adoption, shares that give away
 the reserve, reserve under 10, Linux 5 plus Windows 2, a runner over its share, VM memory overhead
 over the share, Linux taking its new share before Windows finished draining, disk budget exceeded,
 IO reserved while unmeasured, the control VM's memory pushing the pool over, stale lease generation, a runner name that is not the VM name, a

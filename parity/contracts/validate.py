@@ -277,7 +277,9 @@ def sem_allocator(doc):
         raise Invalid("a VM reservation exists before legacy slots were adopted")
     pool, caps = _profile_caps(doc["host"], doc["host_reserve_percent"], doc["share_mode"], profiles)
     for name in ("linux", "windows"):
-        admitted = [r for r in live if r["profile"] == name and r["state"] in ADMITTED]
+        # A heartbeat quarantine holds capacity and may still be running its job, so it counts as admitted.
+        admitted = [r for r in live if r["profile"] == name and
+                    (r["state"] in ADMITTED or (r["state"] == "quarantined" and r["quarantine_kind"] == "heartbeat"))]
         if len(admitted) > profiles[name]["count"]:
             raise Invalid(f"{name}: more admitted reservations than the profile count")
         each = caps[name]["each"]
@@ -396,8 +398,8 @@ def sem_image_catalog(doc):
         for a in g["artifacts"]:
             if not a["path"].startswith(f"base/{g['generation_id']}/"):
                 raise Invalid(f"{g['generation_id']}: artifacts live in base/<profile>/<generation>/ and never move")
-        if g["state"] == "active" and g["live_activation"] is None:
-            raise Invalid(f"{g['generation_id']}: active requires the owner's live activation record (gate D5)")
+        if doc["scope"] == "live" and g["state"] == "active" and g["live_activation"] is None:
+            raise Invalid(f"{g['generation_id']}: active in a live catalog requires the owner's live activation record (gate D5)")
         if g["state"] in ("approved", "active", "retired"):
             if g["certification"]["certificate_ref"] is None or g["approved_by"] is None:
                 raise Invalid(f"{g['generation_id']}: {g['state']} requires a certificate and an approver")
