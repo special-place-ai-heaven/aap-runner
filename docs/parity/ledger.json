@@ -445,6 +445,30 @@
       "cleanup_receipt": null
     },
     {
+      "id": "P20.0",
+      "title": "Two-profile runner controls in the tray (Windows row inert)",
+      "earliest_wave": 2,
+      "needs": [
+        "P00"
+      ],
+      "owns": [
+        "crates/tray/src/**",
+        "crates/tray/README.md",
+        "supervisor/aap-runner-supervisor.ps1",
+        "supervisor/supervisor.Tests.ps1",
+        "supervisor/README.md"
+      ],
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "REVIEWED",
+      "deliverable": "Pulled forward of P20 on the owner's demand 2026-10-19: Linux 0-5 and Windows 0-5 segmented controls (total <= 5, never 0+0, over-budget cells disabled and recomputed live; Linux 0 stays disabled until a Windows backend exists), per-profile Each/Total and host-reserve lines, green Linux / blue Windows identity with drawn OS glyphs on rows, header and cards, OS-titled cards with coloured edge, Windows placeholder cards 'Not installed', stacked per-profile segments in pool bars, card bars and the 60-min graph with legend, same controls on the wizard sizing page. inbox settings.json stays schema 2 with optional windows_runner_count (written only when non-zero; runner_count remains the Linux count; file totals are the Linux share cap/(linux+windows) floored). Supervisor validates and drops the key; a Windows-only change writes nothing and restarts nothing.",
+      "acceptance": "Pure count rule tested for all combinations and both backend-flag values; settings round-trip with and without the key; supervisor rejects bad values and ignores Windows-only changes (Pester on 5.1 and 7); cargo fmt/clippy/test green; both contract READMEs updated in the same PR. Rollout: safe in any order — while no Windows backend exists the tray keeps the Windows choice in %LOCALAPPDATA%\u0007ap-runner\\windows-runners.json and never writes windows_runner_count to the inbox, so the previous supervisor (which rejects unknown keys) is unaffected.",
+      "reviewed_head": "13ec2e6c6ee6aec016cfaad27513b1780b0c52de",
+      "branch": "parity/p20-0-two-profile-controls",
+      "merge_proof": null,
+      "cleanup_receipt": null,
+      "evidence": "cargo fmt/clippy clean, cargo test 147/147; supervisor Pester 232/232 on pwsh 7.6.6 and Windows PowerShell 5.1 (coordinator rerun at 5e87995; 13ec2e6 adds a wizard test only, 148/148 per worker and CI); independent code review (FIX-THEN-MERGE, 5 items fixed) and security review (MERGE; rollout hazard removed by tray-local storage)"
+    },
+    {
       "id": "P20",
       "title": "Implement dual-profile tray controls and diagnostics",
       "earliest_wave": 9,

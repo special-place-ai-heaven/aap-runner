@@ -2,14 +2,135 @@
 //! supervisor. The window edits the runner count, the IO cap and the sharing mode, and shows each
 //! runner's even share of the caps to one decimal. The file stores the caps.
 //! Schema 2 adds `schema`, `io_percent` and `sharing`; a schema 1 file reads with their defaults.
+//! `windows_runner_count` is reserved for the Windows profile's count: read when present, never
+//! written while no Windows backend exists (the count lives in a tray-local file instead), so
+//! every file this tray writes is what it always was. `runner_count` stays the Linux count.
 
 use crate::state::{inbox, read_bounded, write_atomic};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::ops::RangeInclusive;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+/// The Linux count the supervisor accepts.
 pub const RUNNERS: RangeInclusive<u32> = 1..=5;
+/// Linux plus Windows runners, together.
+pub const MAX_RUNNERS: u32 = 5;
+/// A native Windows runner backend exists. Until it does the Windows count is a stored choice
+/// that starts nothing, and Linux keeps at least one runner so the pool runs something.
+pub const WINDOWS_BACKEND: bool = false;
+
+/// A runner profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Linux,
+    Windows,
+}
+
+impl Os {
+    pub fn name(self) -> &'static str {
+        match self {
+            Os::Linux => "Linux",
+            Os::Windows => "Windows",
+        }
+    }
+}
+
+/// Counts `os` may take when the other profile has `other`: up to the budget the other leaves,
+/// never 0 + 0, and Linux at least 1 while no Windows backend exists (`runner_count` is 1..5).
+pub fn count_range(os: Os, other: u32, windows_backend: bool) -> RangeInclusive<u32> {
+    let floor = u32::from(other == 0 || (os == Os::Linux && !windows_backend));
+    floor..=MAX_RUNNERS.saturating_sub(other)
+}
+
+pub fn counts_valid(linux: u32, windows: u32, windows_backend: bool) -> bool {
+    count_range(Os::Linux, windows, windows_backend).contains(&linux)
+        && count_range(Os::Windows, linux, windows_backend).contains(&windows)
+}
+
+/// What each runner gets when `linux + windows` share the pool: `pool / (linux + windows)`
+/// floored to whole CPUs and GiB, the same for both profiles.
+pub fn each_part(pool: (u32, u32), linux: u32, windows: u32) -> (u32, u32) {
+    let n = linux.saturating_add(windows).max(1);
+    (pool.0 / n, pool.1 / n)
+}
+
+/// Linux's part of the pool `(cpus, gib)`: the whole pool with no Windows runners (the file is
+/// then what it always was), else the floored per-runner part times `linux`.
+pub fn linux_part(pool: (u32, u32), linux: u32, windows: u32) -> (u32, u32) {
+    if windows == 0 {
+        return pool;
+    }
+    let (cpus, gib) = each_part(pool, linux, windows);
+    (cpus.saturating_mul(linux), gib.saturating_mul(linux))
+}
+
+/// The Windows count the written totals account for: none while no Windows backend exists, so
+/// a Windows-only edit leaves `runner_count` and the totals exactly as they were.
+pub fn applied_windows(windows: u32) -> u32 {
+    if WINDOWS_BACKEND { windows } else { 0 }
+}
+
+pub(crate) fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+/// `windows_runner_count` stays out of `inbox\settings.json` while no Windows backend exists: a
+/// supervisor that predates the key rejects the whole file (Pause included), so the file must be
+/// what it always was. It is also omitted when 0.
+fn omit_windows(v: &u32) -> bool {
+    !WINDOWS_BACKEND || *v == 0
+}
+
+/// Where the window keeps the Windows count while no Windows backend exists: tray-local,
+/// `%LOCALAPPDATA%\aap-runner\windows-runners.json` (`<base>\windows-runners.json` in tests).
+pub fn windows_choice_path(base: &Path) -> PathBuf {
+    if cfg!(test) {
+        base.join("windows-runners.json")
+    } else {
+        crate::github_setup::data_file("windows-runners.json")
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct WindowsChoice {
+    schema: u32,
+    windows_runner_count: u32,
+}
+
+/// The kept Windows count; 0 when missing, unreadable, another schema or not 0..4.
+pub fn read_windows_choice(path: &Path) -> u32 {
+    read_bounded(path)
+        .and_then(|s| serde_json::from_str::<WindowsChoice>(s.trim_start_matches('\u{feff}')).ok())
+        .filter(|c| c.schema == 1 && c.windows_runner_count < MAX_RUNNERS)
+        .map_or(0, |c| c.windows_runner_count)
+}
+
+pub fn write_windows_choice(path: &Path, windows: u32) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let choice = WindowsChoice {
+        schema: 1,
+        windows_runner_count: windows,
+    };
+    write_atomic(path, &serde_json::to_vec(&choice)?)
+}
+
+/// What the window shows as stored: `settings.json`, with the Windows count from the tray-local
+/// file while no Windows backend exists (0 when it does not fit the stored Linux count).
+pub fn read_with_windows_choice(base: &Path) -> Settings {
+    let mut s = read_settings(base);
+    if !WINDOWS_BACKEND {
+        let w = read_windows_choice(&windows_choice_path(base));
+        s.windows_runner_count = if counts_valid(s.runner_count, w, false) {
+            w
+        } else {
+            0
+        };
+    }
+    s
+}
 
 /// `8`, `4.8`, `14.4`: one decimal, dropped when the value is whole.
 pub fn one_decimal(v: f64) -> String {
@@ -67,6 +188,10 @@ pub struct Settings {
     /// Per-job IO cap as a percentage of the work disk's measured throughput.
     pub io_percent: u32,
     pub sharing: Sharing,
+    /// Windows profile count. Reserved in the file: never written while no Windows backend
+    /// exists (the window keeps it in `windows_choice_path`), and not when 0.
+    #[serde(skip_serializing_if = "omit_windows")]
+    pub windows_runner_count: u32,
 }
 
 impl Default for Settings {
@@ -79,6 +204,7 @@ impl Default for Settings {
             paused: false,
             io_percent: 90,
             sharing: Sharing::Slice,
+            windows_runner_count: 0,
         }
     }
 }
@@ -96,11 +222,13 @@ impl Settings {
         }
     }
 
-    /// What the window writes: the pool caps. Each runner's share is `cap / runners`.
-    pub fn derived(runners: u32, paused: bool, vm: &VmLimit) -> Settings {
-        let (job_cpus, job_memory_gib) = vm.cap();
+    /// What the window writes: Linux's part of the pool caps for the Windows runners that
+    /// actually run (`applied_windows`: none yet), so today the whole caps, as before.
+    pub fn derived(linux: u32, windows: u32, paused: bool, vm: &VmLimit) -> Settings {
+        let (job_cpus, job_memory_gib) = linux_part(vm.cap(), linux, applied_windows(windows));
         Settings {
-            runner_count: runners,
+            runner_count: linux,
+            windows_runner_count: windows,
             job_cpus,
             job_memory_gib,
             paused,
@@ -130,12 +258,24 @@ impl Settings {
             }
         };
         check("Runners", self.runner_count, &RUNNERS)?;
+        if !counts_valid(
+            self.runner_count,
+            self.windows_runner_count,
+            WINDOWS_BACKEND,
+        ) {
+            return Err(format!(
+                "Linux plus Windows runners must be at most {MAX_RUNNERS}"
+            ));
+        }
         check("Total CPUs", self.job_cpus, &CPUS)?;
         check("Total memory GiB", self.job_memory_gib, &MEMORY_GIB)?;
         check("IO cap percent", self.io_percent, &IO_PERCENT)?;
         let (cpus, gib) = self.per_runner();
-        if cpus < 1 || gib < 1 {
-            return Err("Each runner needs at least 1 CPU and 1 GiB".into());
+        if cpus < 1 {
+            return Err("Linux's part needs at least 1 CPU per runner".into());
+        }
+        if gib < 1 {
+            return Err("Linux's part needs at least 1 GiB per runner".into());
         }
         Ok(())
     }
@@ -302,7 +442,7 @@ mod tests {
     #[test]
     fn cpus_and_memory_derive_from_the_caps() {
         let d = |r, vm: &VmLimit| {
-            let s = Settings::derived(r, false, vm);
+            let s = Settings::derived(r, 0, false, vm);
             (
                 s.per_runner(),
                 (s.job_cpus, s.job_memory_gib),
@@ -321,7 +461,7 @@ mod tests {
             gib: 80,
             assumed: false,
         };
-        let five = Settings::derived(5, false, &wide);
+        let five = Settings::derived(5, 0, false, &wide);
         assert_eq!((five.job_cpus, five.job_memory_gib), (24, 72));
         assert_eq!(share_text(five.job_cpus, 5), "4.8");
         assert_eq!(share_text(five.job_memory_gib, 5), "14.4");
@@ -329,8 +469,8 @@ mod tests {
         assert_eq!(cpu_share(24, 5, true), 4.0);
         assert_eq!(one_decimal(cpu_share(24, 5, true)), "4");
         assert!(five.validate(&wide).is_ok());
-        assert_eq!(Settings::derived(1, false, &VM), Settings::default());
-        assert!(Settings::derived(2, true, &VM).paused);
+        assert_eq!(Settings::derived(1, 0, false, &VM), Settings::default());
+        assert!(Settings::derived(2, 0, true, &VM).paused);
         let small = VmLimit {
             cpus: 16,
             gib: 32,
@@ -585,5 +725,168 @@ mod tests {
     fn toggle_label() {
         assert_eq!(Settings::default().toggle_label(), "Pause");
         assert_eq!(with(|s| s.paused = true).toggle_label(), "Resume");
+    }
+
+    #[test]
+    fn profile_counts_share_a_budget_of_five_and_never_zero() {
+        for backend in [false, true] {
+            for l in 0..=7 {
+                for w in 0..=7 {
+                    let want = (1..=MAX_RUNNERS).contains(&(l + w)) && (backend || l >= 1);
+                    assert_eq!(counts_valid(l, w, backend), want, "{l}+{w} {backend}");
+                }
+            }
+        }
+        let r = count_range;
+        assert_eq!(r(Os::Windows, 3, false), 0..=2, "3 Linux leave 2");
+        assert_eq!(r(Os::Linux, 5, true), 0..=0, "5 Windows leave Linux 0");
+        assert_eq!(r(Os::Linux, 0, true), 1..=5, "never 0 + 0");
+        assert_eq!(r(Os::Windows, 0, true), 1..=5);
+        assert_eq!(
+            r(Os::Linux, 2, false),
+            1..=3,
+            "Linux keeps one without a backend"
+        );
+        assert_eq!(r(Os::Linux, 4, false), 1..=1);
+        assert!(
+            r(Os::Linux, 5, false).is_empty(),
+            "unreachable without a backend"
+        );
+        assert_eq!(r(Os::Windows, 1, false), 0..=4);
+        assert_eq!(r(Os::Windows, 9, true), 0..=0, "saturates, no underflow");
+    }
+
+    #[test]
+    fn every_runner_gets_an_even_floored_part_whatever_its_os() {
+        assert_eq!(each_part((26, 72), 3, 2), (5, 14), "26/5 and 72/5, floored");
+        assert_eq!(
+            linux_part((26, 72), 3, 0),
+            (26, 72),
+            "no split: the whole pool"
+        );
+        assert_eq!(linux_part((26, 72), 3, 2), (15, 42), "5 x 3, 14 x 3");
+        assert_eq!(linux_part((26, 72), 1, 4), (5, 14));
+        assert_eq!(linux_part((26, 72), 0, 5), (0, 0));
+        assert_eq!(linux_part((26, 72), 0, 0), (26, 72));
+        assert_eq!(linux_part((u32::MAX, u32::MAX), 5, 0), (u32::MAX, u32::MAX));
+        assert_eq!(
+            each_part((u32::MAX, 1), u32::MAX, u32::MAX),
+            (1, 0),
+            "no overflow"
+        );
+        assert_eq!(applied_windows(3), 0, "inert: the totals ignore Windows");
+        // With the backend the split is what derived() would write.
+        let (cpus, gib) = linux_part(VM.cap(), 3, 2);
+        let with_backend = Settings {
+            runner_count: 3,
+            windows_runner_count: 2,
+            job_cpus: cpus,
+            job_memory_gib: gib,
+            ..Settings::default()
+        };
+        assert_eq!(with_backend.per_runner(), each_part(VM.cap(), 3, 2));
+        assert_eq!(with_backend.validate(&VM), Ok(()));
+        let thin = with(|s| (s.runner_count, s.job_cpus) = (2, 1));
+        assert_eq!(
+            thin.check_shape(),
+            Err("Linux's part needs at least 1 CPU per runner".into())
+        );
+        let thin = with(|s| (s.runner_count, s.job_memory_gib) = (2, 1));
+        assert_eq!(
+            thin.check_shape(),
+            Err("Linux's part needs at least 1 GiB per runner".into())
+        );
+        assert!(Settings::derived(3, 3, false, &VM).validate(&VM).is_err());
+        assert!(Settings::derived(1, 4, false, &VM).validate(&VM).is_ok());
+    }
+
+    /// Security review: while no Windows backend exists no tray write emits
+    /// `windows_runner_count` (an older supervisor rejects such a file, Pause included). Every
+    /// write path serializes `Settings` through `write_settings` (Apply, Pause/Resume) or serde;
+    /// each gives exactly the file a Windows-0 tray writes.
+    #[test]
+    fn no_write_path_emits_the_windows_key_without_a_backend() {
+        if WINDOWS_BACKEND {
+            return; // with a backend the key is written on purpose
+        }
+        let base = temp_base("settings-windows-only");
+        let file = inbox(&base).join("settings.json");
+        write_settings(&base, &Settings::derived(3, 0, false, &VM), &VM).unwrap();
+        let before = fs::read_to_string(&file).unwrap();
+        assert!(!before.contains("windows"), "{before}");
+        for w in 1..=2 {
+            let s = Settings::derived(3, w, false, &VM);
+            assert_eq!(s.windows_runner_count, w, "kept in memory for the window");
+            write_settings(&base, &s, &VM).unwrap();
+            assert_eq!(
+                fs::read_to_string(&file).unwrap(),
+                before,
+                "Windows {w}: byte-identical"
+            );
+            assert!(!serde_json::to_string(&s).unwrap().contains("windows"));
+            // Pause/Resume: read, flip `paused`, write (as toggle_pause does).
+            let paused = Settings {
+                paused: true,
+                ..read_settings(&base)
+            };
+            write_settings(&base, &paused, &VM).unwrap();
+            let text = fs::read_to_string(&file).unwrap();
+            assert_eq!(text, before.replace("\"paused\":false", "\"paused\":true"));
+            write_settings(&base, &s, &VM).unwrap();
+        }
+        // The key a future tray may write is still read (and checked) when present.
+        fs::write(&file, r#"{"runner_count":2,"windows_runner_count":3}"#).unwrap();
+        assert_eq!(read_settings(&base).windows_runner_count, 3);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_windows_choice_is_kept_tray_local() {
+        let base = temp_base("settings-windows-choice");
+        let path = windows_choice_path(&base);
+        assert_eq!(read_windows_choice(&path), 0, "missing");
+        write_windows_choice(&path, 2).unwrap();
+        assert_eq!(read_windows_choice(&path), 2);
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            r#"{"schema":1,"windows_runner_count":2}"#
+        );
+        write_settings(&base, &Settings::derived(3, 0, false, &VM), &VM).unwrap();
+        assert_eq!(read_with_windows_choice(&base).windows_runner_count, 2);
+        write_settings(&base, &Settings::derived(4, 0, false, &VM), &VM).unwrap();
+        assert_eq!(
+            read_with_windows_choice(&base).windows_runner_count,
+            0,
+            "4 Linux + 2 Windows does not fit: 0"
+        );
+        for bad in [
+            "not json",
+            r#"{"schema":2,"windows_runner_count":1}"#,
+            r#"{"schema":1,"windows_runner_count":5}"#,
+            r#"{"schema":1,"windows_runner_count":-1}"#,
+        ] {
+            fs::write(&path, bad).unwrap();
+            assert_eq!(read_windows_choice(&path), 0, "{bad}");
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn windows_key_is_read_when_present_and_checked() {
+        let base = temp_base("settings-windows");
+        let file = inbox(&base).join("settings.json");
+        for bad in [
+            r#"{"runner_count":4,"windows_runner_count":2}"#,
+            r#"{"runner_count":1,"windows_runner_count":5}"#,
+            r#"{"runner_count":1,"windows_runner_count":-1}"#,
+            r#"{"runner_count":1,"windows_runner_count":"2"}"#,
+        ] {
+            fs::write(&file, bad).unwrap();
+            assert_eq!(read_settings(&base), Settings::default(), "{bad}");
+        }
+        fs::write(&file, r#"{"runner_count":1,"windows_runner_count":4}"#).unwrap();
+        assert_eq!(read_settings(&base).windows_runner_count, 4);
+        assert!(write_settings(&base, &with(|s| s.windows_runner_count = 5), &VM).is_err());
+        fs::remove_dir_all(&base).unwrap();
     }
 }
