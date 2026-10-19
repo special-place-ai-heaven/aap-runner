@@ -1,0 +1,2668 @@
+{
+ "schema": 1,
+ "profile": "ubuntu-24.04-x64",
+ "source": {
+  "readme_url": "https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/Ubuntu2404-Readme.md",
+  "runner_images_commit": "ee1ff4569e381a9649b400338bdc8ceb7e18a80e",
+  "readme_sha256": "3911b4bc1aa423be7b7469a75f3093f51306c02f2638f2a8b4f5ed31f3ffe791",
+  "toolset_sha256": "72d25917a42635cf9be9105f7d6056b6d56ffcdf63ddc24f82fe6cdf526c6c84"
+ },
+ "identity": {
+  "os_title": "Ubuntu 24.04",
+  "OS Version": {
+   "value": "24.04.5 LTS",
+   "src_line": 9
+  },
+  "Kernel Version": {
+   "value": "6.17.0-1022-azure",
+   "src_line": 10
+  },
+  "Image Version": {
+   "value": "20261012.334.1",
+   "src_line": 11
+  },
+  "Systemd version": {
+   "value": "255.4-1ubuntu8.17",
+   "src_line": 12
+  }
+ },
+ "announcements_not_inventory": [
+  "| Announcements |",
+  "|-|",
+  "| [[Ubuntu] `ubuntu-latest` label will use Ubuntu 26.04 in November 2026](https://github.com/actions/runner-images/issues/14748) |",
+  "| [[Ubuntu] Ubuntu 26.04 and Ubuntu 26.04 Arm64 are now generally available](https://github.com/actions/runner-images/issues/14747) |",
+  "| [[Ubuntu] The Ubuntu 22 based runner images will begin deprecation on September 17th and will be fully unsupported by April 17th for GitHub Actions and Azure DevOps](https://github.com/actions/runner-images/issues/14254) |",
+  "| [[Ubuntu] Ubuntu 26.04 and Ubuntu 26.04 Arm is now available as a public preview](https://github.com/actions/runner-images/issues/14226) |"
+ ],
+ "toolset_defaults": {
+  "toolcache": [
+   {
+    "name": "Python",
+    "url": "https://raw.githubusercontent.com/actions/python-versions/main/versions-manifest.json",
+    "platform": "linux",
+    "platform_version": "24.04",
+    "arch": "x64",
+    "versions": [
+     "3.11.*",
+     "3.12.*",
+     "3.13.*",
+     "3.14.*",
+     "3.15.*"
+    ]
+   },
+   {
+    "name": "PyPy",
+    "arch": "x64",
+    "platform": "linux",
+    "versions": [
+     "3.9",
+     "3.10",
+     "3.11"
+    ]
+   },
+   {
+    "name": "node",
+    "url": "https://raw.githubusercontent.com/actions/node-versions/main/versions-manifest.json",
+    "platform": "linux",
+    "arch": "x64",
+    "versions": [
+     "22.*",
+     "24.*"
+    ]
+   },
+   {
+    "name": "go",
+    "url": "https://raw.githubusercontent.com/actions/go-versions/main/versions-manifest.json",
+    "arch": "x64",
+    "platform": "linux",
+    "versions": [
+     "1.24.*",
+     "1.25.*",
+     "1.26.*"
+    ],
+    "default": "1.24.*"
+   },
+   {
+    "name": "Ruby",
+    "platform_version": "24.04",
+    "arch": "x64",
+    "versions": [
+     "3.2.*",
+     "3.3.*",
+     "3.4.*",
+     "4.0.*"
+    ]
+   },
+   {
+    "name": "CodeQL",
+    "platform": "linux",
+    "arch": "x64",
+    "versions": [
+     "*"
+    ]
+   }
+  ],
+  "java": {
+   "default": "17",
+   "versions": [
+    "8",
+    "11",
+    "17",
+    "21",
+    "25"
+   ],
+   "maven": "3"
+  },
+  "node": {
+   "default": "22"
+  },
+  "note": "toolset.json at the pin; see README for pin vs build-commit differences"
+ },
+ "counts": {
+  "Language and Runtime": {
+   "entries": 14,
+   "notes": 0,
+   "versions": 24
+  },
+  "Package Management": {
+   "entries": 11,
+   "notes": 0,
+   "versions": 11
+  },
+  "Package Management/Environment variables": {
+   "entries": 2,
+   "notes": 0,
+   "versions": 0
+  },
+  "Package Management/Homebrew note": {
+   "entries": 0,
+   "notes": 1,
+   "versions": 0
+  },
+  "Project Management": {
+   "entries": 4,
+   "notes": 0,
+   "versions": 4
+  },
+  "Tools": {
+   "entries": 39,
+   "notes": 0,
+   "versions": 39
+  },
+  "CLI Tools": {
+   "entries": 7,
+   "notes": 0,
+   "versions": 7
+  },
+  "Java": {
+   "entries": 5,
+   "notes": 0,
+   "versions": 5
+  },
+  "PHP Tools": {
+   "entries": 3,
+   "notes": 1,
+   "versions": 3
+  },
+  "Haskell Tools": {
+   "entries": 4,
+   "notes": 0,
+   "versions": 4
+  },
+  "Rust Tools": {
+   "entries": 4,
+   "notes": 0,
+   "versions": 4
+  },
+  "Rust Tools/Packages": {
+   "entries": 1,
+   "notes": 0,
+   "versions": 1
+  },
+  "Browsers and Drivers": {
+   "entries": 8,
+   "notes": 0,
+   "versions": 8
+  },
+  "Browsers and Drivers/Environment variables": {
+   "entries": 4,
+   "notes": 0,
+   "versions": 0
+  },
+  ".NET Tools": {
+   "entries": 2,
+   "notes": 0,
+   "versions": 12
+  },
+  "Databases": {
+   "entries": 1,
+   "notes": 0,
+   "versions": 1
+  },
+  "Databases/PostgreSQL": {
+   "entries": 1,
+   "notes": 1,
+   "versions": 1
+  },
+  "Databases/MySQL": {
+   "entries": 1,
+   "notes": 1,
+   "versions": 1
+  },
+  "Cached Tools": {
+   "entries": 0,
+   "notes": 0,
+   "versions": 0
+  },
+  "Cached Tools/Go": {
+   "entries": 3,
+   "notes": 0,
+   "versions": 3
+  },
+  "Cached Tools/Node.js": {
+   "entries": 2,
+   "notes": 0,
+   "versions": 2
+  },
+  "Cached Tools/Python": {
+   "entries": 5,
+   "notes": 0,
+   "versions": 5
+  },
+  "Cached Tools/PyPy": {
+   "entries": 3,
+   "notes": 0,
+   "versions": 3
+  },
+  "Cached Tools/Ruby": {
+   "entries": 4,
+   "notes": 0,
+   "versions": 4
+  },
+  "PowerShell Tools": {
+   "entries": 1,
+   "notes": 0,
+   "versions": 1
+  },
+  "PowerShell Tools/PowerShell Modules": {
+   "entries": 4,
+   "notes": 0,
+   "versions": 4
+  },
+  "Web Servers": {
+   "entries": 2,
+   "notes": 0,
+   "versions": 2
+  },
+  "Android": {
+   "entries": 9,
+   "notes": 0,
+   "versions": 34
+  },
+  "Android/Environment variables": {
+   "entries": 6,
+   "notes": 0,
+   "versions": 0
+  },
+  "Installed apt packages": {
+   "entries": 74,
+   "notes": 0,
+   "versions": 74
+  }
+ },
+ "categories": {
+  "Language and Runtime": [
+   {
+    "raw": "Bash 5.2.21(1)-release",
+    "name": "Bash",
+    "versions": [
+     "5.2.21(1)-release"
+    ],
+    "src_line": 17
+   },
+   {
+    "raw": "Clang: 16.0.6, 17.0.6, 18.1.3",
+    "name": "Clang",
+    "versions": [
+     "16.0.6",
+     "17.0.6",
+     "18.1.3"
+    ],
+    "src_line": 18
+   },
+   {
+    "raw": "Clang-format: 16.0.6, 17.0.6, 18.1.3",
+    "name": "Clang-format",
+    "versions": [
+     "16.0.6",
+     "17.0.6",
+     "18.1.3"
+    ],
+    "src_line": 19
+   },
+   {
+    "raw": "Clang-tidy: 16.0.6, 17.0.6, 18.1.3",
+    "name": "Clang-tidy",
+    "versions": [
+     "16.0.6",
+     "17.0.6",
+     "18.1.3"
+    ],
+    "src_line": 20
+   },
+   {
+    "raw": "Dash 0.5.12-6ubuntu5",
+    "name": "Dash",
+    "versions": [
+     "0.5.12-6ubuntu5"
+    ],
+    "src_line": 21
+   },
+   {
+    "raw": "GNU C++: 12.4.0, 13.3.0, 14.2.0",
+    "name": "GNU C++",
+    "versions": [
+     "12.4.0",
+     "13.3.0",
+     "14.2.0"
+    ],
+    "src_line": 22
+   },
+   {
+    "raw": "GNU Fortran: 12.4.0, 13.3.0, 14.2.0",
+    "name": "GNU Fortran",
+    "versions": [
+     "12.4.0",
+     "13.3.0",
+     "14.2.0"
+    ],
+    "src_line": 23
+   },
+   {
+    "raw": "Julia 1.13.1",
+    "name": "Julia",
+    "versions": [
+     "1.13.1"
+    ],
+    "src_line": 24
+   },
+   {
+    "raw": "Kotlin 2.4.21",
+    "name": "Kotlin",
+    "versions": [
+     "2.4.21"
+    ],
+    "src_line": 25
+   },
+   {
+    "raw": "Node.js 22.23.3",
+    "name": "Node.js",
+    "versions": [
+     "22.23.3"
+    ],
+    "src_line": 26
+   },
+   {
+    "raw": "Perl 5.38.2",
+    "name": "Perl",
+    "versions": [
+     "5.38.2"
+    ],
+    "src_line": 27
+   },
+   {
+    "raw": "Python 3.12.3",
+    "name": "Python",
+    "versions": [
+     "3.12.3"
+    ],
+    "src_line": 28
+   },
+   {
+    "raw": "Ruby 3.2.3",
+    "name": "Ruby",
+    "versions": [
+     "3.2.3"
+    ],
+    "src_line": 29
+   },
+   {
+    "raw": "Swift 6.4",
+    "name": "Swift",
+    "versions": [
+     "6.4"
+    ],
+    "src_line": 30
+   }
+  ],
+  "Package Management": [
+   {
+    "raw": "cpan 1.64",
+    "name": "cpan",
+    "versions": [
+     "1.64"
+    ],
+    "src_line": 33
+   },
+   {
+    "raw": "Helm 3.22.0",
+    "name": "Helm",
+    "versions": [
+     "3.22.0"
+    ],
+    "src_line": 34
+   },
+   {
+    "raw": "Homebrew 7.0.9",
+    "name": "Homebrew",
+    "versions": [
+     "7.0.9"
+    ],
+    "src_line": 35
+   },
+   {
+    "raw": "Miniconda 26.7.1",
+    "name": "Miniconda",
+    "versions": [
+     "26.7.1"
+    ],
+    "src_line": 36
+   },
+   {
+    "raw": "Npm 10.9.9",
+    "name": "Npm",
+    "versions": [
+     "10.9.9"
+    ],
+    "src_line": 37
+   },
+   {
+    "raw": "Pip 24.0",
+    "name": "Pip",
+    "versions": [
+     "24.0"
+    ],
+    "src_line": 38
+   },
+   {
+    "raw": "Pip3 24.0",
+    "name": "Pip3",
+    "versions": [
+     "24.0"
+    ],
+    "src_line": 39
+   },
+   {
+    "raw": "Pipx 1.16.7",
+    "name": "Pipx",
+    "versions": [
+     "1.16.7"
+    ],
+    "src_line": 40
+   },
+   {
+    "raw": "RubyGems 3.4.20",
+    "name": "RubyGems",
+    "versions": [
+     "3.4.20"
+    ],
+    "src_line": 41
+   },
+   {
+    "raw": "Vcpkg (build from commit e456309491)",
+    "name": "Vcpkg",
+    "versions": [
+     "build from commit e456309491"
+    ],
+    "src_line": 42
+   },
+   {
+    "raw": "Yarn 1.22.22",
+    "name": "Yarn",
+    "versions": [
+     "1.22.22"
+    ],
+    "src_line": 43
+   }
+  ],
+  "Package Management/Environment variables": [
+   {
+    "raw": "| CONDA                   | /usr/share/miniconda   |",
+    "name": "CONDA",
+    "attrs": {
+     "Name": "CONDA",
+     "Value": "/usr/share/miniconda"
+    },
+    "src_line": 48
+   },
+   {
+    "raw": "| VCPKG_INSTALLATION_ROOT | /usr/local/share/vcpkg |",
+    "name": "VCPKG_INSTALLATION_ROOT",
+    "attrs": {
+     "Name": "VCPKG_INSTALLATION_ROOT",
+     "Value": "/usr/local/share/vcpkg"
+    },
+    "src_line": 49
+   }
+  ],
+  "Package Management/Homebrew note": [
+   {
+    "kind": "note",
+    "name": "note",
+    "raw": "Location: /home/linuxbrew\nNote: Homebrew is pre-installed on image but not added to PATH.\nrun the eval \"$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)\" command\nto accomplish this.",
+    "src_lines": [
+     52,
+     57
+    ]
+   }
+  ],
+  "Project Management": [
+   {
+    "raw": "Ant 1.10.14",
+    "name": "Ant",
+    "versions": [
+     "1.10.14"
+    ],
+    "src_line": 60
+   },
+   {
+    "raw": "Gradle 9.8.1",
+    "name": "Gradle",
+    "versions": [
+     "9.8.1"
+    ],
+    "src_line": 61
+   },
+   {
+    "raw": "Lerna 10.1.0",
+    "name": "Lerna",
+    "versions": [
+     "10.1.0"
+    ],
+    "src_line": 62
+   },
+   {
+    "raw": "Maven 3.10.0",
+    "name": "Maven",
+    "versions": [
+     "3.10.0"
+    ],
+    "src_line": 63
+   }
+  ],
+  "Tools": [
+   {
+    "raw": "Ansible 2.21.5",
+    "name": "Ansible",
+    "versions": [
+     "2.21.5"
+    ],
+    "src_line": 66
+   },
+   {
+    "raw": "AzCopy 10.32.8 - available by `azcopy` and `azcopy10` aliases",
+    "name": "AzCopy",
+    "versions": [
+     "10.32.8"
+    ],
+    "notes": "available by `azcopy` and `azcopy10` aliases",
+    "src_line": 67
+   },
+   {
+    "raw": "Bazel 9.3.0",
+    "name": "Bazel",
+    "versions": [
+     "9.3.0"
+    ],
+    "src_line": 68
+   },
+   {
+    "raw": "Bazelisk 1.28.1",
+    "name": "Bazelisk",
+    "versions": [
+     "1.28.1"
+    ],
+    "src_line": 69
+   },
+   {
+    "raw": "Bicep 0.48.1",
+    "name": "Bicep",
+    "versions": [
+     "0.48.1"
+    ],
+    "src_line": 70
+   },
+   {
+    "raw": "Buildah 1.33.7",
+    "name": "Buildah",
+    "versions": [
+     "1.33.7"
+    ],
+    "src_line": 71
+   },
+   {
+    "raw": "CMake 3.31.6",
+    "name": "CMake",
+    "versions": [
+     "3.31.6"
+    ],
+    "src_line": 72
+   },
+   {
+    "raw": "CodeQL Action Bundle 2.27.2",
+    "name": "CodeQL Action Bundle",
+    "versions": [
+     "2.27.2"
+    ],
+    "src_line": 73
+   },
+   {
+    "raw": "Docker Amazon ECR Credential Helper 0.12.0",
+    "name": "Docker Amazon ECR Credential Helper",
+    "versions": [
+     "0.12.0"
+    ],
+    "src_line": 74
+   },
+   {
+    "raw": "Docker Compose 2.38.2",
+    "name": "Docker Compose",
+    "versions": [
+     "2.38.2"
+    ],
+    "src_line": 75
+   },
+   {
+    "raw": "Docker-Buildx 0.38.0",
+    "name": "Docker-Buildx",
+    "versions": [
+     "0.38.0"
+    ],
+    "src_line": 76
+   },
+   {
+    "raw": "Docker Client 28.0.4",
+    "name": "Docker Client",
+    "versions": [
+     "28.0.4"
+    ],
+    "src_line": 77
+   },
+   {
+    "raw": "Docker Server 28.0.4",
+    "name": "Docker Server",
+    "versions": [
+     "28.0.4"
+    ],
+    "src_line": 78
+   },
+   {
+    "raw": "Fastlane 2.241.0",
+    "name": "Fastlane",
+    "versions": [
+     "2.241.0"
+    ],
+    "src_line": 79
+   },
+   {
+    "raw": "Git 2.55.0",
+    "name": "Git",
+    "versions": [
+     "2.55.0"
+    ],
+    "src_line": 80
+   },
+   {
+    "raw": "Git LFS 3.8.0",
+    "name": "Git LFS",
+    "versions": [
+     "3.8.0"
+    ],
+    "src_line": 81
+   },
+   {
+    "raw": "Git-ftp 1.6.0",
+    "name": "Git-ftp",
+    "versions": [
+     "1.6.0"
+    ],
+    "src_line": 82
+   },
+   {
+    "raw": "Haveged 1.9.14",
+    "name": "Haveged",
+    "versions": [
+     "1.9.14"
+    ],
+    "src_line": 83
+   },
+   {
+    "raw": "jq 1.7",
+    "name": "jq",
+    "versions": [
+     "1.7"
+    ],
+    "src_line": 84
+   },
+   {
+    "raw": "Kind 0.33.0",
+    "name": "Kind",
+    "versions": [
+     "0.33.0"
+    ],
+    "src_line": 85
+   },
+   {
+    "raw": "Kubectl 1.37.1",
+    "name": "Kubectl",
+    "versions": [
+     "1.37.1"
+    ],
+    "src_line": 86
+   },
+   {
+    "raw": "Kustomize 5.8.3",
+    "name": "Kustomize",
+    "versions": [
+     "5.8.3"
+    ],
+    "src_line": 87
+   },
+   {
+    "raw": "MediaInfo 24.01",
+    "name": "MediaInfo",
+    "versions": [
+     "24.01"
+    ],
+    "src_line": 88
+   },
+   {
+    "raw": "Mercurial 6.7.2",
+    "name": "Mercurial",
+    "versions": [
+     "6.7.2"
+    ],
+    "src_line": 89
+   },
+   {
+    "raw": "Minikube 1.39.0",
+    "name": "Minikube",
+    "versions": [
+     "1.39.0"
+    ],
+    "src_line": 90
+   },
+   {
+    "raw": "n 10.2.0",
+    "name": "n",
+    "versions": [
+     "10.2.0"
+    ],
+    "src_line": 91
+   },
+   {
+    "raw": "Newman 6.2.3",
+    "name": "Newman",
+    "versions": [
+     "6.2.3"
+    ],
+    "src_line": 92
+   },
+   {
+    "raw": "nvm 0.40.8",
+    "name": "nvm",
+    "versions": [
+     "0.40.8"
+    ],
+    "src_line": 93
+   },
+   {
+    "raw": "OpenSSL 3.0.13-0ubuntu3.16",
+    "name": "OpenSSL",
+    "versions": [
+     "3.0.13-0ubuntu3.16"
+    ],
+    "src_line": 94
+   },
+   {
+    "raw": "Packer 1.16.1",
+    "name": "Packer",
+    "versions": [
+     "1.16.1"
+    ],
+    "src_line": 95
+   },
+   {
+    "raw": "Parcel 2.16.4",
+    "name": "Parcel",
+    "versions": [
+     "2.16.4"
+    ],
+    "src_line": 96
+   },
+   {
+    "raw": "Podman 4.9.3",
+    "name": "Podman",
+    "versions": [
+     "4.9.3"
+    ],
+    "src_line": 97
+   },
+   {
+    "raw": "Pulumi 3.268.0",
+    "name": "Pulumi",
+    "versions": [
+     "3.268.0"
+    ],
+    "src_line": 98
+   },
+   {
+    "raw": "Skopeo 1.13.3",
+    "name": "Skopeo",
+    "versions": [
+     "1.13.3"
+    ],
+    "src_line": 99
+   },
+   {
+    "raw": "Sphinx Open Source Search Server 2.2.11",
+    "name": "Sphinx Open Source Search Server",
+    "versions": [
+     "2.2.11"
+    ],
+    "src_line": 100
+   },
+   {
+    "raw": "yamllint 1.38.0",
+    "name": "yamllint",
+    "versions": [
+     "1.38.0"
+    ],
+    "src_line": 101
+   },
+   {
+    "raw": "yq 4.54.1",
+    "name": "yq",
+    "versions": [
+     "4.54.1"
+    ],
+    "src_line": 102
+   },
+   {
+    "raw": "zstd 1.5.7",
+    "name": "zstd",
+    "versions": [
+     "1.5.7"
+    ],
+    "src_line": 103
+   },
+   {
+    "raw": "Ninja 1.13.2",
+    "name": "Ninja",
+    "versions": [
+     "1.13.2"
+    ],
+    "src_line": 104
+   }
+  ],
+  "CLI Tools": [
+   {
+    "raw": "AWS CLI 2.37.13",
+    "name": "AWS CLI",
+    "versions": [
+     "2.37.13"
+    ],
+    "src_line": 107
+   },
+   {
+    "raw": "AWS CLI Session Manager Plugin 1.2.896.0",
+    "name": "AWS CLI Session Manager Plugin",
+    "versions": [
+     "1.2.896.0"
+    ],
+    "src_line": 108
+   },
+   {
+    "raw": "AWS SAM CLI 1.168.0",
+    "name": "AWS SAM CLI",
+    "versions": [
+     "1.168.0"
+    ],
+    "src_line": 109
+   },
+   {
+    "raw": "Azure CLI 2.91.0",
+    "name": "Azure CLI",
+    "versions": [
+     "2.91.0"
+    ],
+    "src_line": 110
+   },
+   {
+    "raw": "Azure CLI (azure-devops) 1.0.8",
+    "name": "Azure CLI (azure-devops)",
+    "versions": [
+     "1.0.8"
+    ],
+    "src_line": 111
+   },
+   {
+    "raw": "GitHub CLI 2.102.0",
+    "name": "GitHub CLI",
+    "versions": [
+     "2.102.0"
+    ],
+    "src_line": 112
+   },
+   {
+    "raw": "Google Cloud CLI 588.0.0",
+    "name": "Google Cloud CLI",
+    "versions": [
+     "588.0.0"
+    ],
+    "src_line": 113
+   }
+  ],
+  "Java": [
+   {
+    "raw": "| 8.0.504+1           | JAVA_HOME_8_X64      |",
+    "name": "Java",
+    "versions": [
+     "8.0.504+1"
+    ],
+    "attrs": {
+     "Environment Variable": "JAVA_HOME_8_X64"
+    },
+    "src_line": 118
+   },
+   {
+    "raw": "| 11.0.32+1           | JAVA_HOME_11_X64     |",
+    "name": "Java",
+    "versions": [
+     "11.0.32+1"
+    ],
+    "attrs": {
+     "Environment Variable": "JAVA_HOME_11_X64"
+    },
+    "src_line": 119
+   },
+   {
+    "raw": "| 17.0.20+1 (default) | JAVA_HOME_17_X64     |",
+    "name": "Java",
+    "versions": [
+     "17.0.20+1"
+    ],
+    "default": true,
+    "default_versions": [
+     "17.0.20+1"
+    ],
+    "attrs": {
+     "Environment Variable": "JAVA_HOME_17_X64"
+    },
+    "src_line": 120
+   },
+   {
+    "raw": "| 21.0.12+1           | JAVA_HOME_21_X64     |",
+    "name": "Java",
+    "versions": [
+     "21.0.12+1"
+    ],
+    "attrs": {
+     "Environment Variable": "JAVA_HOME_21_X64"
+    },
+    "src_line": 121
+   },
+   {
+    "raw": "| 25.0.4+1            | JAVA_HOME_25_X64     |",
+    "name": "Java",
+    "versions": [
+     "25.0.4+1"
+    ],
+    "attrs": {
+     "Environment Variable": "JAVA_HOME_25_X64"
+    },
+    "src_line": 122
+   }
+  ],
+  "PHP Tools": [
+   {
+    "raw": "PHP: 8.3.6",
+    "name": "PHP",
+    "versions": [
+     "8.3.6"
+    ],
+    "src_line": 125
+   },
+   {
+    "raw": "Composer 2.10.3",
+    "name": "Composer",
+    "versions": [
+     "2.10.3"
+    ],
+    "src_line": 126
+   },
+   {
+    "raw": "PHPUnit 8.5.56",
+    "name": "PHPUnit",
+    "versions": [
+     "8.5.56"
+    ],
+    "src_line": 127
+   },
+   {
+    "kind": "note",
+    "name": "note",
+    "raw": "Both Xdebug and PCOV extensions are installed, but only Xdebug is enabled.",
+    "src_lines": [
+     128,
+     130
+    ]
+   }
+  ],
+  "Haskell Tools": [
+   {
+    "raw": "Cabal 3.18.1.0",
+    "name": "Cabal",
+    "versions": [
+     "3.18.1.0"
+    ],
+    "src_line": 133
+   },
+   {
+    "raw": "GHC 9.14.1",
+    "name": "GHC",
+    "versions": [
+     "9.14.1"
+    ],
+    "src_line": 134
+   },
+   {
+    "raw": "GHCup 0.2.6.2",
+    "name": "GHCup",
+    "versions": [
+     "0.2.6.2"
+    ],
+    "src_line": 135
+   },
+   {
+    "raw": "Stack 3.11.1",
+    "name": "Stack",
+    "versions": [
+     "3.11.1"
+    ],
+    "src_line": 136
+   }
+  ],
+  "Rust Tools": [
+   {
+    "raw": "Cargo 1.99.0",
+    "name": "Cargo",
+    "versions": [
+     "1.99.0"
+    ],
+    "src_line": 139
+   },
+   {
+    "raw": "Rust 1.99.0",
+    "name": "Rust",
+    "versions": [
+     "1.99.0"
+    ],
+    "src_line": 140
+   },
+   {
+    "raw": "Rustdoc 1.99.0",
+    "name": "Rustdoc",
+    "versions": [
+     "1.99.0"
+    ],
+    "src_line": 141
+   },
+   {
+    "raw": "Rustup 1.29.1",
+    "name": "Rustup",
+    "versions": [
+     "1.29.1"
+    ],
+    "src_line": 142
+   }
+  ],
+  "Rust Tools/Packages": [
+   {
+    "raw": "Rustfmt 1.10.0",
+    "name": "Rustfmt",
+    "versions": [
+     "1.10.0"
+    ],
+    "src_line": 145
+   }
+  ],
+  "Browsers and Drivers": [
+   {
+    "raw": "Google Chrome 155.0.8059.39",
+    "name": "Google Chrome",
+    "versions": [
+     "155.0.8059.39"
+    ],
+    "src_line": 148
+   },
+   {
+    "raw": "ChromeDriver 155.0.8059.39",
+    "name": "ChromeDriver",
+    "versions": [
+     "155.0.8059.39"
+    ],
+    "src_line": 149
+   },
+   {
+    "raw": "Chromium 155.0.8059.0",
+    "name": "Chromium",
+    "versions": [
+     "155.0.8059.0"
+    ],
+    "src_line": 150
+   },
+   {
+    "raw": "Microsoft Edge 155.0.4283.45",
+    "name": "Microsoft Edge",
+    "versions": [
+     "155.0.4283.45"
+    ],
+    "src_line": 151
+   },
+   {
+    "raw": "Microsoft Edge WebDriver 155.0.4283.45",
+    "name": "Microsoft Edge WebDriver",
+    "versions": [
+     "155.0.4283.45"
+    ],
+    "src_line": 152
+   },
+   {
+    "raw": "Selenium server 4.51.0",
+    "name": "Selenium server",
+    "versions": [
+     "4.51.0"
+    ],
+    "src_line": 153
+   },
+   {
+    "raw": "Mozilla Firefox 157.0",
+    "name": "Mozilla Firefox",
+    "versions": [
+     "157.0"
+    ],
+    "src_line": 154
+   },
+   {
+    "raw": "Geckodriver 0.37.1",
+    "name": "Geckodriver",
+    "versions": [
+     "0.37.1"
+    ],
+    "src_line": 155
+   }
+  ],
+  "Browsers and Drivers/Environment variables": [
+   {
+    "raw": "| CHROMEWEBDRIVER   | /usr/local/share/chromedriver-linux64 |",
+    "name": "CHROMEWEBDRIVER",
+    "attrs": {
+     "Name": "CHROMEWEBDRIVER",
+     "Value": "/usr/local/share/chromedriver-linux64"
+    },
+    "src_line": 160
+   },
+   {
+    "raw": "| EDGEWEBDRIVER     | /usr/local/share/edge_driver          |",
+    "name": "EDGEWEBDRIVER",
+    "attrs": {
+     "Name": "EDGEWEBDRIVER",
+     "Value": "/usr/local/share/edge_driver"
+    },
+    "src_line": 161
+   },
+   {
+    "raw": "| GECKOWEBDRIVER    | /usr/local/share/gecko_driver         |",
+    "name": "GECKOWEBDRIVER",
+    "attrs": {
+     "Name": "GECKOWEBDRIVER",
+     "Value": "/usr/local/share/gecko_driver"
+    },
+    "src_line": 162
+   },
+   {
+    "raw": "| SELENIUM_JAR_PATH | /usr/share/java/selenium-server.jar   |",
+    "name": "SELENIUM_JAR_PATH",
+    "attrs": {
+     "Name": "SELENIUM_JAR_PATH",
+     "Value": "/usr/share/java/selenium-server.jar"
+    },
+    "src_line": 163
+   }
+  ],
+  ".NET Tools": [
+   {
+    "raw": ".NET Core SDK: 8.0.131, 8.0.206, 8.0.319, 8.0.425, 9.0.121, 9.0.205, 9.0.318, 10.0.112, 10.0.204, 10.0.303, 10.0.401",
+    "name": ".NET Core SDK",
+    "versions": [
+     "8.0.131",
+     "8.0.206",
+     "8.0.319",
+     "8.0.425",
+     "9.0.121",
+     "9.0.205",
+     "9.0.318",
+     "10.0.112",
+     "10.0.204",
+     "10.0.303",
+     "10.0.401"
+    ],
+    "src_line": 166
+   },
+   {
+    "raw": "nbgv 3.10.94+dea9a6c17c",
+    "name": "nbgv",
+    "versions": [
+     "3.10.94+dea9a6c17c"
+    ],
+    "src_line": 167
+   }
+  ],
+  "Databases": [
+   {
+    "raw": "sqlite3 3.45.1",
+    "name": "sqlite3",
+    "versions": [
+     "3.45.1"
+    ],
+    "src_line": 170
+   }
+  ],
+  "Databases/PostgreSQL": [
+   {
+    "raw": "PostgreSQL 16.15",
+    "name": "PostgreSQL",
+    "versions": [
+     "16.15"
+    ],
+    "src_line": 173
+   },
+   {
+    "kind": "note",
+    "name": "note",
+    "raw": "User: postgres\nPostgreSQL service is disabled by default.\nUse the following command as a part of your job to start the service: 'sudo systemctl start postgresql.service'",
+    "src_lines": [
+     174,
+     178
+    ]
+   }
+  ],
+  "Databases/MySQL": [
+   {
+    "raw": "MySQL 8.0.46-0ubuntu0.24.04.4",
+    "name": "MySQL",
+    "versions": [
+     "8.0.46-0ubuntu0.24.04.4"
+    ],
+    "src_line": 181
+   },
+   {
+    "kind": "note",
+    "name": "note",
+    "raw": "User: root\nPassword: <<REDACTED: upstream-documented credential, see source line>>\nMySQL service is disabled by default.\nUse the following command as a part of your job to start the service: 'sudo systemctl start mysql.service'",
+    "src_lines": [
+     182,
+     187
+    ],
+    "redacted": true
+   }
+  ],
+  "Cached Tools": [],
+  "Cached Tools/Go": [
+   {
+    "raw": "1.24.13",
+    "name": "Go",
+    "versions": [
+     "1.24.13"
+    ],
+    "src_line": 192,
+    "default": true,
+    "default_source": "toolset.toolcache[go].default=1.24.*"
+   },
+   {
+    "raw": "1.25.14",
+    "name": "Go",
+    "versions": [
+     "1.25.14"
+    ],
+    "src_line": 193
+   },
+   {
+    "raw": "1.26.9",
+    "name": "Go",
+    "versions": [
+     "1.26.9"
+    ],
+    "src_line": 194
+   }
+  ],
+  "Cached Tools/Node.js": [
+   {
+    "raw": "22.23.3",
+    "name": "Node.js",
+    "versions": [
+     "22.23.3"
+    ],
+    "src_line": 197
+   },
+   {
+    "raw": "24.21.0",
+    "name": "Node.js",
+    "versions": [
+     "24.21.0"
+    ],
+    "src_line": 198
+   }
+  ],
+  "Cached Tools/Python": [
+   {
+    "raw": "3.10.22",
+    "name": "Python",
+    "versions": [
+     "3.10.22"
+    ],
+    "src_line": 201
+   },
+   {
+    "raw": "3.11.17",
+    "name": "Python",
+    "versions": [
+     "3.11.17"
+    ],
+    "src_line": 202
+   },
+   {
+    "raw": "3.12.15",
+    "name": "Python",
+    "versions": [
+     "3.12.15"
+    ],
+    "src_line": 203
+   },
+   {
+    "raw": "3.13.16",
+    "name": "Python",
+    "versions": [
+     "3.13.16"
+    ],
+    "src_line": 204
+   },
+   {
+    "raw": "3.14.8",
+    "name": "Python",
+    "versions": [
+     "3.14.8"
+    ],
+    "src_line": 205
+   }
+  ],
+  "Cached Tools/PyPy": [
+   {
+    "raw": "3.9.19 [PyPy 7.3.16]",
+    "name": "PyPy",
+    "versions": [
+     "3.9.19 [PyPy 7.3.16]"
+    ],
+    "src_line": 208
+   },
+   {
+    "raw": "3.10.16 [PyPy 7.3.19]",
+    "name": "PyPy",
+    "versions": [
+     "3.10.16 [PyPy 7.3.19]"
+    ],
+    "src_line": 209
+   },
+   {
+    "raw": "3.11.16 [PyPy 8.0.0]",
+    "name": "PyPy",
+    "versions": [
+     "3.11.16 [PyPy 8.0.0]"
+    ],
+    "src_line": 210
+   }
+  ],
+  "Cached Tools/Ruby": [
+   {
+    "raw": "3.2.11",
+    "name": "Ruby",
+    "versions": [
+     "3.2.11"
+    ],
+    "src_line": 213
+   },
+   {
+    "raw": "3.3.12",
+    "name": "Ruby",
+    "versions": [
+     "3.3.12"
+    ],
+    "src_line": 214
+   },
+   {
+    "raw": "3.4.11",
+    "name": "Ruby",
+    "versions": [
+     "3.4.11"
+    ],
+    "src_line": 215
+   },
+   {
+    "raw": "4.0.7",
+    "name": "Ruby",
+    "versions": [
+     "4.0.7"
+    ],
+    "src_line": 216
+   }
+  ],
+  "PowerShell Tools": [
+   {
+    "raw": "PowerShell 7.6.6",
+    "name": "PowerShell",
+    "versions": [
+     "7.6.6"
+    ],
+    "src_line": 219
+   }
+  ],
+  "PowerShell Tools/PowerShell Modules": [
+   {
+    "raw": "Az: 15.6.1",
+    "name": "Az",
+    "versions": [
+     "15.6.1"
+    ],
+    "src_line": 222
+   },
+   {
+    "raw": "Microsoft.Graph: 2.41.1",
+    "name": "Microsoft.Graph",
+    "versions": [
+     "2.41.1"
+    ],
+    "src_line": 223
+   },
+   {
+    "raw": "Pester: 5.9.0",
+    "name": "Pester",
+    "versions": [
+     "5.9.0"
+    ],
+    "src_line": 224
+   },
+   {
+    "raw": "PSScriptAnalyzer: 1.25.0",
+    "name": "PSScriptAnalyzer",
+    "versions": [
+     "1.25.0"
+    ],
+    "src_line": 225
+   }
+  ],
+  "Web Servers": [
+   {
+    "raw": "| apache2 | 2.4.58  | /etc/apache2/apache2.conf | inactive      | 80         |",
+    "name": "apache2",
+    "versions": [
+     "2.4.58"
+    ],
+    "attrs": {
+     "Name": "apache2",
+     "ConfigFile": "/etc/apache2/apache2.conf",
+     "ServiceStatus": "inactive",
+     "ListenPort": "80"
+    },
+    "src_line": 230
+   },
+   {
+    "raw": "| nginx   | 1.24.0  | /etc/nginx/nginx.conf     | inactive      | 80         |",
+    "name": "nginx",
+    "versions": [
+     "1.24.0"
+    ],
+    "attrs": {
+     "Name": "nginx",
+     "ConfigFile": "/etc/nginx/nginx.conf",
+     "ServiceStatus": "inactive",
+     "ListenPort": "80"
+    },
+    "src_line": 231
+   }
+  ],
+  "Android": [
+   {
+    "raw": "| Android Command Line Tools | 12.0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |",
+    "name": "Android Command Line Tools",
+    "versions": [
+     "12.0"
+    ],
+    "attrs": {
+     "Package Name": "Android Command Line Tools"
+    },
+    "src_line": 236
+   },
+   {
+    "raw": "| Android SDK Build-tools    | 37.0.0<br>36.0.0 36.1.0<br>35.0.0 35.0.1<br>34.0.0                                                                                                                                                                                                                                                                                                                                                                                                                                      |",
+    "name": "Android SDK Build-tools",
+    "versions": [
+     "37.0.0",
+     "36.0.0",
+     "36.1.0",
+     "35.0.0",
+     "35.0.1",
+     "34.0.0"
+    ],
+    "attrs": {
+     "Package Name": "Android SDK Build-tools"
+    },
+    "src_line": 237
+   },
+   {
+    "raw": "| Android SDK Platform-Tools | 37.0.1                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |",
+    "name": "Android SDK Platform-Tools",
+    "versions": [
+     "37.0.1"
+    ],
+    "attrs": {
+     "Package Name": "Android SDK Platform-Tools"
+    },
+    "src_line": 238
+   },
+   {
+    "raw": "| Android SDK Platforms      | android-37.2-beta3 (rev 3)<br>android-37.2-beta2 (rev 2)<br>android-37.2-beta1 (rev 1)<br>android-37.2 (rev 1)<br>android-37.1 (rev 1)<br>android-37.0 (rev 2)<br>android-36.1 (rev 1)<br>android-36-ext19 (rev 1)<br>android-36-ext18 (rev 1)<br>android-36 (rev 2)<br>android-35-ext15 (rev 1)<br>android-35-ext14 (rev 1)<br>android-35 (rev 2)<br>android-34-ext8 (rev 1)<br>android-34-ext12 (rev 1)<br>android-34-ext11 (rev 1)<br>android-34-ext10 (rev 1)<br>android-34 (rev 3) |",
+    "name": "Android SDK Platforms",
+    "versions": [
+     "android-37.2-beta3 (rev 3)",
+     "android-37.2-beta2 (rev 2)",
+     "android-37.2-beta1 (rev 1)",
+     "android-37.2 (rev 1)",
+     "android-37.1 (rev 1)",
+     "android-37.0 (rev 2)",
+     "android-36.1 (rev 1)",
+     "android-36-ext19 (rev 1)",
+     "android-36-ext18 (rev 1)",
+     "android-36 (rev 2)",
+     "android-35-ext15 (rev 1)",
+     "android-35-ext14 (rev 1)",
+     "android-35 (rev 2)",
+     "android-34-ext8 (rev 1)",
+     "android-34-ext12 (rev 1)",
+     "android-34-ext11 (rev 1)",
+     "android-34-ext10 (rev 1)",
+     "android-34 (rev 3)"
+    ],
+    "attrs": {
+     "Package Name": "Android SDK Platforms"
+    },
+    "src_line": 239
+   },
+   {
+    "raw": "| Android Support Repository | 47.0.0                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |",
+    "name": "Android Support Repository",
+    "versions": [
+     "47.0.0"
+    ],
+    "attrs": {
+     "Package Name": "Android Support Repository"
+    },
+    "src_line": 240
+   },
+   {
+    "raw": "| CMake                      | 3.31.5<br>4.1.2                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |",
+    "name": "CMake",
+    "versions": [
+     "3.31.5",
+     "4.1.2"
+    ],
+    "attrs": {
+     "Package Name": "CMake"
+    },
+    "src_line": 241
+   },
+   {
+    "raw": "| Google Play services       | 49                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |",
+    "name": "Google Play services",
+    "versions": [
+     "49"
+    ],
+    "attrs": {
+     "Package Name": "Google Play services"
+    },
+    "src_line": 242
+   },
+   {
+    "raw": "| Google Repository          | 58                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |",
+    "name": "Google Repository",
+    "versions": [
+     "58"
+    ],
+    "attrs": {
+     "Package Name": "Google Repository"
+    },
+    "src_line": 243
+   },
+   {
+    "raw": "| NDK                        | 27.3.13750724 (default)<br>29.0.14206865<br>30.0.16248370                                                                                                                                                                                                                                                                                                                                                                                                                               |",
+    "name": "NDK",
+    "versions": [
+     "27.3.13750724",
+     "29.0.14206865",
+     "30.0.16248370"
+    ],
+    "default": true,
+    "default_versions": [
+     "27.3.13750724"
+    ],
+    "attrs": {
+     "Package Name": "NDK"
+    },
+    "src_line": 244
+   }
+  ],
+  "Android/Environment variables": [
+   {
+    "raw": "| ANDROID_HOME            | /usr/local/lib/android/sdk                   |",
+    "name": "ANDROID_HOME",
+    "attrs": {
+     "Name": "ANDROID_HOME",
+     "Value": "/usr/local/lib/android/sdk"
+    },
+    "src_line": 249
+   },
+   {
+    "raw": "| ANDROID_NDK             | /usr/local/lib/android/sdk/ndk/27.3.13750724 |",
+    "name": "ANDROID_NDK",
+    "attrs": {
+     "Name": "ANDROID_NDK",
+     "Value": "/usr/local/lib/android/sdk/ndk/27.3.13750724"
+    },
+    "src_line": 250
+   },
+   {
+    "raw": "| ANDROID_NDK_HOME        | /usr/local/lib/android/sdk/ndk/27.3.13750724 |",
+    "name": "ANDROID_NDK_HOME",
+    "attrs": {
+     "Name": "ANDROID_NDK_HOME",
+     "Value": "/usr/local/lib/android/sdk/ndk/27.3.13750724"
+    },
+    "src_line": 251
+   },
+   {
+    "raw": "| ANDROID_NDK_LATEST_HOME | /usr/local/lib/android/sdk/ndk/30.0.16248370 |",
+    "name": "ANDROID_NDK_LATEST_HOME",
+    "attrs": {
+     "Name": "ANDROID_NDK_LATEST_HOME",
+     "Value": "/usr/local/lib/android/sdk/ndk/30.0.16248370"
+    },
+    "src_line": 252
+   },
+   {
+    "raw": "| ANDROID_NDK_ROOT        | /usr/local/lib/android/sdk/ndk/27.3.13750724 |",
+    "name": "ANDROID_NDK_ROOT",
+    "attrs": {
+     "Name": "ANDROID_NDK_ROOT",
+     "Value": "/usr/local/lib/android/sdk/ndk/27.3.13750724"
+    },
+    "src_line": 253
+   },
+   {
+    "raw": "| ANDROID_SDK_ROOT        | /usr/local/lib/android/sdk                   |",
+    "name": "ANDROID_SDK_ROOT",
+    "attrs": {
+     "Name": "ANDROID_SDK_ROOT",
+     "Value": "/usr/local/lib/android/sdk"
+    },
+    "src_line": 254
+   }
+  ],
+  "Installed apt packages": [
+   {
+    "raw": "| acl                    | 2.3.2-1build1.1               |",
+    "name": "acl",
+    "versions": [
+     "2.3.2-1build1.1"
+    ],
+    "attrs": {
+     "Name": "acl"
+    },
+    "src_line": 259
+   },
+   {
+    "raw": "| aria2                  | 1.37.0+debian-1build3         |",
+    "name": "aria2",
+    "versions": [
+     "1.37.0+debian-1build3"
+    ],
+    "attrs": {
+     "Name": "aria2"
+    },
+    "src_line": 260
+   },
+   {
+    "raw": "| autoconf               | 2.71-3                        |",
+    "name": "autoconf",
+    "versions": [
+     "2.71-3"
+    ],
+    "attrs": {
+     "Name": "autoconf"
+    },
+    "src_line": 261
+   },
+   {
+    "raw": "| automake               | 1:1.16.5-1.3ubuntu1           |",
+    "name": "automake",
+    "versions": [
+     "1:1.16.5-1.3ubuntu1"
+    ],
+    "attrs": {
+     "Name": "automake"
+    },
+    "src_line": 262
+   },
+   {
+    "raw": "| binutils               | 2.42-4ubuntu2.10              |",
+    "name": "binutils",
+    "versions": [
+     "2.42-4ubuntu2.10"
+    ],
+    "attrs": {
+     "Name": "binutils"
+    },
+    "src_line": 263
+   },
+   {
+    "raw": "| bison                  | 2:3.8.2+dfsg-1ubuntu0.24.04.1 |",
+    "name": "bison",
+    "versions": [
+     "2:3.8.2+dfsg-1ubuntu0.24.04.1"
+    ],
+    "attrs": {
+     "Name": "bison"
+    },
+    "src_line": 264
+   },
+   {
+    "raw": "| brotli                 | 1.1.0-2build2                 |",
+    "name": "brotli",
+    "versions": [
+     "1.1.0-2build2"
+    ],
+    "attrs": {
+     "Name": "brotli"
+    },
+    "src_line": 265
+   },
+   {
+    "raw": "| bzip2                  | 1.0.8-5.1ubuntu0.1            |",
+    "name": "bzip2",
+    "versions": [
+     "1.0.8-5.1ubuntu0.1"
+    ],
+    "attrs": {
+     "Name": "bzip2"
+    },
+    "src_line": 266
+   },
+   {
+    "raw": "| coreutils              | 9.4-3ubuntu6.3                |",
+    "name": "coreutils",
+    "versions": [
+     "9.4-3ubuntu6.3"
+    ],
+    "attrs": {
+     "Name": "coreutils"
+    },
+    "src_line": 267
+   },
+   {
+    "raw": "| curl                   | 8.5.0-2ubuntu10.15            |",
+    "name": "curl",
+    "versions": [
+     "8.5.0-2ubuntu10.15"
+    ],
+    "attrs": {
+     "Name": "curl"
+    },
+    "src_line": 268
+   },
+   {
+    "raw": "| dbus                   | 1.14.10-4ubuntu4.1            |",
+    "name": "dbus",
+    "versions": [
+     "1.14.10-4ubuntu4.1"
+    ],
+    "attrs": {
+     "Name": "dbus"
+    },
+    "src_line": 269
+   },
+   {
+    "raw": "| dnsutils               | 1:9.18.39-0ubuntu0.24.04.7    |",
+    "name": "dnsutils",
+    "versions": [
+     "1:9.18.39-0ubuntu0.24.04.7"
+    ],
+    "attrs": {
+     "Name": "dnsutils"
+    },
+    "src_line": 270
+   },
+   {
+    "raw": "| dpkg                   | 1.22.6ubuntu6.6               |",
+    "name": "dpkg",
+    "versions": [
+     "1.22.6ubuntu6.6"
+    ],
+    "attrs": {
+     "Name": "dpkg"
+    },
+    "src_line": 271
+   },
+   {
+    "raw": "| dpkg-dev               | 1.22.6ubuntu6.6               |",
+    "name": "dpkg-dev",
+    "versions": [
+     "1.22.6ubuntu6.6"
+    ],
+    "attrs": {
+     "Name": "dpkg-dev"
+    },
+    "src_line": 272
+   },
+   {
+    "raw": "| fakeroot               | 1.33-1                        |",
+    "name": "fakeroot",
+    "versions": [
+     "1.33-1"
+    ],
+    "attrs": {
+     "Name": "fakeroot"
+    },
+    "src_line": 273
+   },
+   {
+    "raw": "| file                   | 1:5.45-3build1                |",
+    "name": "file",
+    "versions": [
+     "1:5.45-3build1"
+    ],
+    "attrs": {
+     "Name": "file"
+    },
+    "src_line": 274
+   },
+   {
+    "raw": "| findutils              | 4.9.0-5build1                 |",
+    "name": "findutils",
+    "versions": [
+     "4.9.0-5build1"
+    ],
+    "attrs": {
+     "Name": "findutils"
+    },
+    "src_line": 275
+   },
+   {
+    "raw": "| flex                   | 2.6.4-8.2build1               |",
+    "name": "flex",
+    "versions": [
+     "2.6.4-8.2build1"
+    ],
+    "attrs": {
+     "Name": "flex"
+    },
+    "src_line": 276
+   },
+   {
+    "raw": "| fonts-noto-color-emoji | 2.047-0ubuntu0.24.04.1        |",
+    "name": "fonts-noto-color-emoji",
+    "versions": [
+     "2.047-0ubuntu0.24.04.1"
+    ],
+    "attrs": {
+     "Name": "fonts-noto-color-emoji"
+    },
+    "src_line": 277
+   },
+   {
+    "raw": "| ftp                    | 20230507-2build3              |",
+    "name": "ftp",
+    "versions": [
+     "20230507-2build3"
+    ],
+    "attrs": {
+     "Name": "ftp"
+    },
+    "src_line": 278
+   },
+   {
+    "raw": "| g++                    | 4:13.2.0-7ubuntu1             |",
+    "name": "g++",
+    "versions": [
+     "4:13.2.0-7ubuntu1"
+    ],
+    "attrs": {
+     "Name": "g++"
+    },
+    "src_line": 279
+   },
+   {
+    "raw": "| gcc                    | 4:13.2.0-7ubuntu1             |",
+    "name": "gcc",
+    "versions": [
+     "4:13.2.0-7ubuntu1"
+    ],
+    "attrs": {
+     "Name": "gcc"
+    },
+    "src_line": 280
+   },
+   {
+    "raw": "| gnupg2                 | 2.4.4-2ubuntu17.6             |",
+    "name": "gnupg2",
+    "versions": [
+     "2.4.4-2ubuntu17.6"
+    ],
+    "attrs": {
+     "Name": "gnupg2"
+    },
+    "src_line": 281
+   },
+   {
+    "raw": "| haveged                | 1.9.14-1ubuntu2               |",
+    "name": "haveged",
+    "versions": [
+     "1.9.14-1ubuntu2"
+    ],
+    "attrs": {
+     "Name": "haveged"
+    },
+    "src_line": 282
+   },
+   {
+    "raw": "| iproute2               | 6.1.0-1ubuntu6.4              |",
+    "name": "iproute2",
+    "versions": [
+     "6.1.0-1ubuntu6.4"
+    ],
+    "attrs": {
+     "Name": "iproute2"
+    },
+    "src_line": 283
+   },
+   {
+    "raw": "| iputils-ping           | 3:20240117-1ubuntu0.1         |",
+    "name": "iputils-ping",
+    "versions": [
+     "3:20240117-1ubuntu0.1"
+    ],
+    "attrs": {
+     "Name": "iputils-ping"
+    },
+    "src_line": 284
+   },
+   {
+    "raw": "| jq                     | 1.7.1-3ubuntu0.24.04.2        |",
+    "name": "jq",
+    "versions": [
+     "1.7.1-3ubuntu0.24.04.2"
+    ],
+    "attrs": {
+     "Name": "jq"
+    },
+    "src_line": 285
+   },
+   {
+    "raw": "| libicu-dev             | 74.2-1ubuntu3.1               |",
+    "name": "libicu-dev",
+    "versions": [
+     "74.2-1ubuntu3.1"
+    ],
+    "attrs": {
+     "Name": "libicu-dev"
+    },
+    "src_line": 286
+   },
+   {
+    "raw": "| libnss3-tools          | 2:3.98-1ubuntu0.2             |",
+    "name": "libnss3-tools",
+    "versions": [
+     "2:3.98-1ubuntu0.2"
+    ],
+    "attrs": {
+     "Name": "libnss3-tools"
+    },
+    "src_line": 287
+   },
+   {
+    "raw": "| libsqlite3-dev         | 3.45.1-1ubuntu2.8             |",
+    "name": "libsqlite3-dev",
+    "versions": [
+     "3.45.1-1ubuntu2.8"
+    ],
+    "attrs": {
+     "Name": "libsqlite3-dev"
+    },
+    "src_line": 288
+   },
+   {
+    "raw": "| libssl-dev             | 3.0.13-0ubuntu3.16            |",
+    "name": "libssl-dev",
+    "versions": [
+     "3.0.13-0ubuntu3.16"
+    ],
+    "attrs": {
+     "Name": "libssl-dev"
+    },
+    "src_line": 289
+   },
+   {
+    "raw": "| libtool                | 2.4.7-7build1                 |",
+    "name": "libtool",
+    "versions": [
+     "2.4.7-7build1"
+    ],
+    "attrs": {
+     "Name": "libtool"
+    },
+    "src_line": 290
+   },
+   {
+    "raw": "| libyaml-dev            | 0.2.5-1build1                 |",
+    "name": "libyaml-dev",
+    "versions": [
+     "0.2.5-1build1"
+    ],
+    "attrs": {
+     "Name": "libyaml-dev"
+    },
+    "src_line": 291
+   },
+   {
+    "raw": "| locales                | 2.39-0ubuntu8.9               |",
+    "name": "locales",
+    "versions": [
+     "2.39-0ubuntu8.9"
+    ],
+    "attrs": {
+     "Name": "locales"
+    },
+    "src_line": 292
+   },
+   {
+    "raw": "| lz4                    | 1.9.4-1build1.1               |",
+    "name": "lz4",
+    "versions": [
+     "1.9.4-1build1.1"
+    ],
+    "attrs": {
+     "Name": "lz4"
+    },
+    "src_line": 293
+   },
+   {
+    "raw": "| m4                     | 1.4.19-4build1                |",
+    "name": "m4",
+    "versions": [
+     "1.4.19-4build1"
+    ],
+    "attrs": {
+     "Name": "m4"
+    },
+    "src_line": 294
+   },
+   {
+    "raw": "| make                   | 4.3-4.1build2                 |",
+    "name": "make",
+    "versions": [
+     "4.3-4.1build2"
+    ],
+    "attrs": {
+     "Name": "make"
+    },
+    "src_line": 295
+   },
+   {
+    "raw": "| mediainfo              | 24.01.1-1build2               |",
+    "name": "mediainfo",
+    "versions": [
+     "24.01.1-1build2"
+    ],
+    "attrs": {
+     "Name": "mediainfo"
+    },
+    "src_line": 296
+   },
+   {
+    "raw": "| mercurial              | 6.7.2-1ubuntu2.2              |",
+    "name": "mercurial",
+    "versions": [
+     "6.7.2-1ubuntu2.2"
+    ],
+    "attrs": {
+     "Name": "mercurial"
+    },
+    "src_line": 297
+   },
+   {
+    "raw": "| net-tools              | 2.10-0.1ubuntu4.4             |",
+    "name": "net-tools",
+    "versions": [
+     "2.10-0.1ubuntu4.4"
+    ],
+    "attrs": {
+     "Name": "net-tools"
+    },
+    "src_line": 298
+   },
+   {
+    "raw": "| netcat                 | 1.226-1ubuntu2                |",
+    "name": "netcat",
+    "versions": [
+     "1.226-1ubuntu2"
+    ],
+    "attrs": {
+     "Name": "netcat"
+    },
+    "src_line": 299
+   },
+   {
+    "raw": "| openssh-client         | 1:9.6p1-3ubuntu13.19          |",
+    "name": "openssh-client",
+    "versions": [
+     "1:9.6p1-3ubuntu13.19"
+    ],
+    "attrs": {
+     "Name": "openssh-client"
+    },
+    "src_line": 300
+   },
+   {
+    "raw": "| p7zip-full             | 16.02+transitional.1          |",
+    "name": "p7zip-full",
+    "versions": [
+     "16.02+transitional.1"
+    ],
+    "attrs": {
+     "Name": "p7zip-full"
+    },
+    "src_line": 301
+   },
+   {
+    "raw": "| p7zip-rar              | 16.02+transitional.1          |",
+    "name": "p7zip-rar",
+    "versions": [
+     "16.02+transitional.1"
+    ],
+    "attrs": {
+     "Name": "p7zip-rar"
+    },
+    "src_line": 302
+   },
+   {
+    "raw": "| parallel               | 20231122+ds-1                 |",
+    "name": "parallel",
+    "versions": [
+     "20231122+ds-1"
+    ],
+    "attrs": {
+     "Name": "parallel"
+    },
+    "src_line": 303
+   },
+   {
+    "raw": "| patchelf               | 0.18.0-1.1build1              |",
+    "name": "patchelf",
+    "versions": [
+     "0.18.0-1.1build1"
+    ],
+    "attrs": {
+     "Name": "patchelf"
+    },
+    "src_line": 304
+   },
+   {
+    "raw": "| pigz                   | 2.8-1                         |",
+    "name": "pigz",
+    "versions": [
+     "2.8-1"
+    ],
+    "attrs": {
+     "Name": "pigz"
+    },
+    "src_line": 305
+   },
+   {
+    "raw": "| pkg-config             | 1.8.1-2build1                 |",
+    "name": "pkg-config",
+    "versions": [
+     "1.8.1-2build1"
+    ],
+    "attrs": {
+     "Name": "pkg-config"
+    },
+    "src_line": 306
+   },
+   {
+    "raw": "| pollinate              | 4.33-3.1ubuntu1.3             |",
+    "name": "pollinate",
+    "versions": [
+     "4.33-3.1ubuntu1.3"
+    ],
+    "attrs": {
+     "Name": "pollinate"
+    },
+    "src_line": 307
+   },
+   {
+    "raw": "| python-is-python3      | 3.11.4-1                      |",
+    "name": "python-is-python3",
+    "versions": [
+     "3.11.4-1"
+    ],
+    "attrs": {
+     "Name": "python-is-python3"
+    },
+    "src_line": 308
+   },
+   {
+    "raw": "| rpm                    | 4.18.2+dfsg-2.1build2         |",
+    "name": "rpm",
+    "versions": [
+     "4.18.2+dfsg-2.1build2"
+    ],
+    "attrs": {
+     "Name": "rpm"
+    },
+    "src_line": 309
+   },
+   {
+    "raw": "| rsync                  | 3.2.7-1ubuntu1.5              |",
+    "name": "rsync",
+    "versions": [
+     "3.2.7-1ubuntu1.5"
+    ],
+    "attrs": {
+     "Name": "rsync"
+    },
+    "src_line": 310
+   },
+   {
+    "raw": "| shellcheck             | 0.9.0-1                       |",
+    "name": "shellcheck",
+    "versions": [
+     "0.9.0-1"
+    ],
+    "attrs": {
+     "Name": "shellcheck"
+    },
+    "src_line": 311
+   },
+   {
+    "raw": "| sphinxsearch           | 2.2.11-8build1                |",
+    "name": "sphinxsearch",
+    "versions": [
+     "2.2.11-8build1"
+    ],
+    "attrs": {
+     "Name": "sphinxsearch"
+    },
+    "src_line": 312
+   },
+   {
+    "raw": "| sqlite3                | 3.45.1-1ubuntu2.8             |",
+    "name": "sqlite3",
+    "versions": [
+     "3.45.1-1ubuntu2.8"
+    ],
+    "attrs": {
+     "Name": "sqlite3"
+    },
+    "src_line": 313
+   },
+   {
+    "raw": "| ssh                    | 1:9.6p1-3ubuntu13.19          |",
+    "name": "ssh",
+    "versions": [
+     "1:9.6p1-3ubuntu13.19"
+    ],
+    "attrs": {
+     "Name": "ssh"
+    },
+    "src_line": 314
+   },
+   {
+    "raw": "| sshpass                | 1.09-1                        |",
+    "name": "sshpass",
+    "versions": [
+     "1.09-1"
+    ],
+    "attrs": {
+     "Name": "sshpass"
+    },
+    "src_line": 315
+   },
+   {
+    "raw": "| sudo                   | 1.9.15p5-3ubuntu5.24.04.4     |",
+    "name": "sudo",
+    "versions": [
+     "1.9.15p5-3ubuntu5.24.04.4"
+    ],
+    "attrs": {
+     "Name": "sudo"
+    },
+    "src_line": 316
+   },
+   {
+    "raw": "| swig                   | 4.2.0-2ubuntu1                |",
+    "name": "swig",
+    "versions": [
+     "4.2.0-2ubuntu1"
+    ],
+    "attrs": {
+     "Name": "swig"
+    },
+    "src_line": 317
+   },
+   {
+    "raw": "| systemd-coredump       | 255.4-1ubuntu8.17             |",
+    "name": "systemd-coredump",
+    "versions": [
+     "255.4-1ubuntu8.17"
+    ],
+    "attrs": {
+     "Name": "systemd-coredump"
+    },
+    "src_line": 318
+   },
+   {
+    "raw": "| tar                    | 1.35+dfsg-3ubuntu0.4          |",
+    "name": "tar",
+    "versions": [
+     "1.35+dfsg-3ubuntu0.4"
+    ],
+    "attrs": {
+     "Name": "tar"
+    },
+    "src_line": 319
+   },
+   {
+    "raw": "| telnet                 | 0.17+2.5-3ubuntu4.2           |",
+    "name": "telnet",
+    "versions": [
+     "0.17+2.5-3ubuntu4.2"
+    ],
+    "attrs": {
+     "Name": "telnet"
+    },
+    "src_line": 320
+   },
+   {
+    "raw": "| texinfo                | 7.1-3build2                   |",
+    "name": "texinfo",
+    "versions": [
+     "7.1-3build2"
+    ],
+    "attrs": {
+     "Name": "texinfo"
+    },
+    "src_line": 321
+   },
+   {
+    "raw": "| time                   | 1.9-0.2build1                 |",
+    "name": "time",
+    "versions": [
+     "1.9-0.2build1"
+    ],
+    "attrs": {
+     "Name": "time"
+    },
+    "src_line": 322
+   },
+   {
+    "raw": "| tk                     | 8.6.14build1                  |",
+    "name": "tk",
+    "versions": [
+     "8.6.14build1"
+    ],
+    "attrs": {
+     "Name": "tk"
+    },
+    "src_line": 323
+   },
+   {
+    "raw": "| tree                   | 2.1.1-2ubuntu3.24.04.2        |",
+    "name": "tree",
+    "versions": [
+     "2.1.1-2ubuntu3.24.04.2"
+    ],
+    "attrs": {
+     "Name": "tree"
+    },
+    "src_line": 324
+   },
+   {
+    "raw": "| tzdata                 | 2026c-0ubuntu0.24.04.1        |",
+    "name": "tzdata",
+    "versions": [
+     "2026c-0ubuntu0.24.04.1"
+    ],
+    "attrs": {
+     "Name": "tzdata"
+    },
+    "src_line": 325
+   },
+   {
+    "raw": "| unzip                  | 6.0-28ubuntu4.1               |",
+    "name": "unzip",
+    "versions": [
+     "6.0-28ubuntu4.1"
+    ],
+    "attrs": {
+     "Name": "unzip"
+    },
+    "src_line": 326
+   },
+   {
+    "raw": "| upx                    | 4.2.2-3                       |",
+    "name": "upx",
+    "versions": [
+     "4.2.2-3"
+    ],
+    "attrs": {
+     "Name": "upx"
+    },
+    "src_line": 327
+   },
+   {
+    "raw": "| wget                   | 1.21.4-1ubuntu4.5             |",
+    "name": "wget",
+    "versions": [
+     "1.21.4-1ubuntu4.5"
+    ],
+    "attrs": {
+     "Name": "wget"
+    },
+    "src_line": 328
+   },
+   {
+    "raw": "| xvfb                   | 2:21.1.12-1ubuntu1.8          |",
+    "name": "xvfb",
+    "versions": [
+     "2:21.1.12-1ubuntu1.8"
+    ],
+    "attrs": {
+     "Name": "xvfb"
+    },
+    "src_line": 329
+   },
+   {
+    "raw": "| xz-utils               | 5.6.1+really5.4.5-1ubuntu0.3  |",
+    "name": "xz-utils",
+    "versions": [
+     "5.6.1+really5.4.5-1ubuntu0.3"
+    ],
+    "attrs": {
+     "Name": "xz-utils"
+    },
+    "src_line": 330
+   },
+   {
+    "raw": "| zip                    | 3.0-13ubuntu0.2               |",
+    "name": "zip",
+    "versions": [
+     "3.0-13ubuntu0.2"
+    ],
+    "attrs": {
+     "Name": "zip"
+    },
+    "src_line": 331
+   },
+   {
+    "raw": "| zsync                  | 0.6.2-5build1                 |",
+    "name": "zsync",
+    "versions": [
+     "0.6.2-5build1"
+    ],
+    "attrs": {
+     "Name": "zsync"
+    },
+    "src_line": 332
+   }
+  ]
+ },
+ "category_meta": {
+  "Language and Runtime": {
+   "heading_line": 16,
+   "level": 3
+  },
+  "Package Management": {
+   "heading_line": 32,
+   "level": 3
+  },
+  "Package Management/Environment variables": {
+   "heading_line": 45,
+   "level": 4,
+   "columns": [
+    "Name",
+    "Value"
+   ],
+   "columns_line": 46
+  },
+  "Package Management/Homebrew note": {
+   "heading_line": 51,
+   "level": 4
+  },
+  "Project Management": {
+   "heading_line": 59,
+   "level": 3
+  },
+  "Tools": {
+   "heading_line": 65,
+   "level": 3
+  },
+  "CLI Tools": {
+   "heading_line": 106,
+   "level": 3
+  },
+  "Java": {
+   "heading_line": 115,
+   "level": 3,
+   "columns": [
+    "Version",
+    "Environment Variable"
+   ],
+   "columns_line": 116
+  },
+  "PHP Tools": {
+   "heading_line": 124,
+   "level": 3
+  },
+  "Haskell Tools": {
+   "heading_line": 132,
+   "level": 3
+  },
+  "Rust Tools": {
+   "heading_line": 138,
+   "level": 3
+  },
+  "Rust Tools/Packages": {
+   "heading_line": 144,
+   "level": 4
+  },
+  "Browsers and Drivers": {
+   "heading_line": 147,
+   "level": 3
+  },
+  "Browsers and Drivers/Environment variables": {
+   "heading_line": 157,
+   "level": 4,
+   "columns": [
+    "Name",
+    "Value"
+   ],
+   "columns_line": 158
+  },
+  ".NET Tools": {
+   "heading_line": 165,
+   "level": 3
+  },
+  "Databases": {
+   "heading_line": 169,
+   "level": 3
+  },
+  "Databases/PostgreSQL": {
+   "heading_line": 172,
+   "level": 4
+  },
+  "Databases/MySQL": {
+   "heading_line": 180,
+   "level": 4
+  },
+  "Cached Tools": {
+   "heading_line": 189,
+   "level": 3
+  },
+  "Cached Tools/Go": {
+   "heading_line": 191,
+   "level": 4
+  },
+  "Cached Tools/Node.js": {
+   "heading_line": 196,
+   "level": 4
+  },
+  "Cached Tools/Python": {
+   "heading_line": 200,
+   "level": 4
+  },
+  "Cached Tools/PyPy": {
+   "heading_line": 207,
+   "level": 4
+  },
+  "Cached Tools/Ruby": {
+   "heading_line": 212,
+   "level": 4
+  },
+  "PowerShell Tools": {
+   "heading_line": 218,
+   "level": 3
+  },
+  "PowerShell Tools/PowerShell Modules": {
+   "heading_line": 221,
+   "level": 4
+  },
+  "Web Servers": {
+   "heading_line": 227,
+   "level": 3,
+   "columns": [
+    "Name",
+    "Version",
+    "ConfigFile",
+    "ServiceStatus",
+    "ListenPort"
+   ],
+   "columns_line": 228
+  },
+  "Android": {
+   "heading_line": 233,
+   "level": 3,
+   "columns": [
+    "Package Name",
+    "Version"
+   ],
+   "columns_line": 234
+  },
+  "Android/Environment variables": {
+   "heading_line": 246,
+   "level": 4,
+   "columns": [
+    "Name",
+    "Value"
+   ],
+   "columns_line": 247
+  },
+  "Installed apt packages": {
+   "heading_line": 256,
+   "level": 3,
+   "columns": [
+    "Name",
+    "Version"
+   ],
+   "columns_line": 257
+  }
+ },
+ "unexpected_lines": []
+}

@@ -1,0 +1,2 @@
+# Source copies are byte-exact upstream files; do not normalise line endings.
+*/sources/** -text

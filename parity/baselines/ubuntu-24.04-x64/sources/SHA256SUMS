@@ -1,0 +1,5 @@
+5b8a5f29c33d9c98a0368c0e3109eba9dc566ce8091aa412de56fc93518d1adf *./build-commit-7e7dc1b/build.ubuntu-24_04.pkr.hcl
+6ebf0669d768e4cc222d2ae25f9382c86c694e42dc1694db5f5cf50eca611264 *./build-commit-7e7dc1b/toolset-2404.json
+5b8a5f29c33d9c98a0368c0e3109eba9dc566ce8091aa412de56fc93518d1adf *./pin/build.ubuntu-24_04.pkr.hcl
+9de904fe6c77708d0c22506ae61411f61bd97e036f405569f32c7616d15958cf *./pin/locals.ubuntu.pkr.hcl
+72d25917a42635cf9be9105f7d6056b6d56ffcdf63ddc24f82fe6cdf526c6c84 *./pin/toolset-2404.json
