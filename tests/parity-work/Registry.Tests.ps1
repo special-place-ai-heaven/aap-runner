@@ -132,6 +132,38 @@ Describe 'parents and children' {
         { Import-PwLedger -Registry $fx.Registry -LedgerPath $ledger } | Should -Throw '*must not depend on its parent*'
     }
 
+    It 'applies a ledger revision that expands a NOT_STARTED parent into children' {
+        $tasks = @([pscustomobject]@{ id = 'S'; needs = @(); owns = @('ss/summary/**') })
+        $fx2 = New-PwFixture -Tasks $tasks
+        $rev = @([pscustomobject]@{ id = 'S'; needs = @(); owns = @('ss/summary/**'); children = @('S.1') },
+            [pscustomobject]@{ id = 'S.1'; needs = @(); owns = @('ss/one/**'); parent = 'S' })
+        $ledger = Join-Path $fx2.Root 'ledger-rev.json'
+        [IO.File]::WriteAllText($ledger, ([pscustomobject]@{ tasks = $rev } | ConvertTo-Json -Depth 5))
+        Import-PwLedger -Registry $fx2.Registry -LedgerPath $ledger
+        @((Get-FxItem $fx2 'S').children) | Should -Be @('S.1')
+        $s = New-FxReadyItem $fx2 'S' 21 -StopAt 'PR_OPEN'
+        (Set-PwState -Registry $fx2.Registry -Item 'S' -To 'READY_TO_MERGE' -Actor 'coordinator' -Head $s.Head).Status | Should -Be 'REFUSED'
+        (Request-PwClaim -Registry $fx2.Registry -Item 'S.1' -Owner 'worker-1').Status | Should -Be 'CLAIMED'
+    }
+
+    It 'refuses a ledger revision of an item that has left NOT_STARTED' {
+        (Request-PwClaim -Registry $fx.Registry -Item 'P' -Owner 'worker-p').Status | Should -Be 'CLAIMED'
+        $rev = @([pscustomobject]@{ id = 'P'; needs = @(); owns = @('pp/other/**'); children = @('P.1', 'P.2') })
+        $ledger = Join-Path $TestDrive 'rev-active.json'
+        [IO.File]::WriteAllText($ledger, ([pscustomobject]@{ tasks = $rev } | ConvertTo-Json -Depth 5))
+        { Import-PwLedger -Registry $fx.Registry -LedgerPath $ledger } | Should -Throw '*while it is CLAIMED*'
+        @((Get-FxItem $fx 'P').owns) | Should -Be @('pp/summary/**')
+    }
+
+    It 'rejects an item id that could escape a path or an argument: <Id>' -TestCases @(
+        @{ Id = '..\evil' }, @{ Id = '-rf' }, @{ Id = 'a/b' }, @{ Id = '' }, @{ Id = ('x' * 65) }
+    ) {
+        $ledger = Join-Path $TestDrive 'bad-id.json'
+        [IO.File]::WriteAllText($ledger, ([pscustomobject]@{ tasks = @([pscustomobject]@{ id = $Id; needs = @(); owns = @('z/**') }) } | ConvertTo-Json -Depth 5))
+        { Import-PwLedger -Registry $fx.Registry -LedgerPath $ledger } | Should -Throw '*bad item id*'
+        @((Get-PwStatus -Registry $fx.Registry).Items).Count | Should -Be 4
+    }
+
     It 'refuses a child whose ownership overlaps a parent lease' {
         $tasks = @([pscustomobject]@{ id = 'R'; needs = @(); owns = @('rr/**'); children = @('R.1') },
             [pscustomobject]@{ id = 'R.1'; needs = @(); owns = @('rr/one/**'); parent = 'R' })
@@ -144,12 +176,15 @@ Describe 'parents and children' {
 Describe 'transitions' {
     BeforeEach { $script:fx = New-PwFixture }
 
-    It 'rejects illegal transitions and self-review' {
+    It 'rejects illegal transitions, self-verification and self-review' {
         (Set-PwState -Registry $fx.Registry -Item 'A' -To 'IN_PROGRESS' -Actor 'x').Status | Should -Be 'REFUSED'
         (Request-PwClaim -Registry $fx.Registry -Item 'A' -Owner 'worker-a').Status | Should -Be 'CLAIMED'
-        (Set-PwState -Registry $fx.Registry -Item 'A' -To 'VERIFIED' -Actor 'worker-a' -Head 'abc').Status | Should -Be 'REFUSED'
+        (Set-PwState -Registry $fx.Registry -Item 'A' -To 'VERIFIED' -Actor 'tester' -Head 'abc').Status | Should -Be 'REFUSED'
         (Set-PwState -Registry $fx.Registry -Item 'A' -To 'IN_PROGRESS' -Actor 'someone-else').Status | Should -Be 'REFUSED'
         (Set-PwState -Registry $fx.Registry -Item 'A' -To 'IN_PROGRESS' -Actor 'worker-a').Status | Should -Be 'OK'
+        # IN_PROGRESS now: the same transition and head differ only in the actor.
+        (Set-PwState -Registry $fx.Registry -Item 'A' -To 'VERIFIED' -Actor 'worker-a' -Head 'abc').Status | Should -Be 'REFUSED'
+        (Get-FxItem $fx 'A').state | Should -Be 'IN_PROGRESS'
         (Set-PwState -Registry $fx.Registry -Item 'A' -To 'VERIFIED' -Actor 'tester' -Head 'abc').Status | Should -Be 'OK'
         (Set-PwState -Registry $fx.Registry -Item 'A' -To 'REVIEWED' -Actor 'worker-a' -Head 'abc').Status | Should -Be 'REFUSED'
         (Set-PwState -Registry $fx.Registry -Item 'A' -To 'REVIEWED' -Actor 'reviewer' -Head 'def').Status | Should -Be 'REFUSED'

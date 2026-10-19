@@ -11,12 +11,15 @@ $script:States = @('NOT_STARTED', 'CLAIMED', 'IN_PROGRESS', 'VERIFIED', 'REVIEWE
     'READY_TO_MERGE', 'MERGED_CLEANUP_REQUIRED', 'CLEANUP_VERIFIED', 'COMPLETE', 'HOLD')
 $script:CleanupSteps = @('proof', 'inventory', 'evidence', 'processes', 'lab', 'dirs', 'worktrees', 'branch', 'base-sync', 'root')
 $script:OnceSteps = @('proof', 'evidence', 'processes', 'lab', 'branch', 'base-sync')
+$script:NeverKill = @('wsl.exe', 'wslhost.exe', 'vmmem', 'vmmem.exe', 'vmmemWSL', 'vmmemWSL.exe', 'docker*', 'com.docker*',
+    'aap-runner-tray.exe', 'aap-runner-supervisor*')
 $script:DefaultRegistry = 'C:\AI_STUFF\PROGRAMMING\aap-runner-work\parity\registry'
 $script:LockDepth = 0
 $script:Fault = $null
 $script:Lab = $null
 $script:GitHub = {
     param([string]$Repo, [int]$Number)
+    $ErrorActionPreference = 'Continue'   # 5.1: a stderr line under Stop throws even on exit 0
     $json = & gh pr view $Number --repo $Repo --json 'url,state,baseRefName,headRefOid,mergeCommit' 2>$null
     if ($LASTEXITCODE -ne 0) { throw "gh pr view exited $LASTEXITCODE" }
     ($json | Out-String) | ConvertFrom-Json
@@ -174,9 +177,9 @@ function Add-PwHistory($It, [string]$From, [string]$To, [string]$Actor, [string]
     $It.history = @($It.history) + @([pscustomobject]@{ from = $From; to = $To; actor = $Actor; at = (Get-PwNow); note = $Note })
 }
 
-function Set-PwHoldOn($It, [string]$Reason, [string]$Owner, [bool]$AfterMerge, [string]$Actor) {
+function Set-PwHoldOn($It, [string]$Reason, [string]$Owner, [bool]$AfterMerge, [string]$Actor, [bool]$Transient = $false) {
     $from = if ($It.state -eq 'HOLD') { $It.hold.from } else { $It.state }
-    $It.hold = [pscustomobject]@{ reason = $Reason; owner = $Owner; from = $from; after_merge = $AfterMerge; at = (Get-PwNow) }
+    $It.hold = [pscustomobject]@{ reason = $Reason; owner = $Owner; from = $from; after_merge = $AfterMerge; at = (Get-PwNow); transient = $Transient }
     Add-PwHistory $It $It.state 'HOLD' $Actor $Reason
     $It.state = 'HOLD'
 }
@@ -199,20 +202,30 @@ function New-PwItemRecord($T) {
     }
 }
 
-# Adds ledger tasks that the registry does not know yet; never resets existing items.
+# Adds new ledger tasks and applies revisions to NOT_STARTED items. Any revision of
+# needs/owns/children/parent on an item that has left NOT_STARTED is refused.
 function Import-PwLedger {
     param([string]$Registry = $script:DefaultRegistry, [Parameter(Mandatory)][string]$LedgerPath)
     Invoke-PwLocked $Registry {
         $st = Get-PwState $Registry
         if (-not $st) { $st = [pscustomobject]@{ schema = 1; items = @() } }
         $tasks = @((Read-PwJson $LedgerPath).tasks)
+        $shape = { param($r) (@($r.needs) -join ',') + '|' + (@($r.owns) -join ',') + '|' + (@($r.children) -join ',') + '|' + "$($r.parent)" }
+        $new = @(); $revised = @()
         foreach ($t in $tasks) {
-            $p = if ($t.PSObject.Properties['parent']) { $t.parent } else { $null }
-            if ($p -and @($t.needs) -contains $p) { throw "child $($t.id) must not depend on its parent $p" }
+            $rec = New-PwItemRecord $t
+            foreach ($id in @(@($rec.id) + @($rec.needs) + @($rec.children) + @($rec.parent, $rec.remainder_of) | Where-Object { $null -ne $_ })) {
+                if ("$id" -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw "bad item id '$id' in ledger" }
+            }
+            if ($rec.parent -and @($rec.needs) -contains $rec.parent) { throw "child $($rec.id) must not depend on its parent $($rec.parent)" }
+            $old = @($st.items | Where-Object { $_.id -eq $rec.id })
+            if ($old.Count -eq 0) { $new += $rec; continue }
+            if ((& $shape $old[0]) -eq (& $shape $rec)) { continue }
+            if ($old[0].state -ne 'NOT_STARTED') { throw "ledger revises $($rec.id) while it is $($old[0].state)" }
+            $revised += , @($old[0], $rec)
         }
-        foreach ($t in $tasks) {
-            if (@($st.items | Where-Object { $_.id -eq $t.id }).Count -eq 0) { $st.items = @($st.items) + @(New-PwItemRecord $t) }
-        }
+        foreach ($pair in $revised) { foreach ($f in @('needs', 'owns', 'children', 'parent')) { $pair[0].$f = $pair[1].$f } }
+        $st.items = @($st.items) + $new
         Save-PwState $Registry $st
     }
 }
@@ -221,12 +234,14 @@ function Initialize-PwRegistry {
     param([Parameter(Mandatory)][string]$Registry, [Parameter(Mandatory)][string]$Evidence,
         [Parameter(Mandatory)][string]$WorkRoot, [Parameter(Mandatory)][string]$BaseClone,
         [Parameter(Mandatory)][string]$Repo, [Parameter(Mandatory)][string]$LedgerPath, [string[]]$Sentinels,
-        [string[]]$DefaultSentinels = (Get-PwDefaultSentinels))
-    foreach ($p in @($WorkRoot, $Registry, $Evidence)) { Assert-PwPath -Path $p -Boundary $p }
-    if ((Test-PwUnder $Registry $WorkRoot) -or (Test-PwUnder $Evidence $WorkRoot)) { throw 'registry and evidence must live outside the disposable work root' }
+        [string[]]$DefaultSentinels = (Get-PwDefaultSentinels), [string]$Catalog)
+    foreach ($p in @($WorkRoot, $Registry, $Evidence, $Catalog | Where-Object { $_ })) { Assert-PwPath -Path $p -Boundary $p }
+    if ((Test-PwUnder $Registry $WorkRoot) -or (Test-PwUnder $Evidence $WorkRoot) -or ($Catalog -and (Test-PwUnder $Catalog $WorkRoot))) {
+        throw 'registry, evidence and catalog must live outside the disposable work root'
+    }
     if (-not [IO.Directory]::Exists($Registry)) { [void][IO.Directory]::CreateDirectory($Registry) }
     $cfg = [pscustomobject]@{
-        schema = 1; evidence = $Evidence; work_root = $WorkRoot; base_clone = $BaseClone; repo = $Repo
+        schema = 1; evidence = $Evidence; work_root = $WorkRoot; base_clone = $BaseClone; repo = $Repo; catalog = $Catalog
         scratch = (Join-Path $Registry 'scratch')
         sentinels = @(@($BaseClone, $Registry, $Evidence) + @($DefaultSentinels) + @($Sentinels) | Where-Object { $_ })
     }
@@ -283,9 +298,13 @@ function Request-PwClaim {
                     if (Test-PwOverlap $a $b) { return New-PwResult 'REFUSED' "ownership $a overlaps active lease $b of $($o.id)" $null }
                 } }
         }
+        $why = Test-PwUnobservedMerges $Registry $cfg $st $Owner
+        if ($why) { return New-PwResult 'REFUSED' $why $null }
         $attempt = [int]$it.attempt + 1
         $root = Join-Path $cfg.work_root ("{0}\attempt-{1}" -f $it.id, $attempt)
         Assert-PwPath -Path $root -Boundary $cfg.work_root -Sentinels $cfg.sentinels
+        $container = Split-Path $root -Parent
+        Assert-PwPath -Path $container -Boundary $cfg.work_root -Sentinels $cfg.sentinels
         if ([IO.Directory]::Exists($root) -or [IO.File]::Exists($root)) {
             Set-PwHoldOn $it "unregistered existing resource at $root" 'coordinator' $false $Owner
             Save-PwState $Registry $st
@@ -296,6 +315,7 @@ function Request-PwClaim {
         $dirs = @('tmp', 'target', 'logs') | ForEach-Object { [pscustomobject]@{ name = $_; path = (Join-Path $root $_); identity = $null } }
         $m = [pscustomobject]@{
             schema = 1; item = $it.id; attempt = $attempt; owner = $Owner; root = $root; root_identity = $null
+            container = [pscustomobject]@{ path = $container; preexisting = [IO.Directory]::Exists($container); identity = $null }
             branch = ('parity/{0}-attempt-{1}' -f $it.id.ToLowerInvariant(), $attempt); base_sha = $base
             base_clone = $cfg.base_clone; base_inventory_initial = @(Get-PwDirtyInventory $cfg.base_clone)
             sentinels_initial = @($cfg.sentinels | ForEach-Object { [pscustomobject]@{ path = $_; exists = (Test-PwExists $_) } })
@@ -319,8 +339,9 @@ function Request-PwClaim {
 # Idempotent creation of already-registered claim resources.
 function New-PwClaimResources($Registry, $Cfg, $St, $It, $M) {
     $mp = Get-PwManifestPath $Registry $It
-    $container = Split-Path $M.root -Parent
-    if (-not [IO.Directory]::Exists($container)) { [void][IO.Directory]::CreateDirectory($container) }
+    $c = $M.container
+    if (-not [IO.Directory]::Exists($c.path)) { [void][IO.Directory]::CreateDirectory($c.path) }
+    if (-not $c.preexisting -and -not $c.identity) { $c.identity = Get-PwIdentity $c.path; Write-PwJson $mp $M }
     if (-not [IO.Directory]::Exists($M.root)) { [void][IO.Directory]::CreateDirectory($M.root) }
     if (-not $M.root_identity) { $M.root_identity = Get-PwIdentity $M.root; Write-PwJson $mp $M }
     Invoke-PwFault 'claim:root-created'
@@ -408,11 +429,13 @@ function Add-PwWorktree {
 
 function Register-PwProcess {
     param([string]$Registry = $script:DefaultRegistry, [Parameter(Mandatory)][string]$Item, [Parameter(Mandatory)][int]$ProcessId)
-    $p = Get-Process -Id $ProcessId
-    $ticks = $p.StartTime.ToUniversalTime().Ticks.ToString()
+    $h = [ParityWork.OwnedProcess]::Open($ProcessId, $false)
+    if (-not $h) { throw "no process $ProcessId" }
+    try { $ticks = $h.StartTicks; $image = $h.ImagePath } finally { $h.Dispose() }
+    if (-not $image) { throw "process $ProcessId has exited" }
     Update-PwManifest $Registry $Item {
         param($m, $cfg)
-        $m.processes = @($m.processes) + @([pscustomobject]@{ pid = $ProcessId; start_ticks = $ticks; name = $p.ProcessName })
+        $m.processes = @($m.processes) + @([pscustomobject]@{ pid = $ProcessId; start_ticks = $ticks; image = $image })
     } | Out-Null
 }
 
@@ -428,7 +451,8 @@ function Register-PwAsset {
     Update-PwManifest $Registry $Item {
         param($m, $cfg)
         Assert-PwPath -Path $Source -Boundary $m.root
-        if (Test-PwUnder $Destination $m.root) { throw 'asset destination must be outside the attempt root' }
+        if (-not $cfg.catalog) { throw 'no asset catalog root is configured' }
+        Assert-PwPath -Path $Destination -Boundary $cfg.catalog -Sentinels $cfg.sentinels
         $m.assets = @($m.assets) + @([pscustomobject]@{ source = $Source; destination = $Destination; owner = $AssetOwner
                 retention = $Retention; expiry = $Expiry; size = $null; sha256 = $null })
     } | Out-Null
@@ -454,7 +478,7 @@ function Set-PwState {
         $from = $it.state
         $ok = switch ("$from>$To") {
             'CLAIMED>IN_PROGRESS' { $it.owner -eq $Actor }
-            'IN_PROGRESS>VERIFIED' { [bool]$Head }
+            'IN_PROGRESS>VERIFIED' { [bool]$Head -and $Actor -ne $it.owner }
             'VERIFIED>REVIEWED' { $Head -eq $it.verified_head -and $Actor -ne $it.owner }
             'REVIEWED>PR_OPEN' { $Pr -gt 0 -and $Head -eq $it.reviewed_head }
             'PR_OPEN>READY_TO_MERGE' { $Head -eq $it.reviewed_head -and (Test-PwMergeReady $st $it) -and -not (Test-PwBarrierClosed $st) }
@@ -465,6 +489,10 @@ function Set-PwState {
             $it.verified_head = $null; $it.verified_by = $null; $it.reviewed_head = $null; $it.reviewed_by = $null
         }
         if (-not $ok) { return New-PwResult 'REFUSED' "illegal or unproven transition $from -> $To" $null }
+        if ($To -eq 'READY_TO_MERGE') {
+            $why = Test-PwUnobservedMerges $Registry (Get-PwConfig $Registry) $st $Actor
+            if ($why) { return New-PwResult 'REFUSED' $why $null }
+        }
         if ($To -eq 'VERIFIED') { $it.verified_head = $Head; $it.verified_by = $Actor }
         if ($To -eq 'REVIEWED') { $it.reviewed_head = $Head; $it.reviewed_by = $Actor }
         if ($To -eq 'PR_OPEN') { $it.pr = $Pr }
@@ -508,11 +536,12 @@ function Clear-PwHold {
 
 function Test-PwMergeProof($Cfg, $It) {
     $hold = { param($why) New-PwResult 'HOLD' $why $null }
+    $transient = { param($why) New-PwResult 'HOLD' $why ([pscustomobject]@{ transient = $true }) }   # API/fetch: may recover
     if (-not $It.pr) { return New-PwResult 'NOT_MERGED' 'no pull request recorded (commit alone is not a merge)' $null }
     $accepted = $It.reviewed_head
     if (-not $accepted) { return & $hold 'no accepted reviewed head' }
-    try { $pr = & $script:GitHub $Cfg.repo ([int]$It.pr) } catch { return & $hold "GitHub API failure: $($_.Exception.Message)" }
-    if (-not $pr) { return & $hold 'GitHub API returned nothing' }
+    try { $pr = & $script:GitHub $Cfg.repo ([int]$It.pr) } catch { return & $transient "GitHub API failure: $($_.Exception.Message)" }
+    if (-not $pr) { return & $transient 'GitHub API returned nothing' }
     if ($pr.state -ne 'MERGED') { return New-PwResult 'NOT_MERGED' "pull request is $($pr.state)" $null }
     if ($pr.url -ne ("https://github.com/{0}/pull/{1}" -f $Cfg.repo, $It.pr)) { return & $hold "wrong repository: $($pr.url)" }
     if ($pr.baseRefName -ne 'main') { return & $hold "wrong base $($pr.baseRefName)" }
@@ -520,7 +549,7 @@ function Test-PwMergeProof($Cfg, $It) {
     $merge = if ($pr.mergeCommit) { $pr.mergeCommit.oid } else { $null }
     if (-not $merge) { return & $hold 'no merge commit reported' }
     $g = $Cfg.base_clone
-    if ((Invoke-PwGit $g fetch --quiet origin).Code -ne 0) { return & $hold 'fetch of origin failed' }
+    if ((Invoke-PwGit $g fetch --quiet origin).Code -ne 0) { return & $transient 'fetch of origin failed' }
     $origin = (Invoke-PwGit $g rev-parse 'refs/remotes/origin/main').Out[0]
     if ((Invoke-PwGit $g merge-base --is-ancestor $merge $origin).Code -ne 0) { return & $hold "merge commit $merge is not reachable from origin/main" }
     if ((Invoke-PwGit $g cat-file -e "$accepted^{commit}").Code -ne 0) { return & $hold 'accepted head object missing' }
@@ -560,20 +589,49 @@ function Register-PwMerge {
         $phase = if ($it.state -eq 'HOLD') { $it.hold.from } else { $it.state }
         if ($phase -notin @('PR_OPEN', 'READY_TO_MERGE')) { return New-PwResult 'REFUSED' "item is $($it.state)" $null }
         $proof = Test-PwMergeProof $cfg $it
-        if ($proof.Status -eq 'NOT_MERGED') { return $proof }
-        if ($proof.Status -ne 'OK') {
-            Set-PwHoldOn $it $proof.Reason 'coordinator' $true $Actor
-            Save-PwState $Registry $st
+        if ($proof.Status -eq 'NOT_MERGED') {
+            # A post-merge HOLD that only came from an API/fetch failure reverts to a
+            # pre-merge HOLD the coordinator can clear: the barrier reopens.
+            if ($it.state -eq 'HOLD' -and $it.hold.after_merge -and $it.hold.PSObject.Properties['transient'] -and $it.hold.transient) {
+                $it.hold.after_merge = $false; $it.hold.transient = $false
+                Add-PwHistory $it 'HOLD' 'HOLD' $Actor "merge not observed after transient proof failure: $($proof.Reason)"
+                Save-PwState $Registry $st
+            }
             return $proof
         }
-        $it.merge_proof = $proof.Data
-        $it.early_merge = -not (Test-PwMergeReady $st $it)
-        Write-PwJson (Join-Path (Get-PwEvidenceDir $cfg $it) 'merge-proof.json') $proof.Data
-        Add-PwHistory $it $it.state 'MERGED_CLEANUP_REQUIRED' $Actor $proof.Data.merge_sha
-        $it.state = 'MERGED_CLEANUP_REQUIRED'; $it.hold = $null
-        Save-PwState $Registry $st
+        Save-PwMergeObservation $Registry $cfg $st $it $proof $Actor
         $proof
     }
+}
+
+# Records a merge proof result: a proven merge closes the barrier; doubt is a post-merge HOLD.
+function Save-PwMergeObservation($Registry, $Cfg, $St, $It, $Proof, [string]$Actor) {
+    if ($Proof.Status -ne 'OK') {
+        Set-PwHoldOn $It $Proof.Reason 'coordinator' $true $Actor ([bool]($Proof.Data -and $Proof.Data.transient))
+        Save-PwState $Registry $St
+        return
+    }
+    $It.merge_proof = $Proof.Data
+    $It.early_merge = -not (Test-PwMergeReady $St $It)
+    Write-PwJson (Join-Path (Get-PwEvidenceDir $Cfg $It) 'merge-proof.json') $Proof.Data
+    Add-PwHistory $It $It.state 'MERGED_CLEANUP_REQUIRED' $Actor $Proof.Data.merge_sha
+    $It.state = 'MERGED_CLEANUP_REQUIRED'; $It.hold = $null
+    Save-PwState $Registry $St
+}
+
+# Under the lock: proves every open PR before a grant. An external merge nobody observed
+# is recorded (closing the barrier); any merge or uncertainty returns a refusal reason.
+function Test-PwUnobservedMerges($Registry, $Cfg, $St, [string]$Actor) {
+    foreach ($o in @($St.items)) {
+        $phase = if ($o.state -eq 'HOLD' -and -not $o.hold.after_merge) { $o.hold.from } else { $o.state }
+        if ($phase -notin @('PR_OPEN', 'READY_TO_MERGE') -or -not $o.pr) { continue }
+        $p = Test-PwMergeProof $Cfg $o
+        if ($p.Status -eq 'NOT_MERGED') { continue }
+        if ($p.Status -eq 'HOLD' -and $p.Data -and $p.Data.transient) { return "merge state of $($o.id) is uncertain: $($p.Reason)" }
+        Save-PwMergeObservation $Registry $Cfg $St $o $p $Actor
+        return "observed an unrecorded merge of $($o.id)"
+    }
+    $null
 }
 
 # ---- cleanup --------------------------------------------------------------------
@@ -619,28 +677,43 @@ function Invoke-PwCleanupStep([string]$Step, $Cfg, $It, $M, [int]$RetryDelayMs) 
                     reviewed_head = $It.reviewed_head; reviewed_by = $It.reviewed_by; merge_proof = $It.merge_proof; history = @($It.history)
                 })
             foreach ($a in @($M.assets)) {
-                if (-not [IO.File]::Exists($a.destination)) {
-                    $dd = [IO.Path]::GetDirectoryName($a.destination)
-                    if (-not [IO.Directory]::Exists($dd)) { [void][IO.Directory]::CreateDirectory($dd) }
-                    [IO.File]::Copy($a.source, $a.destination)
-                }
+                Assert-PwPath -Path $a.destination -Boundary $Cfg.catalog -Sentinels $Cfg.sentinels
+                # No-follow open: a reparse point anywhere on the source path, or a hard link, is HOLD.
+                $src = [ParityWork.SafeTree]::OpenFileNoFollow($a.source)
+                try {
+                    if (-not [IO.File]::Exists($a.destination)) {
+                        $dd = [IO.Path]::GetDirectoryName($a.destination)
+                        if (-not [IO.Directory]::Exists($dd)) { [void][IO.Directory]::CreateDirectory($dd) }
+                        $out = [IO.File]::Open($a.destination, 'CreateNew', 'Write', 'None')
+                        try { $src.CopyTo($out) } finally { $out.Dispose() }
+                        $src.Position = 0
+                    }
+                    $sha = [Security.Cryptography.SHA256]::Create()
+                    try { $srcHash = ([BitConverter]::ToString($sha.ComputeHash($src))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+                } finally { $src.Dispose() }
                 $a.sha256 = Get-PwHash $a.destination
                 $a.size = ([IO.FileInfo]$a.destination).Length
-                if ([IO.File]::Exists($a.source) -and (Get-PwHash $a.source) -ne $a.sha256) { & $hold 'ASSET' "asset destination differs from source: $($a.destination)" }
+                if ($srcHash -ne $a.sha256) { & $hold 'ASSET' "asset destination differs from source: $($a.destination)" }
             }
         }
         'processes' {
             foreach ($p in @($M.processes)) {
-                $proc = Get-Process -Id $p.pid -ErrorAction SilentlyContinue
-                $ticks = if ($proc) { try { $proc.StartTime.ToUniversalTime().Ticks.ToString() } catch { 'unknown' } } else { $null }
-                if (-not $proc) { & $obs ([pscustomobject]@{ kind = 'process'; id = $p.pid; result = 'absent' }) }
-                elseif ($ticks -ne $p.start_ticks) { & $obs ([pscustomobject]@{ kind = 'process'; id = $p.pid; result = 'pid reused (start time differs); not killed' }) }
-                else {
-                    $proc.Kill(); [void]$proc.WaitForExit(10000)
-                    $again = Get-Process -Id $p.pid -ErrorAction SilentlyContinue
-                    if ($again -and $again.StartTime.ToUniversalTime().Ticks.ToString() -eq $p.start_ticks) { & $hold 'PROCESS' "owned process $($p.pid) did not exit" }
-                    & $obs ([pscustomobject]@{ kind = 'process'; id = $p.pid; result = 'stopped; absence observed' })
-                }
+                # One handle: identity is read from it and termination goes through it.
+                $h = [ParityWork.OwnedProcess]::Open([int]$p.pid, $true)
+                try {
+                    if (-not $h -or $h.HasExited) { & $obs ([pscustomobject]@{ kind = 'process'; id = $p.pid; result = 'absent' }) }
+                    elseif ($h.StartTicks -ne $p.start_ticks) { & $obs ([pscustomobject]@{ kind = 'process'; id = $p.pid; result = 'pid reused (start time differs); not killed' }) }
+                    else {
+                        foreach ($img in @($p.image, $h.ImagePath)) {
+                            $leaf = Split-Path $img -Leaf
+                            if (@($script:NeverKill | Where-Object { $leaf -like $_ }).Count -gt 0) { & $hold 'PROCESS' "image $img is on the never-kill denylist; not killed" }
+                            if (@($Cfg.sentinels | Where-Object { $_ -and (Test-PwUnder $img $_) }).Count -gt 0) { & $hold 'PROCESS' "image $img is under a protected sentinel; not killed" }
+                        }
+                        if ($h.ImagePath -ne $p.image) { & $hold 'PROCESS' "process $($p.pid) image differs from registration; not killed" }
+                        if (-not $h.Terminate(10000)) { & $hold 'PROCESS' "owned process $($p.pid) did not exit" }
+                        & $obs ([pscustomobject]@{ kind = 'process'; id = $p.pid; result = 'stopped; absence observed' })
+                    }
+                } finally { if ($h) { $h.Dispose() } }
             }
         }
         'lab' {
@@ -703,7 +776,7 @@ function Invoke-PwCleanupStep([string]$Step, $Cfg, $It, $M, [int]$RetryDelayMs) 
             $before = @(Get-PwDirtyInventory $g)
             $pre = (Invoke-PwGit $g rev-parse HEAD).Out[0]
             if ((Invoke-PwGit $g fetch --quiet origin).Code -ne 0) { & $hold 'BASE' 'fetch failed' }
-            $r = Invoke-PwGit $g merge --ff-only --quiet 'refs/remotes/origin/main'
+            $r = Invoke-PwGit $g merge --ff-only --no-overwrite-ignore --quiet 'refs/remotes/origin/main'
             if ($r.Code -ne 0) { & $hold 'BASE' "fast-forward refused; base preserved: $($r.Out -join ' ')" }
             $after = @(Get-PwDirtyInventory $g)
             foreach ($b in $before) {
@@ -717,6 +790,15 @@ function Invoke-PwCleanupStep([string]$Step, $Cfg, $It, $M, [int]$RetryDelayMs) 
                 [void](Remove-PwOwnedTree -Path $M.root -Identity $M.root_identity -Boundary $M.root -Sentinels $Cfg.sentinels -RequireEmpty -RetryDelayMs $RetryDelayMs)
             }
             $M.cleanup.disposed = @(@($M.cleanup.disposed | Where-Object { $_.id -ne 'root' }) + @([pscustomobject]@{ id = 'root'; path = $M.root }))
+            $c = $M.container
+            if (-not $c.preexisting) {
+                # Created by this claim: removed only when empty; other attempts' entries HOLD.
+                if (Test-PwExists $c.path) {
+                    if (-not $c.identity) { & $hold 'IDENTITY' "item container $($c.path) exists without a recorded identity" }
+                    [void](Remove-PwOwnedTree -Path $c.path -Identity $c.identity -Boundary $Cfg.work_root -Sentinels $Cfg.sentinels -RequireEmpty -RetryDelayMs $RetryDelayMs)
+                }
+                $M.cleanup.disposed = @(@($M.cleanup.disposed | Where-Object { $_.id -ne 'container' }) + @([pscustomobject]@{ id = 'container'; path = $c.path }))
+            }
         }
     }
 }
@@ -821,7 +903,9 @@ function New-PwReceipt($Registry, $Cfg, $It, $M, $Mp, $Verifier, $RetryDelayMs) 
     $wtList = (Invoke-PwGit $g worktree list --porcelain).Out
     [IO.File]::WriteAllLines((Join-Path $sp 'worktree-list.txt'), [string[]]$wtList)
     $absent = @()
-    foreach ($r in @(@($M.dirs) + @($M.worktrees) + @([pscustomobject]@{ name = 'root'; path = $M.root }))) {
+    $owned = @(@($M.dirs) + @($M.worktrees) + @([pscustomobject]@{ name = 'root'; path = $M.root }))
+    if (-not $M.container.preexisting) { $owned += [pscustomobject]@{ name = 'container'; path = $M.container.path } }
+    foreach ($r in $owned) {
         if (Test-PwExists $r.path) { $fail.Add("still present: $($r.path)") } else { $absent += [pscustomobject]@{ id = $r.name; path = $r.path; observed_absent = $true } }
     }
     foreach ($wt in @($M.worktrees)) {
@@ -831,8 +915,11 @@ function New-PwReceipt($Registry, $Cfg, $It, $M, $Mp, $Verifier, $RetryDelayMs) 
     if ((Invoke-PwGit $g show-ref --verify --quiet "refs/heads/$($M.branch)").Code -eq 0) { $fail.Add("branch present: $($M.branch)") }
     $procs = @()
     foreach ($p in @($M.processes)) {
-        $proc = Get-Process -Id $p.pid -ErrorAction SilentlyContinue
-        $alive = $proc -and ($(try { $proc.StartTime.ToUniversalTime().Ticks.ToString() } catch { '' }) -eq $p.start_ticks)
+        $alive = $true   # unreadable counts as alive: absence is only ever observed
+        try {
+            $h = [ParityWork.OwnedProcess]::Open([int]$p.pid, $false)
+            if (-not $h) { $alive = $false } else { try { $alive = -not $h.HasExited -and $h.StartTicks -eq $p.start_ticks } finally { $h.Dispose() } }
+        } catch { }
         if ($alive) { $fail.Add("owned process alive: $($p.pid)") }
         $procs += [pscustomobject]@{ pid = $p.pid; start_ticks = $p.start_ticks; owned_instance_running = [bool]$alive }
     }

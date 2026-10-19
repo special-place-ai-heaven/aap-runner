@@ -49,7 +49,7 @@ namespace ParityWork
         const uint SHARE_READ = 1, SHARE_WRITE = 2, SHARE_DELETE = 4;
         const uint FILE_OPEN = 1;
         const uint FILE_DIRECTORY_FILE = 0x1, FILE_SYNCHRONOUS_IO_NONALERT = 0x20;
-        const uint FILE_NON_DIRECTORY_FILE = 0x40, FILE_OPEN_FOR_BACKUP_INTENT = 0x4000;
+        const uint FILE_NON_DIRECTORY_FILE = 0x40, FILE_READ_DATA = 0x1;
         const uint FILE_OPEN_REPARSE_POINT = 0x200000;
         const uint OBJ_CASE_INSENSITIVE = 0x40, OBJ_DONT_REPARSE = 0x1000;
         const uint ATTR_READONLY = 0x1, ATTR_DIRECTORY = 0x10, ATTR_REPARSE = 0x400;
@@ -118,6 +118,39 @@ namespace ParityWork
             finally { CloseAll(chain); }
         }
 
+        // Opens a regular file for reading through the same no-follow chain. HOLD when any
+        // ancestor or the file itself is a reparse point, or the file has several links.
+        public static System.IO.FileStream OpenFileNoFollow(string path)
+        {
+            int cut = path == null ? -1 : path.LastIndexOf('\\');
+            if (cut < 3) throw new HoldException("PATH", ".", "not a file below a drive root", false);
+            string name = path.Substring(cut + 1);
+            if (name.Length == 0 || name.Length > 255 || name.IndexOf(':') >= 0)
+                throw new HoldException("PATH", name, "bad file name", false);
+            List<SafeFileHandle> chain = OpenChain(path.Substring(0, cut), false);
+            try
+            {
+                SafeFileHandle h = Open(chain[chain.Count - 1], name, FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    SHARE_READ, FILE_NON_DIRECTORY_FILE, name, true);
+                try
+                {
+                    if ((AttrTag(h, name) & ATTR_REPARSE) != 0)
+                        throw new HoldException("REPARSE", name, "asset source is a reparse point", false);
+                    IntPtr buf = Marshal.AllocHGlobal(24);
+                    try
+                    {
+                        if (!GetFileInformationByHandleEx(h, 1, buf, 24)) throw FromWin32(Marshal.GetLastWin32Error(), name);
+                        if (Marshal.ReadInt32(buf, 16) != 1)
+                            throw new HoldException("HARDLINK", name, "asset source has several links", false);
+                    }
+                    finally { Marshal.FreeHGlobal(buf); }
+                    return new System.IO.FileStream(h, System.IO.FileAccess.Read);
+                }
+                catch { h.Dispose(); throw; }
+            }
+            finally { CloseAll(chain); }
+        }
+
         // ---- internals --------------------------------------------------------
 
         static List<SafeFileHandle> OpenChain(string path, bool forDelete)
@@ -134,7 +167,7 @@ namespace ParityWork
                 for (int i = 0; i < parts.Length; i++)
                 {
                     string p = parts[i];
-                    if (p.Length == 0 || p == "." || p == ".." || p.IndexOf(':') >= 0)
+                    if (p.Length == 0 || p.Length > 255 || p == "." || p == ".." || p.IndexOf(':') >= 0)
                         throw new HoldException("PATH", p, "bad path component", false);
                     bool last = i == parts.Length - 1;
                     string rel = last ? "." : "ancestor:" + p;
@@ -203,7 +236,7 @@ namespace ParityWork
                 IntPtr h;
                 IO_STATUS_BLOCK iosb;
                 int st = NtCreateFile(out h, access, ref oa, out iosb, IntPtr.Zero, 0, share, FILE_OPEN,
-                    options | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT | FILE_OPEN_FOR_BACKUP_INTENT,
+                    options | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
                     IntPtr.Zero, 0);
                 GC.KeepAlive(parent);
                 if (st < 0) throw FromStatus((uint)st, rel);
@@ -329,6 +362,70 @@ namespace ParityWork
             if (err == 2 || err == 3)
                 return new HoldException("NOT_FOUND", rel, "not found", false);
             return new HoldException("IO", rel, "Win32 " + err, false);
+        }
+    }
+
+    // One process handle: identity (creation time, image path) is read from, and any
+    // termination goes through, the same handle, so a reused PID cannot be hit.
+    public sealed class OwnedProcess : IDisposable
+    {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [DllImport("kernel32.dll")]
+        static extern bool CloseHandle(IntPtr h);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetProcessTimes(IntPtr h, out long create, out long exit, out long kernel, out long user);
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool QueryFullProcessImageNameW(IntPtr h, int flags, System.Text.StringBuilder buf, ref int size);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool TerminateProcess(IntPtr h, uint code);
+        [DllImport("kernel32.dll")]
+        static extern uint WaitForSingleObject(IntPtr h, uint ms);
+
+        IntPtr h;
+        public readonly string StartTicks;
+        public readonly string ImagePath;   // null once the process has exited
+
+        // Null when no process has this id; HOLD when it exists but cannot be inspected.
+        public static OwnedProcess Open(int pid, bool terminate)
+        {
+            IntPtr h = OpenProcess(0x1000 | 0x100000 | (terminate ? 0x1u : 0u), false, pid);
+            if (h == IntPtr.Zero)
+            {
+                int err = Marshal.GetLastWin32Error();
+                if (err == 87) return null;
+                throw new HoldException("PROCESS", pid.ToString(), "cannot open process (Win32 " + err + ")", false);
+            }
+            try { return new OwnedProcess(h, pid); }
+            catch { CloseHandle(h); throw; }
+        }
+
+        OwnedProcess(IntPtr handle, int pid)
+        {
+            h = handle;
+            long c, e, k, u;
+            if (!GetProcessTimes(h, out c, out e, out k, out u))
+                throw new HoldException("PROCESS", pid.ToString(), "cannot read start time (Win32 " + Marshal.GetLastWin32Error() + ")", false);
+            StartTicks = DateTime.FromFileTimeUtc(c).Ticks.ToString();
+            if (HasExited) return;
+            System.Text.StringBuilder sb = new System.Text.StringBuilder(1024);
+            int n = sb.Capacity;
+            if (!QueryFullProcessImageNameW(h, 0, sb, ref n))
+                throw new HoldException("PROCESS", pid.ToString(), "cannot read image path (Win32 " + Marshal.GetLastWin32Error() + ")", false);
+            ImagePath = sb.ToString(0, n);
+        }
+
+        public bool HasExited { get { return WaitForSingleObject(h, 0) == 0; } }
+
+        public bool Terminate(int waitMs)
+        {
+            TerminateProcess(h, 1);
+            return WaitForSingleObject(h, (uint)waitMs) == 0;
+        }
+
+        public void Dispose()
+        {
+            if (h != IntPtr.Zero) { CloseHandle(h); h = IntPtr.Zero; }
         }
     }
 }

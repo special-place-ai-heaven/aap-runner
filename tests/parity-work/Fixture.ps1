@@ -80,7 +80,7 @@ function New-PwFixture {
     $fx = [pscustomobject]@{
         Root = $root; Origin = (Join-Path $root 'origin.git'); Base = (Join-Path $root 'base'); Maint = (Join-Path $root 'maint')
         Work = (Join-Path $root 'work'); Registry = (Join-Path $root 'registry'); Evidence = (Join-Path $root 'evidence')
-        Outside = (Join-Path $root 'outside'); Gh = (Join-Path $root 'gh.json'); Ledger = (Join-Path $root 'ledger.json')
+        Outside = (Join-Path $root 'outside'); Catalog = (Join-Path $root 'catalog'); Gh = (Join-Path $root 'gh.json'); Ledger = (Join-Path $root 'ledger.json')
         Sentinels = @('cargo', 'benchmark', 'live-install', 'docker-volumes') | ForEach-Object { Join-Path $root "sentinels\$_" }
     }
     New-Item -ItemType Directory -Force -Path $root, $fx.Work | Out-Null
@@ -107,7 +107,7 @@ function New-PwFixture {
     [IO.File]::WriteAllText($fx.Ledger, ([pscustomobject]@{ tasks = @($Tasks) } | ConvertTo-Json -Depth 10))
     [IO.File]::WriteAllText($fx.Gh, '{}')
     Initialize-PwRegistry -Registry $fx.Registry -Evidence $fx.Evidence -WorkRoot $fx.Work -BaseClone $fx.Base `
-        -Repo 'fx/repo' -LedgerPath $fx.Ledger -Sentinels $fx.Sentinels -DefaultSentinels @()
+        -Repo 'fx/repo' -LedgerPath $fx.Ledger -Sentinels $fx.Sentinels -DefaultSentinels @() -Catalog $fx.Catalog
     Set-PwProviders -GitHub (New-FakeGitHub $fx.Gh) -Lab $null
     Set-PwFault $null
     $fx
@@ -148,6 +148,7 @@ function New-FxReadyItem {
     }
     $head = (Invoke-Fx $wt rev-parse HEAD)[0]
     Invoke-Fx $wt push -q origin "HEAD:refs/heads/$($c.Data.branch)" | Out-Null
+    Set-FxPr $Fx $Pr ([pscustomobject]@{ url = "https://github.com/fx/repo/pull/$Pr"; state = 'OPEN'; baseRefName = 'main'; headRefOid = $head; mergeCommit = $null })
     $steps = @(
         @{ To = 'IN_PROGRESS'; Actor = $Owner }, @{ To = 'VERIFIED'; Actor = 'tester-t'; Head = $head },
         @{ To = 'REVIEWED'; Actor = 'reviewer-r'; Head = $head }, @{ To = 'PR_OPEN'; Actor = $Owner; Head = $head; Pr = $Pr },

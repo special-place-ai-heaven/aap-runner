@@ -7,6 +7,12 @@ BeforeAll {
     Import-Module $script:PwModule -Force
     $script:Fixture = Join-Path $PSScriptRoot 'Fixture.ps1'
     $script:Ping = Join-Path $env:SystemRoot 'System32\PING.EXE'
+    if (-not ('PwTest.Native' -as [type])) {
+        Add-Type -Namespace PwTest -Name Native -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern bool CreateSymbolicLink(string link, string target, int flags);
+'@
+    }
 
     function New-FxLab {
         $vms = [hashtable]::Synchronized(@{})
@@ -111,6 +117,54 @@ Describe 'merge proof' {
     }
 }
 
+Describe 'merge observation recovery and external merges' {
+    BeforeEach { $script:fx = New-PwFixture }
+
+    It 'reverts a post-merge HOLD from a transient API failure once the PR is seen open, reopening the barrier' {
+        $a = New-FxReadyItem $fx 'A' 7 -StopAt 'PR_OPEN'
+        Set-FxPr $fx 7 'FAIL'
+        (Register-PwMerge -Registry $fx.Registry -Item 'A' -Actor 'coordinator').Status | Should -Be 'HOLD'
+        (Get-FxItem $fx 'A').hold.after_merge | Should -BeTrue
+        (Get-Status $fx).BarrierClosed | Should -BeTrue
+        Set-FxMergedPr $fx $a $null -State 'OPEN'
+        (Register-PwMerge -Registry $fx.Registry -Item 'A' -Actor 'coordinator').Status | Should -Be 'NOT_MERGED'
+        $it = Get-FxItem $fx 'A'
+        $it.state | Should -Be 'HOLD'
+        $it.hold.after_merge | Should -BeFalse
+        (Get-Status $fx).BarrierClosed | Should -BeFalse
+        (Clear-PwHold -Registry $fx.Registry -Item 'A' -Actor 'coordinator').Status | Should -Be 'OK'
+        (Get-FxItem $fx 'A').state | Should -Be 'PR_OPEN'
+        (Request-PwClaim -Registry $fx.Registry -Item 'B' -Owner 'worker-b').Status | Should -Be 'CLAIMED'
+    }
+
+    It 'refuses a claim while an open PR is uncertain or was merged unobserved, recording the proven merge' {
+        $a = New-FxReadyItem $fx 'A' 7
+        Set-FxPr $fx 7 'FAIL'
+        $r = Request-PwClaim -Registry $fx.Registry -Item 'B' -Owner 'worker-b'
+        $r.Status | Should -Be 'REFUSED'
+        $r.Reason | Should -Match 'uncertain'
+        (Get-FxItem $fx 'A').state | Should -Be 'READY_TO_MERGE'
+        Set-FxMergedPr $fx $a (Invoke-FxOriginMerge $fx $a 'squash')
+        $r = Request-PwClaim -Registry $fx.Registry -Item 'B' -Owner 'worker-b'
+        $r.Status | Should -Be 'REFUSED'
+        $r.Reason | Should -Match 'unrecorded merge of A'
+        Test-Path (Join-Path $fx.Work 'B') | Should -BeFalse
+        (Get-FxItem $fx 'A').state | Should -Be 'MERGED_CLEANUP_REQUIRED'
+        (Get-Status $fx).BarrierClosed | Should -BeTrue
+    }
+
+    It 'refuses READY_TO_MERGE while another open PR was merged unobserved' {
+        $a = New-FxReadyItem $fx 'A' 7 -StopAt 'PR_OPEN'
+        $b = New-FxReadyItem $fx 'B' 8 -Owner 'worker-b' -StopAt 'PR_OPEN'
+        Set-FxMergedPr $fx $a (Invoke-FxOriginMerge $fx $a 'merge')
+        $r = Set-PwState -Registry $fx.Registry -Item 'B' -To 'READY_TO_MERGE' -Actor 'coordinator' -Head $b.Head
+        $r.Status | Should -Be 'REFUSED'
+        $r.Reason | Should -Match 'unrecorded merge of A'
+        (Get-FxItem $fx 'B').state | Should -Be 'PR_OPEN'
+        (Get-FxItem $fx 'A').state | Should -Be 'MERGED_CLEANUP_REQUIRED'
+    }
+}
+
 Describe 'several merges' {
     BeforeEach {
         $tasks = @(Get-FxDefaultTasks | Where-Object { $_.id -ne 'D' }) + @([pscustomobject]@{ id = 'E'; needs = @(); owns = @('src/e/**') })
@@ -175,17 +229,18 @@ Describe 'cleanup and independent verification' {
         $lab.Vms['vm-a-1'] = $true
         $img = Join-Path $a.Root 'tmp\product.img'
         Write-FxFile $img 'product image bytes'
-        $dest = Join-Path $fx.Root 'catalog\product.img'
+        $dest = Join-Path $fx.Catalog 'product.img'
         Register-PwAsset -Registry $fx.Registry -Item 'A' -Source $img -Destination $dest -AssetOwner 'image-catalog' -Retention 'rollback generation' -Expiry '2026-12-31'
         $verify = Add-PwWorktree -Registry $fx.Registry -Item 'A' -Commit $a.Head
         $userBefore = Get-UserState $fx
         $m = Invoke-FxMergeAndRecord $fx $a $Method
         $v = Invoke-FxCleanupAndVerify $fx 'A'
 
-        # Exact owned roots and resources are absent; shared parent is preserved.
+        # Exact owned roots, including the item container the claim created, are absent;
+        # the shared work root is preserved.
         Test-Path -LiteralPath $a.Root | Should -BeFalse
-        Test-Path -LiteralPath (Join-Path $fx.Work 'A') | Should -BeTrue
-        @(Get-ChildItem -LiteralPath (Join-Path $fx.Work 'A') -Force).Count | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $fx.Work 'A') | Should -BeFalse
+        Test-Path -LiteralPath $fx.Work | Should -BeTrue
         $wtList = (Invoke-Fx $fx.Base worktree list --porcelain) -join "`n"
         $wtList | Should -Not -Match ([regex]::Escape($a.Worktree.Replace('\', '/')))
         $wtList | Should -Not -Match ([regex]::Escape($verify.Replace('\', '/')))
@@ -217,7 +272,7 @@ Describe 'cleanup and independent verification' {
         $rec.verifier | Should -Be 'verifier-v'
         @($rec.released_leases) | Should -Be @('src/a/**')
         $ids = @($rec.disposed | ForEach-Object id)
-        foreach ($x in @('repo', 'verify', 'tmp', 'target', 'logs', 'root', 'vm:vm-a-1', 'verifier-scratch')) { $ids | Should -Contain $x }
+        foreach ($x in @('repo', 'verify', 'tmp', 'target', 'logs', 'root', 'container', 'vm:vm-a-1', 'verifier-scratch')) { $ids | Should -Contain $x }
         @($rec.process_observations | Where-Object { $_.kind -eq 'process' }).result | Should -Match 'stopped; absence observed'
         @($rec.process_observations | Where-Object { $_.kind -eq 'branch' }).result | Should -Match 'local only'
         @($rec.protected_state.base_clone_after).Count | Should -Be 3
@@ -323,6 +378,77 @@ Describe 'cleanup and independent verification' {
         $r.Status | Should -Be 'HOLD'
         $r.Reason | Should -Match 'fast-forward refused'
         [IO.File]::ReadAllText((Join-Path $fx.Base 'a.txt')) | Should -Match "the user's own edit"
+        (Get-Status $fx).BarrierClosed | Should -BeTrue
+    }
+
+    It 'HOLDs instead of letting the base fast-forward overwrite an ignored owner file' {
+        $a = New-FxReadyItem $fx 'A' 7
+        $null = Invoke-FxMergeAndRecord $fx $a
+        Write-FxFile (Join-Path $fx.Maint 'user.log') "now tracked upstream`n"
+        Invoke-Fx $fx.Maint add -f user.log | Out-Null
+        Invoke-Fx $fx.Maint commit -q -m 'track user.log' | Out-Null
+        Invoke-Fx $fx.Maint push -q origin main | Out-Null
+        $before = [IO.File]::ReadAllText((Join-Path $fx.Base 'user.log'))
+        $r = Invoke-PwCleanup -Registry $fx.Registry -Item 'A' -Actor 'coordinator' -RetryDelayMs 100
+        $r.Status | Should -Be 'HOLD'
+        $r.Reason | Should -Match 'fast-forward refused'
+        [IO.File]::ReadAllText((Join-Path $fx.Base 'user.log')) | Should -Be $before
+        (Get-Status $fx).BarrierClosed | Should -BeTrue
+    }
+
+    It 'refuses an asset destination outside the catalog root or on a protected sentinel' {
+        $a = New-FxReadyItem $fx 'A' 7 -StopAt 'IN_PROGRESS'
+        $src = Join-Path $a.Root 'tmp\p.img'
+        Write-FxFile $src 'x'
+        $reg = @{ Registry = $fx.Registry; Item = 'A'; Source = $src; AssetOwner = 'o'; Retention = 'r'; Expiry = 'e' }
+        { Register-PwAsset @reg -Destination (Join-Path $fx.Sentinels[0] 'p.img') } | Should -Throw '*outside the registered boundary*'
+        $guarded = Join-Path $fx.Catalog 'guarded'
+        Initialize-PwRegistry -Registry $fx.Registry -Evidence $fx.Evidence -WorkRoot $fx.Work -BaseClone $fx.Base -Repo 'fx/repo' `
+            -LedgerPath $fx.Ledger -Sentinels (@($fx.Sentinels) + @($guarded)) -DefaultSentinels @() -Catalog $fx.Catalog
+        { Register-PwAsset @reg -Destination (Join-Path $guarded 'p.img') } | Should -Throw '*protected sentinel*'
+        @((Get-FxManifest $fx 'A').assets).Count | Should -Be 0
+    }
+
+    It 'HOLDs before copying an asset whose source is reached through a <Case>' -TestCases @(
+        @{ Case = 'junction ancestor' }, @{ Case = 'file symlink' }, @{ Case = 'hard link' }
+    ) {
+        $a = New-FxReadyItem $fx 'A' 7
+        $target = Join-Path $fx.Outside 'keep.txt'
+        $outsideBefore = Get-FxTreeHash $fx.Outside
+        switch ($Case) {
+            'junction ancestor' { New-FxJunction (Join-Path $a.Root 'tmp\via') $fx.Outside; $src = Join-Path $a.Root 'tmp\via\keep.txt' }
+            'file symlink' {
+                $src = Join-Path $a.Root 'tmp\link.img'
+                if (-not [PwTest.Native]::CreateSymbolicLink($src, $target, 2)) { Set-ItResult -Skipped -Because 'symbolic link creation privilege is unavailable'; return }
+            }
+            'hard link' { $src = Join-Path $a.Root 'tmp\hard.img'; New-Item -ItemType HardLink -Path $src -Target $target | Out-Null }
+        }
+        $dest = Join-Path $fx.Catalog 'product.img'
+        try {
+            Register-PwAsset -Registry $fx.Registry -Item 'A' -Source $src -Destination $dest -AssetOwner 'image-catalog' -Retention 'r' -Expiry 'e'
+            $null = Invoke-FxMergeAndRecord $fx $a
+            $r = Invoke-PwCleanup -Registry $fx.Registry -Item 'A' -Actor 'coordinator' -RetryDelayMs 100
+            $r.Status | Should -Be 'HOLD'
+            $r.Reason | Should -Match 'REPARSE|HARDLINK'
+            Test-Path -LiteralPath $dest | Should -BeFalse
+            Get-FxTreeHash $fx.Outside | Should -Be $outsideBefore
+            Test-Path -LiteralPath $a.Worktree | Should -BeTrue
+        } finally { Remove-FxJunctions }
+    }
+
+    It 'HOLDs and never kills a registered process whose image is on the never-kill denylist' {
+        $a = New-FxReadyItem $fx 'A' 7
+        $p = Start-FxHiddenProcess $script:Ping '-n 120 127.0.0.1'; $procs.Add($p)
+        Register-PwProcess -Registry $fx.Registry -Item 'A' -ProcessId $p.Id
+        $m = Get-FxManifest $fx 'A'
+        @($m.processes)[0].image | Should -Be $script:Ping
+        @($m.processes)[0].image = Join-Path $env:SystemRoot 'System32\wsl.exe'
+        Set-FxManifest $fx 'A' $m
+        $null = Invoke-FxMergeAndRecord $fx $a
+        $r = Invoke-PwCleanup -Registry $fx.Registry -Item 'A' -Actor 'coordinator' -RetryDelayMs 100
+        $r.Status | Should -Be 'HOLD'
+        $r.Reason | Should -Match 'denylist'
+        $p.HasExited | Should -BeFalse
         (Get-Status $fx).BarrierClosed | Should -BeTrue
     }
 
