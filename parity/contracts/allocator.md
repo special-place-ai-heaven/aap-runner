@@ -10,10 +10,11 @@ budget with per-volume budgets for the storage tiers (`host.volumes`, reservatio
 
 ## File
 
-`C:\ProgramData\aap-runner\capacity\allocator.json`. Folder and file are owned by
-Administrators with SYSTEM and Administrators full control and no user write, like the data
-folder root. Only the supervisor writes it: whole-file atomic rename from a temp file in the same
-folder, `revision` + 1 on every write. A reader that already applied a higher revision ignores a
+`C:\ProgramData\aap-runner\capacity\allocator.json`. The capacity folder and every file in it are
+**admin-only**: owner Administrators, SYSTEM and Administrators full control, a protected DACL
+(inheritance off) and no other ACE, not even read for Users (backend-lifecycle.md, Trust checks). A
+non-admin reader could otherwise open `allocator.lock` with no sharing and stall the allocator. Only
+the supervisor writes `allocator.json`: whole-file atomic rename from a temp file in the same folder, `revision` + 1 on every write. A reader that already applied a higher revision ignores a
 lower one. Every read-modify-write holds an exclusive lock file,
 `C:\ProgramData\aap-runner\capacity\allocator.lock` (opened with no sharing, inside the
 admin-only folder), with a bounded wait of 30 s; a timeout fails the operation visibly (status
@@ -99,6 +100,8 @@ then `collecting`, `deleting` and `reconciled`.
 - Heartbeat source: VM slots, a validated guest `status` reply (guest-transport.md); legacy
   slots, the slot's entry in the manager status the supervisor already mirrors into `status.json`,
   counted only while that sample is at most 90 s old. `heartbeat_at` is updated at most every 30 s.
+  Legacy status comes from the control distro, so it is only as trustworthy as root in the distro
+  (informational: the legacy pool already trusts that root).
 - Three missed intervals (90 s) move `ready` or `busy` to `quarantined`, kind `heartbeat`,
   `cleanup_uncertain: true`, capacity and resources held.
 - A validated heartbeat returns a heartbeat-quarantined slot to `busy` (job running) or `ready`.
@@ -119,6 +122,22 @@ then `collecting`, `deleting` and `reconciled`.
   reply; a finished job passes through `collecting`.
 - Only `reconciled` frees a slot. A late `job_done` for an older `lease_generation` is ignored for
   state and logged.
+
+## Provider rules for P10 and P11 (DECIDED, P09 security review 2026-10-20)
+
+Contract notes for the providers; no change to `allocator.json` or `validate.py`.
+
+- A provider derives `JobRunning` from the broker's record of the job GitHub assigned to the runner,
+  never from the guest.
+- A heartbeat is bound to its reservation by the host-side channel it arrived on (that VM's
+  PowerShell Direct session or hvsocket connection), never by an id in the guest's payload.
+- A VM in `busy`, `draining` or `collecting` past `lease_wall_clock_hours` (from `acquired_at`) is
+  flagged, never destroyed.
+- The `quarantine_reason` of a `hostile_guest` quarantine is a fixed code chosen by the host from
+  the hostile cases in guest-transport.md (oversized reply, extra fields, wrong echo, non-printable
+  byte, child exit); it never carries guest text. P10 defines the code list.
+- Heartbeat quarantine covers `ready` and `busy` today. Whether `draining` and `collecting` also get
+  it is an open decision ([README, Open decisions](README.md#open-decisions-2026-10-20)).
 
 ## Resize and host measurement (DECIDED, P09 review 2026-10-20)
 

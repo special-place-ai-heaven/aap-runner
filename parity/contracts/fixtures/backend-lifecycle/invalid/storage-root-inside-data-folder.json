@@ -1,0 +1,26 @@
+{
+  "expect": "roots.clone_root overlaps the data folder C:\\ProgramData\\aap-runner",
+  "instance": {
+    "schema": 2,
+    "kind": "storage",
+    "volume_floor_gib": 50,
+    "roots": {
+      "base_root": {
+        "path": "X:\\aap-example\\base",
+        "volume_guid": "00000000-0000-4000-8000-0000000000a1"
+      },
+      "clone_root": {
+        "path": "C:\\ProgramData\\aap-runner\\capacity\\clones",
+        "volume_guid": "00000000-0000-4000-8000-0000000000b2"
+      },
+      "scratch_root": {
+        "path": "Z:\\aap-example\\scratch",
+        "volume_guid": "00000000-0000-4000-8000-0000000000c3"
+      },
+      "staging_root": {
+        "path": "X:\\aap-example\\staging",
+        "volume_guid": "00000000-0000-4000-8000-0000000000a1"
+      }
+    }
+  }
+}

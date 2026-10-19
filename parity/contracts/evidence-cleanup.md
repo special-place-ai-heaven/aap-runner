@@ -24,12 +24,13 @@ artifact hashes and the independent verifier.
 ### Waivers (revision 2, P02.2)
 
 A record may carry an optional `waivers` list (at most 16). Each waiver names its `kind`,
-`compare_artifacts` (the definition compares artifact names, not hashes), the `definition_id` of
-the workload definition whose oracle it weakens (for `tools/parity-certify` that is the record's
-own workload: `fixture_id` is `workload/<definition_id>`), and a `reason` of 1-500 printable ASCII
-characters that is not blank. One waiver per kind and definition. A record with a waiver can
-still be a pass; P24 and P26 list every waiver they find. Records keep `schema` 1, so every
-revision-1 record stays valid.
+`compare_artifacts` (the definition compares artifact names, not hashes), the `definition_id` of the
+workload definition whose oracle it weakens (always the record's own workload: `validate.py`
+requires `fixture_id` to be `workload/<definition_id>` for every waiver), and a `reason` of 1-500
+printable ASCII characters that is not blank. One waiver per kind and definition. A record with a
+waiver can still be a pass; P24 and P26 list every waiver they find, rebuild the expected waiver set
+from `parity/workloads/**` at the record's `head_sha`, and reject a record whose waivers differ
+(missing or extra). Records keep `schema` 1, so every revision-1 record stays valid.
 
 Until **P05.1** moves the writer to this field, `tools/parity-certify` still appends
 ` [waiver compare_artifacts=names: <reason>]` to `command`, cut to fit its 500 characters, and its
@@ -63,5 +64,6 @@ recorded the full SHA.
 
 Evidence: pass with a mismatched oracle, a success with a non-zero exit status, skipped reported as pass, a token-named field, a raw
 `env` dump, a short head SHA; waivers with an unknown kind, a blank reason, a reason over 500
-characters, a definition id with `..`, and a duplicate. Receipt: self-verified, absence not
+characters, a definition id with `..`, a duplicate, a waiver for another
+definition, and a waiver on a record that is not a workload. Receipt: self-verified, absence not
 observed, missing merge SHA, a recorded secret, a protected path that vanished.

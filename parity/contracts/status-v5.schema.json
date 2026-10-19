@@ -142,7 +142,8 @@
         "detail": {
           "type": "string",
           "maxLength": 200,
-          "pattern": "^[ -~]*$"
+          "pattern": "^((base|clone|scratch|staging): (owner|acl|reparse|ancestor|drive-type|volume|missing|low)(; (base|clone|scratch|staging): (owner|acl|reparse|ancestor|drive-type|volume|missing|low)){0,3})?$",
+          "description": "Empty, or one '<tier>: <code>' entry per failing tier joined by '; '. Never an ACE dump or a path; the full reason goes to logs\\supervisor.log."
         },
         "volume_floor_gib": {
           "type": [

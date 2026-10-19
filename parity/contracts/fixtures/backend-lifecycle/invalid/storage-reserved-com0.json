@@ -1,0 +1,26 @@
+{
+  "expect": "com0 is a reserved device name",
+  "instance": {
+    "schema": 2,
+    "kind": "storage",
+    "volume_floor_gib": 50,
+    "roots": {
+      "base_root": {
+        "path": "X:\\aap-example\\base",
+        "volume_guid": "00000000-0000-4000-8000-0000000000a1"
+      },
+      "clone_root": {
+        "path": "Y:\\aap-example\\clones",
+        "volume_guid": "00000000-0000-4000-8000-0000000000b2"
+      },
+      "scratch_root": {
+        "path": "Z:\\aap-example\\com0\\scratch",
+        "volume_guid": "00000000-0000-4000-8000-0000000000c3"
+      },
+      "staging_root": {
+        "path": "X:\\aap-example\\staging",
+        "volume_guid": "00000000-0000-4000-8000-0000000000a1"
+      }
+    }
+  }
+}

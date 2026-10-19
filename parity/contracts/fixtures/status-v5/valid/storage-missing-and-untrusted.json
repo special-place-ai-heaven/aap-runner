@@ -116,7 +116,7 @@
   ],
   "storage": {
     "state": "missing",
-    "detail": "clone root missing; base root untrusted",
+    "detail": "base: ancestor; clone: missing; staging: acl",
     "volume_floor_gib": 30,
     "tiers": [
       {

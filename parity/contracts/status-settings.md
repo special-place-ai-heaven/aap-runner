@@ -92,6 +92,11 @@ through the elevated helper (a P19 verb, offered by the tray in P20) with the ex
 reads only validated numbers and fixed words from it (`supervisor/README.md`); a root there would
 let any process of the operator steer where the elevated supervisor writes and deletes.
 
+`storage.detail` is empty or lists one `<tier>: <code>` entry per failing tier, joined by `; `,
+with the codes `owner`, `acl`, `reparse`, `ancestor`, `drive-type`, `volume`, `missing` and `low`
+(schema-enforced). It never carries an ACE dump or a path; the full reason goes to
+`logs\supervisor.log`. The tray reads at most 64 KiB of `status.v5.json`.
+
 ## Allocator reasons in status detail (DECIDED, P09 review 2026-10-20)
 
 When the allocator holds back, the top-level `detail` of `status.v5.json` starts with a fixed
@@ -124,9 +129,9 @@ exit" holds only when desired is off or both counts are 0. P12 writes this into
 
 Settings: 3 + 3, 0 + 0, schema 4, a string count, reserve 5, shares summing to 95, a share for a
 zero count. Status: six slots, a Windows slot labelled Linux, a non-GitHub run URL, schema 6, a
-supervisor that stops accepting schema 2, a VM profile available while storage is untrusted, a
-tier below the floor reported `ok`, a UNC root, unconfigured storage that lists tiers, a tier
-listed twice or not at all, a `missing` tier with free space, a tier above the floor reported
-`low`, and an overall `ok` beside a `low` tier. Valid storage examples: unconfigured (VM profile
-unavailable), and `missing` with an `untrusted` tier that reports free space and one that cannot.
-Tray-local: count 5, schema 2, a string, a missing count.
+supervisor that stops accepting schema 2, a VM profile available while storage is untrusted, a tier
+below the floor reported `ok`, a UNC root, unconfigured storage that lists tiers, a tier listed
+twice or not at all, a `missing` tier with free space, a tier above the floor reported `low`, an
+overall `ok` beside a `low` tier, and a storage detail carrying an ACE dump. Valid storage examples:
+unconfigured (VM profile unavailable), and `missing` with an `untrusted` tier that reports free
+space and one that cannot. Tray-local: count 5, schema 2, a string, a missing count.

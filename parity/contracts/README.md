@@ -127,8 +127,9 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
    running job, plus one rollback generation (backend-lifecycle.md, Sizing evidence).
 3. **Volume-root ACLs** (owner). On 2026-10-20 the owner locked `E:\` to Administrators (lab
    preparation, 01:04). `D:\` is the owner's data volume, still grants Everyone full control and
-   is never used. The strict ancestor rule stands unchanged; whether a root on `E:` passes is shown
-   by running the check (P19, P02.1), not by this record.
+   is never used. The earlier open decision on volume-root ACLs is closed as not needed: `E:` is
+   locked by the owner, and the proposed relaxation of the ancestor rule is dropped. Whether a root
+   on `E:` passes is shown by running the check (P19, P02.1), not by this record.
 4. **Lab budget** (owner, gate D2), approved on 2026-10-20: lab data only under `E:\aap-runner\`;
    base generation at most 200 GB; rollback generation at most 200 GB; clone plus scratch at most
    60 GB per runner; at least 15 % of the 585.9 GB volume kept free; build VM with 4 vCPU and
@@ -151,6 +152,10 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
    ([allocator.md, Resize and host measurement](allocator.md#resize-and-host-measurement-decided-p09-review-2026-10-20)).
    `per_profile` mode confines a count change to its own profile. The owner decides whether that
    is acceptable in `even` mode or whether the default share mode changes.
+2. **Heartbeat quarantine for `draining` and `collecting`** (coordinator, P09 security review).
+   Today three missed heartbeats quarantine only `ready` and `busy`. A VM in `draining` or
+   `collecting` that stops answering would otherwise wait for its job or teardown without a
+   quarantine ([allocator.md, Provider rules](allocator.md#provider-rules-for-p10-and-p11-decided-p09-security-review-2026-10-20)).
 
 ## Security review (2026-10-19) items carried by other owners
 
@@ -175,7 +180,8 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
   `<base_root>\staging`), held to the same checks; the README example under
   `D:\aap-runner\images` is superseded.
 - **P04.1**: add the Linux `debug-pdb` (`-g`) rows for every compiler version (8 more rows at
-  P04's versions) now that a matrix may hold 256 rows.
+  P04's versions) now that a matrix may hold 256 rows, and align `retention.md` requirement 4
+  with rule 6's job trust class (event, ref and head repository).
 - **P05.1**: write waivers into the evidence record's `waivers` field and stop appending them to
   `command`; until then `parity-report.json` and `verdict.json` stay authoritative. Nit: the
   harness's `re.match(...$)` checks for workload ids and SHAs accept one trailing newline (Python
@@ -187,7 +193,9 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
   a quarantine, the wall clock from `acquired_at` that only flags, no eviction (clamped host,
   `resize_waits`, `pool_over_live`), the `even` mode drain, and unknown folders blocking admission.
 - **P10, P11**: the inventory callback returns a complete list or throws (allocator.md, Reconcile).
-- **P13**: cache roots per repository plus ref trust class (cache-qualification.md rule 6).
+- **P13**: cache roots per repository plus the job's trust class (cache-qualification.md rule 6);
+  name the GitHub-side source of event, ref and head repository, bound before attach (the App
+  gets `actions:read`, or a runner group per trust class plus the event check).
 - **P19, P20**: the storage document, its helper verb and the tray's storage view.
 
 ## Findings recorded while freezing
@@ -200,17 +208,24 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 - Before revision 2, `validate.py` used Python's `$`, which also matches before a final newline, so
   a value with one trailing newline passed its pattern. Patterns now anchor at the end of input,
   as in ECMA-262.
+- Schema patterns are matched as full strings: every pattern outside a `not` starts with `^`, ends
+  with `$` (end of input) and has no top-level alternation, so none relies on search semantics;
+  `validate.py` lints this. A pattern under `not` is a deliberate "contains" check, such as a `..`
+  component.
+- Ports of these patterns anchor with `\z` (.NET), and PowerShell uses `-cmatch`, because `-match`
+  ignores case and lowercase-only patterns (`volume_guid`, `definition_id`, reservation ids) would
+  accept uppercase.
 
 ## Revision log
 
 | Date | Item | Contract | Version | Change |
 |---|---|---|---|---|
 | 2026-10-19 | P02 | all | 1 (settings 3, status 5 drafts) | frozen |
-| 2026-10-20 | P02.2 | cache-qualification | 2 | `maxItems` 64 to 256; Linux `debug-pdb` (`-g`) rows for every compiler version; rule 6 namespace is the repository plus the ref trust class. Matrices keep `schema` 1 |
+| 2026-10-20 | P02.2 | cache-qualification | 2 | `maxItems` 64 to 256; Linux `debug-pdb` (`-g`) rows for every compiler version; rule 6 namespace is the repository plus the job trust class. Matrices keep `schema` 1 |
 | 2026-10-20 | P02.2 | evidence-cleanup | evidence 2, receipt 1 | optional bounded `waivers`; records keep `schema` 1 |
 | 2026-10-20 | P02.2 | backend-lifecycle | 2 | storage tiers and the `storage` document; tier-relative disk paths; budget caps `clone_gib_max` and `scratch_gib_max`; records `schema` 2 |
 | 2026-10-20 | P02.2 | allocator | 2 | per-volume disk admission: `host.volumes`, reservation `clone_gib` and `scratch_gib`; `allocator.json` schema 2 |
-| 2026-10-20 | P02.2 review | allocator, backend-lifecycle, status-settings, cache-qualification | unchanged | P09 contract points (allocator.md, Resize and host measurement, Reconcile); a VM reservation reserves clone disk; `COM0`/`LPT0` and trailing-space device names; drive letters and volume GUIDs one to one; only the default branch is a trusted ref; schema patterns linted for `_ecma` |
+| 2026-10-20 | P02.2 review | allocator, backend-lifecycle, status-settings, cache-qualification | unchanged | P09 contract points (allocator.md, Resize and host measurement, Reconcile); a VM reservation reserves clone disk; `COM0`/`LPT0` and trailing-space device names; drive letters and volume GUIDs one to one; cache trust class from the job's event, ref and head repository; admin-only capacity folder and clone/scratch roots; data-folder, `COM0` and path-shape root fixtures; waivers only for the record's own workload; fixed storage `detail` codes; schema patterns linted for `_ecma` and full-string anchoring |
 | 2026-10-20 | P02.2 | image-catalog | 2 | catalog at `<base_root>\catalog.json`, artifact paths relative to `base_root`, catalog `schema` 2; P07/P11 acceptance input from P05 |
 | 2026-10-20 | P02.2 | status-settings | status 5 draft, revision 2 | `storage` in `status.v5.json`; settings schema 3 unchanged, no paths |
 | 2026-10-20 | P02.2 | guest-transport | 1 (text only) | lab storage preconditions and the budget step (step 8); envelope unchanged |

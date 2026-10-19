@@ -148,7 +148,7 @@
     ],
     "storage": {
       "state": "untrusted",
-      "detail": "clone and scratch roots failed the ancestor check",
+      "detail": "clone: ancestor; scratch: ancestor",
       "volume_floor_gib": 30,
       "tiers": [
         {

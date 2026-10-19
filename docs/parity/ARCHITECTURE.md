@@ -109,8 +109,10 @@ Trust boundaries, each with its rule:
 DECIDED:
 
 - One allocator inside the supervisor owns all five slots, for every backend, including the
-  legacy WSL pool. Its state is `C:\ProgramData\aap-runner\capacity\allocator.json`
-  (Administrators/SYSTEM only), rewritten by atomic rename with a strictly increasing `revision`.
+  legacy WSL pool. Its state is `C:\ProgramData\aap-runner\capacity\allocator.json` (admin-only:
+  owner Administrators, SYSTEM and Administrators full control, protected DACL, no other ACE, so no
+  reader can hold `allocator.lock`), rewritten by atomic rename with a strictly increasing
+  `revision`.
 - Two live controls: Linux 0-5 and Windows 0-5, Linux + Windows in 1..5. 0 + 0 is not a
   setting; "off" is `inbox\state.json`. Linux 0 means the legacy pool is drained and stopped (the
   manager accepts only 1..5); Windows 0 means no Windows VM is admitted.
@@ -154,6 +156,10 @@ DECIDED:
   pool with a full stop and start (an open owner decision). An unknown clone or scratch folder
   blocks admission, and a provider's inventory listing is complete or throws (allocator.md,
   Reconcile).
+- Provider rules (allocator.md): `JobRunning` comes from the broker's record of the job GitHub
+  assigned, never from the guest; a heartbeat is bound to its reservation by the host-side channel,
+  not by an id in the guest payload; the `hostile_guest` reason is a fixed host code, never guest
+  text; legacy status is only as trustworthy as root in the control distro.
 
 ```mermaid
 stateDiagram-v2
@@ -214,7 +220,9 @@ Root protection (DECIDED, security review H3, per root): at install, at every su
 and before every `create`, each root independently passes the owner, ACL, reparse-point and
 ancestor checks that `install-supervisor.ps1` runs on `C:\ProgramData\aap-runner`, on a fixed
 drive and on the volume recorded for it; any failure disables the VM profiles and shows the tier
-and reason in status. `D:\` fails the ancestor check (Everyone full control) and is never
+and reason in status. The capacity folder, `storage.json`, `clone_root` and `scratch_root` are
+admin-only: owner Administrators, SYSTEM and Administrators full control, a protected DACL and no
+other ACE, not even read. `D:\` fails the ancestor check (Everyone full control) and is never
 used; the owner locked `E:\` to Administrators on 2026-10-20
 ([README, Resolved 2026-10-20](../../parity/contracts/README.md#resolved-2026-10-20)). Whether a
 root on `E:` passes is shown by running the check (P19, P02.1), not by this note. No item
@@ -416,14 +424,15 @@ stateDiagram-v2
 
 ## 7. Cache (contract: [cache-qualification.md](../../parity/contracts/cache-qualification.md))
 
-DECIDED: zccache 1.15.6 (tag `1.15.6`, commit `15ec9537`) replaces sccache entirely. Each
-compiler and invocation on each platform is `qualified` (with evidence) or `direct` (no wrapper).
-No sccache fallback, binary, variable or format reuse. Native `cl.exe`/`link.exe` start `direct`
-(the pinned feature matrix marks them partial). Isolated cache roots per trust namespace (the
-repository plus the ref trust class: only the default branch is trusted, every other ref is in the
-untrusted class; a root is shared only among jobs whose writers are at least as trusted as every
-reader) and copy or reflink delivery by default; hardlink delivery and
-cross-trust sharing stay off until P04/P13 prove them.
+DECIDED: zccache 1.15.6 (tag `1.15.6`, commit `15ec9537`) replaces sccache entirely. Each compiler
+and invocation on each platform is `qualified` (with evidence) or `direct` (no wrapper). No sccache
+fallback, binary, variable or format reuse. Native `cl.exe`/`link.exe` start `direct` (the pinned
+feature matrix marks them partial). Isolated cache roots per trust namespace (the repository plus
+the job's trust class: only push, schedule or workflow_dispatch on the default branch with the
+repository as head repository is trusted, every other event or ref is untrusted; a root is shared
+only among jobs whose writers are at least as trusted as every reader; no shared root when the class
+is not known from GitHub before the root is attached) and copy or reflink delivery by default;
+hardlink delivery and cross-trust sharing stay off until P04/P13 prove them.
 
 ```mermaid
 flowchart LR
@@ -512,10 +521,12 @@ flowchart LR
   the installer preflight); nested virtualization off for guests by default.
 - Runner self-update: the actions-runner overlay is valid for one boot only; GitHub's support
   window for runner versions sets the rebuild deadline, so P25 rebuilds the overlay inside it.
-- Cache trust namespace: the repository plus the ref trust class of the job (the default branch is
-  trusted; every other ref, including a push to another branch, a tag, `workflow_dispatch` or
-  `schedule` on a non-default ref, a pull request or a fork branch, is untrusted), derived from
-  GitHub data via the broker, never from anything the guest reports.
+- Cache trust namespace: the repository plus the job's trust class. Trusted only for `push`,
+  `schedule` or `workflow_dispatch` on the default branch with the repository as head repository;
+  `pull_request`, `pull_request_target`, `workflow_run`, `issue_comment`, `merge_group`, other
+  branches, tags and unknown events are untrusted. The class is bound from GitHub's record of the
+  assigned job before any shared root attaches, never from the guest; when that record is
+  unavailable the job gets no shared root.
 - Relative disk paths have exact forms, relative to their tier root: `<generation_id>/base.vhdx`
   (base_root), `<reservation_id>/os.avhdx` and `<reservation_id>/seed.iso` (clone_root),
   `<reservation_id>/scratch.vhdx` (scratch_root); `validate.py` enforces them.

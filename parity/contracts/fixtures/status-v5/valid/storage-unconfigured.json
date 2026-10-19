@@ -116,7 +116,7 @@
   ],
   "storage": {
     "state": "unconfigured",
-    "detail": "no storage document",
+    "detail": "",
     "volume_floor_gib": null,
     "tiers": []
   },

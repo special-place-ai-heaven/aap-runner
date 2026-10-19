@@ -43,6 +43,9 @@ object per line, schema `op`). `idempotency_key` is `<reservation_id>/<lease_gen
 | `destroy` intent, partial | re-run destroy; absence is the only success |
 | journal unreadable | quarantine the reservation; capacity held |
 
+Provider rules for heartbeats, `JobRunning` and hostile-guest reasons: allocator.md, Provider
+rules for P10 and P11.
+
 ## Storage tiers (DECIDED, owner 2026-10-20)
 
 No VM file, image or staging byte has a hard-coded drive or folder. The owner chooses, through the
@@ -61,15 +64,18 @@ all roots. No VM uses Hyper-V's default host folders for disks, configuration, r
 smart paging.
 
 **Configuration.** The `storage` document, `C:\ProgramData\aap-runner\capacity\storage.json`
-(admin-only, atomic rename), holds the roots, each with its volume GUID, and `volume_floor_gib`
-(at least 10), the free space every volume holding a tier keeps. Only the elevated helper writes
-it (P19): during setup, or through a helper verb the tray offers (P20), approved with the existing
-UAC prompt and revalidated field by field like the `identity` verb. The supervisor never takes a
-root from `inbox\settings.json`: the inbox is user-writable, and the supervisor reads only
-validated numbers and fixed words from it. There are no defaults: without a valid storage
-document the VM profiles stay disabled. Roots change only while no VM reservation is live and no
-build runs; moving generations to a new `base_root` is a P25 operation that re-verifies every
-hash.
+(admin-only, see Trust checks; atomic rename; the supervisor reads at most 64 KiB of it), holds the
+roots, each with its volume GUID, and `volume_floor_gib` (at least 10), the free space every volume
+holding a tier keeps. Only the elevated helper writes it (P19): during setup, or through a helper
+verb the tray offers (P20), approved with the existing UAC prompt and revalidated field by field
+like the `identity` verb. Before writing `storage.json` the helper runs the full trust checks and
+the existing-folder rule on every root, refuses while a VM reservation is live or a build runs, and
+shows the roots it is about to write in its own elevated confirmation, so a job file cannot spoof
+the prompt. The supervisor never takes a root from `inbox\settings.json`: the inbox is
+user-writable, and the supervisor reads only validated numbers and fixed words from it. There are no
+defaults: without a valid storage document the VM profiles stay disabled. Roots change only while no
+VM reservation is live and no build runs; moving generations to a new `base_root` is a P25 operation
+that re-verifies every hash.
 
 **Valid roots** (schema and `validate.py`): an absolute folder at least one level below a
 drive-letter volume root (`X:\folder`); no UNC or device path (`\\server\share`, `\\?\`, `\\.\`),
@@ -82,6 +88,9 @@ inside `base_root`, and a null `staging_root` resolves to exactly that folder. D
 volume GUIDs map one to one (`validate.py`: "drive letters and volume GUIDs map one to one"): one
 letter is one volume, and a volume is reached through one letter only, so per-volume accounting
 and the ancestor checks see one path per volume. A `subst` drive has no volume GUID and is refused.
+No root is equal to, inside, or contains `C:\ProgramData\aap-runner`, `%SystemRoot%` or `C:\wsl`;
+`validate.py` checks the fixed data folder case-insensitively, and the other two are runtime
+checks.
 
 **Trust checks.** At install, at every supervisor start and before every `create`, each root
 independently passes the rules `install-supervisor.ps1` applies to `C:\ProgramData\aap-runner`:
@@ -92,13 +101,24 @@ independently passes the rules `install-supervisor.ps1` applies to `C:\ProgramDa
 - every ancestor up to the volume root is a plain folder with an admin owner that no other
   principal may delete, delete from, re-permission or take ownership of
   (`Get-AapAncestorProblem`; create rights on an ancestor are allowed, as there);
+- the root's DACL is protected (inheritance off) and holds no inheritable ACE for a non-admin
+  principal, because `Test-AapAdminDescriptor` skips inherit-only ACEs (`install-supervisor.ps1`);
+- `clone_root` and `scratch_root` also grant a non-admin no read, because the per-clone credential
+  is injected into the clone;
 - the drive type is fixed (`Test-AapFixedLocalPath`) and the volume GUID is the recorded one.
+
+**Admin-only** (here, in allocator.md and in ARCHITECTURE.md): owner Administrators, SYSTEM and
+Administrators full control, a protected DACL (inheritance off) and no other ACE, not even read.
+The capacity folder with `allocator.json`, `allocator.lock` and `storage.json`, the journals,
+`clone_root` and `scratch_root` are admin-only.
 
 P03's staging check (`Assert-AapStagingRoot`) applies the same rules. Any failure disables the VM
 profiles and names the tier and reason in `status.v5.json`; the supervisor creates, repairs and
 re-permissions nothing. The installer creates a missing root one level below a parent that passes
-the ancestor checks, with its final Administrators/SYSTEM-only ACL (inheritance off) set in the
-same call; an existing folder is accepted only when it holds nothing but this layout's entries.
+the ancestor checks. Creation is one `CreateDirectoryW` call with the final security descriptor.
+`ERROR_ALREADY_EXISTS` sends the folder through the existing-folder rule (admin owner, no reparse
+point, only this layout's entries). The installer never applies an ACL by name to a path it did
+not just create.
 No parity item creates, resizes, formats, relabels or re-letters a partition or volume, or changes
 a volume root's ACL: those are owner actions.
 
@@ -167,12 +187,14 @@ the lab budget on 2026-10-20 ([README, Resolved 2026-10-20](README.md#resolved-2
 
 ## Negative fixtures
 
-Op records: a mismatched idempotency key, a clone path with `..`, a scratch path with the
-revision-1 `scratch/` prefix, a base outside its generation folder, a differencing disk under
-another reservation's folder, a VM name whose suffix is not the reservation's, an `exec` op, a
-`reset` op, and a `done` record with a failure code. Budgets: unmeasured, and a clone or a
-scratch cap below its measured peak. Storage: a relative root, a drive root, a UNC path, a device
-path, a `..` component, a trailing newline, reserved device names (`CON`-style, `LPT0` and
-`aux .d`), two tiers in one folder, a root inside another tier's root, a staging root inside the
-clone root, an explicit staging root equal to `<base_root>\staging`, a missing tier, one drive
-letter on two volumes, two drive letters on one volume, and a floor under 10 GiB.
+Op records: a mismatched idempotency key, a clone path with `..`, a scratch path with the revision-1
+`scratch/` prefix, a base outside its generation folder, a differencing disk under another
+reservation's folder, a VM name whose suffix is not the reservation's, an `exec` op, a `reset` op,
+and a `done` record with a failure code. Budgets: unmeasured, and a clone or a scratch cap below its
+measured peak. Storage: a relative root, a drive root, a UNC path, a device path, a `..` component,
+a trailing newline, reserved device names (`CON`-style, `COM0`, `LPT0` and `aux .d`), two tiers in
+one folder, a root inside another tier's root, a staging root inside the clone root, an explicit
+staging root equal to `<base_root>\staging`, a missing tier, one drive letter on two volumes, two
+drive letters on one volume, a floor under 10 GiB, a root inside the data folder, and root paths
+with a trailing dot, a trailing space, a `~` short name, a `:stream` or `::$INDEX_ALLOCATION`
+stream, forward slashes or a trailing backslash.

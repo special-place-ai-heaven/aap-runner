@@ -186,24 +186,53 @@ def _no_secret_values(doc, path="$"):
 # _ecma rewrites every `$` not preceded by a backslash to `\Z`. It would miss an anchor after an
 # escaped backslash and break a `$` inside a character class, so schemas may use neither form.
 ECMA_UNSAFE = re.compile(r"(?<!\\)(?:\\\\)+\$|\[[^\]]*\$")
+ENDS_ANCHORED = re.compile(r"(?<!\\)(?:\\\\)*\$\Z")
 
 
-def lint_schema(node, path="$"):
-    """Every integer or number in a contract schema has a maximum (security review L1), and no
-    pattern puts `$` after an escaped backslash or inside a character class (see _ecma)."""
+def _unanchored(pattern):
+    """True when a pattern would rely on search semantics: it must start with `^`, end with an
+    unescaped `$` and have no `|` outside a group (`^a|b$` matches any string ending in b)."""
+    if not pattern.startswith("^") or not ENDS_ANCHORED.search(pattern):
+        return True
+    depth, i, in_class = 0, 0, False
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            continue
+        if in_class:
+            in_class = c != "]"
+        elif c == "[":
+            in_class = True
+        elif c in "()":
+            depth += 1 if c == "(" else -1
+        elif c == "|" and depth == 0:
+            return True
+        i += 1
+    return False
+
+
+def lint_schema(node, path="$", negated=False):
+    """Every integer or number in a contract schema has a maximum (security review L1). No
+    pattern puts `$` after an escaped backslash or inside a character class (see _ecma), and
+    every pattern outside a `not` matches the whole string; under `not` a pattern is a
+    deliberate "contains" check (for example a `..` component)."""
     problems = []
     if isinstance(node, dict):
-        if isinstance(node.get("pattern"), str) and ECMA_UNSAFE.search(node["pattern"]):
+        p = node.get("pattern")
+        if isinstance(p, str) and ECMA_UNSAFE.search(p):
             problems.append(f"{path}: pattern form _ecma cannot translate")
+        if isinstance(p, str) and not negated and _unanchored(p):
+            problems.append(f"{path}: pattern is not anchored as a full-string match")
         t = node.get("type")
         types = t if isinstance(t, list) else [t]
         if ("integer" in types or "number" in types) and "maximum" not in node and "const" not in node and "enum" not in node:
             problems.append(f"{path}: numeric without maximum")
         for k, v in node.items():
-            problems += lint_schema(v, f"{path}.{k}")
+            problems += lint_schema(v, f"{path}.{k}", negated or k == "not")
     elif isinstance(node, list):
         for i, v in enumerate(node):
-            problems += lint_schema(v, f"{path}[{i}]")
+            problems += lint_schema(v, f"{path}[{i}]", negated)
     return problems
 
 
@@ -370,14 +399,22 @@ def sem_allocator(doc):
 RESERVED_NAMES = {"con", "prn", "aux", "nul"} | {f"{p}{i}" for p in ("com", "lpt") for i in range(10)}
 
 
+DATA_DIR = "c:\\programdata\\aap-runner"
+
+
 def _storage_roots(roots):
-    """Storage tier roots (backend-lifecycle.md, Storage tiers): no reserved device name, no two roots
-    the same folder or nested, and one drive letter is exactly one volume. Case-insensitive, as NTFS is."""
+    """Storage tier roots (backend-lifecycle.md, Storage tiers): no reserved device name, no root equal
+    to, inside or containing the data folder (%SystemRoot% and C:\\wsl are runtime checks), no two
+    roots the same folder or nested, and drive letters and volume GUIDs map one to one.
+    Case-insensitive, as NTFS is."""
     named = {k: v for k, v in roots.items() if v is not None}
     for name, r in named.items():
         for part in r["path"].split("\\")[1:]:
             if part.split(".")[0].rstrip(" ").lower() in RESERVED_NAMES:  # "aux .d" is AUX to Win32
                 raise Invalid(f"roots.{name}: {part} is a reserved device name")
+        p = r["path"].lower()
+        if p == DATA_DIR or p.startswith(DATA_DIR + "\\") or DATA_DIR.startswith(p + "\\"):
+            raise Invalid(f"roots.{name} overlaps the data folder C:\\ProgramData\\aap-runner")
     names = sorted(named)
     for i, a in enumerate(names):
         for b in names[i + 1:]:
@@ -578,6 +615,9 @@ def sem_evidence_bundle(doc):
     waivers = [(w["kind"], w["definition_id"]) for w in doc.get("waivers", [])]
     if len(waivers) != len(set(waivers)):
         raise Invalid("duplicate waiver for one kind and definition")
+    for _, definition in waivers:
+        if doc["fixture_id"] != "workload/" + definition:
+            raise Invalid(f"waiver for {definition} on fixture {doc['fixture_id']}: a record waives only its own workload")
 
 
 def sem_cleanup_receipt(doc):
@@ -618,7 +658,7 @@ def validate(name, schema, instance):
 
 def load(path):
     with open(path, "rb") as f:
-        raw = f.read()
+        raw = f.read(262145)  # one byte past the bound, never the whole file
     if len(raw) > 262144:
         raise Invalid(f"{path.name}: document over 256 KiB")
     return json.loads(raw.decode("utf-8-sig"))
@@ -650,7 +690,8 @@ def main():
     names = {p.name[: -len(".schema.json")] for p in schemas}
     if names != set(SEMANTIC):
         failures.append(f"schema set {sorted(names)} differs from SEMANTIC {sorted(SEMANTIC)}")
-    for bad, good in ((r"^a\\$", r"^a\$"), (r"^[a$]+$", r"^[a\]]+$")):
+    for bad, good in ((r"^a\\$", r"^a\$$"), (r"^[a$]+$", r"^[a\]]+$"), (r"^a|b$", r"^(a|b)$"),
+                      (r"a$", r"^[|]a$"), (r"^a\$", r"^(a)$")):
         if not lint_schema({"pattern": bad}) or lint_schema({"pattern": good}):
             failures.append(f"lint_schema self-check failed on {bad!r} / {good!r}")
     for spath in schemas:
