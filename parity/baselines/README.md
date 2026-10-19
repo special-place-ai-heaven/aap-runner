@@ -11,8 +11,8 @@ planning candidate only. Both toolset versions remain under each profile's `sour
 |---|---|
 | `windows-2025-vs2026-x64/` | `README.md` identity, defaults, environment, services, provisioning order, counts. `inventory.json` every Readme entry. `inputs.md` installer inputs, blockers, drift. `sources/` template and toolset copies. |
 | `ubuntu-24.04-x64/` | Same layout for Ubuntu 24.04 x64. |
-| `hosted-reference.md` | How to capture the real "Set up job" image identity. Status: not captured yet. |
-| `reference-workflows/` | Two inert workflow files for that capture. Never copy them into `.github/workflows` of this repository. |
+| `hosted-reference.md` | How to capture the real "Set up job" image identity. Status: captured 2026-10-19 (both profiles). |
+| `reference-workflows/` | Inert reference copies of the two capture workflows. The merged, manual (`workflow_dispatch`), hosted-runner-only versions live in `.github/workflows`. |
 | `consumers.md` | Consumer census from this repository's documents. Incomplete. |
 | `zccache.md` | zccache 1.15.6 pin, release assets, pinned compiler statements, daemon and retention interface. |
 | `tools/` | Python scripts that build and verify the inventories (`python -I`, standard library only). |

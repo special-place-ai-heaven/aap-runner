@@ -1,5 +1,5 @@
-# INERT reference file. Do NOT copy into .github/workflows of aap-runner (public repo, CLAUDE.md rules).
-# Run it once from a scratch repository, on GitHub-hosted runners only, then archive the log.
+# Reference copy. The merged, manual (workflow_dispatch) version lives in .github/workflows of aap-runner;
+# this copy is kept for reference only. Hosted runners only, then archive the log.
 # No secrets, no third-party actions, no checkout, no token permissions.
 # The label must be exactly `ubuntu-24.04`. `ubuntu-latest` is announced to move to Ubuntu 26.04 in
 # November 2026 and must never be used as certification evidence (see ../hosted-reference.md).

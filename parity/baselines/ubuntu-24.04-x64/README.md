@@ -1,12 +1,13 @@
 # Ubuntu 24.04, x64
 
 Frozen hosted baseline for profile `ubuntu-24.04-x64`. Facts were fetched on 2026-10-19.
-Every fact cites a source ID from the legend at the end. Source IDs point at the pinned commit
+Every fact cites a source ID from the legend at the end. Source IDs B1 to B3 point at the baseline build commit
+`7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe` (Readme, template, toolset). All other IDs point at the candidate commit
 `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` unless the legend says otherwise.
 **Baseline commit (coordinator decision, 2026-10-19).** The baseline for this profile is `7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe`, the commit that built the
 observed image `ubuntu24/20261012.334`. `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` stays recorded as the planning candidate only.
-The inventory, template and toolset under `sources/build-commit-7e7dc1b/` are the baseline. The scripts under `scripts/` did not change between
-the two commits (the compare lists no file there), so script links at the candidate commit also describe the baseline.
+The inventory, template and toolset under `sources/build-commit-7e7dc1b/` are the baseline. `scripts/build` and `scripts/helpers` did not change between
+the two commits (the compare lists no file there; only `scripts/docs-gen`, the report generator, changed), so script links at the candidate commit also describe the baseline.
 Where this file says "the pin", it means the candidate `ee1ff45`.
 
 Files in this directory: `inventory.json` (machine readable, every Readme entry), `inputs.md`
@@ -17,11 +18,11 @@ Files in this directory: `inventory.json` (machine readable, every Readme entry)
 | Item | Value | Source |
 |---|---|---|
 | Image label written by the image | `ubuntu-24.04` | U13 |
-| Workflow label to use | `ubuntu-24.04` only. `ubuntu-latest` is announced to move to Ubuntu 26.04 in November 2026. | H1, U1 |
-| Image version string | `20261012.334.1` | U1 line 11 |
-| OS version | `24.04.5 LTS` | U1 line 9 |
-| Kernel | `6.17.0-1022-azure` | U1 line 10 |
-| systemd | `255.4-1ubuntu8.17` | U1 line 12 |
+| Workflow label to use | `ubuntu-24.04` only. `ubuntu-latest` is announced to move to Ubuntu 26.04 in November 2026. | H1, B1 |
+| Image version string | `20261012.334.1` | B1 line 11 |
+| OS version | `24.04.5 LTS` | B1 line 9 |
+| Kernel | `6.17.0-1022-azure` | B1 line 10 |
+| systemd | `255.4-1ubuntu8.17` | B1 line 12 |
 | runner-images pin | `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` (2026-10-16) | G1 |
 | Image release | tag `ubuntu24/20261012.334`, published 2026-10-13T10:25:13Z, targets commit `7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe` | G2 |
 | Newest release on 2026-10-19 | `ubuntu24/20261018.339`, published 2026-10-19T11:58Z. The pin is already one release behind the fleet. | G2 |
@@ -44,8 +45,7 @@ The pin is 17 commits ahead of the merge base with the release commit (G3). The 
 
 `scripts/build/*` is unchanged. A rebuild from the pin would cache Python 3.11 to 3.15, not 3.10 to 3.14, and the
 latest-at-build tools would move too. The Readme inventory is the authority for what a hosted VM contains.
-Both toolsets are under `sources/`. Same coordinator decision as for Windows: keep the pin or move it to the
-release commit.
+Both toolsets are under `sources/`. Resolved: the baseline is the release commit `7e7dc1b` (see above).
 
 ## Hardware class of the hosted reference
 
@@ -61,7 +61,7 @@ resource disk (`/mnt`) through `waagent` settings (U4). Observed (R1): 4 vCPU, 1
 
 - Linux hosted VMs run with passwordless `sudo` (H2). Every standard hosted runner is a new VM per job (H2).
 - The runtime user name, UID and groups are not in the pinned sources. The build deprovisions with
-  `waagent -force -deprovision+user` (U2). Observed user: `runner`, uid 1001 (R1). The current rig image
+  `waagent -force -deprovision+user` (B2). Observed user: `runner`, uid 1001 (R1). The current rig image
   rejects sudo for its runner user, which is a known difference (see `../consumers.md`).
 - `loginctl enable-linger` is applied to the last user in `/etc/passwd` after generation (U15), so the user
   session exists from boot.
@@ -82,11 +82,11 @@ resource disk (`/mnt`) through `waagent` settings (U4). Observed (R1): 4 vCPU, 1
 
 | Shell or runtime | Version | Source |
 |---|---|---|
-| Bash | 5.2.21(1)-release | U1 |
-| Dash | 0.5.12-6ubuntu5 | U1 |
-| PowerShell (`pwsh`) | 7.6.6 | U1 |
-| Python (system) | 3.12.3 | U1 |
-| Node.js (system, installed with `n`) | 22.23.3, default from toolset `node.default` `22` | U1, U3 |
+| Bash | 5.2.21(1)-release | B1 |
+| Dash | 0.5.12-6ubuntu5 | B1 |
+| PowerShell (`pwsh`) | 7.6.6 | B1 |
+| Python (system) | 3.12.3 | B1 |
+| Node.js (system, installed with `n`) | 22.23.3, default from toolset `node.default` `22` | B1, B3 |
 
 ## Environment variables and PATH facts
 
@@ -101,7 +101,7 @@ facts. Capture the live job environment before certifying (`../hosted-reference.
 - **Tool cache layout:** `/opt/hostedtoolcache/<Tool>/<version>/<arch>`. It is mode 777 (U4).
   Ruby directories get the sticky bit (U9). For each cached Go version `GOROOT_<major>_<minor>_X64` is appended to
   `/etc/environment`, and the default Go's `bin/*` is symlinked into `/usr/bin` (Configure-Toolset.ps1, S-toolset).
-- **Variables from the Readme tables (U1):** `CONDA=/usr/share/miniconda`, `VCPKG_INSTALLATION_ROOT=/usr/local/share/vcpkg`,
+- **Variables from the Readme tables (B1):** `CONDA=/usr/share/miniconda`, `VCPKG_INSTALLATION_ROOT=/usr/local/share/vcpkg`,
   `CHROMEWEBDRIVER`, `EDGEWEBDRIVER`, `GECKOWEBDRIVER`, `SELENIUM_JAR_PATH`, `JAVA_HOME_8_X64` to `JAVA_HOME_25_X64`,
   `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_NDK*` (default NDK 27.3.13750724, latest 30.0.16248370).
   `JAVA_HOME` is the default Java 17.
@@ -116,13 +116,13 @@ facts. Capture the live job environment before certifying (`../hosted-reference.
   PATH). `configure-system.sh` then strips the quotes around the `PATH` value (U9). Node is installed to
   `/usr/local/bin` with `n`. Final order must be captured live.
 - **Not on PATH:** Homebrew (pre-installed, needs `eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"`)
-  (U1 note). Miniconda is exposed through `CONDA`, not PATH (U1).
+  (B1 note). Miniconda is exposed through `CONDA`, not PATH (B1).
 
 ## Tool cache versions (default marked)
 
-Versions come from U1 "Cached Tools". Defaults come from U3 `toolcache[].default`. The Readme does not mark defaults.
+Versions come from B1 "Cached Tools". Defaults come from B3 `toolcache[].default`. The Readme does not mark defaults.
 
-| Tool | Cached versions | Default | Rule (U3) |
+| Tool | Cached versions | Default | Rule (B3) |
 |---|---|---|---|
 | Go | 1.24.13, 1.25.14, 1.26.9 | **1.24.13** (symlinked into `/usr/bin`) | `go` default `1.24.*` |
 | Node.js | 22.23.3, 24.21.0 | none in the tool cache; system Node 22.23.3 | `node.default` `22` |
@@ -133,31 +133,31 @@ Versions come from U1 "Cached Tools". Defaults come from U3 `toolcache[].default
 The toolset also lists CodeQL (`*`) in the tool cache. The Readme has no CodeQL cached-tools section, only
 "CodeQL Action Bundle 2.27.2" under Tools.
 
-Java (U1 table): 8.0.504+1, 11.0.32+1, **17.0.20+1 (default)**, 21.0.12+1, 25.0.4+1. Android NDK default
-**27.3.13750724**, others 29.0.14206865 and 30.0.16248370 (U1). .NET SDKs: 8.0.131, 8.0.206, 8.0.319, 8.0.425,
+Java (B1 table): 8.0.504+1, 11.0.32+1, **17.0.20+1 (default)**, 21.0.12+1, 25.0.4+1. Android NDK default
+**27.3.13750724**, others 29.0.14206865 and 30.0.16248370 (B1). .NET SDKs: 8.0.131, 8.0.206, 8.0.319, 8.0.425,
 9.0.121, 9.0.205, 9.0.318, 10.0.112, 10.0.204, 10.0.303, 10.0.401. Clang 16.0.6, 17.0.6, 18.1.3 with default
-version 18 (U3 `clang.default_version`). `inventory.json` carries every entry with `default` flags.
+version 18 (B3 `clang.default_version`). `inventory.json` carries every entry with `default` flags.
 CMake is deliberately pinned at 3.31.6: the toolset records "Pinned to avoid CMake 4.0 compatibility issues",
-review date 2026-12-01 (U3 `cmake.pinnedDetails`).
+review date 2026-12-01 (B3 `cmake.pinnedDetails`).
 
 ## Services and system state by default
 
 | Item | Default state | Source |
 |---|---|---|
-| Docker (`docker.service`) | enabled and started; Docker Client and Server 28.0.4, Compose 2.38.2, Buildx 0.38.0, `containerd.io` latest at build; socket `/run/docker.sock` is `root:docker 0770` via tmpfiles | U1, U10, U3 |
-| PostgreSQL 16.15 | disabled, stopped. Start with `sudo systemctl start postgresql.service`. | U1, U11 |
-| MySQL 8.0.46 | disabled, stopped. Root password is set to the upstream-documented value (masked in `inventory.json`). | U1, U11 |
-| Apache 2.4.58, Nginx 1.24.0 | disabled, inactive, port 80 when started | U1, U11 |
+| Docker (`docker.service`) | enabled and started; Docker Client and Server 28.0.4, Compose 2.38.2, Buildx 0.38.0, `containerd.io` latest at build; socket `/run/docker.sock` is `root:docker 0770` via tmpfiles | B1, U10, B3 |
+| PostgreSQL 16.15 | disabled, stopped. Start with `sudo systemctl start postgresql.service`. | B1, U11 |
+| MySQL 8.0.46 | disabled, stopped. Root password is set to the upstream-documented value (masked in `inventory.json`). | B1, U11 |
+| Apache 2.4.58, Nginx 1.24.0 | disabled, inactive, port 80 when started | B1, U11 |
 | `apt-daily`, `apt-daily-upgrade` | timers and services disabled | U6 |
 | `snapd` | running; auto refresh held 60 days from build | U12 |
 | `fwupd-refresh.timer` | masked when present | U4 |
-| `haveged` | installed (Tools). Start state NOT IN PINNED SOURCES. | U1 |
-| Cached Docker images | **Six `:latest` images are pulled in the build and are not listed in the Readme**: `ghcr.io/dependabot/dependabot-updater-core`, `ghcr.io/github/gh-aw-mcpg`, `ghcr.io/github/gh-aw-firewall/agent`, `.../api-proxy`, `.../squid`, `ghcr.io/github/github-mcp-server`. Pulled on 24.04, not on 22.04. The toolset `docker.images` list is empty. | U10, U3 |
+| `haveged` | installed (Tools). Start state NOT IN PINNED SOURCES. | B1 |
+| Cached Docker images | **Six `:latest` images are pulled in the build and are not listed in the Readme**: `ghcr.io/dependabot/dependabot-updater-core`, `ghcr.io/github/gh-aw-mcpg`, `ghcr.io/github/gh-aw-firewall/agent`, `.../api-proxy`, `.../squid`, `ghcr.io/github/github-mcp-server`. Pulled on 24.04, not on 22.04. The toolset `docker.images` list is empty. | U10, B3 |
 
 ## What is explicitly not present
 
 - No `unattended-upgrades` (purged) and no Microsoft Defender for Endpoint (validated absent) (U6, U18).
-- No Homebrew on PATH (U1). No apt-fast (installed on Ubuntu 22.04 only) (U6).
+- No Homebrew on PATH (B1). No apt-fast (installed on Ubuntu 22.04 only) (U6).
 - No Ubuntu 26.04 content and no Arm64 content. Both need their own baseline (PLAN).
 - The Readme lists no cached Docker images section even though images are pulled (above). Do not treat the
   Readme as the full image list. Observe `docker images`.
@@ -172,7 +172,7 @@ review date 2026-12-01 (U3 `cmake.pinnedDetails`).
 - GitHub Copilot CLI in `$AGENT_TOOLSDIRECTORY/copilot-cli/<version>/x64`, pinned to the gh-aw compatibility
   matrix and checksum verified (U17).
 - npm globals from the toolset: `grunt`, `gulp`, `n`, `parcel`, `typescript`, `newman`, `webpack`, `webpack-cli`,
-  `lerna`, `yarn` (U3). Ruby gems `multi_json`, `fastlane`. pipx packages `yamllint`, `ansible-core`.
+  `lerna`, `yarn` (B3). Ruby gems `multi_json`, `fastlane`. pipx packages `yamllint`, `ansible-core`.
 - libicu70 for Ubuntu 24.04, installed from a pinned `.deb` with a hard-coded SHA-512 (U8).
 - Microsoft package repository configuration (`packages-microsoft-prod.deb`) at the start of the build.
 - Apt mirror list `azure.archive.ubuntu.com` then `archive.ubuntu.com` then `security.ubuntu.com`, with
@@ -397,9 +397,12 @@ larger than the file list suggests.
 
 ## Sources
 
-- U1: [Ubuntu2404-Readme.md](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/Ubuntu2404-Readme.md).  Not stored (default credential), hash in `sources/NOT-STORED.md`.
-- U2: [build.ubuntu-24_04.pkr.hcl](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/templates/build.ubuntu-24_04.pkr.hcl). Copy in `sources/pin/`.
-- U3: [toolset-2404.json](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/toolsets/toolset-2404.json). Copy in `sources/pin/`.
+- B1: [Ubuntu2404-Readme.md](https://github.com/actions/runner-images/blob/7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe/images/ubuntu/Ubuntu2404-Readme.md) at the build commit `7e7dc1b`. Not stored (default credential). URL and SHA-256 `3911b4bc1aa423be7b7469a75f3093f51306c02f2638f2a8b4f5ed31f3ffe791` in `sources/NOT-STORED.md`; the Readme is byte-identical at the candidate commit.
+- B2: [build.ubuntu-24_04.pkr.hcl](https://github.com/actions/runner-images/blob/7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe/images/ubuntu/templates/build.ubuntu-24_04.pkr.hcl) at the build commit `7e7dc1b`. Copy in `sources/build-commit-7e7dc1b/`, SHA-256 `5b8a5f29c33d9c98a0368c0e3109eba9dc566ce8091aa412de56fc93518d1adf`.
+- B3: [toolset-2404.json](https://github.com/actions/runner-images/blob/7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe/images/ubuntu/toolsets/toolset-2404.json) at the build commit `7e7dc1b`. Copy in `sources/build-commit-7e7dc1b/`, SHA-256 `6ebf0669d768e4cc222d2ae25f9382c86c694e42dc1694db5f5cf50eca611264`.
+- U1 (candidate `ee1ff45`, planning only): [Ubuntu2404-Readme.md](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/Ubuntu2404-Readme.md).  Not stored (default credential), hash in `sources/NOT-STORED.md`.
+- U2 (candidate `ee1ff45`, planning only): [build.ubuntu-24_04.pkr.hcl](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/templates/build.ubuntu-24_04.pkr.hcl). Copy in `sources/pin/`.
+- U3 (candidate `ee1ff45`, planning only): [toolset-2404.json](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/toolsets/toolset-2404.json). Copy in `sources/pin/`.
 - U4: [configure-environment.sh](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/scripts/build/configure-environment.sh).
 - U5: [configure-limits.sh](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/scripts/build/configure-limits.sh).
 - U6: [configure-apt.sh](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/ubuntu/scripts/build/configure-apt.sh).

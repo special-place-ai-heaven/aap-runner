@@ -1,8 +1,8 @@
 # Inputs for Windows Server 2025 / Visual Studio 2026 x64
 
 What the pinned provisioning scripts fetch, what pins them, what cannot be reproduced locally, and what
-has drifted. Checked on 2026-10-19 against `actions/runner-images` commit
-`ee1ff4569e381a9649b400338bdc8ceb7e18a80e`. Nothing here was downloaded or executed except plain text
+has drifted. Checked on 2026-10-19 against the build commit `aee0669dd04510a11756664eb77f5630debabed3`
+(template and toolset in `sources/build-commit-aee0669/`; the scripts are identical at the candidate `ee1ff4569e381a9649b400338bdc8ceb7e18a80e`). Nothing here was downloaded or executed except plain text
 metadata (manifests, API JSON). P03 turns this list into verified artifacts.
 
 ## What upstream pins and what it does not
@@ -57,49 +57,49 @@ or a branch URL. Dynamic URLs show `$` variables unresolved.
 | 24 | `Install-Kotlin.ps1` | `github:JetBrains/kotlin` | yes |  | SHA256/512 check |
 | 25 | `Install-OpenSSL.ps1` | `https://raw.githubusercontent.com/slproweb/opensslhashes/master/win32_openssl_hashes.json` | yes | yes | SHA256/512 check |
 | 26 | `Install-ServiceFabricSDK.ps1` | `https://download.microsoft.com/download/b/8/a/b8a2fb98-0ec1-41e5-be98-9d8b5abf7856` | yes |  | SHA256/512 check |
-| 27 | `Install-LLVM.ps1` | `choco` | yes |  |  |
-| 28 | `Install-ActionsCache.ps1` | `github:actions/action-versions` |  | yes |  |
-| 29 | `Install-Ruby.ps1` | `github:oneclick/rubyinstaller2`<br>`toolset-manifest` | yes |  |  |
-| 30 | `Install-PyPy.ps1` | `https://downloads.python.org/pypy/versions.json`<br>`https://www.pypy.org/checksums.html`<br>`pip/pipx` | yes | yes | SHA256/512 check |
-| 31 | `Install-Toolset.ps1` | (no URL or helper source detected in script text) | yes |  |  |
-| 32 | `Configure-Toolset.ps1` | (no URL or helper source detected in script text) | yes |  |  |
-| 33 | `Install-NodeJS.ps1` | `https://nodejs.org/dist/v${nodeVersion}/node-v${nodeVersion}-${nodeArch}.msi`<br>`https://registry.npmjs.org/`<br>`github:nodejs/node`<br>`npm` | yes |  | SHA256/512 check |
-| 34 | `Install-AndroidSDK.ps1` | (no URL or helper source detected in script text) | yes | yes | SHA256/512 check |
-| 35 | `Install-PowershellAzModules.ps1` | `powershell-gallery` | yes |  |  |
-| 36 | `Install-Pipx.ps1` | `pip/pipx` | yes |  |  |
-| 37 | `Install-Git.ps1` | `github:git-for-windows/git` |  | yes | SHA256/512 check |
-| 38 | `Install-GitHub-CLI.ps1` | `github:cli/cli` |  | yes | SHA256/512 check |
-| 39 | `Install-PHP.ps1` | `choco` | yes |  |  |
-| 40 | `Install-Rust.ps1` | `https://static.rust-lang.org/rustup/dist/${rustArch}-pc-windows-msvc/rustup-init.exe`<br>`https://static.rust-lang.org/rustup/dist/${rustArch}-pc-windows-msvc/rustup-init.exe.sha256` |  | yes | SHA256/512 check |
-| 41 | `Install-Sbt.ps1` | `choco` |  |  |  |
-| 42 | `Install-Chrome.ps1` | `https://dl.google.com/tag/s/dl/chrome/install/googlechromestandaloneenterprise_arm64.msi`<br>`https://dl.google.com/tag/s/dl/chrome/install/googlechromestandaloneenterprise64.msi`<br>`https://googlechromelabs.github.io/chrome-for-testing/latest-patch-versions-per-build-with-d...` |  | yes | Authenticode subject |
-| 43 | `Install-EdgeDriver.ps1` | `https://msedgedriver.microsoft.com/LATEST_RELEASE_$($edgeVersion.Major`<br>`https://msedgedriver.microsoft.com/$latestVersion/edgedriver_$driverArch.zip` |  | yes | Authenticode subject |
-| 44 | `Install-Firefox.ps1` | `https://product-details.mozilla.org/1.0/firefox_versions.json`<br>`https://download.mozilla.org/?product=firefox-$($versionsManifest.LATEST_FIREFOX_VERSION`<br>`https://archive.mozilla.org/pub/firefox/releases/$($versionsManifest.LATEST_FIREFOX_VERSION`<br>`github:mozilla/geckodriver` |  | yes | SHA256/512 check, Authenticode subject |
-| 45 | `Install-Selenium.ps1` | `github:SeleniumHQ/selenium` | yes |  |  |
-| 46 | `Install-IEWebDriver.ps1` | `github:SeleniumHQ/selenium` | yes |  |  |
-| 47 | `Install-Apache.ps1` | `choco` |  |  |  |
-| 48 | `Install-Nginx.ps1` | `choco` |  |  |  |
-| 49 | `Install-Msys2.ps1` | `https://api.github.com/repos/msys2/msys2-installer/releases/latest` | yes | yes |  |
-| 50 | `Install-WinAppDriver.ps1` | `github:microsoft/WinAppDriver` |  | yes | Authenticode subject |
-| 51 | `Install-R.ps1` | `choco` |  |  |  |
-| 52 | `Install-AWSTools.ps1` | `https://s3.amazonaws.com/session-manager-downloads/plugin/latest/windows/SessionManagerPlugi...`<br>`github:awslabs/aws-sam-cli`<br>`choco` |  | yes | SHA256/512 check, Authenticode subject |
-| 53 | `Install-DACFx.ps1` | `https://aka.ms/dacfx-msi` |  |  | Authenticode subject |
-| 54 | `Install-MysqlCli.ps1` | `https://download.microsoft.com/download/0/5/6/056dcda9-d667-4e27-8001-8a0c6971d6b1/vcredist_...`<br>`https://downloads.mysql.com/archives/community/`<br>`https://dev.mysql.com/downloads/mysql/${mysqlVersionMajorMinor}.html`<br>`https://cdn.mysql.com/Downloads/MySQL-${mysqlVersionMajorMinor}/mysql-${mysqlVersionFull}-wi...` | yes |  | SHA256/512 check, literal hash, Authenticode subject |
-| 55 | `Install-SQLPowerShellTools.ps1` | `https://download.microsoft.com/download/B/1/7/B1783FE9-717B-4F78-A39A-A2E27E3D679D/ENU/x64` |  |  | Authenticode subject |
-| 56 | `Install-SQLOLEDBDriver.ps1` | `https://go.microsoft.com/fwlink/?linkid=2242656`<br>`https://go.microsoft.com/fwlink/?linkid=2318101` |  |  | Authenticode subject |
-| 57 | `Install-DotnetSDK.ps1` | `https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/${DotnetVersion}/releases.json`<br>`https://dot.net/v1/dotnet-install.ps1`<br>`https://api.nuget.org/v3/index.json` | yes |  | SHA256/512 check |
-| 58 | `Install-Mingw64.ps1` | `github:niXman/mingw-builds-binaries` | yes |  |  |
-| 59 | `Install-Haskell.ps1` | `https://downloads.haskell.org/~ghcup/x86_64-mingw64-ghcup.exe` |  | yes |  |
-| 60 | `Install-Stack.ps1` | `github:commercialhaskell/stack` |  | yes | SHA256/512 check |
-| 61 | `Install-Miniconda.ps1` | `https://repo.anaconda.com/miniconda/`<br>`https://repo.anaconda.com/miniconda/${installerName}` |  | yes | SHA256/512 check |
-| 62 | `Install-AzureCosmosDbEmulator.ps1` | `https://aka.ms/cosmosdb-emulator` |  |  |  |
-| 63 | `Install-Zstd.ps1` | `github:facebook/zstd` |  | yes |  |
-| 64 | `Install-Vcpkg.ps1` | `https://github.com/Microsoft/vcpkg.git` |  |  |  |
-| 65 | `Install-Bazel.ps1` | `choco`<br>`npm` |  |  |  |
-| 66 | `Install-RootCA.ps1` | (no URL or helper source detected in script text) |  |  |  |
-| 67 | `Install-MongoDB.ps1` | `https://downloads.mongodb.org/current.json`<br>`https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-$latestVersion-signed.msi`<br>`github:mongodb-js/mongosh` | yes | yes | Authenticode subject |
-| 68 | `Install-CodeQLBundle.ps1` | `https://api.github.com/repos/github/codeql-action/releases`<br>`https://raw.githubusercontent.com/github/codeql-action/v$($codeqlActionLatestMajorVersion`<br>`https://github.com/github/codeql-action/releases/download/$($tagName` |  | yes |  |
-| 69 | `Configure-Diagnostics.ps1` | (no URL or helper source detected in script text) |  |  |  |
+| 27 | `Install-ActionsCache.ps1` | `github:actions/action-versions` |  | yes |  |
+| 28 | `Install-Ruby.ps1` | `github:oneclick/rubyinstaller2`<br>`toolset-manifest` | yes |  |  |
+| 29 | `Install-PyPy.ps1` | `https://downloads.python.org/pypy/versions.json`<br>`https://www.pypy.org/checksums.html`<br>`pip/pipx` | yes | yes | SHA256/512 check |
+| 30 | `Install-Toolset.ps1` | (no URL or helper source detected in script text) | yes |  |  |
+| 31 | `Configure-Toolset.ps1` | (no URL or helper source detected in script text) | yes |  |  |
+| 32 | `Install-NodeJS.ps1` | `https://nodejs.org/dist/v${nodeVersion}/node-v${nodeVersion}-${nodeArch}.msi`<br>`https://registry.npmjs.org/`<br>`github:nodejs/node`<br>`npm` | yes |  | SHA256/512 check |
+| 33 | `Install-AndroidSDK.ps1` | (no URL or helper source detected in script text) | yes | yes | SHA256/512 check |
+| 34 | `Install-PowershellAzModules.ps1` | `powershell-gallery` | yes |  |  |
+| 35 | `Install-Pipx.ps1` | `pip/pipx` | yes |  |  |
+| 36 | `Install-Git.ps1` | `github:git-for-windows/git` |  | yes | SHA256/512 check |
+| 37 | `Install-GitHub-CLI.ps1` | `github:cli/cli` |  | yes | SHA256/512 check |
+| 38 | `Install-PHP.ps1` | `choco` | yes |  |  |
+| 39 | `Install-Rust.ps1` | `https://static.rust-lang.org/rustup/dist/${rustArch}-pc-windows-msvc/rustup-init.exe`<br>`https://static.rust-lang.org/rustup/dist/${rustArch}-pc-windows-msvc/rustup-init.exe.sha256` |  | yes | SHA256/512 check |
+| 40 | `Install-Sbt.ps1` | `choco` |  |  |  |
+| 41 | `Install-Chrome.ps1` | `https://dl.google.com/tag/s/dl/chrome/install/googlechromestandaloneenterprise_arm64.msi`<br>`https://dl.google.com/tag/s/dl/chrome/install/googlechromestandaloneenterprise64.msi`<br>`https://googlechromelabs.github.io/chrome-for-testing/latest-patch-versions-per-build-with-d...` |  | yes | Authenticode subject |
+| 42 | `Install-EdgeDriver.ps1` | `https://msedgedriver.microsoft.com/LATEST_RELEASE_$($edgeVersion.Major`<br>`https://msedgedriver.microsoft.com/$latestVersion/edgedriver_$driverArch.zip` |  | yes | Authenticode subject |
+| 43 | `Install-Firefox.ps1` | `https://product-details.mozilla.org/1.0/firefox_versions.json`<br>`https://download.mozilla.org/?product=firefox-$($versionsManifest.LATEST_FIREFOX_VERSION`<br>`https://archive.mozilla.org/pub/firefox/releases/$($versionsManifest.LATEST_FIREFOX_VERSION`<br>`github:mozilla/geckodriver` |  | yes | SHA256/512 check, Authenticode subject |
+| 44 | `Install-Selenium.ps1` | `github:SeleniumHQ/selenium` | yes |  |  |
+| 45 | `Install-IEWebDriver.ps1` | `github:SeleniumHQ/selenium` | yes |  |  |
+| 46 | `Install-Apache.ps1` | `choco` |  |  |  |
+| 47 | `Install-Nginx.ps1` | `choco` |  |  |  |
+| 48 | `Install-Msys2.ps1` | `https://api.github.com/repos/msys2/msys2-installer/releases/latest` | yes | yes |  |
+| 49 | `Install-WinAppDriver.ps1` | `github:microsoft/WinAppDriver` |  | yes | Authenticode subject |
+| 50 | `Install-R.ps1` | `choco` |  |  |  |
+| 51 | `Install-AWSTools.ps1` | `https://s3.amazonaws.com/session-manager-downloads/plugin/latest/windows/SessionManagerPlugi...`<br>`github:awslabs/aws-sam-cli`<br>`choco` |  | yes | SHA256/512 check, Authenticode subject |
+| 52 | `Install-DACFx.ps1` | `https://aka.ms/dacfx-msi` |  |  | Authenticode subject |
+| 53 | `Install-MysqlCli.ps1` | `https://download.microsoft.com/download/0/5/6/056dcda9-d667-4e27-8001-8a0c6971d6b1/vcredist_...`<br>`https://downloads.mysql.com/archives/community/`<br>`https://dev.mysql.com/downloads/mysql/${mysqlVersionMajorMinor}.html`<br>`https://cdn.mysql.com/Downloads/MySQL-${mysqlVersionMajorMinor}/mysql-${mysqlVersionFull}-wi...` | yes |  | SHA256/512 check, literal hash, Authenticode subject |
+| 54 | `Install-SQLPowerShellTools.ps1` | `https://download.microsoft.com/download/B/1/7/B1783FE9-717B-4F78-A39A-A2E27E3D679D/ENU/x64` |  |  | Authenticode subject |
+| 55 | `Install-SQLOLEDBDriver.ps1` | `https://go.microsoft.com/fwlink/?linkid=2242656`<br>`https://go.microsoft.com/fwlink/?linkid=2318101` |  |  | Authenticode subject |
+| 56 | `Install-DotnetSDK.ps1` | `https://dotnetcli.blob.core.windows.net/dotnet/release-metadata/${DotnetVersion}/releases.json`<br>`https://dot.net/v1/dotnet-install.ps1`<br>`https://api.nuget.org/v3/index.json` | yes |  | SHA256/512 check |
+| 57 | `Install-Mingw64.ps1` | `github:niXman/mingw-builds-binaries` | yes |  |  |
+| 58 | `Install-Haskell.ps1` | `https://downloads.haskell.org/~ghcup/x86_64-mingw64-ghcup.exe` |  | yes |  |
+| 59 | `Install-Stack.ps1` | `github:commercialhaskell/stack` |  | yes | SHA256/512 check |
+| 60 | `Install-Miniconda.ps1` | `https://repo.anaconda.com/miniconda/`<br>`https://repo.anaconda.com/miniconda/${installerName}` |  | yes | SHA256/512 check |
+| 61 | `Install-AzureCosmosDbEmulator.ps1` | `https://aka.ms/cosmosdb-emulator` |  |  |  |
+| 62 | `Install-Zstd.ps1` | `github:facebook/zstd` |  | yes |  |
+| 63 | `Install-Vcpkg.ps1` | `https://github.com/Microsoft/vcpkg.git` |  |  |  |
+| 64 | `Install-Bazel.ps1` | `choco`<br>`npm` |  |  |  |
+| 65 | `Install-RootCA.ps1` | (no URL or helper source detected in script text) |  |  |  |
+| 66 | `Install-MongoDB.ps1` | `https://downloads.mongodb.org/current.json`<br>`https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-$latestVersion-signed.msi`<br>`github:mongodb-js/mongosh` | yes | yes | Authenticode subject |
+| 67 | `Install-CodeQLBundle.ps1` | `https://api.github.com/repos/github/codeql-action/releases`<br>`https://raw.githubusercontent.com/github/codeql-action/v$($codeqlActionLatestMajorVersion`<br>`https://github.com/github/codeql-action/releases/download/$($tagName` |  | yes |  |
+| 68 | `Configure-Diagnostics.ps1` | (no URL or helper source detected in script text) |  |  |  |
+| 69 | `Install-LLVM.ps1` | `choco` | yes |  |  |
 | 70 | `Install-PostgreSQL.ps1` | `https://get.enterprisedb.com/postgresql/postgresql-$majorVersion.$minorVersion-$patchVersion...`<br>`https://get.enterprisedb.com/postgresql/postgresql-$toolsetVersion.$targetMinorVersions-$inc...` | yes |  | Authenticode subject |
 | 71 | `Install-WindowsUpdates.ps1` | (no URL or helper source detected in script text) |  |  |  |
 | 72 | `Configure-DynamicPort.ps1` | (no URL or helper source detected in script text) |  |  |  |
@@ -186,7 +186,7 @@ Each item is a blocker, not an omission (PLAN, "Baselines"). None is resolved by
 |---|---|
 | The hosted fleet has a newer image release than the pin: `win25-vs2026/20261018.275` (2026-10-19) versus pinned `20261007.264` | GitHub releases API |
 | `runner-images` `main` is `82d1b86ad393865982dd29535cb8d3adbc68e41e` (2026-10-19), "[Windows] Install latest Microsoft Edge Stable during image build (#14915)", ahead of the pin | commits API |
-| Pin toolset (Python 3.11 to 3.15) does not match the Readme (3.10 to 3.14) | `README.md` "Pin versus build commit" |
+| Pin toolset (Python 3.11 to 3.15) does not match the Readme (3.10 to 3.14) | `README.md` "Pin drift, resolved by pinning to the build commit" |
 | Cached tool versions in the Readme are still resolvable in the upstream manifests: Python 3.10.11, 3.11.9, 3.12.10, 3.13.16, 3.14.8 (win32 x64), Node.js 22.23.3 and 24.21.0, Go 1.24.13, 1.25.14 and 1.26.8 | `versions-manifest.json` of `actions/python-versions`, `actions/node-versions`, `actions/go-versions`, read 2026-10-19 |
 | Newer cached versions already exist upstream: Node.js 24.22.0 (Readme has 24.21.0), Go 1.26.9 (Readme has 1.26.8), Python 3.15.0 (not in Readme). A rebuild from the pin would not reproduce the Readme. | same manifests |
 | Not checkable by P01 (floating, no archive of past versions): every `latest` vendor feed in the table, Chocolatey packages, Visual Studio stable channel, Windows Updates | n/a |

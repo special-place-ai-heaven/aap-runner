@@ -42,7 +42,9 @@ workflows (hosted runners only, no secrets) and attach the logs before P01 close
 
 The Readme at both release commits is byte-identical to the Readme at the pin (same SHA-256, see each
 profile's `sources/NOT-STORED.md`). The release commits are on a different branch line from the pin. The
-pin's template and toolset differ from the release commits. See each profile README, "Pin versus build commit".
+Ubuntu template is byte-identical at the pin and the release commit; only the Ubuntu toolset differs. On Windows both
+the template (`Install-LLVM.ps1` moves) and the toolset differ. See each profile README, "Pin drift, resolved by pinning
+to the build commit".
 
 ## Format of the Set up job lines
 

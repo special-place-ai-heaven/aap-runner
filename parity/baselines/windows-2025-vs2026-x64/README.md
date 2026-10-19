@@ -1,12 +1,13 @@
 # Windows Server 2025 with Visual Studio 2026, x64
 
 Frozen hosted baseline for profile `windows-2025-vs2026-x64`. Facts were fetched on 2026-10-19.
-Every fact cites a source ID from the legend at the end. Source IDs `Sn` point at the pinned commit
+Every fact cites a source ID from the legend at the end. Source IDs B1 to B3 point at the baseline build commit
+`aee0669dd04510a11756664eb77f5630debabed3` (Readme, template, toolset). All other IDs point at the candidate commit
 `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` unless the legend says otherwise.
 **Baseline commit (coordinator decision, 2026-10-19).** The baseline for this profile is `aee0669dd04510a11756664eb77f5630debabed3`, the commit that built the
 observed image `win25-vs2026/20261007.264`. `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` stays recorded as the planning candidate only.
-The inventory, template and toolset under `sources/build-commit-aee0669/` are the baseline. The scripts under `scripts/` did not change between
-the two commits (the compare lists no file there), so script links at the candidate commit also describe the baseline.
+The inventory, template and toolset under `sources/build-commit-aee0669/` are the baseline. `scripts/build` and `scripts/helpers` did not change between
+the two commits (the compare lists no file there; only `scripts/docs-gen`, the report generator, changed), so script links at the candidate commit also describe the baseline.
 Where this file says "the pin", it means the candidate `ee1ff45`.
 
 Files in this directory: `inventory.json` (machine readable, every Readme entry), `inputs.md`
@@ -18,12 +19,12 @@ Files in this directory: `inventory.json` (machine readable, every Readme entry)
 |---|---|---|
 | Image label written by the image | `windows-2025-vs2026` | S6 |
 | Workflow label to use | `windows-2025-vs2026` only. See `../hosted-reference.md` for why `windows-latest` and `windows-2025` are not usable. | H1 |
-| Image version string | `20261007.264.1` | S1 line 8 |
-| OS version | `10.0.26100 Build 33438` (Windows Server 2025) | S1 line 7 |
+| Image version string | `20261007.264.1` | B1 line 8 |
+| OS version | `10.0.26100 Build 33438` (Windows Server 2025) | B1 line 7 |
 | runner-images pin | `ee1ff4569e381a9649b400338bdc8ceb7e18a80e` (2026-10-16, "Updating readme file for ubuntu22 version 20261012.322.1 (#14917)") | G1 |
 | Image release | tag `win25-vs2026/20261007.264`, published 2026-10-14T10:41:28Z, targets commit `aee0669dd04510a11756664eb77f5630debabed3` | G2 |
 | Newest release on 2026-10-19 | `win25-vs2026/20261018.275`, published 2026-10-19T16:55Z. The pin is already one release behind the fleet. | G2 |
-| Azure source image (build input) | `MicrosoftWindowsServer:WindowsServer:2025-Datacenter-g2`, OS disk 150 GB, selected by the key `win25-vs2026`. The pipeline value for the key is not in the repository. | S2, S7 |
+| Azure source image (build input) | `MicrosoftWindowsServer:WindowsServer:2025-Datacenter-g2`, OS disk 150 GB, selected by the key `win25-vs2026`. The pipeline value for the key is not in the repository. | B2, S7 |
 | Build VM size (build time, not hosted runtime) | `Standard_F8s_v2` | S7 |
 | Runner application version | `2.337.0` (observed 2026-10-19) | R1 |
 | Hosted capture of the "Set up job" lines | Captured. Image and version equal the frozen values. See "Observed on the hosted reference". | R1 |
@@ -72,18 +73,18 @@ runner (R1): 4 logical processors, 16 GiB RAM, `C:` 33.0 GB free of about 160 GB
   `C:\Windows\Temp` is granted `Users:F` for MSI (S9). Dynamic port range is 49152, 16384 ports, for IPv4 and IPv6,
   TCP and UDP (Configure-DynamicPort.ps1). GDI process handle quota is 20000 (Configure-GDIProcessHandleQuota.ps1).
   Developer mode is enabled by `AllowDevelopmentWithoutDevLicense=1` (Configure-DeveloperMode.ps1).
-- `bcdedit /set TESTSIGNING ON` runs in the build (template step 5) (S2). `hypervisorschedulertype` is set to
+- `bcdedit /set TESTSIGNING ON` runs in the build (template step 5) (B2). `hypervisorschedulertype` is set to
   `root` (Install-WindowsFeatures.ps1). Whether TESTSIGNING survives sysprep is not stated. Observe it.
 
 ## Shells and versions
 
 | Shell | Target or version | Source |
 |---|---|---|
-| `gitbash.exe` | `C:\Program Files\Git\bin\bash.exe`, symlink in `C:\shells` | S1 Shells table, Configure-Shell.ps1 |
-| `msys2bash.cmd` | `C:\msys64\usr\bin\bash.exe` via wrapper that sets `MSYS2_PATH_TYPE=strict`, `MSYSTEM=MINGW64`, `CHERE_INVOKING=1` and runs `bash -leo pipefail` | S1, Configure-Shell.ps1 |
-| `wslbash.exe` | `C:\Windows\System32\bash.exe` | S1 |
-| PowerShell (pwsh) | 7.6.6 | S1 |
-| Bash (Language and Runtime) | 5.3.15(2)-release | S1 |
+| `gitbash.exe` | `C:\Program Files\Git\bin\bash.exe`, symlink in `C:\shells` | B1 Shells table, Configure-Shell.ps1 |
+| `msys2bash.cmd` | `C:\msys64\usr\bin\bash.exe` via wrapper that sets `MSYS2_PATH_TYPE=strict`, `MSYSTEM=MINGW64`, `CHERE_INVOKING=1` and runs `bash -leo pipefail` | B1, Configure-Shell.ps1 |
+| `wslbash.exe` | `C:\Windows\System32\bash.exe` | B1 |
+| PowerShell (pwsh) | 7.6.6 | B1 |
+| Bash (Language and Runtime) | 5.3.15(2)-release | B1 |
 | Windows PowerShell 5.1 | built into Windows Server 2025, not listed in the Readme. Observe the version. | n/a |
 
 ## Environment variables and PATH facts
@@ -97,8 +98,8 @@ Final ordering and values must be captured from the hosted job (`../hosted-refer
 - **Tool cache layout:** `C:\hostedtoolcache\windows\<Tool>\<version>\<arch>` (Configure-Toolset.ps1).
   For each cached Go version it sets `GOROOT_<major>_<minor>_X64` (for example `GOROOT_1_24_X64`).
 - **Toolset defaults on PATH:** Python `3.12.*` adds `<path>` and `<path>\Scripts`. Go `1.24.*` adds `<path>\bin`.
-  Install-Ruby.ps1 adds the default Ruby (3.3) `bin` directory. The toolset default for Node is `22.*` and is installed system-wide (S3).
-- **Variables from the Readme tables (S1):** `VCPKG_INSTALLATION_ROOT=C:\vcpkg`, `CONDA=C:\Miniconda`,
+  Install-Ruby.ps1 adds the default Ruby (3.3) `bin` directory. The toolset default for Node is `22.*` and is installed system-wide (B3).
+- **Variables from the Readme tables (B1):** `VCPKG_INSTALLATION_ROOT=C:\vcpkg`, `CONDA=C:\Miniconda`,
   `CHROMEWEBDRIVER`, `EDGEWEBDRIVER`, `GECKOWEBDRIVER`, `SELENIUM_JAR_PATH`, `JAVA_HOME_8_X64` to `JAVA_HOME_25_X64`,
   `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `ANDROID_NDK`, `ANDROID_NDK_HOME`, `ANDROID_NDK_ROOT`
   (NDK 27.3.13750724) and `ANDROID_NDK_LATEST_HOME` (NDK 30.0.16248370). `JAVA_HOME` is set to the default
@@ -115,8 +116,8 @@ Final ordering and values must be captured from the hosted job (`../hosted-refer
 - **Visual Studio developer environment is not applied globally.** No provisioning script sets
   `VCINSTALLDIR` or `VSINSTALLDIR` or runs `vcvars*` or `VsDevCmd` (searched `windows/scripts` and
   `windows/assets` at the pin: no match). Visual Studio 2026 Enterprise 18.10.12224.181 is at
-  `C:\Program Files\Microsoft Visual Studio\18\Enterprise` (S1). `VSWhere 3.1.7` is installed from Chocolatey
-  (toolset `choco.common_packages`, S3). MSVC jobs must find the toolchain with `vswhere` and enter the
+  `C:\Program Files\Microsoft Visual Studio\18\Enterprise` (B1). `VSWhere 3.1.7` is installed from Chocolatey
+  (toolset `choco.common_packages`, B3). MSVC jobs must find the toolchain with `vswhere` and enter the
   developer environment themselves. The reference workflow prints `VCINSTALLDIR`, `VSINSTALLDIR`, `VSCMD_VER`,
   `INCLUDE`, `LIB` to prove their absence or presence.
 - **PATH order mechanism.** `Add-MachinePathItem` **prepends** (`$PathItem + ';' + $currentPath`)
@@ -127,14 +128,14 @@ Final ordering and values must be captured from the hosted job (`../hosted-refer
   driver, Edge driver, Gecko driver, R, MySQL CLI, .NET (`C:\Program Files\dotnet`), MinGW64
   (`C:\mingw64\bin`), Haskell (ghcup, cabal), Stack, zstd, vcpkg, MongoDB. Per-user default-profile PATH
   entries: `%USERPROFILE%\.cargo\bin`, `%USERPROFILE%\.dotnet\tools`.
-- **Not on PATH:** Miniconda (`C:\Miniconda`) and MSYS2 (`C:\msys64`) are installed but not added to PATH (S1).
+- **Not on PATH:** Miniconda (`C:\Miniconda`) and MSYS2 (`C:\msys64`) are installed but not added to PATH (B1).
 
 ## Tool cache versions (default marked)
 
-Source for versions: S1 "Cached Tools". Source for defaults: S3 `toolcache[].default`. The Readme itself
+Source for versions: B1 "Cached Tools". Source for defaults: B3 `toolcache[].default`. The Readme itself
 does not mark defaults, so the marks below are derived by matching the toolset rule.
 
-| Tool | Cached versions | Default | Rule (S3) |
+| Tool | Cached versions | Default | Rule (B3) |
 |---|---|---|---|
 | Go | 1.24.13, 1.25.14, 1.26.8 | **1.24.13** | `go` default `1.24.*` |
 | Node.js | 22.23.3, 24.21.0 | none in the tool cache; system Node 22.23.3 | toolcache has no default; `node.default` `22.*` |
@@ -142,37 +143,37 @@ does not mark defaults, so the marks below are derived by matching the toolset r
 | PyPy | 3.9.19 [PyPy 7.3.16], 3.10.16 [PyPy 7.3.19] | none | no default in toolset (arch `x86`, platform `win64`) |
 | Ruby | 3.2.11, 3.3.12, 3.4.11, 4.0.7 | **3.3.12** | `Ruby` default `3.3` |
 
-Java (S1 table): 8.0.504+1, 11.0.32+101, **17.0.20+101 (default)**, 21.0.12+101.0, 25.0.4+101.0.
+Java (B1 table): 8.0.504+1, 11.0.32+101, **17.0.20+101 (default)**, 21.0.12+101.0, 25.0.4+101.0.
 .NET SDKs: 8.0.131, 8.0.206, 8.0.319, 8.0.425, 9.0.121, 9.0.205, 9.0.318, 10.0.112, 10.0.204, 10.0.303, 10.0.401
-(S1). `inventory.json` carries every entry with `default` flags.
+(B1). `inventory.json` carries every entry with `default` flags.
 
 ## Services and system state by default
 
 | Item | Default state | Source |
 |---|---|---|
-| PostgreSQL `postgresql-x64-17` 17.11 | Stopped, start type Disabled | S1, Install-PostgreSQL.ps1 |
-| MongoDB 7.0.43.0 | Stopped, Disabled | S1 |
-| Apache 2.4.55 | Stopped (port 80); script sets Disabled | S1, Install-Apache.ps1 |
-| Nginx 1.31.6 | Stopped (port 80); script sets Disabled | S1, Install-Nginx.ps1 |
+| PostgreSQL `postgresql-x64-17` 17.11 | Stopped, start type Disabled | B1, Install-PostgreSQL.ps1 |
+| MongoDB 7.0.43.0 | Stopped, Disabled | B1 |
+| Apache 2.4.55 | Stopped (port 80); script sets Disabled | B1, Install-Apache.ps1 |
+| Nginx 1.31.6 | Stopped (port 80); script sets Disabled | B1, Install-Nginx.ps1 |
 | Windows Update `wuauserv`, `DiagTrack`, `dmwappushservice`, `SysMain`, `gupdate`, `gupdatem` | Build script: Stopped, Disabled. `PcaSvc` and `StorSvc` are left alone on Windows Server 2025. Observed: `wuauserv` Running, Manual; `DiagTrack` and `SysMain` Stopped, Disabled. | S9, R1 |
 | Windows Update Medic (`WaaSMedicSvc`) | Start type 4 (disabled) | S4 |
-| `wlansvc` | Manual, stopped if running | S2 template step 7 |
+| `wlansvc` | Manual, stopped if running | B2 template step 7 |
 | Windows Defender | Build script: real-time protection and many features disabled, passive mode when the policy key exists. Observed: `WinDefend` Running, Automatic; preference values not read. | S8, R1 |
 | Scheduled tasks | Many Windows, Visual Studio and Azure tasks disabled (list in Configure-System.ps1) | S9 |
-| WSL | WSL1 enabled; default WSL2 version `3.0.1.0` | S1 |
-| Windows features enabled | Containers, WSL, VirtualMachinePlatform, `NET-Framework-45-Features` and `NET-Framework-Features` (all sub-features), Client-ProjFS, Hyper-V (all sub-features), HypervisorPlatform, Hyper-V-PowerShell, Wireless-Networking | S3 `windowsFeatures` |
-| Docker engine | Moby 29.7.2 from the static Docker CE build plus a pinned Install-DockerCE script. Observed: service `docker` Running, Automatic; client and server 29.7.2. | S1, Install-Docker.ps1, R1 |
-| Cached Docker images | None. Image pulls are skipped on Windows Server 2025 and the toolset list is empty. | Install-Docker.ps1, S3 |
+| WSL | WSL1 enabled; default WSL2 version `3.0.1.0` | B1 |
+| Windows features enabled | Containers, WSL, VirtualMachinePlatform, `NET-Framework-45-Features` and `NET-Framework-Features` (all sub-features), Client-ProjFS, Hyper-V (all sub-features), HypervisorPlatform, Hyper-V-PowerShell, Wireless-Networking | B3 `windowsFeatures` |
+| Docker engine | Moby 29.7.2 from the static Docker CE build plus a pinned Install-DockerCE script. Observed: service `docker` Running, Automatic; client and server 29.7.2. | B1, Install-Docker.ps1, R1 |
+| Cached Docker images | None. Image pulls are skipped on Windows Server 2025 and the toolset list is empty. | Install-Docker.ps1, B3 |
 
 ## What is explicitly not present
 
 - No Visual Studio 2022. The only installed Visual Studio is 2026 Enterprise. The VC++ 2022 redistributables
   are present (inventory, "Microsoft Visual C++").
 - No Windows 10 SDK 10.0.17763. It installs only on Windows Server 2022. The only Windows SDK is 10.0.26100.0
-  (Install-VisualStudio.ps1, S1).
+  (Install-VisualStudio.ps1, B1).
 - No TortoiseSVN on Windows Server 2025 (comment in Configure-User.ps1).
 - No cached Docker images (above). No Visual Studio developer environment in the global environment (above).
-- Miniconda and MSYS2 are not on PATH (S1).
+- Miniconda and MSYS2 are not on PATH (B1).
 - Windows Update installs are disabled by policy (service Running, Manual). Defender real-time scanning is disabled by the build script; the observed service runs and the preference was not read.
 - Not part of this profile: Windows Server 2022, Windows Server 2025 with Visual Studio 2022, Windows 11 Arm64,
   Ubuntu 26.04 and other architectures. They need their own baseline (PLAN).
@@ -187,10 +188,10 @@ Records of things a build-parity job can touch that the Readme sections do not l
   native image generation (Install-NativeImages.ps1), Windows Updates before and after reboot, final cleanup.
 - Choco packages from the toolset: `7zip.install`, `aria2`, `azcopy10`, `Bicep`, `innosetup`, `jq`, `NuGet.CommandLine`,
   `packer`, `pulumi`, `swig`, `vswhere`, `julia` (to `C:\Julia`), `cmake.install` (CMake on the system PATH),
-  `strawberryperl` 5.42.0.1, `imagemagick`, `ninja` (S3).
-- npm global packages from the toolset: `yarn`, `newman`, `lerna`, `gulp-cli`, `grunt-cli` (S3).
+  `strawberryperl` 5.42.0.1, `imagemagick`, `ninja` (B3).
+- npm global packages from the toolset: `yarn`, `newman`, `lerna`, `gulp-cli`, `grunt-cli` (B3).
   The Readme lists Yarn and Newman but not Lerna, gulp or grunt for this profile. Observe them live.
-- pipx package: `yamllint` (S3).
+- pipx package: `yamllint` (B3).
 - Windows SDK 10.0.26100 installed separately from the Visual Studio component, with
   `OptionId.WindowsDesktopDebuggers` added on Windows Server 2025 (Install-VisualStudio.ps1).
 
@@ -420,9 +421,12 @@ P06/P07 reconcile each test with a probe (S13).
 
 ## Sources
 
-- S1: [Windows2025-VS2026-Readme.md](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/windows/Windows2025-VS2026-Readme.md).  Not stored (default credential), hash in `sources/NOT-STORED.md`.
-- S2: [build.windows-2025-vs2026.pkr.hcl](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/windows/templates/build.windows-2025-vs2026.pkr.hcl). Copy in `sources/pin/`.
-- S3: [toolset-2025-vs2026.json](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/windows/toolsets/toolset-2025-vs2026.json). Copy in `sources/pin/`.
+- B1: [Windows2025-VS2026-Readme.md](https://github.com/actions/runner-images/blob/aee0669dd04510a11756664eb77f5630debabed3/images/windows/Windows2025-VS2026-Readme.md) at the build commit `aee0669`. Not stored (default credential). URL and SHA-256 `1be74251a3224d797dd351ce4509c3576a5ad417bed3c923d05a39a5f770bad6` in `sources/NOT-STORED.md`; the Readme is byte-identical at the candidate commit.
+- B2: [build.windows-2025-vs2026.pkr.hcl](https://github.com/actions/runner-images/blob/aee0669dd04510a11756664eb77f5630debabed3/images/windows/templates/build.windows-2025-vs2026.pkr.hcl) at the build commit `aee0669`. Copy in `sources/build-commit-aee0669/`, SHA-256 `f1057bf63d180ff8392acb2bd0604523fa701a10397dcac5579de52009b35241`.
+- B3: [toolset-2025-vs2026.json](https://github.com/actions/runner-images/blob/aee0669dd04510a11756664eb77f5630debabed3/images/windows/toolsets/toolset-2025-vs2026.json) at the build commit `aee0669`. Copy in `sources/build-commit-aee0669/`, SHA-256 `74afa20f0f390cd230f98900d034c1ad297a071820e5b45c55c5cd7abf2caa8f`.
+- S1 (candidate `ee1ff45`, planning only): [Windows2025-VS2026-Readme.md](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/windows/Windows2025-VS2026-Readme.md).  Not stored (default credential), hash in `sources/NOT-STORED.md`.
+- S2 (candidate `ee1ff45`, planning only): [build.windows-2025-vs2026.pkr.hcl](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/windows/templates/build.windows-2025-vs2026.pkr.hcl). Copy in `sources/pin/`.
+- S3 (candidate `ee1ff45`, planning only): [toolset-2025-vs2026.json](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/windows/toolsets/toolset-2025-vs2026.json). Copy in `sources/pin/`.
 - S4: [Configure-BaseImage.ps1](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/windows/scripts/build/Configure-BaseImage.ps1).
 - S5: [Configure-User.ps1](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/windows/scripts/build/Configure-User.ps1).
 - S6: [Configure-ImageDataFile.ps1](https://github.com/actions/runner-images/blob/ee1ff4569e381a9649b400338bdc8ceb7e18a80e/images/windows/scripts/build/Configure-ImageDataFile.ps1).

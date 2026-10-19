@@ -1,8 +1,8 @@
 # Inputs for Ubuntu 24.04 x64
 
 What the pinned provisioning scripts fetch, what pins them, what cannot be reproduced locally, and what
-has drifted. Checked on 2026-10-19 against `actions/runner-images` commit
-`ee1ff4569e381a9649b400338bdc8ceb7e18a80e`. Nothing here was downloaded or executed except plain text
+has drifted. Checked on 2026-10-19 against the build commit `7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe`
+(template and toolset in `sources/build-commit-7e7dc1b/`; the scripts are identical at the candidate `ee1ff4569e381a9649b400338bdc8ceb7e18a80e`). Nothing here was downloaded or executed except plain text
 metadata (manifests, API JSON). P03 turns this list into verified artifacts.
 
 ## What upstream pins and what it does not
@@ -168,7 +168,7 @@ Each item is a blocker, not an omission (PLAN, "Baselines"). None is resolved by
 |---|---|
 | The hosted fleet has a newer image release than the pin: `ubuntu24/20261018.339` (2026-10-19) versus pinned `20261012.334` | GitHub releases API |
 | `runner-images` `main` is `82d1b86ad393865982dd29535cb8d3adbc68e41e` (2026-10-19), ahead of the pin | commits API |
-| Pin toolset (Python 3.11 to 3.15) does not match the Readme (3.10 to 3.14) | `README.md` "Pin versus build commit" |
+| Pin toolset (Python 3.11 to 3.15) does not match the Readme (3.10 to 3.14) | `README.md` "Pin drift, resolved by pinning to the build commit" |
 | Cached tool versions in the Readme are still resolvable in the upstream manifests: Python 3.10.22, 3.11.17, 3.12.15, 3.13.16, 3.14.8 (linux x64), Node.js 22.23.3 and 24.21.0, Go 1.24.13, 1.25.14 and 1.26.9 | `versions-manifest.json` of `actions/python-versions`, `actions/node-versions`, `actions/go-versions`, read 2026-10-19 |
 | Newer cached versions already exist upstream: Node.js 24.22.0 (Readme has 24.21.0), Python 3.15.0 (not in Readme). A rebuild from the pin would not reproduce the Readme. | same manifests |
 | `ubuntu-latest` is announced to move to Ubuntu 26.04 in November 2026 | Readme announcements |
