@@ -24,8 +24,12 @@ done
 [ -n "$OUT" ] || { echo "linux.sh: --out FILE is required" >&2; exit 2; }
 
 # --- JSON helpers (no jq/python dependency) ----------------------------------------------------
-js() { # JSON string of $1
-  printf '"%s"' "$(printf '%s' "$1" | tr -d '\000-\010\013\014\016-\037' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' -e 's/\r/\\r/g' | sed -e ':a;N;$!ba;s/\n/\\n/g')"
+export LC_ALL=C  # byte semantics for the escaping below and C-order sorting everywhere
+js() { # JSON string of $1; pure bash, no subshell and no external process (matters on slow-fork hosts)
+  local s="$1"
+  s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//$'\t'/\\t}"; s="${s//$'\r'/\\r}"; s="${s//$'\n'/\\n}"
+  s="${s//[$'\001'-$'\010'$'\013'$'\014'$'\016'-$'\037']/}"
+  printf '"%s"' "$s"
 }
 jv() { if [ -z "${1:-}" ]; then printf 'null'; else js "$1"; fi; }            # string or null
 jn() { if [[ "${1:-}" =~ ^[0-9]+$ ]]; then printf '%s' "$1"; elif [ -z "${1:-}" ]; then printf 'null'; else js "$1"; fi; }
@@ -96,10 +100,14 @@ emit() {
   printf '"run_identity":{"source_sha":%s,"workflow_sha":%s,"action_shas":%s},\n' \
     "$(jv "${GITHUB_SHA:-}")" "$(jv "${GITHUB_WORKFLOW_SHA:-}")" "$(printf '%s' "${AAP_PARITY_ACTION_SHAS:-}" | tr ',' '\n' | sed 's/^ *//;s/ *$//' | sort | jarr)"
 
-  local sudo_ok=0
-  if [ $SAFE -eq 0 ] && command -v sudo >/dev/null 2>&1 && timeout 5 sudo -n true >/dev/null 2>&1; then sudo_ok=1; fi
+  # --safe never calls sudo, so the answer is unknown (null), not false
+  local sudo_json=null
+  if [ $SAFE -eq 0 ]; then
+    sudo_json="$(jb 0)"
+    if command -v sudo >/dev/null 2>&1 && timeout 5 sudo -n true >/dev/null 2>&1; then sudo_json="$(jb 1)"; fi
+  fi
   printf '"user":{"name":%s,"uid":%s,"gid":%s,"groups":%s,"passwordless_sudo":%s},\n' \
-    "$(jv "$(id -un)")" "$(jn "$(id -u)")" "$(jn "$(id -g)")" "$(id -Gn | tr ' ' '\n' | sort | jarr)" "$(jb $sudo_ok)"
+    "$(jv "$(id -un)")" "$(jn "$(id -u)")" "$(jn "$(id -g)")" "$(id -Gn | tr ' ' '\n' | sort | jarr)" "$sudo_json"
 
   printf '"env":{'
   local first=1 n v

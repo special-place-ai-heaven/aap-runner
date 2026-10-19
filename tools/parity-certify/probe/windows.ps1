@@ -95,10 +95,19 @@ $pw = Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($pw) { $shells.pwsh = Try-Run { (& $pw.Source -NoProfile -Command '$PSVersionTable.PSVersion.ToString()') | Select-Object -First 1 } }
 $wp = Get-Command powershell.exe -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($wp) { $shells.powershell = Try-Run { (& $wp.Source -NoProfile -Command '$PSVersionTable.PSVersion.ToString()') | Select-Object -First 1 } }
-$bash = Get-Command bash -ErrorAction SilentlyContinue | Select-Object -First 1
+$bash = Get-Command bash -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($bash) {
-    $bv = Try-Run { & $bash.Source --version 2>$null | Select-Object -First 1 }
-    if ($bv -match '^GNU bash, version (\S+)') { $shells.bash = $Matches[1] }
+    # System32\bash.exe and the WindowsApps alias are the WSL launcher: running it would start WSL. Never run it;
+    # record a marker so the comparison fails honestly instead of passing on an absent value.
+    $bsrc = [string]$bash.Source
+    $sysRoot = $env:SystemRoot
+    if (($sysRoot -and $bsrc.StartsWith($sysRoot, [StringComparison]::OrdinalIgnoreCase)) -or ($bsrc -like '*\WindowsApps\*')) {
+        $shells.bash = '<not-run:wsl-launcher>'
+    }
+    else {
+        $bv = Try-Run { & $bsrc --version 2>$null | Select-Object -First 1 }
+        if ($bv -match '^GNU bash, version (\S+)') { $shells.bash = $Matches[1] }
+    }
 }
 $inv.shells = $shells
 $tools = [ordered]@{}

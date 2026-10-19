@@ -1,12 +1,23 @@
 {
   "schema": 1,
-  "note": "Only differences named here may be reported as documented-rig-difference. Patterns are fnmatch against <section>.<key>. Extend only with an owner-approved reason; PLAN.md 'Outcome' lists the permitted classes.",
+  "note": "Only differences named here may be reported as documented-rig-difference. Patterns are fnmatch against <section>.<key>. Keys are enumerated on purpose: no section wildcards. Extend only with an owner-approved reason. image.kernel, limits.read_ahead_kb and limits.mount_options are deliberately NOT here (see README).",
   "entries": [
-    {"match": "infra.*", "reason": "Azure identity/metadata (provisioner build, region, cloud, worker id) and hostname are hosted-only identifiers"},
-    {"match": "hardware.*", "reason": "resource caps (CPU/RAM/disk budgets) and hardware speed are rig properties, never correctness"},
+    {"match": "image.runner_environment", "reason": "hosted vs self-hosted is the definition of the rig difference (RUNNER_ENVIRONMENT github-hosted vs self-hosted)"},
+    {"match": "infra.provisioner_version", "reason": "Azure hosted-compute provisioner build is hosted-only metadata"},
+    {"match": "infra.provisioner_commit", "reason": "Azure hosted-compute provisioner build is hosted-only metadata"},
+    {"match": "infra.region", "reason": "Azure region is hosted-only metadata"},
+    {"match": "infra.cloud", "reason": "Azure cloud identity is hosted-only metadata"},
+    {"match": "infra.worker_id", "reason": "per-job worker id is hosted-only metadata"},
+    {"match": "infra.hostname", "reason": "VM host name differs per machine"},
+    {"match": "hardware.logical_processors", "reason": "resource cap: AAP admits guests under CPU budgets, not hosted-runner sizes"},
+    {"match": "hardware.memory_bytes", "reason": "resource cap: AAP admits guests under RAM budgets, not hosted-runner sizes"},
+    {"match": "hardware.swap_bytes", "reason": "resource cap: swap follows the guest RAM budget"},
     {"match": "env.ZCCACHE_*", "reason": "zccache is an AAP-only compile cache; it may change performance, never correctness"},
     {"match": "tools.zccache*", "reason": "zccache is an AAP-only compile cache"},
     {"match": "command_paths.zccache*", "reason": "zccache is an AAP-only compile cache"},
     {"match": "path.*zccache*", "reason": "zccache is an AAP-only compile cache"}
+  ],
+  "floors": [
+    {"match": "hardware.root_disk_free_bytes", "reason": "free disk may exceed the hosted runner's but must not fall below it"}
   ]
 }
