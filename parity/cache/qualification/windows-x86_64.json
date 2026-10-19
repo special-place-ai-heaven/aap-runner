@@ -1,0 +1,206 @@
+{
+  "schema": 1,
+  "zccache": {
+    "version": "1.15.6",
+    "commit": "15ec9537af0d219e07b72ce2b3f97d5f68d72b5e",
+    "archive": "zccache-v1.15.6-x86_64-pc-windows-msvc.zip",
+    "archive_sha256": "a9e2b079946d00757a56fea3dacd8a47f9cb4bcbfe8c427ffd719ced59fd949b",
+    "binary_sha256": "41de068f3024a1bcbfea8ad488455c648ee07903e09e9fca4d663436789d0731"
+  },
+  "platform": "windows-x86_64",
+  "matrix_revision": 1,
+  "rows": [
+    {
+      "compiler": "rustc",
+      "compiler_version": "1.99.0",
+      "invocation": "rustc-wrapper",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/rustc-1.99.0-rustc-wrapper.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L15 yes"
+    },
+    {
+      "compiler": "rustc",
+      "compiler_version": "1.99.0",
+      "invocation": "link",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/rustc-1.99.0-link.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L15 yes"
+    },
+    {
+      "compiler": "rustc",
+      "compiler_version": "1.99.0",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/rustc-1.99.0-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L15 yes"
+    },
+    {
+      "compiler": "rustc",
+      "compiler_version": "1.99.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/rustc-1.99.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L15 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "20.1.8",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "20.1.8",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "20.1.8",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "20.1.8",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "20.1.8",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "20.1.8",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "20.1.8",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-compile-pch.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "20.1.8",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "20.1.8",
+      "invocation": "depfile",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-depfile.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "20.1.8",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-20.1.8-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes"
+    },
+    {
+      "compiler": "clang-cl",
+      "compiler_version": "20.1.8",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-cl-20.1.8-compile-object.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L19 clang-cl via MSVC-style args"
+    },
+    {
+      "compiler": "clang-cl",
+      "compiler_version": "20.1.8",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-cl-20.1.8-response-file.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L19 clang-cl via MSVC-style args"
+    },
+    {
+      "compiler": "clang-cl",
+      "compiler_version": "20.1.8",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-cl-20.1.8-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L19 clang-cl via MSVC-style args"
+    },
+    {
+      "compiler": "clang-cl",
+      "compiler_version": "20.1.8",
+      "invocation": "path-with-spaces",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/clang-cl-20.1.8-path-with-spaces.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L19 clang-cl via MSVC-style args"
+    },
+    {
+      "compiler": "cl",
+      "compiler_version": "VS 18.10.12224.181, VC.Tools.x86.x64 18.10.12020.329",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/cl-VS-18.10.12224.181-VC.Tools.x86.x64-18.10.12020.329-compile-object.json",
+      "reason": "partial per upstream matrix - direct-only until proven; FEATURE-MATRIX L19 partial"
+    },
+    {
+      "compiler": "cl",
+      "compiler_version": "VS 18.10.12224.181, VC.Tools.x86.x64 18.10.12020.329",
+      "invocation": "compile-pch",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/cl-VS-18.10.12224.181-VC.Tools.x86.x64-18.10.12020.329-compile-pch.json",
+      "reason": "partial per upstream matrix - direct-only until proven; FEATURE-MATRIX L19 partial"
+    },
+    {
+      "compiler": "cl",
+      "compiler_version": "VS 18.10.12224.181, VC.Tools.x86.x64 18.10.12020.329",
+      "invocation": "response-file",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/cl-VS-18.10.12224.181-VC.Tools.x86.x64-18.10.12020.329-response-file.json",
+      "reason": "partial per upstream matrix - direct-only until proven; FEATURE-MATRIX L19 partial"
+    },
+    {
+      "compiler": "cl",
+      "compiler_version": "VS 18.10.12224.181, VC.Tools.x86.x64 18.10.12020.329",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/cl-VS-18.10.12224.181-VC.Tools.x86.x64-18.10.12020.329-debug-pdb.json",
+      "reason": "partial per upstream matrix - direct-only until proven; FEATURE-MATRIX L19 partial"
+    },
+    {
+      "compiler": "link",
+      "compiler_version": "VS 18.10.12224.181, VC.Tools.x86.x64 18.10.12020.329",
+      "invocation": "link",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/link-VS-18.10.12224.181-VC.Tools.x86.x64-18.10.12020.329-link.json",
+      "reason": "partial per upstream matrix - direct-only until proven; FEATURE-MATRIX L19 partial"
+    },
+    {
+      "compiler": "lld-link",
+      "compiler_version": "20.1.8",
+      "invocation": "link",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/windows-x86_64/lld-link-20.1.8-link.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L14 link caching yes"
+    }
+  ]
+}

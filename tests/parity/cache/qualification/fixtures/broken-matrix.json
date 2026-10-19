@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "zccache": {
+    "version": "1.15.6",
+    "commit": "15ec9537af0d219e07b72ce2b3f97d5f68d72b5e",
+    "archive": "zccache-v1.15.6-x86_64-pc-windows-msvc.zip",
+    "archive_sha256": "a9e2b079946d00757a56fea3dacd8a47f9cb4bcbfe8c427ffd719ced59fd949b",
+    "binary_sha256": "41de068f3024a1bcbfea8ad488455c648ee07903e09e9fca4d663436789d0731"
+  },
+  "platform": "windows-x86_64",
+  "matrix_revision": 1,
+  "rows": [
+    {
+      "compiler": "cl",
+      "compiler_version": "VS 18.10.12224.181, VC.Tools.x86.x64 18.10.12020.329",
+      "invocation": "compile-object",
+      "mode": "qualified",
+      "evidence_ref": null,
+      "reason": "broken on purpose: qualified without evidence"
+    }
+  ]
+}
