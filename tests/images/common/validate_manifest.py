@@ -11,6 +11,7 @@ import sys
 
 
 def main():
+    sys.dont_write_bytecode = True  # do not litter parity/contracts with __pycache__
     validator, schema_path, manifest_path = sys.argv[1:4]
     spec = importlib.util.spec_from_file_location("contract_validate", validator)
     mod = importlib.util.module_from_spec(spec)
