@@ -37,26 +37,44 @@ P16 removes it. No zccache root is ever trimmed by the manager or by any script 
    - bound the journal and log files, by rotation if zccache offers it (**to confirm in lab**,
      the README documents none) or by the guest's own disposable lifetime;
    - report artifact, metadata, log and temp bytes separately in sanitized telemetry.
-4. **One root per trust namespace.** Default is one root per repository. Each root has its own
-   daemon, endpoint, artifacts and indexes, because `ZCCACHE_CACHE_DIR` isolates all of them
-   (R 422-437). `ZCCACHE_ENDPOINT` must not be set, since that would join two roots to one daemon.
-   The qualification harness removes it, with every other inherited `ZCCACHE_*` variable.
-   `ZCCACHE_DAEMON_NAMESPACE` or `ZCCACHE_DAEMON_STATE_DIR` (R 464-489) may separate daemon
-   identities. They never replace separate roots across trust boundaries.
-5. **No cross-trust or cross-job mutable sharing.** `ZCCACHE_PATH_REMAP=auto` cross-worktree
-   sharing (FM 64-67) stays off between trust namespaces. Inside one namespace it needs three
-   things first: a lab concurrency run, a poisoning run, and a direct-equivalence run.
+4. **One root per trust namespace.** A trust namespace is the repository plus the trust class of
+   the ref that runs the job. PR branches are one class and the default branch is another, so
+   repository alone is not enough. A root may be shared only among jobs whose writers are at least
+   as trusted as every reader. A PR job therefore never writes a root that a default-branch build
+   reads. The contract's "default per repository" (cache-qualification.md rule 6) is too coarse on
+   its own, so P13 also splits by ref trust class. P02 should align the contract wording. Each root
+   has its own daemon, endpoint, artifacts and indexes,
+   because `ZCCACHE_CACHE_DIR` isolates all of them (R 422-437). `ZCCACHE_ENDPOINT` must not be
+   set, since that would join two roots to one daemon. The qualification harness removes it,
+   along with every other inherited `ZCCACHE_*` variable. `ZCCACHE_DAEMON_NAMESPACE` or
+   `ZCCACHE_DAEMON_STATE_DIR` (R 464-489) may separate daemon identities. They never replace
+   separate roots across trust boundaries.
+5. **The poison step qualifies corruption handling only.** A passing poison step shows that a
+   corrupted store entry is looked up and not served. It does not show that sharing a root is
+   safe. A writer can store a well-formed but malicious entry that no integrity check rejects, and
+   upstream does not claim to prove cache integrity (R 1123). Cross-trust sharing of a mutable
+   root stays off whatever the poison results are, and cross-job sharing follows the
+   writer-trust rule in requirement 4. `ZCCACHE_PATH_REMAP=auto` cross-worktree sharing
+   (FM 64-67) stays off between trust namespaces. Inside one namespace it needs three runs
+   first: a lab concurrency run, a poisoning run and a direct-equivalence run.
    `ZCCACHE_PATH_REMAP=auto` injects `-ffile-prefix-map` into C/C++ invocations and
-   `--remap-path-prefix` into rustc invocations (FM 65-66). The compiler then no longer runs
-   the command the build asked for. Debug info and diagnostics name the canonical path, not
-   the worktree, so the equivalence run compares those outputs with a direct build of the same
-   tree. The harness relocated check is one example.
-6. **Copy delivery until poisoning is proven.** Set `ZCCACHE_MODE=COPY` (R 548-557). Do not use
-   `AUTO`, `LINK` or `REFLINK_OR_LINK_OR_COPY`. `AUTO` hardlinks C/C++ outputs, and the
-   hardlink poisoning prevention (FM 50-51, 110) is an upstream claim, not P04 evidence.
-   Hardlink materialisation needs its own lab record, using the harness poison step with a
-   hardlink mode, and an explicit matrix revision. Reflink may be enabled per filesystem after the
-   same proof.
+   `--remap-path-prefix` into rustc invocations (FM 65-66). The compiler then no longer runs the
+   command the build asked for. Debug info and diagnostics name the canonical path, not the
+   worktree, so the equivalence run compares those outputs with a direct build of the same tree.
+   The harness relocated check is one example.
+6. **Copy delivery until hardlink delivery is proven.** Set `ZCCACHE_MODE=COPY` (R 548-557). Do not
+   use `AUTO`, `LINK` or `REFLINK_OR_LINK_OR_COPY`. `AUTO` hardlinks C/C++ outputs, and the
+   hardlink poisoning prevention (FM 50-51, 110) is an upstream claim, not P04 evidence. The
+   harness has no hardlink mode: it always runs `COPY`. Its store overwrite does not test the
+   real hardlink hazard, which is a build step writing into an output that shares its inode with
+   the cache. Unlocking a hardlink mode therefore needs a separate lab step, recorded with an
+   explicit matrix revision:
+   1. Build warm in that mode until there is a hit.
+   2. Write into the delivered output file in place, as a build tool appending to it would.
+   3. Rebuild through the cache into a fresh output directory.
+   4. Require artifacts equal to the uncached build.
+
+   Reflink may be enabled per filesystem after the same proof.
 7. **Daemon failure is not a build failure.** If the daemon is missing, crashes or rejects an
    invocation, the build runs the direct compiler for that invocation, and the cache state is
    `degraded` in `status.v5.json` (contract rule 7). `ZCCACHE_DISABLE=1` is the documented kill
@@ -66,3 +84,11 @@ P16 removes it. No zccache root is ever trimmed by the manager or by any script 
    procedure inside the guest. `zccache clear` exists (R 411-412). Its effect on metadata, log and
    journal bytes is **to confirm in lab**. Docker volumes and the live legacy cache are never
    purged by P13 or P16 (ledger P16).
+9. **No credentials in the daemon's environment.** The daemon inherits the environment of the
+   process that starts it. Upstream writes crash dumps under the root's `crashes/` folder
+   (R 433-434), and those dumps can hold process memory and environment. So P13 starts each root's
+   daemon before Actions starts, from an environment with no runner token, JIT config, job token
+   or key. A job step must never be the one that spawns it. Crash dumps and journals stay inside
+   the disposable guest and are reported only as counts and sanitized telemetry. The
+   qualification harness applies the same rule: it refuses to run with a credential-shaped
+   variable in its environment.

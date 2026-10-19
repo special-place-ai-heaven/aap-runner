@@ -48,11 +48,29 @@ binary (`f97ae874...cb18cc`, 27,876,808 bytes). The comparison used the hash in
    provenance attestation asset, so there is no signature to verify. Skip the first line of
    `SHA256SUMS`, which hashes the file itself as the empty string (see zccache.md).
 3. Unpack into a fresh directory inside the lab VM. Reject members with absolute paths, `..`
-   segments or links. Hash the binary and compare it with the member table. The harnesses repeat
-   this check and exit 4 on a mismatch.
+   segments or links. Hash the binary and compare it with the member table. The harnesses copy
+   `zccache` and `zccache-fp` into a private directory, check the copies again and run only them.
+   They exit 4 on a mismatch.
 4. Execute only inside the authorized lab VM (gate D2), never on the owner's host or the live
-   distro. The harnesses refuse to run without `AAP_ZCCACHE_LAB=1` or when live-install markers
-   are present.
+   distro. The harnesses refuse to run without `AAP_ZCCACHE_LAB=1`, when live-install markers
+   are present, or when a credential-shaped variable is in the environment.
+
+## Forbidden install and restore paths
+
+These never supply a qualification binary or cache content:
+
+- `install.sh`, `install.ps1`, `releases/latest`, PyPI wheels and crates.io builds. They are not
+  the pinned archive.
+- The upstream GitHub Action `zackees/zccache` at any ref, including `@main`. That covers its
+  compilation-cache and target-snapshot restores through the GitHub Actions cache, and its
+  `zccache warm` backfill.
+
+Upstream says plainly that warmed artifacts are trusted rather than verified (README 1070). It
+also says that `zccache warm` does not checksum every restored object and that the action "does
+not try to prove cache integrity before building" (README 1123, both at the pinned commit). A
+restored cache is foreign content written by another job, so it falls under the trust rules in
+[retention.md](retention.md). A floating `@main` ref is not pinned at all. Product jobs reach
+zccache only through the P13 guest integration.
 
 ## The owner's benchmark binary is not qualification evidence
 

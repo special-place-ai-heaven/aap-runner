@@ -4,14 +4,20 @@
 def same($a; $b): $a != null and $b != null and $a.artifacts == $b.artifacts;
 def hits($r): ($r.journal.hit // 0) + ($r.journal.link_hit // 0);
 def looked_up($r): $r.journal != null and ([$r.journal[]?] | add // 0) >= 1;
-# A corrupted entry was looked up, not served, and the build still equals the uncached build.
+# A corrupted entry was looked up, not served (zero hits), and the build still equals uncached.
 def rejected($r; $u):
   $r != null and ($r.corrupted_files // 0) >= 1 and $r.prime_exit == $u.exit
   and $r.exit == $u.exit and same($u; $r) and looked_up($r) and hits($r) == 0;
+# The version as a whole dotted number, e.g. 18.1.3 but not 18.1.30.
+def names_version($text; $v):
+  ($text // "") | test("(^|[^0-9.])" + ($v | gsub("[.]"; "[.]")) + "($|[^0-9.]|[.]($|[^0-9]))");
+def harness_vars: ["ZCCACHE_MODE", "ZCCACHE_CACHE_DIR", "ZCCACHE_SESSION_ID"];
 
 .meta as $m | .runs as $r | .errors as $e | $r.uncached as $u
+| ($m.tool_versions // {}) as $t
 | ({
     ok_exit_zero: ($u.exit == 0),
+    ok_runs_produce_primary: ([$r[] | .primary_present == true] | all),
     exit_codes_equal: ($r.cold.exit == $u.exit and $r.warm.exit == $u.exit),
     artifacts_equal: (same($u; $r.cold) and same($u; $r.warm)),
     cold_has_no_hits: ($r.cold.journal != null and hits($r.cold) == 0),
@@ -21,8 +27,16 @@ def rejected($r; $u):
       and $e.cold.exit == $e.uncached.exit and $e.warm.exit == $e.uncached.exit
       and ([$e.uncached, $e.cold, $e.warm] | all(.primary_present == false))),
     poisoned_same_size_rejected: rejected($r.poisoned_same_size; $u),
-    poisoned_marker_rejected: rejected($r.poisoned_marker; $u)
+    poisoned_marker_rejected: rejected($r.poisoned_marker; $u),
+    zccache_env_clean: ([$r[], $e[] | .zccache_env | arrays | .[]] | all(. as $n | harness_vars | index([$n]) != null)),
+    daemons_pinned: (($m.daemons | type) == "array" and ($m.daemons | length) >= 1
+      and ($m.daemons | all(.in_private_bin == true
+        and (.sha256 == $t.zccache_sha256 or .sha256 == $t["zccache-fp_sha256"])))),
+    no_crash_dumps: (($m.crash_dumps | type) == "object" and ([$m.crash_dumps[]] | add // 0) == 0)
   }
+  + (if ($m.compiler | IN("cl", "link")) then {} else {
+      compiler_version_observed: names_version($t.compiler; $m.compiler_version)
+    } end)
   + (if $m.invocation == "debug-pdb" then {
       relocated_matches_direct: ($r.relocated_direct != null and $r.relocated_direct.exit == 0
         and $r.relocated.exit == $r.relocated_direct.exit and same($r.relocated_direct; $r.relocated))
@@ -34,11 +48,15 @@ def rejected($r; $u):
     platform: $m.platform,
     command: $m.command,
     tool_versions: $m.tool_versions,
+    os: $m.os,
     env: $m.env,
     started_at: $m.started_at,
     ended_at: $m.ended_at,
     runs: $r,
     error_runs: $e,
+    daemons: $m.daemons,
+    daemons_stopped: $m.daemons_stopped,
+    crash_dumps: $m.crash_dumps,
     checks: $c,
     harness_pass: ($failed | length == 0),
     lab_gates: {concurrency: null, daemon_restart: null, unsupported_invocations: null},

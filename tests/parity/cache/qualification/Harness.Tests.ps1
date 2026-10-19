@@ -1,6 +1,6 @@
 # P04 Windows qualification harness: lab gate, argument and banner checks, command table, journal,
-# environment hygiene, cache corruption and the shared record.jq verdict. Nothing here runs zccache
-# or a compiler. Needs jq on PATH. Pester 5, Windows PowerShell 5.1 and PowerShell 7.
+# environment hygiene, cache corruption, daemon bookkeeping and the shared record.jq verdict.
+# Nothing here runs zccache or a compiler. Needs jq on PATH. Pester 5, Windows PowerShell 5.1 and 7.
 
 BeforeAll {
     $script:Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
@@ -33,11 +33,12 @@ BeforeAll {
     }
     function New-Journal([int]$Hit = 0, [int]$Miss = 0) { [ordered]@{ hit = $Hit; miss = $Miss; error = 0; link_hit = 0; link_miss = 0; other = 0 } }
     function New-Entry([int]$Exit, $Artifacts, $Journal) {
-        [ordered]@{ exit = $Exit; artifacts = $Artifacts; primary_present = ($Exit -eq 0); argv = @('x'); cache_dir = $null; journal = $Journal }
+        $env = if ($null -ne $Journal) { @('ZCCACHE_CACHE_DIR', 'ZCCACHE_MODE', 'ZCCACHE_SESSION_ID') } else { @('ZCCACHE_MODE') }
+        [ordered]@{ exit = $Exit; artifacts = $Artifacts; primary_present = ($Exit -eq 0); argv = @('x'); cache_dir = $null; zccache_env = $env; journal = $Journal }
     }
     function New-Poisoned($Artifacts) { $p = New-Entry 0 $Artifacts (New-Journal 0 1); $p.prime_exit = 0; $p.corrupted_files = 2; $p }
     # A record.jq input in which every harness check holds.
-    function New-PassingInput([string]$Invocation = 'compile-object') {
+    function New-PassingInput([string]$Invocation = 'compile-object', [string]$Compiler = 'clang-cl') {
         $a = [ordered]@{ 'hello.obj' = ('a' * 64) }
         $runs = [ordered]@{ uncached = (New-Entry 0 $a $null); cold = (New-Entry 0 $a (New-Journal 0 1)); warm = (New-Entry 0 $a (New-Journal 1 0)) }
         if ($Invocation -eq 'debug-pdb') {
@@ -50,17 +51,21 @@ BeforeAll {
         $none = [ordered]@{}
         $errs = [ordered]@{ uncached = (New-Entry 2 $none $null); cold = (New-Entry 2 $none (New-Journal 0 1)); warm = (New-Entry 2 $none (New-Journal 0 1)) }
         $meta = [ordered]@{
-            platform = 'windows-x86_64'; command = 'qualify.ps1 -Compiler clang-cl'; tool_versions = [ordered]@{ compiler = 'clang version 20.1.8' }
+            platform = 'windows-x86_64'; command = 'qualify.ps1 -Compiler clang-cl'
+            tool_versions = [ordered]@{ compiler = 'clang version 20.1.8'; zccache_sha256 = $ZqBinarySha256; 'zccache-fp_sha256' = $ZqFpSha256 }
+            os = [ordered]@{ os_version = 'Microsoft Windows Server 2025 10.0.26100.6584'; image_os = 'win25'; image_version = '20261007.264.1' }
             env = [ordered]@{ set = [ordered]@{ ZCCACHE_MODE = 'COPY' }; removed = @() }
+            daemons = @([ordered]@{ pid = 42; exe = 'C:\w\bin\zccache.exe'; in_private_bin = $true; sha256 = $ZqBinarySha256 })
+            daemons_stopped = $true; crash_dumps = [ordered]@{ 'cache-ok' = 0; 'cache-error' = 0 }
             started_at = '2026-10-19T00:00:00Z'; ended_at = '2026-10-19T00:01:00Z'
-            compiler = 'clang-cl'; compiler_version = '20.1.8'; invocation = $Invocation; evidence_ref = $script:Ref
+            compiler = $Compiler; compiler_version = '20.1.8'; invocation = $Invocation; evidence_ref = $script:Ref
         }
         [ordered]@{ meta = $meta; runs = $runs; errors = $errs }
     }
     function Get-Record($In) { New-ZqRecord $In $script:Jq $script:Tmp | ConvertFrom-Json }
 }
 
-Describe 'Lab gate (the harness never runs on the live pool host)' {
+Describe 'Lab gate (the harness never runs on the live pool host or with credentials)' {
     It 'refuses with exit 3 when AAP_ZCCACHE_LAB is not set' {
         $r = Invoke-Harness @('-Compiler', 'cl') $null
         $r.Code | Should -Be 3
@@ -79,26 +84,33 @@ Describe 'Lab gate (the harness never runs on the live pool host)' {
     It 'checks the gate before any argument, so a bare call never reaches the build' {
         (Invoke-Harness @() $null).Code | Should -Be 3
     }
-    It 'always probes the real install, data and WSL roots; an extra root only adds paths' {
+    It 'always probes the real install, data and WSL roots, including ProgramW6432; an extra root only adds paths' {
         $p = Get-ZqMarkerPath @('X:\fake')
         $p | Should -Contain "$env:ProgramData\aap-runner"
         $p | Should -Contain "$env:ProgramFiles\aap-runner"
         $p | Should -Contain "$env:SystemDrive\wsl"
+        if ($env:ProgramW6432) { $p | Should -Contain "$env:ProgramW6432\aap-runner" }
         $p | Should -Contain 'X:\fake\ProgramData\aap-runner'
         $p | Should -Contain 'X:\fake\Program Files\aap-runner'
         $p | Should -Contain 'X:\fake\wsl'
     }
-    It 'Assert-ZqLab passes only with the opt-in set and no marker present' {
+    It 'finds credential-shaped variable names and leaves ordinary ones alone' {
+        $names = @('GITHUB_TOKEN', 'ACTIONS_RUNNER_INPUT_JITCONFIG', 'TYPESAFE_API_KEY', 'AGENTMEMORY_SECRET', 'DB_PASSWORD', 'AWS_SECRET_ACCESS_KEY',
+            'SSH_PRIVATE_KEY', 'GH_PAT_KEY', 'Path', 'KEYBOARD_LAYOUT', 'ProgramFiles', 'INCLUDE', 'LIB', 'ImageVersion', 'PSModulePath')
+        (Find-ZqSecretEnv $names) -join ',' | Should -Be 'ACTIONS_RUNNER_INPUT_JITCONFIG,AGENTMEMORY_SECRET,AWS_SECRET_ACCESS_KEY,DB_PASSWORD,GH_PAT_KEY,GITHUB_TOKEN,SSH_PRIVATE_KEY,TYPESAFE_API_KEY'
+    }
+    It 'Assert-ZqLab passes only with the opt-in, no marker and no credential-shaped variable' {
         $root = New-TempDir
         $prev = $env:AAP_ZCCACHE_LAB
         try {
             $candidates = @((Join-Path $root 'ProgramData\aap-runner'), (Join-Path $root 'wsl'))
             Remove-Item Env:\AAP_ZCCACHE_LAB -ErrorAction SilentlyContinue
-            { Assert-ZqLab $candidates } | Should -Throw 'REFUSED: AAP_ZCCACHE_LAB=1*'
+            { Assert-ZqLab $candidates @('Path') } | Should -Throw 'REFUSED: AAP_ZCCACHE_LAB=1*'
             $env:AAP_ZCCACHE_LAB = '1'
-            { Assert-ZqLab $candidates } | Should -Not -Throw
+            { Assert-ZqLab $candidates @('Path') } | Should -Not -Throw
+            { Assert-ZqLab $candidates @('Path', 'GITHUB_TOKEN') } | Should -Throw 'REFUSED: credential-shaped environment variables present (names only): GITHUB_TOKEN*'
             $null = New-Item -ItemType Directory -Path (Join-Path $root 'wsl')
-            { Assert-ZqLab $candidates } | Should -Throw 'REFUSED: live aap-runner install markers present*'
+            { Assert-ZqLab $candidates @('Path') } | Should -Throw 'REFUSED: live aap-runner install markers present*'
         } finally {
             if ($null -ne $prev) { $env:AAP_ZCCACHE_LAB = $prev } else { Remove-Item Env:\AAP_ZCCACHE_LAB -ErrorAction SilentlyContinue }
             Remove-Item -LiteralPath $root -Recurse -Force
@@ -123,9 +135,21 @@ Describe 'Argument and banner checks' {
     }
     It 'rejects a compiler or zccache path that is not a file' { { Test-With @{ Zccache = 'C:\nope\zccache.exe' } } | Should -Throw 'USAGE: *is not a file' }
     It 'rejects link rows without a prerequisite compiler' { { Test-With @{ Compiler = 'link'; Invocation = 'link' } } | Should -Throw 'USAGE: link rows need*' }
-    It 'rejects a non-empty work directory' {
+    It 'rejects a non-empty work directory and a work path that is a file' {
         $d = New-TempDir
-        try { Set-Content -LiteralPath (Join-Path $d 'f') 'x'; { Test-With @{ Work = $d } } | Should -Throw 'USAGE: -Work*' } finally { Remove-Item -LiteralPath $d -Recurse -Force }
+        try {
+            Set-Content -LiteralPath (Join-Path $d 'f') 'x'
+            { Test-With @{ Work = $d } } | Should -Throw 'USAGE: -Work must name an empty or new directory'
+            { Test-With @{ Work = (Join-Path $d 'f') } } | Should -Throw 'USAGE: -Work must name an empty or new directory'
+        } finally { Remove-Item -LiteralPath $d -Recurse -Force }
+    }
+    It 'rejects a work directory that is a junction' {
+        $d = New-TempDir
+        try {
+            $target = Join-Path $d 'target'; $null = New-Item -ItemType Directory -Path $target
+            $link = Join-Path $d 'link'; $null = New-Item -ItemType Junction -Path $link -Target $target
+            { Test-With @{ Work = $link } } | Should -Throw 'USAGE: -Work must not be a symbolic link or junction'
+        } finally { cmd /c rmdir (Join-Path $d 'link') 2>$null; Remove-Item -LiteralPath $d -Recurse -Force }
     }
     It 'accepts a non-MSVC banner that names the exact version' {
         { Test-ZqBanner 'clang-cl' '20.1.8' "clang version 20.1.8`nTarget: x86_64-pc-windows-msvc" } | Should -Not -Throw
@@ -197,7 +221,7 @@ Describe 'Command table' {
     }
 }
 
-Describe 'Journal, artifacts, environment and corruption' {
+Describe 'Journal, files, environment and corruption' {
     It 'counts journal outcomes with journal.jq and returns null without a journal' {
         $j = Join-Path $script:Tmp ('p04-' + [guid]::NewGuid().ToString('N') + '.jsonl')
         try {
@@ -207,15 +231,35 @@ Describe 'Journal, artifacts, environment and corruption' {
         } finally { Remove-Item -LiteralPath $j }
         Get-ZqJournal 'C:\nope\missing.jsonl' $script:Jq | Should -BeNullOrEmpty
     }
-    It 'hashes artifacts by relative path' {
+    It 'hashes artifacts by relative path and never follows a junction' {
         $d = New-TempDir
         try {
-            $null = New-Item -ItemType Directory -Path (Join-Path $d 'sub')
-            Set-Content -LiteralPath (Join-Path $d 'sub\a.obj') 'x' -NoNewline
-            $a = Get-ZqArtifact $d
-            @($a.Keys) | Should -Be @('sub\a.obj')
+            $outside = Join-Path $d 'outside'; $null = New-Item -ItemType Directory -Path $outside
+            Set-Content -LiteralPath (Join-Path $outside 'secret.txt') 'x' -NoNewline
+            $out = Join-Path $d 'out'; $null = New-Item -ItemType Directory -Path (Join-Path $out 'sub')
+            Set-Content -LiteralPath (Join-Path $out 'sub\a.obj') 'x' -NoNewline
+            $null = New-Item -ItemType Junction -Path (Join-Path $out 'link') -Target $outside
+            $a = Get-ZqArtifact $out
+            @($a.Keys) -join ',' | Should -Be 'sub\a.obj'
             $a['sub\a.obj'] | Should -Be '2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881'
-        } finally { Remove-Item -LiteralPath $d -Recurse -Force }
+            @(Get-ZqFiles (Join-Path $out 'link')).Count | Should -Be 0
+        } finally { cmd /c rmdir (Join-Path $d 'out\link') 2>$null; Remove-Item -LiteralPath $d -Recurse -Force }
+    }
+    It 'returns ZCCACHE_ names as an array, also for zero or one name' {
+        $saved = @(Get-ChildItem Env: | Where-Object { $_.Name -like 'ZCCACHE_*' })
+        try {
+            foreach ($s in $saved) { Remove-Item -LiteralPath "Env:\$($s.Name)" }
+            $none = Get-ZqZccacheEnvName
+            , $none | Should -BeOfType [object[]]
+            $none.Count | Should -Be 0
+            $env:ZCCACHE_MODE = 'COPY'
+            $one = Get-ZqZccacheEnvName
+            , $one | Should -BeOfType [object[]]
+            $one -join ',' | Should -Be 'ZCCACHE_MODE'
+        } finally {
+            Remove-Item Env:\ZCCACHE_MODE -ErrorAction SilentlyContinue
+            foreach ($s in $saved) { Set-Item -LiteralPath "Env:\$($s.Name)" -Value $s.Value }
+        }
     }
     It 'removes every ZCCACHE_ variable from the lab shell and reports the names' {
         $saved = @(Get-ChildItem Env: | Where-Object { $_.Name -like 'ZCCACHE_*' })
@@ -226,12 +270,14 @@ Describe 'Journal, artifacts, environment and corruption' {
             $removed | Should -Contain 'ZCCACHE_PATH_REMAP'
             @(Get-ChildItem Env: | Where-Object { $_.Name -like 'ZCCACHE_*' }).Count | Should -Be 0
             $env:AAP_ZQ_KEEP | Should -Be 'y'
+            $again = Clear-ZqEnv
+            $again.Count | Should -Be 0
         } finally {
             Remove-Item Env:\AAP_ZQ_KEEP, Env:\ZCCACHE_ENDPOINT, Env:\ZCCACHE_PATH_REMAP -ErrorAction SilentlyContinue
             foreach ($s in $saved) { Set-Item -LiteralPath "Env:\$($s.Name)" -Value $s.Value }
         }
     }
-    It 'same-size corruption keeps size, mtime and read-only state; marker corruption replaces content' {
+    It 'same-size corruption flips one byte mid-file in place, keeping length, mtime and read-only state' {
         $d = New-TempDir
         try {
             $store = Join-Path $d 'artifacts'
@@ -242,19 +288,35 @@ Describe 'Journal, artifacts, environment and corruption' {
             (Get-Item -LiteralPath $f1).IsReadOnly = $true
             $f2 = Join-Path $store 'sub\b.bin'; [IO.File]::WriteAllBytes($f2, [byte[]](7))
             $empty = Join-Path $store 'empty.bin'; [IO.File]::WriteAllBytes($empty, [byte[]]@())
+            $outside = Join-Path $d 'outside'; $null = New-Item -ItemType Directory -Path $outside
+            $victim = Join-Path $outside 'v.bin'; [IO.File]::WriteAllBytes($victim, [byte[]](9, 9))
+            $null = New-Item -ItemType Junction -Path (Join-Path $store 'link') -Target $outside
 
             Invoke-ZqCorrupt $store -SameSize | Should -Be 2
-            ([IO.File]::ReadAllBytes($f1) -join ',') | Should -Be '1,2,0'
-            ([IO.File]::ReadAllBytes($f2) -join ',') | Should -Be '8'
+            ([IO.File]::ReadAllBytes($f1) -join ',') | Should -Be '0,254,255'
+            ([IO.File]::ReadAllBytes($f2) -join ',') | Should -Be '248'
             (Get-Item -LiteralPath $f1).LastWriteTimeUtc | Should -Be $old
+            (Get-Item -LiteralPath $f1).Length | Should -Be 3
             (Get-Item -LiteralPath $f1).IsReadOnly | Should -BeTrue
             (Get-Item -LiteralPath $empty).Length | Should -Be 0
+            ([IO.File]::ReadAllBytes($victim) -join ',') | Should -Be '9,9'
 
             Invoke-ZqCorrupt $store | Should -Be 3
             [IO.File]::ReadAllText($f1) | Should -Be 'P04-POISON'
             (Get-Item -LiteralPath $f1).IsReadOnly | Should -BeTrue
+            ([IO.File]::ReadAllBytes($victim) -join ',') | Should -Be '9,9'
             Invoke-ZqCorrupt (Join-Path $d 'missing') | Should -Be 0
-        } finally { Remove-Item -LiteralPath $d -Recurse -Force }
+        } finally { cmd /c rmdir (Join-Path $d 'artifacts\link') 2>$null; Remove-Item -LiteralPath $d -Recurse -Force }
+    }
+    It 'reports the operating system and image identity as printable text' {
+        $os = Get-ZqOs
+        $os.os_version | Should -Match '^[ -~]{1,120}$'
+        @($os.Keys) -join ',' | Should -Be 'os_version,image_os,image_version'
+    }
+    It 'sees no daemon and stops nothing for a private directory that runs nothing' {
+        $bin = Join-Path $script:Tmp ('p04-bin-' + [guid]::NewGuid().ToString('N'))
+        @(Get-ZqDaemon $bin | Where-Object { $_.in_private_bin }).Count | Should -Be 0
+        Stop-ZqDaemon $bin | Should -BeTrue
     }
 }
 
@@ -263,7 +325,8 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         $r = Get-Record (New-PassingInput)
         $r.harness_pass | Should -BeTrue
         @($r.checks.PSObject.Properties | Where-Object { $_.Value -ne $true }).Count | Should -Be 0
-        @($r.checks.PSObject.Properties).Count | Should -Be 8
+        @($r.checks.PSObject.Properties.Name) -join ',' | Should -Be ('ok_exit_zero,ok_runs_produce_primary,exit_codes_equal,artifacts_equal,cold_has_no_hits,warm_has_hits,' +
+            'errors_stay_errors,poisoned_same_size_rejected,poisoned_marker_rejected,zccache_env_clean,daemons_pinned,no_crash_dumps,compiler_version_observed')
         $r.row.mode | Should -Be 'direct'
         $r.row.reason | Should -Be 'harness checks pass; lab steps 7-9 pending'
         $r.row.evidence_ref | Should -Be $script:Ref
@@ -271,6 +334,13 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         @($r.lab_gates.PSObject.Properties | Where-Object { $null -ne $_.Value }).Count | Should -Be 0
         $r.command | Should -Be 'qualify.ps1 -Compiler clang-cl'
         $r.tool_versions.compiler | Should -Be 'clang version 20.1.8'
+        $r.os.image_version | Should -Be '20261007.264.1'
+        $r.daemons_stopped | Should -BeTrue
+    }
+    It 'checks no banner for cl and link, whose matrix version is the VS version' {
+        $r = Get-Record (New-PassingInput 'compile-object' 'cl')
+        $r.harness_pass | Should -BeTrue
+        @($r.checks.PSObject.Properties.Name) | Should -Not -Contain 'compiler_version_observed'
     }
     It 'adds the relocated comp_dir check for debug-pdb' {
         $in = New-PassingInput 'debug-pdb'
@@ -291,12 +361,22 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         @{ Name = 'an error run leaves its artifact'; Check = 'errors_stay_errors'; Break = { param($i) $i.errors.cold.primary_present = $true } }
         @{ Name = 'the warm artifact differs'; Check = 'artifacts_equal'; Break = { param($i) $i.runs.warm.artifacts = [ordered]@{ 'hello.obj' = ('b' * 64) } } }
         @{ Name = 'the cold exit code differs'; Check = 'exit_codes_equal'; Break = { param($i) $i.runs.cold.exit = 1 } }
+        @{ Name = 'two empty output directories compare equal but nothing was built'; Check = 'ok_runs_produce_primary'; Break = {
+                param($i) foreach ($k in @('uncached', 'cold', 'warm')) { $i.runs[$k].artifacts = [ordered]@{}; $i.runs[$k].primary_present = $false } } }
         @{ Name = 'a same-size poisoned entry is served as a hit'; Check = 'poisoned_same_size_rejected'; Break = { param($i) $i.runs.poisoned_same_size.journal.hit = 1 } }
+        @{ Name = 'a poisoned link entry is served as a link hit'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.poisoned_marker.journal.link_hit = 1 } }
         @{ Name = 'a poisoned build differs from uncached'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.poisoned_marker.artifacts = [ordered]@{ 'hello.obj' = ('c' * 64) } } }
         @{ Name = 'the poisoned build never looked the entry up'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.poisoned_marker.journal.miss = 0 } }
         @{ Name = 'nothing in the store was corrupted'; Check = 'poisoned_same_size_rejected'; Break = { param($i) $i.runs.poisoned_same_size.corrupted_files = 0 } }
         @{ Name = 'the priming build failed'; Check = 'poisoned_same_size_rejected'; Break = { param($i) $i.runs.poisoned_same_size.prime_exit = 1 } }
         @{ Name = 'the poison step did not run'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.Remove('poisoned_marker') } }
+        @{ Name = 'a lab-shell ZCCACHE_ variable reached a build'; Check = 'zccache_env_clean'; Break = { param($i) $i.runs.warm.zccache_env = @('ZCCACHE_ENDPOINT', 'ZCCACHE_MODE') } }
+        @{ Name = 'no daemon was observed'; Check = 'daemons_pinned'; Break = { param($i) $i.meta.daemons = @() } }
+        @{ Name = 'a daemon runs from outside the private copy'; Check = 'daemons_pinned'; Break = { param($i) $i.meta.daemons[0].in_private_bin = $false } }
+        @{ Name = 'a daemon runs another binary'; Check = 'daemons_pinned'; Break = { param($i) $i.meta.daemons[0].sha256 = ('0' * 64) } }
+        @{ Name = 'a daemon wrote a crash dump'; Check = 'no_crash_dumps'; Break = { param($i) $i.meta.crash_dumps['cache-ok'] = 1 } }
+        @{ Name = 'crash dumps were not counted'; Check = 'no_crash_dumps'; Break = { param($i) $i.meta.crash_dumps = $null } }
+        @{ Name = 'the compiler banner names another version'; Check = 'compiler_version_observed'; Break = { param($i) $i.meta.tool_versions.compiler = 'clang version 20.1.80' } }
     ) {
         $in = New-PassingInput
         & $Break $in
@@ -317,7 +397,7 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         $f = Join-Path $script:Tmp ('p04-' + [guid]::NewGuid().ToString('N') + '.json')
         try {
             [IO.File]::WriteAllText($f, ($doc | ConvertTo-Json -Depth 6))
-            $out = & python -I (Join-Path $script:Repo 'parity\contracts\validate.py') cache-qualification $f 2>&1 | Out-String
+            $out = & python -I -B (Join-Path $script:Repo 'parity\contracts\validate.py') cache-qualification $f 2>&1 | Out-String
             $LASTEXITCODE | Should -Be 0 -Because $out
         } finally { Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue }
     }

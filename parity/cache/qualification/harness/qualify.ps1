@@ -5,11 +5,13 @@
 # case uses its own fresh cache root. It compares exit codes and artifact hashes, counts journal
 # outcomes and writes one evidence record via record.jq. It never emits "qualified": the record's
 # row stays "direct" and `harness_pass` says whether steps 1-6 held. Lab steps 7-9 decide the rest.
+# zccache runs from a private, hash-checked copy under -Work; its daemons are stopped at the end.
 #
 # Exit codes: 0 record written (read harness_pass), 1 unexpected harness error (no record),
-# 2 usage, 3 refused (not a lab), 4 zccache.exe or zccache-fp.exe is not the pinned release binary.
+# 2 usage, 3 refused (not a clean lab), 4 zccache.exe or zccache-fp.exe is not the pinned binary.
 #
-# Windows PowerShell 5.1 and PowerShell 7. Needs jq on PATH. Run from a Developer PowerShell for cl/link.
+# Windows PowerShell 5.1 and PowerShell 7. Needs jq on PATH. Run from a Developer PowerShell for
+# cl/link, in a clean session: no tokens, keys or runner JIT config in the environment.
 [CmdletBinding()]
 param(
     [string]$Compiler,          # matrix compiler name, e.g. clang-cl
@@ -20,7 +22,7 @@ param(
     [string]$Out,               # where the evidence JSON is written
     [string]$EvidenceRef,       # repo path the reviewer will commit the record under
     [string]$PrereqCompiler,    # link/lld-link only: cl.exe or clang-cl.exe that builds the objects
-    [string]$Work,              # empty scratch directory
+    [string]$Work,              # empty scratch directory, not a link or junction
     [string[]]$ExtraMarkerRoot  # tests only: more roots to probe for live-install markers
 )
 
@@ -36,24 +38,34 @@ $ZqPairs = @{
     'lld-link' = @('link')
 }
 $ZqEvidencePattern = '^parity/cache/qualification/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$'
+# Variable names that look like credentials (the zccache daemon and its crash dumps inherit them).
+$ZqSecretName = '(?i)token|secret|passw|credential|jit|private_?key|(^|_)(api_?)?key$|pem$'
 $ZqHere = $PSScriptRoot
 
 function Get-ZqMarkerPath([string[]]$Roots) {
     # The live pool on the owner's host: installer, supervisor data and the WSL distro root.
+    # ProgramW6432 matters when a 32-bit PowerShell resolves ProgramFiles to Program Files (x86).
     $paths = @("$env:ProgramData\aap-runner", "$env:ProgramFiles\aap-runner", "$env:SystemDrive\wsl")
+    if ($env:ProgramW6432) { $paths += "$env:ProgramW6432\aap-runner" }
     foreach ($r in $Roots) {
         if ($r) { $paths += @('ProgramData\aap-runner', 'Program Files\aap-runner', 'wsl' | ForEach-Object { [IO.Path]::Combine($r, $_) }) }
     }
     $paths
 }
 
-function Assert-ZqLab([string[]]$Candidates) {
+function Find-ZqSecretEnv([string[]]$Names) { @($Names | Where-Object { $_ -match $ZqSecretName } | Sort-Object -Unique) }
+
+function Assert-ZqLab([string[]]$Candidates, [string[]]$EnvNames) {
     if ($env:AAP_ZCCACHE_LAB -ne '1') {
         throw 'REFUSED: AAP_ZCCACHE_LAB=1 is not set; this harness runs only inside a disposable lab VM'
     }
     $found = @($Candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) })
     if ($found.Count -gt 0) {
         throw "REFUSED: live aap-runner install markers present: $($found -join ', ')"
+    }
+    $secret = Find-ZqSecretEnv $EnvNames
+    if ($secret.Count -gt 0) {
+        throw "REFUSED: credential-shaped environment variables present (names only): $($secret -join ', '); start the harness from a clean session"
     }
 }
 
@@ -66,7 +78,12 @@ function Test-ZqArg {
     if (-not $Out) { throw 'USAGE: -Out is required' }
     foreach ($p in @($CompilerPath, $Zccache)) { if (-not $p -or -not (Test-Path -LiteralPath $p -PathType Leaf)) { throw "USAGE: '$p' is not a file" } }
     if ($Compiler -in @('link', 'lld-link') -and (-not $PrereqCompiler -or -not (Test-Path -LiteralPath $PrereqCompiler -PathType Leaf))) { throw 'USAGE: link rows need -PrereqCompiler' }
-    if (-not $Work -or ((Test-Path -LiteralPath $Work) -and @(Get-ChildItem -LiteralPath $Work -Force).Count -gt 0)) { throw 'USAGE: -Work must name an empty or new directory' }
+    if (-not $Work) { throw 'USAGE: -Work is required' }
+    if (Test-Path -LiteralPath $Work) {
+        $item = Get-Item -LiteralPath $Work -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'USAGE: -Work must not be a symbolic link or junction' }
+        if (-not $item.PSIsContainer -or @(Get-ChildItem -LiteralPath $Work -Force).Count -gt 0) { throw 'USAGE: -Work must name an empty or new directory' }
+    }
 }
 
 # Non-MSVC compilers must name the matrix version in their --version banner. cl and link print
@@ -148,9 +165,20 @@ function Get-ZqPrintable([string]$Text) {
     $t.Substring(0, [Math]::Min(120, $t.Length))
 }
 
+# Regular files below $Dir. Symbolic links and junctions are never followed (Windows PowerShell 5.1
+# recursion would descend into directory links), and a linked $Dir yields nothing.
+function Get-ZqFiles([string]$Dir) {
+    if (-not (Test-Path -LiteralPath $Dir -PathType Container)) { return }
+    if ((Get-Item -LiteralPath $Dir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { return }
+    foreach ($i in @(Get-ChildItem -LiteralPath $Dir -Force -ErrorAction SilentlyContinue)) {
+        if ($i.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+        if ($i.PSIsContainer) { Get-ZqFiles $i.FullName } else { $i }
+    }
+}
+
 function Get-ZqArtifact([string]$Dir) {
     $h = [ordered]@{}
-    Get-ChildItem -LiteralPath $Dir -Recurse -File -ErrorAction SilentlyContinue | Sort-Object FullName | ForEach-Object {
+    Get-ZqFiles $Dir | Sort-Object FullName | ForEach-Object {
         $h[$_.FullName.Substring($Dir.Length).TrimStart('\')] = Get-ZqSha256 $_.FullName
     }
     $h
@@ -178,27 +206,34 @@ function New-ZqRecord($InputObject, [string]$Jq, [string]$Scratch) {
     try { Invoke-ZqJq $Jq @('-a', '-f', (Join-Path $ZqHere 'record.jq'), $in) } finally { Remove-Item -LiteralPath $in -ErrorAction SilentlyContinue }
 }
 
+# Always an array, also with zero or one name (the leading comma stops PowerShell unrolling it).
+function Get-ZqZccacheEnvName { , @(Get-ChildItem Env: | Where-Object { $_.Name -like 'ZCCACHE_*' } | ForEach-Object { $_.Name } | Sort-Object) }
+
 # Removes every ZCCACHE_* variable so nothing leaks from the lab shell; returns the removed names.
 function Clear-ZqEnv {
-    $names = @(Get-ChildItem Env: | Where-Object { $_.Name -like 'ZCCACHE_*' } | ForEach-Object { $_.Name } | Sort-Object)
+    $names = Get-ZqZccacheEnvName
     foreach ($n in $names) { Remove-Item -LiteralPath "Env:\$n" }
     , $names
 }
 
-# Corrupts every file in a cache store; returns how many changed. -SameSize keeps each file's size
-# and modification time (every byte + 1), so only a content check can notice; otherwise the file
-# becomes the short marker P04-POISON.
+# Corrupts every regular file in a cache store (links are not followed); returns how many changed.
+# -SameSize flips one byte mid-file in place, keeping length and modification time, so only a
+# content check can notice (upstream does not claim to prove integrity, README 1123). Otherwise
+# the file becomes the 10-byte marker P04-POISON, which changes its length.
 function Invoke-ZqCorrupt([string]$Store, [switch]$SameSize) {
     $n = 0
-    foreach ($f in @(Get-ChildItem -LiteralPath $Store -Recurse -File -Force -ErrorAction SilentlyContinue)) {
+    foreach ($f in @(Get-ZqFiles $Store)) {
         if ($SameSize -and $f.Length -eq 0) { continue }
         $ro = $f.IsReadOnly; $mtime = $f.LastWriteTimeUtc
         try {
             if ($ro) { $f.IsReadOnly = $false }
             if ($SameSize) {
-                $b = [IO.File]::ReadAllBytes($f.FullName)
-                for ($i = 0; $i -lt $b.Length; $i++) { $b[$i] = [byte](($b[$i] + 1) -band 0xFF) }
-                [IO.File]::WriteAllBytes($f.FullName, $b)
+                $at = [long][Math]::Floor($f.Length / 2)
+                $fs = [IO.File]::Open($f.FullName, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+                try {
+                    $fs.Position = $at; $b = $fs.ReadByte()
+                    $fs.Position = $at; $fs.WriteByte([byte]($b -bxor 0xFF))
+                } finally { $fs.Dispose() }
                 [IO.File]::SetLastWriteTimeUtc($f.FullName, $mtime)
             } else {
                 [IO.File]::WriteAllBytes($f.FullName, [Text.Encoding]::ASCII.GetBytes('P04-POISON'))
@@ -211,6 +246,55 @@ function Invoke-ZqCorrupt([string]$Store, [switch]$SameSize) {
         }
     }
     $n
+}
+
+function Get-ZqOwnProcess([string]$Bin) {
+    $prefix = $Bin.TrimEnd('\') + '\'
+    @(Get-Process -Name 'zccache*' -ErrorAction SilentlyContinue | Where-Object {
+            $p = $null; try { $p = $_.Path } catch { }
+            $p -and $p.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+        })
+}
+
+# Every visible zccache* process: the lab records which binary the daemons really run.
+function Get-ZqDaemon([string]$Bin) {
+    $prefix = $Bin.TrimEnd('\') + '\'
+    , @(Get-Process -Name 'zccache*' -ErrorAction SilentlyContinue | ForEach-Object {
+            $p = $null; try { $p = $_.Path } catch { }
+            [ordered]@{
+                pid = $_.Id
+                exe = $(if ($p) { Get-ZqPrintable $p } else { $null })
+                in_private_bin = [bool]($p -and $p.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))
+                sha256 = $(if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { Get-ZqSha256 $p } else { $null })
+            }
+        })
+}
+
+# Stops every process running from the private copy; $true when none is left.
+function Stop-ZqDaemon([string]$Bin) {
+    foreach ($p in (Get-ZqOwnProcess $Bin)) { try { $p.Kill(); $null = $p.WaitForExit(5000) } catch { } }
+    (Get-ZqOwnProcess $Bin).Count -eq 0
+}
+
+# Files under each cache root's crashes/ folder. The dumps themselves never leave the VM.
+function Get-ZqCrashDump([string]$Work) {
+    $counts = [ordered]@{}
+    foreach ($d in @(Get-ChildItem -LiteralPath $Work -Directory -Filter 'cache-*' -ErrorAction SilentlyContinue)) {
+        $counts[$d.Name] = @(Get-ZqFiles (Join-Path $d.FullName 'crashes')).Count
+    }
+    $counts
+}
+
+function Get-ZqOs {
+    $os = $null; $ubr = $null
+    try { $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop } catch { }
+    try { $ubr = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -Name UBR -ErrorAction Stop).UBR } catch { }
+    $v = if ($os) { "$($os.Caption) $($os.Version)" + $(if ($null -ne $ubr) { ".$ubr" } else { '' }) } else { [Environment]::OSVersion.VersionString }
+    [ordered]@{
+        os_version = Get-ZqPrintable $v
+        image_os = $(if ($env:ImageOS) { Get-ZqPrintable $env:ImageOS } else { $null })
+        image_version = $(if ($env:ImageVersion) { Get-ZqPrintable $env:ImageVersion } else { $null })
+    }
 }
 
 function Invoke-ZqRun([string]$Exe, [string[]]$Argv, [string]$Log, [string]$Cwd) {
@@ -229,6 +313,7 @@ function Invoke-ZqPhase($Ctx, [string]$Src, [string]$Case, [string]$Root, [strin
     $log = Join-Path $Ctx.Logs $Name
     $journal = $null
     if (-not $Root) {
+        $zenv = Get-ZqZccacheEnvName
         $rc = Invoke-ZqRun $Ctx.Cc $cmd.Args $log $Src
     } else {
         $env:ZCCACHE_CACHE_DIR = $Root
@@ -238,6 +323,7 @@ function Invoke-ZqPhase($Ctx, [string]$Src, [string]$Case, [string]$Root, [strin
             $sid = [string]((Get-Content -Raw -LiteralPath "$log.session-start.out") | ConvertFrom-Json).session_id
         } catch { $sid = $null }
         if ($sid) { $env:ZCCACHE_SESSION_ID = $sid }
+        $zenv = Get-ZqZccacheEnvName
         try {
             $rc = Invoke-ZqRun $Ctx.Zc (@($Ctx.Cc) + $cmd.Args) $log $Src
         } finally {
@@ -248,7 +334,7 @@ function Invoke-ZqPhase($Ctx, [string]$Src, [string]$Case, [string]$Root, [strin
     }
     [ordered]@{
         exit = $rc; artifacts = (Get-ZqArtifact $outDir); primary_present = (Test-Path -LiteralPath (Join-Path $outDir $cmd.Primary))
-        argv = @($cmd.Args); cache_dir = $(if ($Root) { Split-Path -Leaf $Root } else { $null }); journal = $journal
+        argv = @($cmd.Args); cache_dir = $(if ($Root) { Split-Path -Leaf $Root } else { $null }); zccache_env = $zenv; journal = $journal
     }
 }
 
@@ -260,92 +346,108 @@ function New-ZqTree([string]$Work, [string]$Name) {
 }
 
 function Invoke-ZqMain {
-    Assert-ZqLab (Get-ZqMarkerPath $ExtraMarkerRoot)
+    Assert-ZqLab (Get-ZqMarkerPath $ExtraMarkerRoot) @(Get-ChildItem Env: | ForEach-Object { $_.Name })
+    $removed = Clear-ZqEnv
     Test-ZqArg -Compiler $Compiler -CompilerPath $CompilerPath -CompilerVersion $CompilerVersion -Invocation $Invocation `
         -Zccache $Zccache -Out $Out -EvidenceRef $EvidenceRef -PrereqCompiler $PrereqCompiler -Work $Work
     $jq = @(Get-Command jq -CommandType Application -ErrorAction SilentlyContinue)[0].Source
     if (-not $jq) { throw 'USAGE: jq is not on PATH' }
     # Absolute paths before any run changes the working directory.
     $cc = (Resolve-Path -LiteralPath $CompilerPath).ProviderPath
-    $zc = (Resolve-Path -LiteralPath $Zccache).ProviderPath
+    $zcSource = (Resolve-Path -LiteralPath $Zccache).ProviderPath
+    $fpSource = Join-Path (Split-Path -Parent $zcSource) 'zccache-fp.exe'
     $pre = if ($PrereqCompiler) { (Resolve-Path -LiteralPath $PrereqCompiler).ProviderPath } else { $null }
     $outFile = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out)
-    $zsha = Get-ZqSha256 $zc
-    if ($zsha -ne $ZqBinarySha256) { throw "BINARY: $zc is $zsha, not the pinned 1.15.6 zccache.exe" }
-    $fp = Join-Path (Split-Path -Parent $zc) 'zccache-fp.exe'
-    $fpsha = if (Test-Path -LiteralPath $fp -PathType Leaf) { Get-ZqSha256 $fp } else { 'missing' }
-    if ($fpsha -ne $ZqFpSha256) { throw "BINARY: $fp is $fpsha, not the pinned 1.15.6 zccache-fp.exe" }
+    if (-not (Test-Path -LiteralPath $fpSource -PathType Leaf)) { throw "BINARY: $fpSource is missing; unpack zccache-fp.exe beside zccache.exe" }
 
-    $removed = Clear-ZqEnv
-    $env:ZCCACHE_MODE = 'COPY'   # contract rule 6; hardlink and reflink need their own proof
-    $started = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    # Run a private copy under -Work, hashed after copying, never the file given on the command line.
     $null = New-Item -ItemType Directory -Force -Path $Work
     $w = (Resolve-Path -LiteralPath $Work).ProviderPath
     $logs = Join-Path $w 'logs'
-    $null = New-Item -ItemType Directory -Path $logs
-    $null = Invoke-ZqRun $cc @('--version') (Join-Path $logs 'compiler-version') $w   # cl prints its banner to stderr
-    $banner = (@(Get-Content -LiteralPath (Join-Path $logs 'compiler-version.out'), (Join-Path $logs 'compiler-version.err') -ErrorAction SilentlyContinue) -join "`n")
-    Test-ZqBanner $Compiler $CompilerVersion $banner
-    $null = Invoke-ZqRun $zc @('--version') (Join-Path $logs 'zccache-version') $w
-    $zver = @(Get-Content -LiteralPath (Join-Path $logs 'zccache-version.out') -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })[0]
+    $bin = Join-Path $w 'bin'
+    $null = New-Item -ItemType Directory -Path $logs, $bin
+    Copy-Item -LiteralPath $zcSource -Destination (Join-Path $bin 'zccache.exe') -ErrorAction Stop
+    Copy-Item -LiteralPath $fpSource -Destination (Join-Path $bin 'zccache-fp.exe') -ErrorAction Stop
+    $zc = Join-Path $bin 'zccache.exe'
+    $zsha = Get-ZqSha256 $zc
+    $fpsha = Get-ZqSha256 (Join-Path $bin 'zccache-fp.exe')
+    if ($zsha -ne $ZqBinarySha256) { throw "BINARY: $zcSource is $zsha, not the pinned 1.15.6 zccache.exe" }
+    if ($fpsha -ne $ZqFpSha256) { throw "BINARY: $fpSource is $fpsha, not the pinned 1.15.6 zccache-fp.exe" }
 
-    $src = New-ZqTree $w $(if ($Invocation -eq 'path-with-spaces') { 'src with spaces' } else { 'src' })
-    $preDir = $null
-    $tools = [ordered]@{
-        compiler = (Get-ZqPrintable (@($banner -split "`n" | Where-Object { $_.Trim() })[0])); compiler_path = (Get-ZqPrintable $cc); compiler_sha256 = (Get-ZqSha256 $cc)
-        zccache = (Get-ZqPrintable $zver); zccache_sha256 = $zsha; 'zccache-fp_sha256' = $fpsha
-    }
-    if ($Compiler -in @('link', 'lld-link')) {
-        $preDir = Join-Path $w 'pre'
-        $null = New-Item -ItemType Directory -Path $preDir
-        foreach ($n in @('hello', 'unresolved')) {
-            $rc = Invoke-ZqRun $pre @('/nologo', '/c', '/Brepro', (Join-Path $src "$n.c"), ('/Fo' + (Join-Path $preDir "$n.obj"))) (Join-Path $logs "pre-$n") $w
-            if ($rc -ne 0) { throw "USAGE: prerequisite compile of $n.c failed ($rc)" }
+    try {
+        $env:ZCCACHE_MODE = 'COPY'   # contract rule 6; hardlink and reflink need their own proof
+        $started = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $null = Invoke-ZqRun $cc @('--version') (Join-Path $logs 'compiler-version') $w   # cl prints its banner to stderr
+        $banner = (@(Get-Content -LiteralPath (Join-Path $logs 'compiler-version.out'), (Join-Path $logs 'compiler-version.err') -ErrorAction SilentlyContinue) -join "`n")
+        Test-ZqBanner $Compiler $CompilerVersion $banner
+        $null = Invoke-ZqRun $zc @('--version') (Join-Path $logs 'zccache-version') $w
+        $zver = @(Get-Content -LiteralPath (Join-Path $logs 'zccache-version.out') -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })[0]
+
+        $src = New-ZqTree $w $(if ($Invocation -eq 'path-with-spaces') { 'src with spaces' } else { 'src' })
+        $preDir = $null
+        $tools = [ordered]@{
+            compiler = (Get-ZqPrintable (@($banner -split "`n" | Where-Object { $_.Trim() })[0])); compiler_path = (Get-ZqPrintable $cc); compiler_sha256 = (Get-ZqSha256 $cc)
+            zccache = (Get-ZqPrintable $zver); zccache_sha256 = $zsha; 'zccache-fp_sha256' = $fpsha
         }
-        $tools.prereq_compiler_path = Get-ZqPrintable $pre
-        $tools.prereq_compiler_sha256 = Get-ZqSha256 $pre
-    }
-    $ctx = @{ Compiler = $Compiler; Invocation = $Invocation; Cc = $cc; Zc = $zc; Jq = $jq; Rsp = (Join-Path $w 'args.rsp'); Pre = $preDir; Logs = $logs }
-
-    # Fresh cache root per case; no cache root is ever deleted (its daemon may still be alive).
-    $runs = [ordered]@{}
-    $runs.uncached = Invoke-ZqPhase $ctx $src 'ok' '' 'ok-uncached'
-    $runs.cold = Invoke-ZqPhase $ctx $src 'ok' (Join-Path $w 'cache-ok') 'ok-cold'
-    $runs.warm = Invoke-ZqPhase $ctx $src 'ok' (Join-Path $w 'cache-ok') 'ok-warm'
-    if ($Invocation -eq 'debug-pdb') {
-        $moved = New-ZqTree $w 'relocated'
-        $runs.relocated_direct = Invoke-ZqPhase $ctx $moved 'ok' '' 'ok-relocated-direct'
-        $runs.relocated = Invoke-ZqPhase $ctx $moved 'ok' (Join-Path $w 'cache-ok') 'ok-relocated'
-    }
-    foreach ($v in @('same_size', 'marker')) {
-        $root = Join-Path $w ('cache-poison-' + $v.Replace('_', '-'))
-        $prime = Invoke-ZqPhase $ctx $src 'ok' $root "ok-prime-$v"
-        $n = Invoke-ZqCorrupt (Join-Path $root 'artifacts') -SameSize:($v -eq 'same_size')
-        $p = Invoke-ZqPhase $ctx $src 'ok' $root "ok-poisoned-$v"
-        $p.prime_exit = $prime.exit
-        $p.corrupted_files = $n
-        $runs["poisoned_$v"] = $p
-    }
-    $errs = [ordered]@{}
-    $errs.uncached = Invoke-ZqPhase $ctx $src 'error' '' 'error-uncached'
-    $errs.cold = Invoke-ZqPhase $ctx $src 'error' (Join-Path $w 'cache-error') 'error-cold'
-    $errs.warm = Invoke-ZqPhase $ctx $src 'error' (Join-Path $w 'cache-error') 'error-warm'
-
-    $meta = [ordered]@{
-        platform = 'windows-x86_64'
-        command = "qualify.ps1 -Compiler $Compiler -CompilerVersion '$CompilerVersion' -Invocation $Invocation -EvidenceRef $EvidenceRef"
-        tool_versions = $tools
-        env = [ordered]@{
-            set = [ordered]@{ ZCCACHE_MODE = 'COPY'; ZCCACHE_CACHE_DIR = '<work>\<cache_dir> per wrapped run'; ZCCACHE_SESSION_ID = 'per wrapped run, from session-start' }
-            removed = $removed
+        if ($Compiler -in @('link', 'lld-link')) {
+            $preDir = Join-Path $w 'pre'
+            $null = New-Item -ItemType Directory -Path $preDir
+            foreach ($n in @('hello', 'unresolved')) {
+                $rc = Invoke-ZqRun $pre @('/nologo', '/c', '/Brepro', (Join-Path $src "$n.c"), ('/Fo' + (Join-Path $preDir "$n.obj"))) (Join-Path $logs "pre-$n") $w
+                if ($rc -ne 0) { throw "USAGE: prerequisite compile of $n.c failed ($rc)" }
+            }
+            $tools.prereq_compiler_path = Get-ZqPrintable $pre
+            $tools.prereq_compiler_sha256 = Get-ZqSha256 $pre
         }
-        started_at = $started; ended_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-        compiler = $Compiler; compiler_version = $CompilerVersion; invocation = $Invocation; evidence_ref = $EvidenceRef
+        $ctx = @{ Compiler = $Compiler; Invocation = $Invocation; Cc = $cc; Zc = $zc; Jq = $jq; Rsp = (Join-Path $w 'args.rsp'); Pre = $preDir; Logs = $logs }
+
+        # Fresh cache root per case; no cache root is ever deleted (its daemon may still be alive).
+        $runs = [ordered]@{}
+        $runs.uncached = Invoke-ZqPhase $ctx $src 'ok' '' 'ok-uncached'
+        $runs.cold = Invoke-ZqPhase $ctx $src 'ok' (Join-Path $w 'cache-ok') 'ok-cold'
+        $runs.warm = Invoke-ZqPhase $ctx $src 'ok' (Join-Path $w 'cache-ok') 'ok-warm'
+        if ($Invocation -eq 'debug-pdb') {
+            $moved = New-ZqTree $w 'relocated'
+            $runs.relocated_direct = Invoke-ZqPhase $ctx $moved 'ok' '' 'ok-relocated-direct'
+            $runs.relocated = Invoke-ZqPhase $ctx $moved 'ok' (Join-Path $w 'cache-ok') 'ok-relocated'
+        }
+        foreach ($v in @('same_size', 'marker')) {
+            $root = Join-Path $w ('cache-poison-' + $v.Replace('_', '-'))
+            $prime = Invoke-ZqPhase $ctx $src 'ok' $root "ok-prime-$v"
+            $n = Invoke-ZqCorrupt (Join-Path $root 'artifacts') -SameSize:($v -eq 'same_size')
+            $p = Invoke-ZqPhase $ctx $src 'ok' $root "ok-poisoned-$v"
+            $p.prime_exit = $prime.exit
+            $p.corrupted_files = $n
+            $runs["poisoned_$v"] = $p
+        }
+        $errs = [ordered]@{}
+        $errs.uncached = Invoke-ZqPhase $ctx $src 'error' '' 'error-uncached'
+        $errs.cold = Invoke-ZqPhase $ctx $src 'error' (Join-Path $w 'cache-error') 'error-cold'
+        $errs.warm = Invoke-ZqPhase $ctx $src 'error' (Join-Path $w 'cache-error') 'error-warm'
+
+        $daemons = Get-ZqDaemon $bin
+        $crashes = Get-ZqCrashDump $w
+        $stopped = Stop-ZqDaemon $bin
+        $meta = [ordered]@{
+            platform = 'windows-x86_64'
+            command = "qualify.ps1 -Compiler $Compiler -CompilerVersion '$CompilerVersion' -Invocation $Invocation -EvidenceRef $EvidenceRef"
+            tool_versions = $tools
+            os = Get-ZqOs
+            env = [ordered]@{
+                set = [ordered]@{ ZCCACHE_MODE = 'COPY'; ZCCACHE_CACHE_DIR = '<work>\<cache_dir> per wrapped run'; ZCCACHE_SESSION_ID = 'per wrapped run, from session-start' }
+                removed = $removed
+            }
+            daemons = $daemons; daemons_stopped = $stopped; crash_dumps = $crashes
+            started_at = $started; ended_at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            compiler = $Compiler; compiler_version = $CompilerVersion; invocation = $Invocation; evidence_ref = $EvidenceRef
+        }
+        $record = New-ZqRecord ([ordered]@{ meta = $meta; runs = $runs; errors = $errs }) $jq $w
+        [IO.File]::WriteAllText($outFile, $record + "`n")
+        $r = $record | ConvertFrom-Json
+        Write-Output "harness_pass=$($r.harness_pass): $($r.row.reason)"
+    } finally {
+        $null = Stop-ZqDaemon $bin   # also after a failure; crash dumps stay in the VM
     }
-    $record = New-ZqRecord ([ordered]@{ meta = $meta; runs = $runs; errors = $errs }) $jq $w
-    [IO.File]::WriteAllText($outFile, $record + "`n")
-    $r = $record | ConvertFrom-Json
-    Write-Output "harness_pass=$($r.harness_pass): $($r.row.reason)"
 }
 
 if ($MyInvocation.InvocationName -eq '.') { return }
