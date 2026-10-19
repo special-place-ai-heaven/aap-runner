@@ -1,0 +1,14 @@
+{
+  "expect": "an issued lease carries",
+  "instance": {
+    "schema": 1,
+    "kind": "lease_response",
+    "lease_id": "l-55555555555555555555555555555555",
+    "result": "issued",
+    "reason": "ok",
+    "runner_id": 23,
+    "runner_name": "aap-w-4-3-1a2b3c4d",
+    "expires_at": "2026-10-19T18:10:00Z",
+    "jit_config": null
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "kind": "status_request",
+  "lease_id": "l-55555555555555555555555555555555",
+  "nonce": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "issued_at": "2026-10-19T18:00:00Z"
+}

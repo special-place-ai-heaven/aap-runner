@@ -1,0 +1,6 @@
+{
+  "expect": "missing required property",
+  "instance": {
+    "schema": 1
+  }
+}

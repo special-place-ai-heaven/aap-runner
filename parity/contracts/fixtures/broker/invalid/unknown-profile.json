@@ -1,0 +1,15 @@
+{
+  "expect": "windows-latest\" not in enum",
+  "instance": {
+    "schema": 1,
+    "kind": "lease_request",
+    "lease_id": "l-55555555555555555555555555555555",
+    "reservation_id": "r-1a2b3c4d000000b1",
+    "lease_generation": 3,
+    "slot": 4,
+    "profile": "windows-latest",
+    "image_generation": "win25-vs2026-x64/20261007.264.1-aap.1",
+    "nonce": "77777777777777777777777777777777",
+    "issued_at": "2026-10-19T18:00:00Z"
+  }
+}

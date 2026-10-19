@@ -1,0 +1,405 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/cleanup-receipt.schema.json",
+  "title": "Cleanup receipt: the automated shape New-PwReceipt writes (schema 1) or the coordinator's manual shape (kind manual-cleanup / manual-bootstrap-cleanup)",
+  "x-contract-version": 1,
+  "x-owner": "P00 (automated writer, existing); coordinator (manual receipts in use since P00); P00.1 hardening; P28 reconciles",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/automated"
+    },
+    {
+      "$ref": "#/$defs/manual"
+    }
+  ],
+  "$defs": {
+    "sha1": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "item": {
+      "type": "string",
+      "pattern": "^P[0-9]{2}(\\.[0-9]+)?$"
+    },
+    "pr": {
+      "type": "string",
+      "pattern": "^https://github\\.com/special-place-ai-heaven/aap-runner/pull/[0-9]+$"
+    },
+    "automated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "item",
+        "attempt",
+        "final_reviewed_head",
+        "pr_url",
+        "merge_sha",
+        "base_sha",
+        "origin_main_sha",
+        "merge_comparison",
+        "implementer",
+        "tested_by",
+        "reviewed_by",
+        "protected_state",
+        "disposed",
+        "retained_assets",
+        "process_observations",
+        "released_leases",
+        "verifier",
+        "cleanup_started",
+        "verified_at"
+      ],
+      "properties": {
+        "schema": {
+          "const": 1
+        },
+        "item": {
+          "$ref": "#/$defs/item"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "final_reviewed_head": {
+          "$ref": "#/$defs/sha1"
+        },
+        "pr_url": {
+          "$ref": "#/$defs/pr"
+        },
+        "merge_sha": {
+          "$ref": "#/$defs/sha1"
+        },
+        "base_sha": {
+          "$ref": "#/$defs/sha1"
+        },
+        "origin_main_sha": {
+          "$ref": "#/$defs/sha1"
+        },
+        "merge_comparison": {
+          "type": [
+            "string",
+            "object"
+          ]
+        },
+        "implementer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "tested_by": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 120
+        },
+        "reviewed_by": {
+          "type": [
+            "string",
+            "array",
+            "null"
+          ]
+        },
+        "protected_state": {
+          "type": "object",
+          "required": [
+            "base_clone_initial",
+            "base_clone_after",
+            "base_before_sha",
+            "base_after_sha",
+            "sentinels"
+          ],
+          "properties": {
+            "sentinels": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "path",
+                  "existed",
+                  "exists"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  },
+                  "existed": {
+                    "type": "boolean"
+                  },
+                  "exists": {
+                    "type": "boolean"
+                  }
+                },
+                "if": {
+                  "properties": {
+                    "existed": {
+                      "const": true
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "exists": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "disposed": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "path",
+              "observed_absent"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "path": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "observed_absent": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "retained_assets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "destination",
+              "owner",
+              "retention",
+              "expiry",
+              "size",
+              "sha256"
+            ],
+            "properties": {
+              "destination": {
+                "type": "string",
+                "minLength": 1
+              },
+              "owner": {
+                "type": "string",
+                "minLength": 1
+              },
+              "retention": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expiry": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "size": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        },
+        "process_observations": {
+          "type": "array"
+        },
+        "released_leases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "verifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "cleanup_started": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "verified_at": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "manual": {
+      "type": "object",
+      "required": [
+        "item",
+        "attempt",
+        "kind",
+        "written",
+        "cleanup_actor",
+        "verifier",
+        "branch",
+        "base_sha",
+        "reviewed_head",
+        "pr",
+        "merge",
+        "disposed",
+        "retained",
+        "lab_vms",
+        "leases_released",
+        "secrets"
+      ],
+      "properties": {
+        "item": {
+          "$ref": "#/$defs/item"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "kind": {
+          "enum": [
+            "manual-cleanup",
+            "manual-bootstrap-cleanup"
+          ]
+        },
+        "written": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$"
+        },
+        "cleanup_actor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "verifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "branch": {
+          "type": "string",
+          "pattern": "^parity/[a-z0-9._/-]+$"
+        },
+        "base_sha": {
+          "$ref": "#/$defs/sha1"
+        },
+        "reviewed_head": {
+          "$ref": "#/$defs/sha1"
+        },
+        "pr": {
+          "$ref": "#/$defs/pr"
+        },
+        "merge": {
+          "type": "object",
+          "required": [
+            "method",
+            "merge_sha",
+            "origin_main_after",
+            "comparison"
+          ],
+          "properties": {
+            "method": {
+              "enum": [
+                "merge-commit",
+                "squash",
+                "rebase"
+              ]
+            },
+            "merge_sha": {
+              "$ref": "#/$defs/sha1"
+            },
+            "origin_main_after": {
+              "$ref": "#/$defs/sha1"
+            },
+            "comparison": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "disposed": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "resource",
+              "how",
+              "observed_absent"
+            ],
+            "properties": {
+              "resource": {
+                "type": "string",
+                "minLength": 1
+              },
+              "how": {
+                "type": "string",
+                "minLength": 1
+              },
+              "observed_absent": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "retained": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "owner",
+              "retention"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "retention": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "lab_vms": {
+          "type": "array"
+        },
+        "leases_released": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "secrets": {
+          "const": "none recorded"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "kind": "status_response",
+  "lease_id": "l-55555555555555555555555555555555",
+  "result": "ok",
+  "reason": "ok",
+  "runner": {
+    "status": "offline",
+    "busy": false
+  }
+}

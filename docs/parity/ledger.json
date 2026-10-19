@@ -79,11 +79,16 @@
         "parity/baselines/**"
       ],
       "lane": "Luna medium (Claude: Sonnet)",
-      "delivery_state": "REVIEWED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Capture exact Windows Server 2025/VS2026 x64 and Ubuntu 24.04 x64 hosted image identities, upstream commits, full inventories, defaults, source inputs and selected consuming repositories. Capture the real hosted Set up job image reference.",
       "acceptance": "Every upstream inventory entry is accounted for; cached versions and environment/service defaults included. Moving labels and mismatched hosted generations invalidate evidence. Exact unresolved source/media/licensing inputs are recorded.",
-      "merge_proof": null,
-      "cleanup_receipt": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/28",
+        "method": "merge-commit",
+        "accepted_head": "c005e94c891bc54bc119cfafc181d211f3a257ae",
+        "merge_sha": "fc3bbc6a995370329b82041fbd51534bfd0e26d3"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P01-attempt-1.receipt.json (independently verified)",
       "branch": "parity/p01-baselines",
       "reviewed_head": "99d2734",
       "evidence": "Inventories 382/382 (Windows) and 224/224 (Ubuntu) entries with line coverage verified by scripts; baselines pinned to the build commits aee0669 (Windows 20261007.264.1) and 7e7dc1b (Ubuntu 20261012.334.1); hosted captures runs 39303666617 and 39305649952 on GitHub-hosted runners stored as sources; zccache 1.15.6 pinned at 15ec953; independent review at b0407c2 (FIX-THEN-MERGE, docs-only) with fixes in 99d2734; reviewer re-verified counts, source hashes, image identity and zccache assets against upstream",
@@ -100,10 +105,38 @@
         "parity/contracts/**",
         "docs/parity/ARCHITECTURE.md"
       ],
-      "lane": "Sol high",
-      "delivery_state": "NOT_STARTED",
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "REVIEWED",
       "deliverable": "Specify immutable image/catalog, host-wide resource lease, backend lifecycle, guest bootstrap, auth/JIT transport, cache qualification, status/settings compatibility, evidence and cleanup schemas. Prove management transport feasibility in an explicitly authorized disposable lab before backend fan-out.",
       "acceptance": "Independent security review; concrete schema examples and negative fixtures; no missing interface decision delegated to two workers. Preserve App key custody in existing control distro. PR20 is merged and reconciled before consumers depend on its helper APIs.",
+      "merge_proof": null,
+      "cleanup_receipt": null,
+      "branch": "parity/p02-contracts",
+      "reviewed_head": "3a52d4482dedcf09a44406fb506fb1bf5ab41bd6",
+      "evidence": "parity/contracts validate.py PASS (11 schemas, positive and negative fixtures); independent architecture review (FIX-THEN-MERGE, 8 contract defects + ledger gap) and security review (FIX-THEN-MERGE, 3 high / 7 medium / 4 low, all contract text) at ef4251e, fixes applied; delta re-review at the final head",
+      "decisions": [
+        "labels: Windows self-hosted,Windows,X64,aap-win25-vs2026; Ubuntu self-hosted,Linux,X64,aap-ubuntu-24.04; group aap-crrr",
+        "image root D:\\aap-runner\\images with base/, clones/, scratch/ (one folder per generation, never moved; rollback is catalog state)",
+        "control distro runs whenever Linux+Windows >= 1; host reserve floor 10 %",
+        "D2 media: Windows Server 2025 Evaluation ISO (180-day) proves parity; licensed image is a later production decision; lab host = this machine; budget approval before any VM",
+        "transport lab proof is a single-owner child P02.1 gating P10/P11; guest network module is child P10.0 consumed by P10 and P11"
+      ]
+    },
+    {
+      "id": "P02.1",
+      "title": "Prove guest management transport and isolation in the authorized lab",
+      "earliest_wave": 4,
+      "needs": [
+        "P02"
+      ],
+      "owns": [
+        "parity/contracts/lab/**",
+        "docs/parity/evidence/lab/**"
+      ],
+      "lane": "Sol high (Claude: Opus xhigh)",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Execute the guest-transport.md lab plan once gate D2 is granted: PowerShell Direct via an isolated child process (and the hvsocket framed-protocol comparison), SSH over hvsocket with pinned host key, credential bootstrap (unattend vs KVP), replay/nonce/echo checks, hostile and oversized replies, guest-replaced endpoint, crafted CLIXML and stream floods, guest network isolation (H1 negative matrix incl. IPv6, host ports, ARP/DHCP spoofing, WSL mirrored mode) with a positive egress oracle, JIT end-to-end on the current runner incl. unused-runner deletion, measured disk/memory/IO budgets. Freeze the chosen sub-candidates as a contract revision.",
+      "acceptance": "Every lab case has an observed result; isolation negatives all refused; no secret in host logs/events 4103/4104/transcripts or guest files outside the runner root; chosen mechanisms recorded in parity/contracts with the lab evidence; independent security review of the evidence. Requires D2 (eval ISO, lab GitHub App and test org/repo, approved compute/storage budget); never on the live pool.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -232,6 +265,25 @@
       "delivery_state": "NOT_STARTED",
       "deliverable": "Acquire durable generation-bound reservations before boot/registration. Count legacy, warm/listening and cleanup-uncertain workers; enforce five total runner slots plus aggregate CPU/RAM/disk/IO and physical-host reserve.",
       "acceptance": "Profile counts are two live controls, Linux 0-5 and Windows 0-5, with Linux + Windows <= 5; each control's maximum is recomputed from the other (3 Linux => Windows max 2; 5 Windows => Linux 0) and 0 is valid for either. Resource allotment follows the counts per profile and the host reserve is never given away. The tray shows the two profiles as separate groups with the OS on every runner card and per-profile totals and limits next to each control (owner requirement 2026-10-19). Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Sixth worker, duplicate lease, concurrent starts, lost heartbeat, controller crash, late completion, failed reset, memory overhead and storage pressure cannot over-admit or release capacity early. Legacy pool never remains autonomous at five plus Windows.",
+      "merge_proof": null,
+      "cleanup_receipt": null
+    },
+    {
+      "id": "P10.0",
+      "title": "Guest network module (shared by the Windows and Linux VM backends)",
+      "earliest_wave": 5,
+      "needs": [
+        "P02.1",
+        "P09"
+      ],
+      "owns": [
+        "supervisor/backends/network/**",
+        "tests/backends/network/**"
+      ],
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "One PowerShell module that creates the per-profile internal switch + NAT (or the per-guest private switch chosen in P02.1), applies DHCP guard, router guard, MAC-spoofing off, extended port ACLs (deny host vEthernet except DHCP/DNS, RFC1918, 169.254/16, 100.64/10, multicast, fe80::/10, fc00::/7, LAN IPv6 prefix, clone subnet except gateway), disables enhanced session and Guest Service Interface, and exposes attach/detach/verify for P10 and P11.",
+      "acceptance": "Pester with fakes for the Hyper-V cmdlets; the lab negative matrix from guest-transport.md passes on a disposable guest; External/Default switch attachment refused.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -377,7 +429,7 @@
       ],
       "lane": "Sol high",
       "delivery_state": "NOT_STARTED",
-      "deliverable": "Install broker support, make legacy reservations coordinator-controlled and replace maintained sccache install/env/paths/whitelists/diagnostics with qualified zccache or direct compilation. Preserve legacy isolation until authorized retirement.",
+      "deliverable": "Install broker support, make legacy reservations coordinator-controlled and replace maintained sccache install/env/paths/whitelists/diagnostics with qualified zccache or direct compilation. Preserve legacy isolation until authorized retirement. Also correct the distro/README.md threat-model row: any process of the operator account can run wsl.exe and therefore the broker and read app.pem; broker replay/lease limits are integrity controls, not access control (P02 security review M1).",
       "acceptance": "No active sccache binary/variable/process/workflow requirement remains in maintained runtime. Bash suites and shellcheck pass on real Linux; staging hashes match. No Docker-volume deletion or live-cache purge. P19 later owns shared bootstrap/hash serially.",
       "merge_proof": null,
       "cleanup_receipt": null

@@ -1,0 +1,14 @@
+{
+  "expect": "a refused lease carries",
+  "instance": {
+    "schema": 1,
+    "kind": "lease_response",
+    "lease_id": "l-55555555555555555555555555555555",
+    "result": "refused",
+    "reason": "replay",
+    "runner_id": null,
+    "runner_name": null,
+    "expires_at": null,
+    "jit_config": "abc"
+  }
+}

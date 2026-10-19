@@ -1,0 +1,16 @@
+{
+  "schema": 3,
+  "linux_backend": "wsl-legacy",
+  "lease_wall_clock_hours": 6,
+  "runner_count": 3,
+  "windows_runner_count": 2,
+  "job_cpus": 28,
+  "job_memory_gib": 80,
+  "paused": false,
+  "io_percent": 90,
+  "sharing": "slice",
+  "host_reserve_percent": 10,
+  "share_mode": "per_profile",
+  "linux_share_percent": 60,
+  "windows_share_percent": 30
+}

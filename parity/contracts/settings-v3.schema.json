@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/settings-v3.schema.json",
+  "title": "inbox\\settings.json schema 3 (DRAFT): two profile counts, per-profile shares, host reserve",
+  "x-contract-version": 3,
+  "x-owner": "P12 (supervisor reader and both contract docs); P20 (tray writer); schema 2 stays the live contract until P12 lands",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "linux_backend",
+    "runner_count",
+    "windows_runner_count",
+    "job_cpus",
+    "job_memory_gib",
+    "paused",
+    "io_percent",
+    "sharing",
+    "host_reserve_percent",
+    "share_mode",
+    "linux_share_percent",
+    "windows_share_percent",
+    "lease_wall_clock_hours"
+  ],
+  "properties": {
+    "schema": {
+      "const": 3
+    },
+    "linux_backend": {
+      "enum": [
+        "wsl-legacy",
+        "hyperv-vm"
+      ],
+      "description": "Supervisor-side; the tray writes back what status.v5.json reports and never changes it. Flipped only by the cutover item P27. Default wsl-legacy."
+    },
+    "runner_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5,
+      "description": "The Linux count, as in schema 2 (now 0 allowed when Windows >= 1)."
+    },
+    "windows_runner_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "job_cpus": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 28,
+      "description": "Legacy WSL pool total, unchanged meaning; the supervisor caps it to the Linux share (shares win); ignored while runner_count is 0 or linux_backend is hyperv-vm."
+    },
+    "job_memory_gib": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 80
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "io_percent": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "sharing": {
+      "enum": [
+        "slice",
+        "fixed"
+      ]
+    },
+    "host_reserve_percent": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 90
+    },
+    "share_mode": {
+      "enum": [
+        "even",
+        "per_profile"
+      ]
+    },
+    "linux_share_percent": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 90
+    },
+    "windows_share_percent": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 90
+    },
+    "lease_wall_clock_hours": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 72,
+      "description": "Host cap per VM lease, default 6. Past it a quarantined slot whose runner GitHub reports offline is destroyed; a runner GitHub reports busy is never destroyed, only flagged in status."
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "expect": "unexpected property 'runner_id'",
+  "instance": {
+    "schema": 1,
+    "kind": "release_request",
+    "lease_id": "l-55555555555555555555555555555555",
+    "nonce": "88888888888888888888888888888888",
+    "issued_at": "2026-10-19T18:00:00Z",
+    "runner_id": 99
+  }
+}

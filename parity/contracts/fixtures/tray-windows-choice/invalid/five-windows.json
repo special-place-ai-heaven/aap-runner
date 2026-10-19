@@ -1,0 +1,7 @@
+{
+  "expect": "above maximum 4",
+  "instance": {
+    "schema": 1,
+    "windows_runner_count": 5
+  }
+}

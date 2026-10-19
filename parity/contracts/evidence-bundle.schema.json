@@ -1,0 +1,236 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/evidence-bundle.schema.json",
+  "title": "One accepted-result evidence record (ACCEPTANCE.md, Evidence, review and completion)",
+  "x-contract-version": 1,
+  "x-owner": "P05 (harness writer); every implementation item records its oracles with it; P24 certificates and P26 review consume it",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "item",
+    "contract_revision",
+    "head_sha",
+    "action_shas",
+    "reference_image",
+    "candidate_image",
+    "inputs_manifest_sha256",
+    "fixture_id",
+    "os_version",
+    "tool_versions",
+    "command",
+    "started_at",
+    "ended_at",
+    "exit_status",
+    "oracle",
+    "result",
+    "artifacts",
+    "verifier"
+  ],
+  "properties": {
+    "schema": {
+      "const": 1
+    },
+    "item": {
+      "type": "string",
+      "pattern": "^P[0-9]{2}(\\.[0-9]+)?$"
+    },
+    "contract_revision": {
+      "type": "string",
+      "pattern": "^[a-z-]+@[0-9]+$"
+    },
+    "head_sha": {
+      "$ref": "#/$defs/sha1"
+    },
+    "action_shas": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$"
+      }
+    },
+    "reference_image": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "image_version"
+          ],
+          "properties": {
+            "label": {
+              "enum": [
+                "windows-2025-vs2026",
+                "ubuntu-24.04"
+              ]
+            },
+            "image_version": {
+              "type": "string",
+              "pattern": "^[0-9]{8}\\.[0-9]+\\.[0-9]+$"
+            }
+          }
+        }
+      ]
+    },
+    "candidate_image": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generation_id",
+            "base_sha256"
+          ],
+          "properties": {
+            "generation_id": {
+              "type": "string",
+              "pattern": "^(win25-vs2026-x64|ubuntu-24.04-x64)/[0-9]{8}\\.[0-9]+\\.[0-9]+-aap\\.[0-9]+$"
+            },
+            "base_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "inputs_manifest_sha256": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._/-]{0,119}$",
+      "not": {
+        "pattern": "(^|/)\\.\\.?(/|$)"
+      }
+    },
+    "os_version": {
+      "type": "string",
+      "maxLength": 120,
+      "pattern": "^[ -~]+$"
+    },
+    "tool_versions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 120,
+        "pattern": "^[ -~]+$"
+      }
+    },
+    "command": {
+      "type": "string",
+      "maxLength": 500,
+      "pattern": "^[ -~]+$"
+    },
+    "started_at": {
+      "$ref": "#/$defs/time"
+    },
+    "ended_at": {
+      "$ref": "#/$defs/time"
+    },
+    "exit_status": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": -2147483648,
+      "maximum": 4294967295
+    },
+    "oracle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected",
+        "observed"
+      ],
+      "properties": {
+        "expected": {
+          "enum": [
+            "success",
+            "failure"
+          ]
+        },
+        "observed": {
+          "enum": [
+            "success",
+            "failure",
+            "timeout",
+            "skipped",
+            "blocked",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "result": {
+      "enum": [
+        "pass",
+        "fail",
+        "blocked",
+        "skipped",
+        "timeout",
+        "unknown"
+      ]
+    },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "bytes",
+          "sha256"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,120}$"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "verifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    }
+  },
+  "$defs": {
+    "time": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "sha1": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

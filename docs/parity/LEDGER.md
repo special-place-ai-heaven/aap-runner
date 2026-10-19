@@ -24,7 +24,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). States below are current
 - Pinned execution lane: Luna medium; ownership: `parity/baselines/**`.
 - Deliverable: Capture exact Windows Server 2025/VS2026 x64 and Ubuntu 24.04 x64 hosted image identities, upstream commits, full inventories, defaults, source inputs and selected consuming repositories. Capture the real hosted Set up job image reference.
 - Acceptance: Every upstream inventory entry is accounted for; cached versions and environment/service defaults included. Moving labels and mismatched hosted generations invalidate evidence. Exact unresolved source/media/licensing inputs are recorded.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: REVIEWED at `99d2734` on `parity/p01-baselines` — inventories 382/382 and 224/224 verified, baselines pinned to the build commits (Windows `aee0669` → image 20261007.264.1, Ubuntu `7e7dc1b` → 20261012.334.1), hosted captures recorded; open licensed/unreproducible inputs listed in the profile `inputs.md` files.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #28 merged at `fc3bbc6` (accepted head `c005e94`), attempt-1 cleaned and independently verified; baselines — inventories 382/382 and 224/224 verified, baselines pinned to the build commits (Windows `aee0669` → image 20261007.264.1, Ubuntu `7e7dc1b` → 20261012.334.1), hosted captures recorded; open licensed/unreproducible inputs listed in the profile `inputs.md` files.
 
 ## P02 — Freeze architecture and shared contracts
 
@@ -32,6 +32,14 @@ Revision 3 (executing since 2026-10-19; D0 authorized). States below are current
 - Pinned execution lane: Sol high; ownership: `parity/contracts/**`, `docs/parity/ARCHITECTURE.md`.
 - Deliverable: Specify immutable image/catalog, host-wide resource lease, backend lifecycle, guest bootstrap, auth/JIT transport, cache qualification, status/settings compatibility, evidence and cleanup schemas. Prove management transport feasibility in an explicitly authorized disposable lab before backend fan-out.
 - Acceptance: Independent security review; concrete schema examples and negative fixtures; no missing interface decision delegated to two workers. Preserve App key custody in existing control distro. PR20 is merged and reconciled before consumers depend on its helper APIs.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: REVIEWED at `3a52d44` on `parity/p02-contracts` — ARCHITECTURE.md plus 8 contracts, 11 schemas and fixtures validated; architecture and security reviews applied; owner decisions 2026-10-19 (labels, D:\aap-runner\images, distro uptime, 10 % reserve floor, eval ISO) recorded in parity/contracts/README.md.
+
+## P02.1 — Prove guest management transport and isolation in the authorized lab
+
+- Earliest wave: 4; prerequisites: P02 and gate D2 (eval ISO, lab GitHub App and test org/repo, approved compute/storage budget).
+- Pinned execution lane: Sol high (Claude: Opus xhigh); ownership: `parity/contracts/lab/**`, `docs/parity/evidence/lab/**`.
+- Deliverable: execute the `guest-transport.md` lab plan (PowerShell Direct through an isolated child process and the hvsocket framed-protocol comparison; SSH over hvsocket with pinned host key; credential bootstrap; replay/nonce/echo; hostile, oversized and guest-replaced endpoints; guest network isolation matrix with a positive egress oracle; JIT end to end; measured budgets) and freeze the chosen sub-candidates as a contract revision. Single owner; gates P10/P11 fan-out.
+- Acceptance: every lab case observed; all isolation negatives refused; no secret in host events 4103/4104, transcripts or guest files outside the runner root; independent security review of the evidence; never on the live pool.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
 
 ## P03 — Implement verified artifact acquisition
@@ -88,6 +96,14 @@ Revision 3 (executing since 2026-10-19; D0 authorized). States below are current
 - Pinned execution lane: Sol high; ownership: `supervisor/capacity/**`, `tests/capacity/**`.
 - Deliverable: Acquire durable generation-bound reservations before boot/registration. Count legacy, warm/listening and cleanup-uncertain workers; enforce five total runner slots plus aggregate CPU/RAM/disk/IO and physical-host reserve.
 - Acceptance: Profile counts are two live controls, Linux 0-5 and Windows 0-5, with Linux + Windows <= 5; each control's maximum is recomputed from the other (3 Linux => Windows max 2; 5 Windows => Linux 0) and 0 is valid for either. Resource allotment follows the counts per profile and the host reserve is never given away. The tray shows the two profiles as separate groups with the OS on every runner card and per-profile totals and limits next to each control (owner requirement 2026-10-19). Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Sixth worker, duplicate lease, concurrent starts, lost heartbeat, controller crash, late completion, failed reset, memory overhead and storage pressure cannot over-admit or release capacity early. Legacy pool never remains autonomous at five plus Windows.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+
+## P10.0 — Guest network module (shared by the Windows and Linux VM backends)
+
+- Earliest wave: 5; prerequisites: P02.1, P09.
+- Pinned execution lane: Sol high (Claude: Opus high); ownership: `supervisor/backends/network/**`, `tests/backends/network/**`.
+- Deliverable: one PowerShell module for the per-profile internal switch + NAT (or per-guest private switch, per P02.1), DHCP/router guard, MAC-spoofing off, extended port ACLs (deny host vEthernet except DHCP/DNS, RFC1918, 169.254/16, 100.64/10, multicast, fe80::/10, fc00::/7, LAN IPv6 prefix, clone subnet except gateway), enhanced session and Guest Service Interface off; attach/detach/verify consumed by P10 and P11.
+- Acceptance: Pester with Hyper-V cmdlet fakes; the lab negative matrix passes on a disposable guest; External/Default switch attachment refused.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
 
 ## P10 — Implement Windows VM backend

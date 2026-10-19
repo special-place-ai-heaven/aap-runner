@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "zccache": {
+    "version": "1.15.6",
+    "commit": "15ec9537af0d219e07b72ce2b3f97d5f68d72b5e",
+    "archive": "zccache-v1.15.6-x86_64-pc-windows-msvc.zip",
+    "archive_sha256": "a9e2b079946d00757a56fea3dacd8a47f9cb4bcbfe8c427ffd719ced59fd949b",
+    "binary_sha256": null
+  },
+  "platform": "windows-x86_64",
+  "matrix_revision": 1,
+  "rows": [
+    {
+      "compiler": "rustc",
+      "compiler_version": "1.90.0 (x86_64-pc-windows-msvc)",
+      "invocation": "rustc-wrapper",
+      "mode": "qualified",
+      "evidence_ref": "parity/cache/qualification/windows/rustc-wrapper.json",
+      "reason": "cold/warm/disabled outputs and exit codes equal; warm hit observed"
+    },
+    {
+      "compiler": "cl",
+      "compiler_version": "19.50",
+      "invocation": "compile-object",
+      "mode": "direct",
+      "evidence_ref": null,
+      "reason": "native cl.exe integration is partial at 1.15.6; not qualified"
+    },
+    {
+      "compiler": "link",
+      "compiler_version": "14.50",
+      "invocation": "link",
+      "mode": "direct",
+      "evidence_ref": null,
+      "reason": "native link.exe integration is partial at 1.15.6; not qualified"
+    }
+  ]
+}
