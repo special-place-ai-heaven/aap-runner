@@ -70,7 +70,9 @@ and a **test org and repository**, so the lab never uses the production App, key
 2. SSH over a Hyper-V socket for Ubuntu with KVP host-key pinning (fallback: per-clone isolated switch).
 3. Guest network isolation (internet only; no host, WSL distro, LAN or other guests): one
    internal switch per profile with Windows NAT, host firewall rules and per-adapter ACLs, or one
-   private switch per guest.
+   internal switch per guest (a private switch has no host adapter and is not viable). Note: `D:\`
+   grants Everyone full control today, so the image-root ancestor check fails and VM profiles stay
+   off until the owner tightens `D:\` or relocates the image root.
 4. End-to-end JIT runner behaviour on the pinned runner release: environment input consumed and
    masked, one job, registration gone afterwards, unused runner deletion, no copy left in the guest.
 5. (Removed by the security review: `reset` is forbidden, so there is nothing to prove.)

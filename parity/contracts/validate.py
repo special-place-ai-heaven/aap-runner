@@ -162,7 +162,7 @@ def _same(a, b):
 
 SECRET_KEY = re.compile(r"(token|secret|password|passwd|private_key|jit_config|credential|pem)", re.I)
 # Value shapes of GitHub tokens and PEM blocks; never valid in any contract document.
-SECRET_VALUE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)")
+SECRET_VALUE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|SYNTHETIC-JIT-MARKER)")
 
 
 def _no_secret_values(doc, path="$"):

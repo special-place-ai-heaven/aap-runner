@@ -41,10 +41,10 @@ same bounded JSON.
 
 | Item | Windows | Linux |
 |---|---|---|
-| Host-side caller | a short-lived hidden child per command: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -File <supervisor dir>\backends\windows\psdirect-call.ps1`, no data on its command line, inside a job object with memory, CPU-time and wall-time caps and kill-on-close | the supervisor's relay (below) plus `C:\Windows\System32\OpenSSH\ssh.exe` by absolute path |
+| Host-side caller | a short-lived hidden child per command: `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -NonInteractive -File <supervisor dir>\backends\windows\psdirect-call.ps1`, no data on its command line, inside a job object with memory, CPU-time and wall-time caps and kill-on-close; the child's environment carries the machine `PSModulePath`, not the operator's | the supervisor's relay (below) plus `C:\Windows\System32\OpenSSH\ssh.exe` by absolute path |
 | Channel | inside the child: `New-PSSession -VMId <id> -Credential <per-clone>` | OpenSSH over `AF_VSOCK` port **5222**; host service GUID **`00001466-facb-11e6-bd58-64006a7986d3`** (VSOCK template with port 0x1466) |
 | Agent entrypoint | `C:\Program Files\aap-guest\agent.ps1`, Administrators-only ACL, in the image | `/usr/local/libexec/aap-guest/agent`, root 0755, in the image |
-| How data travels | supervisor writes envelope line + payload to the **child's stdin**; the child sends them as **pipeline input** (`Invoke-Command -Session $s -InputObject`) to one fixed script block that writes them to the agent's stdin. Never in script text, `-ArgumentList` or any command line | `authorized_keys` entry `restrict,command="/usr/local/libexec/aap-guest/agent"`; stdin = envelope line then exactly `payload_bytes` bytes |
+| How data travels | supervisor writes envelope line + payload to the **child's stdin**; the child hands them to the **remote runspace through the PowerShell API** (`[powershell]::Create()` on the session's runspace, one fixed script, the values added with `AddParameter` or as stream input), and that script writes them to the agent's stdin. Never in script text, `-ArgumentList`, `Invoke-Command -InputObject` or any local cmdlet parameter (event 4103 records cmdlet parameters), and never on a command line | `authorized_keys` entry `restrict,command="/usr/local/libexec/aap-guest/agent"`; stdin = envelope line then exactly `payload_bytes` bytes |
 | Reply | the agent writes one JSON line to stdout; the script block returns it as one `[string]`; the child discards every other stream (error, warning, verbose, debug, information, progress) and host-UI calls, and writes that one string to its own stdout | stdout: exactly one JSON line; stderr read at most 4 KiB, never parsed |
 | Host-side bound | the supervisor reads at most 8193 bytes of the child's stdout, then parses; anything more, or any child exit other than 0, is `hostile_guest` | the relay reads at most 8193 bytes |
 
@@ -99,9 +99,11 @@ Kernel `CONFIG_VSOCKET=y`, `CONFIG_HYPERV_VSOCKETS=y` (Microsoft, "Make your own
 services"). The host service GUID above is registered once under
 `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\GuestCommunicationServices`
 by the installer through the existing elevated helper (P19). The relay is a supervisor-module
-`ProxyCommand` over stdio that connects an `AF_HYPERV` socket to the VM id and that GUID; it opens
-no listening socket. Fallback candidate if the relay is not qualified: SSH on a per-clone private
-switch.
+program named in `ProxyCommand` by its absolute path (under the Administrators-only supervisor
+folder), speaking stdio and connecting an `AF_HYPERV` socket to the VM id and that GUID; it opens no
+listening socket. Fallback candidate if the relay is not qualified: SSH over a per-clone
+**internal** switch (it has a host adapter) under the same ACL and firewall rules; a private switch
+has no host adapter, so it cannot carry host SSH.
 
 - **Client hardening** (security review M4): `ssh.exe` by absolute path with `-F` pointing at an
   Administrators-only config that sets `IdentitiesOnly yes`, `IdentityAgent none`,
@@ -141,8 +143,9 @@ Candidate mechanism: one Hyper-V internal switch per profile (`aap-guests-win`,
 `aap-guests-linux`), each with its own private subnet and a `New-NetNat` instance for internet
 egress. An internal switch gives the host a vEthernet adapter on that subnet, so the host **is**
 reachable at layer 3 unless the ACLs and firewall rules above block it; that is why those rules are
-mandatory, not optional. Alternative candidate: one private switch per guest with a per-guest NAT
-path. P02.1 picks one with evidence, and must also show the design holds with WSL in mirrored
+mandatory, not optional. Alternative candidate: one **internal** switch per guest (its own subnet
+and NAT, same ACLs and firewall rules). A Hyper-V private switch has no host adapter, so it cannot
+carry host NAT egress or host SSH and is not viable for these designs. P02.1 picks one with evidence, and must also show the design holds with WSL in mirrored
 networking mode.
 
 ## What is never supplied to a guest (DECIDED)
@@ -169,7 +172,7 @@ step 6. No live install, `C:\wsl`, `C:\ProgramData\aap-runner` or live distro is
 | 2 | Create two differencing clones of each; inject distinct per-clone credentials offline (Windows: unattend sub-candidate a, then KVP sub-candidate b; Linux: seed ISO, then KVP) | each clone accepts only its own credential; the base disk hash is unchanged after both clones ran |
 | 3 | PowerShell Direct `probe` through the call child and the agent entrypoint, by VM id; the same through the framed hvsocket comparison | reply validates against the schema; echo fields match; works with the clone's network adapter disconnected |
 | 4 | Linux SSH over vsock port 5222 through the relay, `probe` with the pinned host key | connects with networking disabled; a changed host key is refused; the key cannot open a shell or forward |
-| 5 | `deliver_registration` with the synthetic marker, then `start_runner` against a stub `Runner.Listener` that records how it received input | stub sees the marker only in `ACTIONS_RUNNER_INPUT_JITCONFIG`; marker absent from guest and host argv (process lists sampled during start), guest event logs (PowerShell 4103/4104, transcription), **host PowerShell Operational 4103/4104 and transcription output**, files, journald, the supervisor log, status files and evidence |
+| 5 | With PowerShell module logging for all modules (`*`), script-block logging and transcription **enabled on the host and in the guest** (otherwise this step is void): `deliver_registration` with the synthetic marker, then `start_runner` against a stub `Runner.Listener` that records how it received input | stub sees the marker only in `ACTIONS_RUNNER_INPUT_JITCONFIG`; marker absent from guest and host argv (process lists sampled during start), guest event logs (PowerShell 4103/4104, transcription), **host PowerShell Operational 4103/4104 and transcription output**, files, journald, the supervisor log, status files and evidence |
 | 6 | Real runner (pinned release) with a JIT config from the lab App for the test repo | runner takes one job and exits; the registration disappears; reusing the JIT config is rejected by GitHub; an unused JIT runner is deleted by `release_request` |
 | 7 | Network, positive | from each guest: DNS resolves `github.com`; HTTPS to `github.com`, `api.github.com` and one package registry per OS succeeds |
 | 8 | Destroy each clone | VM, its configuration/saved-state/checkpoint files, clone and scratch folders and per-clone credential files observed absent; base unchanged |

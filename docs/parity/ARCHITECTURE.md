@@ -184,9 +184,11 @@ checkpoint paths as well as its disks.
 Image root protection (DECIDED, security review H3): at install and at every supervisor start the
 installer and supervisor run the same owner, ACL, reparse-point and ancestor checks on
 `D:\aap-runner\images` that `install-supervisor.ps1` runs on `C:\ProgramData\aap-runner`; any
-failure disables the VM profiles and shows the reason in status. `D:\` grants Everyone full control
-today, so the installer creates `D:\aap-runner` with an Administrators/SYSTEM-only ACL and
-inheritance off; if the ancestor check still fails the owner picks another location. Approved
+failure disables the VM profiles and shows the reason in status. `D:\` today grants Everyone full
+control, including delete-child, so the ancestor check **fails** on `D:\` itself even after the
+installer creates `D:\aap-runner` with an Administrators/SYSTEM-only ACL and inheritance off. The
+VM profiles therefore stay off (fail closed) until the owner tightens the ACL on `D:\` or relocates
+the image root. Approved
 artifact hashes are pinned outside the image root (admin-only data folder and the P24
 certificate), and every `create` re-hashes the base against that pin.
 
@@ -310,8 +312,10 @@ CANDIDATE (D2):
 - Hostile replies: bounded size, strict schema, printable ASCII diagnostics, time-limited; a
   violation sends the slot straight to `deleting` with code `hostile_guest`.
 - Wire framing: Windows runs each command in a short-lived hidden child process (job object
-  with memory, CPU and time caps) that takes the envelope and payload on stdin, passes them as
-  pipeline input to a fixed script block in the PowerShell Direct session, which feeds
+  with memory, CPU and time caps, machine `PSModulePath`) that takes the envelope and payload on
+  stdin and hands them to the remote runspace through the PowerShell API (`[powershell]::Create()`
+  with `AddParameter` or stream input, never a local cmdlet parameter that event 4103 would log),
+  where one fixed script feeds
   `C:\Program Files\aap-guest\agent.ps1` on stdin; the child discards every non-output stream and
   returns one bounded string; Linux uses an SSH forced command `/usr/local/libexec/aap-guest/agent`
   over vsock port 5222 (host service GUID `00001466-facb-11e6-bd58-64006a7986d3`), stdin = envelope
@@ -321,7 +325,7 @@ CANDIDATE (D2):
   guard on, MAC spoofing off; extended port ACLs denying the host vEthernet addresses, private,
   link-local, CGNAT, multicast and ULA ranges, the LAN IPv6 prefix and other clones; enhanced
   session and Guest Service Interface off; host ports blocked on the guest vEthernet). The
-  mechanism (internal switch per profile with NAT, or a private switch per guest) is CANDIDATE D2,
+  mechanism (internal switch per profile with NAT, or an internal switch per guest; a private switch has no host adapter and is not viable) is CANDIDATE D2,
   owned by the P10.0 guest network module. The lab proves internet egress works and every denied
   path fails, over IPv4 and IPv6.
 
@@ -352,7 +356,7 @@ anchored to the P01 baselines (Windows `aee0669` / `20261007.264.1`, Ubuntu `7e7
 `20261012.334.1`) and their `inventory.json` hashes. One `active` generation per profile;
 the previous one is `retired` and kept as the single rollback generation. New admissions use the
 active generation; running jobs finish on theirs. A `quarantined` generation is never re-activated.
-The live supervisor refuses, and admits nothing from, a catalog at `D:\aap-runner\images` whose scope is not `live`. Lab catalogs never live under the live image root.
+The live supervisor refuses, and admits nothing from, a catalog at `D:\aap-runner\images` whose scope is not `live`. Lab catalogs never live under the live image root. A catalog at that path that says `lab` (or anything but `live`) disables the VM profiles, with the reason in status. Defense in depth: each entry in the admin-only `C:\ProgramData\aap-runner\capacity\approved-images.json` pins the generation's artifact hashes **and** carries the reference to the owner's `live_activation` record; the live supervisor admits an `active` generation only when the catalog and that entry both have it.
 
 ```mermaid
 stateDiagram-v2

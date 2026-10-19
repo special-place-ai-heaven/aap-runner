@@ -85,10 +85,7 @@ States: `creating`, `ready` (registered and listening), `busy`, `draining`, `col
 - A validated heartbeat returns a heartbeat-quarantined slot to `busy` (job running) or `ready`.
 - A heartbeat-quarantined slot is destroyed only when the broker's read-only `status_request`
   (runner looked up by the ledger's runner id) reports it `offline` or `absent` and not busy, or
-  the job is known to have ended. A VM whose runner GitHub reports `busy` is never destroyed: past
-  the per-lease host wall clock (`lease_wall_clock_hours` in settings, default 6) the slot stays
-  held, `cleanup_uncertain`, and status flags it for the owner. A running job is never cancelled
-  by the allocator.
+  the job is known to have ended. Wall-clock rule (same text in status-settings.md): past `lease_wall_clock_hours` (default 6) since the lease was issued, a heartbeat-quarantined slot is destroyed only when GitHub reports its runner `offline` (or `absent`) and not busy; a runner GitHub reports `busy` is never destroyed, the slot stays held and `cleanup_uncertain`, and `status.v5.json` `detail` flags it for the owner. A running job is never cancelled by the allocator.
 - `hostile_guest` is immediate and final: the slot goes straight to `deleting` and the VM is never
   trusted again.
 - Only `reconciled` frees a slot. A late `job_done` for an older `lease_generation` is ignored for
