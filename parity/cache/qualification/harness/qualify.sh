@@ -2,7 +2,7 @@
 # zccache 1.15.6 qualification harness, Linux x86_64. LAB ONLY (P13/P22), see ../README.md.
 #
 # Runs one (compiler, invocation) pair through method steps 1-6: uncached, cold and warm builds,
-# a relocated build for debug-pdb, two poisoned-cache builds and the deliberate-error case. Every
+# a relocated build for debug-pdb, three poisoned-cache builds and the deliberate-error case. Every
 # case uses its own fresh cache root. It compares exit codes and artifact hashes, counts journal
 # outcomes and writes one evidence record via record.jq. It never emits "qualified": the record's
 # row stays "direct" and `harness_pass` says whether steps 1-6 held. Lab steps 7-9 decide the rest.
@@ -13,14 +13,24 @@
 # Exit codes: 0 record written (read harness_pass), 1 unexpected harness error (no record), 2 usage,
 # 3 refused (not a clean lab), 4 zccache or zccache-fp is not the pinned release binary.
 # Needs bash 4+, coreutils, find, Linux /proc and jq 1.7+. Start it from a clean shell:
-# no tokens, keys or runner JIT config in the environment (it refuses otherwise).
+# no tokens, keys, URL credentials or runner JIT config in the environment (it refuses otherwise).
+# Builds and zccache run under `env -i` with only the ZQ_ENV_KEEP variables.
 set -u
 
 ZQ_BINARY_SHA256=f97ae874042ab5c80fc2e35342e406972437f1fd45ec81372be33c0f5cbb18cc
 ZQ_FP_SHA256=df637b927954093a6fd5c7cc34afc3dd9470a855ec3e03e0342ee9ea9e49f058
 ZQ_EVIDENCE_RE='^parity/cache/qualification/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$'
 # Variable names that look like credentials (the zccache daemon and its crash dumps inherit them).
-ZQ_SECRET_NAME_RE='token|secret|passw|credential|jit|private_?key|(^|_)(api_?)?key$|pem$'
+# pat and auth only as whole words (GH_PAT, SSH_AUTH_SOCK, NPM_CONFIG__AUTH, not PATH or
+# GIT_AUTHOR_NAME); _pwd$ catches MYSQL_PWD but not PWD.
+ZQ_SECRET_NAME_RE='token|secret|pass|credential|jit|jwt|private_?key|(^|_)(api_?)?key$|pem$|(^|_)(pat|auth)($|_)|_pwd$'
+# A value carrying URL credentials, scheme://user:password@host, whatever the variable is called.
+ZQ_URL_CREDENTIAL_RE='://[^/@[:space:]]*:[^/@[:space:]]*@'
+# The only variables builds and zccache (hence its daemons) see; everything else is dropped by
+# `env -i`, so a credential the name and value checks miss never reaches them. PWD stays: GCC
+# takes DW_AT_comp_dir from it. HOME and the rustup variables let the rustc proxy find its toolchain.
+ZQ_ENV_KEEP=(PATH HOME PWD TMPDIR LANG LC_ALL CARGO_HOME RUSTUP_HOME RUSTUP_TOOLCHAIN
+  ZCCACHE_MODE ZCCACHE_CACHE_DIR ZCCACHE_SESSION_ID)
 ZQ_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 zq_pairs() {
@@ -50,6 +60,23 @@ zq_is_wsl_kernel() {
 
 zq_secret_env_names() { compgen -e | grep -Ei "${ZQ_SECRET_NAME_RE}" | sort -u; }
 
+zq_url_credential_names() { # names only; the values are never printed
+  local n
+  for n in $(compgen -e); do [[ "${!n-}" =~ ${ZQ_URL_CREDENTIAL_RE} ]] && echo "${n}"; done | sort -u
+}
+
+zq_run() { # CMD... -> CMD under `env -i` with the ZQ_ENV_KEEP variables that are set
+  local n
+  local -a keep=()
+  for n in "${ZQ_ENV_KEEP[@]}"; do [[ -n "${!n+x}" ]] && keep+=("${n}=${!n}"); done
+  env -i "${keep[@]}" "$@"
+}
+
+zq_kept_zccache_names() { # the ZCCACHE_* names zq_run passes on, space-separated
+  local n
+  for n in "${ZQ_ENV_KEEP[@]}"; do [[ "${n}" == ZCCACHE_* && -n "${!n+x}" ]] && printf '%s ' "${n}"; done
+}
+
 zq_assert_lab() {
   if [[ "${AAP_ZCCACHE_LAB:-}" != 1 ]]; then
     echo "REFUSED: AAP_ZCCACHE_LAB=1 is not set; this harness runs only inside a disposable lab VM" >&2
@@ -69,7 +96,7 @@ zq_assert_lab() {
     return 3
   fi
   local secrets
-  secrets=$(zq_secret_env_names | tr '\n' ' ')
+  secrets=$({ zq_secret_env_names; zq_url_credential_names; } | sort -u | tr '\n' ' ')
   if [[ -n "${secrets}" ]]; then
     echo "REFUSED: credential-shaped environment variables present (names only): ${secrets}; start the harness from a clean shell" >&2
     return 3
@@ -155,17 +182,22 @@ zq_clear_env() {
   done
 }
 
-# Corrupts every regular file in a cache store (links are not followed) and prints how many
-# changed. same-size flips one byte mid-file in place, keeping length and modification time, so
-# only a content check can notice (upstream does not claim to prove integrity, README 1123).
-# marker replaces the file with the 10-byte P04-POISON, changing its length.
-zq_corrupt() { # STORE same-size|marker
+# Corrupts regular files in a cache store (links are not followed) and prints how many changed.
+# artifact flips one byte mid-file in place, keeping length and modification time, in each file
+# whose SHA-256 is one of HASHES (a stored copy of an uncached artifact); metadata stays intact,
+# so only a content check can notice (upstream does not claim to prove integrity, README 1123).
+# same-size does the same to every file, which can include metadata a format check rejects.
+# marker replaces each file with the 10-byte P04-POISON, changing its length.
+zq_corrupt() { # STORE artifact|same-size|marker [HASHES]
   local n=0 f mode ref size at byte
   ref=$(mktemp)
   while IFS= read -r -d '' f; do
-    [[ "$2" == same-size && ! -s "${f}" ]] && continue
+    [[ "$2" != marker && ! -s "${f}" ]] && continue
+    [[ "$2" == artifact && " ${3:-} " != *" $(sha256sum < "${f}" | cut -d' ' -f1) "* ]] && continue
     mode=$(stat -c %a "${f}") && chmod u+w "${f}" || continue
-    if [[ "$2" == same-size ]]; then
+    if [[ "$2" == marker ]]; then
+      printf P04-POISON > "${f}" && n=$((n + 1))
+    else
       size=$(stat -c %s "${f}")
       at=$((size / 2))
       byte=$(od -An -tu1 -j "${at}" -N1 "${f}" | tr -d ' \n')
@@ -174,8 +206,6 @@ zq_corrupt() { # STORE same-size|marker
         touch -r "${ref}" "${f}"; then
         n=$((n + 1))
       fi
-    else
-      printf P04-POISON > "${f}" && n=$((n + 1))
     fi
     chmod "${mode}" "${f}"
   done < <(find "$1" -type f -print0 2> /dev/null)
@@ -183,9 +213,14 @@ zq_corrupt() { # STORE same-size|marker
   echo "${n}"
 }
 
+# The private bin directory must be absolute and below /: an empty or relative path would make
+# the process helpers match executables the harness does not own.
+zq_bin_ok() { [[ "$1" == /?* ]] || { echo "zq: refusing bin path '$1'; it must be absolute" >&2; return 1; }; }
+
 # Every visible process whose executable is named zccache*, as JSON: the lab records which binary
 # the daemons really run.
 zq_daemons() { # BIN
+  zq_bin_ok "$1" || { echo '[]'; return 1; }
   local p exe
   for p in /proc/[0-9]*; do
     exe=$(readlink "${p}/exe" 2> /dev/null) || continue
@@ -197,6 +232,7 @@ zq_daemons() { # BIN
 }
 
 zq_own_pids() { # BIN -> pids of processes running an executable from BIN
+  zq_bin_ok "$1" || return 1
   local p exe
   for p in /proc/[0-9]*; do
     exe=$(readlink "${p}/exe" 2> /dev/null) || continue
@@ -205,6 +241,7 @@ zq_own_pids() { # BIN -> pids of processes running an executable from BIN
 }
 
 zq_stop_daemons() { # BIN -> prints true when nothing runs from BIN any more
+  zq_bin_ok "$1" || { echo false; return 1; }
   local -a pids
   local i
   mapfile -t pids < <(zq_own_pids "$1")
@@ -238,7 +275,7 @@ zq_os() { # kernel release and image identity for the record
 }
 
 # One build as a JSON run entry. ROOT empty: the compiler directly. Otherwise through zccache with
-# that cache root, inside a journaled session.
+# that cache root, inside a journaled session. Every command runs under zq_run (env -i).
 zq_phase() { # SRC CASE ROOT NAME
   local src=$1 root=$3 log="${ZQ_LOGS}/$4" rc sid journal=null present=false zenv
   local -a argv
@@ -246,16 +283,16 @@ zq_phase() { # SRC CASE ROOT NAME
   zq_command "${ZQ_COMPILER}" "${ZQ_INVOCATION}" "${src}" "$2" "${ZQ_RSP}" > "${log}.argv" || return 1
   mapfile -t argv < "${log}.argv"
   if [[ -z "${root}" ]]; then
-    zenv=$(compgen -e | grep '^ZCCACHE_' | sort | tr '\n' ' ')
-    (cd "${src}" && exec "${ZQ_CC}" "${argv[@]}") > "${log}.out" 2> "${log}.err"; rc=$?
+    zenv=$(zq_kept_zccache_names)
+    (cd "${src}" && zq_run "${ZQ_CC}" "${argv[@]}") > "${log}.out" 2> "${log}.err"; rc=$?
   else
     export ZCCACHE_CACHE_DIR="${root}"
-    sid=$(cd "${src}" && "${ZQ_ZC}" session-start --journal "${log}.jsonl" 2> "${log}.session-start.err" | jq -r '.session_id // empty' 2> /dev/null)
+    sid=$(cd "${src}" && zq_run "${ZQ_ZC}" session-start --journal "${log}.jsonl" 2> "${log}.session-start.err" | jq -r '.session_id // empty' 2> /dev/null)
     [[ -n "${sid}" ]] && export ZCCACHE_SESSION_ID="${sid}"
-    zenv=$(compgen -e | grep '^ZCCACHE_' | sort | tr '\n' ' ')
-    (cd "${src}" && exec "${ZQ_ZC}" "${ZQ_CC}" "${argv[@]}") > "${log}.out" 2> "${log}.err"; rc=$?
+    zenv=$(zq_kept_zccache_names)
+    (cd "${src}" && zq_run "${ZQ_ZC}" "${ZQ_CC}" "${argv[@]}") > "${log}.out" 2> "${log}.err"; rc=$?
     if [[ -n "${sid}" ]]; then
-      (cd "${src}" && "${ZQ_ZC}" session-end "${sid}" --json) > "${log}.session-end.json" 2>&1
+      (cd "${src}" && zq_run "${ZQ_ZC}" session-end "${sid}" --json) > "${log}.session-end.json" 2>&1
       journal=$(zq_journal "${log}.jsonl")
     fi
     unset ZCCACHE_CACHE_DIR ZCCACHE_SESSION_ID
@@ -268,10 +305,10 @@ zq_phase() { # SRC CASE ROOT NAME
       journal: $j}' --args "${argv[@]}"
 }
 
-zq_poison() { # SRC ROOT same-size|marker
+zq_poison() { # SRC ROOT artifact|same-size|marker [HASHES]
   local prime n p
   prime=$(zq_phase "$1" ok "$2" "ok-prime-$3") || return 1
-  n=$(zq_corrupt "$2/artifacts" "$3")
+  n=$(zq_corrupt "$2/artifacts" "$3" "${4:-}")
   p=$(zq_phase "$1" ok "$2" "ok-poisoned-$3") || return 1
   jq -c --argjson e "$(jq .exit <<<"${prime}")" --argjson n "${n}" '.prime_exit = $e | .corrupted_files = $n' <<<"${p}"
 }
@@ -283,6 +320,10 @@ zq_tree() { # WORK NAME -> a fresh copy of the fixtures
 zq_abs() { if [[ "$1" == /* ]]; then printf '%s\n' "$1"; else printf '%s/%s\n' "${PWD}" "$1"; fi; }  # no symlink resolution: clang++ is a symlink to clang
 zq_printable() { tr -cd '\40-\176' | cut -c1-120; }
 
+# Creates WORK (mode 0700) and prints its canonical path, symlinks in its parents resolved the way
+# /proc/<pid>/exe reports them, so the private bin path matches the daemons' executables.
+zq_work_dir() { mkdir -p -- "$1" && chmod 0700 -- "$1" && (cd -- "$1" && pwd -P); }
+
 zq_main() {
   zq_assert_lab || return 3
   zq_clear_env
@@ -291,12 +332,13 @@ zq_main() {
   ZQ_COMPILER=$1 ZQ_INVOCATION=$4
   ZQ_CC=$(zq_abs "$2")
   local cver=$3 eref=$7 out work zc fp zsha fpsha
-  zc=$(zq_abs "$5") out=$(zq_abs "$6") work=$(zq_abs "$8")
+  zc=$(zq_abs "$5") out=$(zq_abs "$6")
   fp="$(dirname "${zc}")/zccache-fp"
   [[ -f "${fp}" ]] || { echo "BINARY: ${fp} is missing; unpack zccache-fp beside zccache" >&2; return 4; }
 
-  # Run a private copy under WORK, hashed after copying, never the file given on the command line.
-  mkdir -p "${work}/logs" && chmod 0700 "${work}" || return 1
+  # Canonical WORK first, then a private copy under it, hashed after copying, never the file given
+  # on the command line.
+  work=$(zq_work_dir "$8") && mkdir -- "${work}/logs" || return 1
   ZQ_BIN="${work}/bin"
   install -d -m 0700 "${ZQ_BIN}" && cp -- "${zc}" "${ZQ_BIN}/zccache" && cp -- "${fp}" "${ZQ_BIN}/zccache-fp" &&
     chmod 0700 "${ZQ_BIN}/zccache" "${ZQ_BIN}/zccache-fp" || return 1
@@ -311,12 +353,12 @@ zq_main() {
   local started banner src moved
   started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   ZQ_LOGS="${work}/logs" ZQ_RSP="${work}/args.rsp"
-  banner=$("${ZQ_CC}" --version 2>&1)
+  banner=$(zq_run "${ZQ_CC}" --version 2>&1)
   zq_check_banner "${ZQ_COMPILER}" "${cver}" "${banner}" || return 2
   if [[ "${ZQ_INVOCATION}" == path-with-spaces ]]; then src=$(zq_tree "${work}" "src with spaces"); else src=$(zq_tree "${work}" src); fi || return 1
 
   # Fresh cache root per case; no cache root is ever deleted (its daemon may still be alive).
-  local u c w rd=null r=null ps pm eu ec ew
+  local u c w rd=null r=null pa ps pm eu ec ew
   u=$(zq_phase "${src}" ok "" ok-uncached) || return 1
   c=$(zq_phase "${src}" ok "${work}/cache-ok" ok-cold) || return 1
   w=$(zq_phase "${src}" ok "${work}/cache-ok" ok-warm) || return 1
@@ -325,6 +367,7 @@ zq_main() {
     rd=$(zq_phase "${moved}" ok "" ok-relocated-direct) || return 1
     r=$(zq_phase "${moved}" ok "${work}/cache-ok" ok-relocated) || return 1
   fi
+  pa=$(zq_poison "${src}" "${work}/cache-poison-artifact" artifact "$(jq -r '.artifacts[]' <<<"${u}" | tr '\n' ' ')") || return 1
   ps=$(zq_poison "${src}" "${work}/cache-poison-same-size" same-size) || return 1
   pm=$(zq_poison "${src}" "${work}/cache-poison-marker" marker) || return 1
   eu=$(zq_phase "${src}" error "" error-uncached) || return 1
@@ -336,9 +379,9 @@ zq_main() {
   crashes=$(zq_crash_dumps "${work}")
   stopped=$(zq_stop_daemons "${ZQ_BIN}")
   tools=$(jq -c -n --arg b "$(head -n 1 <<<"${banner}" | zq_printable)" --arg p "$(zq_printable <<<"${ZQ_CC}")" \
-    --arg s "$(sha256sum "${ZQ_CC}" | cut -d' ' -f1)" --arg z "$("${ZQ_ZC}" --version 2>&1 | head -n 1 | zq_printable)" \
-    --arg zs "${zsha}" --arg fs "${fpsha}" \
-    '{compiler: $b, compiler_path: $p, compiler_sha256: $s, zccache: $z, zccache_sha256: $zs, "zccache-fp_sha256": $fs}')
+    --arg s "$(sha256sum "${ZQ_CC}" | cut -d' ' -f1)" --arg z "$(zq_run "${ZQ_ZC}" --version 2>&1 | head -n 1 | zq_printable)" \
+    --arg zs "${zsha}" --arg fs "${fpsha}" --arg jv "$(jq --version 2>&1 | head -n 1 | zq_printable)" \
+    '{compiler: $b, compiler_path: $p, compiler_sha256: $s, zccache: $z, zccache_sha256: $zs, "zccache-fp_sha256": $fs, jq: $jv}')
   zq_stop_daemons "${ZQ_BIN}" > /dev/null  # `zccache --version` may have started nothing; make sure
   meta=$(jq -c -n --argjson t "${tools}" --argjson os "$(zq_os)" --argjson d "${daemons}" --argjson cd "${crashes}" \
     --argjson ds "${stopped}" --arg cmd "qualify.sh ${ZQ_COMPILER} ${cver} ${ZQ_INVOCATION} ${eref}" \
@@ -351,10 +394,11 @@ zq_main() {
       started_at: $st, ended_at: $en, compiler: $c, compiler_version: $v, invocation: $i, evidence_ref: $e}' \
     --args ${ZQ_REMOVED[@]+"${ZQ_REMOVED[@]}"})
   jq -n --argjson m "${meta}" --argjson u "${u}" --argjson c "${c}" --argjson w "${w}" --argjson rd "${rd}" \
-    --argjson r "${r}" --argjson ps "${ps}" --argjson pm "${pm}" --argjson eu "${eu}" --argjson ec "${ec}" --argjson ew "${ew}" \
+    --argjson r "${r}" --argjson pa "${pa}" --argjson ps "${ps}" --argjson pm "${pm}" \
+    --argjson eu "${eu}" --argjson ec "${ec}" --argjson ew "${ew}" \
     '{meta: $m, errors: {uncached: $eu, cold: $ec, warm: $ew},
       runs: ({uncached: $u, cold: $c, warm: $w, relocated_direct: $rd, relocated: $r,
-              poisoned_same_size: $ps, poisoned_marker: $pm} | with_entries(select(.value != null)))}' \
+              poisoned_artifact: $pa, poisoned_same_size: $ps, poisoned_marker: $pm} | with_entries(select(.value != null)))}' \
     > "${work}/record-input.json" || return 1
   jq -a -f "${ZQ_HERE}/record.jq" "${work}/record-input.json" > "${out}" || return 1
   jq -r '"harness_pass=\(.harness_pass): \(.row.reason)"' "${out}"

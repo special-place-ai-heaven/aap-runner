@@ -108,13 +108,21 @@ Before any build, the harness does the following:
   `ZCCACHE_PATH_REMAP` and `ZCCACHE_SESSION_ID`, and records the removed names. It sets only
   `ZCCACHE_MODE=COPY`, plus `ZCCACHE_CACHE_DIR` and `ZCCACHE_SESSION_ID` for each wrapped run. Every
   run records the `ZCCACHE_*` names in effect.
-- It copies `zccache` and its sibling `zccache-fp` into a private `bin` directory under the work
-  directory. It hashes the copies against the pins (exit 4 on a mismatch) and runs only them,
-  never the file named on the command line.
+- On Linux it runs every build and every zccache call, and so the daemons, under `env -i` with an
+  allowlist: `PATH`, `HOME`, `PWD`, `TMPDIR`, `LANG`, `LC_ALL`, `CARGO_HOME`, `RUSTUP_HOME`,
+  `RUSTUP_TOOLCHAIN` and its own three `ZCCACHE_*` variables. A credential the name and value
+  checks miss never reaches them. `PWD` stays because GCC takes `DW_AT_comp_dir` from it.
+- It canonicalizes the work directory before building any path under it. Linux resolves symlinks
+  in its parents (`pwd -P`). Windows uses long names in their on-disk case and refuses a work
+  directory below a symbolic link or junction. Then it copies `zccache` and its sibling
+  `zccache-fp` into a private `bin` directory there. It hashes the copies against the pins (exit 4
+  on a mismatch) and runs only them, never the file named on the command line. The process helpers
+  refuse an empty or relative `bin` path.
 - For non-MSVC compilers, it checks that the `--version` banner names the matrix version (exit 2
   otherwise). It records the compiler's path and SHA-256.
 - It gives every case its own fresh cache root: `cache-ok` for cold, warm and relocated builds,
-  `cache-error`, `cache-poison-same-size` and `cache-poison-marker`. It never deletes a cache root.
+  `cache-error`, `cache-poison-artifact`, `cache-poison-same-size` and `cache-poison-marker`. It
+  never deletes a cache root.
 - It runs every build with the working directory at the fixture tree.
 
 After the builds, the harness lists every visible `zccache*` process with its executable path and
@@ -136,20 +144,31 @@ environment.
    as hits (README 1240-1252). The harness keeps `zccache session-end <id> --json` output
    (README 1224-1229), but its layout is undocumented, so it is **to confirm in lab** and not used
    for the verdict. Without a session id, the journal is `null` and the row cannot pass.
-4. **Poisoned cache, two variants.** Upstream does not claim to prove cache integrity
+4. **Poisoned cache, three variants.** Upstream does not claim to prove cache integrity
    (README 1123), so corruption handling needs its own evidence. Each variant gets its own root.
-   The harness primes the root with one build through zccache and corrupts every regular file
-   under `<root>/artifacts/` (README 433). It never follows a link or junction. Then it builds
-   again in a journaled session.
-   - `same_size` flips one byte in the middle of each file, in place. The file keeps its length
-     and modification time, so only a content check can notice.
+   The harness primes the root with one build through zccache and corrupts regular files under
+   `<root>/artifacts/` (README 433). It never follows a link or junction. Then it builds again in
+   a journaled session.
+   - `artifact` flips one byte in the middle of each store file whose SHA-256 equals an uncached
+     artifact, in place. The file keeps its length and modification time, and nothing else in the
+     store changes, so this variant asks whether zccache checks the content it serves. Upstream
+     delivers hits as hardlinks or reflinks of the cache file (README 548-560), so the store should
+     hold artifact bytes verbatim. That is **to confirm in lab**. If no stored file matches, the
+     variant corrupts nothing and fails.
+   - `same_size` flips one byte in the middle of every file under `artifacts/` in the same way.
+     Those files can include per-entry metadata, which a format check might reject without any
+     content check. So a pass here does not by itself show that content is verified. What
+     `artifacts/` holds besides artifact bytes is **to confirm in lab**.
    - `marker` replaces each file with the 10-byte `P04-POISON`, which changes its length.
 
    A variant passes when it meets all of these conditions:
    - at least one file was corrupted;
    - the priming build's exit equals the uncached build's exit;
    - the build's exit code and artifacts equal the uncached build;
-   - the journal shows the invocation was looked up, with at least one entry and zero hits.
+   - the journal shows the invocation was looked up, with at least one `miss`, `error` or
+     `link_miss` entry;
+   - the journal shows no `hit` or `link_hit` and no unrecognised outcome. Upstream lists every
+     outcome (README 1247), so an unknown one could be a hit under another name.
 
    A hit served from anywhere else, such as a staged generation outside `artifacts/` or warm
    daemon state, never counts as detection. The journal outcome for a rejected entry (`miss` or
@@ -215,8 +234,8 @@ holds these fields:
 
 - `command`: the harness invocation, without machine paths.
 - `tool_versions`: the compiler's banner, path and SHA-256, zccache's version and SHA-256, the
-  `zccache-fp` SHA-256, and the prerequisite compiler for link rows. Values are printable ASCII of
-  at most 120 characters, as the evidence bundle requires.
+  `zccache-fp` SHA-256, the jq version, and the prerequisite compiler for link rows. Values are
+  printable ASCII of at most 120 characters, as the evidence bundle requires.
 - `os`: the kernel release or Windows version, plus `ImageOS` and `ImageVersion` when the image
   sets them.
 - `env`: the variables the harness set and the `ZCCACHE_*` names it removed.
@@ -226,18 +245,21 @@ holds these fields:
 - `checks`, `harness_pass` and `lab_gates`.
 - `row`: always `direct`.
 
-The verdict requires all of these checks:
+The verdict requires all of these checks. Missing or mistyped input fails a check and never passes
+one. Exits and counts must be numbers, hashes must be 64 hex digits, and two absent values never
+compare equal.
 
 | Check | Requires |
 |---|---|
 | `ok_exit_zero`, `ok_runs_produce_primary` | The uncached build succeeds, and every success-case build produces its primary artifact |
 | `exit_codes_equal`, `artifacts_equal` | Cold and warm builds equal the uncached build |
-| `cold_has_no_hits`, `warm_has_hits` | The journal shows no hit when cold and at least one hit when warm |
+| `cold_has_no_hits`, `warm_has_hits` | The journal shows no hit and no unrecognised outcome when cold, and at least one hit when warm |
 | `errors_stay_errors` | Error-case builds keep the uncached non-zero exit and leave no primary artifact |
-| `poisoned_same_size_rejected`, `poisoned_marker_rejected` | Step 4 holds for both variants |
-| `zccache_env_clean` | Only the harness's own `ZCCACHE_*` variables reached any build |
+| `poisoned_artifact_rejected`, `poisoned_same_size_rejected`, `poisoned_marker_rejected` | Step 4 holds for each variant |
+| `zccache_env_clean` | Every run records its `ZCCACHE_*` names as a list, and only the harness's own reached any build |
 | `daemons_pinned` | At least one `zccache*` process was seen, and every one ran from the private copy with a pinned hash |
-| `no_crash_dumps` | No crash dump was written under any cache root |
+| `no_crash_dumps` | Crash dumps were counted for at least one cache root, and every count is zero |
+| `tool_versions_recorded` | `tool_versions` holds every field above as printable text |
 | `compiler_version_observed` (non-MSVC) | The recorded banner names the matrix version |
 | `relocated_matches_direct` (debug-pdb) | The relocated build equals its direct build |
 
@@ -249,11 +271,11 @@ remaining bundle fields. They copy `command`, `tool_versions` and the `os` value
 ## Running the harness (lab only)
 
 The harness needs jq 1.7 or later, which both baseline images ship, and `zccache-fp` beside
-`zccache`. Start it from a clean shell. No token, key, password or runner JIT config may be in the
-environment, because the daemon and its crash dumps inherit that environment. The harness refuses
-with exit 3 and names the variables, never their values. The work directory must be new or empty,
-and it must not be a symbolic link or junction. Use a fresh per-user directory, never a shared
-`/tmp` path or a fixed folder like `C:\zq`.
+`zccache`. Start it from a clean shell. No token, key, password, URL with credentials or runner JIT
+config may be in the environment, because the daemon and its crash dumps inherit that environment.
+The harness refuses with exit 3 and names the variables, never their values. The work directory
+must be new or empty, and it must not be a symbolic link or junction. Use a fresh per-user
+directory, never a shared `/tmp` path or a fixed folder like `C:\zq`.
 
 ```bash
 export AAP_ZCCACHE_LAB=1   # only inside the disposable lab VM
@@ -286,7 +308,12 @@ Refusal comes first, before any argument is read. Both harnesses refuse in these
   `/sys/fs/cgroup/aap.slice/aap-runner.slice`. On Windows they are `%ProgramData%\aap-runner`,
   `%ProgramFiles%\aap-runner`, `%ProgramW6432%\aap-runner` and `%SystemDrive%\wsl`. ProgramW6432
   matters when a 32-bit PowerShell maps ProgramFiles to Program Files (x86).
-- A variable name looks like a credential.
+- A variable name looks like a credential. That covers token, secret, pass, credential, JIT, JWT
+  and private key anywhere in the name, PAT and AUTH as whole words, and names ending in KEY, PEM
+  or `_PWD`. Examples are `GH_PAT`, `DB_PASS`, `NPM_CONFIG__AUTH`, `SSH_AUTH_SOCK`, `CI_JOB_JWT`
+  and `MYSQL_PWD`, while `PATH`, `PWD` and `GIT_AUTHOR_NAME` pass.
+- A variable's value carries URL credentials, `scheme://user:password@host`, whatever the variable
+  is called. Examples are `DATABASE_URL` and `HTTPS_PROXY`.
 
 The Linux harness also refuses on signs of WSL:
 
@@ -300,7 +327,7 @@ Only the live markers catch a custom WSL kernel without that name.
 
 The reviewer commits each record at its `evidence_ref`, whether it passed or failed. A matrix row
 changes only under the "Verdicts" conditions. Then `matrix_revision` is bumped and
-`python -I parity/contracts/validate.py cache-qualification <matrix>` must pass.
+`python -I -B parity/contracts/validate.py cache-qualification <matrix>` must pass.
 
 ## Deferred to P13 and P22
 
@@ -308,6 +335,8 @@ changes only under the "Verdicts" conditions. Then `matrix_revision` is bumped a
 - Several items **to confirm in lab**:
   - the `session-end --json` layout;
   - the artifact store layout and the journal outcome of a rejected entry, for the poison step;
+  - whether the store holds artifact bytes verbatim and what else `artifacts/` holds, for the
+    `artifact` and `same_size` variants;
   - the daemon kill method;
   - pass-through for unsupported invocations other than rustc binary crates;
   - the clang-cl `/Zi /Fd` PDB behaviour;

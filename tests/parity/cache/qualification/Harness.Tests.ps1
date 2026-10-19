@@ -33,8 +33,9 @@ BeforeAll {
     }
     function New-Journal([int]$Hit = 0, [int]$Miss = 0) { [ordered]@{ hit = $Hit; miss = $Miss; error = 0; link_hit = 0; link_miss = 0; other = 0 } }
     function New-Entry([int]$Exit, $Artifacts, $Journal) {
-        $env = if ($null -ne $Journal) { @('ZCCACHE_CACHE_DIR', 'ZCCACHE_MODE', 'ZCCACHE_SESSION_ID') } else { @('ZCCACHE_MODE') }
-        [ordered]@{ exit = $Exit; artifacts = $Artifacts; primary_present = ($Exit -eq 0); argv = @('x'); cache_dir = $null; zccache_env = $env; journal = $Journal }
+        # @() keeps a one-name list an array; a bare if/else would unroll it into a string.
+        $names = @(if ($null -ne $Journal) { 'ZCCACHE_CACHE_DIR', 'ZCCACHE_MODE', 'ZCCACHE_SESSION_ID' } else { 'ZCCACHE_MODE' })
+        [ordered]@{ exit = $Exit; artifacts = $Artifacts; primary_present = ($Exit -eq 0); argv = @('x'); cache_dir = $null; zccache_env = $names; journal = $Journal }
     }
     function New-Poisoned($Artifacts) { $p = New-Entry 0 $Artifacts (New-Journal 0 1); $p.prime_exit = 0; $p.corrupted_files = 2; $p }
     # A record.jq input in which every harness check holds.
@@ -46,13 +47,15 @@ BeforeAll {
             $runs.relocated_direct = New-Entry 0 $b $null
             $runs.relocated = New-Entry 0 $b (New-Journal 0 1)
         }
+        $runs.poisoned_artifact = New-Poisoned $a
         $runs.poisoned_same_size = New-Poisoned $a
         $runs.poisoned_marker = New-Poisoned $a
         $none = [ordered]@{}
         $errs = [ordered]@{ uncached = (New-Entry 2 $none $null); cold = (New-Entry 2 $none (New-Journal 0 1)); warm = (New-Entry 2 $none (New-Journal 0 1)) }
         $meta = [ordered]@{
             platform = 'windows-x86_64'; command = 'qualify.ps1 -Compiler clang-cl'
-            tool_versions = [ordered]@{ compiler = 'clang version 20.1.8'; zccache_sha256 = $ZqBinarySha256; 'zccache-fp_sha256' = $ZqFpSha256 }
+            tool_versions = [ordered]@{ compiler = 'clang version 20.1.8'; compiler_path = 'C:\Program Files\LLVM\bin\clang-cl.exe'; compiler_sha256 = ('c' * 64)
+                zccache = 'zccache 1.15.6'; zccache_sha256 = $ZqBinarySha256; 'zccache-fp_sha256' = $ZqFpSha256; jq = 'jq-1.8.1' }
             os = [ordered]@{ os_version = 'Microsoft Windows Server 2025 10.0.26100.6584'; image_os = 'win25'; image_version = '20261007.264.1' }
             env = [ordered]@{ set = [ordered]@{ ZCCACHE_MODE = 'COPY' }; removed = @() }
             daemons = @([ordered]@{ pid = 42; exe = 'C:\w\bin\zccache.exe'; in_private_bin = $true; sha256 = $ZqBinarySha256 })
@@ -95,22 +98,35 @@ Describe 'Lab gate (the harness never runs on the live pool host or with credent
         $p | Should -Contain 'X:\fake\wsl'
     }
     It 'finds credential-shaped variable names and leaves ordinary ones alone' {
-        $names = @('GITHUB_TOKEN', 'ACTIONS_RUNNER_INPUT_JITCONFIG', 'TYPESAFE_API_KEY', 'AGENTMEMORY_SECRET', 'DB_PASSWORD', 'AWS_SECRET_ACCESS_KEY',
-            'SSH_PRIVATE_KEY', 'GH_PAT_KEY', 'Path', 'KEYBOARD_LAYOUT', 'ProgramFiles', 'INCLUDE', 'LIB', 'ImageVersion', 'PSModulePath')
-        (Find-ZqSecretEnv $names) -join ',' | Should -Be 'ACTIONS_RUNNER_INPUT_JITCONFIG,AGENTMEMORY_SECRET,AWS_SECRET_ACCESS_KEY,DB_PASSWORD,GH_PAT_KEY,GITHUB_TOKEN,SSH_PRIVATE_KEY,TYPESAFE_API_KEY'
+        $secret = @('GITHUB_TOKEN', 'ACTIONS_RUNNER_INPUT_JITCONFIG', 'TYPESAFE_API_KEY', 'AGENTMEMORY_SECRET', 'DB_PASSWORD', 'AWS_SECRET_ACCESS_KEY',
+            'SSH_PRIVATE_KEY', 'GH_PAT_KEY', 'GH_PAT', 'GITHUB_PAT', 'DB_PASS', 'GPG_PASSPHRASE', 'NPM_CONFIG__AUTH', 'DOCKER_AUTH_CONFIG', 'CI_JOB_JWT',
+            'SSH_AUTH_SOCK', 'MYSQL_PWD')
+        $plain = @('Path', 'PATHEXT', 'PSModulePath', 'SELENIUM_JAR_PATH', 'PWD', 'OLDPWD', 'GIT_AUTHOR_NAME', 'XAUTHORITY', 'KEYBOARD_LAYOUT',
+            'ProgramFiles', 'INCLUDE', 'LIB', 'ImageVersion')
+        (Find-ZqSecretEnv ($secret + $plain)) -join ',' | Should -Be (($secret | Sort-Object) -join ',')
     }
-    It 'Assert-ZqLab passes only with the opt-in, no marker and no credential-shaped variable' {
+    It 'finds URL credentials by value and returns only the variable names' {
+        $vars = [ordered]@{ DATABASE_URL = 'postgres://app:hunter2@db:5432/x'; HTTPS_PROXY = 'http://u:hunter3@proxy:3128'
+            PLAIN_URL = 'https://example.com:443/a@b'; GIT_URL = 'ssh://git@github.com/o/r'; Path = 'C:\x' }
+        (Find-ZqUrlCredential $vars) -join ',' | Should -Be 'DATABASE_URL,HTTPS_PROXY'
+    }
+    It 'Assert-ZqLab passes only with the opt-in, no marker and no credential-shaped name or value' {
         $root = New-TempDir
         $prev = $env:AAP_ZCCACHE_LAB
         try {
             $candidates = @((Join-Path $root 'ProgramData\aap-runner'), (Join-Path $root 'wsl'))
+            $clean = @{ Path = 'C:\x'; PWD = 'C:\w' }
             Remove-Item Env:\AAP_ZCCACHE_LAB -ErrorAction SilentlyContinue
-            { Assert-ZqLab $candidates @('Path') } | Should -Throw 'REFUSED: AAP_ZCCACHE_LAB=1*'
+            { Assert-ZqLab $candidates $clean } | Should -Throw 'REFUSED: AAP_ZCCACHE_LAB=1*'
             $env:AAP_ZCCACHE_LAB = '1'
-            { Assert-ZqLab $candidates @('Path') } | Should -Not -Throw
-            { Assert-ZqLab $candidates @('Path', 'GITHUB_TOKEN') } | Should -Throw 'REFUSED: credential-shaped environment variables present (names only): GITHUB_TOKEN*'
+            { Assert-ZqLab $candidates $clean } | Should -Not -Throw
+            { Assert-ZqLab $candidates @{ Path = 'C:\x'; GITHUB_TOKEN = 'x' } } | Should -Throw 'REFUSED: credential-shaped environment variables present (names only): GITHUB_TOKEN*'
+            $e = $null
+            try { Assert-ZqLab $candidates @{ Path = 'C:\x'; REGISTRY = 'https://bot:hunter4@registry.example/v2' } } catch { $e = $_.Exception.Message }
+            $e | Should -BeLike 'REFUSED: credential-shaped environment variables present (names only): REGISTRY*'
+            $e | Should -Not -Match 'hunter4'
             $null = New-Item -ItemType Directory -Path (Join-Path $root 'wsl')
-            { Assert-ZqLab $candidates @('Path') } | Should -Throw 'REFUSED: live aap-runner install markers present*'
+            { Assert-ZqLab $candidates $clean } | Should -Throw 'REFUSED: live aap-runner install markers present*'
         } finally {
             if ($null -ne $prev) { $env:AAP_ZCCACHE_LAB = $prev } else { Remove-Item Env:\AAP_ZCCACHE_LAB -ErrorAction SilentlyContinue }
             Remove-Item -LiteralPath $root -Recurse -Force
@@ -149,6 +165,20 @@ Describe 'Argument and banner checks' {
             $target = Join-Path $d 'target'; $null = New-Item -ItemType Directory -Path $target
             $link = Join-Path $d 'link'; $null = New-Item -ItemType Junction -Path $link -Target $target
             { Test-With @{ Work = $link } } | Should -Throw 'USAGE: -Work must not be a symbolic link or junction'
+        } finally { cmd /c rmdir (Join-Path $d 'link') 2>$null; Remove-Item -LiteralPath $d -Recurse -Force }
+    }
+    It 'canonicalizes -Work before the private bin path is built and refuses one under a junction' {
+        $d = New-TempDir
+        try {
+            $base = Resolve-ZqWork $d
+            $null = New-Item -ItemType Directory -Path (Join-Path $d 'Mixed-Case')
+            Push-Location -LiteralPath $d
+            try { $w = Resolve-ZqWork 'mixed-case\.\w' } finally { Pop-Location }
+            $w | Should -BeExactly (Join-Path $base 'Mixed-Case\w')
+            Test-Path -LiteralPath $w -PathType Container | Should -BeTrue
+            $target = Join-Path $d 'target'; $null = New-Item -ItemType Directory -Path $target
+            $null = New-Item -ItemType Junction -Path (Join-Path $d 'link') -Target $target
+            { Resolve-ZqWork (Join-Path $d 'link\w') } | Should -Throw 'USAGE: -Work must not be under a symbolic link or junction*'
         } finally { cmd /c rmdir (Join-Path $d 'link') 2>$null; Remove-Item -LiteralPath $d -Recurse -Force }
     }
     It 'accepts a non-MSVC banner that names the exact version' {
@@ -292,7 +322,7 @@ Describe 'Journal, files, environment and corruption' {
             $victim = Join-Path $outside 'v.bin'; [IO.File]::WriteAllBytes($victim, [byte[]](9, 9))
             $null = New-Item -ItemType Junction -Path (Join-Path $store 'link') -Target $outside
 
-            Invoke-ZqCorrupt $store -SameSize | Should -Be 2
+            Invoke-ZqCorrupt $store 'same_size' | Should -Be 2
             ([IO.File]::ReadAllBytes($f1) -join ',') | Should -Be '0,254,255'
             ([IO.File]::ReadAllBytes($f2) -join ',') | Should -Be '248'
             (Get-Item -LiteralPath $f1).LastWriteTimeUtc | Should -Be $old
@@ -301,12 +331,44 @@ Describe 'Journal, files, environment and corruption' {
             (Get-Item -LiteralPath $empty).Length | Should -Be 0
             ([IO.File]::ReadAllBytes($victim) -join ',') | Should -Be '9,9'
 
-            Invoke-ZqCorrupt $store | Should -Be 3
+            Invoke-ZqCorrupt $store 'marker' | Should -Be 3
             [IO.File]::ReadAllText($f1) | Should -Be 'P04-POISON'
             (Get-Item -LiteralPath $f1).IsReadOnly | Should -BeTrue
             ([IO.File]::ReadAllBytes($victim) -join ',') | Should -Be '9,9'
-            Invoke-ZqCorrupt (Join-Path $d 'missing') | Should -Be 0
+            Invoke-ZqCorrupt (Join-Path $d 'missing') 'marker' | Should -Be 0
         } finally { cmd /c rmdir (Join-Path $d 'artifacts\link') 2>$null; Remove-Item -LiteralPath $d -Recurse -Force }
+    }
+    It 'artifact corruption flips only stored copies of uncached artifacts and leaves metadata alone' {
+        $d = New-TempDir
+        try {
+            $entry = Join-Path $d 'entry.bin'; [IO.File]::WriteAllBytes($entry, [byte[]](97, 98, 99))
+            $meta = Join-Path $d 'entry.meta'; [IO.File]::WriteAllText($meta, 'meta')
+            $old = [datetime]::SpecifyKind([datetime]'2026-01-02T03:04:05', 'Utc')
+            [IO.File]::SetLastWriteTimeUtc($entry, $old)
+            Invoke-ZqCorrupt $d 'artifact' @(Get-ZqSha256 $entry) | Should -Be 1
+            ([IO.File]::ReadAllBytes($entry) -join ',') | Should -Be '97,157,99'
+            (Get-Item -LiteralPath $entry).LastWriteTimeUtc | Should -Be $old
+            [IO.File]::ReadAllText($meta) | Should -Be 'meta'
+            Invoke-ZqCorrupt $d 'artifact' @() | Should -Be 0
+        } finally { Remove-Item -LiteralPath $d -Recurse -Force }
+    }
+    It 'refuses an empty, relative or root bin path in the process helpers' {
+        Mock Get-Process { }   # even a regressed guard could then stop nothing
+        foreach ($b in @('', 'bin', 'w\bin', 'C:bin', '\bin', 'C:\')) {
+            { Stop-ZqDaemon $b } | Should -Throw '*refusing bin path*' -Because "bin '$b'"
+            { Get-ZqDaemon $b } | Should -Throw '*refusing bin path*' -Because "bin '$b'"
+        }
+        Should -Invoke Get-Process -Times 0 -Exactly
+    }
+    It 'formats UTC timestamps the same in every culture' {
+        $c = [Globalization.CultureInfo]::new('en-US'); $c.DateTimeFormat.TimeSeparator = '.'
+        $prev = [Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            [Threading.Thread]::CurrentThread.CurrentCulture = $c
+            $naive = [DateTime]::UtcNow.ToString('HH:mm'); $stamp = Get-ZqUtcStamp
+        } finally { [Threading.Thread]::CurrentThread.CurrentCulture = $prev }
+        $naive | Should -Match '^\d\d\.\d\d$' -Because 'the test culture must really change the time separator'
+        $stamp | Should -Match '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$'
     }
     It 'reports the operating system and image identity as printable text' {
         $os = Get-ZqOs
@@ -326,7 +388,8 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         $r.harness_pass | Should -BeTrue
         @($r.checks.PSObject.Properties | Where-Object { $_.Value -ne $true }).Count | Should -Be 0
         @($r.checks.PSObject.Properties.Name) -join ',' | Should -Be ('ok_exit_zero,ok_runs_produce_primary,exit_codes_equal,artifacts_equal,cold_has_no_hits,warm_has_hits,' +
-            'errors_stay_errors,poisoned_same_size_rejected,poisoned_marker_rejected,zccache_env_clean,daemons_pinned,no_crash_dumps,compiler_version_observed')
+            'errors_stay_errors,poisoned_artifact_rejected,poisoned_same_size_rejected,poisoned_marker_rejected,zccache_env_clean,daemons_pinned,no_crash_dumps,' +
+            'tool_versions_recorded,compiler_version_observed')
         $r.row.mode | Should -Be 'direct'
         $r.row.reason | Should -Be 'harness checks pass; lab steps 7-9 pending'
         $r.row.evidence_ref | Should -Be $script:Ref
@@ -352,6 +415,21 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         $in.runs.Remove('relocated')
         (Get-Record $in).checks.relocated_matches_direct | Should -BeFalse
     }
+    It 'accepts a rejected entry that shows as a miss, an error or a link miss' {
+        foreach ($k in 'miss', 'error', 'link_miss') {
+            $in = New-PassingInput
+            $in.runs.poisoned_marker.journal = New-Journal
+            $in.runs.poisoned_marker.journal[$k] = 1
+            (Get-Record $in).checks.poisoned_marker_rejected | Should -BeTrue -Because $k
+        }
+    }
+    It 'never errors on missing or mistyped input; every check just fails' {
+        foreach ($in in @([ordered]@{}, [ordered]@{ meta = 5; runs = 'x'; errors = @(1) })) {
+            $r = Get-Record $in
+            $r.harness_pass | Should -BeFalse
+            @($r.checks.PSObject.Properties | Where-Object { $_.Value -eq $true }).Count | Should -Be 0
+        }
+    }
     It 'fails when <Name>' -ForEach @(
         @{ Name = 'warm shows no hit (a green warm build is not caching evidence)'; Check = 'warm_has_hits'; Break = { param($i) $i.runs.warm.journal.hit = 0 } }
         @{ Name = 'hit counts are unavailable'; Check = 'warm_has_hits'; Break = { param($i) $i.runs.warm.journal = $null } }
@@ -363,6 +441,15 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         @{ Name = 'the cold exit code differs'; Check = 'exit_codes_equal'; Break = { param($i) $i.runs.cold.exit = 1 } }
         @{ Name = 'two empty output directories compare equal but nothing was built'; Check = 'ok_runs_produce_primary'; Break = {
                 param($i) foreach ($k in @('uncached', 'cold', 'warm')) { $i.runs[$k].artifacts = [ordered]@{}; $i.runs[$k].primary_present = $false } } }
+        @{ Name = 'the cold run shows an unrecognised outcome'; Check = 'cold_has_no_hits'; Break = { param($i) $i.runs.cold.journal.other = 1 } }
+        @{ Name = 'a hit count is text'; Check = 'warm_has_hits'; Break = { param($i) $i.runs.warm.journal.hit = '1' } }
+        @{ Name = 'every error exit is missing'; Check = 'errors_stay_errors'; Break = { param($i) foreach ($k in 'uncached', 'cold', 'warm') { $i.errors[$k].exit = $null } } }
+        @{ Name = 'a stored copy of an uncached artifact is served after a byte flip'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.poisoned_artifact.journal.hit = 1 } }
+        @{ Name = 'the artifact variant corrupted nothing'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.poisoned_artifact.corrupted_files = 0 } }
+        @{ Name = 'a corrupted-file count is text'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.poisoned_artifact.corrupted_files = '2' } }
+        @{ Name = 'the poisoned run shows only an unrecognised outcome'; Check = 'poisoned_same_size_rejected'; Break = {
+                param($i) $i.runs.poisoned_same_size.journal.miss = 0; $i.runs.poisoned_same_size.journal.other = 1 } }
+        @{ Name = 'the poisoned run also shows an unrecognised outcome'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.poisoned_marker.journal.other = 1 } }
         @{ Name = 'a same-size poisoned entry is served as a hit'; Check = 'poisoned_same_size_rejected'; Break = { param($i) $i.runs.poisoned_same_size.journal.hit = 1 } }
         @{ Name = 'a poisoned link entry is served as a link hit'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.poisoned_marker.journal.link_hit = 1 } }
         @{ Name = 'a poisoned build differs from uncached'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.poisoned_marker.artifacts = [ordered]@{ 'hello.obj' = ('c' * 64) } } }
@@ -371,12 +458,22 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         @{ Name = 'the priming build failed'; Check = 'poisoned_same_size_rejected'; Break = { param($i) $i.runs.poisoned_same_size.prime_exit = 1 } }
         @{ Name = 'the poison step did not run'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.Remove('poisoned_marker') } }
         @{ Name = 'a lab-shell ZCCACHE_ variable reached a build'; Check = 'zccache_env_clean'; Break = { param($i) $i.runs.warm.zccache_env = @('ZCCACHE_ENDPOINT', 'ZCCACHE_MODE') } }
+        @{ Name = 'a run does not record its ZCCACHE_ names'; Check = 'zccache_env_clean'; Break = { param($i) $i.runs.warm.Remove('zccache_env') } }
+        @{ Name = 'a run records its ZCCACHE_ names as text'; Check = 'zccache_env_clean'; Break = { param($i) $i.runs.warm.zccache_env = 'ZCCACHE_MODE' } }
         @{ Name = 'no daemon was observed'; Check = 'daemons_pinned'; Break = { param($i) $i.meta.daemons = @() } }
         @{ Name = 'a daemon runs from outside the private copy'; Check = 'daemons_pinned'; Break = { param($i) $i.meta.daemons[0].in_private_bin = $false } }
         @{ Name = 'a daemon runs another binary'; Check = 'daemons_pinned'; Break = { param($i) $i.meta.daemons[0].sha256 = ('0' * 64) } }
+        @{ Name = 'the daemon and pinned hashes are both missing'; Check = 'daemons_pinned'; Break = {
+                param($i) $i.meta.daemons[0].sha256 = $null; $i.meta.tool_versions.zccache_sha256 = $null } }
         @{ Name = 'a daemon wrote a crash dump'; Check = 'no_crash_dumps'; Break = { param($i) $i.meta.crash_dumps['cache-ok'] = 1 } }
         @{ Name = 'crash dumps were not counted'; Check = 'no_crash_dumps'; Break = { param($i) $i.meta.crash_dumps = $null } }
+        @{ Name = 'a crash-dump count is missing'; Check = 'no_crash_dumps'; Break = { param($i) $i.meta.crash_dumps['cache-ok'] = $null } }
+        @{ Name = 'no cache root was counted'; Check = 'no_crash_dumps'; Break = { param($i) $i.meta.crash_dumps = [ordered]@{} } }
+        @{ Name = 'tool versions are missing'; Check = 'tool_versions_recorded'; Break = { param($i) $i.meta.Remove('tool_versions') } }
+        @{ Name = 'the jq version is missing'; Check = 'tool_versions_recorded'; Break = { param($i) $i.meta.tool_versions.Remove('jq') } }
+        @{ Name = 'the zccache version is empty'; Check = 'tool_versions_recorded'; Break = { param($i) $i.meta.tool_versions.zccache = '' } }
         @{ Name = 'the compiler banner names another version'; Check = 'compiler_version_observed'; Break = { param($i) $i.meta.tool_versions.compiler = 'clang version 20.1.80' } }
+        @{ Name = 'the matrix version is empty'; Check = 'compiler_version_observed'; Break = { param($i) $i.meta.compiler_version = '' } }
     ) {
         $in = New-PassingInput
         & $Break $in

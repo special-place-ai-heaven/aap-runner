@@ -1,6 +1,6 @@
 """P04 static qualification checks. Standard library only.
 
-Run: python -I -m unittest discover -s tests/parity/cache/qualification -p "test_*.py"
+Run: python -I -B -m unittest discover -s tests/parity/cache/qualification -p "test_*.py"
 """
 
 import copy
@@ -36,6 +36,22 @@ LINUX_DEBUG = {("clang", "18.1.3"), ("clang++", "18.1.3"), ("gcc", "13.3.0"), ("
 
 LAB_GATES = {"concurrency", "daemon_restart", "unsupported_invocations"}
 IDENTITY = ("compiler", "compiler_version", "invocation", "evidence_ref")
+# The checks record.jq emits for every pair; test_expected_checks_match_record_jq ties the two.
+BASE_CHECKS = {"ok_exit_zero", "ok_runs_produce_primary", "exit_codes_equal", "artifacts_equal",
+               "cold_has_no_hits", "warm_has_hits", "errors_stay_errors", "poisoned_artifact_rejected",
+               "poisoned_same_size_rejected", "poisoned_marker_rejected", "zccache_env_clean",
+               "daemons_pinned", "no_crash_dumps", "tool_versions_recorded"}
+
+
+def expected_checks(compiler, invocation):
+    """record.jq's check names for one pair: cl and link skip the banner check, debug-pdb adds the
+    relocated build."""
+    checks = set(BASE_CHECKS)
+    if compiler not in ("cl", "link"):
+        checks.add("compiler_version_observed")
+    if invocation == "debug-pdb":
+        checks.add("relocated_matches_direct")
+    return checks
 
 
 def load(name):
@@ -43,7 +59,7 @@ def load(name):
 
 
 def validate(*paths):
-    return subprocess.run([sys.executable, "-I", str(VALIDATE), "cache-qualification", *map(str, paths)],
+    return subprocess.run([sys.executable, "-I", "-B", str(VALIDATE), "cache-qualification", *map(str, paths)],
                           capture_output=True, text=True)
 
 
@@ -70,7 +86,7 @@ def qualified_row_problems(doc, row, record):
     if record.get("harness_pass") is not True:
         problems.append("harness_pass")
     checks = record.get("checks") or {}
-    if not checks or not all(v is True for v in checks.values()):
+    if set(checks) != expected_checks(row["compiler"], row["invocation"]) or not all(v is True for v in checks.values()):
         problems.append("checks")
     gates = record.get("lab_gates") or {}
     if set(gates) != LAB_GATES or not all(v is True for v in gates.values()):
@@ -177,7 +193,7 @@ class MatrixTests(unittest.TestCase):
             "platform": "windows-x86_64",
             "tool_versions": {"zccache_sha256": doc["zccache"]["binary_sha256"]},
             "harness_pass": True,
-            "checks": {"ok_exit_zero": True, "warm_has_hits": True},
+            "checks": {c: True for c in expected_checks(row["compiler"], row["invocation"])},
             "lab_gates": {g: True for g in LAB_GATES},
             "row": {k: row[k] for k in IDENTITY} | {"mode": "direct", "reason": "harness checks pass; lab steps 7-9 pending"},
         }
@@ -194,9 +210,21 @@ class MatrixTests(unittest.TestCase):
             bad = copy.deepcopy(good)
             mutate(bad)
             self.assertIn(want, qualified_row_problems(doc, row, bad), want)
-        bad = copy.deepcopy(good)
-        bad["checks"] = {}
-        self.assertIn("checks", qualified_row_problems(doc, row, bad))
+        # An all-true set is not enough: it must be exactly record.jq's set for this pair.
+        for checks in ({}, {"ok_exit_zero": True}, dict(good["checks"], extra_check=True),
+                       {c: True for c in expected_checks(row["compiler"], row["invocation"]) - {"poisoned_artifact_rejected"}}):
+            bad = dict(copy.deepcopy(good), checks=checks)
+            self.assertIn("checks", qualified_row_problems(doc, row, bad), sorted(checks))
+
+    def test_expected_checks_match_record_jq(self):
+        """Every check name record.jq can emit, read from its checks object, equals expected_checks."""
+        text = (QUAL / "harness" / "record.jq").read_text(encoding="utf-8")
+        block = text.split("| ({", 1)[1].split(") as $c", 1)[0]
+        names = set(re.findall(r"^\s+([a-z_]+): ", block, re.M))
+        self.assertEqual(names, expected_checks("clang", "debug-pdb"))
+        self.assertEqual(expected_checks("cl", "compile-object") | {"compiler_version_observed", "relocated_matches_direct"}, names)
+        self.assertIn('IN("cl", "link")', block)
+        self.assertIn('$m.invocation == "debug-pdb"', block)
 
     def test_pins_agree_with_artifacts_md_and_harnesses(self):
         artifacts = (QUAL / "artifacts.md").read_text(encoding="utf-8")

@@ -53,7 +53,7 @@ binary (`f97ae874...cb18cc`, 27,876,808 bytes). The comparison used the hash in
    They exit 4 on a mismatch.
 4. Execute only inside the authorized lab VM (gate D2), never on the owner's host or the live
    distro. The harnesses refuse to run without `AAP_ZCCACHE_LAB=1`, when live-install markers
-   are present, or when a credential-shaped variable is in the environment.
+   are present, or when a variable name or value in the environment looks like a credential.
 
 ## Forbidden install and restore paths
 

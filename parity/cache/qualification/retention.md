@@ -90,5 +90,7 @@ P16 removes it. No zccache root is ever trimmed by the manager or by any script 
    daemon before Actions starts, from an environment with no runner token, JIT config, job token
    or key. A job step must never be the one that spawns it. Crash dumps and journals stay inside
    the disposable guest and are reported only as counts and sanitized telemetry. The
-   qualification harness applies the same rule: it refuses to run with a credential-shaped
-   variable in its environment.
+   qualification harness applies the same rule. It refuses to run when a variable name looks like
+   a credential or a value carries URL credentials. On Linux it also starts every build and
+   daemon under `env -i` with an allowlist, so the rule does not rest on names alone. P13 should
+   start daemons the same way.

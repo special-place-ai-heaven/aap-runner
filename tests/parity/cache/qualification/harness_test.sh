@@ -35,6 +35,14 @@ out=$(clean AAP_ZCCACHE_LAB=1 AAP_ZQ_EXTRA_MARKER_ROOT="${tmp}/root" bash "${HAR
 out=$(clean AAP_ZCCACHE_LAB=1 AAP_ZQ_EXTRA_MARKER_ROOT="${tmp}/empty" GH_TOKEN=hunter2 MY_API_KEY=hunter3 bash "${HARNESS}" 2>&1)
 [[ "${out}" == *"REFUSED: credential-shaped environment variables present (names only): GH_TOKEN MY_API_KEY"* && "${out}" != *hunter* ]] &&
   ok "refuses credential-shaped variables by name only" || no "refuses credential-shaped variables by name only: ${out}"
+out=$(clean AAP_ZCCACHE_LAB=1 AAP_ZQ_EXTRA_MARKER_ROOT="${tmp}/empty" GH_PAT=a GITHUB_PAT=a DB_PASS=a GPG_PASSPHRASE=a NPM_CONFIG__AUTH=a \
+  DOCKER_AUTH_CONFIG=a CI_JOB_JWT=a SSH_AUTH_SOCK=/s MYSQL_PWD=a GIT_AUTHOR_NAME=a XAUTHORITY=/x SELENIUM_JAR_PATH=/j bash "${HARNESS}" 2>&1)
+[[ "${out}" == *"(names only): CI_JOB_JWT DB_PASS DOCKER_AUTH_CONFIG GH_PAT GITHUB_PAT GPG_PASSPHRASE MYSQL_PWD NPM_CONFIG__AUTH SSH_AUTH_SOCK ;"* ]] &&
+  ok "refuses PAT, pass, auth and JWT names; leaves PWD, PATH and GIT_AUTHOR_NAME" || no "refuses PAT, pass, auth and JWT names: ${out}"
+out=$(clean AAP_ZCCACHE_LAB=1 AAP_ZQ_EXTRA_MARKER_ROOT="${tmp}/empty" DATABASE_URL=postgres://app:hunter5@db/x \
+  HTTPS_PROXY=http://u:hunter6@proxy:3128 PLAIN_URL=https://example.com:443/a@b GIT_URL=ssh://git@github.com/o/r bash "${HARNESS}" 2>&1)
+[[ "${out}" == *"(names only): DATABASE_URL HTTPS_PROXY ;"* && "${out}" != *hunter* ]] &&
+  ok "refuses URL credentials by value, naming only the variables" || no "refuses URL credentials by value: ${out}"
 paths=$(AAP_ZQ_EXTRA_MARKER_ROOT=/x zq_marker_paths)
 for p in /etc/aap-runner /var/lib/ghrunner /sys/fs/cgroup/aap.slice/aap-runner.slice /x/etc/aap-runner /x/var/lib/ghrunner; do
   grep -qxF "${p}" <<<"${paths}" && ok "probes ${p}" || no "probes ${p}"
@@ -63,6 +71,10 @@ expect_rc 2 "rejects a work path that is a file" zq_check_args "${good[@]:0:7}" 
 expect_rc 2 "rejects a work dir that is a symlink" zq_check_args "${good[@]:0:7}" "${tmp}/worklink"
 expect_rc 0 "accepts an empty work dir" zq_check_args "${good[@]:0:7}" "${tmp}/empty"
 expect_rc 2 "rejects a wrong argument count" zq_check_args clang
+mkdir -p "${tmp}/real"; ln -s "${tmp}/real" "${tmp}/via"
+[[ "$(zq_work_dir "${tmp}/via/w")" == "$(cd "${tmp}/real" && pwd -P)/w" && -d "${tmp}/real/w" && "$(stat -c %a "${tmp}/real/w")" == 700 ]] &&
+  ok "WORK is created 0700 and canonical (symlinked parent resolved)" || no "WORK is canonical: $(zq_work_dir "${tmp}/via/w")"
+[[ "$(cd "${tmp}" && zq_work_dir rel/w)" == "$(cd "${tmp}" && pwd -P)/rel/w" ]] && ok "a relative WORK becomes absolute" || no "a relative WORK becomes absolute"
 expect_rc 0 "banner names the version" zq_check_banner rustc 1.99.0 "rustc 1.99.0 (0123abcd 2026-09-01)"
 expect_rc 0 "gcc banner with a distro suffix" zq_check_banner gcc 13.3.0 "gcc (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0"
 expect_rc 2 "rejects a longer version" zq_check_banner clang 18.1.3 "Ubuntu clang version 18.1.30"
@@ -101,6 +113,13 @@ printf '%s\n' '{"outcome":"hit"}' '{"outcome":"miss"}' 'junk' '{"outcome":"link_
   ok "journal outcome counts" || no "journal outcome counts: $(zq_journal "${tmp}/j.jsonl")"
 out=$(export ZCCACHE_ENDPOINT=pipe ZCCACHE_PATH_REMAP=auto AAP_ZQ_KEEP=y; zq_clear_env; echo "${ZQ_REMOVED[*]}|${ZCCACHE_ENDPOINT:-gone}|${AAP_ZQ_KEEP}")
 [[ "${out}" == *ZCCACHE_ENDPOINT* && "${out}" == *ZCCACHE_PATH_REMAP* && "${out}" == *"|gone|y" ]] && ok "clears every ZCCACHE_ variable" || no "clears every ZCCACHE_ variable: ${out}"
+printf '#!/bin/sh\nenv > "$1"\n' > "${tmp}/envdump"; chmod +x "${tmp}/envdump"
+(export ZQ_INNOCENT_NAME=hunter7 ZCCACHE_MODE=COPY ZCCACHE_ENDPOINT=pipe TMPDIR="${tmp}"; cd "${tmp}" && zq_run "${tmp}/envdump" "${tmp}/env.txt")
+e=$(cat "${tmp}/env.txt")
+[[ "${e}" != *hunter7* && "${e}" != *ZCCACHE_ENDPOINT* && "${e}" == *"ZCCACHE_MODE=COPY"* && "${e}" == *"PWD=${tmp}"* && "${e}" == *"PATH=${PATH}"* &&
+  "${e}" == *"TMPDIR=${tmp}"* ]] && ok "builds run under env -i with only the allowlist" || no "builds run under env -i with only the allowlist: ${e}"
+out=$(unset ZCCACHE_CACHE_DIR ZCCACHE_SESSION_ID; export ZCCACHE_MODE=COPY ZCCACHE_ENDPOINT=pipe; zq_kept_zccache_names)
+[[ "${out}" == "ZCCACHE_MODE " ]] && ok "records only the ZCCACHE_ names a build sees" || no "records only the ZCCACHE_ names a build sees: ${out}"
 store="${tmp}/store"
 mkdir -p "${store}/sub" "${tmp}/outside"
 printf 'abc' > "${store}/a.bin"; printf 'x' > "${store}/sub/b.bin"; : > "${store}/empty.bin"
@@ -113,6 +132,12 @@ n=$(zq_corrupt "${store}" same-size)
 n=$(zq_corrupt "${store}" marker)
 [[ "${n}" == 3 && "$(cat "${store}/a.bin")" == P04-POISON && "$(stat -c %a "${store}/a.bin")" == 444 && "$(cat "${tmp}/outside/v.bin")" == vv ]] && ok "marker corruption" || no "marker corruption (n=${n})"
 [[ "$(zq_corrupt "${tmp}/missing" marker)" == 0 ]] && ok "no store, nothing corrupted" || no "no store, nothing corrupted"
+mkdir -p "${tmp}/store2"; printf 'abc' > "${tmp}/store2/entry.bin"; printf 'meta' > "${tmp}/store2/entry.meta"
+touch -d '2026-01-02 03:04:05' "${tmp}/store2/entry.bin"; before=$(stat -c %Y "${tmp}/store2/entry.bin")
+n=$(zq_corrupt "${tmp}/store2" artifact "x $(printf abc | sha256sum | cut -d' ' -f1) y")
+[[ "${n}" == 1 && "$(od -An -tx1 "${tmp}/store2/entry.bin" | tr -d ' \n')" == 619d63 && "$(stat -c %Y "${tmp}/store2/entry.bin")" == "${before}" &&
+  "$(cat "${tmp}/store2/entry.meta")" == meta ]] && ok "artifact corruption flips only stored copies of uncached artifacts" || no "artifact corruption (n=${n})"
+[[ "$(zq_corrupt "${tmp}/store2" artifact "")" == 0 ]] && ok "no artifact hash, nothing corrupted" || no "no artifact hash, nothing corrupted"
 mkdir -p "${tmp}/w/cache-ok/crashes" "${tmp}/w/cache-error"; : > "${tmp}/w/cache-ok/crashes/dump.bin"
 [[ "$(zq_crash_dumps "${tmp}/w")" == '{"cache-error":0,"cache-ok":1}' || "$(zq_crash_dumps "${tmp}/w")" == '{"cache-ok":1,"cache-error":0}' ]] &&
   ok "counts crash dumps per cache root" || no "counts crash dumps per cache root: $(zq_crash_dumps "${tmp}/w")"
@@ -128,6 +153,13 @@ stopped=$(zq_stop_daemons "${tmp}/bin")
 [[ "${stopped}" == true ]] && { wait "${bg}" 2> /dev/null; bg=""; }  # reap it; a zombie still answers kill -0
 [[ "${stopped}" == true && -z "$(zq_own_pids "${tmp}/bin")" ]] && ok "stops what runs from the private copy" || no "stops what runs from the private copy"
 [[ "$(zq_stop_daemons "${tmp}/nothing-runs-here")" == true ]] && ok "nothing to stop is a success" || no "nothing to stop is a success"
+for b in "" bin rel/bin /; do
+  # kill is shadowed, so even a regressed guard could not signal anything here.
+  out=$(kill() { echo "would kill $*"; }; zq_stop_daemons "${b}" 2> /dev/null; echo "rc=$?")
+  [[ "${out}" == $'false\nrc=1' ]] && ok "stop refuses bin path '${b}'" || no "stop refuses bin path '${b}': ${out}"
+  expect_rc 1 "pid lookup refuses bin path '${b}'" zq_own_pids "${b}"
+  [[ "$(zq_daemons "${b}" 2> /dev/null)" == '[]' ]] && ok "bin path '${b}' lists nothing" || no "bin path '${b}' lists nothing"
+done
 
 # ---- verdict (record.jq): the harness never emits qualified ----
 J='{"hit":0,"miss":1,"error":0,"link_hit":0,"link_miss":0,"other":0}'
@@ -137,7 +169,9 @@ input=$(jq -c -n --argjson j "${J}" --argjson h "${H}" --argjson a "${A}" --arg 
   def e($x; $art; $jr): {exit: $x, artifacts: $art, primary_present: ($x == 0), argv: ["x"], cache_dir: null,
     zccache_env: (if $jr == null then ["ZCCACHE_MODE"] else ["ZCCACHE_CACHE_DIR", "ZCCACHE_MODE", "ZCCACHE_SESSION_ID"] end), journal: $jr};
   {meta: {platform: "linux-x86_64", command: "qualify.sh clang 18.1.3 compile-object x",
-          tool_versions: {compiler: "Ubuntu clang version 18.1.3 (1ubuntu1)", zccache_sha256: $zs, "zccache-fp_sha256": $fs},
+          tool_versions: {compiler: "Ubuntu clang version 18.1.3 (1ubuntu1)", compiler_path: "/usr/bin/clang-18",
+                          compiler_sha256: ("c" * 64), zccache: "zccache 1.15.6", zccache_sha256: $zs, "zccache-fp_sha256": $fs,
+                          jq: "jq-1.7.1"},
           os: {kernel_release: "6.8.0-45-generic", os_release: "Ubuntu 24.04.5 LTS", image_os: "ubuntu24", image_version: "20261012.334.1"},
           env: {set: {ZCCACHE_MODE: "COPY"}, removed: []},
           daemons: [{pid: 42, exe: "/w/bin/zccache", in_private_bin: true, sha256: $zs}], daemons_stopped: true,
@@ -146,28 +180,47 @@ input=$(jq -c -n --argjson j "${J}" --argjson h "${H}" --argjson a "${A}" --arg 
           compiler: "clang", compiler_version: "18.1.3", invocation: "compile-object",
           evidence_ref: "parity/cache/qualification/evidence/linux-x86_64/clang-18.1.3-compile-object.json"},
    runs: {uncached: e(0; $a; null), cold: e(0; $a; $j), warm: e(0; $a; $h),
+          poisoned_artifact: (e(0; $a; $j) + {prime_exit: 0, corrupted_files: 1}),
           poisoned_same_size: (e(0; $a; $j) + {prime_exit: 0, corrupted_files: 2}),
           poisoned_marker: (e(0; $a; $j) + {prime_exit: 0, corrupted_files: 2})},
    errors: {uncached: e(1; {}; null), cold: e(1; {}; $j), warm: e(1; {}; $j)}}')
 verdict() { jq -c -f "${ZQ_HERE}/record.jq" <<<"$1"; }
 r=$(verdict "${input}")
-[[ "$(jq -r '"\(.harness_pass)|\(.row.mode)|\(.row.reason)|\(.lab_gates | [.[] | select(. != null)] | length)|\(.checks | length)"' <<<"${r}")" == "true|direct|harness checks pass; lab steps 7-9 pending|0|13" ]] &&
+[[ "$(jq -r '"\(.harness_pass)|\(.row.mode)|\(.row.reason)|\(.lab_gates | [.[] | select(. != null)] | length)|\(.checks | length)"' <<<"${r}")" == "true|direct|harness checks pass; lab steps 7-9 pending|0|15" ]] &&
   ok "all checks pass, row stays direct" || no "all checks pass, row stays direct: ${r}"
 for c in 'warm_has_hits#.runs.warm.journal.hit = 0' 'cold_has_no_hits#.runs.cold.journal = null' \
-  'errors_stay_errors#.errors.cold.exit = 3' 'errors_stay_errors#.errors.warm.primary_present = true' \
+  'cold_has_no_hits#.runs.cold.journal.other = 1' 'warm_has_hits#.runs.warm.journal.hit = "1"' \
+  'errors_stay_errors#.errors.cold.exit = 3' 'errors_stay_errors#.errors.warm.primary_present = true' 'errors_stay_errors#.errors[].exit = null' \
   'artifacts_equal#.runs.warm.artifacts = {"hello.o": "b"}' \
   'ok_runs_produce_primary#(.runs.uncached, .runs.cold, .runs.warm) |= (.artifacts = {} | .primary_present = false)' \
+  'poisoned_artifact_rejected#.runs.poisoned_artifact.journal.hit = 1' 'poisoned_artifact_rejected#.runs.poisoned_artifact.corrupted_files = 0' \
+  'poisoned_artifact_rejected#.runs.poisoned_artifact.corrupted_files = "2"' \
   'poisoned_same_size_rejected#.runs.poisoned_same_size.journal.hit = 1' 'poisoned_marker_rejected#.runs.poisoned_marker.journal.link_hit = 1' \
+  'poisoned_same_size_rejected#.runs.poisoned_same_size.journal |= (.miss = 0 | .other = 1)' \
+  'poisoned_marker_rejected#.runs.poisoned_marker.journal.other = 1' \
   'poisoned_marker_rejected#.runs.poisoned_marker.journal.miss = 0' 'poisoned_marker_rejected#del(.runs.poisoned_marker)' \
   'poisoned_same_size_rejected#.runs.poisoned_same_size.corrupted_files = 0' \
-  'zccache_env_clean#.runs.warm.zccache_env = ["ZCCACHE_ENDPOINT", "ZCCACHE_MODE"]' \
+  'zccache_env_clean#.runs.warm.zccache_env = ["ZCCACHE_ENDPOINT", "ZCCACHE_MODE"]' 'zccache_env_clean#del(.runs.warm.zccache_env)' \
+  'zccache_env_clean#.runs.warm.zccache_env = "ZCCACHE_MODE"' \
   'daemons_pinned#.meta.daemons = []' 'daemons_pinned#.meta.daemons[0].in_private_bin = false' 'daemons_pinned#.meta.daemons[0].sha256 = "0"' \
+  'daemons_pinned#.meta.daemons[0].sha256 = null | .meta.tool_versions.zccache_sha256 = null' \
   'no_crash_dumps#.meta.crash_dumps["cache-ok"] = 1' 'no_crash_dumps#.meta.crash_dumps = null' \
-  'compiler_version_observed#.meta.tool_versions.compiler = "clang version 18.1.30"'; do
+  'no_crash_dumps#.meta.crash_dumps["cache-ok"] = null' 'no_crash_dumps#.meta.crash_dumps = {}' \
+  'tool_versions_recorded#del(.meta.tool_versions)' 'tool_versions_recorded#del(.meta.tool_versions.jq)' \
+  'tool_versions_recorded#.meta.tool_versions.zccache = ""' \
+  'compiler_version_observed#.meta.tool_versions.compiler = "clang version 18.1.30"' 'compiler_version_observed#.meta.compiler_version = ""'; do
   want=${c%%#*}
   r=$(verdict "$(jq -c "${c#*#}" <<<"${input}")")
   [[ "$(jq -r --arg k "${want}" '"\(.harness_pass)|\(.row.mode)|\(.checks[$k])"' <<<"${r}")" == "false|direct|false" && "$(jq -r .row.reason <<<"${r}")" == *"${want}"* ]] &&
     ok "fails ${want} for: ${c#*#}" || no "fails ${want} for: ${c#*#}"
+done
+for k in miss error link_miss; do
+  [[ "$(verdict "$(jq -c --arg k "${k}" '.runs.poisoned_marker.journal = ({hit: 0, miss: 0, error: 0, link_hit: 0, link_miss: 0, other: 0} | .[$k] = 1)' <<<"${input}")" |
+    jq -r .checks.poisoned_marker_rejected)" == true ]] && ok "a rejected entry may show as ${k}" || no "a rejected entry may show as ${k}"
+done
+for bad in '{}' '[]' '{"meta":5,"runs":"x","errors":[1]}'; do
+  [[ "$(verdict "${bad}" | jq -r '"\(.harness_pass)|\([.checks[] | select(. == true)] | length)"')" == "false|0" ]] &&
+    ok "input ${bad} fails every check without a jq error" || no "input ${bad} fails every check without a jq error"
 done
 dbg=$(jq -c '.meta.invocation = "debug-pdb" | .runs.relocated_direct = (.runs.uncached | .artifacts = {"hello.o": "b"})
   | .runs.relocated = (.runs.cold | .artifacts = {"hello.o": "b"})' <<<"${input}")
