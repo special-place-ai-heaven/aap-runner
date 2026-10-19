@@ -1,0 +1,620 @@
+{
+  "schema": 1,
+  "generated_from": "parity/baselines/windows-2025-vs2026-x64/inputs.md, parity/baselines/ubuntu-24.04-x64/inputs.md, parity/baselines/zccache.md (P01, checked 2026-10-19)",
+  "entries": [
+    {
+      "name": "zccache-sha256sums",
+      "version": "1.15.6",
+      "profiles": [
+        "windows-2025-vs2026-x64",
+        "ubuntu-24.04-x64"
+      ],
+      "file_name": "SHA256SUMS",
+      "urls": [
+        "https://github.com/zackees/zccache/releases/download/1.15.6/SHA256SUMS"
+      ],
+      "redirect_hosts": [
+        "release-assets.githubusercontent.com",
+        "objects.githubusercontent.com"
+      ],
+      "hash": {
+        "algorithm": "sha256",
+        "source": "literal",
+        "value": "6b5c2b96c99ab876814cedf3c6c1801d80dc2491fb823fcd8b58f3662c0231c3",
+        "upstream_entry": null,
+        "upstream_key": null
+      },
+      "size_bytes": 1636,
+      "size_max_bytes": 65536,
+      "content_types": [
+        "application/octet-stream",
+        "text/plain"
+      ],
+      "license": {
+        "class": "unknown",
+        "redistribution": "unknown",
+        "note": "Release metadata file of zackees/zccache."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 120
+      },
+      "evidence_ref": "parity/baselines/zccache.md, \"Release assets\"",
+      "note": "Its first line hashes itself as the empty string; consumers skip that line. Transport integrity only, not a signature."
+    },
+    {
+      "name": "zccache-x86_64-unknown-linux-musl",
+      "version": "1.15.6",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "file_name": "zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz",
+      "urls": [
+        "https://github.com/zackees/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz"
+      ],
+      "redirect_hosts": [
+        "release-assets.githubusercontent.com",
+        "objects.githubusercontent.com"
+      ],
+      "hash": {
+        "algorithm": "sha256",
+        "source": "upstream-file",
+        "value": "885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7",
+        "upstream_entry": "zccache-sha256sums",
+        "upstream_key": "zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz"
+      },
+      "size_bytes": 12389072,
+      "size_max_bytes": 104857600,
+      "content_types": [
+        "application/octet-stream"
+      ],
+      "license": {
+        "class": "unknown",
+        "redistribution": "unknown",
+        "note": "Licence not recorded by P01; record it before the archive is placed in an image or redistributed."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 900
+      },
+      "evidence_ref": "parity/baselines/zccache.md, \"Release assets\"",
+      "note": "Pinned value cross-checked against the SHA256SUMS entry of the same release; both must agree."
+    },
+    {
+      "name": "zccache-x86_64-unknown-linux-musl-debug",
+      "version": "1.15.6",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "file_name": "zccache-v1.15.6-x86_64-unknown-linux-musl-debug.tar.gz",
+      "urls": [
+        "https://github.com/zackees/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-unknown-linux-musl-debug.tar.gz"
+      ],
+      "redirect_hosts": [
+        "release-assets.githubusercontent.com",
+        "objects.githubusercontent.com"
+      ],
+      "hash": {
+        "algorithm": "sha256",
+        "source": "upstream-file",
+        "value": "6eccf0034b23df2fa9f6f523e43a5c2335847e6eb956de8b2e2a284651afaecd",
+        "upstream_entry": "zccache-sha256sums",
+        "upstream_key": "zccache-v1.15.6-x86_64-unknown-linux-musl-debug.tar.gz"
+      },
+      "size_bytes": 29806744,
+      "size_max_bytes": 104857600,
+      "content_types": [
+        "application/octet-stream"
+      ],
+      "license": {
+        "class": "unknown",
+        "redistribution": "unknown",
+        "note": "Licence not recorded by P01; record it before the archive is placed in an image or redistributed."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 900
+      },
+      "evidence_ref": "parity/baselines/zccache.md, \"Release assets\"",
+      "note": "Pinned value cross-checked against the SHA256SUMS entry of the same release; both must agree."
+    },
+    {
+      "name": "zccache-x86_64-pc-windows-msvc",
+      "version": "1.15.6",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "file_name": "zccache-v1.15.6-x86_64-pc-windows-msvc.zip",
+      "urls": [
+        "https://github.com/zackees/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-pc-windows-msvc.zip"
+      ],
+      "redirect_hosts": [
+        "release-assets.githubusercontent.com",
+        "objects.githubusercontent.com"
+      ],
+      "hash": {
+        "algorithm": "sha256",
+        "source": "upstream-file",
+        "value": "a9e2b079946d00757a56fea3dacd8a47f9cb4bcbfe8c427ffd719ced59fd949b",
+        "upstream_entry": "zccache-sha256sums",
+        "upstream_key": "zccache-v1.15.6-x86_64-pc-windows-msvc.zip"
+      },
+      "size_bytes": 10545387,
+      "size_max_bytes": 104857600,
+      "content_types": [
+        "application/octet-stream"
+      ],
+      "license": {
+        "class": "unknown",
+        "redistribution": "unknown",
+        "note": "Licence not recorded by P01; record it before the archive is placed in an image or redistributed."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 900
+      },
+      "evidence_ref": "parity/baselines/zccache.md, \"Release assets\"",
+      "note": "Pinned value cross-checked against the SHA256SUMS entry of the same release; both must agree."
+    },
+    {
+      "name": "zccache-x86_64-pc-windows-msvc-debug",
+      "version": "1.15.6",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "file_name": "zccache-v1.15.6-x86_64-pc-windows-msvc-debug.zip",
+      "urls": [
+        "https://github.com/zackees/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-pc-windows-msvc-debug.zip"
+      ],
+      "redirect_hosts": [
+        "release-assets.githubusercontent.com",
+        "objects.githubusercontent.com"
+      ],
+      "hash": {
+        "algorithm": "sha256",
+        "source": "upstream-file",
+        "value": "619e41467ea832454c0a5fa8ab009497274279f8bbfe8ad4a39bc18784901ceb",
+        "upstream_entry": "zccache-sha256sums",
+        "upstream_key": "zccache-v1.15.6-x86_64-pc-windows-msvc-debug.zip"
+      },
+      "size_bytes": 34900341,
+      "size_max_bytes": 104857600,
+      "content_types": [
+        "application/octet-stream"
+      ],
+      "license": {
+        "class": "unknown",
+        "redistribution": "unknown",
+        "note": "Licence not recorded by P01; record it before the archive is placed in an image or redistributed."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 900
+      },
+      "evidence_ref": "parity/baselines/zccache.md, \"Release assets\"",
+      "note": "Pinned value cross-checked against the SHA256SUMS entry of the same release; both must agree."
+    },
+    {
+      "name": "android-commandlinetools-win",
+      "version": "13114758",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "file_name": "commandlinetools-win-13114758_latest.zip",
+      "urls": [
+        "https://dl.google.com/android/repository/commandlinetools-win-13114758_latest.zip"
+      ],
+      "redirect_hosts": [],
+      "hash": {
+        "algorithm": "sha256",
+        "source": "literal",
+        "value": "98b565cb657b012dae6794cefc0f66ae1efb4690c699b78a614b4a6a3505b003",
+        "upstream_entry": null,
+        "upstream_key": null
+      },
+      "size_bytes": null,
+      "size_max_bytes": 268435456,
+      "content_types": [
+        "application/zip"
+      ],
+      "license": {
+        "class": "proprietary-eula",
+        "redistribution": "restricted",
+        "note": "Android SDK terms; the scripts also write the SDK licence acceptances, which the operator inherits."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 1800
+      },
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, \"Version- or hash-pinned values\"",
+      "note": "The file name contains \"latest\" but the version is the build number 13114758 and the hash pins the content."
+    },
+    {
+      "name": "mysql-vcredist-x64",
+      "version": "h20e2645b7cd5",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "file_name": "vcredist_x64.exe",
+      "urls": [
+        "https://download.microsoft.com/download/0/5/6/056dcda9-d667-4e27-8001-8a0c6971d6b1/vcredist_x64.exe"
+      ],
+      "redirect_hosts": [],
+      "hash": {
+        "algorithm": "sha256",
+        "source": "literal",
+        "value": "20e2645b7cd5873b1fa3462b99a665ac8d6e14aae83ded9d875fea35ffdd7d7e",
+        "upstream_entry": null,
+        "upstream_key": null
+      },
+      "size_bytes": null,
+      "size_max_bytes": 33554432,
+      "content_types": [
+        "application/octet-stream"
+      ],
+      "license": {
+        "class": "vendor-redistributable",
+        "redistribution": "restricted",
+        "note": "Microsoft Visual C++ redistributable; redistributable under Microsoft terms, record them before shipping inside an image."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 300
+      },
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, \"Version- or hash-pinned values\"",
+      "note": "Helper for the MySQL CLI install; the literal SHA-256 is committed upstream in Install-MysqlCli.ps1. Upstream records no version, so the version label is the first 12 hex digits of the hash behind an h; the hash is the identity."
+    },
+    {
+      "name": "docker-ce-install-helper",
+      "version": "8ea2a92d8dfa7815abcf5cc44a756a0ac3d0f513",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "file_name": "install-docker-ce.ps1",
+      "urls": [
+        "https://raw.githubusercontent.com/microsoft/Windows-Containers/8ea2a92d8dfa7815abcf5cc44a756a0ac3d0f513/helpful_tools/Install-DockerCE/install-docker-ce.ps1"
+      ],
+      "redirect_hosts": [],
+      "hash": {
+        "algorithm": "sha256",
+        "source": "first-fetch",
+        "value": null,
+        "upstream_entry": null,
+        "upstream_key": null
+      },
+      "size_bytes": null,
+      "size_max_bytes": 1048576,
+      "content_types": [
+        "text/plain"
+      ],
+      "license": {
+        "class": "unknown",
+        "redistribution": "unknown",
+        "note": "Licence of microsoft/Windows-Containers not recorded by P01."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 120
+      },
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, \"Version- or hash-pinned values\"",
+      "note": "Pinned to a commit, no upstream hash. Download needs -RecordFirstFetch and is recorded unverified. Data only: never executed by this tooling."
+    },
+    {
+      "name": "libicu70",
+      "version": "70.1-2",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "file_name": "libicu70_70.1-2_amd64.deb",
+      "urls": [
+        "https://archive.ubuntu.com/ubuntu/pool/main/i/icu/libicu70_70.1-2_amd64.deb"
+      ],
+      "redirect_hosts": [],
+      "hash": {
+        "algorithm": "sha512",
+        "source": "literal",
+        "value": "a6315482d93606e375c272718d2458870b95e4ed4b672ea8640cf7bc2d2c2f41aea13b798b1e417e1ffc472a90c6aad150d3d293aa9bddec48e39106e4042807",
+        "upstream_entry": null,
+        "upstream_key": null
+      },
+      "size_bytes": null,
+      "size_max_bytes": 33554432,
+      "content_types": [
+        "application/vnd.debian.binary-package"
+      ],
+      "license": {
+        "class": "open-source",
+        "redistribution": "allowed",
+        "note": "ICU and Unicode licences."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 300
+      },
+      "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, \"Version- or hash-pinned values\"",
+      "note": "SHA-512 as committed in configure-dpkg.sh upstream."
+    },
+    {
+      "name": "containernetworking-plugins",
+      "version": "1.1.1+ds1-3build1",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "file_name": "containernetworking-plugins_1.1.1+ds1-3build1_amd64.deb",
+      "urls": [
+        "https://archive.ubuntu.com/ubuntu/pool/universe/g/golang-github-containernetworking-plugins/containernetworking-plugins_1.1.1+ds1-3build1_amd64.deb"
+      ],
+      "redirect_hosts": [],
+      "hash": {
+        "algorithm": "sha256",
+        "source": "first-fetch",
+        "value": null,
+        "upstream_entry": null,
+        "upstream_key": null
+      },
+      "size_bytes": null,
+      "size_max_bytes": 33554432,
+      "content_types": [
+        "application/vnd.debian.binary-package"
+      ],
+      "license": {
+        "class": "open-source",
+        "redistribution": "allowed",
+        "note": "Apache-2.0 per the Debian package; confirm at first fetch."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 300
+      },
+      "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, \"Version- or hash-pinned values\"",
+      "note": "No upstream hash seen. Needs -RecordFirstFetch; recorded unverified."
+    },
+    {
+      "name": "android-commandlinetools-linux",
+      "version": "11076708",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "file_name": "commandlinetools-linux-11076708_latest.zip",
+      "urls": [
+        "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+      ],
+      "redirect_hosts": [],
+      "hash": {
+        "algorithm": "sha256",
+        "source": "first-fetch",
+        "value": null,
+        "upstream_entry": null,
+        "upstream_key": null
+      },
+      "size_bytes": null,
+      "size_max_bytes": 268435456,
+      "content_types": [
+        "application/zip"
+      ],
+      "license": {
+        "class": "proprietary-eula",
+        "redistribution": "restricted",
+        "note": "Android SDK terms."
+      },
+      "retry": {
+        "max_attempts": 3,
+        "backoff_seconds": 5,
+        "timeout_seconds": 1800
+      },
+      "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, \"Version- or hash-pinned values\"",
+      "note": "Toolset gives the file name without a hash. URL derived from the Windows pin path on the same host and answered with HTTP 200 on 2026-10-19 (headers only). Needs -RecordFirstFetch."
+    }
+  ],
+  "not_reproducible": [
+    {
+      "id": "azure-base-image-windows-server-2025",
+      "name": "Azure Marketplace image MicrosoftWindowsServer:WindowsServer:2025-Datacenter-g2",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "blocker_kind": "cloud-base-image",
+      "reason": "Exists only in Azure with the Azure agent and drivers. A local Hyper-V guest built from other media is a different base.",
+      "owner_action": "Decide the accepted deviation for the local base; the reference image stays the hosted runner.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 1"
+    },
+    {
+      "id": "windows-server-2025-media",
+      "name": "Windows Server 2025 installation media and activation",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "blocker_kind": "licensed-media",
+      "reason": "Lawful media, edition, key or volume activation and the lab licence are owner decisions. The tooling never downloads, stores or redistributes it.",
+      "owner_action": "Owner supplies the Windows Server 2025 Evaluation ISO manually, records its SHA-256, edition and the evaluation licence terms, and places it outside the staging tree.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 2"
+    },
+    {
+      "id": "windows-updates-level",
+      "name": "Windows Updates level of image build 10.0.26100.33438",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "blocker_kind": "moving-layout",
+      "reason": "Microsoft supersedes updates; the KB list is not recorded upstream.",
+      "owner_action": "Record the catalog state at the first lawful fetch or accept a documented update-level deviation.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 3"
+    },
+    {
+      "id": "visual-studio-2026-bootstrapper",
+      "name": "Visual Studio 2026 Enterprise bootstrapper and stable channel (aka.ms/vs/postGRO-stable/vs_Enterprise.exe)",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "blocker_kind": "moving-layout",
+      "reason": "Channel stable has no pinned layout and serves the current build, not 18.10.12224.181. Entitlement for a non-GitHub host is not established.",
+      "owner_action": "Owner decides the entitlement, then a layout is created once and retained with a recorded hash; a layout creation is a separate approved step.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 4"
+    },
+    {
+      "id": "visual-studio-marketplace-extensions",
+      "name": "Visual Studio Marketplace extensions (SSIS, Analysis Services, Reports, Installer Projects, Service Fabric, WiX)",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "blocker_kind": "proprietary-license",
+      "reason": "Downloaded by marketplace item name with no hash and their own terms.",
+      "owner_action": "Record licence terms and retain the VSIX files with hashes at the first lawful fetch.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 4"
+    },
+    {
+      "id": "windows-sdk-and-wdk",
+      "name": "Windows 11 SDK 10.0.26100 and Windows Driver Kit (go.microsoft.com/fwlink redirects)",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "blocker_kind": "vendor-latest-no-hash",
+      "reason": "Fetched through vendor redirects with an Authenticode check only; Microsoft-licensed.",
+      "owner_action": "Resolve the redirect once, retain the installer and record hash and licence.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 5"
+    },
+    {
+      "id": "windows-vendor-latest-feeds",
+      "name": "Vendor latest feeds without a hash source (Cosmos DB emulator, DacFx, SQL OLE DB, Chrome, Edge, Firefox, Selenium, Miniconda, MSYS2, MongoDB, ghcup and others)",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "blocker_kind": "vendor-latest-no-hash",
+      "reason": "The installed versions are recorded only in the upstream Readme; the feeds serve whatever is current.",
+      "owner_action": "Retain the exact installer files at the first lawful fetch with hash, URL chain and licence, or accept a documented drift.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 6"
+    },
+    {
+      "id": "windows-chocolatey-community-feed",
+      "name": "Chocolatey community feed packages",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "blocker_kind": "vendor-latest-no-hash",
+      "reason": "Package versions resolve at build time from a moving feed.",
+      "owner_action": "Pin exact package versions and retain the nupkg files with hashes.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, table rows 6 and 17 to 22"
+    },
+    {
+      "id": "windows-service-fabric-runtime-sdk",
+      "name": "Service Fabric runtime 11.7.157.1 and SDK 8.7.157",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "blocker_kind": "resolve-before-use",
+      "reason": "Checksums are pinned in the toolset but the download file names are built inside Install-ServiceFabricSDK.ps1, which P01 did not store.",
+      "owner_action": "Read the script at the pinned build commit, add the two entries with the toolset SHA-256 values.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, pinned values"
+    },
+    {
+      "id": "windows-docker-engine-compose",
+      "name": "Docker Engine 29.7.2 and Docker Compose 2.40.3 (Windows)",
+      "profiles": [
+        "windows-2025-vs2026-x64"
+      ],
+      "blocker_kind": "resolve-before-use",
+      "reason": "Exact versions are pinned in the toolset; file URLs and hashes are not stored by P01.",
+      "owner_action": "Resolve the exact release files at the pinned build commit and add entries with a recorded hash.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, pinned values"
+    },
+    {
+      "id": "tool-cache-manifests",
+      "name": "Tool cache version manifests (actions/python-versions, node-versions, go-versions, PyPy)",
+      "profiles": [
+        "windows-2025-vs2026-x64",
+        "ubuntu-24.04-x64"
+      ],
+      "blocker_kind": "moving-layout",
+      "reason": "The manifests live on main branches and move; newer versions already exist upstream.",
+      "owner_action": "Snapshot each manifest at a recorded commit, then pin the tool archives it lists by hash.",
+      "evidence_ref": "parity/baselines/windows-2025-vs2026-x64/inputs.md, Drift since the pin"
+    },
+    {
+      "id": "azure-base-image-ubuntu-24.04",
+      "name": "Azure Marketplace image canonical:ubuntu-24_04-lts:server (version latest at build)",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "blocker_kind": "cloud-base-image",
+      "reason": "Moves with every build and carries an Azure kernel and the Azure Linux agent. The base build date is not recorded.",
+      "owner_action": "Decide the accepted deviation for the local base image.",
+      "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 1"
+    },
+    {
+      "id": "ubuntu-superseded-apt-versions",
+      "name": "Exact apt package versions listed in the upstream Readme",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "blocker_kind": "superseded-versions",
+      "reason": "The live archive keeps only current versions; availability of a snapshot service for these dates is not verified.",
+      "owner_action": "Retain the .deb files or an archive snapshot at the first lawful fetch.",
+      "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 2"
+    },
+    {
+      "id": "ubuntu-vendor-apt-repositories",
+      "name": "Vendor package repositories added during the build (Microsoft, Docker, PostgreSQL, Google Cloud, Adoptium, Kubernetes, git-lfs)",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "blocker_kind": "vendor-repository",
+      "reason": "Configuration is removed after the build, versions are not archived and signing keys are fetched at build time.",
+      "owner_action": "Pin repository snapshots or retain packages with hashes and record the key fingerprints.",
+      "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 3"
+    },
+    {
+      "id": "ubuntu-proprietary-components",
+      "name": "Proprietary or separately licensed components (Google Chrome, Edge, Microsoft packages, Android SDK, Docker Engine, MySQL)",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "blocker_kind": "proprietary-license",
+      "reason": "Licence terms and redistribution limits are not recorded; the scripts export ACCEPT_EULA globally.",
+      "owner_action": "Record licence terms and redistribution class per component before any acquisition.",
+      "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 4"
+    },
+    {
+      "id": "ubuntu-vendor-latest-feeds",
+      "name": "Vendor latest feeds without a hash source (AWS CLI, azcopy, kubectl stable.txt, Helm, Pulumi, Packer, Miniconda, nvm, rustup, Composer, Gradle, Julia and others)",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "blocker_kind": "vendor-latest-no-hash",
+      "reason": "The versions installed on 2026-10-12 are recorded only in the upstream Readme.",
+      "owner_action": "Retain the exact files at the first lawful fetch with hash, URL chain and licence.",
+      "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 5"
+    },
+    {
+      "id": "ubuntu-floating-container-images",
+      "name": "Six ghcr.io images pulled as :latest",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "blocker_kind": "floating-container",
+      "reason": "No digests were recorded upstream and the tags move.",
+      "owner_action": "Resolve each tag to a digest once and pin the digest.",
+      "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 6"
+    },
+    {
+      "id": "ubuntu-docker-cmake-toolset-pins",
+      "name": "Docker 28.0.4, Docker Compose 2.38.2 and CMake 3.31.6 (Ubuntu)",
+      "profiles": [
+        "ubuntu-24.04-x64"
+      ],
+      "blocker_kind": "resolve-before-use",
+      "reason": "Exact versions are pinned in the toolset; file URLs and hashes are not stored by P01.",
+      "owner_action": "Resolve the exact release files at the pinned build commit and add entries with a recorded hash.",
+      "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, pinned values"
+    }
+  ]
+}

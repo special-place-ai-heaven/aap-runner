@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pinned upstream install inputs and the inputs that cannot be reproduced (P03)",
+  "x-contract-version": 1,
+  "x-owner": "P03; consumed by P06, P07, P13 and P21 through images/common/AapArtifact.psm1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "generated_from", "entries", "not_reproducible"],
+  "properties": {
+    "schema": { "const": 1 },
+    "generated_from": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "entries": { "type": "array", "maxItems": 200, "items": { "$ref": "#/$defs/entry" } },
+    "not_reproducible": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/blocker" } }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "profiles", "file_name", "urls", "redirect_hosts", "hash", "size_bytes", "size_max_bytes", "content_types", "license", "retry", "evidence_ref"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$" },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9A-Za-z][0-9A-Za-z._+-]{0,79}$",
+          "not": { "pattern": "(?i)latest|stable|nightly|current|^(head|main|master|lts|newest)$" }
+        },
+        "profiles": {
+          "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true,
+          "items": { "enum": ["windows-2025-vs2026-x64", "ubuntu-24.04-x64"] }
+        },
+        "file_name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+~-]{0,199}$" },
+        "urls": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "pattern": "^https://[^@\\s]+$", "maxLength": 600 } },
+        "redirect_hosts": { "type": "array", "maxItems": 8, "items": { "type": "string", "pattern": "^[a-z0-9.-]+$", "maxLength": 120 } },
+        "hash": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["algorithm", "source", "value", "upstream_entry", "upstream_key"],
+          "properties": {
+            "algorithm": { "enum": ["sha256", "sha512"] },
+            "source": { "enum": ["literal", "upstream-file", "first-fetch"] },
+            "value": { "anyOf": [{ "type": "null" }, { "type": "string", "pattern": "^([0-9a-f]{64}|[0-9a-f]{128})$" }] },
+            "upstream_entry": { "anyOf": [{ "type": "null" }, { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$" }] },
+            "upstream_key": { "anyOf": [{ "type": "null" }, { "type": "string", "minLength": 1, "maxLength": 200 }] }
+          }
+        },
+        "size_bytes": { "anyOf": [{ "type": "null" }, { "type": "integer", "minimum": 0, "maximum": 10737418240 }] },
+        "size_max_bytes": { "type": "integer", "minimum": 1, "maximum": 10737418240 },
+        "content_types": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "string", "pattern": "^[a-z0-9.+-]+/[a-z0-9.+-]+$" } },
+        "license": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["class", "redistribution", "note"],
+          "properties": {
+            "class": { "enum": ["open-source", "vendor-redistributable", "proprietary-eula", "unknown"] },
+            "redistribution": { "enum": ["allowed", "restricted", "forbidden", "unknown"] },
+            "note": { "type": "string", "maxLength": 400 }
+          }
+        },
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_attempts", "backoff_seconds", "timeout_seconds"],
+          "properties": {
+            "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10 },
+            "backoff_seconds": { "type": "integer", "minimum": 0, "maximum": 60 },
+            "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 }
+          }
+        },
+        "evidence_ref": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "note": { "type": "string", "maxLength": 600 }
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "profiles", "blocker_kind", "reason", "owner_action", "evidence_ref"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,79}$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "profiles": {
+          "type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true,
+          "items": { "enum": ["windows-2025-vs2026-x64", "ubuntu-24.04-x64"] }
+        },
+        "blocker_kind": { "enum": ["cloud-base-image", "licensed-media", "moving-layout", "vendor-latest-no-hash", "superseded-versions", "vendor-repository", "floating-container", "proprietary-license", "resolve-before-use"] },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 800 },
+        "owner_action": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "evidence_ref": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    }
+  }
+}
