@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "note": "Only differences named here may be reported as documented-rig-difference. Patterns are fnmatch against <section>.<key>. Extend only with an owner-approved reason; PLAN.md 'Outcome' lists the permitted classes.",
+  "entries": [
+    {"match": "infra.*", "reason": "Azure identity/metadata (provisioner build, region, cloud, worker id) and hostname are hosted-only identifiers"},
+    {"match": "hardware.*", "reason": "resource caps (CPU/RAM/disk budgets) and hardware speed are rig properties, never correctness"},
+    {"match": "env.ZCCACHE_*", "reason": "zccache is an AAP-only compile cache; it may change performance, never correctness"},
+    {"match": "tools.zccache*", "reason": "zccache is an AAP-only compile cache"},
+    {"match": "command_paths.zccache*", "reason": "zccache is an AAP-only compile cache"},
+    {"match": "path.*zccache*", "reason": "zccache is an AAP-only compile cache"}
+  ]
+}

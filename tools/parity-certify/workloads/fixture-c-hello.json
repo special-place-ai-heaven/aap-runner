@@ -1,0 +1,9 @@
+{
+  "id": "fixture/c-hello",
+  "description": "Positive: compile and run a C hello with gcc when it is on PATH, else echo through the harness interpreter. Variants are tried in order; the one used is recorded in the result.",
+  "expected_exit_codes": [0],
+  "variants": [
+    {"requires": "gcc", "commands": [["gcc", "{fixtures}/hello.c", "-o", "{work}/hello{exe}"], ["{work}/hello{exe}"]], "artifact_globs": ["hello*"]},
+    {"requires": null, "commands": [["{python}", "-c", "print('hello from aap parity')"]], "artifact_globs": []}
+  ]
+}

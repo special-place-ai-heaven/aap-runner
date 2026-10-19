@@ -1,0 +1,8 @@
+{
+  "id": "fixture/artifact-hash",
+  "description": "Artifact round trip: a deterministic file is produced and its sha256 must match.",
+  "expected_exit_codes": [0],
+  "commands": [["{python}", "-c", "open('out.txt','wb').write(b'aap parity artifact\\n')"]],
+  "artifact_globs": ["out.txt"],
+  "expected_hashes": {"out.txt": "f192990f9950ce241723b90f9476c39041fbda7bfb0d62573e8953aa48af238a"}
+}
