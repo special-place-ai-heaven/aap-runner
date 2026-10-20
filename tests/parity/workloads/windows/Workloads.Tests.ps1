@@ -118,7 +118,7 @@ Describe 'oracle citations' {
 
     It 'cites a known source kind for every value' {
         $Leaves.Count | Should -BeGreaterThan 60
-        foreach ($l in $Leaves) { $l.Src | Should -Match '^(inventory|capture|capture-list|readme|docs|derived|provisional):' -Because $l.Key }
+        foreach ($l in $Leaves) { $l.Src | Should -Match '^(inventory|capture|capture-list|hosted|readme|docs|derived|provisional):' -Because $l.Key }
     }
 
     It 'matches the frozen inventory for every inventory citation' {
@@ -144,11 +144,32 @@ Describe 'oracle citations' {
                 continue
             }
             $Log.Contains($text) | Should -BeTrue -Because "$($l.Key): $text"
+            $text | Should -Not -Match '\x1b|\$env:' -Because "$($l.Key) must cite an output line, not the script that printed it"
             if ($null -ne $l.V) { $text.Contains("$($l.V)") | Should -BeTrue -Because $l.Key }
             else { $text | Should -Match '=<unset>$|^shell:' -Because "$($l.Key) is absent" }
         }
         foreach ($l in @($Leaves | Where-Object { $_.Src -like 'capture-list:*' })) {
             foreach ($e in @($l.V)) { $Log | Should -Match ('(?m)Z ' + [regex]::Escape($e) + '\s*$') -Because $l.Key }
+        }
+    }
+
+    It 'matches the stored hosted-run evidence for every hosted citation' {
+        $hosted = @($Leaves | Where-Object { $_.Src -like 'hosted:*' })
+        $hosted.Count | Should -BeGreaterThan 0
+        foreach ($l in $hosted) {
+            $l.Src -match '^hosted:(\d+)/([A-Za-z0-9._-]+):(.+)$' | Should -BeTrue -Because $l.Src
+            $file = Join-Path $Win ("oracle\hosted-runs\{0}\{1}" -f $Matches[1], $Matches[2])
+            $text = $Matches[3]
+            Test-Path -LiteralPath $file | Should -BeTrue -Because $l.Src
+            $body = Get-Content -Raw -LiteralPath $file
+            if ($l.V -is [pscustomobject]) {
+                # one evidence line per member: '<text><name> = <value>'
+                foreach ($m in $l.V.PSObject.Properties) { $body.Contains("$text$($m.Name) = $($m.Value)") | Should -BeTrue -Because "$($l.Key).$($m.Name)" }
+            }
+            else {
+                $body.Contains($text) | Should -BeTrue -Because $l.Src
+                $text.Contains("$($l.V)") | Should -BeTrue -Because $l.Key
+            }
         }
     }
 
@@ -158,7 +179,7 @@ Describe 'oracle citations' {
 
     It 'keeps derived and provisional values to the reviewed set' {
         @($Leaves | Where-Object { $_.Src -like 'derived:*' } | ForEach-Object { $_.Key } | Sort-Object) | Should -Be @('tool_cache_arch', 'visual_studio/alt_toolsets')
-        @($Leaves | Where-Object { $_.Src -like 'provisional:*' } | ForEach-Object { $_.Key }) | Should -Be @('shell_semantics_exit_codes')
+        @($Leaves | Where-Object { $_.Src -like 'provisional:*' }) | Should -BeNullOrEmpty
         ($Inv.toolset_defaults.toolcache | Where-Object { $_.name -eq 'PyPy' }).arch | Should -Be $Oracle.tool_cache_arch.v.PyPy
         $names = @(Entries 'Visual Studio Enterprise 2026/Workloads, components and extensions' $null | ForEach-Object { $_.name })
         $names -contains 'Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64' | Should -BeTrue

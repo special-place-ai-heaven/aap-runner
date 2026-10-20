@@ -51,7 +51,7 @@ to `System32\bash.exe` is refused, not run) and Docker is queried only inside an
 |---|---|
 | `Invoke-Workloads.ps1` | entrypoint (Windows PowerShell 5.1 compatible) |
 | `Workload.psm1` | shared helpers: developer environment (vswhere + VsDevCmd), tool runner with path-normalized logs, PE/zip/MSI inspection, oracle facts, sabotage |
-| `oracle/windows-2025-vs2026.json` | what a correct environment shows; every value cites its source (`inventory:`, `capture:`, `readme:`, `docs:`, `derived:`, `provisional:`) and the tests check the citations |
+| `oracle/windows-2025-vs2026.json` | what a correct environment shows; every value cites its source (`inventory:`, `capture:`, `hosted:<run>/<file>:`, `readme:`, `docs:`, `derived:`) and the tests check the citations |
 | `defs/*.json`, `../actions/windows/defs/*.json` | P05 workload definitions (`fixture_id` in evidence is `workload/<id>`) |
 | `<workload>/run.ps1` + sources | one folder per workload |
 | `../actions/windows/` | Actions behaviour: shell semantics, runner environment, file-command composite action |
@@ -67,9 +67,9 @@ harness only offers `{fixtures}` (its own fixture folder), so the path climbs to
 | `windows/msvc-x64`, `-x86`, `-arm64` | C and C++ with SDK/UCRT, `rc`, `lib`, advapi32, /MT and /MD, PDB; run (x64, x86 under WOW64) and inspect; arm64 cross-built and inspected only | INCLUDE or LIB without Windows Kits (`C1083 windows.h`, `LNK1181 advapi32.lib`) |
 | `windows/msvc-toolset-14.44`, `-14.29` | side-by-side toolsets from the inventory via `-vcvars_ver` | `-vcvars_ver=14.99` (`Toolset directory ... not found`) |
 | `windows/clang-cl` | LLVM clang-cl + lld-link from PATH without a developer environment | INCLUDE = empty folder (`'windows.h' file not found`) |
-| `windows/cmake-ninja`, `windows/cmake-vs` | configure/build/ctest/cpack ZIP with Ninja+cl and with the VS 18 2026 generator | LIB without SDK (`LNK1104 kernel32.lib`); SDK 10.0.99999.0 |
+| `windows/cmake-ninja`, `windows/cmake-vs` | configure/build/ctest/cpack ZIP with Ninja+cl and with the VS 18 2026 generator | LIB without SDK (`LNK1104 kernel32.lib`); WindowsTargetPlatformVersion 10.0.99999.0 (`MSB8036`) |
 | `windows/rust-plain`, `windows/rust-native` | cargo test/build/run offline; plain env must not use Git's `link.exe`; build.rs C via cl/lib | fake dev env leaving Git's link.exe (`linking with link.exe failed`); LIB without SDK |
-| `windows/dotnet-net8`, `-net10` | SDK band via global.json; build, run, publish apphost, pack nupkg, no package source | net7.0 targeting pack (`NU1100 ... Microsoft.NETCore.App.Ref`) |
+| `windows/dotnet-net8`, `-net10` | SDK band via global.json; build, run, publish apphost, pack nupkg, no package source | net7.0 targeting pack (`NU1101 ... Microsoft.NETCore.App.Ref`) |
 | `windows/msbuild-netfx` | VS MSBuild (vswhere) builds .NET Framework 4.7.2 | v4.0 (`MSB3644`) |
 | `windows/node-addon` | Node-API addon with MSVC, loaded by node.exe | LIB without SDK |
 | `windows/python-wheel` | CPython extension with MSVC, wheel, offline pip install, import | no Python libs (`LNK1104 python312.lib`) |
@@ -87,18 +87,25 @@ Linux containers are not assumed on hosted Windows: `runner-env` requires Docker
 Each build workload writes `report.txt`: program output, PE machine and subsystem, required imports, version
 resources, package entry lists (nupkg, wheel, jar, cpack zip, MSI properties). No versions, paths or times, so the
 report hash is the same on the hosted reference and a correct candidate and `compare_artifacts` stays `sha256`
-(no waivers). Where the report was produced on the owner's host its hash is pinned in `expected_hashes`; the rest
-are pinned after the first hosted run. Compiled binaries are inspected, not hashed (they embed times and paths).
+(no waivers). Every report hash is pinned in `expected_hashes` (owner's host, confirmed by hosted run 39351642738;
+`file-commands` is its eight marker checks, all True). Compiled binaries are inspected, not hashed (they embed times
+and paths).
 
 Logs replace the work and repository paths with `<work>` and `<repo>`, so first causal errors compare across machines.
 The log claim is each workload's own verdict line (`workload <id>: all oracle checks met` / `N oracle check(s) not met`).
 
 ## Validation status and gaps
 
-- Validated on the owner's host only where its toolchain matches (see the P17 report); hosted-reference validation
-  runs through `.github/workflows/parity-workloads.yml`.
-- `shell_semantics_exit_codes` is provisional: pwsh 7.6.6 and Windows PowerShell 5.1 return 1, not N, for `exit N`
-  inside the runner's dot-sourced step script (GitHub's docs say N). The hosted run decides.
+- Hosted iteration 1 (run 39351642738, image 20261007.264.1, head c2ba84e): 39/47. Fixed after it: two oracle values
+  copied wrongly from the capture (ImageOS, ImageVersion), the default JDK's version string (the inventory lists the
+  tool-cache folder 17.0.20+101, the JDK reports 17.0.20.1+1), CTest 4.x's summary line, the .NET negatives' first
+  error (hosted NuGet also searches `C:\Program Files\dotnet\library-packs`: NU1101), the cmake-vs negative (a
+  CMAKE_SYSTEM_VERSION newer than any installed SDK only caps the selection; WindowsTargetPlatformVersion fails with
+  MSB8036), and a helper bug that stopped runner-env before its checks.
+- `oracle/hosted-runs/<run>/` keeps the hosted log excerpts the `hosted:` citations point at.
+- Through the runner's `-command ". 'script'"` template, `exit N` (and the runner's appended `exit $LASTEXITCODE`
+  after a failing native command) ends pwsh 7.6.6 and Windows PowerShell 5.1 with exit code 1, not N as GitHub's docs
+  say. Observed on the hosted image and the owner's host; the oracle records 1.
 - Not covered here: node-gyp (downloads Node headers), Maven/Gradle builds (download plugins), setup-* actions
   installing uncached versions, cache/artifact actions and network acquisition (P03/P18/P22), the default `shell:`
   when a step names none, Windows service workloads beyond state checks, and candidate execution (P22/P24).

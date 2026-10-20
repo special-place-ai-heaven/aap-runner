@@ -25,14 +25,14 @@ function Write-Utf8([string]$Path, [string]$Text) {
 }
 
 function Get-Oracle([string]$Key) {
-    # 'versions/cmake' -> the cited value
+    # 'versions/cmake' -> the cited value; a group ('env', 'services') comes back whole, its members as {v, src}
     $o = $script:S.Oracle
     foreach ($k in $Key.Split('/')) {
         $p = $o.PSObject.Properties[$k]
         if ($null -eq $p) { throw "oracle has no key $Key" }
         $o = $p.Value
     }
-    $o.v
+    if ($o.PSObject.Properties['src']) { $o.v } else { $o }
 }
 
 function Add-Observation([string]$Name, $Value) { $script:S.Obs[$Name] = [ordered]@{ observed = $Value } }

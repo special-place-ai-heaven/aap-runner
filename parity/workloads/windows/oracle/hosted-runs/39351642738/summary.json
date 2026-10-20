@@ -1,0 +1,313 @@
+{
+  "schema": 1,
+  "kind": "p17-workload-summary",
+  "profile": "windows-2025-vs2026",
+  "image": {
+    "ImageOS": "win25-vs2026",
+    "ImageVersion": "20261007.264.1",
+    "RUNNER_ENVIRONMENT": "github-hosted",
+    "os": "Microsoft Windows Server 2025 Datacenter 10.0.26100 build 26100",
+    "imagedata": [
+      {
+        "group": "Operating System",
+        "detail": "Microsoft Windows Server 2025\n10.0.26100\nDatacenter"
+      },
+      {
+        "group": "Runner Image",
+        "detail": "Image: windows-2025-vs2026\nVersion: 20261007.264.1\nIncluded Software: https://github.com/actions/runner-images/blob/win25-vs2026/20261007.264/images/windows/Windows2025-VS2026-Readme.md\nImage Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261007.264"
+      }
+    ]
+  },
+  "source": {
+    "repo_head": "c2ba84e97236df3b2f196a800bd51a0877886aa0",
+    "GITHUB_SHA": "af2ad5306aa90569047b11631bae466740d575b5",
+    "GITHUB_RUN_ID": "39351642738",
+    "GITHUB_RUN_ATTEMPT": "1"
+  },
+  "pass": 39,
+  "total": 47,
+  "workloads": [
+    {
+      "id": "actions/windows/file-commands",
+      "status": "fail",
+      "exit_code": 1,
+      "duration_s": 3.598
+    },
+    {
+      "id": "actions/windows/file-commands.neg-missing-marker",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.342
+    },
+    {
+      "id": "actions/windows/runner-env",
+      "status": "fail",
+      "exit_code": 1,
+      "duration_s": 0.409
+    },
+    {
+      "id": "actions/windows/runner-env.neg-no-tool-cache",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.404
+    },
+    {
+      "id": "actions/windows/shell-semantics",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 3.527
+    },
+    {
+      "id": "actions/windows/shell-semantics.neg-no-git-bash",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.382
+    },
+    {
+      "id": "windows/clang-cl",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 12.574
+    },
+    {
+      "id": "windows/clang-cl.neg-no-sdk-include",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.523
+    },
+    {
+      "id": "windows/cmake-ninja",
+      "status": "fail",
+      "exit_code": 1,
+      "duration_s": 11.87
+    },
+    {
+      "id": "windows/cmake-ninja.neg-no-sdk-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 3.197
+    },
+    {
+      "id": "windows/cmake-vs",
+      "status": "fail",
+      "exit_code": 1,
+      "duration_s": 9.886
+    },
+    {
+      "id": "windows/cmake-vs.neg-missing-winsdk",
+      "status": "fail",
+      "exit_code": 1,
+      "duration_s": 5.281
+    },
+    {
+      "id": "windows/dotnet-net10",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 15.943
+    },
+    {
+      "id": "windows/dotnet-net10.neg-missing-targeting-pack",
+      "status": "fail",
+      "exit_code": 1,
+      "duration_s": 1.561
+    },
+    {
+      "id": "windows/dotnet-net8",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 12.869
+    },
+    {
+      "id": "windows/dotnet-net8.neg-missing-targeting-pack",
+      "status": "fail",
+      "exit_code": 1,
+      "duration_s": 1.331
+    },
+    {
+      "id": "windows/java",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 3.849
+    },
+    {
+      "id": "windows/java.neg-no-java-home",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.346
+    },
+    {
+      "id": "windows/msbuild-netfx",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 14.59
+    },
+    {
+      "id": "windows/msbuild-netfx.neg-missing-targeting-pack",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.871
+    },
+    {
+      "id": "windows/msvc-arm64",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 8.623
+    },
+    {
+      "id": "windows/msvc-arm64.neg-no-sdk-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.285
+    },
+    {
+      "id": "windows/msvc-toolset-14.29",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 9.161
+    },
+    {
+      "id": "windows/msvc-toolset-14.29.neg-missing-toolset",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.717
+    },
+    {
+      "id": "windows/msvc-toolset-14.44",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 7.806
+    },
+    {
+      "id": "windows/msvc-x64",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 3.954
+    },
+    {
+      "id": "windows/msvc-x64.neg-no-sdk-include",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 1.989
+    },
+    {
+      "id": "windows/msvc-x86",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 8.579
+    },
+    {
+      "id": "windows/msvc-x86.neg-no-sdk-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.323
+    },
+    {
+      "id": "windows/node-addon",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 4.377
+    },
+    {
+      "id": "windows/node-addon.neg-no-sdk-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 1.885
+    },
+    {
+      "id": "windows/package-7zip",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 0.772
+    },
+    {
+      "id": "windows/package-7zip.neg-hide-tool",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.353
+    },
+    {
+      "id": "windows/package-innosetup",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 2.092
+    },
+    {
+      "id": "windows/package-innosetup.neg-hide-tool",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.345
+    },
+    {
+      "id": "windows/package-wix",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 3.522
+    },
+    {
+      "id": "windows/package-wix.neg-hide-tool",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.343
+    },
+    {
+      "id": "windows/python-wheel",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 5.165
+    },
+    {
+      "id": "windows/python-wheel.neg-no-python-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 1.977
+    },
+    {
+      "id": "windows/rust-native",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 17.77
+    },
+    {
+      "id": "windows/rust-native.neg-no-sdk-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.243
+    },
+    {
+      "id": "windows/rust-plain",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 1.53
+    },
+    {
+      "id": "windows/rust-plain.neg-git-link",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.713
+    },
+    {
+      "id": "windows/toolchain-versions",
+      "status": "fail",
+      "exit_code": 1,
+      "duration_s": 4.648
+    },
+    {
+      "id": "windows/toolchain-versions.neg-no-llvm-on-path",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.445
+    },
+    {
+      "id": "windows/vs-devenv",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 2.503
+    },
+    {
+      "id": "windows/vs-devenv.neg-missing-winsdk",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.305
+    }
+  ]
+}

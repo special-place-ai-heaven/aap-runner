@@ -4,8 +4,8 @@
   "note": "Oracle for the P17 workloads. Every value cites its source: 'inventory:<category>|<name>' is parity/baselines/windows-2025-vs2026-x64/inventory.json, 'capture:<text>' is a line of sources/hosted-capture-39303666617.log, 'readme:<text>' is that profile's README.md, 'docs:<url>' is GitHub's published runner behaviour. tests/parity/workloads/windows checks every inventory, capture and readme citation.",
   "image": {
     "ImageOS": {
-      "v": "$env:ImageOS\"^[[0m",
-      "src": "capture:ImageOS=$env:ImageOS\"^[[0m"
+      "v": "win25-vs2026",
+      "src": "capture:ImageOS=win25-vs2026"
     },
     "ImageVersion": {
       "v": "20261007.264.1",
@@ -134,8 +134,9 @@
       "src": "inventory:Package Management|pip"
     },
     "java": {
-      "v": "17.0.20+101",
-      "src": "inventory:Java|Java"
+      "v": "17.0.20.1+1",
+      "src": "hosted:39351642738/windows__toolchain-versions.log:observed '17.0.20.1+1'",
+      "note": "the inventory lists Java 17.0.20+101 (inventory:Java|Java, the tool-cache folder 17.0.20-101); the default JDK there reports build 17.0.20.1+1 on the hosted image (run 39351642738)"
     },
     "go": {
       "v": "1.24.13",
@@ -196,12 +197,12 @@
   },
   "env": {
     "ImageOS": {
-      "v": "$env:ImageOS\"^[[0m",
-      "src": "capture:ImageOS=$env:ImageOS\"^[[0m"
+      "v": "win25-vs2026",
+      "src": "capture:ImageOS=win25-vs2026"
     },
     "ImageVersion": {
-      "v": "$env:ImageVersion\"^[[0m",
-      "src": "capture:ImageVersion=$env:ImageVersion\"^[[0m"
+      "v": "20261007.264.1",
+      "src": "capture:ImageVersion=20261007.264.1"
     },
     "AGENT_TOOLSDIRECTORY": {
       "v": "C:\\hostedtoolcache\\windows",
@@ -510,7 +511,8 @@
       "powershell.native_last": 1,
       "powershell.exit": 1
     },
-    "src": "provisional:observed 2026-10-20 on pwsh 7.6.6 and Windows PowerShell 5.1 through the runner's '. script' template: exit N inside the dot-sourced step script ends with process exit code 1, not N as the docs say; the hosted run confirms or corrects these four values"
+    "src": "hosted:39351642738/actions__windows__shell-semantics.log:ok   exit.",
+    "note": "observed on the hosted image (run 39351642738) and on the owner's host: through the runner's -command \". 'script'\" template, exit N inside the step script (and the runner's appended exit $LASTEXITCODE after a failing native command) ends pwsh 7.6.6 and Windows PowerShell 5.1 with exit code 1, not N as GitHub's docs say"
   },
   "shell_semantics": {
     "v": {

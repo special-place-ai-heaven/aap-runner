@@ -29,7 +29,8 @@ Invoke-Workload -Id $Id -Work $Work -Sabotage $Sabotage -Body {
         foreach ($n in 'RUNNER_TEMP', 'GITHUB_WORKSPACE') {
             Add-Fact "dir.$n" ([bool]((Get-Item env:$n -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath (Get-Item env:$n).Value -PathType Container))) $true
         }
-        Add-Fact 'dir.ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE' (Test-Path -LiteralPath "$env:ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE" -PathType Container) $true
+        $aac = $env:ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE
+        Add-Fact 'dir.ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE' ([bool]($aac -and (Test-Path -LiteralPath $aac -PathType Container))) $true
         foreach ($p in (Get-Oracle 'services').PSObject.Properties) {
             $s = Get-Service -Name $p.Name -ErrorAction SilentlyContinue
             Add-Fact "service.$($p.Name)" $(if ($s) { "$($s.Status)/$($s.StartType)" } else { 'absent' }) "$($p.Value.v.Status)/$($p.Value.v.StartType)"
@@ -54,7 +55,7 @@ Invoke-Workload -Id $Id -Work $Work -Sabotage $Sabotage -Body {
     foreach ($e in (Get-Oracle 'tool_cache')) {
         $tool, $ver = $e.Split('/')
         $a = if ($arch.PSObject.Properties[$tool]) { $arch.$tool } else { 'x64' }
-        $dir = Join-Path $env:RUNNER_TOOL_CACHE "$tool\$ver"
+        $dir = "$env:RUNNER_TOOL_CACHE\$tool\$ver"
         Add-Fact "tool_cache.$e" ((Test-Path -LiteralPath (Join-Path $dir $a) -PathType Container) -and (Test-Path -LiteralPath (Join-Path $dir "$a.complete"))) $true
     }
 }
