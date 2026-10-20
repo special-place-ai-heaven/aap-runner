@@ -24,9 +24,11 @@ wire, and where P08 reads the frozen contract more strictly than its text.
    the same file.
 3. **Nothing else to create.** On first run the broker creates `/var/lib/aap-runner/broker/`
    (`leases/`, `open/`, `slots/`, `lock`, `group-id`; root `0700`/`0600`) and
-   `/var/log/aap-runner/broker-audit.jsonl` (root `0600`, rotated at 5 MB to one `.1`). No unit,
-   timer, socket, listener or sudoers entry: the supervisor reaches root through
-   `wsl.exe -u root`.
+   `/var/log/aap-runner/broker-audit.jsonl` (root `0600`, rotated at 5 MB to one `.1`). Each of
+   those directories goes through `install -d -m 0700`, and the broker refuses to run (exit 1)
+   when one is a symlink or is not owned by root. If the manager ever writes to
+   `/var/log/aap-runner` too, that directory is root `0700`. No unit, timer, socket, listener or
+   sudoers entry: the supervisor reaches root through `wsl.exe -u root`.
 4. **What the manager must keep.** The broker reuses the manager's App code instead of a second
    JWT signer. It sources the installed manager and calls `load_config`, `check_key`,
    `mint_installation_token`, `auth_header` and `now_s`, and reads `AAP_GITHUB_ORG` and
@@ -43,9 +45,24 @@ wire, and where P08 reads the frozen contract more strictly than its text.
    `self-hosted,Windows,X64,aap-win25-vs2026` and `ubuntu-24.04-x64` registers
    `self-hosted,Linux,X64,aap-ubuntu-24.04`, exactly the owner's decision. If the owner wants
    them configurable, P16 adds keys to `manager.sh`'s allow-list and the broker reads them.
-6. **Threat model.** The `distro/README.md` row correction from the contract (any operator
-   process reaches the distro as root; the broker's rules are integrity controls, not access
-   control) stays a P16 todo.
+6. **Threat model (still open, F6).** The `distro/README.md` row correction from broker.md M1
+   (any operator process reaches the distro as root; the broker's rules are integrity controls,
+   not access control) stays a P16 todo.
+7. **curl and jq in the manager.** The broker gives every curl call `-q` first (a `curl`
+   function that also covers the manager's `mint_installation_token` while the broker runs) and
+   sets `HOME=/nonexistent`, so no `.curlrc` or `~/.jq` is read. When the manager runs on its
+   own, its curl calls read root's `.curlrc` and its jq calls root's `~/.jq`: P16 adds `-q` as the
+   first argument of every curl call in `manager.sh` and pins `HOME` the same way.
+8. **Core dumps.** The broker sets `ulimit -c 0`, since the installation token and the JIT config
+   live in its memory. A `kernel.core_pattern` that pipes to a collector (`|...`, for example
+   apport or systemd-coredump) may ignore that limit. P16 checks
+   `/proc/sys/kernel/core_pattern` in the distro at install and keeps it a plain file pattern or
+   disables the collector.
+9. **A corrupt slot file.** `slots/<n>` holds the highest generation leased in slot n. A missing
+   file is generation 0. A file that exists but does not hold a generation (empty, truncated,
+   unreadable) refuses every lease for that slot as `stale_generation`. Recovery, as root with
+   no VM runner alive in that slot: write the allocator's highest generation for the slot into
+   the file, or remove it if the allocator's counter for the slot restarts from 1.
 
 ## Supervisor side (P12 integrates; P10 and P11 call it)
 
@@ -85,18 +102,29 @@ Rules for the callers:
 1. Persist the lease id (the journal's intent record) **before** `Invoke-AapBrokerLease`. Every
    teardown releases it, whatever the lease call returned, including `unavailable` and
    `bad_reply`.
-2. Only `issued` registers a runner. Call `JitConfig.WriteTo` inside the guest-transport call that
-   writes the payload to the transport child's stdin (guest-transport.md), before `ExpiresAt`,
-   then `JitConfig.Clear()`. Never turn it into a string, never log it, never write it to a file,
-   status or the inbox.
+2. Only `issued` registers a runner. `JitConfig.WriteTo` goes only to the transport of the VM
+   whose name equals `RunnerName`, and only if that VM was created for this reservation and
+   generation, booted from the base image, never ran a job, and is not quarantined or marked
+   `hostile_guest` (F1). Call it inside the guest-transport call that writes the payload to the
+   transport child's stdin (guest-transport.md), before `ExpiresAt`, then call
+   `JitConfig.Clear()` in a `finally`, on every path. Inside the transport child too, the JIT
+   config is never a PowerShell parameter value, an `-ArgumentList` element or script text
+   (PowerShell Direct's `-ArgumentList` is exactly that case; module logging records all three)
+   (F2). Never turn it into a string, never log it, never write it to a file, status or the inbox.
 3. Any other lease outcome means no registration: the slot goes to `deleting`. A new attempt
    needs a new lease id **and** a new slot generation (see "Stricter readings" below).
 4. Release: `deregistered` and `already_gone` close the lease and are the teardown proof's runner
-   part. `retry` means GitHub failed: keep `deleting` and call again later (each call sends a new
-   nonce). `refused`/`not_found` means the broker has no record of the lease id, so it never
-   created a runner under it. If that lease call is still waiting on the broker's lock it can
-   still create one; the broker never delivers that runner, and the sweep deletes it after
-   `expires_at` (GitHub reports it offline and idle).
+   part. `retry` means the runner's absence is not proven yet: GitHub failed, or the lease is
+   still pending and its create may still finish at GitHub (until `expires_at`, at most 10
+   minutes). Keep `deleting` and call again later; each call sends a new nonce.
+   `refused`/`not_found` means the broker has no record of the lease id. If the lease call
+   returned `issued` (or `unavailable`/`bad_reply`, when the broker may have recorded it),
+   `not_found` is `cleanup_uncertain`, never teardown proof (F3). If the lease call never reached
+   the broker, or is still waiting on its lock, a runner it creates later is never delivered,
+   and the sweep deletes it after `expires_at` (GitHub reports it offline and idle).
+   `refused`/`clock_skew`: fix the clock (rule 7) and call again; nothing changed. `refused`/
+   `replay`: the nonce was already seen, so this exact request was already answered; call again
+   with a new nonce (the client always sends one). Neither is teardown proof.
 5. Status is read-only, for the heartbeat-quarantine rule in allocator.md: destroy only on
    `offline` or `absent` with `RunnerBusy` false.
 6. Log only `Outcome`, `Reason` and `ExitCode`. The broker's stdout and stderr never reach a log.
@@ -104,6 +132,14 @@ Rules for the callers:
    `Export-Clixml` write only that length.
 7. The Windows and WSL clocks must agree within 300 s; otherwise every request is
    `clock_skew` (a WSL clock that lags after host sleep shows up here).
+8. A guest that holds its runner credential controls what GitHub, and so status, reports:
+   online, busy. A hostile guest can keep a quarantined slot from ever reading `offline` and
+   idle. P09 and P10 need a hard VM lifetime cap that destroys the VM whatever status says (F4,
+   an owner decision to record).
+
+P19: the installer gives `supervisor\broker\` an Administrators/SYSTEM-only ACL, like the
+supervisor script beside it. An operator who can write the module gets code execution in the
+elevated supervisor (F5).
 
 ## CI (owner of `.github/workflows/ci.yml`)
 
@@ -129,11 +165,24 @@ Add `tests/broker` to the Pester run: `$c.Run.Path = @('supervisor', 'tests/pari
   write a closed `refused` ledger file through the same `O_CREAT|O_EXCL` create, so the id is
   spent like any other.
 - **An uncertain create stays open.** When GitHub may have created the runner (a timeout, a 5xx,
-  an unusable 201), the broker deletes it before answering. If that delete or lookup also fails,
-  the lease stays `pending` and open, so the release or the sweep removes it by name.
+  an unusable 201), the broker deletes it before answering. Only a delete closes the lease. A
+  runner GitHub does not list (yet) proves nothing, so the lease stays `pending` and open, and a
+  release before `expires_at` answers `retry`/`github_error`. After `expires_at` the release or
+  the sweep looks again by name and closes it.
 - **Absent runners close in the sweep.** Past `expires_at`, a lease whose runner GitHub no longer
   lists is closed (`already_gone`), so a lost lease id cannot hold the outstanding limit forever.
   Busy or online runners are never touched.
+- **The sweep deletes a pending lease's runner only when it is offline and idle.** broker.md says
+  to delete a pending lease's runner outright. The broker also requires GitHub to report it
+  offline and not busy, as for an issued lease: a pending runner that is online was delivered by
+  something else, and is left for its release.
+- **A run never outlives the client.** No GitHub call starts unless it can end within 55 s of the
+  run's start (the client kills `wsl.exe` at 60 s); a lease past that point is refused
+  `github_error` before generate-jitconfig. The sweep checks its 10 s budget before every
+  GitHub call. At exit the broker revokes its installation token (best effort).
+- **Ledger writes fail closed.** A lease file is replaced only by a complete new one. A ledger
+  write or read that fails ends the run with exit 1 and no response, and leaves the lease file as
+  it was; a slot file that cannot be read refuses the slot (distro item 9).
 - **Image generation matches the profile.** A lease request whose `image_generation` does not
   start with its `profile` is `malformed` (image-catalog.md's rule).
 - **Client checks validate.py does not make.** A `release_response` whose result and reason

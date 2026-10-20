@@ -20,9 +20,12 @@ Describe 'contract fixtures' {
             $case | Should -Not -BeNullOrEmpty -Because $f.Name
             $why = Test-AapBrokerDocument $case['instance']
             $why | Should -Not -BeNullOrEmpty -Because $f.Name
-            # The same reason as validate.py. Errors name fields and never quote a value.
-            if ($case['expect'].Contains('"')) {
-                $why | Should -BeLike '*profile*' -Because $f.Name
+            # The same reason as validate.py. The client's errors name fields and
+            # never quote a value, so the one fixture whose message quotes the
+            # value it refuses is matched on the field it names.
+            if ($f.Name -ceq 'unknown-profile.json') {
+                $case['expect'] | Should -BeExactly 'windows-latest" not in enum'
+                $why | Should -BeExactly '$.profile: invalid value' -Because $f.Name
             } else {
                 $why | Should -BeLike ('*' + $case['expect'] + '*') -Because $f.Name
             }

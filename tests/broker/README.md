@@ -1,8 +1,9 @@
 # Broker client tests
 
-Pester 5 suite for `supervisor/broker/aap-broker.psm1`, run on Windows PowerShell 5.1 and
-PowerShell 7 (`Run.Path` includes `tests/broker`). No test starts `wsl.exe`: replies come from
-a fake invoker, and the transport tests start `cmd.exe`, `findstr.exe` and `PING.EXE`, hidden.
+Pester 5 suite for `supervisor/broker/aap-broker.psm1`, for Windows PowerShell 5.1 and
+PowerShell 7. CI runs it once the coordinator adds `tests/broker` to the Pester `Run.Path`
+(see `supervisor/broker/INTEGRATION.md`). No test starts `wsl.exe`: replies come from a fake
+invoker, and the transport tests start `cmd.exe`, `findstr.exe` and `PING.EXE`, hidden.
 
 | File | Topic |
 |---|---|

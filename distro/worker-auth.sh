@@ -4,10 +4,11 @@
 # Contract: parity/contracts/broker.md, version 1. The supervisor runs
 #   wsl.exe -d aap-runner -u root --exec /usr/local/sbin/aap-runner-broker
 # with no arguments: one request JSON on stdin (at most 4096 bytes), one
-# response JSON on stdout (at most 20 KiB), exit 0. Exit 1 (config, key, lock
-# or internal failure) and exit 2 (an argument, or stdin that is not one JSON
-# object with a request kind and a lease id) print nothing on stdout; the
-# supervisor treats both as an unavailable broker.
+# response JSON on stdout (at most 20 KiB), exit 0. Exit 2 means an argument,
+# or stdin that is not one JSON object with a request kind and a lease id.
+# Every other failure (config, key, lock, a ledger write, a tool) exits 1: the
+# exit trap maps any other status to 1. Neither prints anything on stdout, and
+# the supervisor treats both as an unavailable broker.
 #
 # Requests carry ids, numbers and enums only. The runner name, labels, group
 # and work folder are derived here; no path, command, label, name, runner id or
@@ -29,6 +30,9 @@ umask 077
 ulimit -c 0
 export LC_ALL=C
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# No ~/.jq or ~/.curlrc of whoever HOME names; curl also always gets -q.
+export HOME=/nonexistent
+unset CURL_HOME XDG_CONFIG_HOME
 
 BROKER_HOME=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # The distro installs the manager as aap-runner-manager beside this file; the
@@ -45,6 +49,12 @@ fi
 # shellcheck disable=SC2034  # read by the manager's load_config
 CONFIG_PATH=/etc/aap-runner/manager.conf
 
+# Every curl call, the manager's token mint included, starts with -q, so no
+# .curlrc is read.
+curl() {
+  command curl -q "$@"
+}
+
 BROKER_DIR=/var/lib/aap-runner/broker
 AUDIT_LOG=/var/log/aap-runner/broker-audit.jsonl
 AUDIT_MAX_BYTES=5242880
@@ -54,6 +64,9 @@ LEASE_SECONDS=600
 MAX_OPEN_LEASES=5
 LOCK_WAIT_SECONDS=20
 SWEEP_SECONDS=10
+# The supervisor kills wsl.exe after 60 s. No GitHub call starts unless it can
+# end within this many seconds of the run's start (curl's --max-time).
+RUN_LIMIT_SECONDS=55
 NONCE_KEEP_SECONDS=3600
 JIT_MAX_BYTES=16384
 GITHUB_API=https://api.github.com
@@ -62,6 +75,8 @@ ID_RE='^[1-9][0-9]{0,15}$'
 
 TOKEN=""
 REQ=""
+RUN_START=0
+BAD_INPUT=0
 V="" KIND="" LEASE_ID="" RES_ID="" GEN="" SLOT="" PROFILE="" IMAGE_GEN="" NONCE="" ISSUED_AT=""
 ISSUED_EPOCH=0
 # The lease an audit line describes: the request's, or one loaded from the ledger.
@@ -130,6 +145,16 @@ utc_now() {
   date -u +%s
 }
 
+die() {
+  echo "aap-runner-broker: $*" >&2
+  exit 1
+}
+
+# True while a call that takes at most SECONDS still ends within the run limit.
+room_for() {
+  ((RUN_START + RUN_LIMIT_SECONDS - $(now_s) > $1))
+}
+
 iso_of() {
   date -u -d "@$1" +%Y-%m-%dT%H:%M:%SZ
 }
@@ -178,6 +203,10 @@ parse_request() {
 gh_api() {
   local method=$1 path=$2 out
   shift 2
+  if ! room_for 10; then
+    printf '\n000'
+    return 0
+  fi
   out=$(auth_header "${TOKEN}" | curl --silent --show-error --connect-timeout 5 --max-time 10 \
     -X "${method}" -H @- -H "Accept: application/vnd.github+json" -w '\n%{http_code}' "$@" \
     "${GITHUB_API}${path}") || out=$'\n000'
@@ -199,6 +228,7 @@ gh_reason() {
 # One installation token per run, minted by the manager's own code.
 mint_token() {
   [[ -z "${TOKEN}" ]] || return 0
+  room_for 15 || return 1
   TOKEN=$(mint_installation_token) || TOKEN=""
   [[ -n "${TOKEN}" ]]
 }
@@ -226,8 +256,8 @@ runner_group_id() {
     echo "error github_error"
     return 0
   fi
-  printf '%s\n' "${id}" > "${cache}.tmp"
-  mv -f "${cache}.tmp" "${cache}"
+  { printf '%s\n' "${id}" > "${cache}.tmp" && mv -f "${cache}.tmp" "${cache}"; } 2>/dev/null \
+    || rm -f "${cache}.tmp"
   echo "ok ${id}"
 }
 
@@ -287,13 +317,16 @@ delete_runner() {
 # hash of one. open/<lease_id> marks a lease that is pending or issued, so the
 # outstanding count and the sweep never read closed leases. slots/<slot> holds
 # the highest lease_generation leased in that slot. Every read and write runs
-# under the flock taken in broker_run.
+# under the flock taken in broker_run. A write that fails leaves the file as it
+# was and ends the run with exit 1 and no response.
 
 ledger_update() {
   local file="${BROKER_DIR}/leases/$1.json"
   shift
-  jq -c "$@" "${file}" > "${file}.tmp"
-  mv -f "${file}.tmp" "${file}"
+  if ! { jq -c "$@" "${file}" > "${file}.tmp" && [[ -s "${file}.tmp" ]] && mv -f "${file}.tmp" "${file}"; }; then
+    rm -f "${file}.tmp"
+    die "the lease ledger could not be written"
+  fi
 }
 
 # LEASE_ID: loads LS, LEXP, LRID, LNAME and the L_* audit fields.
@@ -332,11 +365,14 @@ open_leases() {
 # Refuses a nonce this lease has already seen, records it otherwise. Entries
 # older than an hour are dropped: a request that old fails the clock check.
 nonce_add() {
-  local now
-  if jq -e --arg n "${NONCE}" 'any(.nonces[]?; .n == $n)' \
-    "${BROKER_DIR}/leases/${LEASE_ID}.json" >/dev/null 2>&1; then
-    return 1
-  fi
+  local now rc=0
+  jq -e --arg n "${NONCE}" 'any(.nonces[]?; .n == $n)' \
+    "${BROKER_DIR}/leases/${LEASE_ID}.json" >/dev/null 2>&1 || rc=$?
+  case "${rc}" in
+    0) return 1 ;;
+    1) ;;
+    *) die "the lease ledger could not be read" ;;
+  esac
   now=$(utc_now)
   ledger_update "${LEASE_ID}" --arg n "${NONCE}" --argjson t "${now}" \
     --argjson keep "$((now - NONCE_KEEP_SECONDS))" \
@@ -420,7 +456,8 @@ refuse_request() {
 # never delivered; its runner is found by the derived name), or a runner
 # GitHub reports offline and not busy. A runner GitHub reports busy or online
 # is never touched; its lease waits for the supervisor's release_request. A
-# runner GitHub no longer lists closes its lease. At most SWEEP_SECONDS per run.
+# runner GitHub no longer lists closes its lease. No GitHub call starts after
+# SWEEP_SECONDS.
 sweep() {
   local id now stop r fid fstatus fbusy
   local -a ids=()
@@ -429,10 +466,11 @@ sweep() {
   now=$(utc_now)
   stop=$(($(now_s) + SWEEP_SECONDS))
   for id in "${ids[@]}"; do
-    (($(now_s) < stop)) || break
     ledger_read "${id}" || continue
     ((now > LEXP)) || continue
+    (($(now_s) < stop)) || break
     mint_token || return 0
+    (($(now_s) < stop)) || break
     if [[ "${LS}" == pending ]]; then
       r=$(runner_by_name "${LNAME}")
     else
@@ -446,6 +484,7 @@ sweep() {
       "found "*)
         read -r _ fid fstatus fbusy <<< "${r}"
         [[ "${fstatus}" == offline && "${fbusy}" == false ]] || continue
+        (($(now_s) < stop)) || break
         r=$(delete_runner "${fid}")
         case "${r}" in
           deregistered | already_gone)
@@ -462,9 +501,10 @@ sweep() {
 
 # ---- requests --------------------------------------------------------------
 
-# GitHub may have created the runner: delete it before answering. When that is
-# not confirmed the lease stays pending and open, so the supervisor's
-# release_request or the sweep deletes it by the derived name later.
+# GitHub may have created the runner: delete it before answering. Only a
+# delete closes the lease. A runner that is not listed (yet) proves nothing,
+# since GitHub may still finish the create: the lease stays pending and open,
+# and the supervisor's release_request or the sweep looks again by name.
 lease_abandon() {
   local r id
   if [[ "$3" =~ ${ID_RE} ]]; then
@@ -477,13 +517,14 @@ lease_abandon() {
     fi
   fi
   case "${r}" in
-    absent | deregistered | already_gone) lease_close "$1" "$2" ;;
+    deregistered | already_gone) lease_close "$1" "$2" ;;
     *) lease_refused "$1" "$2" ;;
   esac
 }
 
 handle_lease() {
-  local now seen verdict=ok state name expires rec r gid body resp code meta rid named jit
+  local now seen=0 verdict=ok state name expires rec r gid body resp code meta rid named jit
+  local lease_file="${BROKER_DIR}/leases/${LEASE_ID}.json" slot_file="${BROKER_DIR}/slots/${SLOT}"
   L_RES=${RES_ID} L_GEN=${GEN} L_PROFILE=${PROFILE} L_IMAGE=${IMAGE_GEN}
   set_profile "${PROFILE}"
   # The VM name: aap-<w|l>-<slot>-<lease_generation>-<first 8 hex of the reservation>.
@@ -493,11 +534,13 @@ handle_lease() {
     verdict=clock_skew
   else
     # One lease per slot generation: a lower or equal generation is stale, so a
-    # runner name is never leased twice.
-    seen=0
-    { read -r seen < "${BROKER_DIR}/slots/${SLOT}"; } 2>/dev/null || seen=0
-    [[ "${seen}" =~ ^[0-9]{1,9}$ ]] || seen=999999999
-    if ((GEN <= seen)); then
+    # runner name is never leased twice. No slot file is generation 0; a slot
+    # file that exists but holds no generation refuses the slot.
+    if [[ -e "${slot_file}" || -L "${slot_file}" ]]; then
+      seen=$(cat "${slot_file}" 2>/dev/null) || seen=""
+      [[ "${seen}" =~ ^[0-9]{1,9}$ ]] || seen=999999999
+    fi
+    if ((GEN <= 10#${seen})); then
       verdict=stale_generation
     elif (($(open_leases | wc -l) >= MAX_OPEN_LEASES)); then
       verdict=lease_limit
@@ -514,19 +557,29 @@ handle_lease() {
      profile: $prof, image_generation: $img, runner_name: $name, runner_id: null, state: $state,
      outcome: $why, created_at: $created, expires_at: $expires, expires_epoch: $exp,
      nonces: [{n: $nonce, t: $now}]}')
-  # The replay check: noclobber opens with O_CREAT|O_EXCL, so a lease id whose
-  # file exists, in any state, is refused and the file is left as it is.
-  if ! (set -C && printf '%s\n' "${rec}" > "${BROKER_DIR}/leases/${LEASE_ID}.json") 2>/dev/null; then
+  # The replay check: a lease id whose file exists, in any state, is refused
+  # and the file is left as it is.
+  if [[ -e "${lease_file}" || -L "${lease_file}" ]]; then
     lease_refused replay "${name}"
     return 0
+  fi
+  # The open marker before the lease file: a crash in between leaves a marker
+  # that open_leases drops, never a pending lease the sweep cannot see.
+  if [[ "${verdict}" == ok ]]; then
+    : > "${BROKER_DIR}/open/${LEASE_ID}" || die "the lease ledger could not be written"
+  fi
+  # noclobber: O_CREAT|O_EXCL. A failed write leaves no lease file; nothing was
+  # answered, so the lease id is not spent.
+  if ! (set -C && printf '%s\n' "${rec}" > "${lease_file}") 2>/dev/null; then
+    rm -f "${lease_file}"
+    die "the lease ledger could not be written"
   fi
   if [[ "${verdict}" != ok ]]; then
     lease_refused "${verdict}" "${name}"
     return 0
   fi
-  : > "${BROKER_DIR}/open/${LEASE_ID}"
-  printf '%s\n' "${GEN}" > "${BROKER_DIR}/slots/${SLOT}.tmp"
-  mv -f "${BROKER_DIR}/slots/${SLOT}.tmp" "${BROKER_DIR}/slots/${SLOT}"
+  { printf '%s\n' "${GEN}" > "${slot_file}.tmp" && mv -f "${slot_file}.tmp" "${slot_file}"; } \
+    || { rm -f "${slot_file}.tmp"; die "the slot generation could not be written"; }
   if ! mint_token; then
     lease_close github_error "${name}"
     return 0
@@ -539,6 +592,12 @@ handle_lease() {
   gid=${r#ok }
   body=$(printf '{"name":"%s","runner_group_id":%s,"labels":[%s],"work_folder":"_work"}' \
     "${name}" "${gid}" "${P_LABELS}")
+  # No create starts unless its reply can arrive within the run limit; nothing
+  # was created, so the lease closes.
+  if ! room_for 10; then
+    lease_close github_error "${name}"
+    return 0
+  fi
   resp=$(gh_api POST "/orgs/${AAP_GITHUB_ORG}/actions/runners/generate-jitconfig" \
     -H "Content-Type: application/json" --data "${body}")
   code=${resp##*$'\n'}
@@ -613,6 +672,12 @@ handle_release() {
   fi
   case "${r}" in
     absent | already_gone)
+      # Until expires_at a pending lease's create may still finish at GitHub,
+      # so a runner that is not listed is no proof yet.
+      if [[ "${r}" == absent ]] && (($(utc_now) <= LEXP)); then
+        release_answer retry github_error "${LRID}" "${LNAME}"
+        return 0
+      fi
       close_lease "${LEASE_ID}" released already_gone
       release_answer already_gone ok "${LRID}" "${LNAME}"
       ;;
@@ -664,7 +729,23 @@ handle_status() {
   esac
 }
 
+# Exit trap: the installation token is revoked (best effort, its answer is
+# dropped), and every failure but the bad-input exit 2 leaves with status 1.
+on_exit() {
+  local rc=$?
+  if [[ -n "${TOKEN}" ]] && room_for 3; then
+    auth_header "${TOKEN}" | curl --silent --connect-timeout 2 --max-time 3 -X DELETE -H @- \
+      -H "Accept: application/vnd.github+json" "${GITHUB_API}/installation/token" >/dev/null 2>&1 || true
+  fi
+  TOKEN=""
+  ((rc == 0 || (rc == 2 && BAD_INPUT == 1))) || rc=1
+  exit "${rc}"
+}
+
 broker_run() {
+  local d
+  RUN_START=$(now_s)
+  trap on_exit EXIT
   if read_request; then
     parse_request
   else
@@ -672,11 +753,17 @@ broker_run() {
   fi
   if [[ "${V}" == bad ]]; then
     echo "aap-runner-broker: refused: stdin is not one request with a kind and a lease id" >&2
+    BAD_INPUT=1
     exit 2
   fi
   load_config >&2
   check_key >&2
-  mkdir -p "${BROKER_DIR}/leases" "${BROKER_DIR}/open" "${BROKER_DIR}/slots" "${AUDIT_LOG%/*}"
+  # Directories owned by root (this user), mode 0700, never through a symlink.
+  for d in "${BROKER_DIR}" "${BROKER_DIR}/leases" "${BROKER_DIR}/open" "${BROKER_DIR}/slots" "${AUDIT_LOG%/*}"; do
+    if [[ -L "${d}" ]] || ! install -d -m 0700 "${d}" || [[ -L "${d}" || ! -O "${d}" ]]; then
+      die "refusing ${d}: not a directory owned by this user"
+    fi
+  done
   exec 9>> "${BROKER_DIR}/lock"
   if ! flock -w "${LOCK_WAIT_SECONDS}" 9; then
     echo "aap-runner-broker: the ledger lock stayed busy for ${LOCK_WAIT_SECONDS} s" >&2

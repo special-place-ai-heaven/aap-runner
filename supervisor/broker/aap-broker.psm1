@@ -385,81 +385,12 @@ function Invoke-AapBrokerWsl {
         -StdIn $StdIn -TimeoutSeconds $TimeoutSeconds -MaxStdoutBytes $script:MaxReplyBytes
 }
 
-# Checks one reply and parses it. Returns @{ Doc; Jit } or $null. Bytes is
-# zeroed in every case; on $null nothing of the reply survives.
-function ConvertFrom-AapBrokerReply {
-    param([byte[]]$Bytes, [string]$Kind)
-    $jit = $null
-    try {
-        if ($null -eq $Bytes) { return $null }
-        $n = $Bytes.Length
-        while ($n -gt 0 -and ($Bytes[$n - 1] -eq 10 -or $Bytes[$n - 1] -eq 13)) { $n-- }
-        if ($n -eq 0 -or $n -gt $script:MaxReplyBytes) { return $null }
-        $keys = New-Object Collections.Generic.List[int]
-        $key = $script:JitKey
-        for ($i = 0; $i -lt $n; $i++) {
-            $b = $Bytes[$i]
-            if ($b -lt 0x20 -or $b -gt 0x7e -or $b -eq 0x5c) { return $null }
-            if ($b -eq 0x22 -and $i + $key.Length -le $n) {
-                $k = 1
-                while ($k -lt $key.Length -and $Bytes[$i + $k] -eq $key[$k]) { $k++ }
-                if ($k -eq $key.Length) { $keys.Add($i) }
-            }
-        }
-        if ($keys.Count -ne [int]($Kind -ceq 'lease_response')) { return $null }
-        if ($keys.Count -eq 1) {
-            $at = $keys[0] + $key.Length
-            if ($at -ge $n -or $Bytes[$at] -ne 0x3a) { return $null }
-            $at++
-            if ($at -lt $n -and $Bytes[$at] -eq 0x22) {
-                $start = $at + 1
-                $end = $start
-                # A-Z a-z 0-9 + / = _ - (the schema's jit_config pattern).
-                while ($end -lt $n) {
-                    $b = $Bytes[$end]
-                    if (-not (($b -ge 0x41 -and $b -le 0x5a) -or ($b -ge 0x61 -and $b -le 0x7a) -or ($b -ge 0x30 -and $b -le 0x39) -or
-                            $b -eq 0x2b -or $b -eq 0x2f -or $b -eq 0x3d -or $b -eq 0x5f -or $b -eq 0x2d)) { break }
-                    $end++
-                }
-                if ($end -ge $n -or $Bytes[$end] -ne 0x22 -or $end -eq $start -or ($end - $start) -gt $script:MaxJitBytes) { return $null }
-                $jit = New-Object byte[] ($end - $start)
-                [Array]::Copy($Bytes, $start, $jit, 0, $jit.Length)
-                for ($i = $start; $i -lt $end; $i++) { $Bytes[$i] = 0x41 }
-            } elseif ($at + 4 -gt $n -or [Text.Encoding]::ASCII.GetString($Bytes, $at, 4) -cne 'null') {
-                return $null
-            }
-        }
-        $doc = ConvertFrom-AapBrokerJson ([Text.Encoding]::ASCII.GetString($Bytes, 0, $n))
-        if ($null -eq $doc -or $null -ne (Test-AapBrokerDocument $doc) -or $doc['kind'] -cne $Kind) { return $null }
-        $parsed = @{ Doc = $doc; Jit = $jit }
-        $jit = $null
-        return $parsed
-    } finally {
-        if ($null -ne $Bytes) { [Array]::Clear($Bytes, 0, $Bytes.Length) }
-        if ($null -ne $jit) { [Array]::Clear($jit, 0, $jit.Length) }
-    }
-}
-
-# The JIT config as an object whose only property is Length, so it formats,
-# serializes and logs as nothing else. WriteTo(stream) writes the bytes (to the
-# guest transport's stdin); Clear() zeroes them. Nothing makes it a string.
-function New-AapBrokerSecret([byte[]]$Bytes) {
-    $secret = [pscustomobject]@{ Length = $Bytes.Length }
-    $writeTo = { param([IO.Stream]$Stream) $Stream.Write($Bytes, 0, $Bytes.Length) }.GetNewClosure()
-    $clear = { [Array]::Clear($Bytes, 0, $Bytes.Length) }.GetNewClosure()
-    Add-Member -InputObject $secret -MemberType ScriptMethod -Name WriteTo -Value $writeTo
-    Add-Member -InputObject $secret -MemberType ScriptMethod -Name Clear -Value $clear
-    return $secret
-}
-
-function Get-AapBrokerProperty($Object, [string]$Name) {
-    if ($null -eq $Object) { return $null }
-    $p = $Object.PSObject.Properties[$Name]
-    if ($null -eq $p) { return $null }
-    return , $p.Value
-}
-
 # Sends one request, returns @{ Outcome = reply|unavailable|bad_reply; ExitCode; Doc; Jit }.
+# The reply bytes, and the JIT config cut out of them, are never a command's
+# parameter value (module logging records those): they are read inline here,
+# from the invoker's result, and the JIT bytes leave only as the return value.
+# The reply buffer is zeroed on every path; on anything but a reply no JIT
+# byte survives.
 function Invoke-AapBrokerCall($Request, [string]$Reply, [scriptblock]$Invoker, [string]$Distro, [int]$TimeoutSeconds) {
     $json = ConvertTo-AapBrokerJson $Request
     $why = Test-AapBrokerDocument (ConvertFrom-AapBrokerJson $json)
@@ -474,23 +405,74 @@ function Invoke-AapBrokerCall($Request, [string]$Reply, [scriptblock]$Invoker, [
     } catch {
         return @{ Outcome = 'unavailable'; ExitCode = $null; Doc = $null; Jit = $null }
     }
-    $code = Get-AapBrokerProperty $r 'ExitCode'
-    $out = Get-AapBrokerProperty $r 'Stdout'
-    # More than 20 KiB is a reply that broke the contract, whatever the exit code.
-    if ([bool](Get-AapBrokerProperty $r 'Overflow')) {
+    $code = $null
+    $out = $null
+    $timedOut = $false
+    $overflow = $false
+    if ($null -ne $r) {
+        $props = $r.PSObject.Properties
+        if ($null -ne $props['ExitCode']) { $code = $props['ExitCode'].Value }
+        if ($null -ne $props['Stdout']) { $out = $props['Stdout'].Value }
+        if ($null -ne $props['TimedOut']) { $timedOut = [bool]$props['TimedOut'].Value }
+        if ($null -ne $props['Overflow']) { $overflow = [bool]$props['Overflow'].Value }
+    }
+    $jit = $null
+    try {
+        # More than 20 KiB is a reply that broke the contract, whatever the exit code.
+        if ($overflow) { return @{ Outcome = 'bad_reply'; ExitCode = $code; Doc = $null; Jit = $null } }
+        if ($timedOut -or -not ($code -is [int]) -or $code -ne 0) {
+            return @{ Outcome = 'unavailable'; ExitCode = $code; Doc = $null; Jit = $null }
+        }
+        $bad = @{ Outcome = 'bad_reply'; ExitCode = 0; Doc = $null; Jit = $null }
+        if (-not ($out -is [byte[]])) { return $bad }
+        $n = $out.Length
+        while ($n -gt 0 -and ($out[$n - 1] -eq 10 -or $out[$n - 1] -eq 13)) { $n-- }
+        if ($n -eq 0 -or $n -gt $script:MaxReplyBytes) { return $bad }
+        $keys = New-Object Collections.Generic.List[int]
+        $key = $script:JitKey
+        for ($i = 0; $i -lt $n; $i++) {
+            $b = $out[$i]
+            if ($b -lt 0x20 -or $b -gt 0x7e -or $b -eq 0x5c) { return $bad }
+            if ($b -eq 0x22 -and $i + $key.Length -le $n) {
+                $k = 1
+                while ($k -lt $key.Length -and $out[$i + $k] -eq $key[$k]) { $k++ }
+                if ($k -eq $key.Length) { $keys.Add($i) }
+            }
+        }
+        if ($keys.Count -ne [int]($Reply -ceq 'lease_response')) { return $bad }
+        if ($keys.Count -eq 1) {
+            $at = $keys[0] + $key.Length
+            if ($at -ge $n -or $out[$at] -ne 0x3a) { return $bad }
+            $at++
+            if ($at -lt $n -and $out[$at] -eq 0x22) {
+                $start = $at + 1
+                $end = $start
+                # A-Z a-z 0-9 + / = _ - (the schema's jit_config pattern).
+                while ($end -lt $n) {
+                    $b = $out[$end]
+                    if (-not (($b -ge 0x41 -and $b -le 0x5a) -or ($b -ge 0x61 -and $b -le 0x7a) -or ($b -ge 0x30 -and $b -le 0x39) -or
+                            $b -eq 0x2b -or $b -eq 0x2f -or $b -eq 0x3d -or $b -eq 0x5f -or $b -eq 0x2d)) { break }
+                    $end++
+                }
+                if ($end -ge $n -or $out[$end] -ne 0x22 -or $end -eq $start -or ($end - $start) -gt $script:MaxJitBytes) { return $bad }
+                $jit = New-Object byte[] ($end - $start)
+                [Array]::Copy($out, $start, $jit, 0, $jit.Length)
+                for ($i = $start; $i -lt $end; $i++) { $out[$i] = 0x41 }
+            } elseif ($at + 4 -gt $n -or [Text.Encoding]::ASCII.GetString($out, $at, 4) -cne 'null') {
+                return $bad
+            }
+        }
+        # The text holds a run of A in place of the JIT config.
+        $text = [Text.Encoding]::ASCII.GetString($out, 0, $n)
+        $doc = ConvertFrom-AapBrokerJson $text
+        if ($null -eq $doc -or $null -ne (Test-AapBrokerDocument $doc) -or $doc['kind'] -cne $Reply) { return $bad }
+        $parsed = @{ Outcome = 'reply'; ExitCode = 0; Doc = $doc; Jit = $jit }
+        $jit = $null
+        return $parsed
+    } finally {
         if ($out -is [byte[]]) { [Array]::Clear($out, 0, $out.Length) }
-        return @{ Outcome = 'bad_reply'; ExitCode = $code; Doc = $null; Jit = $null }
+        if ($null -ne $jit) { [Array]::Clear($jit, 0, $jit.Length) }
     }
-    if ([bool](Get-AapBrokerProperty $r 'TimedOut') -or -not ($code -is [int]) -or $code -ne 0) {
-        if ($out -is [byte[]]) { [Array]::Clear($out, 0, $out.Length) }
-        return @{ Outcome = 'unavailable'; ExitCode = $code; Doc = $null; Jit = $null }
-    }
-    if (-not ($out -is [byte[]])) {
-        return @{ Outcome = 'bad_reply'; ExitCode = 0; Doc = $null; Jit = $null }
-    }
-    $parsed = ConvertFrom-AapBrokerReply -Bytes $out -Kind $Reply
-    if ($null -eq $parsed) { return @{ Outcome = 'bad_reply'; ExitCode = 0; Doc = $null; Jit = $null } }
-    return @{ Outcome = 'reply'; ExitCode = 0; Doc = $parsed.Doc; Jit = $parsed.Jit }
 }
 
 # ---- public ----------------------------------------------------------------
@@ -571,21 +553,37 @@ function Invoke-AapBrokerLease {
         nonce = (New-AapBrokerHex 16); issued_at = (Get-AapBrokerTime)
     }
     $call = Invoke-AapBrokerCall $request 'lease_response' $Invoker $Distro $TimeoutSeconds
-    if ($call.Outcome -cne 'reply') { return (New-AapBrokerResult $LeaseId $call.Outcome $null $call.ExitCode) }
-    $doc = $call.Doc
-    $issued = $doc['result'] -ceq 'issued'
-    if ($doc['lease_id'] -cne $LeaseId -or ($issued -and $doc['runner_name'] -cne $name)) {
-        if ($null -ne $call.Jit) { [Array]::Clear($call.Jit, 0, $call.Jit.Length) }
-        return (New-AapBrokerResult $LeaseId 'bad_reply' $null 0)
+    $jit = $call.Jit
+    $call.Jit = $null
+    $handed = $false
+    try {
+        if ($call.Outcome -cne 'reply') { return (New-AapBrokerResult $LeaseId $call.Outcome $null $call.ExitCode) }
+        $doc = $call.Doc
+        $issued = $doc['result'] -ceq 'issued'
+        if ($doc['lease_id'] -cne $LeaseId -or ($issued -and $doc['runner_name'] -cne $name)) {
+            return (New-AapBrokerResult $LeaseId 'bad_reply' $null 0)
+        }
+        $result = New-AapBrokerResult $LeaseId $doc['result'] $doc['reason'] 0
+        if ($issued) {
+            $result.RunnerId = $doc['runner_id']
+            $result.RunnerName = $doc['runner_name']
+            $result.ExpiresAt = $doc['expires_at']
+            # The JIT config as an object whose only property is Length, so it
+            # formats, serializes and logs as nothing else. WriteTo(stream)
+            # writes the bytes; Clear() zeroes them. Built here, with .NET
+            # calls only, so the bytes are never a command's parameter value.
+            $secret = [pscustomobject]@{ Length = $jit.Length }
+            $writeTo = { param([IO.Stream]$Stream) $Stream.Write($jit, 0, $jit.Length) }.GetNewClosure()
+            $clear = { [Array]::Clear($jit, 0, $jit.Length) }.GetNewClosure()
+            $secret.PSObject.Methods.Add([Management.Automation.PSScriptMethod]::new('WriteTo', $writeTo))
+            $secret.PSObject.Methods.Add([Management.Automation.PSScriptMethod]::new('Clear', $clear))
+            $result.JitConfig = $secret
+            $handed = $true
+        }
+        return $result
+    } finally {
+        if (-not $handed -and $null -ne $jit) { [Array]::Clear($jit, 0, $jit.Length) }
     }
-    $result = New-AapBrokerResult $LeaseId $doc['result'] $doc['reason'] 0
-    if ($issued) {
-        $result.RunnerId = $doc['runner_id']
-        $result.RunnerName = $doc['runner_name']
-        $result.ExpiresAt = $doc['expires_at']
-        $result.JitConfig = New-AapBrokerSecret $call.Jit
-    }
-    return $result
 }
 
 # Mandatory at every teardown, with the lease id only. Outcome deregistered or

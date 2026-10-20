@@ -66,10 +66,16 @@ jit_value=$(cat "${N}/jit")
 # ---- shims -----------------------------------------------------------------
 # jq and openssl: record every process's argv that holds a secret, then run
 # the real tool. A secret passed in any argv during a broker run lands here.
+# ${T}/jq_fail holds a filter fragment: a jq call whose arguments contain it
+# writes a partial document and fails (a full disk), with status 2.
 cat > "${T}/bin/jq" <<'EOF'
 #!/bin/bash
 cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\0' '\n' | grep -F -f "${N}/needles" >> "${T}/argv-hits" || true
 printf x >> "${T}/snaps"
+if [[ -s "${T}/jq_fail" && "$*" == *"$(cat "${T}/jq_fail")"* ]]; then
+  printf '{'
+  exit 2
+fi
 exec "${REAL_JQ}" "$@"
 EOF
 cat > "${T}/bin/openssl" <<'EOF'
@@ -86,6 +92,10 @@ set -euo pipefail
 gh="${T}/gh"
 cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\0' '\n' | grep -F -f "${N}/needles" >> "${T}/argv-hits" || true
 printf x >> "${T}/snaps"
+if [[ "${1:-}" != -q ]]; then
+  echo "CURL WITHOUT -q" >> "${gh}/calls"
+  exit 2
+fi
 hdr=$(cat)
 method=GET data="" query="" wfmt="" fail_flag=0 timeouts=0
 args=("$@")
@@ -123,6 +133,7 @@ code=200 body=""
 case "${method} ${path}" in
   "POST /app/installations/67890/access_tokens")
     [[ ! -e "${gh}/token_fail" ]] || exit 22
+    [[ ! -f "${gh}/token_sleep" ]] || sleep "$(cat "${gh}/token_sleep")"
     body=$(printf '{"token":"%s","expires_at":"2099-01-01T00:00:00Z"}' "${token}")
     ;;
   "GET /orgs/example-org/actions/runner-groups")
@@ -159,7 +170,11 @@ case "${method} ${path}" in
       *) code=${mode} body='{"message":"Validation failed, or the endpoint has been spammed."}' ;;
     esac
     ;;
+  "DELETE /installation/token")
+    code=204
+    ;;
   "GET /orgs/example-org/actions/runners")
+    [[ ! -f "${gh}/list_sleep" ]] || sleep "$(cat "${gh}/list_sleep")"
     [[ ! -f "${gh}/list_code" ]] || code=$(cat "${gh}/list_code")
     body=$("${REAL_JQ}" -c --arg n "${query#name=}" '[.[] | select(.name == $n)] | {total_count: length, runners: .}' \
       "${gh}/runners.json")
@@ -213,6 +228,7 @@ AUDIT_LOG="${T}/log/broker-audit.jsonl"
 LOCK_WAIT_SECONDS=${TEST_LOCK_WAIT:-20}
 AUDIT_MAX_BYTES=${TEST_AUDIT_MAX:-${AUDIT_MAX_BYTES}}
 SWEEP_SECONDS=${TEST_SWEEP_SECONDS:-${SWEEP_SECONDS}}
+RUN_LIMIT_SECONDS=${TEST_RUN_LIMIT:-${RUN_LIMIT_SECONDS}}
 load_config() {
   echo load_config >> "${T}/called"
   if [[ -n "${TEST_CONF_FAIL:-}" ]]; then
@@ -352,6 +368,12 @@ seed() {
      outcome: "ok", created_at: "2026-10-19T18:00:00Z", expires_at: "2026-10-19T18:10:00Z",
      expires_epoch: $exp, nonces: []}' > "${T}/state/leases/$1.json"
   : > "${T}/state/open/$1"
+}
+
+# LEASE_ID: its expiry moves a minute into the past.
+age_lease() {
+  jq -c --argjson e "$(($(date -u +%s) - 60))" '.expires_epoch = $e' "${T}/state/leases/$1.json" > "${T}/state/age.tmp"
+  mv "${T}/state/age.tmp" "${T}/state/leases/$1.json"
 }
 
 # Every audit line (and the rotated file) is a valid contract audit record.
@@ -527,14 +549,15 @@ jq -e --arg n "${name}" '.name == $n and .runner_group_id == 7 and .work_folder 
 [[ "$(calls 'POST /app/installations/67890/access_tokens auth=jwt timeouts=2')" -eq 1 ]] || fail "the installation token was not minted from a JWT on stdin: $(cat "${T}/gh/calls")"
 [[ "$(calls 'GET /orgs/example-org/actions/runner-groups?per_page=100 auth=token timeouts=2')" -eq 1 ]] || fail "the runner group was not resolved by name"
 [[ "$(calls 'POST /orgs/example-org/actions/runners/generate-jitconfig auth=token timeouts=2')" -eq 1 ]] || fail "generate-jitconfig was not called once with the token on stdin"
-[[ "$(calls ' ')" -eq 3 ]] || fail "unexpected GitHub calls: $(cat "${T}/gh/calls")"
+[[ "$(calls 'DELETE /installation/token auth=token timeouts=2')" -eq 1 ]] || fail "the installation token was not revoked at exit"
+[[ "$(calls ' ')" -eq 4 ]] || fail "unexpected GitHub calls: $(cat "${T}/gh/calls")"
 [[ "$(sort "${T}/called" | tr '\n' ' ')" == "check_key load_config " ]] || fail "the manager's load_config and check_key were not each called once"
 [[ "$(ledger "${lid}" '[.state, .runner_id, .runner_name, .slot, .lease_generation, .reservation_id] | join(" ")')" == "issued 100 ${name} 4 3 ${res}" ]] \
   || fail "ledger: $(cat "${T}/state/leases/${lid}.json")"
 [[ "$(ledger "${lid}" 'keys | join(",")')" == "created_at,expires_at,expires_epoch,image_generation,lease_generation,lease_id,nonces,outcome,profile,reservation_id,runner_id,runner_name,schema,slot,state" ]] \
   || fail "ledger fields: $(ledger "${lid}" 'keys | join(",")')"
-[[ "$(stat -c %a "${T}/state/leases/${lid}.json")" == 600 && "$(stat -c %a "${T}/state")" == 700 && "$(stat -c %a "${T}/state/leases")" == 700 ]] \
-  || fail "ledger is not root-only (0600 files, 0700 dirs)"
+[[ "$(stat -c %a "${T}/state/leases/${lid}.json")" == 600 && "$(stat -c %a "${T}/state")" == 700 && "$(stat -c %a "${T}/state/leases")" == 700 \
+  && "$(stat -c %a "${T}/log")" == 700 ]] || fail "ledger or audit log is not root-only (0600 files, 0700 dirs)"
 [[ -e "${T}/state/open/${lid}" && "$(cat "${T}/state/slots/4")" == 3 && "$(cat "${T}/state/group-id")" == 7 ]] \
   || fail "open marker, slot generation or group cache missing"
 [[ "$(last_audit '[.op, .outcome, .reason, .runner_id, .runner_name, .lease_generation, .profile] | join(" ")')" == "lease issued ok 100 ${name} 3 win25-vs2026-x64" ]] \
@@ -546,6 +569,16 @@ expect "ubuntu lease" issued ok
 tail -n 1 "${T}/gh/jit_bodies" | jq -e '.labels == ["self-hosted", "Linux", "X64", "aap-ubuntu-24.04"] and .runner_group_id == 7' >/dev/null \
   || fail "ubuntu labels: $(tail -n 1 "${T}/gh/jit_bodies")"
 [[ "$(calls 'runner-groups')" -eq 1 ]] || fail "the cached group id was not reused"
+# HOME is the caller's: its ~/.jq (a jq library jq loads by itself) is never read.
+mkdir -p "${T}/home"
+printf 'def broken: ;;;\n' > "${T}/home/.jq"
+hl=$(new_lease)
+run_broker "$(lease_req "${hl}" 5 1 "$(new_res)")" HOME="${T}/home"
+expect "lease with a hostile HOME" issued ok
+rm -rf "${T}/home"
+run_broker "$(small_req release_request "${hl}")"
+expect "release of the hostile-HOME lease" deregistered ok
+[[ "$(calls 'WITHOUT -q')" -eq 0 ]] || fail "a curl call did not start with -q"
 echo "issued lease ok"
 
 # Replay: the same bytes, and the same lease id from another reservation.
@@ -582,6 +615,18 @@ run_broker "$(lease_req "$(new_lease)" 4 4 "$(new_res)")"
 expect "next generation" issued ok
 run_broker "$(lease_req "$(new_lease)" 3 1 "$(new_res)")"
 expect "another slot" issued ok
+# A slot file that exists but holds no generation refuses the slot; a
+# generation without a newline still counts.
+for content in '' 'garbage' '3x'; do
+  printf '%s' "${content}" > "${T}/state/slots/2"
+  run_broker "$(lease_req "$(new_lease)" 2 7 "$(new_res)")"
+  expect "slot file '${content}'" refused stale_generation
+done
+printf '7' > "${T}/state/slots/2"
+run_broker "$(lease_req "$(new_lease)" 2 7 "$(new_res)")"
+expect "slot generation without a newline" refused stale_generation
+run_broker "$(lease_req "$(new_lease)" 2 8 "$(new_res)")"
+expect "next generation after a bare one" issued ok
 echo "stale generation ok"
 
 # ---- outstanding limit -----------------------------------------------------
@@ -599,8 +644,9 @@ expect "sixth outstanding lease" refused lease_limit
   || fail "the refused sixth lease is counted"
 run_broker "$(small_req release_request "${slot_lease[1]}")"
 expect "release slot 1" deregistered ok
-# Four outstanding; two requests at once. The count runs under the lock, so
-# exactly one gets the fifth lease.
+# Four outstanding; two requests at once: exactly one gets the fifth lease.
+# This shows the outcome, not the lock (without it the two runs usually still
+# serialize); the busy-lock block below is the proof that the lock is held.
 echo sleep > "${T}/gh/jit_mode"
 lease_req "$(new_lease)" 1 2 "$(new_res)" > "${T}/req.a"
 lease_req "$(new_lease)" 2 2 "$(new_res)" > "${T}/req.b"
@@ -671,6 +717,37 @@ jq -e --argjson a "${foreign}" --argjson b "${lookalike}" '[.[].id] | index($a) 
 [[ "$(grep -c . "${T}/gh/deleted")" -eq 2 ]] || fail "unexpected deletes: $(cat "${T}/gh/deleted")"
 echo "release by lease id only ok"
 
+# ---- ledger writes that fail -------------------------------------------------
+# The nonce check, the nonce write and the close each fail once: exit 1, no
+# response, the lease still issued and open, no temp file left.
+reset
+lid=$(new_lease)
+run_broker "$(lease_req "${lid}" 1 1 "$(new_res)")"
+expect "lease for the write failures" issued ok
+sum=$(sha256sum < "${T}/state/leases/${lid}.json")
+for filter in 'any(.nonces' '.nonces = (' '.closed_at = $at'; do
+  printf '%s' "${filter}" > "${T}/jq_fail"
+  run_broker "$(small_req release_request "${lid}")"
+  rm -f "${T}/jq_fail"
+  [[ "${RC}" -eq 1 && -z "${OUT}" ]] || fail "a failed ledger write (${filter}) gave exit ${RC} and output ${OUT}"
+  # The close runs after the nonce write, so only the nonce cases keep every byte.
+  [[ "${filter}" == '.closed_at = $at' || "$(sha256sum < "${T}/state/leases/${lid}.json")" == "${sum}" ]] \
+    || fail "a failed ledger write (${filter}) changed the lease: $(cat "${T}/state/leases/${lid}.json")"
+  [[ "$(ledger "${lid}" .state)" == issued && -e "${T}/state/open/${lid}" ]] \
+    || fail "a failed ledger write (${filter}) lost the lease: $(cat "${T}/state/leases/${lid}.json")"
+  [[ -z "$(find "${T}/state" -name '*.tmp' -print -quit)" ]] || fail "a failed ledger write (${filter}) left a temp file"
+done
+# The failed close came after GitHub deleted the runner: the next release closes it.
+run_broker "$(small_req release_request "${lid}")"
+expect "release after a failed close" already_gone ok
+[[ "$(ledger "${lid}" .state)" == released ]] || fail "the release after a failed close did not close the lease"
+# Any unexpected tool failure exits 1, never a status a caller could read as a bad request.
+printf '%s' 'kind: "audit"' > "${T}/jq_fail"
+run_broker "$(small_req status_request "$(new_lease)")"
+rm -f "${T}/jq_fail"
+[[ "${RC}" -eq 1 && -z "${OUT}" ]] || fail "a failed audit write gave exit ${RC} and output ${OUT}"
+echo "failed ledger writes ok"
+
 # ---- status ----------------------------------------------------------------
 reset
 s1=$(new_lease)
@@ -738,8 +815,8 @@ expect "malformed request" refused malformed
 run_broker "$(small_req status_request "$(new_lease)")" TEST_SWEEP_SECONDS=0
 expect "status with no sweep budget left" refused not_found
 [[ "$(calls ' ')" -eq 0 && ! -e "${T}/gh/deleted" ]] || fail "a malformed request or a spent budget swept"
-# The budget here only keeps a slow machine from cutting the run short.
-run_broker "$(small_req status_request "$(new_lease)")" TEST_SWEEP_SECONDS=120
+# The budgets here only keep a slow machine from cutting the run short.
+run_broker "$(small_req status_request "$(new_lease)")" TEST_SWEEP_SECONDS=120 TEST_RUN_LIMIT=600
 expect "status that triggers the sweep" refused not_found
 [[ "$(sort -n "${T}/gh/deleted" | tr '\n' ' ')" == "${x1} ${x3} " ]] || fail "the sweep deleted $(tr '\n' ' ' < "${T}/gh/deleted"); want ${x1} ${x3}"
 for lid in l-11111111111111111111111111111111 l-22222222222222222222222222222222 \
@@ -758,12 +835,26 @@ grep -q "\"op\":\"expire\".*\"outcome\":\"deregistered\".*\"runner_id\":${x1}" "
 # Lookup fails: the pending lease stays open for the next run.
 seed l-99999999999999999999999999999999 pending aap-w-4-2-99999999 - "${past}"
 echo 500 > "${T}/gh/list_code"
-run_broker "$(small_req status_request "$(new_lease)")" TEST_SWEEP_SECONDS=120
+run_broker "$(small_req status_request "$(new_lease)")" TEST_SWEEP_SECONDS=120 TEST_RUN_LIMIT=600
 expect "status while the runner list fails" refused not_found
 [[ "$(ledger l-99999999999999999999999999999999 .state)" == pending ]] || fail "a failed lookup closed a lease"
 [[ "$(last_audit '[.op, .outcome, .reason] | join(" ")')" == "status refused not_found" ]] || fail "status audit after sweep"
 grep -q '"op":"expire".*"outcome":"retry","reason":"github_error"' "${T}/log/broker-audit.jsonl" || fail "no retry audit for a failed sweep"
 rm -f "${T}/gh/list_code"
+# The budget is checked before every GitHub call: a lookup that uses it up
+# stops the sweep before the delete. A 9 s lookup outlasts the 8 s budget; the
+# token mint before it may take up to 7 s on a slow machine.
+reset
+seed l-12121212121212121212121212121212 pending aap-w-1-3-12121212 - "${past}"
+xs=$(gh_runner aap-w-1-3-12121212 offline false)
+echo 9 > "${T}/gh/list_sleep"
+run_broker "$(small_req status_request "$(new_lease)")" TEST_SWEEP_SECONDS=8
+rm -f "${T}/gh/list_sleep"
+expect "status after a slow sweep lookup" refused not_found
+[[ "$(calls 'runners?name=aap-w-1-3-12121212')" -eq 1 && ! -e "${T}/gh/deleted" ]] \
+  || fail "the sweep called GitHub after its budget ran out: $(tr '\n' ';' < "${T}/gh/calls")"
+[[ "$(ledger l-12121212121212121212121212121212 .state)" == pending ]] || fail "the cut sweep closed the lease"
+gh_forget "${xs}"
 echo "sweep ok"
 
 # ---- unavailable and failing brokers ---------------------------------------
@@ -808,12 +899,21 @@ for mode in 404:github_error 409:github_error 422:github_error 429:rate_limited 
   esac
 done
 [[ ! -e "${T}/gh/deleted" && "$(runner_count)" -eq 0 ]] || fail "a refused generate-jitconfig left or deleted a runner"
-# A server error with no runner created: looked up by name, closed.
+# A server error and no runner listed: GitHub may still finish the create, so
+# the lease stays pending and open. Release answers retry until expires_at,
+# then closes it.
 echo 502 > "${T}/gh/jit_mode"
 lid=$(new_lease)
 run_broker "$(lease_req "${lid}" 3 1 "$(new_res)")"
 expect "generate-jitconfig 502" refused github_error
-[[ "$(ledger "${lid}" .state)" == refused ]] || fail "502 with no runner left the lease open"
+[[ "$(ledger "${lid}" .state)" == pending && -e "${T}/state/open/${lid}" ]] || fail "an uncertain create closed its lease"
+run_broker "$(small_req release_request "${lid}")"
+expect "release of an uncertain create before expiry" retry github_error
+[[ "$(ledger "${lid}" .state)" == pending && -e "${T}/state/open/${lid}" ]] || fail "a release before expiry closed an uncertain create"
+age_lease "${lid}"
+run_broker "$(small_req release_request "${lid}")"
+expect "release of an uncertain create after expiry" already_gone ok
+[[ "$(ledger "${lid}" .state)" == released ]] || fail "an expired uncertain create stayed open"
 # Created, but the reply is unusable: deleted by id before answering.
 echo bad-jit > "${T}/gh/jit_mode"
 lid=$(new_lease)
@@ -860,8 +960,31 @@ wait "${victim}" 2>/dev/null || true
 rm -f "${N}/killed.out" "${T}/gh/jit_mode"
 [[ "$(ledger "${lid}" .state)" == pending && -e "${T}/state/open/${lid}" ]] || fail "the killed broker's lease is not pending"
 run_broker "$(small_req release_request "${lid}")"
+expect "release after a killed broker, before expiry" retry github_error
+age_lease "${lid}"
+run_broker "$(small_req release_request "${lid}")"
 expect "release after a killed broker" already_gone ok
 [[ "$(ledger "${lid}" .state)" == released && ! -e "${T}/state/open/${lid}" ]] || fail "the killed broker's lease stayed open"
+# Past the run's time budget no create starts: refused and closed, and
+# generate-jitconfig is never called (the token mint takes 15 s of a 25 s limit).
+echo 15 > "${T}/gh/token_sleep"
+printf '7\n' > "${T}/state/group-id"
+lid=$(new_lease)
+before=$(calls generate-jitconfig)
+run_broker "$(lease_req "${lid}" 2 50 "$(new_res)")" TEST_RUN_LIMIT=25
+rm -f "${T}/gh/token_sleep"
+expect "lease past the time budget" refused github_error
+[[ "$(calls generate-jitconfig)" -eq "${before}" && "$(ledger "${lid}" .state)" == refused && ! -e "${T}/state/open/${lid}" ]] \
+  || fail "a lease past the time budget called generate-jitconfig or stayed open"
+# A state or log directory that is a symlink: exit 1, nothing written through it.
+reset
+mkdir -p "${T}/elsewhere"
+ln -s "${T}/elsewhere" "${T}/log"
+run_broker "$(lease_req "$(new_lease)" 1 1 "$(new_res)")"
+[[ "${RC}" -eq 1 && -z "${OUT}" && -z "$(ls -A "${T}/elsewhere")" && "$(calls ' ')" -eq 0 ]] \
+  || fail "a symlinked log directory gave exit ${RC}, output, files or GitHub calls"
+rm -f "${T}/log"
+rm -rf "${T}/elsewhere"
 echo "unavailable and failing brokers ok"
 
 # ---- audit rotation ---------------------------------------------------------

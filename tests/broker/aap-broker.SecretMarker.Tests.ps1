@@ -73,4 +73,27 @@ Describe 'secret marker' {
             $source.Contains($word) | Should -BeFalse -Because $word
         }
     }
+
+    It 'never gives the reply or the JIT config to a command as a parameter value' {
+        # Module logging (event 4103) records the parameter values of every
+        # command a module runs. The variables that hold reply or JIT bytes are
+        # read by .NET calls and returned, never bound to a command.
+        $ast = [Management.Automation.Language.Parser]::ParseFile($script:ModulePath, [ref]$null, [ref]$null)
+        $held = @('jit', 'out', 'r', 'stdout', 'buf', 'secret', 'writeTo', 'clear')
+        $members = @('Jit', 'Stdout')
+        $commands = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] }, $true))
+        $commands.Count | Should -BeGreaterThan 10
+        $found = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($c in $commands) {
+            foreach ($e in @($c.CommandElements | Select-Object -Skip 1)) {
+                $uses = @($e.FindAll({
+                            param($n)
+                            ($n -is [Management.Automation.Language.VariableExpressionAst] -and $held -contains $n.VariablePath.UserPath) -or
+                            ($n -is [Management.Automation.Language.MemberExpressionAst] -and $members -contains $n.Member.Extent.Text)
+                        }, $true))
+                if ($uses.Count -gt 0) { $found.Add(('line {0}: {1}' -f $c.Extent.StartLineNumber, $c.Extent.Text)) }
+            }
+        }
+        $found.ToArray() | Should -BeNullOrEmpty
+    }
 }
