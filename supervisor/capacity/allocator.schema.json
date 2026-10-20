@@ -1,0 +1,460 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/allocator.schema.json",
+  "title": "Host-wide runner slot allocator state (C:\\ProgramData\\aap-runner\\capacity\\allocator.json)",
+  "x-contract-version": 2,
+  "x-owner": "P09 (writer: supervisor capacity module); consumers P10, P11, P12, P16, P20, P22",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "revision",
+    "written_at",
+    "max_slots",
+    "host",
+    "host_reserve_percent",
+    "share_mode",
+    "profiles",
+    "legacy_adopted",
+    "slot_generations",
+    "reservations"
+  ],
+  "properties": {
+    "schema": {
+      "const": 2
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Strictly increasing on every write; a reader that sees a lower revision than it already applied ignores the file.",
+      "maximum": 2147483647
+    },
+    "written_at": {
+      "$ref": "#/$defs/time"
+    },
+    "max_slots": {
+      "const": 5
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cpu_cores",
+        "mem_gib",
+        "volumes",
+        "io_mbps",
+        "control_distro_mem_gib",
+        "measured_at"
+      ],
+      "properties": {
+        "cpu_cores": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        },
+        "mem_gib": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "volumes": {
+          "type": "array",
+          "maxItems": 4,
+          "description": "One entry per volume that holds a storage tier, written only for a storage layout that passed every trust check; empty while storage is unconfigured or failing (no VM admission).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "volume_guid",
+              "tiers",
+              "available_gib",
+              "floor_gib",
+              "held_gib"
+            ],
+            "properties": {
+              "volume_guid": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "tiers": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "base",
+                    "clone",
+                    "scratch",
+                    "staging"
+                  ]
+                }
+              },
+              "available_gib": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1048576,
+                "description": "Measured at each admission: free space plus what live reservations already hold on this volume, so each cap counts once."
+              },
+              "floor_gib": {
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 4096
+              },
+              "held_gib": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1048576,
+                "description": "Replacement and staging headroom held while a generation is built or lands on this volume."
+              }
+            }
+          }
+        },
+        "io_mbps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000,
+          "description": "Measured throughput of the slowest volume holding the clone or scratch tier; 0 = not measured, then every reservation's io_mbps must be 0 (no IO cap) and VM admission is refused by P09."
+        },
+        "measured_at": {
+          "$ref": "#/$defs/time"
+        },
+        "control_distro_mem_gib": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096,
+          "description": "Measured resident memory of the always-on WSL control VM; taken off the pool before any runner share."
+        }
+      }
+    },
+    "host_reserve_percent": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 90
+    },
+    "share_mode": {
+      "enum": [
+        "even",
+        "per_profile"
+      ]
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "linux",
+        "windows"
+      ],
+      "properties": {
+        "linux": {
+          "$ref": "#/$defs/profile"
+        },
+        "windows": {
+          "$ref": "#/$defs/profile"
+        }
+      }
+    },
+    "legacy_adopted": {
+      "type": "boolean"
+    },
+    "slot_generations": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 999999999
+      },
+      "description": "Per-slot lease generation counter, index 0 = slot 1. Incremented before each new reservation of that slot."
+    },
+    "reservations": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "$ref": "#/$defs/reservation"
+      }
+    }
+  },
+  "$defs": {
+    "time": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "share_percent",
+        "backend",
+        "active_generation"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "share_percent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 90
+        },
+        "backend": {
+          "enum": [
+            "wsl-legacy",
+            "hyperv-vm"
+          ]
+        },
+        "active_generation": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 80
+        }
+      }
+    },
+    "runner_dereg": {
+      "enum": [
+        true,
+        "github-removed",
+        "never_registered"
+      ]
+    },
+    "teardown_vm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "observed_at",
+        "vm_absent",
+        "disks_absent",
+        "vm_files_absent",
+        "runner_deregistered"
+      ],
+      "properties": {
+        "kind": {
+          "const": "vm"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/time"
+        },
+        "vm_absent": {
+          "const": true
+        },
+        "disks_absent": {
+          "const": true
+        },
+        "runner_deregistered": {
+          "$ref": "#/$defs/runner_dereg"
+        },
+        "vm_files_absent": {
+          "const": true,
+          "description": "VM configuration, saved-state and checkpoint paths inside the clone folder observed absent."
+        }
+      }
+    },
+    "teardown_legacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "observed_at",
+        "manager_reports_slot_gone",
+        "runner_deregistered"
+      ],
+      "properties": {
+        "kind": {
+          "const": "legacy"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/time"
+        },
+        "manager_reports_slot_gone": {
+          "const": true
+        },
+        "runner_deregistered": {
+          "$ref": "#/$defs/runner_dereg"
+        }
+      }
+    },
+    "reservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reservation_id",
+        "slot",
+        "profile",
+        "backend",
+        "image_generation",
+        "lease_generation",
+        "state",
+        "idempotency_key",
+        "acquired_at",
+        "state_changed_at",
+        "heartbeat_at",
+        "cpus",
+        "mem_gib",
+        "mem_overhead_mib",
+        "clone_gib",
+        "scratch_gib",
+        "io_mbps",
+        "vm_id",
+        "runner_name",
+        "cleanup_uncertain",
+        "quarantine_kind",
+        "quarantine_reason",
+        "teardown_proof"
+      ],
+      "properties": {
+        "reservation_id": {
+          "type": "string",
+          "pattern": "^r-[0-9a-f]{16}$"
+        },
+        "slot": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "profile": {
+          "enum": [
+            "linux",
+            "windows"
+          ]
+        },
+        "backend": {
+          "enum": [
+            "wsl-legacy",
+            "hyperv-vm"
+          ]
+        },
+        "image_generation": {
+          "type": "string",
+          "pattern": "^(legacy-[a-z0-9.-]{1,40}|(win25-vs2026-x64|ubuntu-24.04-x64)/[0-9]{8}\\.[0-9]+\\.[0-9]+-aap\\.[0-9]+)$"
+        },
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "state": {
+          "enum": [
+            "creating",
+            "ready",
+            "busy",
+            "draining",
+            "collecting",
+            "deleting",
+            "quarantined",
+            "reconciled"
+          ]
+        },
+        "idempotency_key": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "acquired_at": {
+          "$ref": "#/$defs/time"
+        },
+        "state_changed_at": {
+          "$ref": "#/$defs/time"
+        },
+        "heartbeat_at": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cpus": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        },
+        "mem_gib": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "mem_overhead_mib": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65536,
+          "description": "Measured VM memory beyond mem_gib (budget boot_mem_overhead_mib); counts against the profile share."
+        },
+        "clone_gib": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096,
+          "description": "The generation's clone_gib_max, counted on the clone tier's volume; 0 for legacy."
+        },
+        "scratch_gib": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096,
+          "description": "The generation's scratch_gib_max, counted on the scratch tier's volume; 0 for legacy."
+        },
+        "io_mbps": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "vm_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "runner_name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^aap-(crrr|fresh|w|l)-[a-z0-9-]{1,60}$"
+        },
+        "cleanup_uncertain": {
+          "type": "boolean"
+        },
+        "quarantine_kind": {
+          "enum": [
+            null,
+            "heartbeat",
+            "hostile_guest",
+            "teardown_failed",
+            "unknown_vm",
+            "crash"
+          ]
+        },
+        "quarantine_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 200
+        },
+        "teardown_proof": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/teardown_vm"
+            },
+            {
+              "$ref": "#/$defs/teardown_legacy"
+            }
+          ]
+        }
+      }
+    }
+  }
+}
