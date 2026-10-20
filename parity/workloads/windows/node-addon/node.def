@@ -1,0 +1,5 @@
+NAME node.exe
+EXPORTS
+    napi_create_string_utf8
+    napi_create_function
+    napi_set_named_property

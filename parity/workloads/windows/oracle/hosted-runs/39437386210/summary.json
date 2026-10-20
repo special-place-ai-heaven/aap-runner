@@ -1,0 +1,414 @@
+{
+  "schema": 1,
+  "kind": "p17-workload-summary",
+  "profile": "windows-2025-vs2026",
+  "image": {
+    "ImageOS": "win25-vs2026",
+    "ImageVersion": "20261007.264.1",
+    "RUNNER_ENVIRONMENT": "github-hosted",
+    "os": "Microsoft Windows Server 2025 Datacenter 10.0.26100 build 26100",
+    "imagedata": [
+      {
+        "group": "Operating System",
+        "detail": "Microsoft Windows Server 2025\n10.0.26100\nDatacenter"
+      },
+      {
+        "group": "Runner Image",
+        "detail": "Image: windows-2025-vs2026\nVersion: 20261007.264.1\nIncluded Software: https://github.com/actions/runner-images/blob/win25-vs2026/20261007.264/images/windows/Windows2025-VS2026-Readme.md\nImage Release: https://github.com/actions/runner-images/releases/tag/win25-vs2026%2F20261007.264"
+      }
+    ]
+  },
+  "source": {
+    "repo_head": "717d1ba484a3b64bca7b4b16f51bf68b3b3aa9cd",
+    "GITHUB_SHA": "c621999704c4b4d3e2304f62b22e79c7188922b5",
+    "GITHUB_RUN_ID": "39437386210",
+    "GITHUB_RUN_ATTEMPT": "1"
+  },
+  "tree": {
+    "sha256": "7290b8a9b6735a66cd804552e50a9a9ce81d2eaf0e0dc9af0bba2d7184734c90",
+    "files": {
+      "parity/workloads/actions/windows/defs/file-commands.json": "03cfd013b23eafb7cfa1ff505e21cd3bbb6e5820d06502a0809dc2f5bc9dd4f8",
+      "parity/workloads/actions/windows/defs/file-commands.neg-missing-marker.json": "ad6b8b49354e068a5ee40e4cb782a2605ebcf37b72fd6e2c690c53b21065b68b",
+      "parity/workloads/actions/windows/defs/runner-env.json": "90a3a43ba65579b208884f66c83299c9373db248685a0569f28d49f71e77eb75",
+      "parity/workloads/actions/windows/defs/runner-env.neg-no-tool-cache.json": "cf8d0e3bf20173bcab7a2a3cb7545e7718e23daafb391fd3cb5a501b755b3955",
+      "parity/workloads/actions/windows/defs/shell-semantics.json": "7482a9fd6a8c6e4cba319aa182bfadccec5c7f0ac3ae41b1791581e87e5f4b4f",
+      "parity/workloads/actions/windows/defs/shell-semantics.neg-no-git-bash.json": "f5c06a0cf882712126141d5c415fa9bf58c5277cc2e55395a0109ae3c0c6e55a",
+      "parity/workloads/actions/windows/file-commands/action.yml": "7831c9d5049ca21427c9924d51785c910ec38bcd1895b0d71ee6d04ea27e1f44",
+      "parity/workloads/actions/windows/file-commands/run.ps1": "26c9efc8076159d07054c1811044865e14a0799505ba440f6ac69800eac7e7ba",
+      "parity/workloads/actions/windows/runner-env/run.ps1": "9fa2215186ba8cb9fd845e5082765dce72c5461d000635f47ad7849979bbb28b",
+      "parity/workloads/actions/windows/shell-semantics/run.ps1": "7228757725fa7687bc447f0e105e40c6f4943b980a0d2619fcd3e994ffcd1b8b",
+      "parity/workloads/windows/Invoke-Workloads.ps1": "ab9e6ed0018059e17a6955c1bd364b2c14ca5c41fe99b3194af7af2cbbfcf988",
+      "parity/workloads/windows/Workload.psm1": "d8922b86e8a486c1325c25816a858060e7de3c70088113485d63d7fe2b555ffa",
+      "parity/workloads/windows/clang-cl/run.ps1": "ea17d28dcb85110b28fdea5c7373e4e0235bcea35264f6072125deefe000b492",
+      "parity/workloads/windows/cmake/run.ps1": "8b1750738e9d1e077505f26ab42bade849fd8c6bcc25602e8b9df256aed33be0",
+      "parity/workloads/windows/cmake/src/CMakeLists.txt": "098b4cd73a093a3956fd6c2bf64ff77baefeff9a58eb1704c7b87b98a8e0f5ee",
+      "parity/workloads/windows/cmake/src/calc.c": "d6b38d887ecab27ab953b522bc5f9e7080f54a5bda3ea2bb4d741406b150ccd7",
+      "parity/workloads/windows/cmake/src/main.cpp": "3880e2945ac1049c2662d8322a73316ff09dc36a86fbd7801b4781d5bd0c66ae",
+      "parity/workloads/windows/defs/clang-cl.json": "b6bc9f490c433ba5a67da507b94399e2594593543f003300f3b9d820d954f924",
+      "parity/workloads/windows/defs/clang-cl.neg-no-sdk-include.json": "1375d96b214e091383f65262db3e54b26a3dad109aa986ca1be133c9cdd1b69b",
+      "parity/workloads/windows/defs/cmake-ninja.json": "0e15edfd4e05e28e80cc23d34b9a98c29157bc7aaf949e057654d164c85b24da",
+      "parity/workloads/windows/defs/cmake-ninja.neg-no-sdk-lib.json": "0de1b50669542e0f091867e802eceddbc74d9daf5a1515cdcbb78722e26ef3c3",
+      "parity/workloads/windows/defs/cmake-vs.json": "c1cee3254522766264c2f8f038e3648ab8faf555e1980216bcd782583dcd5f3d",
+      "parity/workloads/windows/defs/cmake-vs.neg-missing-winsdk.json": "1183d119511d9e87f6fbd1d88992f135383e5b5d7ecb55a3f79ddec9af189a01",
+      "parity/workloads/windows/defs/dotnet-net10.json": "80a67aec9d4f96915de02293fb4867568912d02e1c9700968993d32091ed1e67",
+      "parity/workloads/windows/defs/dotnet-net10.neg-missing-targeting-pack.json": "be98d74234da7c666095bb576ee9f2ab9c6bc5f9ee6d7aa35e2dd3b165397fdb",
+      "parity/workloads/windows/defs/dotnet-net8.json": "8dd7ffa60cbeeb56a832a19bd1cb6a379740036f4cb5cabb2eb2b4810e14578d",
+      "parity/workloads/windows/defs/dotnet-net8.neg-missing-targeting-pack.json": "79ef3d23e3b32c35c896743e96b60c261b97ce100a088e8f77360d0c0b6fd50a",
+      "parity/workloads/windows/defs/java.json": "e8ca8791d17e8f36966b15dd7615ecc19f84eaafe22ba9cb572a55303140900a",
+      "parity/workloads/windows/defs/java.neg-no-java-home.json": "440d42d949b7561460364be8cb21e1c3246dcf7501e2e939508ab313453a2f13",
+      "parity/workloads/windows/defs/msbuild-netfx.json": "aa566b4b40b0be270452fd26a42162896d3b4a8691b5a4e5bb9ba4e298d72330",
+      "parity/workloads/windows/defs/msbuild-netfx.neg-missing-targeting-pack.json": "d7e32f542834527598e0cd7389568bb62753eecad3eb0d7d4e464b8993ef79ee",
+      "parity/workloads/windows/defs/msvc-arm64.json": "a4b71e32255ccdc1eea048b290ac82f75dc3b7077a1dc79783ddd6b4368b6ba8",
+      "parity/workloads/windows/defs/msvc-arm64.neg-no-sdk-lib.json": "02eceffa85e6e6bb78c89383de0ee31f321ef1c9c8a4732a895430b4571f3d85",
+      "parity/workloads/windows/defs/msvc-toolset-14.29.json": "3b742105ed6960d620edff5e5a33335019fdfd002708f170d0ac92bd8e92b917",
+      "parity/workloads/windows/defs/msvc-toolset-14.29.neg-missing-toolset.json": "673681c7d61712eb68870598cb626852c26d6cf3f4446179480aa2b9f03de7f9",
+      "parity/workloads/windows/defs/msvc-toolset-14.44.json": "041fa475301df5e2f27a9b97c5a93970b4ec5be0f056e373dfdbd42536c913b1",
+      "parity/workloads/windows/defs/msvc-x64.json": "d29f5a3a7436df485e18c36af895e2154bd9a477190e2b06ea843fb27758a67b",
+      "parity/workloads/windows/defs/msvc-x64.neg-no-sdk-include.json": "a87e2cb597abc5db20094e1404bdf016cb8fe69e86c641cef5c734048b12ae3a",
+      "parity/workloads/windows/defs/msvc-x86.json": "05eefbd62b6b11be95e98b6ba301624654d385db57063c384b9d71f9b118b85c",
+      "parity/workloads/windows/defs/msvc-x86.neg-no-sdk-lib.json": "16f7e89ff82432774c95dbf41112dd9a30d9bed4e21c5eb6cb31f2a1210d2774",
+      "parity/workloads/windows/defs/node-addon.json": "b9052ca6aba001d18d49f25f354617de2cae3a3fbff9362f16b635a31dada368",
+      "parity/workloads/windows/defs/node-addon.neg-no-sdk-lib.json": "420dc5e1ef8ba8ff68c9465a6709756ead925ec340dd92ea07b1500f0c27c5b0",
+      "parity/workloads/windows/defs/package-7zip.json": "886a37ba0412a38240b61d57653c5a03d5707fe185bbce3c3070a08aa7c41179",
+      "parity/workloads/windows/defs/package-7zip.neg-hide-tool.json": "663f0978b91d2fa26a16b055ecf16c86932efba2d602a6e3c61c098febccd196",
+      "parity/workloads/windows/defs/package-innosetup.json": "dc3124b7ece3bad4ce79f0cc426d9ea3c76b685fc9615ac87105375bae4d6e84",
+      "parity/workloads/windows/defs/package-innosetup.neg-hide-tool.json": "22994c015aff29befd0c4013cbf31bfd28ee34ef0b5c97bb3be19186747d9ba9",
+      "parity/workloads/windows/defs/package-wix.json": "74768c5ee64f3b48ddcb445f49a114ef3aa6cc2f284fa9d76e7879b5cd83e1c1",
+      "parity/workloads/windows/defs/package-wix.neg-hide-tool.json": "47722e8ac45558d9a40e0b28b8d56fee66c961be8624699666cc55f51df7316f",
+      "parity/workloads/windows/defs/python-wheel.json": "eef5f58ebcd1fa3eed912707b2c683bbf89ee8a52a378477f02795ea77d78489",
+      "parity/workloads/windows/defs/python-wheel.neg-no-python-lib.json": "61dc081b9701a6bd0e69ee6b2c6862af79a9adbf94e55896d241d85227f929e4",
+      "parity/workloads/windows/defs/rust-native.json": "03d943103a52632798761638533f54dae2278c7b842be0e94a3b7668ab08e2a1",
+      "parity/workloads/windows/defs/rust-native.neg-no-sdk-lib.json": "ec388a815a1eb9494b4c13c9ed805b7e62964189f8ae3c7533ee116d50c35493",
+      "parity/workloads/windows/defs/rust-plain.json": "1f3414f894c45d88becc92276cd92408bc02e0bbab7d77beb0cc39e98f3d6f3c",
+      "parity/workloads/windows/defs/rust-plain.neg-git-link.json": "0355f24cc36c360fc5f133109d19f01e1fc5b3358a2e0aab3b4836a0253921d7",
+      "parity/workloads/windows/defs/toolchain-versions.json": "1e35692e215f44037bae3e1dea7d55eb9c41803697d365b44412a30b75d0759d",
+      "parity/workloads/windows/defs/toolchain-versions.neg-no-llvm-on-path.json": "eec62f2ca7fd413628259625378011ca399c5a0c42f5b214a2f4e2ce11e7b852",
+      "parity/workloads/windows/defs/vs-devenv.json": "aa883080a5a738f5eea18178dbfb5b5e5c92f883511aba01875ebca86e655459",
+      "parity/workloads/windows/defs/vs-devenv.neg-missing-winsdk.json": "3a2c1ee2f3f828d2d8ba6e4820d5bb0a608b2959d7a102cac50d06cdd2235fdb",
+      "parity/workloads/windows/devenv/run.ps1": "7903b905892506657c213ddd6642cd359b988655d1c7f4f03847c28b98099be5",
+      "parity/workloads/windows/dotnet/app/ParityApp.csproj": "6e6b58b8ab28f832e51ea0872ff725dbc92f6bd6111f404d08a4be0fc08e465b",
+      "parity/workloads/windows/dotnet/app/Program.cs": "bd0fb152cd202632117ffc54ea14a079b78fcf10e00a6acd40db9a98dad908b9",
+      "parity/workloads/windows/dotnet/app/nuget.config": "a2cd6e0da2252a23ead64e93fd5bdd6bffae510ce0ee4c1ec7d5d5fa71335a84",
+      "parity/workloads/windows/dotnet/run.ps1": "91851de3b71932864f686a226a212c1786d4a0140e5d7f1b9c5f3cea235787d3",
+      "parity/workloads/windows/java/run.ps1": "cb4cbe4bbd669274a9c7e4c34026320bd1fa19058d8dee3724475f9ae31215a9",
+      "parity/workloads/windows/java/src/parity/Main.java": "689e492d157c81fb9fdc073850cfa18957f7adf697d02e285f44fa3e6aa8bd6d",
+      "parity/workloads/windows/msvc/run.ps1": "f1bb4b6edcdcaa2b22782ae6a1eb81adc05215c3ab072c74f38af6b074a20f79",
+      "parity/workloads/windows/msvc/src/hello.c": "b6344d374cc6d6b7f6355ce7769f0de34c3d2d6cc3edc6749ce01eee30120a5e",
+      "parity/workloads/windows/msvc/src/hello.cpp": "b800b662038fa816477d145561b285313fa7abcbb4bdf3752cb2aeeadf721ef7",
+      "parity/workloads/windows/msvc/src/util.c": "cb68a9fb7cef4ab253913d877a75d6b63daa9244c1a63e84911e321231d825c4",
+      "parity/workloads/windows/msvc/src/version.rc": "3db5f5656e141c179c652dc7b27c3a8ae4a2540d168203283c2e0690111c5b5b",
+      "parity/workloads/windows/netfx/Legacy.csproj": "e22fb9608693552d4f9184d7c79e9b3f9a131512f1943d031a5c0fd557a552cf",
+      "parity/workloads/windows/netfx/Program.cs": "94c4b4ca346e9fd2f1e2509fbccc6b011300c18b8f32a961d5f509f87d246e15",
+      "parity/workloads/windows/netfx/run.ps1": "0d28056c71ed00948bfa7e7dc7d2123e17d1de255b79237d0b3855d4689f91bb",
+      "parity/workloads/windows/node-addon/addon.c": "4b4225d559016e6d780c20067f75a892751b9f13eeb9389a4e2bd66994088716",
+      "parity/workloads/windows/node-addon/node.def": "51d6840c0962155942238a45789b0e2d7a89266c3150b49974f7b833533304ae",
+      "parity/workloads/windows/node-addon/run.ps1": "69d802d77b2d40a6ed788cfb9419ac873f6e07ab35b136d153b8533658df85da",
+      "parity/workloads/windows/node-addon/test.js": "6d8b7f045db997fb8071c854acac2a21bb6c88be926e377f97f6e4e505e5660d",
+      "parity/workloads/windows/oracle/windows-2025-vs2026.json": "b4f1ca05472b0d4245af6f3eb312d5903675187ae9991316bbfc42a1b460eaa1",
+      "parity/workloads/windows/packaging/payload.txt": "505032eeac3d70f5bf049d5b00de38ce09c08946044c59ea5ce1bb34eb4cc2c5",
+      "parity/workloads/windows/packaging/product.wxs": "b7060e4217bae32874911957aa78e595ca2223447062d685116c507672bfe581",
+      "parity/workloads/windows/packaging/run.ps1": "e12aba130d7ea17228ec691318e28945984d37bfcb9b4441715e9f13d2332772",
+      "parity/workloads/windows/packaging/setup.iss": "bc6896769ededf0c1af2d3599434ca81f41bd23d37640c94130feebf83de043b",
+      "parity/workloads/windows/python-wheel/build_wheel.py": "400433be34772c9fb2a061c2bde971e643e5bfaf74c67e9d6758e168c96dcb2b",
+      "parity/workloads/windows/python-wheel/check.py": "105a873655d6a72d22f30f2ec6fe23d86adda24af2ebaf4775dd544ec468b889",
+      "parity/workloads/windows/python-wheel/parity_ext.c": "0789d5cce76ec541a86390626762bbf715fc82bef57b902bc24bd047e3c96bf6",
+      "parity/workloads/windows/python-wheel/run.ps1": "88ea7292f04b3ceacc00f1c98590fd05d5ad3e356a8e5f38ad9be40007ca2ee2",
+      "parity/workloads/windows/rust/native/Cargo.toml": "29977ef06e87a88902e2449aa3890437e6acb0ff54cdc0ddb64bbd364d391cfb",
+      "parity/workloads/windows/rust/native/build.rs": "af0f4096339258df4f3d3a6b7e27d8b09e8293d468c205e35372bd1c4e5d1ce4",
+      "parity/workloads/windows/rust/native/native/native.c": "e8da1b11300236e8193593759d5843565ae2a6035aef9ac9d0aebe64f3801746",
+      "parity/workloads/windows/rust/native/src/main.rs": "ca77ad7c862726e4fc561d3ca9df55bc86f58881ea25854daa64df71b1d329a9",
+      "parity/workloads/windows/rust/plain/Cargo.toml": "9b060cf3684880127dd5af6284e17a24b42f7ca4cf982271d63f86b6946e0757",
+      "parity/workloads/windows/rust/plain/src/main.rs": "8a53e26b52684345f226853a8172d5dd7b47c5542ae682d05ad495b781f20136",
+      "parity/workloads/windows/rust/run.ps1": "aad10d6a356ece83cafa5e03fb505514867e5905f281752c153ec5439fcd7aec",
+      "parity/workloads/windows/tree_manifest.py": "347879b24a3df3016e28658af169d992cfdf2799cf03c0060fd3df16c71f35ea",
+      "parity/workloads/windows/versions/run.ps1": "1f1b5376dd1e34a7a025aabf940e069c2a5dec523b2a4b86c854cb5e1a2fa0ae",
+      "tools/parity-certify/certify.py": "7ec01a395bad894ba53d4bda2286eba18840dd5d9f5eccd4d6967a068212440a"
+    }
+  },
+  "pass": 47,
+  "total": 47,
+  "workloads": [
+    {
+      "id": "actions/windows/file-commands",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 1.481
+    },
+    {
+      "id": "actions/windows/file-commands.neg-missing-marker",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.466
+    },
+    {
+      "id": "actions/windows/runner-env",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 3.589
+    },
+    {
+      "id": "actions/windows/runner-env.neg-no-tool-cache",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.473
+    },
+    {
+      "id": "actions/windows/shell-semantics",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 3.96
+    },
+    {
+      "id": "actions/windows/shell-semantics.neg-no-git-bash",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.444
+    },
+    {
+      "id": "windows/clang-cl",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 12.373
+    },
+    {
+      "id": "windows/clang-cl.neg-no-sdk-include",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.593
+    },
+    {
+      "id": "windows/cmake-ninja",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 11.502
+    },
+    {
+      "id": "windows/cmake-ninja.neg-no-sdk-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 3.615
+    },
+    {
+      "id": "windows/cmake-vs",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 10.288
+    },
+    {
+      "id": "windows/cmake-vs.neg-missing-winsdk",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 4.291
+    },
+    {
+      "id": "windows/dotnet-net10",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 17.113
+    },
+    {
+      "id": "windows/dotnet-net10.neg-missing-targeting-pack",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 1.904
+    },
+    {
+      "id": "windows/dotnet-net8",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 13.284
+    },
+    {
+      "id": "windows/dotnet-net8.neg-missing-targeting-pack",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 1.529
+    },
+    {
+      "id": "windows/java",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 3.793
+    },
+    {
+      "id": "windows/java.neg-no-java-home",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.414
+    },
+    {
+      "id": "windows/msbuild-netfx",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 13.62
+    },
+    {
+      "id": "windows/msbuild-netfx.neg-missing-targeting-pack",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 1.044
+    },
+    {
+      "id": "windows/msvc-arm64",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 8.861
+    },
+    {
+      "id": "windows/msvc-arm64.neg-no-sdk-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.562
+    },
+    {
+      "id": "windows/msvc-toolset-14.29",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 7.465
+    },
+    {
+      "id": "windows/msvc-toolset-14.29.neg-missing-toolset",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 3.026
+    },
+    {
+      "id": "windows/msvc-toolset-14.44",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 7.971
+    },
+    {
+      "id": "windows/msvc-x64",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 4.58
+    },
+    {
+      "id": "windows/msvc-x64.neg-no-sdk-include",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.295
+    },
+    {
+      "id": "windows/msvc-x86",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 8.952
+    },
+    {
+      "id": "windows/msvc-x86.neg-no-sdk-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.705
+    },
+    {
+      "id": "windows/node-addon",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 4.354
+    },
+    {
+      "id": "windows/node-addon.neg-no-sdk-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.211
+    },
+    {
+      "id": "windows/package-7zip",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 0.883
+    },
+    {
+      "id": "windows/package-7zip.neg-hide-tool",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.917
+    },
+    {
+      "id": "windows/package-innosetup",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 2.103
+    },
+    {
+      "id": "windows/package-innosetup.neg-hide-tool",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.855
+    },
+    {
+      "id": "windows/package-wix",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 3.723
+    },
+    {
+      "id": "windows/package-wix.neg-hide-tool",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.41
+    },
+    {
+      "id": "windows/python-wheel",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 5.521
+    },
+    {
+      "id": "windows/python-wheel.neg-no-python-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.331
+    },
+    {
+      "id": "windows/rust-native",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 15.588
+    },
+    {
+      "id": "windows/rust-native.neg-no-sdk-lib",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.496
+    },
+    {
+      "id": "windows/rust-plain",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 1.652
+    },
+    {
+      "id": "windows/rust-plain.neg-git-link",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 0.822
+    },
+    {
+      "id": "windows/toolchain-versions",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 4.807
+    },
+    {
+      "id": "windows/toolchain-versions.neg-no-llvm-on-path",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.823
+    },
+    {
+      "id": "windows/vs-devenv",
+      "status": "pass",
+      "exit_code": 0,
+      "duration_s": 3.012
+    },
+    {
+      "id": "windows/vs-devenv.neg-missing-winsdk",
+      "status": "pass",
+      "exit_code": 1,
+      "duration_s": 2.771
+    }
+  ]
+}

@@ -1,0 +1,533 @@
+{
+  "schema": 1,
+  "profile": "windows-2025-vs2026",
+  "note": "Oracle for the P17 workloads. Every value cites its source: 'inventory:<category>|<name>' is parity/baselines/windows-2025-vs2026-x64/inventory.json, 'capture:<text>' is a line of sources/hosted-capture-39303666617.log, 'readme:<text>' is that profile's README.md, 'docs:<url>' is GitHub's published runner behaviour. 'hosted:<run>/<file>:<text>' is a line of oracle/hosted-runs/<run>/<file>, stored evidence from a parity-workloads.yml run on the hosted image. tests/parity/workloads/windows checks every inventory, capture, hosted and readme citation.",
+  "hosted_validation": {
+    "run": "39437386210",
+    "note": "parity-workloads.yml on windows-2025-vs2026 20261007.264.1, head 717d1ba: 47 of 47 definitions pass (24 positives, 23 negative controls with their named first error). oracle/hosted-runs/39437386210/results.json pins every definition (def_sha256), report hash and first error, and its summary.json the tree manifest (tree_manifest.py); tests/parity/workloads/windows/check_hosted_run.py checks the checkout still matches both. Runs 39351642738 and 39352919500 keep only the logs that hosted: citations point at."
+  },
+  "image": {
+    "ImageOS": {
+      "v": "win25-vs2026",
+      "src": "capture:ImageOS=win25-vs2026"
+    },
+    "ImageVersion": {
+      "v": "20261007.264.1",
+      "src": "inventory:identity|Image Version"
+    }
+  },
+  "visual_studio": {
+    "installationVersion": {
+      "v": "18.10.12224.181",
+      "src": "inventory:Visual Studio Enterprise 2026|Visual Studio Enterprise 2026"
+    },
+    "installationPath": {
+      "v": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise",
+      "src": "capture:\"installationPath\": \"C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\""
+    },
+    "components": {
+      "v": [
+        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        "Microsoft.VisualStudio.Component.Windows11SDK.26100",
+        "Microsoft.VisualStudio.Component.VC.Llvm.Clang",
+        "Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64",
+        "Microsoft.VisualStudio.ComponentGroup.VC.Tools.142.x86.x64",
+        "Microsoft.VisualStudio.Component.VC.Tools.ARM64",
+        "Microsoft.VisualStudio.Component.VC.CMake.Project",
+        "Microsoft.Net.Component.4.7.2.TargetingPack"
+      ],
+      "src": "inventory:Visual Studio Enterprise 2026/Workloads, components and extensions"
+    },
+    "alt_toolsets": {
+      "v": [
+        "14.44",
+        "14.29"
+      ],
+      "src": "derived:VS component Microsoft.VisualStudio.Component.VC.14.44.17.14.x86.x64 (toolset 14.44) and component group Microsoft.VisualStudio.ComponentGroup.VC.Tools.142.x86.x64 (v142, toolset 14.29) in the inventory"
+    }
+  },
+  "windows_sdk": {
+    "v": "10.0.26100.0",
+    "src": "inventory:Visual Studio Enterprise 2026/Installed Windows SDKs|Installed Windows SDKs"
+  },
+  "netfx_targeting_pack": {
+    "v": "v4.7.2",
+    "src": "inventory:Visual Studio Enterprise 2026/Workloads, components and extensions|Microsoft.Net.Component.4.7.2.TargetingPack"
+  },
+  "bare_path": {
+    "cl.exe": {
+      "v": null,
+      "src": "readme:`cl.exe` and `msbuild.exe` are not on PATH"
+    },
+    "msbuild.exe": {
+      "v": null,
+      "src": "readme:`cl.exe` and `msbuild.exe` are not on PATH"
+    },
+    "link.exe": {
+      "v": "C:\\Program Files\\Git\\usr\\bin\\link.exe",
+      "src": "capture:link.exe     C:\\Program Files\\Git\\usr\\bin\\link.exe"
+    },
+    "clang-cl.exe": {
+      "v": "C:\\Program Files\\LLVM\\bin\\clang-cl.exe",
+      "src": "capture:clang-cl.exe C:\\Program Files\\LLVM\\bin\\clang-cl.exe"
+    },
+    "cmake.exe": {
+      "v": "C:\\Program Files\\CMake\\bin\\cmake.exe",
+      "src": "capture:cmake.exe    C:\\Program Files\\CMake\\bin\\cmake.exe"
+    },
+    "ninja.exe": {
+      "v": "C:\\ProgramData\\Chocolatey\\bin\\ninja.exe",
+      "src": "capture:ninja.exe    C:\\ProgramData\\Chocolatey\\bin\\ninja.exe"
+    },
+    "pwsh.exe": {
+      "v": "C:\\Program Files\\PowerShell\\7\\pwsh.EXE",
+      "src": "capture:shell: C:\\Program Files\\PowerShell\\7\\pwsh.EXE"
+    },
+    "bash.exe": {
+      "v": "C:\\Program Files\\Git\\bin\\bash.exe",
+      "src": "inventory:Shells|gitbash.exe"
+    },
+    "python_dir": {
+      "v": "C:\\hostedtoolcache\\windows\\Python\\3.12.10\\x64",
+      "src": "capture:021 C:\\hostedtoolcache\\windows\\Python\\3.12.10\\x64"
+    },
+    "node_dir": {
+      "v": "C:\\Program Files\\nodejs",
+      "src": "capture:056 C:\\Program Files\\nodejs"
+    }
+  },
+  "versions": {
+    "llvm": {
+      "v": "20.1.8",
+      "src": "inventory:Language and Runtime|LLVM"
+    },
+    "cmake": {
+      "v": "4.4.4",
+      "src": "inventory:Tools|CMake"
+    },
+    "ninja": {
+      "v": "1.13.2",
+      "src": "inventory:Tools|Ninja"
+    },
+    "rustc": {
+      "v": "1.99.0",
+      "src": "inventory:Rust Tools|Rust"
+    },
+    "cargo": {
+      "v": "1.99.0",
+      "src": "inventory:Rust Tools|Cargo"
+    },
+    "rustup": {
+      "v": "1.29.1",
+      "src": "inventory:Rust Tools|Rustup"
+    },
+    "node": {
+      "v": "22.23.3",
+      "src": "inventory:Language and Runtime|Node"
+    },
+    "npm": {
+      "v": "10.9.9",
+      "src": "inventory:Package Management|NPM"
+    },
+    "python": {
+      "v": "3.12.10",
+      "src": "inventory:Language and Runtime|Python"
+    },
+    "pip": {
+      "v": "26.2.1",
+      "src": "inventory:Package Management|pip"
+    },
+    "java": {
+      "v": "17.0.20.1+1",
+      "src": "hosted:39351642738/windows__toolchain-versions.log:observed '17.0.20.1+1'",
+      "note": "the inventory lists Java 17.0.20+101 (inventory:Java|Java, the tool-cache folder 17.0.20-101); the default JDK there reports build 17.0.20.1+1 on the hosted image (run 39351642738)"
+    },
+    "go": {
+      "v": "1.24.13",
+      "src": "inventory:Language and Runtime|Go"
+    },
+    "pwsh": {
+      "v": "7.6.6",
+      "src": "inventory:PowerShell Tools|PowerShell"
+    },
+    "windows_powershell": {
+      "v": "5.1.26100.33438",
+      "src": "capture:5.1.26100.33438"
+    },
+    "git": {
+      "v": "2.56.0.windows.2",
+      "src": "inventory:Tools|Git"
+    },
+    "bash": {
+      "v": "5.3.15(2)-release",
+      "src": "inventory:Language and Runtime|Bash"
+    },
+    "wix": {
+      "v": "3.14.1.8722",
+      "src": "inventory:Tools|WiX Toolset"
+    },
+    "innosetup": {
+      "v": "6.7.1",
+      "src": "inventory:Tools|InnoSetup"
+    },
+    "7zip": {
+      "v": "26.04",
+      "src": "inventory:Tools|7zip"
+    },
+    "vswhere": {
+      "v": "3.1.7",
+      "src": "inventory:Tools|VSWhere"
+    },
+    "dotnet_sdks": {
+      "v": [
+        "8.0.131",
+        "8.0.206",
+        "8.0.319",
+        "8.0.425",
+        "9.0.121",
+        "9.0.205",
+        "9.0.318",
+        "10.0.112",
+        "10.0.204",
+        "10.0.303",
+        "10.0.401"
+      ],
+      "src": "inventory:.NET Core Tools|.NET Core SDK"
+    }
+  },
+  "env": {
+    "ImageOS": {
+      "v": "win25-vs2026",
+      "src": "capture:ImageOS=win25-vs2026"
+    },
+    "ImageVersion": {
+      "v": "20261007.264.1",
+      "src": "capture:ImageVersion=20261007.264.1"
+    },
+    "AGENT_TOOLSDIRECTORY": {
+      "v": "C:\\hostedtoolcache\\windows",
+      "src": "capture:AGENT_TOOLSDIRECTORY=C:\\hostedtoolcache\\windows"
+    },
+    "RUNNER_TOOL_CACHE": {
+      "v": "C:\\hostedtoolcache\\windows",
+      "src": "capture:RUNNER_TOOL_CACHE=C:\\hostedtoolcache\\windows"
+    },
+    "ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE": {
+      "v": "C:\\actionarchivecache\\",
+      "src": "capture:ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=C:\\actionarchivecache\\"
+    },
+    "JAVA_HOME": {
+      "v": "C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.20-101\\x64",
+      "src": "capture:JAVA_HOME=C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.20-101\\x64"
+    },
+    "JAVA_HOME_17_X64": {
+      "v": "C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.20-101\\x64",
+      "src": "capture:JAVA_HOME_17_X64=C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.20-101\\x64"
+    },
+    "GOROOT_1_24_X64": {
+      "v": "C:\\hostedtoolcache\\windows\\go\\1.24.13\\x64",
+      "src": "capture:GOROOT_1_24_X64=C:\\hostedtoolcache\\windows\\go\\1.24.13\\x64"
+    },
+    "VCPKG_INSTALLATION_ROOT": {
+      "v": "C:\\vcpkg",
+      "src": "capture:VCPKG_INSTALLATION_ROOT=C:\\vcpkg"
+    },
+    "CONDA": {
+      "v": "C:\\Miniconda",
+      "src": "capture:CONDA=C:\\Miniconda"
+    },
+    "ANDROID_HOME": {
+      "v": "C:\\Android\\android-sdk",
+      "src": "capture:ANDROID_HOME=C:\\Android\\android-sdk"
+    },
+    "ANDROID_NDK_HOME": {
+      "v": "C:\\Android\\android-sdk\\ndk\\27.3.13750724",
+      "src": "capture:ANDROID_NDK_HOME=C:\\Android\\android-sdk\\ndk\\27.3.13750724"
+    },
+    "CHROMEWEBDRIVER": {
+      "v": "C:\\SeleniumWebDrivers\\ChromeDriver",
+      "src": "capture:CHROMEWEBDRIVER=C:\\SeleniumWebDrivers\\ChromeDriver"
+    },
+    "EDGEWEBDRIVER": {
+      "v": "C:\\SeleniumWebDrivers\\EdgeDriver",
+      "src": "capture:EDGEWEBDRIVER=C:\\SeleniumWebDrivers\\EdgeDriver"
+    },
+    "GECKOWEBDRIVER": {
+      "v": "C:\\SeleniumWebDrivers\\GeckoDriver",
+      "src": "capture:GECKOWEBDRIVER=C:\\SeleniumWebDrivers\\GeckoDriver"
+    },
+    "SELENIUM_JAR_PATH": {
+      "v": "C:\\selenium\\selenium-server.jar",
+      "src": "capture:SELENIUM_JAR_PATH=C:\\selenium\\selenium-server.jar"
+    },
+    "DOTNET_MULTILEVEL_LOOKUP": {
+      "v": "0",
+      "src": "capture:DOTNET_MULTILEVEL_LOOKUP=0"
+    },
+    "DOTNET_NOLOGO": {
+      "v": "1",
+      "src": "capture:DOTNET_NOLOGO=1"
+    },
+    "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": {
+      "v": "1",
+      "src": "capture:DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1"
+    },
+    "POWERSHELL_UPDATECHECK": {
+      "v": "Off",
+      "src": "capture:POWERSHELL_UPDATECHECK=Off"
+    },
+    "GCM_INTERACTIVE": {
+      "v": "Never",
+      "src": "capture:GCM_INTERACTIVE=Never"
+    },
+    "PIPX_BIN_DIR": {
+      "v": "C:\\Program Files (x86)\\pipx_bin",
+      "src": "capture:PIPX_BIN_DIR=C:\\Program Files (x86)\\pipx_bin"
+    },
+    "PIPX_HOME": {
+      "v": "C:\\Program Files (x86)\\pipx",
+      "src": "capture:PIPX_HOME=C:\\Program Files (x86)\\pipx"
+    },
+    "PGBIN": {
+      "v": "C:\\Program Files\\PostgreSQL\\17\\bin",
+      "src": "capture:PGBIN=C:\\Program Files\\PostgreSQL\\17\\bin"
+    },
+    "PGROOT": {
+      "v": "C:\\Program Files\\PostgreSQL\\17",
+      "src": "capture:PGROOT=C:\\Program Files\\PostgreSQL\\17"
+    },
+    "PGDATA": {
+      "v": "C:\\PostgreSQL\\17\\data",
+      "src": "capture:PGDATA=C:\\PostgreSQL\\17\\data"
+    },
+    "PGUSER": {
+      "v": "postgres",
+      "src": "capture:PGUSER=postgres"
+    },
+    "VCINSTALLDIR": {
+      "v": null,
+      "src": "capture:VCINSTALLDIR=<unset>"
+    },
+    "VSINSTALLDIR": {
+      "v": null,
+      "src": "capture:VSINSTALLDIR=<unset>"
+    },
+    "VSCMD_VER": {
+      "v": null,
+      "src": "capture:VSCMD_VER=<unset>"
+    },
+    "INCLUDE": {
+      "v": null,
+      "src": "capture:INCLUDE=<unset>"
+    },
+    "LIB": {
+      "v": null,
+      "src": "capture:LIB=<unset>"
+    },
+    "LIBPATH": {
+      "v": null,
+      "src": "capture:LIBPATH=<unset>"
+    },
+    "Platform": {
+      "v": null,
+      "src": "capture:Platform=<unset>"
+    }
+  },
+  "runner_env": {
+    "RUNNER_OS": {
+      "v": "Windows",
+      "src": "capture:RUNNER_OS=Windows"
+    },
+    "RUNNER_ARCH": {
+      "v": "X64",
+      "src": "capture:RUNNER_ARCH=X64"
+    },
+    "CI": {
+      "v": "true",
+      "src": "hosted:39352919500/actions__windows__runner-env.log:ok   env.CI = true"
+    },
+    "GITHUB_ACTIONS": {
+      "v": "true",
+      "src": "hosted:39352919500/actions__windows__runner-env.log:ok   env.GITHUB_ACTIONS = true"
+    }
+  },
+  "services": {
+    "wuauserv": {
+      "v": {
+        "Status": "Running",
+        "StartType": "Manual"
+      },
+      "src": "capture:wuauserv"
+    },
+    "DiagTrack": {
+      "v": {
+        "Status": "Stopped",
+        "StartType": "Disabled"
+      },
+      "src": "capture:DiagTrack"
+    },
+    "SysMain": {
+      "v": {
+        "Status": "Stopped",
+        "StartType": "Disabled"
+      },
+      "src": "capture:SysMain"
+    },
+    "docker": {
+      "v": {
+        "Status": "Running",
+        "StartType": "Automatic"
+      },
+      "src": "capture:docker"
+    },
+    "postgresql-x64-17": {
+      "v": {
+        "Status": "Stopped",
+        "StartType": "Disabled"
+      },
+      "src": "capture:postgresql-x64-17"
+    },
+    "MongoDB": {
+      "v": {
+        "Status": "Stopped",
+        "StartType": "Disabled"
+      },
+      "src": "capture:MongoDB"
+    },
+    "Apache": {
+      "v": {
+        "Status": "Stopped",
+        "StartType": "Disabled"
+      },
+      "src": "capture:Apache"
+    },
+    "nginx": {
+      "v": {
+        "Status": "Stopped",
+        "StartType": "Disabled"
+      },
+      "src": "capture:nginx"
+    },
+    "wlansvc": {
+      "v": {
+        "Status": "Stopped",
+        "StartType": "Manual"
+      },
+      "src": "capture:wlansvc"
+    },
+    "WinDefend": {
+      "v": {
+        "Status": "Running",
+        "StartType": "Automatic"
+      },
+      "src": "capture:WinDefend"
+    },
+    "WSLService": {
+      "v": {
+        "Status": "Running",
+        "StartType": "Automatic"
+      },
+      "src": "capture:WSLService"
+    }
+  },
+  "tool_cache": {
+    "v": [
+      "CodeQL/2.27.1",
+      "go/1.24.13",
+      "go/1.25.14",
+      "go/1.26.8",
+      "Java_Temurin-Hotspot_jdk/11.0.32-101",
+      "Java_Temurin-Hotspot_jdk/17.0.20-101",
+      "Java_Temurin-Hotspot_jdk/21.0.12-101.0",
+      "Java_Temurin-Hotspot_jdk/25.0.4-101.0",
+      "Java_Temurin-Hotspot_jdk/8.0.504-1",
+      "node/22.23.3",
+      "node/24.21.0",
+      "PyPy/3.10.16",
+      "PyPy/3.9.19",
+      "Python/3.10.11",
+      "Python/3.11.9",
+      "Python/3.12.10",
+      "Python/3.13.16",
+      "Python/3.14.8",
+      "Ruby/3.2.11",
+      "Ruby/3.3.12",
+      "Ruby/3.4.11",
+      "Ruby/4.0.7",
+      "stack/3.11.1"
+    ],
+    "src": "capture-list:Tool cache layout step (Get-ChildItem $env:AGENT_TOOLSDIRECTORY), one line per entry"
+  },
+  "tool_cache_arch": {
+    "v": {
+      "PyPy": "x86"
+    },
+    "src": "derived:inventory.json toolset_defaults toolcache[PyPy].arch (the other cached tools are x64)"
+  },
+  "shells_dir": {
+    "v": [
+      "gitbash.exe",
+      "msys2bash.cmd",
+      "wslbash.exe"
+    ],
+    "src": "inventory:Shells"
+  },
+  "registry": {
+    "ConsentPromptBehaviorAdmin": {
+      "v": "0",
+      "src": "capture:ConsentPromptBehaviorAdmin=0"
+    },
+    "LongPathsEnabled": {
+      "v": "1",
+      "src": "hosted:39352919500/actions__windows__runner-env.log:ok   registry.LongPathsEnabled = 1"
+    },
+    "AllowDevelopmentWithoutDevLicense": {
+      "v": "1",
+      "src": "hosted:39352919500/actions__windows__runner-env.log:ok   registry.AllowDevelopmentWithoutDevLicense = 1"
+    }
+  },
+  "is_administrator": {
+    "v": "True",
+    "src": "capture:is_administrator=True"
+  },
+  "docker_server_os": {
+    "v": "windows",
+    "src": "hosted:39352919500/actions__windows__runner-env.log:ok   docker.server_os = windows"
+  },
+  "shell_templates": {
+    "v": {
+      "pwsh": "-command \". '{0}'\"",
+      "powershell": "-command \". '{0}'\"",
+      "cmd": "/D /E:ON /V:OFF /S /C \"CALL \"{0}\"\"",
+      "bash": "--noprofile --norc -eo pipefail {0}",
+      "python": "{0}"
+    },
+    "src": "docs:https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idstepsshell"
+  },
+  "shell_semantics_exit_codes": {
+    "v": {
+      "pwsh.native_last": 1,
+      "pwsh.exit": 1,
+      "powershell.native_last": 1,
+      "powershell.exit": 1
+    },
+    "src": "hosted:39351642738/actions__windows__shell-semantics.log:ok   exit.",
+    "note": "observed on the hosted image (run 39351642738) and on the owner's host: through the runner's -command \". 'script'\" template, exit N inside the step script (and the runner's appended exit $LASTEXITCODE after a failing native command) ends pwsh 7.6.6 and Windows PowerShell 5.1 with exit code 1, not N as GitHub's docs say"
+  },
+  "shell_semantics": {
+    "v": {
+      "pwsh.native_then_ok": 0,
+      "pwsh.cmdlet_error": 1,
+      "powershell.native_then_ok": 0,
+      "powershell.cmdlet_error": 1,
+      "cmd.exit_b": 4,
+      "cmd.ok": 0,
+      "bash.errexit": 1,
+      "bash.pipefail": 1,
+      "bash.exit": 5,
+      "bash.ok": 0,
+      "python.exit": 6
+    },
+    "src": "docs:https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#exit-codes-and-error-action-preference"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "id": "windows/vs-devenv.neg-missing-winsdk",
+  "description": "Negative control: VsDevCmd asked for a Windows SDK the profile does not have must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/devenv/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/vs-devenv.neg-missing-winsdk",
+      "-Sabotage",
+      "missing-winsdk"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "Windows SDK 10.0.99999.0"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

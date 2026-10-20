@@ -1,0 +1,33 @@
+{
+  "id": "windows/package-innosetup",
+  "description": "Inno Setup ISCC from its install location builds setup.exe; version resource read back.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/packaging/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/package-innosetup",
+      "-Tool",
+      "innosetup"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "74aa625bfddd6b462f1beed3a4c137ed8370af9012510c044c685df1520b9095"
+  }
+}

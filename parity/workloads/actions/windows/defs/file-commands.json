@@ -1,0 +1,31 @@
+{
+  "id": "actions/windows/file-commands",
+  "description": "Marker from the file-commands composite action run earlier in the job: GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT, step summary, working-directory.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 120,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/actions/windows/file-commands/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "actions/windows/file-commands"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "5b5d853b09984d1521ae321878fbddefbfe8b61a614cd35a67f702d9ab2b2ec7"
+  }
+}

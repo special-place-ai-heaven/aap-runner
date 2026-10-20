@@ -1,0 +1,41 @@
+workload windows/toolchain-versions profile=windows-2025-vs2026 sabotage=none
+> clang-cl.exe --version
+> cmake.exe --version
+> ninja.exe --version
+> rustc.exe -V
+> cargo.exe -V
+> rustup.exe --version
+> node.exe -v
+> npm.cmd -v
+> python.exe --version
+> python.exe -B -I -m pip --version
+> go.exe version
+> pwsh.exe --version
+> git.exe --version
+> java.exe -version
+> bash.exe --version
+> candle.exe -?
+> vswhere.exe -?
+ok   version.llvm = 20.1.8
+ok   version.cmake = 4.4.4
+ok   version.ninja = 1.13.2
+ok   version.rustc = 1.99.0
+ok   version.cargo = 1.99.0
+ok   version.rustup = 1.29.1
+ok   version.node = 22.23.3
+ok   version.npm = 10.9.9
+ok   version.python = 3.12.10
+ok   version.pip = 26.2.1
+ok   version.go = 1.24.13
+ok   version.pwsh = 7.6.6
+ok   version.git = 2.56.0.windows.2
+ok   version.windows_powershell = 5.1.26100.33438
+error: oracle version.java expected '17.0.20+101' observed '17.0.20.1+1'
+ok   version.bash = 5.3.15(2)-release
+ok   version.wix = 3.14.1.8722
+ok   version.vswhere = 3.1.7
+ok   version.innosetup = 6.7.1
+ok   version.7zip = 26.04
+> dotnet.exe --list-sdks
+ok   version.dotnet_sdks = 8.0.131,8.0.206,8.0.319,8.0.425,9.0.121,9.0.205,9.0.318,10.0.112,10.0.204,10.0.303,10.0.401
+workload windows/toolchain-versions: 1 oracle check(s) not met

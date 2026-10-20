@@ -1,0 +1,30 @@
+{
+  "id": "actions/windows/runner-env.neg-no-tool-cache",
+  "description": "Negative control: An empty tool cache must fail the layout oracle.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/actions/windows/runner-env/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "actions/windows/runner-env.neg-no-tool-cache",
+      "-Sabotage",
+      "no-tool-cache"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "oracle tool_cache.CodeQL/2.27.1 expected 'True' observed 'False'"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

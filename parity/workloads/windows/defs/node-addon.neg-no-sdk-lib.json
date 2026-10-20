@@ -1,0 +1,30 @@
+{
+  "id": "windows/node-addon.neg-no-sdk-lib",
+  "description": "Negative control: The addon without the Windows SDK libraries must fail to link.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/node-addon/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/node-addon.neg-no-sdk-lib",
+      "-Sabotage",
+      "no-sdk-lib"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "LNK1104: cannot open file 'kernel32.lib'"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

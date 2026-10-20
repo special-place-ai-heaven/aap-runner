@@ -1,0 +1,35 @@
+{
+  "id": "windows/dotnet-net10",
+  "description": ".NET SDK 10.0 band (the image default): build, run, framework-dependent publish (apphost) and pack with no package source.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/dotnet/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/dotnet-net10",
+      "-Tfm",
+      "net10.0",
+      "-SdkBand",
+      "10.0.100"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "2e993a5dafff7508084c4886a353976624acec5a1466502ee01b64d78cfeebec"
+  }
+}

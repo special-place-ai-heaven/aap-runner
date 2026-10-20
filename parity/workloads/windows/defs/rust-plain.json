@@ -1,0 +1,33 @@
+{
+  "id": "windows/rust-plain",
+  "description": "cargo test, release build and run in a plain job environment: rustc must find the MSVC linker and SDK even though PATH's link.exe is Git's.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/rust/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/rust-plain",
+      "-Crate",
+      "plain"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "562c304fd18d10763a46880d7a2381ff0740a486e88bf01b2390abc04b2ad35c"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "id": "windows/dotnet-net8.neg-missing-targeting-pack",
+  "description": "Negative control: A target framework whose targeting pack is not installed must fail offline.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/dotnet/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/dotnet-net8.neg-missing-targeting-pack",
+      "-Tfm",
+      "net8.0",
+      "-SdkBand",
+      "8.0.100",
+      "-Sabotage",
+      "missing-targeting-pack"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "NU1101: Unable to find package Microsoft.NETCore.App.Ref"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

@@ -1,0 +1,30 @@
+{
+  "id": "actions/windows/shell-semantics.neg-no-git-bash",
+  "description": "Negative control: Without Git on PATH, bash resolves to the WSL launcher (never started) and must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/actions/windows/shell-semantics/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "actions/windows/shell-semantics.neg-no-git-bash",
+      "-Sabotage",
+      "no-git-bash"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "not a build shell"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

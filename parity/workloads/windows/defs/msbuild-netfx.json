@@ -1,0 +1,31 @@
+{
+  "id": "windows/msbuild-netfx",
+  "description": "Visual Studio MSBuild (via vswhere) builds a classic .NET Framework 4.7.2 project against the installed targeting pack.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/netfx/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/msbuild-netfx"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "2efcc5729d66297172cd4877947de6a890618924bd97542ddf84180930e9e957"
+  }
+}

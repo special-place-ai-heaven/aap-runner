@@ -1,0 +1,31 @@
+{
+  "id": "windows/java",
+  "description": "Default JDK through JAVA_HOME: javac, jar and java -jar.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/java/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/java"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "23f2c80ae2b61678d8b0cc51e4feaa031c8a4e35e87a238330aeaebeba0df788"
+  }
+}

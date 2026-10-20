@@ -1,0 +1,33 @@
+{
+  "id": "windows/msvc-toolset-14.44",
+  "description": "Side-by-side MSVC toolset 14.44 (VS 17.14 component) selected with -vcvars_ver; same programs as msvc-x64.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/msvc/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/msvc-toolset-14.44",
+      "-VcVarsVer",
+      "14.44"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "6131359b1447ea870aa46eea03b7c2271603149a6ac37b3566e2ca5f35f10c71"
+  }
+}

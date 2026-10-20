@@ -1,0 +1,31 @@
+{
+  "id": "windows/python-wheel",
+  "description": "CPython extension built with MSVC against the default Python, packed as a wheel, installed offline with pip and imported.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/python-wheel/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/python-wheel"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "5605fa03ef6a64563e1cab9d1d22e800addbf31ef9da6e81f9327874d57b25cb"
+  }
+}

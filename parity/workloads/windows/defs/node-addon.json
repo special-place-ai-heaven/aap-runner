@@ -1,0 +1,31 @@
+{
+  "id": "windows/node-addon",
+  "description": "Node-API native addon built with MSVC against an import library for node.exe, loaded by the job's node.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/node-addon/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/node-addon"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "e0fd1290f537cdb3210d1448c3ebcaf83271e81c5be2b890f61574af65a7da1c"
+  }
+}

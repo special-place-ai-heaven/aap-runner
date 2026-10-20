@@ -1,0 +1,25 @@
+{
+  "id": "windows/toolchain-versions",
+  "description": "Version the job resolves for each build tool equals the frozen baseline inventory.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/versions/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/toolchain-versions"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

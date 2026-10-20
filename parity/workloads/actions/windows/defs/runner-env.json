@@ -1,0 +1,25 @@
+{
+  "id": "actions/windows/runner-env",
+  "description": "Actions job environment: default and image variables, file-command files, tool cache layout with .complete markers, services, Windows-only Docker, privileges, registry settings.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/actions/windows/runner-env/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "actions/windows/runner-env"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

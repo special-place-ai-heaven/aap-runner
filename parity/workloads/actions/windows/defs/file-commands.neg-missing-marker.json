@@ -1,0 +1,30 @@
+{
+  "id": "actions/windows/file-commands.neg-missing-marker",
+  "description": "Negative control: A marker that was never written must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 120,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/actions/windows/file-commands/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "actions/windows/file-commands.neg-missing-marker",
+      "-Sabotage",
+      "missing-marker"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "file-commands marker not found"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}
