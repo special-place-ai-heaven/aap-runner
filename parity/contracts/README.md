@@ -195,8 +195,11 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
   `resize_waits`, `pool_over_live`), the `even` mode drain, and unknown folders blocking admission.
 - **P10, P11**: the inventory callback returns a complete list or throws (allocator.md, Reconcile).
 - **P13**: cache roots per repository plus the job's trust class (cache-qualification.md rule 6);
-  name the GitHub-side source of event, ref and head repository, bound before attach (the App
-  gets `actions:read`, or a runner group per trust class plus the event check).
+  the GitHub-side source of event, ref and head repository is the job record matched by
+  `runner_id` and `runner_group_id`, bound before attach, through a per-lookup installation token
+  with `actions`, `contents` and `metadata` read only (owner decision: the App gains `actions: read`
+  and `contents: read`); `workflow_dispatch` is untrusted, and untrusted jobs get a private
+  per-job root only.
 - **P19, P20**: the storage document, its helper verb and the tray's storage view.
 
 ## Findings recorded while freezing
@@ -231,3 +234,4 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 | 2026-10-20 | P02.2 | status-settings | status 5 draft, revision 2 | `storage` in `status.v5.json`; settings schema 3 unchanged, no paths |
 | 2026-10-20 | P02.2 | guest-transport | 1 (text only) | lab storage preconditions and the budget step (step 8); envelope unchanged |
 | 2026-10-20 | P02.2 | validate.py | - | `$` is the end of input; documents bounded to 256 KiB (a 256-row matrix is about 90 KB) |
+| 2026-10-20 | P13 security review | cache-qualification | 2 (text only) | rule 6: `workflow_dispatch` untrusted; tag push trusted only when `head_sha` is reachable from the default branch; class from the job record matched by `runner_id` and `runner_group_id` (owner decision: App gains `actions: read`, `contents: read`); untrusted jobs get a private per-job root only; namespace key adds the zccache version; host never mounts a namespace disk after a guest has had it. No schema change |

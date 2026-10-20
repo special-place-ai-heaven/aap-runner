@@ -428,10 +428,12 @@ DECIDED: zccache 1.15.6 (tag `1.15.6`, commit `15ec9537`) replaces sccache entir
 and invocation on each platform is `qualified` (with evidence) or `direct` (no wrapper). No sccache
 fallback, binary, variable or format reuse. Native `cl.exe`/`link.exe` start `direct` (the pinned
 feature matrix marks them partial). Isolated cache roots per trust namespace (the repository plus
-the job's trust class: only push, schedule or workflow_dispatch on the default branch with the
-repository as head repository is trusted, every other event or ref is untrusted; a root is shared
-only among jobs whose writers are at least as trusted as every reader; no shared root when the class
-is not known from GitHub before the root is attached) and copy or reflink delivery by default;
+the job's trust class: only push or schedule on the default branch with the
+repository as head repository is trusted, every other event or ref is untrusted, including
+workflow_dispatch and a tag push whose head_sha is not reachable from the default branch; a root is
+shared only among jobs whose writers are at least as trusted as every reader, and an untrusted job
+gets only its private per-job root; no shared root when the class is not known from GitHub before
+the root is attached) and copy or reflink delivery by default;
 hardlink delivery and cross-trust sharing stay off until P04/P13 prove them.
 
 ```mermaid
@@ -521,12 +523,16 @@ flowchart LR
   the installer preflight); nested virtualization off for guests by default.
 - Runner self-update: the actions-runner overlay is valid for one boot only; GitHub's support
   window for runner versions sets the rebuild deadline, so P25 rebuilds the overlay inside it.
-- Cache trust namespace: the repository plus the job's trust class. Trusted only for `push`,
-  `schedule` or `workflow_dispatch` on the default branch with the repository as head repository;
-  `pull_request`, `pull_request_target`, `workflow_run`, `issue_comment`, `merge_group`, other
-  branches, tags and unknown events are untrusted. The class is bound from GitHub's record of the
-  assigned job before any shared root attaches, never from the guest; when that record is
-  unavailable the job gets no shared root.
+- Cache trust namespace: the repository plus the job's trust class. Trusted only for `push` or
+  `schedule` on the default branch with the repository as head repository; `workflow_dispatch`
+  (an untrusted same-repository job with `actions: write` can dispatch with attacker-chosen
+  inputs), `pull_request`, `pull_request_target`, `workflow_run`, `issue_comment`, `merge_group`,
+  other branches, tags whose `head_sha` is not reachable from the default branch, and unknown
+  events are untrusted. The class is bound from GitHub's record of the assigned job (matched by
+  `runner_id` and `runner_group_id`, exactly one match) before any shared root attaches, never from
+  the guest; when that record is unavailable or ambiguous the job gets no shared root, and an
+  untrusted job gets only its private per-job root. The namespace key is the repository id, the
+  trust class, the zccache version and the toolchain digest.
 - Relative disk paths have exact forms, relative to their tier root: `<generation_id>/base.vhdx`
   (base_root), `<reservation_id>/os.avhdx` and `<reservation_id>/seed.iso` (clone_root),
   `<reservation_id>/scratch.vhdx` (scratch_root); `validate.py` enforces them.
