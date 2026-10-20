@@ -3,8 +3,8 @@
   "profile": "windows-2025-vs2026",
   "note": "Oracle for the P17 workloads. Every value cites its source: 'inventory:<category>|<name>' is parity/baselines/windows-2025-vs2026-x64/inventory.json, 'capture:<text>' is a line of sources/hosted-capture-39303666617.log, 'readme:<text>' is that profile's README.md, 'docs:<url>' is GitHub's published runner behaviour. 'hosted:<run>/<file>:<text>' is a line of oracle/hosted-runs/<run>/<file>, stored evidence from a parity-workloads.yml run on the hosted image. tests/parity/workloads/windows checks every inventory, capture, hosted and readme citation.",
   "hosted_validation": {
-    "run": "39352919500",
-    "note": "parity-workloads.yml on windows-2025-vs2026 20261007.264.1: 47 of 47 definitions pass (24 positives, 23 negative controls with their named first error). oracle/hosted-runs/39352919500/results.json pins every definition (def_sha256), report hash and first error; tests/parity/workloads/windows checks the definitions still match it. First full run of actions/windows/runner-env and actions/windows/file-commands. Run 39351642738 (39 of 47) fixed the oracle values cited from it."
+    "run": "39437386210",
+    "note": "parity-workloads.yml on windows-2025-vs2026 20261007.264.1, head 717d1ba: 47 of 47 definitions pass (24 positives, 23 negative controls with their named first error). oracle/hosted-runs/39437386210/results.json pins every definition (def_sha256), report hash and first error, and its summary.json the tree manifest (tree_manifest.py); tests/parity/workloads/windows/check_hosted_run.py checks the checkout still matches both. Runs 39351642738 and 39352919500 keep only the logs that hosted: citations point at."
   },
   "image": {
     "ImageOS": {

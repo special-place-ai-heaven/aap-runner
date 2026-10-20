@@ -14,10 +14,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:21:13Z",
-      "ended_at": "2026-10-20T01:21:14Z",
-      "duration_s": 1.354,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/file-commands/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-1zw695x2 -Id actions/windows/file-commands",
+      "started_at": "2026-10-20T14:14:42Z",
+      "ended_at": "2026-10-20T14:14:43Z",
+      "duration_s": 1.481,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/file-commands/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-ts8cxikb -Id actions/windows/file-commands",
       "artifacts": [
         {
           "name": "report.txt",
@@ -27,7 +27,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "845bbbb2a807657312ec8a6eac7c6174b37b676332d298cff8d19c2e5ecadf59",
+      "log_sha256": "7561cc741fe06e45cc5366a1dcdbf706abb6c121f1edaaa31f1fcb86a05620d6",
       "log_claim": "success",
       "reasons": []
     },
@@ -43,10 +43,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:21:14Z",
-      "ended_at": "2026-10-20T01:21:14Z",
-      "duration_s": 0.463,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/file-commands/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-j9209qe1 -Id actions/windows/file-commands.neg-missing-marker -Sabotage missing-marker",
+      "started_at": "2026-10-20T14:14:43Z",
+      "ended_at": "2026-10-20T14:14:44Z",
+      "duration_s": 0.466,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/file-commands/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-gza0ptn3 -Id actions/windows/file-commands.neg-missing-marker -Sabotage missing-marker",
       "artifacts": [],
       "first_error": {
         "message": "error: file-commands marker not found: run uses: ./parity/workloads/actions/windows/file-commands earlier in this job",
@@ -69,10 +69,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:21:14Z",
-      "ended_at": "2026-10-20T01:21:18Z",
-      "duration_s": 3.629,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/runner-env/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-4tq_ddc1 -Id actions/windows/runner-env",
+      "started_at": "2026-10-20T14:14:44Z",
+      "ended_at": "2026-10-20T14:14:47Z",
+      "duration_s": 3.589,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/runner-env/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-xwxndhli -Id actions/windows/runner-env",
       "artifacts": [],
       "first_error": null,
       "log_sha256": "08aa1ba33c94a4d7449b0a97247c2a3bfcca1e91b44e9de04c0af7e384b5d0fd",
@@ -83,7 +83,7 @@
       "id": "actions/windows/runner-env.neg-no-tool-cache",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "c48360f9b5db01df56aee143f11e5672213317bdf2446cd6230b031969f1caee",
+      "def_sha256": "c7fbb9bd34d0ae14ebf479282599e441c2937163ed6219895f88418b14b60d0f",
       "status": "pass",
       "expected": "failure",
       "observed": "failure",
@@ -91,17 +91,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:21:18Z",
-      "ended_at": "2026-10-20T01:21:19Z",
-      "duration_s": 0.484,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/runner-env/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-a6tabfbz -Id actions/windows/runner-env.neg-no-tool-cache -Sabotage no-tool-cache",
+      "started_at": "2026-10-20T14:14:47Z",
+      "ended_at": "2026-10-20T14:14:48Z",
+      "duration_s": 0.473,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/runner-env/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-cr4lk5sb -Id actions/windows/runner-env.neg-no-tool-cache -Sabotage no-tool-cache",
       "artifacts": [],
       "first_error": {
-        "message": "error: oracle env.RUNNER_TOOL_CACHE expected 'C:\\hostedtoolcache\\windows' observed '<work>\\empty-tool-cache'",
+        "message": "error: oracle tool_cache.CodeQL/2.27.1 expected 'True' observed 'False'",
         "file": null,
         "line": null
       },
-      "log_sha256": "0829ac14172891fa18e246be3e13bbf19afca667121b9c1b8265e35291766b58",
+      "log_sha256": "5a37d944a8547873dec20589852b91ec8d46db223a34079894409abc68a8c505",
       "log_claim": "failure",
       "reasons": []
     },
@@ -117,10 +117,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:21:19Z",
-      "ended_at": "2026-10-20T01:21:23Z",
-      "duration_s": 4.181,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/shell-semantics/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-2a_kvf5z -Id actions/windows/shell-semantics",
+      "started_at": "2026-10-20T14:14:48Z",
+      "ended_at": "2026-10-20T14:14:52Z",
+      "duration_s": 3.96,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/shell-semantics/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-dlp4t9c2 -Id actions/windows/shell-semantics",
       "artifacts": [
         {
           "name": "report.txt",
@@ -130,11 +130,11 @@
         }
       ],
       "first_error": {
-        "message": "| \u001b[31;1mWrite-Error: \u001b[31;1mparity cmdlet error\u001b[0m",
+        "message": "| Write-Error: parity cmdlet error",
         "file": null,
         "line": null
       },
-      "log_sha256": "74de90b067370a8305173f2c8036ccddd0415adfc026d816c46b02d3fdce86ed",
+      "log_sha256": "bd2ffa4535cf35fef69d63846ff81328a6483729a6659248ce6b33f1cdf59140",
       "log_claim": "success",
       "reasons": []
     },
@@ -150,10 +150,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:21:23Z",
-      "ended_at": "2026-10-20T01:21:23Z",
-      "duration_s": 0.43,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/shell-semantics/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-feonn6f9 -Id actions/windows/shell-semantics.neg-no-git-bash -Sabotage no-git-bash",
+      "started_at": "2026-10-20T14:14:52Z",
+      "ended_at": "2026-10-20T14:14:52Z",
+      "duration_s": 0.444,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/actions/windows/shell-semantics/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-f9_nyt09 -Id actions/windows/shell-semantics.neg-no-git-bash -Sabotage no-git-bash",
       "artifacts": [],
       "first_error": {
         "message": "error: bash.exe on PATH is the WSL launcher: not a build shell",
@@ -176,10 +176,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:21:23Z",
-      "ended_at": "2026-10-20T01:21:36Z",
-      "duration_s": 12.719,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/clang-cl/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-pnz_856z -Id windows/clang-cl",
+      "started_at": "2026-10-20T14:14:52Z",
+      "ended_at": "2026-10-20T14:15:04Z",
+      "duration_s": 12.373,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/clang-cl/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-vxa68oge -Id windows/clang-cl",
       "artifacts": [
         {
           "name": "report.txt",
@@ -205,10 +205,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:21:36Z",
-      "ended_at": "2026-10-20T01:21:36Z",
-      "duration_s": 0.589,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/clang-cl/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-xgttus9j -Id windows/clang-cl.neg-no-sdk-include -Sabotage no-sdk-include",
+      "started_at": "2026-10-20T14:15:04Z",
+      "ended_at": "2026-10-20T14:15:05Z",
+      "duration_s": 0.593,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/clang-cl/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-zecww7io -Id windows/clang-cl.neg-no-sdk-include -Sabotage no-sdk-include",
       "artifacts": [],
       "first_error": {
         "message": "hello.c(1,10): fatal error: 'windows.h' file not found",
@@ -223,7 +223,7 @@
       "id": "windows/cmake-ninja",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "71249542527fcc0fbcda818488d05d9bd8172532060c57c5cd74729e33213425",
+      "def_sha256": "ce9906c84e5c026a231d01204362614e405c7e87cc3ac6f140011d7ee05946ef",
       "status": "pass",
       "expected": "success",
       "observed": "success",
@@ -231,10 +231,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:21:36Z",
-      "ended_at": "2026-10-20T01:21:48Z",
-      "duration_s": 11.739,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/cmake/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-m1txjz3i -Id windows/cmake-ninja -Generator ninja",
+      "started_at": "2026-10-20T14:15:05Z",
+      "ended_at": "2026-10-20T14:15:17Z",
+      "duration_s": 11.502,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/cmake/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-g10_ttzd -Id windows/cmake-ninja -Generator ninja",
       "artifacts": [
         {
           "name": "report.txt",
@@ -244,7 +244,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "ff84e5604d058ce12e827d7fcfa0d0873d2dba87ea087f273a24ffa91484ffff",
+      "log_sha256": "18d8a4c3c48d8a8482ffdbab02cd46adf36c4a6c2e39d644acb94637fa4a9f56",
       "log_claim": "success",
       "reasons": []
     },
@@ -252,7 +252,7 @@
       "id": "windows/cmake-ninja.neg-no-sdk-lib",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "60e72ff0ccb6a16f80a96c05810b57e15cd2872953dce2c2ade9ef009d5f0f6b",
+      "def_sha256": "26961f46b1202f4ff51dfd19f0d7210516fc091842e712fb89d18b72fab3c6c3",
       "status": "pass",
       "expected": "failure",
       "observed": "failure",
@@ -260,17 +260,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:21:48Z",
-      "ended_at": "2026-10-20T01:21:52Z",
-      "duration_s": 3.76,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/cmake/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-br9ri96g -Id windows/cmake-ninja.neg-no-sdk-lib -Generator ninja -Sabotage no-sdk-lib",
+      "started_at": "2026-10-20T14:15:17Z",
+      "ended_at": "2026-10-20T14:15:20Z",
+      "duration_s": 3.615,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/cmake/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-tylod_xv -Id windows/cmake-ninja.neg-no-sdk-lib -Generator ninja -Sabotage no-sdk-lib",
       "artifacts": [],
       "first_error": {
         "message": "LINK : fatal error LNK1104: cannot open file 'kernel32.lib'",
         "file": null,
         "line": null
       },
-      "log_sha256": "b10346a7329f817b6cb2be8bf8917d77192f2e9a05cd92565d61056337831da2",
+      "log_sha256": "8ea8fea49223685deadeaae7bbe96c53eed2a60b65252c8a8e9219bd47a058b4",
       "log_claim": null,
       "reasons": []
     },
@@ -278,7 +278,7 @@
       "id": "windows/cmake-vs",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "111172b7583ea280182515002b128f64368ef3e72366823d44ca67fb051bbeee",
+      "def_sha256": "bff867f48b3c771550d500b13ab4b2bf06b5b0c613e6c5c7f00f77256d13da0e",
       "status": "pass",
       "expected": "success",
       "observed": "success",
@@ -286,10 +286,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:21:52Z",
-      "ended_at": "2026-10-20T01:22:02Z",
-      "duration_s": 10.188,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/cmake/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-heqii2qs -Id windows/cmake-vs -Generator vs",
+      "started_at": "2026-10-20T14:15:20Z",
+      "ended_at": "2026-10-20T14:15:30Z",
+      "duration_s": 10.288,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/cmake/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-r8alnfgw -Id windows/cmake-vs -Generator vs",
       "artifacts": [
         {
           "name": "report.txt",
@@ -307,7 +307,7 @@
       "id": "windows/cmake-vs.neg-missing-winsdk",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "5212923cd656eed8436c92b4db2d07bbadcaa8d06dcd7643399bbd6273fc8e04",
+      "def_sha256": "4e0adc6f0f0e583c6de942a6ab481dbb3901ddf4b11774c042ba7fb50e81ed1e",
       "status": "pass",
       "expected": "failure",
       "observed": "failure",
@@ -315,10 +315,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:22:02Z",
-      "ended_at": "2026-10-20T01:22:06Z",
-      "duration_s": 4.266,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/cmake/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-bxfwu7qq -Id windows/cmake-vs.neg-missing-winsdk -Generator vs -Sabotage missing-winsdk",
+      "started_at": "2026-10-20T14:15:30Z",
+      "ended_at": "2026-10-20T14:15:35Z",
+      "duration_s": 4.291,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/cmake/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-1klmbd82 -Id windows/cmake-vs.neg-missing-winsdk -Generator vs -Sabotage missing-winsdk",
       "artifacts": [],
       "first_error": {
         "message": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\MSBuild\\Microsoft\\VC\\v180\\Microsoft.Cpp.WindowsSDK.targets(46,5): error MSB8036: The Windows SDK version 10.0.99999.0 was not found. Install the required version of Windows SDK or change the SDK version in the project property pages or by right-",
@@ -333,7 +333,7 @@
       "id": "windows/dotnet-net10",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "9ecff2f301e673662d108061a446da944e6129500567a26aeff94770f3e30915",
+      "def_sha256": "32b0431e79c3acb26415016444aa1a794eae3bca9bd661507fd0f22c48654980",
       "status": "pass",
       "expected": "success",
       "observed": "success",
@@ -341,10 +341,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:22:06Z",
-      "ended_at": "2026-10-20T01:22:24Z",
-      "duration_s": 18.026,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/dotnet/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-dylfwoas -Id windows/dotnet-net10 -Tfm net10.0 -SdkBand 10.0.100",
+      "started_at": "2026-10-20T14:15:35Z",
+      "ended_at": "2026-10-20T14:15:52Z",
+      "duration_s": 17.113,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/dotnet/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-a2vb7dah -Id windows/dotnet-net10 -Tfm net10.0 -SdkBand 10.0.100",
       "artifacts": [
         {
           "name": "report.txt",
@@ -354,7 +354,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "f27b3a4597dcd6d023d4a50feef0c715ba665e2bd060f490b063844c0139cfe8",
+      "log_sha256": "1ff11a8235dada67d85d190630d238752c721f7154852f8a8d5de9f483ca341b",
       "log_claim": "success",
       "reasons": []
     },
@@ -362,7 +362,7 @@
       "id": "windows/dotnet-net10.neg-missing-targeting-pack",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "786504e50c9af24b81a0b0c203af0c14cb15854d4f7ca3e1ffa5b3af68a01c08",
+      "def_sha256": "6f8d535c3d04760edb8a0a682290c7474c1e46f69c263bf570086cbb7bd51132",
       "status": "pass",
       "expected": "failure",
       "observed": "failure",
@@ -370,17 +370,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:22:24Z",
-      "ended_at": "2026-10-20T01:22:26Z",
-      "duration_s": 1.94,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/dotnet/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-5_hp4__r -Id windows/dotnet-net10.neg-missing-targeting-pack -Tfm net10.0 -SdkBand 10.0.100 -Sabotage missing-targeting-pack",
+      "started_at": "2026-10-20T14:15:52Z",
+      "ended_at": "2026-10-20T14:15:54Z",
+      "duration_s": 1.904,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/dotnet/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-cw_10fgs -Id windows/dotnet-net10.neg-missing-targeting-pack -Tfm net10.0 -SdkBand 10.0.100 -Sabotage missing-targeting-pack",
       "artifacts": [],
       "first_error": {
         "message": "<work>\\app\\ParityApp.csproj : error NU1101: Unable to find package Microsoft.NETCore.App.Ref. No packages exist with this id in source(s): C:\\Program Files\\dotnet\\library-packs",
         "file": null,
         "line": null
       },
-      "log_sha256": "c9e2f20248f32451c70bc017f5ab49db75678320cc704d89e16602e59693116d",
+      "log_sha256": "75c7ac0ce86cbd423e33d5070f648014634a64eafd5cccd7db73b19b19ff02d2",
       "log_claim": null,
       "reasons": []
     },
@@ -388,7 +388,7 @@
       "id": "windows/dotnet-net8",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "dd1f19e15710cc4a5e506c165f36cfbf6570217874158c14d2e4d9ade69c98c2",
+      "def_sha256": "09efa493d56db69c1181c7866c5c45cdcc4bb9ead25fa8f20207bcde2e5e78e5",
       "status": "pass",
       "expected": "success",
       "observed": "success",
@@ -396,10 +396,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:22:26Z",
-      "ended_at": "2026-10-20T01:22:40Z",
-      "duration_s": 13.369,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/dotnet/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-ngx10d0j -Id windows/dotnet-net8 -Tfm net8.0 -SdkBand 8.0.100",
+      "started_at": "2026-10-20T14:15:54Z",
+      "ended_at": "2026-10-20T14:16:07Z",
+      "duration_s": 13.284,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/dotnet/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-yha2hrtb -Id windows/dotnet-net8 -Tfm net8.0 -SdkBand 8.0.100",
       "artifacts": [
         {
           "name": "report.txt",
@@ -409,7 +409,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "c17daf5ca1519d7f1bec6255f150e2b25e765dbeadecffc2275be2f80ef04308",
+      "log_sha256": "c5b6f18f76a94f7aa24972f332bd391a6506dedd7cbff1444004a74e006b6ac1",
       "log_claim": "success",
       "reasons": []
     },
@@ -417,7 +417,7 @@
       "id": "windows/dotnet-net8.neg-missing-targeting-pack",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "18da46185680f78b1bae0cc7ba8f1996f25d95c2446bc718c2c428749a715bae",
+      "def_sha256": "e9fa15538bc42c3c407ab6e1c7f342de05b9a96eb30292a968a4fc188847b509",
       "status": "pass",
       "expected": "failure",
       "observed": "failure",
@@ -425,17 +425,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:22:40Z",
-      "ended_at": "2026-10-20T01:22:41Z",
-      "duration_s": 1.54,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/dotnet/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-wfke66hf -Id windows/dotnet-net8.neg-missing-targeting-pack -Tfm net8.0 -SdkBand 8.0.100 -Sabotage missing-targeting-pack",
+      "started_at": "2026-10-20T14:16:07Z",
+      "ended_at": "2026-10-20T14:16:09Z",
+      "duration_s": 1.529,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/dotnet/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-ka8i52dk -Id windows/dotnet-net8.neg-missing-targeting-pack -Tfm net8.0 -SdkBand 8.0.100 -Sabotage missing-targeting-pack",
       "artifacts": [],
       "first_error": {
         "message": "<work>\\app\\ParityApp.csproj : error NU1101: Unable to find package Microsoft.NETCore.App.Ref. No packages exist with this id in source(s): C:\\Program Files\\dotnet\\library-packs",
         "file": null,
         "line": null
       },
-      "log_sha256": "e3a03537b7b73c98c906ac8021269f514dbe3b95476c34b651fad62a83da2243",
+      "log_sha256": "696c896f5c9b9533ac7adca8df52716de219f4eaece7e0c91143f98ab67f4ec1",
       "log_claim": null,
       "reasons": []
     },
@@ -451,10 +451,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:22:41Z",
-      "ended_at": "2026-10-20T01:22:45Z",
-      "duration_s": 3.992,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/java/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-f1i_to3q -Id windows/java",
+      "started_at": "2026-10-20T14:16:09Z",
+      "ended_at": "2026-10-20T14:16:12Z",
+      "duration_s": 3.793,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/java/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-7fo1874_ -Id windows/java",
       "artifacts": [
         {
           "name": "report.txt",
@@ -480,10 +480,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:22:45Z",
-      "ended_at": "2026-10-20T01:22:46Z",
-      "duration_s": 0.408,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/java/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-s3eel3j7 -Id windows/java.neg-no-java-home -Sabotage no-java-home",
+      "started_at": "2026-10-20T14:16:12Z",
+      "ended_at": "2026-10-20T14:16:13Z",
+      "duration_s": 0.414,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/java/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-89d_5phy -Id windows/java.neg-no-java-home -Sabotage no-java-home",
       "artifacts": [],
       "first_error": {
         "message": "error: javac.exe not found under JAVA_HOME",
@@ -506,10 +506,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:22:46Z",
-      "ended_at": "2026-10-20T01:23:00Z",
-      "duration_s": 14.107,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/netfx/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-o9gjy68r -Id windows/msbuild-netfx",
+      "started_at": "2026-10-20T14:16:13Z",
+      "ended_at": "2026-10-20T14:16:26Z",
+      "duration_s": 13.62,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/netfx/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-zibq32zh -Id windows/msbuild-netfx",
       "artifacts": [
         {
           "name": "report.txt",
@@ -535,10 +535,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:23:00Z",
-      "ended_at": "2026-10-20T01:23:01Z",
-      "duration_s": 1.06,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/netfx/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-jitwrkle -Id windows/msbuild-netfx.neg-missing-targeting-pack -Sabotage missing-targeting-pack",
+      "started_at": "2026-10-20T14:16:26Z",
+      "ended_at": "2026-10-20T14:16:27Z",
+      "duration_s": 1.044,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/netfx/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-pdwky_gf -Id windows/msbuild-netfx.neg-missing-targeting-pack -Sabotage missing-targeting-pack",
       "artifacts": [],
       "first_error": {
         "message": "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\MSBuild\\Current\\Bin\\Microsoft.Common.CurrentVersion.targets(1259,5): error MSB3644: The reference assemblies for .NETFramework,Version=v4.0 were not found. To resolve this, install the Developer Pack (SDK/Targeting Pack) for this framework versi",
@@ -561,10 +561,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:23:01Z",
-      "ended_at": "2026-10-20T01:23:10Z",
-      "duration_s": 8.932,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-a_v4wd4o -Id windows/msvc-arm64 -Arch arm64",
+      "started_at": "2026-10-20T14:16:27Z",
+      "ended_at": "2026-10-20T14:16:36Z",
+      "duration_s": 8.861,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-ax_2emk7 -Id windows/msvc-arm64 -Arch arm64",
       "artifacts": [
         {
           "name": "report.txt",
@@ -590,10 +590,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:23:10Z",
-      "ended_at": "2026-10-20T01:23:12Z",
-      "duration_s": 2.57,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-qoj3ibzk -Id windows/msvc-arm64.neg-no-sdk-lib -Arch arm64 -Sabotage no-sdk-lib",
+      "started_at": "2026-10-20T14:16:36Z",
+      "ended_at": "2026-10-20T14:16:39Z",
+      "duration_s": 2.562,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-5sg00oe6 -Id windows/msvc-arm64.neg-no-sdk-lib -Arch arm64 -Sabotage no-sdk-lib",
       "artifacts": [],
       "first_error": {
         "message": "LINK : fatal error LNK1181: cannot open input file 'advapi32.lib'",
@@ -616,10 +616,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:23:12Z",
-      "ended_at": "2026-10-20T01:23:20Z",
-      "duration_s": 7.679,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-ubpqe1o1 -Id windows/msvc-toolset-14.29 -VcVarsVer 14.29",
+      "started_at": "2026-10-20T14:16:39Z",
+      "ended_at": "2026-10-20T14:16:46Z",
+      "duration_s": 7.465,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-9oeqyykt -Id windows/msvc-toolset-14.29 -VcVarsVer 14.29",
       "artifacts": [
         {
           "name": "report.txt",
@@ -645,10 +645,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:23:20Z",
-      "ended_at": "2026-10-20T01:23:23Z",
-      "duration_s": 3.251,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-_znoywjr -Id windows/msvc-toolset-14.29.neg-missing-toolset -VcVarsVer 14.99",
+      "started_at": "2026-10-20T14:16:46Z",
+      "ended_at": "2026-10-20T14:16:49Z",
+      "duration_s": 3.026,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-_js58ta7 -Id windows/msvc-toolset-14.29.neg-missing-toolset -VcVarsVer 14.99",
       "artifacts": [],
       "first_error": {
         "message": "[ERROR:vcvars.bat] Toolset directory for version '14.99' was not found.",
@@ -671,10 +671,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:23:23Z",
-      "ended_at": "2026-10-20T01:23:45Z",
-      "duration_s": 21.258,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-is4a0myn -Id windows/msvc-toolset-14.44 -VcVarsVer 14.44",
+      "started_at": "2026-10-20T14:16:49Z",
+      "ended_at": "2026-10-20T14:16:57Z",
+      "duration_s": 7.971,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-flvekkdt -Id windows/msvc-toolset-14.44 -VcVarsVer 14.44",
       "artifacts": [
         {
           "name": "report.txt",
@@ -700,10 +700,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:23:45Z",
-      "ended_at": "2026-10-20T01:23:49Z",
-      "duration_s": 4.603,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-udoecb2x -Id windows/msvc-x64 -Arch x64",
+      "started_at": "2026-10-20T14:16:57Z",
+      "ended_at": "2026-10-20T14:17:02Z",
+      "duration_s": 4.58,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-nh5ngg_q -Id windows/msvc-x64 -Arch x64",
       "artifacts": [
         {
           "name": "report.txt",
@@ -729,10 +729,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:23:49Z",
-      "ended_at": "2026-10-20T01:23:51Z",
-      "duration_s": 2.321,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-l8xmfsac -Id windows/msvc-x64.neg-no-sdk-include -Arch x64 -Sabotage no-sdk-include",
+      "started_at": "2026-10-20T14:17:02Z",
+      "ended_at": "2026-10-20T14:17:04Z",
+      "duration_s": 2.295,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-7dnbzefb -Id windows/msvc-x64.neg-no-sdk-include -Arch x64 -Sabotage no-sdk-include",
       "artifacts": [],
       "first_error": {
         "message": "hello.c(1): fatal error C1083: Cannot open include file: 'windows.h': No such file or directory",
@@ -755,10 +755,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:23:51Z",
-      "ended_at": "2026-10-20T01:24:00Z",
-      "duration_s": 8.93,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-479i06qg -Id windows/msvc-x86 -Arch x86",
+      "started_at": "2026-10-20T14:17:04Z",
+      "ended_at": "2026-10-20T14:17:13Z",
+      "duration_s": 8.952,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-lrwkzxi4 -Id windows/msvc-x86 -Arch x86",
       "artifacts": [
         {
           "name": "report.txt",
@@ -784,10 +784,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:24:00Z",
-      "ended_at": "2026-10-20T01:24:03Z",
-      "duration_s": 2.663,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-gz4f2k_p -Id windows/msvc-x86.neg-no-sdk-lib -Arch x86 -Sabotage no-sdk-lib",
+      "started_at": "2026-10-20T14:17:13Z",
+      "ended_at": "2026-10-20T14:17:16Z",
+      "duration_s": 2.705,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/msvc/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-5qnyag26 -Id windows/msvc-x86.neg-no-sdk-lib -Arch x86 -Sabotage no-sdk-lib",
       "artifacts": [],
       "first_error": {
         "message": "LINK : fatal error LNK1181: cannot open input file 'advapi32.lib'",
@@ -810,10 +810,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:24:03Z",
-      "ended_at": "2026-10-20T01:24:08Z",
-      "duration_s": 4.567,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/node-addon/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-ne8lfjda -Id windows/node-addon",
+      "started_at": "2026-10-20T14:17:16Z",
+      "ended_at": "2026-10-20T14:17:20Z",
+      "duration_s": 4.354,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/node-addon/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-ep1_4_09 -Id windows/node-addon",
       "artifacts": [
         {
           "name": "report.txt",
@@ -839,10 +839,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:24:08Z",
-      "ended_at": "2026-10-20T01:24:10Z",
-      "duration_s": 2.175,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/node-addon/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-cplw89wq -Id windows/node-addon.neg-no-sdk-lib -Sabotage no-sdk-lib",
+      "started_at": "2026-10-20T14:17:20Z",
+      "ended_at": "2026-10-20T14:17:22Z",
+      "duration_s": 2.211,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/node-addon/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-cfljwu1v -Id windows/node-addon.neg-no-sdk-lib -Sabotage no-sdk-lib",
       "artifacts": [],
       "first_error": {
         "message": "LINK : fatal error LNK1104: cannot open file 'kernel32.lib'",
@@ -865,10 +865,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:24:10Z",
-      "ended_at": "2026-10-20T01:24:11Z",
-      "duration_s": 0.848,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-bf2hftd2 -Id windows/package-7zip -Tool 7zip",
+      "started_at": "2026-10-20T14:17:22Z",
+      "ended_at": "2026-10-20T14:17:23Z",
+      "duration_s": 0.883,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-2wjucabo -Id windows/package-7zip -Tool 7zip",
       "artifacts": [
         {
           "name": "report.txt",
@@ -878,7 +878,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "df8e62e760e27f1886c595a79090d3ea4e4f482d41874ec5e69bd68b2e5f5d28",
+      "log_sha256": "78e038d451170e09e6380f02b45f2a161f790688e7f8ba36e87c51f443b8be0a",
       "log_claim": "success",
       "reasons": []
     },
@@ -894,10 +894,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:24:11Z",
-      "ended_at": "2026-10-20T01:24:11Z",
-      "duration_s": 0.399,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-fw66yge2 -Id windows/package-7zip.neg-hide-tool -Tool 7zip -Sabotage hide-tool",
+      "started_at": "2026-10-20T14:17:23Z",
+      "ended_at": "2026-10-20T14:17:24Z",
+      "duration_s": 0.917,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-8eyawq6n -Id windows/package-7zip.neg-hide-tool -Tool 7zip -Sabotage hide-tool",
       "artifacts": [],
       "first_error": {
         "message": "error: 7-Zip install location not found",
@@ -920,10 +920,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:24:11Z",
-      "ended_at": "2026-10-20T01:24:13Z",
-      "duration_s": 2.147,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-9ny4z1ok -Id windows/package-innosetup -Tool innosetup",
+      "started_at": "2026-10-20T14:17:24Z",
+      "ended_at": "2026-10-20T14:17:26Z",
+      "duration_s": 2.103,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-jvvzwtjv -Id windows/package-innosetup -Tool innosetup",
       "artifacts": [
         {
           "name": "report.txt",
@@ -949,10 +949,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:24:13Z",
-      "ended_at": "2026-10-20T01:24:14Z",
-      "duration_s": 0.391,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-t6cto2tw -Id windows/package-innosetup.neg-hide-tool -Tool innosetup -Sabotage hide-tool",
+      "started_at": "2026-10-20T14:17:26Z",
+      "ended_at": "2026-10-20T14:17:27Z",
+      "duration_s": 0.855,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-kmkwihm7 -Id windows/package-innosetup.neg-hide-tool -Tool innosetup -Sabotage hide-tool",
       "artifacts": [],
       "first_error": {
         "message": "error: Inno Setup install location not found",
@@ -975,10 +975,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:24:14Z",
-      "ended_at": "2026-10-20T01:24:17Z",
-      "duration_s": 3.833,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-z677g4ak -Id windows/package-wix -Tool wix",
+      "started_at": "2026-10-20T14:17:27Z",
+      "ended_at": "2026-10-20T14:17:31Z",
+      "duration_s": 3.723,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-5a_kcosm -Id windows/package-wix -Tool wix",
       "artifacts": [
         {
           "name": "report.txt",
@@ -1004,10 +1004,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:24:17Z",
-      "ended_at": "2026-10-20T01:24:18Z",
-      "duration_s": 0.397,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-zxgv5avd -Id windows/package-wix.neg-hide-tool -Tool wix -Sabotage hide-tool",
+      "started_at": "2026-10-20T14:17:31Z",
+      "ended_at": "2026-10-20T14:17:31Z",
+      "duration_s": 0.41,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/packaging/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-mpf4ei8j -Id windows/package-wix.neg-hide-tool -Tool wix -Sabotage hide-tool",
       "artifacts": [],
       "first_error": {
         "message": "error: WIX is not set: WiX Toolset 3 not found",
@@ -1030,10 +1030,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:24:18Z",
-      "ended_at": "2026-10-20T01:24:24Z",
-      "duration_s": 5.85,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/python-wheel/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-buuyazbo -Id windows/python-wheel",
+      "started_at": "2026-10-20T14:17:31Z",
+      "ended_at": "2026-10-20T14:17:37Z",
+      "duration_s": 5.521,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/python-wheel/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-n0332lp4 -Id windows/python-wheel",
       "artifacts": [
         {
           "name": "report.txt",
@@ -1059,10 +1059,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:24:24Z",
-      "ended_at": "2026-10-20T01:24:26Z",
-      "duration_s": 2.39,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/python-wheel/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-uqwfuwtj -Id windows/python-wheel.neg-no-python-lib -Sabotage no-python-lib",
+      "started_at": "2026-10-20T14:17:37Z",
+      "ended_at": "2026-10-20T14:17:39Z",
+      "duration_s": 2.331,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/python-wheel/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-m06z7849 -Id windows/python-wheel.neg-no-python-lib -Sabotage no-python-lib",
       "artifacts": [],
       "first_error": {
         "message": "LINK : fatal error LNK1104: cannot open file 'python312.lib'",
@@ -1077,7 +1077,7 @@
       "id": "windows/rust-native",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "60e3e86115b02631bf5d5925bb1644ab76a5598af481f6116a06d886735e3648",
+      "def_sha256": "26144b73f8709acf4d57f274a563def4a7a5a6699ee59f8bbe8c8ec009636118",
       "status": "pass",
       "expected": "success",
       "observed": "success",
@@ -1085,10 +1085,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:24:26Z",
-      "ended_at": "2026-10-20T01:24:50Z",
-      "duration_s": 23.723,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/rust/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-5faqcyjv -Id windows/rust-native -Crate native",
+      "started_at": "2026-10-20T14:17:39Z",
+      "ended_at": "2026-10-20T14:17:55Z",
+      "duration_s": 15.588,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/rust/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-rr4nl6s5 -Id windows/rust-native -Crate native",
       "artifacts": [
         {
           "name": "report.txt",
@@ -1098,7 +1098,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "69d1efea38f5d14ea8696e8179d1fed114ca6295ad9b1332e18eec3957ef84ed",
+      "log_sha256": "f16f296993ebc59c5ae23a9a4be0cb9ca6e46ba78c975ba482f3c037539148a2",
       "log_claim": "success",
       "reasons": []
     },
@@ -1106,7 +1106,7 @@
       "id": "windows/rust-native.neg-no-sdk-lib",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "8977ee558accc736ed2adb7625f1087521b0e86f0284926e6865789c18186818",
+      "def_sha256": "b7cfdfbb9c565fd7d8d8080461685600b876aaf4bd2e7f5a02b3ced4946b0914",
       "status": "pass",
       "expected": "failure",
       "observed": "failure",
@@ -1114,17 +1114,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:24:50Z",
-      "ended_at": "2026-10-20T01:24:52Z",
-      "duration_s": 2.514,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/rust/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-0x30q4qa -Id windows/rust-native.neg-no-sdk-lib -Crate native -Sabotage no-sdk-lib",
+      "started_at": "2026-10-20T14:17:55Z",
+      "ended_at": "2026-10-20T14:17:57Z",
+      "duration_s": 2.496,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/rust/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-hik2k3iy -Id windows/rust-native.neg-no-sdk-lib -Crate native -Sabotage no-sdk-lib",
       "artifacts": [],
       "first_error": {
         "message": "error: linking with `link.exe` failed: exit code: 1181",
         "file": null,
         "line": null
       },
-      "log_sha256": "4afa051e037e32a75010b73223af4965b642413267b9f559fb5f958e04ce2d50",
+      "log_sha256": "432a9e8c4c59100ff69f63965e03ee5c354cabb66937fdb9905af832bb5f0d8c",
       "log_claim": null,
       "reasons": []
     },
@@ -1132,7 +1132,7 @@
       "id": "windows/rust-plain",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "d1914d9909a6f4789cb00f982e44244d1cb19c0119ff7de4678b3fcd6e9648d1",
+      "def_sha256": "388cea9a3b9f4bdf2437c0140a49b0d5226f26b766c04189e871d0ee46a3db86",
       "status": "pass",
       "expected": "success",
       "observed": "success",
@@ -1140,10 +1140,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:24:52Z",
-      "ended_at": "2026-10-20T01:24:54Z",
-      "duration_s": 1.677,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/rust/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-13laoli2 -Id windows/rust-plain -Crate plain",
+      "started_at": "2026-10-20T14:17:57Z",
+      "ended_at": "2026-10-20T14:17:59Z",
+      "duration_s": 1.652,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/rust/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-bg_fgzt7 -Id windows/rust-plain -Crate plain",
       "artifacts": [
         {
           "name": "report.txt",
@@ -1153,7 +1153,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "7213688f4a129d1fe22b520ad1e2a8d660f2ff62fd159f8b025cfe2973da6e6f",
+      "log_sha256": "e56e49d1b7f49d055d6e5939171ad79c803dbcb0b40fd2bffea4a2e0265f8edd",
       "log_claim": "success",
       "reasons": []
     },
@@ -1161,7 +1161,7 @@
       "id": "windows/rust-plain.neg-git-link",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "452ed4ef7c0ae81fc02ef018693d04aa9c9b267ee3955a45a9a207b56b3db041",
+      "def_sha256": "4efa2e0fcaea66fac6c6158c58cc9d4876c4401c0f2f828672367144ebcb5782",
       "status": "pass",
       "expected": "failure",
       "observed": "failure",
@@ -1169,17 +1169,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:24:54Z",
-      "ended_at": "2026-10-20T01:24:55Z",
-      "duration_s": 0.802,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/rust/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-ft2vb9d1 -Id windows/rust-plain.neg-git-link -Crate plain -Sabotage git-link",
+      "started_at": "2026-10-20T14:17:59Z",
+      "ended_at": "2026-10-20T14:18:00Z",
+      "duration_s": 0.822,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/rust/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-z_avd4eu -Id windows/rust-plain.neg-git-link -Crate plain -Sabotage git-link",
       "artifacts": [],
       "first_error": {
         "message": "error: linking with `link.exe` failed: exit code: 1",
         "file": null,
         "line": null
       },
-      "log_sha256": "6dafac516fc94b718b2ca2f2a8bb63efa70f1ac1728cb2144de99d846e99a4a7",
+      "log_sha256": "460848ab89fa3a2265c9477671bb90d4b3214095f48d6eb5e38ecc8791c1e045",
       "log_claim": null,
       "reasons": []
     },
@@ -1195,10 +1195,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:24:55Z",
-      "ended_at": "2026-10-20T01:25:00Z",
-      "duration_s": 4.88,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/versions/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-fdc5cbfl -Id windows/toolchain-versions",
+      "started_at": "2026-10-20T14:18:00Z",
+      "ended_at": "2026-10-20T14:18:05Z",
+      "duration_s": 4.807,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/versions/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-y5z17q1l -Id windows/toolchain-versions",
       "artifacts": [],
       "first_error": null,
       "log_sha256": "54390f5ceee08d0c21c022cb97be1ef11b0ffc54da63405c0087ca61623760d8",
@@ -1209,7 +1209,7 @@
       "id": "windows/toolchain-versions.neg-no-llvm-on-path",
       "variant": "default",
       "variant_index": 0,
-      "def_sha256": "1aefd42cfe566bc718e26a8f25fd4326d007f84e5e91852b52821bb13764467c",
+      "def_sha256": "bf9d8e8cfd2a1785baa0a5e5375a73577e1d3f03a732c3784ef7010a9bbe53a9",
       "status": "pass",
       "expected": "failure",
       "observed": "failure",
@@ -1217,10 +1217,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:25:00Z",
-      "ended_at": "2026-10-20T01:25:02Z",
-      "duration_s": 2.825,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/versions/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-das80muq -Id windows/toolchain-versions.neg-no-llvm-on-path -Sabotage no-llvm-on-path",
+      "started_at": "2026-10-20T14:18:05Z",
+      "ended_at": "2026-10-20T14:18:07Z",
+      "duration_s": 2.823,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/versions/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-hkl2086n -Id windows/toolchain-versions.neg-no-llvm-on-path -Sabotage no-llvm-on-path",
       "artifacts": [],
       "first_error": {
         "message": "error: oracle version.llvm expected '20.1.8' observed ''",
@@ -1243,10 +1243,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T01:25:02Z",
-      "ended_at": "2026-10-20T01:25:05Z",
-      "duration_s": 3.019,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/devenv/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-14xepxcj -Id windows/vs-devenv",
+      "started_at": "2026-10-20T14:18:07Z",
+      "ended_at": "2026-10-20T14:18:10Z",
+      "duration_s": 3.012,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/devenv/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-hp6i512f -Id windows/vs-devenv",
       "artifacts": [],
       "first_error": null,
       "log_sha256": "6e4e83e33745dd778e20856a7dc52b5c89212bef8c8cb77b6a0f7aa48eaf7e20",
@@ -1265,10 +1265,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T01:25:05Z",
-      "ended_at": "2026-10-20T01:25:08Z",
-      "duration_s": 2.751,
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/devenv/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-p_hu1tmj -Id windows/vs-devenv.neg-missing-winsdk -Sabotage missing-winsdk",
+      "started_at": "2026-10-20T14:18:10Z",
+      "ended_at": "2026-10-20T14:18:13Z",
+      "duration_s": 2.771,
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File D:\\a\\aap-runner\\aap-runner\\tools\\parity-certify\\workloads\\fixtures/../../../../parity/workloads/windows/devenv/run.ps1 -Work D:\\a\\_temp\\parity-out\\work\\wl-6kirsf1h -Id windows/vs-devenv.neg-missing-winsdk -Sabotage missing-winsdk",
       "artifacts": [],
       "first_error": {
         "message": "[ERROR:winsdk.bat] Windows SDK 10.0.99999.0 : 'C:\\Program Files (x86)\\Windows Kits\\10\\include\\10.0.99999.0\\um' not found or was incomplete",

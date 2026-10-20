@@ -103,8 +103,14 @@ The log claim is each workload's own verdict line (`workload <id>: all oracle ch
   independent review then tightened four negatives so each can fail only on its own sabotage: `rust-plain.neg-git-link`
   checks that Git's link.exe is first on PATH before cargo runs; `runner-env.neg-no-tool-cache` leaves the variables
   alone and looks for the layout in an empty folder; the Inno Setup and 7-Zip negatives run the real install-record
-  lookup with a name nothing matches; `toolchain-versions.neg-no-llvm-on-path` expects the full oracle line. Those
-  definitions changed, so run 39352919500 no longer validates this tree.
+  lookup with a name nothing matches; `toolchain-versions.neg-no-llvm-on-path` expects the full oracle line.
+- Hosted-validated: run 39437386210 (image 20261007.264.1, head 717d1ba): 47/47, all 24 positives and all 23
+  negatives, and its `summary.json` tree manifest equals this tree. Every negative fails on its own sabotage: its
+  expected text is the first error line of its log, its positive twin passed in the same run, and its observed facts
+  show no other failed check except the ones the sabotage implies (the bogus SDK's or toolset's developer-environment
+  values, the tool cache entries). The tightened ones show their setup holding before the named error: Git's
+  link.exe first on PATH, RUNNER_TOOL_CACHE and AGENT_TOOLSDIRECTORY unchanged. Report hashes were unchanged from run
+  39352919500, and the logs carry no ANSI colour codes.
 - `tests/parity/workloads/windows/check_hosted_run.py` compares the tree with the run named in the oracle's
   `hosted_validation.run`: every definition hash, report hash and first error in its `results.json`, and the content
   manifest in its `summary.json` (added, removed or changed files are listed). After changing anything the manifest
@@ -115,7 +121,8 @@ The log claim is each workload's own verdict line (`workload <id>: all oracle ch
   error (hosted NuGet also searches `C:\Program Files\dotnet\library-packs`: NU1101), the cmake-vs negative (a
   CMAKE_SYSTEM_VERSION newer than any installed SDK only caps the selection; WindowsTargetPlatformVersion fails with
   MSB8036), and a helper bug that stopped runner-env before its checks.
-- `oracle/hosted-runs/<run>/` keeps the hosted log excerpts the `hosted:` citations point at.
+- `oracle/hosted-runs/<run>/` keeps the evidence of the validating run (summary.json, results.json, runner-env and
+  file-commands logs) and, for earlier runs, only the log excerpts that `hosted:` citations still point at.
 - Through the runner's `-command ". 'script'"` template, `exit N` (and the runner's appended `exit $LASTEXITCODE`
   after a failing native command) ends pwsh 7.6.6 and Windows PowerShell 5.1 with exit code 1, not N as GitHub's docs
   say. Observed on the hosted image and the owner's host; the oracle records 1.
