@@ -7,7 +7,8 @@
 # Every call appends the environment variable NAMES it received (never values) to fake-env.log.
 # Faults: FAKE_ZC_CRASH=1 exits 139 at once; with FAKE_ZC_VERIFY=1 a stored entry that no longer matches its .sha
 # sidecar is refused with exit 5 (a cache that detects a corrupted entry); FAKE_ZC_HANG=SECONDS records this process in
-# fake-client.pid and sleeps that long before exiting 0 (a hung client).
+# fake-client.pid and sleeps that long before exiting 0 (a hung client); with FAKE_ZC_LATE=SECONDS it first starts a
+# child that writes LATE to the -o file after that long (a straggler the timeout must stop).
 # FAKE_ZC_ARGV_LOG=PATH writes the arguments it received to PATH as JSON and exits 0, before anything else; it then
 # needs no cache root. The arguments come from the process command line, as zcshim.ps1 takes them.
 $ErrorActionPreference = 'Stop'
@@ -43,11 +44,6 @@ if ($argv[0] -eq 'session-start') {
     exit 0
 }
 if ($argv[0] -eq 'session-end') { exit 0 }
-if ($env:FAKE_ZC_HANG) {
-    Set-Content -LiteralPath (Join-Path $root 'fake-client.pid') -Value $PID
-    Start-Sleep -Seconds ([int]$env:FAKE_ZC_HANG)
-    exit 0
-}
 $cc = $argv[0]
 $rest = @($argv | Select-Object -Skip 1)
 $out = $null; $in = $null; $keyArgs = @()
@@ -55,6 +51,15 @@ for ($i = 0; $i -lt $rest.Count; $i++) {
     if ($rest[$i] -eq '-o' -and $i + 1 -lt $rest.Count) { $out = $rest[$i + 1]; $i++; continue }
     if (Test-Path -LiteralPath $rest[$i] -PathType Leaf) { $in = $rest[$i] }
     $keyArgs += $rest[$i]
+}
+if ($env:FAKE_ZC_HANG) {
+    Set-Content -LiteralPath (Join-Path $root 'fake-client.pid') -Value $PID
+    if ($env:FAKE_ZC_LATE -and $out) {
+        $late = "Start-Sleep -Seconds $([int]$env:FAKE_ZC_LATE); [IO.File]::WriteAllText('$out', 'LATE')"
+        $null = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', $late) -WindowStyle Hidden -PassThru
+    }
+    Start-Sleep -Seconds ([int]$env:FAKE_ZC_HANG)
+    exit 0
 }
 $keyText = $cc + "`n" + ($keyArgs -join "`n") + "`n" + $(if ($in) { [IO.File]::ReadAllText($in) } else { '' })
 $h = [Security.Cryptography.SHA256]::Create()

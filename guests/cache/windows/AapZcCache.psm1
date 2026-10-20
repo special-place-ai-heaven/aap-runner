@@ -22,7 +22,7 @@ $script:Compilers = @('rustc', 'clang', 'clang++', 'clang-cl', 'cl', 'link', 'll
 $script:NamespaceKeys = @('repository_id', 'repository', 'trust_class', 'platform', 'toolchain_digest', 'zccache_version')
 # The compiler launcher runs zcshim.ps1 under PowerShell 7: Windows PowerShell 5.1's -File refuses a bare '-' argument
 # (a compiler reading stdin) before the script runs, which would fail the compile itself.
-$script:LauncherShell = $(if ($PSVersionTable.PSEdition -eq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe' })
+$script:LauncherShell = $(if ($PSVersionTable.PSEdition -eq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'PowerShell\7\pwsh.exe' })
 $script:LogLimit = 1MB
 $script:UsageEverySeconds = 30
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -115,6 +115,14 @@ function ConvertTo-AapZcArg([string]$Arg) {
 # Runs a program. -Capture: hidden, output captured as bytes, and with -TimeoutSeconds killed (TimedOut) when it runs
 # longer. Otherwise the program shares this process's console and standard handles, as a direct compiler must (the
 # shim always runs in a console, so no window appears).
+# Stops a process and every descendant it still has: a timed-out client and what it started, or a root's daemon and the
+# compiles it runs. PowerShell 7 kills the tree itself; Windows PowerShell 5.1 has no tree kill, taskkill /T does it.
+function Stop-AapZcTree([int]$Id) {
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        try { $p = [Diagnostics.Process]::GetProcessById($Id); $p.Kill($true); [void]$p.WaitForExit(10000) } catch { $null = $_ }
+    } else { $null = & (Join-Path ([Environment]::SystemDirectory) 'taskkill.exe') /T /F /PID $Id 2>&1 }
+}
+
 function Invoke-AapZcProcess {
     param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [System.Collections.IDictionary]$Environment, [switch]$Capture, [int]$TimeoutSeconds = 0)
     $si = New-Object System.Diagnostics.ProcessStartInfo
@@ -136,7 +144,7 @@ function Invoke-AapZcProcess {
         $t1 = $p.StandardOutput.BaseStream.CopyToAsync($out)
         $t2 = $p.StandardError.BaseStream.CopyToAsync($err)
         if (-not $p.WaitForExit($(if ($TimeoutSeconds -gt 0) { $TimeoutSeconds * 1000 } else { -1 }))) {
-            try { $p.Kill() } catch { $null = $_ }
+            Stop-AapZcTree $p.Id  # SAFETY:WIN-KILL-TREE (a child left alive could write the output after the direct compile)
             $r.TimedOut = $true
             return $r
         }
@@ -321,17 +329,18 @@ function Initialize-AapZcJob {
        (artifacts, index, metadata, zccache's logs and temp); state\ and shim\ come on top (README). Returns the config;
        writes state\config.json and state\runner.env (KEY=VALUE lines P14 merges into the runner's environment; empty
        when nothing is qualified). SharedRoots lets Connect-AapZcSharedRoot attach a host root at all; it stays off
-       until the lab proof for shared roots exists (P04/P22). WrapperTimeoutSeconds bounds each wrapped zccache call. #>
+       until the lab proof for shared roots exists (P04/P22). WrapperTimeoutSeconds bounds each wrapped compile-object call,
+       WrapperTimeoutLongSeconds every other wrapped call (rustc, link, precompiled headers). #>
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$InstallDir, [Parameter(Mandatory)][string]$JobRoot, [Parameter(Mandatory)][long]$BudgetBytes,
-        [switch]$SharedRoots, [ValidateRange(1, 3600)][int]$WrapperTimeoutSeconds = 60)
+        [switch]$SharedRoots, [ValidateRange(1, 3600)][int]$WrapperTimeoutSeconds = 60, [ValidateRange(1, 7200)][int]$WrapperTimeoutLongSeconds = 600)
     New-AapZcDir $JobRoot
     foreach ($d in 'state', 'roots', 'shim') { New-AapZcDir (Join-Path $JobRoot $d) }
     $w = Get-AapZcPlatform (Join-Path $InstallDir 'wrappers.json')
     $artifactBudget = [long][Math]::Floor($BudgetBytes * 3 / 4)
     $cfg = [ordered]@{
         schema = 1; platform = $script:Platform; install_dir = $InstallDir; job_root = $JobRoot; zccache_version = [string]$w.Version
-        shared_roots = [bool]$SharedRoots; wrapper_timeout_seconds = $WrapperTimeoutSeconds
+        shared_roots = [bool]$SharedRoots; wrapper_timeout_seconds = $WrapperTimeoutSeconds; wrapper_timeout_long_seconds = $WrapperTimeoutLongSeconds
         state = 'direct'; detail = 'no qualified compiler and invocation pair'
         toolchains = @(); toolchain_digest = $null; qualified = @(); active_root = 'private'
         roots = [ordered]@{ private = [ordered]@{ dir = Join-Path $JobRoot 'roots\private'; budget_bytes = $BudgetBytes; artifact_budget_bytes = $artifactBudget; daemon = $null } }
@@ -555,8 +564,15 @@ function Resolve-AapZcCompiler([string]$Name) {
     return $null
 }
 
+# The bound of one wrapped call: a single object compile is short; rustc (a whole crate), links and precompiled headers
+# routinely run for minutes.
+function Get-AapZcWrapperTimeout($Config, [string[]]$Classes) {
+    if ($Classes -contains 'compile-object') { $s = [int](Get-AapZcProp $Config 'wrapper_timeout_seconds'); if ($s -gt 0) { return $s }; return 60 }  # SAFETY:WIN-TIMEOUT-CLASS
+    $l = [int](Get-AapZcProp $Config 'wrapper_timeout_long_seconds'); if ($l -gt 0) { return $l }; return 600
+}
+
 function Get-AapZcDecision([string]$ConfigPath, [string]$Compiler, [string[]]$Arguments) {
-    $d = [pscustomobject]@{ Mode = 'direct'; Reason = $null; Path = (Resolve-AapZcCompiler $Compiler); Config = $null; RootId = $null; Root = $null }
+    $d = [pscustomobject]@{ Mode = 'direct'; Reason = $null; Path = (Resolve-AapZcCompiler $Compiler); Config = $null; RootId = $null; Root = $null; Classes = @() }
     if (-not $ConfigPath -or -not [IO.File]::Exists($ConfigPath)) { $d.Reason = 'no-state'; return $d }
     $cfg = Read-AapZcJson $ConfigPath
     $d.Config = $cfg
@@ -569,6 +585,7 @@ function Get-AapZcDecision([string]$ConfigPath, [string]$Compiler, [string[]]$Ar
     if (-not $fi.Exists -or $fi.Length -ne [long]$tc.bytes -or $fi.LastWriteTimeUtc.Ticks -ne [long]$tc.mtime) { $d.Reason = 'toolchain-changed'; return $d }  # SAFETY:WIN-SHIM-TOOLCHAIN
     $classes = Get-AapZcInvocation -Compiler $tc.compiler -Arguments $Arguments
     if ($null -eq $classes) { $d.Reason = 'unclassified'; return $d }
+    $d.Classes = @($classes)
     foreach ($c in $classes) {
         $q = @($cfg.qualified | Where-Object { $_.compiler -eq $tc.compiler -and $_.compiler_version -eq $tc.compiler_version -and $_.invocation -eq $c })
         if (-not $q.Count) { $d.Reason = 'not-qualified:' + $c; return $d }  # SAFETY:WIN-SHIM-QUALIFIED
@@ -595,8 +612,7 @@ function Invoke-AapZcShim {
     $exe = $(if ($d.Path) { $d.Path } else { $compiler })
     if ($d.Mode -eq 'zccache') {
         $r = $null
-        $timeout = [int](Get-AapZcProp $d.Config 'wrapper_timeout_seconds')
-        if ($timeout -le 0) { $timeout = 60 }
+        $timeout = Get-AapZcWrapperTimeout $d.Config $d.Classes
         try {
             $r = Invoke-AapZcProcess -FilePath (Get-AapZcBinary $InstallDir) -Arguments (@($exe) + $rest) -Environment (Get-AapZcChildEnv $d.Root) -Capture -TimeoutSeconds $timeout  # SAFETY:WIN-SHIM-TIMEOUT
         } catch { $r = $null }
@@ -608,11 +624,16 @@ function Invoke-AapZcShim {
         }
         # Any zccache failure, a compile error included, is answered by the direct compiler: its exit code and output
         # are the build's (contract rule 7). The wrapped call's output is dropped so errors are not reported twice, and a
-        # compile error costs two compiler runs. A call that ran past the bound marks the root degraded either way.
-        $code = (Invoke-AapZcProcess -FilePath $exe -Arguments $rest).ExitCode  # SAFETY:WIN-SHIM-FALLBACK
+        # compile error costs two compiler runs. A call that ran past the bound marks the root degraded either way, and
+        # the root's daemon is stopped first: it may still be compiling this call's output, which the direct compile is
+        # about to write. Other wrapped calls on that root then fail and compile directly too.
         $timedOut = ($null -ne $r -and $r.TimedOut)
-        if ($timedOut) { Set-AapZcDegraded $d.Config $d.RootId 'wrapper-timeout' }
-        elseif ($code -eq 0) { Set-AapZcDegraded $d.Config $d.RootId 'wrapper-failure' }
+        if ($timedOut) {
+            Set-AapZcDegraded $d.Config $d.RootId 'wrapper-timeout'
+            if (Test-AapZcDaemonAlive $d.Root.daemon) { Stop-AapZcTree ([int]$d.Root.daemon.pid) }  # SAFETY:WIN-TIMEOUT-DAEMON
+        }
+        $code = (Invoke-AapZcProcess -FilePath $exe -Arguments $rest).ExitCode  # SAFETY:WIN-SHIM-FALLBACK
+        if (-not $timedOut -and $code -eq 0) { Set-AapZcDegraded $d.Config $d.RootId 'wrapper-failure' }
         Write-AapZcLog $d.Config ('fallback {0} zccache-exit {1} direct-exit {2}' -f [IO.Path]::GetFileName($exe), $(if ($timedOut) { 'timeout' } elseif ($r) { $r.ExitCode } else { 'none' }), $code)
         return $code
     }

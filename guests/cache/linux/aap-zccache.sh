@@ -2,6 +2,7 @@
 # zccache guest integration (P13), Linux guest. Needs bash 4+, coreutils, tar and jq (all in the Ubuntu 24.04 image).
 #   aap-zccache.sh install ARCHIVE PROVENANCE INSTALL_DIR TOOLCHAINS [WRAPPERS]   image build, as root
 #   aap-zccache.sh init INSTALL_DIR JOB_ROOT BUDGET_BYTES [--shared-roots] [--wrapper-timeout SECONDS]
+#                      [--wrapper-timeout-long SECONDS]
 #                                                                                 guest agent, before Actions starts
 #   aap-zccache.sh attach INSTALL_DIR JOB_ROOT BINDING MOUNT RUNNER_NAME          guest agent, on the host's bind
 #   aap-zccache.sh state JOB_ROOT                                                 guest agent status/collect (JSON)
@@ -116,6 +117,21 @@ zc_daemon_alive() { # PID START
   [[ -n "$1" && -n "$2" && "$(zc_proc_start "$1")" == "$2" ]]  # SAFETY:LNX-DAEMON-ALIVE
 }
 
+# Stops a process and every descendant it has (a root's daemon and the compiles it runs).
+zc_kill_tree() { # PID
+  local all=("$1") i=0 s line f
+  while [[ ${i} -lt ${#all[@]} ]]; do
+    for s in /proc/[0-9]*/stat; do
+      read -r line < "${s}" 2> /dev/null || continue
+      read -r -a f <<< "${line##*) }"
+      [[ "${f[1]}" == "${all[i]}" ]] && { s=${s#/proc/}; all+=("${s%%/*}"); }
+    done
+    i=$((i + 1))
+  done
+  kill -KILL "${all[@]}" 2> /dev/null
+  return 0
+}
+
 # The installed zccache: always INSTALL_DIR/bin/<pinned member>, never a path from the job's config.
 zc_bin() { # INSTALL_DIR
   echo "$1/bin/$(jq -r --arg p "${ZC_PLATFORM}" '.platforms[$p].members[0].name' "$1/wrappers.json")"
@@ -184,18 +200,19 @@ zc_start_daemon() { # INSTALL_DIR JOB_ROOT ROOT_ID -> rewrites config with the d
   jq --arg i "${id}" --argjson p "${pids[0]}" --arg s "${start}" '.roots[$i].daemon = {pid: $p, start: $s}' "${cfg}" | zc_write "${cfg}"
 }
 
-zc_init() { # INSTALL_DIR JOB_ROOT BUDGET_BYTES [--shared-roots] [--wrapper-timeout SECONDS]
-  local dir=$1 job=$2 budget=$3 shared=false tmo=60 plat ok=1 m d active=() t tcs digest qualified cfg state detail env_lines="" shim
+zc_init() { # INSTALL_DIR JOB_ROOT BUDGET_BYTES [--shared-roots] [--wrapper-timeout SECONDS] [--wrapper-timeout-long SECONDS]
+  local dir=$1 job=$2 budget=$3 shared=false tmo=60 tmol=600 plat ok=1 m d active=() t tcs digest qualified cfg state detail env_lines="" shim
   shift 3
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --shared-roots) shared=true; shift ;;
       --wrapper-timeout) tmo=${2:-}; shift 2 || zc_die "--wrapper-timeout needs seconds" ;;
+      --wrapper-timeout-long) tmol=${2:-}; shift 2 || zc_die "--wrapper-timeout-long needs seconds" ;;
       *) zc_die "unknown init option $1" ;;
     esac
   done
   [[ "${budget}" =~ ^(0|[1-9][0-9]*)$ ]] || zc_die "budget must be a byte count"
-  [[ "${tmo}" =~ ^[1-9][0-9]{0,3}$ ]] || zc_die "the wrapper timeout must be 1 to 9999 seconds"
+  [[ "${tmo}" =~ ^[1-9][0-9]{0,3}$ && "${tmol}" =~ ^[1-9][0-9]{0,3}$ ]] || zc_die "a wrapper timeout must be 1 to 9999 seconds"
   zc_mkdir "${job}"
   for d in state roots shim; do zc_mkdir "${job}/${d}"; done
   plat=$(jq -ce --arg p "${ZC_PLATFORM}" '.platforms[$p] // empty' "${dir}/wrappers.json") || zc_die "no ${ZC_PLATFORM} entry"
@@ -218,9 +235,10 @@ zc_init() { # INSTALL_DIR JOB_ROOT BUDGET_BYTES [--shared-roots] [--wrapper-time
   fi
   cfg=$(zc_cfg "${job}")
   jq -n --arg p "${ZC_PLATFORM}" --arg dir "${dir}" --arg job "${job}" --arg st "${state}" --arg de "${detail}" --argjson sh "${shared}" \
-    --argjson tmo "${tmo}" --arg v "$(jq -r .zccache.version "${dir}/wrappers.json")" \
+    --argjson tmo "${tmo}" --argjson tmol "${tmol}" --arg v "$(jq -r .zccache.version "${dir}/wrappers.json")" \
     --argjson t "${tcs}" --arg dg "${digest}" --argjson q "${qualified}" --argjson b "${budget}" '
     {schema: 1, platform: $p, install_dir: $dir, job_root: $job, zccache_version: $v, shared_roots: $sh, wrapper_timeout_seconds: $tmo,
+     wrapper_timeout_long_seconds: $tmol,
      state: $st, detail: $de, toolchains: $t, toolchain_digest: $dg, qualified: $q, active_root: "private",
      roots: {private: {dir: ($job + "/roots/private"), budget_bytes: $b, artifact_budget_bytes: (($b * 3 / 4) | floor), daemon: null}}}' | zc_write "${cfg}"
   if [[ "${state}" == pending ]]; then
@@ -248,21 +266,21 @@ zc_attach() { # INSTALL_DIR JOB_ROOT BINDING MOUNT RUNNER_NAME
   local install=$1 job=$2 binding=$3 mount=$4 runner=$5 cfg reason="" b=""
   cfg=$(zc_cfg "${job}")
   b=$(jq -ce . "${binding}" 2> /dev/null) || b=""
-  if [[ "$(jq -r .state "${cfg}")" != qualified ]]; then reason=no-qualified-wrappers
-  elif ! jq -e '.shared_roots == true' "${cfg}" > /dev/null; then reason=shared-roots-off  # SAFETY:LNX-BIND-SWITCH
-  elif jq -e '.roots.shared' "${cfg}" > /dev/null; then reason=already-bound  # SAFETY:LNX-BIND-ONCE
+  if [[ "$(jq -r .state "${cfg}")" != qualified ]]; then reason="no-qualified-wrappers"
+  elif ! jq -e '.shared_roots == true' "${cfg}" > /dev/null; then reason="shared-roots-off"  # SAFETY:LNX-BIND-SWITCH
+  elif jq -e '.roots.shared' "${cfg}" > /dev/null; then reason="already-bound"  # SAFETY:LNX-BIND-ONCE
   elif [[ -z "${b}" ]] || ! jq -e --argjson k "${ZC_NS_KEYS}" '.schema == 1 and (.root_id | type) == "string" and .root_id != "" and
       (.namespace | type) == "object" and (.namespace as $n | all($k[]; $n[.] != null and $n[.] != ""))' \
-      <<< "${b}" > /dev/null 2>&1; then reason=binding-missing  # SAFETY:LNX-BIND-MISSING
-  elif ! jq -e '.namespace.trust_class == "trusted"' <<< "${b}" > /dev/null; then reason=not-trusted  # SAFETY:LNX-BIND-CLASS
-  elif ! jq -e --arg r "${runner}" '.runner_name == $r' <<< "${b}" > /dev/null; then reason=runner-mismatch  # SAFETY:LNX-BIND-RUNNER
+      <<< "${b}" > /dev/null 2>&1; then reason="binding-missing"  # SAFETY:LNX-BIND-MISSING
+  elif ! jq -e '.namespace.trust_class == "trusted"' <<< "${b}" > /dev/null; then reason="not-trusted"  # SAFETY:LNX-BIND-CLASS
+  elif ! jq -e --arg r "${runner}" '.runner_name == $r' <<< "${b}" > /dev/null; then reason="runner-mismatch"  # SAFETY:LNX-BIND-RUNNER
   elif ! jq -e --arg p "${ZC_PLATFORM}" --arg d "$(jq -r .toolchain_digest "${cfg}")" --arg v "$(jq -r .zccache.version "${install}/wrappers.json")" \
-    '.namespace.platform == $p and .namespace.toolchain_digest == $d and .namespace.zccache_version == $v' <<< "${b}" > /dev/null; then reason=toolchain-mismatch  # SAFETY:LNX-BIND-TOOLCHAIN
-  elif [[ -L "${mount}" || -L "${mount}/root" ]]; then reason=root-is-link  # SAFETY:LNX-BIND-LINK
-  elif ! jq -e '(.budget_bytes | type) == "number" and .budget_bytes > 0' <<< "${b}" > /dev/null; then reason=budget-invalid
+    '.namespace.platform == $p and .namespace.toolchain_digest == $d and .namespace.zccache_version == $v' <<< "${b}" > /dev/null; then reason="toolchain-mismatch"  # SAFETY:LNX-BIND-TOOLCHAIN
+  elif [[ -L "${mount}" || -L "${mount}/root" ]]; then reason="root-is-link"  # SAFETY:LNX-BIND-LINK
+  elif ! jq -e '(.budget_bytes | type) == "number" and .budget_bytes > 0' <<< "${b}" > /dev/null; then reason="budget-invalid"
   elif ! jq -e --argjson b "${b}" --argjson k "${ZC_NS_KEYS}" '. as $m | $m.root_id == $b.root_id and
       all($k[]; . as $f | $m.namespace[$f] == $b.namespace[$f])' \
-      "${mount}/aap-cache-root.json" > /dev/null 2>&1; then reason=marker-mismatch  # SAFETY:LNX-BIND-MARKER
+      "${mount}/aap-cache-root.json" > /dev/null 2>&1; then reason="marker-mismatch"  # SAFETY:LNX-BIND-MARKER
   fi
   if [[ -z "${reason}" ]]; then
     jq --argjson b "${b}" --arg dir "${mount}/root" '.roots.shared = {dir: $dir, budget_bytes: $b.budget_bytes,
@@ -272,7 +290,7 @@ zc_attach() { # INSTALL_DIR JOB_ROOT BINDING MOUNT RUNNER_NAME
       jq '.active_root = "shared"' "${cfg}" | zc_write "${cfg}"
     else
       jq 'del(.roots.shared)' "${cfg}" | zc_write "${cfg}"
-      reason=daemon-start-failed
+      reason="daemon-start-failed"
     fi
   fi
   jq --arg r "${reason}" '.last_bind = {attached: ($r == ""), reason: (if $r == "" then null else $r end)}' "${cfg}" | zc_write "${cfg}"
@@ -329,8 +347,8 @@ zc_classify() { # COMPILER ARGS...
         fi
       done
       [[ -n "${types// /}" ]] || return 1
-      n=rustc-wrapper
-      for a in ${types}; do [[ "${a}" == lib || "${a}" == rlib ]] || n=link; done
+      n="rustc-wrapper"
+      for a in ${types}; do [[ "${a}" == lib || "${a}" == rlib ]] || n="link"; done
       classes+=("${n}")
       ;;
     gcc | g++ | clang | clang++)
@@ -375,30 +393,36 @@ zc_resolve() { # NAME -> absolute path (symbolic links kept: clang and clang++ s
   if [[ "$1" == /* ]]; then echo "$1"; else type -P -- "$1"; fi
 }
 
+# The bound of one wrapped call: a single object compile is short; rustc (a whole crate), links and precompiled headers
+# routinely run for minutes.
+zc_wrapper_timeout() { # CLASSES SHORT LONG
+  if [[ " $1 " == *" compile-object "* ]]; then echo "$2"; else echo "$3"; fi  # SAFETY:LNX-TIMEOUT-CLASS
+}
+
 zc_shim() { # COMPILER ARGS...
   [[ $# -ge 1 ]] || { echo "zcshim: usage: zcshim COMPILER [ARGS...]" >&2; exit 2; }
-  local compiler=$1 self path cfg=${AAP_ZC_STATE:-} info reason="" job="" state root dir budget abudget pid start zcname tmo kind real bytes mtime quals c tc out err rc rc2
+  local compiler=$1 self path cfg=${AAP_ZC_STATE:-} info reason="" job="" state root dir budget abudget pid start zcname tmo tmol kind real bytes mtime quals c tc out err rc rc2
   shift
   # zccache is always the pinned member of the install this shim runs from, never a path from the job's config.
   self=$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")
   path=$(zc_resolve "${compiler}") || path=""
   [[ -n "${path}" ]] || path=${compiler}
-  if [[ -z "${cfg}" || ! -f "${cfg}" ]]; then reason=no-state
+  if [[ -z "${cfg}" || ! -f "${cfg}" ]]; then reason="no-state"
   elif ! info=$(jq -r --arg p "${path}" --arg pl "${ZC_PLATFORM}" --slurpfile w "${self}/wrappers.json" '
       (.toolchains | map(select(.path == $p)) | first) as $t | .roots[.active_root] as $r |
       [.state, .job_root, .active_root, $r.dir, $r.budget_bytes, $r.artifact_budget_bytes, ($r.daemon.pid // ""), ($r.daemon.start // ""),
-       $w[0].platforms[$pl].members[0].name, (.wrapper_timeout_seconds // 60),
+       $w[0].platforms[$pl].members[0].name, (.wrapper_timeout_seconds // 60), (.wrapper_timeout_long_seconds // 600),
        ($t.compiler // ""), ($t.real // ""), ($t.bytes // ""), ($t.mtime // ""),
        ([.qualified[] | select(.compiler == $t.compiler and .compiler_version == $t.compiler_version) | .invocation] | join(" "))]
       | map(tostring) | join("\u001f")' "${cfg}" 2> /dev/null); then
-    reason=state-unreadable
+    reason="state-unreadable"
   else
-    IFS=$'\x1f' read -r state job root dir budget abudget pid start zcname tmo kind real bytes mtime quals <<< "${info}"
+    IFS=$'\x1f' read -r state job root dir budget abudget pid start zcname tmo tmol kind real bytes mtime quals <<< "${info}"
     if [[ "${state}" != qualified ]]; then reason="state-${state}"
-    elif [[ -z "${kind}" ]]; then reason=unknown-toolchain
+    elif [[ -z "${kind}" ]]; then reason="unknown-toolchain"
     # ponytail: size and mtime per call, the full hash once per boot (init); a hash per call costs more than a compile.
     elif [[ "$(readlink -f -- "${path}")" != "${real}" || "$(zc_size "${real}" 2> /dev/null)" != "${bytes}" ||
-      "$(stat -c %Y -- "${real}" 2> /dev/null)" != "${mtime}" ]]; then reason=toolchain-changed  # SAFETY:LNX-SHIM-TOOLCHAIN
+      "$(stat -c %Y -- "${real}" 2> /dev/null)" != "${mtime}" ]]; then reason="toolchain-changed"  # SAFETY:LNX-SHIM-TOOLCHAIN
     elif ! tc=$(zc_classify "${kind}" "$@"); then reason=unclassified
     else
       for c in ${tc}; do [[ " ${quals} " == *" ${c} "* ]] || { reason="not-qualified:${c}"; break; }; done  # SAFETY:LNX-SHIM-QUALIFIED
@@ -406,8 +430,8 @@ zc_shim() { # COMPILER ARGS...
         if [[ -f "${job}/shim/degraded-${root}" ]]; then reason=degraded  # SAFETY:LNX-SHIM-FLAG
         else
           zc_over_budget "${job}" "${root}" "${dir}" "${budget}" "${abudget}"
-          case $? in 0) reason=over-budget ;; 2) reason=usage-unwritable ;; esac
-          if [[ -z "${reason}" ]] && ! zc_daemon_alive "${pid}" "${start}"; then reason=daemon-down; fi  # SAFETY:LNX-SHIM-DAEMON
+          case $? in 0) reason="over-budget" ;; 2) reason="usage-unwritable" ;; esac
+          if [[ -z "${reason}" ]] && ! zc_daemon_alive "${pid}" "${start}"; then reason="daemon-down"; fi  # SAFETY:LNX-SHIM-DAEMON
           [[ -n "${reason}" ]] && zc_degrade "${job}" "${root}" "${reason}"
         fi
       fi
@@ -418,6 +442,7 @@ zc_shim() { # COMPILER ARGS...
     exec "${path}" "$@"
   fi
   { out=$(mktemp "${job}/shim/out.XXXXXX") && err=$(mktemp "${job}/shim/err.XXXXXX"); } 2> /dev/null || exec "${path}" "$@"
+  tmo=$(zc_wrapper_timeout "${tc}" "${tmo}" "${tmol}")
   zc_child_env "${dir}" "${abudget}" timeout -k 5 "${tmo}" "${self}/bin/${zcname}" "${path}" "$@" > "${out}" 2> "${err}"  # SAFETY:LNX-SHIM-TIMEOUT
   rc=$?
   if [[ ${rc} == 0 ]]; then
@@ -427,14 +452,18 @@ zc_shim() { # COMPILER ARGS...
   fi
   # Any zccache failure, a compile error included, is answered by the direct compiler: its exit code and output are
   # the build's (contract rule 7). The wrapped call's output is dropped so errors are not reported twice, and a compile
-  # error costs two compiler runs. A call that ran past the bound (timeout: 124, or 137 after the kill) marks the root
-  # degraded either way.
+  # error costs two compiler runs. A call that ran past the bound (timeout: 124, or 137 after the kill; timeout killed
+  # the client's whole process group) marks the root degraded either way, and the root's daemon is stopped first: it may
+  # still be compiling this call's output, which the direct compile is about to write. Other wrapped calls on that root
+  # then fail and compile directly too.
   rm -f -- "${out}" "${err}"
+  if [[ ${rc} == 124 || ${rc} == 137 ]]; then
+    zc_degrade "${job}" "${root}" wrapper-timeout
+    zc_daemon_alive "${pid}" "${start}" && zc_kill_tree "${pid}"  # SAFETY:LNX-TIMEOUT-DAEMON
+  fi
   "${path}" "$@"  # SAFETY:LNX-SHIM-FALLBACK
   rc2=$?
-  if [[ ${rc} == 124 || ${rc} == 137 ]]; then zc_degrade "${job}" "${root}" wrapper-timeout
-  elif [[ ${rc2} == 0 ]]; then zc_degrade "${job}" "${root}" wrapper-failure
-  fi
+  [[ ${rc} != 124 && ${rc} != 137 && ${rc2} == 0 ]] && zc_degrade "${job}" "${root}" wrapper-failure
   zc_log "${job}" "fallback ${path##*/} zccache-exit ${rc} direct-exit ${rc2}"
   exit "${rc2}"
 }
@@ -445,7 +474,7 @@ zc_main() {
   shift || true
   case "${cmd}" in
     install) [[ $# -ge 4 ]] || zc_die "usage: install ARCHIVE PROVENANCE INSTALL_DIR TOOLCHAINS [WRAPPERS]"; zc_install "$@" ;;
-    init) [[ $# -ge 3 ]] || zc_die "usage: init INSTALL_DIR JOB_ROOT BUDGET_BYTES [--shared-roots] [--wrapper-timeout SECONDS]"; zc_init "$@" ;;
+    init) [[ $# -ge 3 ]] || zc_die "usage: init INSTALL_DIR JOB_ROOT BUDGET_BYTES [--shared-roots] [--wrapper-timeout SECONDS] [--wrapper-timeout-long SECONDS]"; zc_init "$@" ;;
     attach) [[ $# -eq 5 ]] || zc_die "usage: attach INSTALL_DIR JOB_ROOT BINDING MOUNT RUNNER_NAME"; zc_attach "$@" ;;
     state) [[ $# -eq 1 ]] || zc_die "usage: state JOB_ROOT"; zc_state "$@" ;;
     shim) zc_shim "$@" ;;

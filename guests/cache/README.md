@@ -2,8 +2,8 @@
 
 Packages the pinned zccache 1.15.6 into the Windows and Ubuntu guest images and decides, per compiler call, whether a
 build goes through zccache or straight to the compiler. Contract:
-[cache-qualification.md](../../parity/contracts/cache-qualification.md) (revision 2; rule 6 as amended by the
-coordinator: `workflow_dispatch` is not a trusted class). Requirements:
+[cache-qualification.md](../../parity/contracts/cache-qualification.md) (revision 2; rule 6 as amended on 2026-10-20:
+`workflow_dispatch` is untrusted, untrusted jobs get a private per-job root only). Requirements:
 [retention.md](../../parity/cache/qualification/retention.md) (requirement 4 is superseded by contract rule 6). What
 other items must wire: [INTEGRATION.md](INTEGRATION.md).
 
@@ -50,7 +50,9 @@ use. P13 does not make that decision. P21 carries the constraint into the image 
    `state/runner.env` for the runner: `AAP_ZC_STATE`, plus `CMAKE_C_COMPILER_LAUNCHER` / `CMAKE_CXX_COMPILER_LAUNCHER`
    for C/C++ pairs and, on Linux, `RUSTC_WRAPPER` for rustc pairs. No `ZCCACHE_*` variable is ever set for jobs. With
    nothing wired the file is empty. Options: shared roots (`-SharedRoots` / `--shared-roots`, **off**; see "Trust and
-   namespaces") and the bound on each wrapped call (`-WrapperTimeoutSeconds` / `--wrapper-timeout`, 60 s).
+   namespaces") and the bounds on each wrapped call: `-WrapperTimeoutSeconds` / `--wrapper-timeout` (60 s) for an
+   object compile (`compile-object`), `-WrapperTimeoutLongSeconds` / `--wrapper-timeout-long` (600 s) for every other
+   call (a whole-crate `rustc`, a link, a precompiled header routinely runs for minutes).
    On Windows the launcher is PowerShell 7 (`pwsh.exe`): Windows PowerShell 5.1's `-File` refuses a bare `-` argument
    (a compiler reading stdin) before the script runs, which would fail the compile itself. Without PowerShell 7 nothing
    is wired. `RUSTC_WRAPPER` is never wired on Windows (INTEGRATION.md, gap G3).
@@ -62,7 +64,10 @@ use. P13 does not make that decision. P21 carries the constraint into the image 
    runs the install's own `bin/zccache` (never a path from the job's config) as `zccache <compiler> <args>` with the
    job's environment minus every inherited `ZCCACHE_*` variable and anything credential-shaped (names come from the
    whole environment block, including names no shell variable can hold), plus `ZCCACHE_CACHE_DIR`, `ZCCACHE_MODE=COPY`
-   and `ZCCACHE_CACHE_SIZE_BYTES`. That call is bounded (60 s by default): past the bound it is killed. Output is held
+   and `ZCCACHE_CACHE_SIZE_BYTES`. That call is bounded (60 s for an object compile, 600 s otherwise, by default): past
+   the bound it is killed with every process it started (Windows: the process tree; Linux: `timeout` kills the
+   client's process group), and the root's daemon is stopped with its children before the direct compile, because it
+   may still be compiling the same output file; nothing late can then overwrite the direct result. Output is held
    back; on **any** non-zero exit or timeout (compile error, crash, hang, daemon or transport failure, rejected entry)
    the shim runs the compiler directly and returns its exit code and output, so an error is reported once and a build
    that would pass directly never fails because of the cache. The price: a compile error costs two compiler runs. If
@@ -112,9 +117,11 @@ another runner; it is for another platform, toolchain digest or zccache version;
 link; the budget is not positive; the disk's `aap-cache-root.json` marker does not name the same root id and all six
 namespace fields; or the root's daemon cannot be identified.
 
-The namespace is six fields: repository id, repository, trust class, platform, toolchain digest (SHA-256 of the sorted
-`compiler|version|sha256` lines, identical on both platforms) and zccache version. Entries made by one set of compilers
-or one zccache release are never served to another, whatever zccache's own key holds.
+The contract's namespace key is the repository id, the trust class, the zccache version and the toolchain digest
+(SHA-256 of the sorted `compiler|version|sha256` lines, identical on both platforms). Bindings and markers also carry
+the repository name and the platform, and the guest compares all six fields: a stricter key, never one that merges what
+the contract separates. Entries made by one set of compilers or one zccache release are never served to another,
+whatever zccache's own key holds.
 
 | Namespace | Key | Writers and readers | Trust | Retention owner | Ends |
 |---|---|---|---|---|---|
@@ -143,7 +150,8 @@ same repository gets the private root.
 - **Logs.** The shim writes one line per call (time, decision, compiler file name, exit code; no arguments, no
   environment) to `shim/shim.log`, rotated once at 1 MiB to `shim.log.1`, so at most about 2 MiB. Nothing the shim
   does writes to the compile's stderr. zccache's own logs and journals count against the root's non-artifact cap.
-  Crash dumps stay in the VM and are reported only as counts.
+  zccache's crash dumps stay in the root of the daemon that wrote them (so inside the VM, or on the namespace disk)
+  and are reported only as counts, never their contents.
 - **Temp.** The shim's captured output files live in `shim/` and are removed after each call. zccache's `tmp/` is inside
   the root and counted.
 
@@ -189,8 +197,10 @@ hosted Ubuntu job is a coordinator change (INTEGRATION.md).
 - Whether a byte budget below upstream's 40 GiB clamp is honoured, and the real non-artifact growth per root (the 3/4
   split is a starting value).
 - Journal and log growth on a long-lived shared root, and `zccache clear`'s effect on them.
-- The 60 s wrapper bound against the slowest qualified compile (a bound that kills real compiles only costs time, but
-  marks the root degraded).
+- The 60 s and 600 s wrapper bounds against the slowest qualified object compile and the slowest qualified rustc or
+  link call (a bound that kills real compiles only costs time, but marks the root degraded).
+- zccache's journals, logs and crash dumps in a shared root contain no environment and no argv (a trusted job's
+  secret on its command line must not be readable from the namespace disk).
 - The Windows launcher: CMake accepts the PowerShell 7 launcher list; per-call PowerShell start-up cost;
   `RUSTC_WRAPPER` needs one executable and is not wired on Windows (INTEGRATION.md G3).
 - The shared-root proof itself (concurrency, poisoning, direct equivalence on a shared root) before any agent passes

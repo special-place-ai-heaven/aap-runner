@@ -35,11 +35,31 @@ fails=0 passes=0
 ok() { passes=$((passes + 1)); echo "ok   $1"; }
 no() { fails=$((fails + 1)); echo "FAIL $1"; }
 check() { local name=$1; shift; if "$@"; then ok "${name}"; else no "${name}"; fi; }
-TMPROOT=$(mktemp -d)
-cleanup() {
-  local f
-  while IFS= read -r f; do kill "$(cat "${f}")" 2> /dev/null; done < <(find "${TMPROOT}" -name fake-daemon.pid 2> /dev/null)
+# Everything this run writes, its children's temp files included, lives under one run root.
+TMPROOT=$(mktemp -d "${TMPDIR:-/tmp}/p13-bash.XXXXXX") || exit 1
+export TMPDIR=${TMPROOT}
+run_pids() { # the processes started from TMPROOT: the fakes run from a package tree's install/bin
+  local n f
+  n=$(basename "${TMPROOT}")
+  if [[ ${MSYS} == 1 ]]; then
+    ps -e | awk -v n="${n}" 'index($0, n) { print ($1 ~ /^[0-9]+$/) ? $1 : $2 }'
+  else
+    for f in /proc/[0-9]*/cmdline; do
+      [[ "$(tr '\0' ' ' < "${f}" 2> /dev/null)" == *"${n}"* ]] && f=${f#/proc/} && echo "${f%%/*}"
+    done
+  fi
+}
+cleanup() { # stops every process started from TMPROOT and removes it; fails when either survives
+  local f p left
+  while IFS= read -r f; do kill "$(cat "${f}")" 2> /dev/null; done < <(find "${TMPROOT}" -name 'fake-*.pid' 2> /dev/null)
+  for _ in $(seq 50); do
+    left=$(run_pids)
+    [[ -z "${left}" ]] && break
+    while IFS= read -r p; do kill -9 "${p}" 2> /dev/null; done <<< "${left}"
+    sleep 0.2
+  done
   rm -rf -- "${TMPROOT}"
+  [[ -z "$(run_pids)" && ! -e "${TMPROOT}" ]]
 }
 trap cleanup EXIT
 # Strip the secrets of whatever CI shell runs this suite; the cases add synthetic ones on purpose.
@@ -191,7 +211,7 @@ t_init_qualified() {
   check "init: artifact budget is 3/4 of the job budget" [ "$(jq -r .roots.private.artifact_budget_bytes "${CFG}")" == 78643200 ]
   check "init: the daemon recorded is the one zccache started" [ "$(jq -r .roots.private.daemon.pid "${CFG}")" == "$(cat "${P}/job/roots/private/fake-daemon.pid")" ]
   check "init: shared roots off, a 60 s wrapper bound and the zccache version by default" \
-    jq -e '.shared_roots == false and .wrapper_timeout_seconds == 60 and .zccache_version == "1.15.6"' "${CFG}" > /dev/null
+    jq -e '.shared_roots == false and .wrapper_timeout_seconds == 60 and .wrapper_timeout_long_seconds == 600 and .zccache_version == "1.15.6"' "${CFG}" > /dev/null
   check "init: runner env names the state and the CMake launchers" \
     grep -qx "CMAKE_C_COMPILER_LAUNCHER=${P}/install/zcshim" "${P}/job/state/runner.env"
   check "init: no RUSTC_WRAPPER without a qualified rustc pair, no ZCCACHE_* for jobs" \
@@ -222,8 +242,10 @@ t_init_args() {
   install_pkg > /dev/null 2>&1
   check "init: refuses a budget written with a leading zero" bash -c '! bash "$1" init "$2" "$3" 00 > /dev/null 2>&1' _ "${SCRIPT}" "${P}/install" "${P}/job"
   check "init: refuses a wrapper bound of 0" bash -c '! bash "$1" init "$2" "$3" 1048576 --wrapper-timeout 0 > /dev/null 2>&1' _ "${SCRIPT}" "${P}/install" "${P}/job"
-  bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 --shared-roots --wrapper-timeout 7 > /dev/null
-  check "init: records --shared-roots and --wrapper-timeout" jq -e '.shared_roots == true and .wrapper_timeout_seconds == 7' "${CFG}" > /dev/null
+  check "init: refuses a long wrapper bound of 0" bash -c '! bash "$1" init "$2" "$3" 1048576 --wrapper-timeout-long 0 > /dev/null 2>&1' _ "${SCRIPT}" "${P}/install" "${P}/job"
+  bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 --shared-roots --wrapper-timeout 7 --wrapper-timeout-long 70 > /dev/null
+  check "init: records --shared-roots and both wrapper bounds" \
+    jq -e '.shared_roots == true and .wrapper_timeout_seconds == 7 and .wrapper_timeout_long_seconds == 70' "${CFG}" > /dev/null
 }
 t_init_boot_binary() {
   new_pkg
@@ -385,14 +407,24 @@ t_shim_over_budget_total() {
 t_shim_timeout() {
   new_pkg
   init_pkg 104857600 --wrapper-timeout 2
-  local t0=${SECONDS}
-  FAKE_ZC_HANG=20 compile a.c
+  local t0=${SECONDS} daemon
+  daemon=$(jq -r .roots.private.daemon.pid "${CFG}")
+  # The hung client leaves a child that writes the output 8 s in, after the direct compile.
+  FAKE_ZC_HANG=30 FAKE_ZC_LATE=8 compile a.c
   local took=$((SECONDS - t0))
   [[ -f "${P}/job/roots/private/fake-client.pid" ]] && kill "$(cat "${P}/job/roots/private/fake-client.pid")" 2> /dev/null
   check "shim: a hung zccache call is killed at the bound" [ "${took}" -lt 15 ]
-  check "shim: and the compiler runs directly" same_as_direct "${OUT}"
+  while ((SECONDS - t0 < 14)); do sleep 1; done
+  check "shim: and the compiler runs directly, nothing the call started writes the output late" same_as_direct "${OUT}"
+  check "shim: and the root's daemon, which may still compile that output, is stopped" bash -c '! kill -0 "$1" 2> /dev/null' _ "${daemon}"
   check "shim: with its exit code" [ "${RC}" == 0 ]
   check "shim: and the root is marked degraded" [ "$(flag)" == wrapper-timeout ]
+}
+t_timeout_class() {
+  check "shim: an object compile gets the short bound" [ "$(zc_wrapper_timeout "compile-object depfile" 60 600)" == 60 ]
+  check "shim: rustc gets the long bound" [ "$(zc_wrapper_timeout "rustc-wrapper" 60 600)" == 600 ]
+  check "shim: a link gets the long bound" [ "$(zc_wrapper_timeout "debug-pdb link" 60 600)" == 600 ]
+  check "shim: a precompiled header gets the long bound" [ "$(zc_wrapper_timeout "compile-pch" 60 600)" == 600 ]
 }
 t_shim_usage_unwritable() {
   new_pkg
@@ -603,7 +635,8 @@ run t_shim_crash LNX-SHIM-FALLBACK
 run t_shim_toolchain_changed LNX-SHIM-TOOLCHAIN
 run t_shim_over_budget LNX-OVER-BUDGET
 run t_shim_over_budget_total LNX-OVER-BUDGET
-run t_shim_timeout LNX-SHIM-TIMEOUT
+run t_shim_timeout LNX-SHIM-TIMEOUT LNX-TIMEOUT-DAEMON
+run t_timeout_class LNX-TIMEOUT-CLASS
 run t_shim_usage_unwritable
 run t_shim_flag LNX-SHIM-FLAG
 run t_shim_log LNX-LOG-BOUND
@@ -618,5 +651,8 @@ run t_state
 run t_classify
 run t_digest
 
+trap - EXIT
+# The suite's own hygiene check: hosted runners are thrown away, a developer's machine is not.
+check "suite: no folder or process of this run is left behind" cleanup
 echo "passed ${passes}, failed ${fails}"
 [[ ${fails} -eq 0 ]]

@@ -11,6 +11,10 @@ BeforeAll {
     $script:Fakes = Join-Path $PSScriptRoot 'fakes'
     $script:Pwsh = $(if ($PSVersionTable.PSEdition -eq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe' })
     $script:Trees = New-Object System.Collections.Generic.List[string]
+    # Everything this run writes lives under one run root in the temp folder; AfterAll stops every process started from
+    # it and fails the run when the root or one of those processes survives.
+    $script:RunRoot = Join-Path ([IO.Path]::GetTempPath()) ('p13-' + [guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $script:RunRoot
     $script:Utf8 = New-Object System.Text.UTF8Encoding($false)
     $script:Qualified = @(
         [ordered]@{ compiler = 'clang'; compiler_version = '18.1.3'; invocation = 'compile-object'; evidence_ref = 'parity/cache/qualification/evidence/x.json' }
@@ -18,10 +22,16 @@ BeforeAll {
     )
 
     function New-Tree {
-        $d = Join-Path ([IO.Path]::GetTempPath()) ('p13-' + [guid]::NewGuid().ToString('N'))
+        $d = Join-Path $script:RunRoot ('t' + $script:Trees.Count)
         $null = New-Item -ItemType Directory -Path $d
         $script:Trees.Add($d)
         return $d
+    }
+    function New-TempName { Join-Path $script:RunRoot ([guid]::NewGuid().ToString('N') + '.tmp') }
+    # The processes started from this run's root: the fakes run from a tree's install folder.
+    function Get-RunProcess {
+        $name = Split-Path -Leaf $script:RunRoot
+        @(Get-CimInstance -ClassName Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ([string]$_.CommandLine).Contains($name) })
     }
     function Get-Sha([byte[]]$Bytes) {
         $h = [Security.Cryptography.SHA256]::Create()
@@ -126,7 +136,7 @@ BeforeAll {
         $saved = @{}
         $Env['AAP_ZC_STATE'] = $(if ($NoState) { $null } else { $Pkg.Config })
         foreach ($k in $Env.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $Env[$k]) }
-        $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
+        $o = New-TempName; $e = New-TempName
         try {
             # Only the shim itself is awaited: a killed client's orphan may outlive it.
             $p = Start-Shim $Pkg $Argv $o $e
@@ -179,8 +189,21 @@ BeforeAll {
 }
 
 AfterAll {
+    if ($env:AAP_ZC_KEEP) { return }
     foreach ($x in @(Get-FakePidFile)) { Stop-Process -Id $x.Id -Force -ErrorAction SilentlyContinue }
-    if (-not $env:AAP_ZC_KEEP) { foreach ($t in $script:Trees) { Remove-Item -LiteralPath $t -Recurse -Force -ErrorAction SilentlyContinue } }
+    $deadline = [DateTime]::Now.AddSeconds(30)
+    do {
+        $left = @(Get-RunProcess)
+        foreach ($x in $left) { Stop-Process -Id $x.ProcessId -Force -ErrorAction SilentlyContinue }
+        Remove-Item -LiteralPath $script:RunRoot -Recurse -Force -ErrorAction SilentlyContinue
+        $done = -not $left.Count -and -not (Test-Path -LiteralPath $script:RunRoot)
+        if (-not $done) { Start-Sleep -Milliseconds 250 }
+    } until ($done -or [DateTime]::Now -gt $deadline)
+    # The suite's own hygiene check: hosted runners are thrown away, a developer's machine is not.
+    $left = @(Get-RunProcess)
+    if ($left.Count -or (Test-Path -LiteralPath $script:RunRoot)) {
+        throw ('the run left {0} or processes {1} behind' -f $script:RunRoot, (($left | ForEach-Object { $_.ProcessId }) -join ','))
+    }
 }
 
 Describe 'Install-AapZcCache' {
@@ -257,6 +280,7 @@ Describe 'Initialize-AapZcJob' {
         $cfg.roots.private.daemon.pid | Should -Be ([int](Get-Content -LiteralPath (Join-Path $pkg.Job 'roots\private\fake-daemon.pid')))
         $cfg.shared_roots | Should -BeFalse -Because 'shared roots stay off until the lab proof exists'
         $cfg.wrapper_timeout_seconds | Should -Be 60
+        $cfg.wrapper_timeout_long_seconds | Should -Be 600
         $cfg.zccache_version | Should -Be '1.15.6'
         $envText = [IO.File]::ReadAllText((Join-Path $pkg.Job 'state\runner.env'))
         $envText | Should -Match ('AAP_ZC_STATE=' + [regex]::Escape($pkg.Config))
@@ -493,16 +517,28 @@ Describe 'zcshim: faults' {
         Get-Flag $pkg | Should -Be 'over-budget'
         @(Get-Journal $pkg).Count | Should -Be 0
     }
-    It 'a hung zccache call is killed at the bound and the compiler runs directly' -Tag 'WIN-SHIM-TIMEOUT' {
+    It 'a hung zccache call is killed at the bound with everything it started, and the compiler runs directly' -Tag 'WIN-SHIM-TIMEOUT', 'WIN-KILL-TREE', 'WIN-TIMEOUT-DAEMON' {
         $pkg = New-Package
-        $null = Initialize-Package $pkg -Timeout 2
+        $cfg = Initialize-Package $pkg -Timeout 2
         $expected = Get-Direct $pkg (Join-Path $pkg.Src 'a.c')
         $sw = [Diagnostics.Stopwatch]::StartNew()
-        try { $r = Compile $pkg 'a.c' @{ FAKE_ZC_HANG = '20' } } finally { $sw.Stop(); Stop-FakeClient $pkg }
+        # The hung client leaves a child that writes the output 8 s in, after the direct compile.
+        try { $r = Compile $pkg 'a.c' @{ FAKE_ZC_HANG = '30'; FAKE_ZC_LATE = '8' } } finally { $took = $sw.Elapsed.TotalSeconds; Stop-FakeClient $pkg }
+        $took | Should -BeLessThan 15
+        while ($sw.Elapsed.TotalSeconds -lt 14) { Start-Sleep -Milliseconds 250 }
         $r.Code | Should -Be 0
-        [IO.File]::ReadAllBytes($r.Output) | Should -Be $expected
+        [IO.File]::ReadAllBytes($r.Output) | Should -Be $expected -Because 'nothing the wrapped call started may write the output late'
         Get-Flag $pkg | Should -Be 'wrapper-timeout'
-        $sw.Elapsed.TotalSeconds | Should -BeLessThan 15
+        Get-Process -Id $cfg.roots.private.daemon.pid -ErrorAction SilentlyContinue | Should -BeNullOrEmpty -Because 'the daemon may still be compiling that output'
+    }
+    It 'bounds an object compile by the short timeout and every other call by the long one' -Tag 'WIN-TIMEOUT-CLASS' {
+        $c = [pscustomobject]@{ wrapper_timeout_seconds = 60; wrapper_timeout_long_seconds = 600 }
+        InModuleScope AapZcCache -Parameters @{ C = $c } {
+            Get-AapZcWrapperTimeout $C @('compile-object', 'depfile') | Should -Be 60
+            Get-AapZcWrapperTimeout $C @('rustc-wrapper') | Should -Be 600
+            Get-AapZcWrapperTimeout $C @('debug-pdb', 'link') | Should -Be 600
+            Get-AapZcWrapperTimeout $C @('compile-pch') | Should -Be 600
+        }
     }
     It 'a root already marked degraded is not used' -Tag 'WIN-SHIM-FLAG' {
         [IO.File]::WriteAllText((Join-Path $script:Pkg.Job 'shim\degraded-private'), 'daemon-down')
@@ -633,7 +669,7 @@ Describe 'Connect-AapZcSharedRoot' {
         (Get-Content -Raw $script:Pkg.Config | ConvertFrom-Json).roots.shared.root_id | Should -Be 'ns-00112233aabbccdd'
     }
     It 'a wrapped compile running during the attach is never taken for the shared root''s daemon' -Tag 'WIN-DAEMON-ID' {
-        $o = [IO.Path]::GetTempFileName(); $e = [IO.Path]::GetTempFileName()
+        $o = New-TempName; $e = New-TempName
         $env:AAP_ZC_STATE = $script:Pkg.Config; $env:FAKE_ZC_HANG = '60'
         try { $proc = Start-Shim $script:Pkg @($script:Pkg.Cc, '-c', (Join-Path $script:Pkg.Src 'a.c'), '-o', (Join-Path $script:Pkg.Tree 'hung.o')) $o $e }
         finally { Remove-Item Env:\AAP_ZC_STATE, Env:\FAKE_ZC_HANG }
@@ -729,7 +765,7 @@ Describe 'ConvertTo-AapZcArg' {
     ) {
         $py = Get-Command python -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $py) { Set-ItResult -Skipped -Because 'needs python to print its argv'; return }
-        $o = [IO.Path]::GetTempFileName()
+        $o = New-TempName
         try {
             $p = Start-Process -FilePath $py.Source -ArgumentList ('-I -B -c "import sys,json; print(json.dumps(sys.argv[1:]))" ' + (ConvertTo-AapZcArg $A)) -NoNewWindow -Wait -PassThru -RedirectStandardOutput $o
             $p.ExitCode | Should -Be 0

@@ -2,13 +2,17 @@
 
     python -B -I tests/guests/cache/mutate.py [--suite pester|bash|python] [--only ID ...] [--work DIR]
 
+--work names the parent of the scratch folder (default: the temp folder); the scratch folder is always removed.
+
 Every safety check in guests/cache carries a `SAFETY:<ID>` tag. For each ID this copies guests/cache to a scratch
 folder, disables that one check with the literal replacement below, and runs only the tests tagged ID against the copy
 (AAP_ZC_SRC): Pester tags (WIN-*, TRUST-*), AAP_ZC_TAGS in zccache_test.sh (LNX-*), the generator tests (GEN-*).
 A mutation must make that run fail (KILLED). A run that still passes (SURVIVED), runs no test (NO-TEST) or ends
 without the suite's summary line (ERROR: a crash proves nothing) means the check is not proven. Before the mutations, each selected suite runs once on an unmutated copy and must pass.
 Every tag in the sources needs an entry here and every entry a tag, so a new check cannot go unproven silently.
-Exit 0 only when every selected mutation is KILLED.
+Exit 0 only when every selected mutation is KILLED and no run left a folder or a process behind: each suite run gets
+its own temp folder (TMPDIR; TEMP and TMP too, except for Git Bash), and whatever was started from it is stopped and
+the folder removed after the run.
 
 Bash runs through Git Bash on Windows (never System32\\bash.exe, which is WSL); cases that need symbolic links are
 skipped there, so LNX-DIR-LINK and LNX-BIND-LINK are proven only on real Linux.
@@ -18,9 +22,12 @@ import argparse
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -65,6 +72,9 @@ MUTATIONS = {
     "WIN-SHIM-FLAG": (W, "if ([IO.File]::Exists((Get-AapZcFlagPath $cfg $d.RootId))) {", "if ($false) {"),
     "WIN-SHIM-DAEMON": (W, "if (-not (Test-AapZcDaemonAlive $d.Root.daemon)) {", "if ($false) {"),
     "WIN-SHIM-TIMEOUT": (W, "-Capture -TimeoutSeconds $timeout  # SAFETY:WIN-SHIM-TIMEOUT", "-Capture"),
+    "WIN-KILL-TREE": (W, "Stop-AapZcTree $p.Id  # SAFETY:WIN-KILL-TREE", "try { $p.Kill() } catch { $null = $_ }  #"),
+    "WIN-TIMEOUT-DAEMON": (W, "if (Test-AapZcDaemonAlive $d.Root.daemon) { Stop-AapZcTree", "if ($false) { Stop-AapZcTree"),
+    "WIN-TIMEOUT-CLASS": (W, "if ($Classes -contains 'compile-object') {", "if ($true) {"),
     "WIN-SHIM-FALLBACK": (W, "$code = (Invoke-AapZcProcess -FilePath $exe -Arguments $rest).ExitCode  # SAFETY:WIN-SHIM-FALLBACK", "$code = $(if ($r) { $r.ExitCode } else { 1 })"),
     "TRUST-JOB-MATCH": (T, "if ($m.Count -ne 1) { return $null }", "if ($false) { return $null }"),
     "TRUST-SAME-REPO": (T, "if ($runRepo -ne $repoId) { return $null }", "if ($false) { return $null }"),
@@ -92,7 +102,7 @@ MUTATIONS = {
     "LNX-BOOT-TOOLCHAIN": (L, '[[ -f "$(jq -r .real <<< "${t}")" && "$(zc_sha "$(jq -r .real <<< "${t}")")" == "$(jq -r .sha256 <<< "${t}")" ]]', '[[ -f "$(jq -r .real <<< "${t}")" ]]'),
     "LNX-BIND-SWITCH": (L, "elif ! jq -e '.shared_roots == true' \"${cfg}\" > /dev/null; then", "elif false; then"),
     "LNX-BIND-ONCE": (L, "elif jq -e '.roots.shared'", "elif false && jq -e '.roots.shared'"),
-    "LNX-BIND-MISSING": (L, "then reason=binding-missing", 'then reason=""'),
+    "LNX-BIND-MISSING": (L, 'then reason="binding-missing"', 'then reason=""'),
     "LNX-BIND-CLASS": (L, "elif ! jq -e '.namespace.trust_class ==", "elif false && ! jq -e '.namespace.trust_class =="),
     "LNX-BIND-RUNNER": (L, "elif ! jq -e --arg r \"${runner}\"", "elif false && ! jq -e --arg r \"${runner}\""),
     "LNX-BIND-TOOLCHAIN": (L, "elif ! jq -e --arg p \"${ZC_PLATFORM}\" --arg d", "elif false && ! jq -e --arg p \"${ZC_PLATFORM}\" --arg d"),
@@ -106,7 +116,10 @@ MUTATIONS = {
     "LNX-SHIM-QUALIFIED": (L, '[[ " ${quals} " == *" ${c} "* ]] || {', "true || {"),
     "LNX-SHIM-FLAG": (L, 'if [[ -f "${job}/shim/degraded-${root}" ]]; then', "if false; then"),
     "LNX-SHIM-DAEMON": (L, '! zc_daemon_alive "${pid}" "${start}"; then', "false; then"),
-    "LNX-SHIM-TIMEOUT": (L, 'timeout -k 5 "${tmo}" "${self}/bin/${zcname}"', '"${self}/bin/${zcname}"'),
+    "LNX-SHIM-TIMEOUT": [(L, 'timeout -k 5 "${tmo}" "${self}/bin/${zcname}"', '"${self}/bin/${zcname}"'),
+                         (L, 'timeout -k 5 "${tmo}" "${self}/bin/${zcname}"', 'timeout --foreground -k 5 "${tmo}" "${self}/bin/${zcname}"')],
+    "LNX-TIMEOUT-DAEMON": (L, 'zc_daemon_alive "${pid}" "${start}" && zc_kill_tree "${pid}"', 'true'),
+    "LNX-TIMEOUT-CLASS": (L, 'if [[ " $1 " == *" compile-object "* ]]; then', 'if true; then'),
     "LNX-SHIM-FALLBACK": (L, '"${path}" "$@"  # SAFETY:LNX-SHIM-FALLBACK', "false"),
     "GEN-VALIDATE": (G, "if r.returncode != 0:", "if False:"),
     "GEN-BINARY-PIN": (G, 'if z["binary_sha256"] != pins["members"][0]["sha256"]:', "if False:"),
@@ -141,9 +154,60 @@ def pwsh():
     return shutil.which("pwsh")
 
 
+def run_pids(marker):
+    """Processes whose command line or program names marker (a suite's fakes run from inside its temp folder)."""
+    if os.name == "nt":
+        ps = ("Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ([string]$_.CommandLine + "
+              "[string]$_.ExecutablePath).Contains('" + marker + "') } | ForEach-Object { $_.ProcessId }")
+        r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True)
+        return [int(x) for x in r.stdout.split()]
+    pids = []
+    for f in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            if marker.encode() in f.read_bytes():
+                pids.append(int(f.parent.name))
+        except OSError:
+            pass
+    return pids
+
+
+def sweep(tmp):
+    """Stops every process started from tmp and removes it; -> False when either survives."""
+    for _ in range(50):
+        pids = run_pids(tmp.name)
+        if not pids:
+            break
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM if os.name == "nt" else signal.SIGKILL)
+            except OSError:
+                pass
+        time.sleep(0.2)
+    shutil.rmtree(tmp, ignore_errors=True)
+    return not tmp.exists() and not run_pids(tmp.name)
+
+
+LEFT = []
+
+
 def run_suite(suite, copy, tag):
+    """run_once with a temp folder of its own, swept afterwards; a run that leaves anything behind is recorded in LEFT."""
+    tmp = copy.parent / f"tmp-{uuid.uuid4().hex}"
+    tmp.mkdir()
+    try:
+        return run_once(suite, copy, tag, tmp)
+    finally:
+        if not sweep(tmp):
+            LEFT.append(str(tmp))
+
+
+def run_once(suite, copy, tag, tmp):
     """-> (ran, failed), (0, None) when the run ended without its summary line, or None when the runner is missing."""
-    env = dict(os.environ, AAP_ZC_SRC=str(copy))
+    env = dict(os.environ, AAP_ZC_SRC=str(copy), TMPDIR=str(tmp))
+    # Not for Git Bash: it maps /tmp from TEMP once for every MSYS process alive (one shared mount table), so a TEMP
+    # that is removed after the run would leave /tmp missing for every Git Bash on the machine.
+    if not (suite == "bash" and os.name == "nt"):
+        env.update(TEMP=str(tmp), TMP=str(tmp))
     if suite == "pester":
         shell = pwsh()
         if not shell:
@@ -151,7 +215,7 @@ def run_suite(suite, copy, tag):
         flt = f"$c.Filter.Tag = '{tag}'; " if tag else ""
         cmd = ("$c = New-PesterConfiguration; $c.Run.Path = '" + str(HERE / "AapZcCache.Tests.ps1") + "'; " + flt +
                "$c.Output.Verbosity = 'None'; $c.Run.PassThru = $true; $r = Invoke-Pester -Configuration $c; "
-               "'RESULT {0} {1}' -f ($r.PassedCount + $r.FailedCount), $r.FailedCount")
+               "'RESULT {0} {1}' -f ($r.PassedCount + $r.FailedCount), ($r.FailedCount + $r.FailedBlocksCount + $r.FailedContainersCount)")
         r = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", cmd], env=env, cwd=copy, capture_output=True, text=True)
         m = re.search(r"RESULT (\d+) (\d+)", r.stdout)
         return (int(m.group(1)), int(m.group(2))) if m else (0, None)
@@ -163,6 +227,7 @@ def run_suite(suite, copy, tag):
             env["AAP_ZC_TAGS"] = tag
         if os.name == "nt":  # find, sort and tar must be Git's, not System32's
             env["PATH"] = str(Path(bash).parent) + os.pathsep + env.get("PATH", "")
+            env["TMPDIR"] = "/" + tmp.drive[0].lower() + tmp.as_posix()[2:]  # in its own form
         r = subprocess.run([bash, str(HERE / "zccache_test.sh")], env=env, cwd=copy, capture_output=True, text=True)
         m = re.search(r"passed (\d+), failed (\d+)", r.stdout)
         return (int(m.group(1)) + int(m.group(2)), int(m.group(2))) if m else (0, None)
@@ -185,8 +250,20 @@ def main(argv):
         print(f"tags without a mutation: {sorted(tags - set(MUTATIONS))}; mutations without a tag: {sorted(set(MUTATIONS) - tags)}")
         return 1
     chosen = [t for t in sorted(MUTATIONS) if (not a.suite or suite_of(t) == a.suite) and (not a.only or t in a.only)]
-    work = Path(a.work or tempfile.mkdtemp(prefix="p13-mut-")).resolve()
-    work.mkdir(parents=True, exist_ok=True)
+    if a.work:
+        Path(a.work).mkdir(parents=True, exist_ok=True)
+    work = Path(tempfile.mkdtemp(prefix="p13-mut-", dir=a.work)).resolve()
+    try:
+        code = prove(chosen, work)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    if LEFT or work.exists():
+        print(f"LEFT BEHIND: {LEFT or [str(work)]}")
+        return 1
+    return code
+
+
+def prove(chosen, work):
     base = work / "baseline"
     shutil.rmtree(base, ignore_errors=True)
     shutil.copytree(SRC, base)

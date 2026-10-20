@@ -23,7 +23,7 @@ is the wiring for after that proof.
 
 ## Where the job's trust class comes from (decision for P16; option A chosen for the design)
 
-Contract rule 6, as amended by the coordinator: a job is `trusted` only when its event is `push` or `schedule`, its
+Contract rule 6, as amended on 2026-10-20 (cache-qualification.md): a job is `trusted` only when its event is `push` or `schedule`, its
 ref is the repository's default branch, its head commit is reachable from that branch and its head repository is the
 repository itself; everything else is `untrusted`. `workflow_dispatch` is untrusted: any untrusted job of the same
 repository that holds `actions: write` can dispatch a workflow with inputs of its choosing. The class comes from
@@ -125,7 +125,7 @@ the job keeps its private root for its whole life. No retry later in the job.
    user and from the agent's clean environment** (no runner token, JIT config or key), run
    `Initialize-AapZcJob -InstallDir ... -JobRoot <scratch>\aap-cache -BudgetBytes <n>` (`-SharedRoots` only after the
    lab proof). The daemons therefore run as the runner user, the user the compile clients run as, and their crash dumps
-   stay in their root. Merge `state\runner.env` into the runner's environment (the runner's `.env`). Nothing else: no
+   stay in their root (reported only as counts). Merge `state\runner.env` into the runner's environment (the runner's `.env`). Nothing else: no
    `ZCCACHE_*` variable, no PATH change.
 3. On `bind_cache`: mount the hot-added disk (the mount folder Administrators-owned; its `root` folder writable by the
    runner user; the marker read-only to it), write the payload to an admin-only file, call
@@ -154,7 +154,7 @@ the job keeps its private root for its whole life. No retry later in the job.
 3. On `bind_cache`: mount the disk with the mount point root-owned 0755, `<mount>/root` owned by the runner user 0700
    and the marker root-owned 0444; then, as the runner user,
    `aap-zccache.sh attach <install> <job root> <binding file> <mount> <own VM name>`; reply with its JSON.
-4. `status`/`collect`: `aap-zccache.sh state <job root>`.
+4. `status`/`collect`: `aap-zccache.sh state <job root>`, as the runner user (the job root is 0700 to it).
 
 ## P16 (legacy distro)
 
@@ -177,5 +177,5 @@ through PowerShell 7, present on hosted Windows), and on hosted `ubuntu-latest` 
 `bash tests/guests/cache/zccache_test.sh`, `python3 -B -I -m unittest discover -s tests/guests/cache -p "test_*.py"`,
 `python3 -B -I guests/cache/gen_wrappers.py --check` and shellcheck 0.11.0 at `-S warning` on
 `guests/cache/linux/aap-zccache.sh`, `tests/guests/cache/zccache_test.sh` and `tests/guests/cache/fakes/fake-zccache`
-and `fake-cc`. The amended rule 6 (`workflow_dispatch` untrusted) lands in `cache-qualification.md` through the
-coordinator's own PR.
+and `fake-cc`. Each suite works under one per-run folder in the temp directory, stops the fakes it started and fails
+when that folder or one of its processes survives the run.
