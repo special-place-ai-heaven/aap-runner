@@ -4,7 +4,8 @@
 # Nothing travels on its command line. Stdin: four lines (VM id, guest user, per-clone password, host_cmd envelope), then
 # exactly payload_bytes bytes (the JIT config for deliver_registration, nothing otherwise). Stdout: the agent's one reply
 # line, nothing else. Exit 0 with no output: the guest could not be reached (a failed guest, not a hostile one). Any other
-# exit: the remote side broke the contract, and the supervisor journals hostile_guest (code child_exit).
+# exit: the remote side broke the contract, and the supervisor journals hostile_guest (code child_exit). A connection
+# that drops mid-call (the guest rebooting, the VM stopping) is a failed guest too: exit 0 with no output.
 # Guest output is deserialized here, never in the supervisor: anything but exactly one string, a remote host-UI call
 # (refused: this host is non-interactive) or a flood that trips the job's caps ends this process. The envelope and the
 # payload reach the remote runspace as pipeline input through the PowerShell API, never as script text, an argument
@@ -35,11 +36,11 @@ function Read-AapCallLine([IO.Stream]$Stream) {
 
 $vmId = Read-AapCallLine $stdin
 $user = Read-AapCallLine $stdin
-$password = Read-AapCallLine $stdin
+$pwText = Read-AapCallLine $stdin
 $envelope = Read-AapCallLine $stdin
 $m = [regex]::Match($envelope, '"payload_bytes":([0-9]{1,5})[,}]')
 if ($vmId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z' -or $user -cnotmatch '^[A-Za-z][A-Za-z0-9_-]{0,19}\z' -or
-    $password.Length -lt 16 -or -not $m.Success -or [int]$m.Groups[1].Value -gt 16384) { exit 2 }
+    $pwText.Length -lt 16 -or -not $m.Success -or [int]$m.Groups[1].Value -gt 16384) { exit 2 }
 $payload = New-Object byte[] ([int]$m.Groups[1].Value)
 $got = 0
 while ($got -lt $payload.Length) {
@@ -48,9 +49,9 @@ while ($got -lt $payload.Length) {
     $got += $n
 }
 $secure = New-Object Security.SecureString
-foreach ($ch in $password.ToCharArray()) { $secure.AppendChar($ch) }
+foreach ($ch in $pwText.ToCharArray()) { $secure.AppendChar($ch) }
 $secure.MakeReadOnly()
-$password = $null
+$pwText = $null
 $credential = New-Object Management.Automation.PSCredential (".\$user", $secure)
 
 # The one fixed script that runs in the guest. Its input is the envelope line and the payload bytes.
@@ -76,6 +77,16 @@ $p.StandardInput.Close()
 [string]$p.StandardOutput.ReadLine()
 '@
 
+# The exit code for an exception from the remote call: 0 (no reply, a failed guest) when the PowerShell Direct transport
+# dropped or the session is no longer open, 3 (the remote side broke the contract) for anything else.
+function Get-AapCallExit($ErrorRecord, $Session) {
+    for ($e = $ErrorRecord.Exception; $null -ne $e; $e = $e.InnerException) {
+        if ($e -is [Management.Automation.Remoting.PSRemotingTransportException]) { return 0 }   # check:transport-drop
+    }
+    if ($null -ne $Session -and [string]$Session.Runspace.RunspaceStateInfo.State -cne 'Opened') { return 0 }   # check:transport-drop
+    3
+}
+
 $session = $null
 $ps = $null
 try {
@@ -87,7 +98,7 @@ try {
     $feed.Add($envelope)
     $feed.Add($payload)
     $feed.Complete()
-    try { $result = $ps.Invoke($feed) } catch { exit 3 }
+    try { $result = $ps.Invoke($feed) } catch { exit (Get-AapCallExit $_ $session) }
     if ($ps.InvocationStateInfo.State -ne 'Completed' -or $result.Count -ne 1 -or $null -eq $result[0] -or -not ($result[0].BaseObject -is [string])) { exit 4 }
     $text = [string]$result[0].BaseObject
     if ($text.Length -gt 8192) { exit 5 }

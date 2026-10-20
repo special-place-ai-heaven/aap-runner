@@ -41,9 +41,9 @@ BeforeAll {
 Describe 'killed at every lifecycle boundary' {
     It 'killed at <Fault>: recovered from the journal' -ForEach @(
         @{ Fault = 'create:after-intent' }, @{ Fault = 'create:after-folders' }, @{ Fault = 'create:after-disks' }, @{ Fault = 'create:after-unattend' }
-        @{ Fault = 'create:after-vm' }, @{ Fault = 'create:after-done' }, @{ Fault = 'boot:after-intent' }, @{ Fault = 'boot:after-done' }
+        @{ Fault = 'create:after-newvm' }, @{ Fault = 'create:after-vm' }, @{ Fault = 'create:after-done' }, @{ Fault = 'boot:after-intent' }, @{ Fault = 'boot:after-done' }
         @{ Fault = 'ready:after-done' }, @{ Fault = 'run_one:after-intent' }, @{ Fault = 'run_one:after-lease' }, @{ Fault = 'run_one:after-deliver' }
-        @{ Fault = 'run_one:after-start' }
+        @{ Fault = 'run_one:after-start' }, @{ Fault = 'collect:after-intent'; Knobs = @{ RunnerStatus = 'absent' } }
         @{ Fault = 'destroy:after-intent'; Knobs = @{ RunnerStatus = 'absent' } }, @{ Fault = 'destroy:after-release'; Knobs = @{ RunnerStatus = 'absent' } }
         @{ Fault = 'destroy:after-vm'; Knobs = @{ RunnerStatus = 'absent' } }, @{ Fault = 'destroy:after-done'; Knobs = @{ RunnerStatus = 'absent' } }
     ) {
@@ -60,6 +60,21 @@ Describe 'killed at every lifecycle boundary' {
         Assert-WinSound $w $id $name
         # The slot's next reservation takes a new generation.
         (New-WinReservation $w).lease_generation | Should -BeGreaterThan $r.lease_generation
+    }
+
+    It 'killed in a drain: the restarted supervisor finishes it (drain, collect, destroy)' {
+        $w = New-WinWorld
+        $r = New-WinReservation $w
+        $id = $r.reservation_id
+        $B = New-WinBackend $w
+        [void](Invoke-WinSteps $B $w $id -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $id))   # running, listening
+        [void](Set-AapSlotState -Root $w.Cap -ReservationId $id -LeaseGeneration $r.lease_generation -State draining -RelaxedTrustForTests)
+        $c = Start-WinChild $w 'drain:after-intent' $id 4
+        $c.ExitCode | Should -Be -1 -Because "stdout: $($c.Out) stderr: $($c.Err)"
+        $B = New-WinBackend $w
+        [void](Invoke-WinRecover $B $w $id)
+        Assert-WinSound $w $id (Get-AapVmName -Profile windows -Slot $r.slot -LeaseGeneration $r.lease_generation -ReservationId $id)
     }
 
     It 'killed while a job runs: the restarted supervisor never cancels it, and tears down after it ended' {

@@ -107,6 +107,26 @@ Describe 'reply checks' {
     }
 }
 
+Describe 'the JIT config' {
+    It 'is cleared once run_one is done with it' -Tag 'jit-clear' {
+        $w = New-WinWorld
+        $guest = New-WinGuest
+        $held = New-Object Collections.Generic.List[object]
+        $spy = { param($Call) if ($Call.PayloadLength -gt 0) { $held.Add($Call.WritePayload) }; & $guest $Call }.GetNewClosure()
+        $B = New-AapWinBackend -Provider (New-WinProvider) -Network (New-WinNetwork) -Transport $spy -BrokerInvoker (New-WinBroker) -AllocatorRoot $w.Cap `
+            -JournalRoot $w.Journal -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue -Sleep { param($s) }
+        $r = New-WinReservation $w
+        [void](Invoke-WinSteps $B $w $r.reservation_id -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $r.reservation_id)).Action | Should -Be 'running'
+        $held.Count | Should -Be 1
+        $ms = New-Object IO.MemoryStream
+        & $held[0] $ms
+        $bytes = $ms.ToArray()
+        $bytes.Length | Should -BeGreaterThan 20
+        @($bytes | Where-Object { $_ -ne 0 }).Count | Should -Be 0
+    }
+}
+
 Describe 'a hostile guest is final' {
     It 'misbehaviour <How> on <Cmd> gives hostile_guest <Code>: slot to deleting, VM destroyed, fixed reason' -Tag 'reply-size', 'printable', 'reply-json', 'reply-fields', 'reply-values', 'reply-echo', 'reply-secret', 'reply-state', 'child-exit' -ForEach @(
         @{ How = 'oversized'; Cmd = 'probe'; Code = 'oversized_reply' }, @{ How = 'overflow'; Cmd = 'probe'; Code = 'oversized_reply' }
@@ -245,6 +265,8 @@ Start-Sleep -Seconds 600
             [pscustomobject]@{ Raw = $raw; Seconds = $sw.Elapsed.TotalSeconds }
         }
         $script:Pw = Invoke-WinInModule { New-AapWinPassword }
+        $script:PwText = [Text.Encoding]::ASCII.GetString((Get-WinSecretBytes $script:Pw))
+        $null = New-WinBackend (New-WinWorld)   # compiles the job object type, as the supervisor does at start
     }
     AfterAll { Set-WinModuleVar 'ChildScript' $script:Saved }
 
@@ -256,7 +278,7 @@ Start-Sleep -Seconds 600
         $side = [IO.File]::ReadAllText($script:Side)
         $side | Should -Match "pwlen=32 user=runneradmin payload=$(Get-WinSha $jit) "
         $side | Should -Not -Match 'SYNTHETIC|host_cmd|6f1d2c3b'
-        $side.Contains($script:Pw) | Should -BeFalse
+        $side.Contains($script:PwText) | Should -BeFalse
         # The supervisor passes the machine value; Windows PowerShell itself prepends the user's own module folder at start,
         # which psdirect-call.ps1 drops again. Nothing of this process's PSModulePath beyond the machine value is inherited.
         $machine = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
@@ -313,6 +335,21 @@ Start-Sleep -Seconds 600
         $c = Invoke-WinChild 'exit.ps1'
         $c.Raw.ExitCode | Should -Be 3
         (Test-WinReply $c.Raw).Code | Should -Be 'child_exit'
+    }
+
+    It 'psdirect-call.ps1 maps a dropped PowerShell Direct connection to no reply (exit 0), anything else to exit 3' -Tag 'transport-drop' {
+        $src = Join-Path (Split-Path -Parent $script:BackendModule) 'psdirect-call.ps1'
+        $ast = [Management.Automation.Language.Parser]::ParseFile($src, [ref]$null, [ref]$null)
+        $fn = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-AapCallExit' }, $true)
+        . ([scriptblock]::Create($fn.Extent.Text))
+        $session = { param($state) [pscustomobject]@{ Runspace = [pscustomobject]@{ RunspaceStateInfo = [pscustomobject]@{ State = $state } } } }
+        $er = { param($ex) New-Object Management.Automation.ErrorRecord ($ex, 'x', 'NotSpecified', $null) }
+        $drop = New-Object Management.Automation.Remoting.PSRemotingTransportException 'the connection to the remote host was lost'
+        Get-AapCallExit (& $er $drop) (& $session 'Opened') | Should -Be 0
+        Get-AapCallExit (& $er (New-Object Management.Automation.MethodInvocationException ('wrapped', $drop))) (& $session 'Opened') | Should -Be 0
+        Get-AapCallExit (& $er (New-Object Management.Automation.RuntimeException 'pipeline stopped')) (& $session 'Broken') | Should -Be 0
+        Get-AapCallExit (& $er (New-Object Management.Automation.RuntimeException 'a remote script error')) (& $session 'Opened') | Should -Be 3
+        Get-AapCallExit (& $er (New-Object Management.Automation.RuntimeException 'a remote script error')) $null | Should -Be 3
     }
 
     It 'the real psdirect-call.ps1 refuses a malformed stdin with exit 2, before any session is opened' {

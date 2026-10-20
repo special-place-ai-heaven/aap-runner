@@ -7,7 +7,8 @@
 # Invoke-AapWinStep moves one reservation one step, by its allocator state:
 #   creating   create (base re-hash, differencing and scratch disks, per-clone credential, VM, network), boot, ready (probe)
 #   ready      run_one: broker lease, deliver_registration (JIT on the call child's stdin), start_runner
-#   ready, busy, draining   heartbeat: guest status over the host-side channel, JobRunning from the broker, clone cap
+#   ready, busy, draining   heartbeat: guest status over the host-side channel, JobRunning from the broker
+#   every step of a reservation with a VM: the clone cap and a paused VM, host-side, with or without a guest channel
 #   collecting collect (the bounded job summary)        deleting   destroy (release, VM, folders, observed absence)
 # The journal, <JournalRoot>\<reservation_id>.jsonl (one backend-lifecycle `op` record per line, admin-only), is the
 # state: every op appends `intent` before it acts and `done` or `failed` after, so a supervisor killed anywhere resumes
@@ -21,6 +22,9 @@
 # Allocator and broker calls go to AapCapacity.psm1 and aap-broker.psm1 beside this folder.
 # Lines tagged '# check:<name>' are the safety checks tests/backends/windows/Invoke-AapWinMutations.ps1 disables one at a
 # time; each must make at least one test fail.
+# One backend context ($B) belongs to one runspace: its hashtables, its scriptblocks and the process-wide console input
+# encoding swap around each child start are not thread-safe. Steps of one reservation never overlap: Invoke-AapWinStep
+# holds <JournalRoot>\<reservation_id>.lock (FileShare.None, deleted on close) for the whole step.
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
@@ -62,8 +66,15 @@ $script:GuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\
 $script:RidRe = '^r-[0-9a-f]{16}\z'
 $script:GenerationRe = '^win25-vs2026-x64/[0-9]{8}\.[0-9]+\.[0-9]+-aap\.[0-9]+\z'
 $script:Reserved = '^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]) *(\..*)?$'
-$script:ProviderOps = @('GetVolumeGuid', 'HashFile', 'NewDiffDisk', 'NewDisk', 'WriteUnattend', 'NewVm', 'GetVmConfig', 'StartVm', 'StopVm',
-    'RemoveVm', 'ListVms', 'MeasureBytes')
+$script:ProviderOps = @('GetVolumeGuid', 'GetHostSecurity', 'HashFile', 'NewDiffDisk', 'GetVhdParent', 'NewDisk', 'WriteUnattend', 'NewVm',
+    'GetVmConfig', 'StartVm', 'StopVm', 'RemoveVm', 'ListVms', 'MeasureBytes')
+$script:VmGroupSid = 'S-1-5-83-0'      # NT VIRTUAL MACHINE\Virtual Machines: may read a sealed base (P06), nothing more
+# The lease outcomes journaled right after the lease call (a repeated `ready` `done` record: `op` has no lease field), so a
+# restarted supervisor never takes a broker that lost an issued lease for one that never recorded it.
+$script:LeaseAnswers = @('lease issued by the broker', 'lease answer unreadable')
+$script:DrainOnline = 'runner online and idle; released at destroy'
+$script:StatusSeconds = 30             # guest and broker status at most this often per reservation (allocator: 30 s heartbeat)
+$script:Utf8 = New-Object Text.UTF8Encoding($false)
 $script:NetworkOps = @('Attach', 'Detach', 'Verify')
 $script:Ops = @('create', 'boot', 'ready', 'run_one', 'drain', 'collect', 'destroy')
 # Legal allocator edges down to deleting (draining always passes through collecting).
@@ -118,20 +129,32 @@ function Get-AapWinLine([string]$Text, [int]$Max = 200) {
 function Get-AapWinError($ErrorRecord) { Get-AapWinLine ([string]$ErrorRecord.Exception.Message) 200 }
 
 function New-AapWinPassword {
-    <# 32 random characters with upper, lower, digit and symbol, no space or quote. Memory only: never in a file, log,
-       journal or record outside the clone's own answer file. #>
-    $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_=+.,:!@#%'
+    <# The per-clone password: 32 random characters with upper, lower, digit and symbol, no space or quote. Returned as an
+       object whose only property is Length (the broker's JitConfig pattern), so it formats, serializes and logs as nothing
+       else; WriteTo(stream) writes its ASCII bytes and Clear() zeroes them. Built with .NET calls only, so the characters
+       are never a command's parameter value (module logging, event 4103, records those). Memory only: never in a file,
+       log, journal or record outside the clone's own answer file. #>
+    $alphabet = [Text.Encoding]::ASCII.GetBytes('ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_=+.,:!@#%')
+    $pwBytes = New-Object byte[] 32
+    $raw = New-Object byte[] 64
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
     try {
         do {
-            $bytes = New-Object byte[] 64
-            $rng.GetBytes($bytes)
-            $sb = New-Object Text.StringBuilder
-            foreach ($b in $bytes) { if ($b -lt 204 -and $sb.Length -lt 32) { [void]$sb.Append($alphabet[$b % 68]) } }
-            $pw = $sb.ToString()
-        } until ($pw.Length -eq 32 -and $pw -cmatch '[A-Z]' -and $pw -cmatch '[a-z]' -and $pw -match '[0-9]' -and $pw -match '[^A-Za-z0-9]')
-        return $pw
-    } finally { $rng.Dispose() }
+            $rng.GetBytes($raw)
+            $n = 0
+            foreach ($b in $raw) { if ($b -lt 204 -and $n -lt 32) { $pwBytes[$n] = $alphabet[$b % 68]; $n++ } }
+            $up = $lo = $digit = $other = $false
+            foreach ($c in $pwBytes) {
+                if ($c -ge 65 -and $c -le 90) { $up = $true } elseif ($c -ge 97 -and $c -le 122) { $lo = $true } elseif ($c -ge 48 -and $c -le 57) { $digit = $true } else { $other = $true }
+            }
+        } until ($n -eq 32 -and $up -and $lo -and $digit -and $other)
+    } finally { $rng.Dispose(); [Array]::Clear($raw, 0, $raw.Length) }
+    $secret = [pscustomobject]@{ Length = $pwBytes.Length }
+    $writeTo = { param([IO.Stream]$Stream) $Stream.Write($pwBytes, 0, $pwBytes.Length) }.GetNewClosure()
+    $clear = { [Array]::Clear($pwBytes, 0, $pwBytes.Length) }.GetNewClosure()
+    $secret.PSObject.Methods.Add([Management.Automation.PSScriptMethod]::new('WriteTo', $writeTo))
+    $secret.PSObject.Methods.Add([Management.Automation.PSScriptMethod]::new('Clear', $clear))
+    $secret
 }
 
 # ---- paths (the patterns of images/windows/AapWinImage.psm1, P06) -----------------------------------------------------
@@ -153,7 +176,7 @@ function Assert-AapWinPlainPath {
     if ($r.Length -gt 3) { $r = $r.TrimEnd('\') }
     if ($full.Length -gt 3) { $full = $full.TrimEnd('\') }
     $prefix = $(if ($r.EndsWith('\')) { $r } else { $r + '\' })
-    if ($full -ne $r -and -not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "${Reason}: $full is not below $r" }
+    if ($full -ne $r -and -not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "${Reason}: not below its root: $full" }
     $segs = @($(if ($full.Length -gt $r.Length) { $full.Substring($prefix.Length).Split('\') }))
     $walk = $r
     $kind = Get-AapWinPathKind $walk
@@ -164,13 +187,15 @@ function Assert-AapWinPlainPath {
             if ($kind -eq 'absent' -and $Create) { [void][IO.Directory]::CreateDirectory($walk); $kind = Get-AapWinPathKind $walk }
             if ($kind -eq 'absent') { return }
         }
-        if ($kind -ne 'dir') { throw "${Reason}: $walk is $(@{ link = 'a link'; file = 'a file'; absent = 'missing' }[$kind]), not a plain folder" }   # check:plain-path
+        if ($kind -ne 'dir') { throw "${Reason}: $(@{ link = 'a link'; file = 'a file'; absent = 'missing' }[$kind]), not a plain folder: $walk" }   # check:plain-path
     }
 }
 
 # Gives this process's user full control of one entry, replacing its DACL, so an entry whose ACL forbids the delete can
 # be deleted right after (an administrator owns every file the supervisor created).
 function Grant-AapWinOwnerAccess([string]$Path, [bool]$IsDir) {
+    # Setting an ACL follows a link to its target: a link is never re-permissioned, only removed as an entry.
+    if ((Get-AapWinPathKind $Path) -ceq 'link') { throw "AAP_UnsafeDelete: a link: $Path" }   # check:grant-link
     $sec = $(if ($IsDir) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity })
     $sec.SetAccessRuleProtection($true, $false)
     $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule ([Security.Principal.WindowsIdentity]::GetCurrent().User), 'FullControl', 'Allow'))
@@ -182,10 +207,10 @@ function Grant-AapWinOwnerAccess([string]$Path, [bool]$IsDir) {
 # as an entry, never entered, so a link a guest or anyone else planted never redirects the delete.
 function Remove-AapWinTree([string]$Path, [string]$Under) {
     $full = [IO.Path]::GetFullPath($Path).TrimEnd('\'); $root = [IO.Path]::GetFullPath($Under).TrimEnd('\')
-    if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "AAP_UnsafeDelete: $full is not below $root" }
+    if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "AAP_UnsafeDelete: not below its root: $full" }
     $walk = $root
     foreach ($seg in $full.Substring($root.Length + 1).Split('\')) {
-        if ((Get-AapWinPathKind $walk) -eq 'link') { throw "AAP_UnsafeDelete: $walk is a link" }   # check:safe-delete
+        if ((Get-AapWinPathKind $walk) -eq 'link') { throw "AAP_UnsafeDelete: a link: $walk" }   # check:safe-delete
         $walk = Join-Path $walk $seg
     }
     $kind = Get-AapWinPathKind $full
@@ -203,25 +228,10 @@ function Remove-AapWinTreeInner([string]$Dir) {
 function Remove-AapWinEntry([string]$Path, [string]$Kind) {
     $isDir = $Kind -eq 'dir' -or ($Kind -eq 'link' -and (([int][IO.File]::GetAttributes($Path)) -band [int][IO.FileAttributes]::Directory) -ne 0)
     $once = { if ($isDir) { [IO.Directory]::Delete($Path, $false) } else { [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal); [IO.File]::Delete($Path) } }
-    try { & $once } catch [UnauthorizedAccessException] { Grant-AapWinOwnerAccess $Path $isDir; & $once }
+    try { & $once } catch [UnauthorizedAccessException] { if ($Kind -ceq 'link') { throw }; Grant-AapWinOwnerAccess $Path $isDir; & $once }
 }
 
 # ---- guest disk preparation (exported for the production provider; P06's rules) --------------------------------------
-
-function Write-AapWinGuestFile {
-    <# Writes one file into a mounted clone disk before its first boot. Every folder from the partition root down must be
-       plain (missing ones are created), an existing plain file is deleted first, and the new file is opened with
-       CreateNew, so nothing on the disk can redirect the write. #>
-    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$RelPath, [Parameter(Mandatory)][AllowEmptyCollection()][byte[]]$Bytes)
-    if ($RelPath -cnotmatch '^[A-Za-z0-9._-]+(\\[A-Za-z0-9._-]+)*\z' -or $RelPath -match '(^|\\)\.\.?(\\|$)') { throw "AAP_UnsafePath: bad guest path $RelPath" }
-    $target = Join-Path $Root $RelPath
-    Assert-AapWinPlainPath -Root $Root -Path (Split-Path -Parent $target) -Reason 'AAP_UnsafePath' -Create
-    $kind = Get-AapWinPathKind $target
-    if ($kind -eq 'link' -or $kind -eq 'dir') { throw "AAP_UnsafePath: $target is a $kind" }   # check:guest-write
-    if ($kind -eq 'file') { [IO.File]::SetAttributes($target, [IO.FileAttributes]::Normal); [IO.File]::Delete($target) }
-    $fs = New-Object IO.FileStream($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try { $fs.Write($Bytes, 0, $Bytes.Length) } finally { $fs.Dispose() }
-}
 
 function Select-AapWinPartition {
     <# The Windows partition of a clone disk: exactly EFI, MSR and one basic data partition, numbers 1 to 3, the layout P06
@@ -236,13 +246,48 @@ function Select-AapWinPartition {
     $p[2]
 }
 
-function New-AapWinUnattend {
+# A protected DACL for a new entry: SYSTEM, Administrators and this process's own identity (the supervisor runs as an
+# administrator or SYSTEM; an unelevated test needs its own entry to write what it creates). Containers inherit it.
+function New-AapWinSecurity([bool]$IsDir) {
+    $f = $(if ($IsDir) { 'OICI' } else { '' })
+    $sddl = "D:P(A;$f;FA;;;SY)(A;$f;FA;;;BA)(A;$f;FA;;;$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))"
+    $sec = $(if ($IsDir) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity })
+    $sec.SetSecurityDescriptorSddlForm($sddl)
+    $sec
+}
+# A new folder with $Security from its creation (no window with an inherited DACL).
+function New-AapWinDir([string]$Path, $Security) {
+    $ext = 'System.IO.FileSystemAclExtensions' -as [type]
+    if ($ext -and $ext.GetMethod('Create', [type[]]@([IO.DirectoryInfo], [Security.AccessControl.DirectorySecurity]))) { [void]$ext::Create([IO.DirectoryInfo]$Path, $Security) }
+    else { [void][IO.Directory]::CreateDirectory($Path, $Security) }
+}
+
+function Write-AapWinUnattend {
     <# The per-clone answer file (images/windows/INTEGRATION.md, P10 item 2): one local administrator, OOBE skipped, UTC,
-       en-US, SanPolicy 1 so the scratch disk comes online, never autologon. The password is plain text only inside the
-       clone disk being prepared; the guest agent deletes the file at first boot (guest-transport.md). #>
-    param([Parameter(Mandatory)][string]$UserName, [Parameter(Mandatory)][string]$Password)
+       en-US, SanPolicy 1 so the scratch disk comes online, never autologon. Written to Windows\Panther\unattend.xml under
+       $Root, the Windows partition of a clone disk that never booted, mounted with no drive letter at an access path inside
+       the admin-only reservation folder. -Password is New-AapWinPassword's object: the text is built and written here with
+       .NET calls only, never bound to a command (event 4103). Every folder from $Root down must be plain; a missing one is
+       created, and the file created new, with a protected SYSTEM/Administrators DACL, so nothing on the disk redirects the
+       write and no other account reads it. The guest agent deletes the file at first boot (guest-transport.md). #>
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$UserName, [Parameter(Mandatory)]$Password)
     if ($UserName -cnotmatch '^[A-Za-z][A-Za-z0-9_-]{0,19}$') { throw 'AAP_UnattendInvalid: user name' }
-    $e = [Security.SecurityElement]::Escape($Password)
+    $dir = $Root
+    foreach ($seg in @('', 'Windows', 'Panther')) {
+        if ($seg) { $dir = Join-Path $dir $seg }
+        $kind = Get-AapWinPathKind $dir
+        if ($kind -eq 'absent' -and $seg) { New-AapWinDir $dir (New-AapWinSecurity $true); $kind = Get-AapWinPathKind $dir }
+        if ($kind -ne 'dir') { throw "AAP_UnsafePath: $(@{ link = 'a link'; file = 'a file'; absent = 'missing' }[$kind]), not a plain folder: $dir" }   # check:guest-write
+    }
+    $target = Join-Path $dir 'unattend.xml'
+    $kind = Get-AapWinPathKind $target
+    if ($kind -eq 'link' -or $kind -eq 'dir') { throw "AAP_UnsafePath: a $kind where the answer file goes: $target" }   # check:guest-write
+    if ($kind -eq 'file') { [IO.File]::SetAttributes($target, [IO.FileAttributes]::Normal); [IO.File]::Delete($target) }
+    $ms = New-Object IO.MemoryStream
+    try {
+        $Password.WriteTo($ms)
+        $pwText = [Text.Encoding]::ASCII.GetString($ms.GetBuffer(), 0, [int]$ms.Length)
+    } finally { $buf = $ms.GetBuffer(); [Array]::Clear($buf, 0, $buf.Length); $ms.Dispose() }
     $c = 'processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"'
     $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -278,7 +323,7 @@ function New-AapWinUnattend {
             <Name>$UserName</Name>
             <Group>Administrators</Group>
             <Password>
-              <Value>$e</Value>
+              <Value>$([Security.SecurityElement]::Escape($pwText))</Value>
               <PlainText>true</PlainText>
             </Password>
           </LocalAccount>
@@ -288,8 +333,19 @@ function New-AapWinUnattend {
   </settings>
 </unattend>
 "@
+    $pwText = $null
     [void]([xml]$xml)
-    $xml
+    $xmlBytes = $script:Utf8.GetBytes($xml)
+    $xml = $null
+    try {
+        $sec = New-AapWinSecurity $false
+        if ($PSVersionTable.PSVersion.Major -ge 6) {
+            $fs = [IO.FileSystemAclExtensions]::Create([IO.FileInfo]$target, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $sec)
+        } else {
+            $fs = New-Object IO.FileStream($target, [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $sec)
+        }
+        try { $fs.Write($xmlBytes, 0, $xmlBytes.Length) } finally { $fs.Dispose() }
+    } finally { [Array]::Clear($xmlBytes, 0, $xmlBytes.Length) }
 }
 
 # ---- trust: the admin-only definition of backend-lifecycle.md, Trust checks -------------------------------------------
@@ -308,15 +364,15 @@ function Get-AapWinRawSd([string]$Path) {
 # re-permission or take ownership (create rights are allowed; inherit-only ACEs do not apply to the folder itself).
 function Get-AapWinAncestorAclProblem([string]$Dir) {
     $bad = [int]([Security.AccessControl.FileSystemRights]'Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership') -bor 0x10000000
-    try { $raw = Get-AapWinRawSd $Dir } catch { return "cannot read the ACL of $Dir" }
-    if ($null -eq $raw.Owner -or $script:AdminSids -notcontains $raw.Owner.Value) { return "owner $($raw.Owner) of $Dir is not an admin" }
-    if ($null -eq $raw.DiscretionaryAcl) { return "$Dir has no DACL (everyone has full control)" }
+    try { $raw = Get-AapWinRawSd $Dir } catch { return "cannot read the ACL: $Dir" }
+    if ($null -eq $raw.Owner -or $script:AdminSids -notcontains $raw.Owner.Value) { return "owner $($raw.Owner) is not an admin: $Dir" }
+    if ($null -eq $raw.DiscretionaryAcl) { return "no DACL (everyone has full control): $Dir" }
     foreach ($ace in $raw.DiscretionaryAcl) {
         $type = [int]$ace.AceType
-        if ($type -ne 0 -and $type -ne 1) { return "$Dir has an ACE that is not a plain allow or deny" }
+        if ($type -ne 0 -and $type -ne 1) { return "an ACE that is not a plain allow or deny: $Dir" }
         if ($type -ne 0 -or ([int]$ace.AceFlags -band 8) -ne 0) { continue }
         if ($script:AdminSids -contains $ace.SecurityIdentifier.Value) { continue }
-        if (([int]$ace.AccessMask -band $bad) -ne 0) { return "$Dir grants $($ace.SecurityIdentifier.Value) delete or re-permission rights" }
+        if (([int]$ace.AccessMask -band $bad) -ne 0) { return "grants $($ace.SecurityIdentifier.Value) delete or re-permission rights: $Dir" }
     }
     $null
 }
@@ -327,34 +383,52 @@ function Get-AapWinAncestorAclProblem([string]$Dir) {
 function Get-AapWinTrustProblem($B, [string]$Path, [switch]$AllowRead) {
     $out = New-Object Collections.Generic.List[string]
     if ($Path -notmatch '^[A-Za-z]:\\.+' -or $Path.EndsWith('\') -or [IO.Path]::GetFullPath($Path) -cne $Path) {
-        $out.Add("$Path is not a normalized absolute path on a drive")
+        $out.Add("not a normalized absolute path on a drive: $Path")
         return $out.ToArray()
     }
     $fixed = $false
     try { $fixed = (New-Object IO.DriveInfo($Path.Substring(0, 1))).DriveType -eq [IO.DriveType]::Fixed } catch { $fixed = $false }
-    if (-not $fixed) { $out.Add("$Path is not on a fixed local drive") }   # check:fixed-drive
+    if (-not $fixed) { $out.Add("not on a fixed local drive: $Path") }   # check:fixed-drive
     $dir = Split-Path -Parent $Path
     while ($dir) {
-        if (Test-AapWinReparse $dir) { $out.Add("reparse point $dir") }   # check:ancestor-reparse
+        if (Test-AapWinReparse $dir) { $out.Add("reparse point above the root: $dir") }   # check:ancestor-reparse
         elseif (-not $B.Relaxed) { $p = Get-AapWinAncestorAclProblem $dir; if ($p) { $out.Add($p) } }
         $dir = Split-Path -Parent $dir
     }
-    if (Test-AapWinReparse $Path) { $out.Add("reparse point $Path"); return $out.ToArray() }   # check:root-reparse
-    if (-not [IO.Directory]::Exists($Path)) { $out.Add("$Path does not exist"); return $out.ToArray() }
-    try { $raw = Get-AapWinRawSd $Path } catch { $out.Add("cannot read the ACL of $Path"); return $out.ToArray() }
-    if ($null -eq $raw.Owner -or $B.TrustedSids -notcontains $raw.Owner.Value) { $out.Add("owner $($raw.Owner) of $Path is not an admin") }   # check:root-owner
-    if (([int]$raw.ControlFlags -band 0x1000) -eq 0) { $out.Add("$Path inherits its DACL from its parent") }   # check:acl-protected
-    if ($null -eq $raw.DiscretionaryAcl) { $out.Add("$Path has no DACL (everyone has full control)"); return $out.ToArray() }
+    if (Test-AapWinReparse $Path) { $out.Add("reparse point: $Path"); return $out.ToArray() }   # check:root-reparse
+    if (-not [IO.Directory]::Exists($Path)) { $out.Add("does not exist: $Path"); return $out.ToArray() }
+    try { $raw = Get-AapWinRawSd $Path } catch { $out.Add("cannot read the ACL: $Path"); return $out.ToArray() }
+    if ($null -eq $raw.Owner -or $B.TrustedSids -notcontains $raw.Owner.Value) { $out.Add("owner $($raw.Owner) is not an admin: $Path") }   # check:root-owner
+    if (([int]$raw.ControlFlags -band 0x1000) -eq 0) { $out.Add("inherits its DACL from its parent: $Path") }   # check:acl-protected
+    if ($null -eq $raw.DiscretionaryAcl) { $out.Add("no DACL (everyone has full control): $Path"); return $out.ToArray() }
     foreach ($ace in $raw.DiscretionaryAcl) {
         $type = [int]$ace.AceType
-        if ($type -ne 0 -and $type -ne 1) { $out.Add("$Path has an ACE that is not a plain allow or deny"); continue }
+        if ($type -ne 0 -and $type -ne 1) { $out.Add("an ACE that is not a plain allow or deny: $Path"); continue }
         if ($type -ne 0) { continue }
         $sid = $ace.SecurityIdentifier.Value
         if ($B.TrustedSids -contains $sid) { continue }
-        if (-not $AllowRead) { $out.Add("$Path grants $sid access; it must be admin-only"); continue }   # check:admin-only
-        if ((([int]$ace.AccessMask) -band $script:WriteMask) -ne 0 -or (([int]$ace.AceFlags) -band 3) -ne 0) { $out.Add("$Path grants $sid write or inheritable access") }   # check:no-write
+        if (-not $AllowRead) { $out.Add("grants $sid access (it must be admin-only): $Path"); continue }   # check:admin-only
+        if ((([int]$ace.AccessMask) -band $script:WriteMask) -ne 0 -or (([int]$ace.AceFlags) -band 3) -ne 0) { $out.Add("grants $sid write or inheritable access: $Path") }   # check:no-write
     }
     $out.ToArray()
+}
+
+# A sealed generation entry (P06's read-only signature, images/windows/INTEGRATION.md): an admin owner, a protected DACL,
+# no allow entry for anyone but the admins and Virtual Machines (S-1-5-83-0, read only) and, for the file, the ReadOnly
+# attribute. Hyper-V only reads the parent of a differencing disk, so nobody but an administrator may change the base.
+function Get-AapWinSealedProblem($B, [string]$Path) {
+    try { $raw = Get-AapWinRawSd $Path } catch { return "cannot read the ACL: $Path" }
+    if ($null -eq $raw.Owner -or $B.TrustedSids -notcontains $raw.Owner.Value) { return "owner $($raw.Owner) is not an admin: $Path" }   # check:sealed-owner
+    if (([int]$raw.ControlFlags -band 0x1000) -eq 0) { return "inherits its DACL from its parent: $Path" }   # check:sealed-acl
+    if ($null -eq $raw.DiscretionaryAcl) { return "no DACL (everyone has full control): $Path" }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+        $type = [int]$ace.AceType
+        if ($type -ne 0 -and $type -ne 1) { return "an ACE that is not a plain allow or deny: $Path" }
+        if ($type -ne 0 -or $B.TrustedSids -contains $ace.SecurityIdentifier.Value) { continue }
+        if ($ace.SecurityIdentifier.Value -cne $script:VmGroupSid -or ([int]$ace.AccessMask -band $script:WriteMask) -ne 0) { return "grants $($ace.SecurityIdentifier.Value) more than Virtual Machines read: $Path" }   # check:sealed-acl
+    }
+    if ((Get-AapWinPathKind $Path) -ceq 'file' -and (([int][IO.File]::GetAttributes($Path)) -band [int][IO.FileAttributes]::ReadOnly) -eq 0) { return "not ReadOnly: $Path" }   # check:sealed-readonly
+    $null
 }
 
 # -RelaxedTrustForTests trusts the current user and skips the ancestor ACL check (P09's rule): refused for SYSTEM and for
@@ -431,12 +505,31 @@ function Get-AapWinStorageProblem {
     $out.ToArray()
 }
 
+function Get-AapWinHostProblem {
+    <# The host settings a Windows VM profile needs: Enhanced Session Mode off (it opens an interactive console channel
+       into every guest), and nobody in Hyper-V Administrators (S-1-5-32-578) but SYSTEM and Administrators (a member can
+       drive every VM, read its disks and connect to it). 'AAP_<Reason>: detail' lines, empty = trusted. Run at supervisor
+       start (P12 shows them and keeps the VM profiles off) and before every create. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Backend)
+    $out = New-Object Collections.Generic.List[string]
+    try { $h = & $Backend.Provider.GetHostSecurity @{} } catch { $out.Add("AAP_HostUnreadable: $(Get-AapWinError $_)"); return $out.ToArray() }
+    if ((Get-AapWinField $h 'EnhancedSessionMode') -ne $false) { $out.Add('AAP_EnhancedSession: Enhanced Session Mode is not off on this Hyper-V host') }   # check:enhanced-session
+    $members = Get-AapWinField $h 'HyperVAdmins'
+    if ($null -eq $members) { $out.Add('AAP_HostUnreadable: the members of Hyper-V Administrators are unknown') }
+    foreach ($sid in @($members | Where-Object { $null -ne $_ })) {
+        if ($script:AdminSids -cnotcontains [string]$sid) { $out.Add("AAP_HyperVAdmins: $(Get-AapWinLine ([string]$sid) 80) is a member of Hyper-V Administrators") }   # check:hyperv-admins
+    }
+    $out.ToArray()
+}
+
 # ---- journal ----------------------------------------------------------------------------------------------------------
 
 function Get-AapWinVmName($r) { Get-AapVmName -Profile windows -Slot ([int]$r.slot) -LeaseGeneration ([long]$r.lease_generation) -ReservationId ([string]$r.reservation_id) }
 function Get-AapWinJournalPath($B, $r) { Join-Path $B.JournalRoot ([string]$r.reservation_id + '.jsonl') }
 
-# Appends one `op` record and flushes it to disk before the caller acts (intent) or moves on (done, failed).
+# Appends one `op` record and flushes it to disk before the caller acts (intent) or moves on (done, failed). A last line
+# without its newline is a write a crash cut short: it is cut off first, so the new record never joins it.
 function Write-AapWinJournal($B, $r, [string]$Op, [string]$Phase, [string]$VmId = '', [object[]]$Disks = @(), [string]$Code = '', [string]$Detail = '') {
     $result = $null
     if ($Phase -cne 'intent') { $result = [ordered]@{ code = $Code; detail = (Get-AapWinLine $Detail 200) } }
@@ -448,16 +541,31 @@ function Write-AapWinJournal($B, $r, [string]$Op, [string]$Phase, [string]$VmId 
         idempotency_key = ('{0}/{1}/{2}' -f $r.reservation_id, $r.lease_generation, $Op); phase = $Phase; at = (Format-AapWinTime (Get-AapWinNow $B))
         vm = [ordered]@{ vm_id = $vm; vm_name = (Get-AapWinVmName $r) }; disks = [object[]]$Disks; result = $result
     }
-    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes((ConvertTo-Json -InputObject $rec -Depth 6 -Compress) + "`n")
-    $fs = New-Object IO.FileStream((Get-AapWinJournalPath $B $r), [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-    try { $fs.Write($bytes, 0, $bytes.Length); $fs.Flush($true) } finally { $fs.Dispose() }
+    $bytes = $script:Utf8.GetBytes((ConvertTo-Json -InputObject $rec -Depth 6 -Compress) + "`n")
+    $fs = New-Object IO.FileStream((Get-AapWinJournalPath $B $r), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+    try {
+        $keep = $fs.Length
+        while ($keep -gt 0) { $fs.Position = $keep - 1; if ($fs.ReadByte() -eq 10) { break }; $keep-- }
+        if ($keep -ne $fs.Length) { $fs.SetLength($keep); $fs.Flush($true) }   # check:journal-torn
+        $fs.Position = $fs.Length
+        $fs.Write($bytes, 0, $bytes.Length)
+        $fs.Flush($true)
+    } finally { $fs.Dispose() }
+}
+
+# A failed record, unless the journal's last record says exactly the same: a teardown that keeps failing the same way (a
+# pending release, a VM that will not go) does not grow the journal toward its size bound.
+function Write-AapWinFailedOnce($B, $r, $j, [string]$Op, [string]$VmId, [string]$Code, [string]$Detail) {
+    if ($j.Last -ceq "$Op/failed/$Code/$(Get-AapWinLine $Detail 200)") { return }   # check:journal-dedup
+    Write-AapWinJournal $B $r $Op 'failed' -VmId $VmId -Code $Code -Detail $Detail
 }
 
 # The facts the steps need, from the journal. Throws AAP_JournalUnreadable on anything but well-formed records of this
 # reservation and lease generation. A last line without its newline was torn by a crash mid-append: that write never
-# completed, so neither did its act (intent), or only the act's record is missing (done, failed); both re-run safely.
+# completed, so neither did its act (intent), or only the act's record is missing (done, failed); both re-run safely, and
+# the next append cuts it off. Last is '<op>/<phase>/<code>/<detail>' of the last record.
 function Read-AapWinJournal($B, $r) {
-    $f = @{ Has = @{}; VmId = $null; LeaseId = $null; BootAt = $null; RunOneAt = $null; Hostile = $null; LastDestroyFail = $null }
+    $f = @{ Has = @{}; VmId = $null; LeaseId = $null; LeaseIssued = $false; DrainedOnline = $false; BootAt = $null; RunOneAt = $null; Hostile = $null; LastDestroyFail = $null; Last = '' }
     $path = Get-AapWinJournalPath $B $r
     $kind = Get-AapWinPathKind $path
     if ($kind -eq 'absent') { return $f }
@@ -476,6 +584,9 @@ function Read-AapWinJournal($B, $r) {
         $res = Get-AapWinField $rec 'result'
         $code = [string](Get-AapWinField $res 'code'); $detail = [string](Get-AapWinField $res 'detail')
         if ($op -ceq 'ready' -and $phase -ceq 'done' -and $detail -cmatch 'lease (l-[0-9a-f]{32})\z') { $f.LeaseId = $Matches[1] }
+        if ($op -ceq 'ready' -and $phase -ceq 'done' -and $script:LeaseAnswers -ccontains $detail) { $f.LeaseIssued = $true }
+        if ($op -ceq 'drain' -and $phase -ceq 'done' -and $detail -ceq $script:DrainOnline) { $f.DrainedOnline = $true }
+        $f.Last = "$op/$phase/$code/$detail"
         if ($op -ceq 'boot' -and $phase -ceq 'done') { $f.BootAt = ConvertTo-AapWinUtc $at }
         if ($op -ceq 'run_one' -and $phase -ceq 'intent' -and $null -eq $f.RunOneAt) { $f.RunOneAt = ConvertTo-AapWinUtc $at }
         if ($code -ceq 'hostile_guest') { $f.Hostile = $detail }
@@ -559,7 +670,10 @@ function Test-AapWinReply($Raw, $Cmd) {
 }
 
 # Sends one command to the reservation's guest. The VM, the reservation and the lease generation come from this
-# process's own records, never from the guest; the seq counter is per boot and the nonce fresh. A JIT config ($Jit, the
+# process's own records, never from the guest; seq grows by one per send, including a send that times out or fails, and
+# is never reused, so a command the guest never saw or whose reply was lost leaves a gap the agent accepts
+# (guest-transport.md, Sequence rule: any seq strictly greater than the last accepted one); the nonce is fresh. A reply
+# must echo this command's seq and nonce, or it is hostile (wrong_echo). A JIT config ($Jit, the
 # broker's object) is written by the transport straight onto the call child's stdin and never becomes text here.
 function Invoke-AapWinCommand($B, $r, [string]$Cmd, $Jit = $null) {
     $g = $B.Guests[[string]$r.reservation_id]
@@ -570,8 +684,9 @@ function Invoke-AapWinCommand($B, $r, [string]$Cmd, $Jit = $null) {
     $c = [ordered]@{ vm_id = $g.VmId; reservation_id = [string]$r.reservation_id; lease_generation = [long]$r.lease_generation; seq = [long]$g.Seq
         nonce = (New-AapWinHex 16); cmd = $Cmd; payload_bytes = $len; expires_at = (Format-AapWinTime (Get-AapWinNow $B).AddSeconds($timeout))
     }
-    $line = '{{"schema":1,"kind":"host_cmd","vm_id":"{0}","reservation_id":"{1}","lease_generation":{2},"seq":{3},"nonce":"{4}","cmd":"{5}","payload_bytes":{6},"expires_at":"{7}"}}' -f `
-        $c.vm_id, $c.reservation_id, $c.lease_generation, $c.seq, $c.nonce, $c.cmd, $c.payload_bytes, $c.expires_at
+    $doc = [ordered]@{ schema = 1; kind = 'host_cmd' }
+    foreach ($k in $c.Keys) { $doc[$k] = $c[$k] }
+    $line = ConvertTo-Json -InputObject $doc -Compress
     if ($c.vm_id -cnotmatch $script:GuidRe -or $line.Length -gt $script:EnvelopeMax -or $len -gt $script:PayloadMax -or ($Cmd -ceq 'deliver_registration') -ne ($len -gt 0)) {
         throw 'AAP_BadCommand: the envelope breaks guest-transport.md'
     }
@@ -623,7 +738,8 @@ public static class AapWinJobObject {
 # The default transport: one hidden child per command (psdirect-call.ps1 under Windows PowerShell, fixed command line,
 # machine PSModulePath), inside a job object with a memory cap, a CPU-time cap and kill-on-close; the wall cap is the
 # command's timeout plus 10 s. Its stdin gets the VM id, the guest user, the per-clone password and the envelope, one per
-# line, then the payload; at most 8193 bytes of its stdout are read, stderr is drained and dropped.
+# line (the password straight from its secret object), then the payload; at most 8193 bytes of its stdout are read,
+# stderr is drained and dropped.
 # ponytail: the child runs for a moment before it is assigned to the job; it reads nothing from the guest until the
 # supervisor writes its stdin, which happens only after the assignment. CREATE_SUSPENDED would close that gap.
 # Windows PowerShell 5.1 (.NET Framework) builds a redirected stdin writer from [Console]::InputEncoding and writes its
@@ -639,7 +755,7 @@ function Start-AapWinProcess([Diagnostics.ProcessStartInfo]$Psi) {
 }
 
 function Invoke-AapWinGuestChild([hashtable]$Call) {
-    if (-not ('AapWinJobObject' -as [type])) { Add-Type -TypeDefinition $script:JobSource }
+    if (-not ('AapWinJobObject' -as [type])) { throw 'AAP_ChildUncapped: the job object type is compiled by New-AapWinBackend' }
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $script:ChildExe
     $psi.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}"' -f $script:ChildScript
@@ -659,8 +775,11 @@ function Invoke-AapWinGuestChild([hashtable]$Call) {
         try { $job = [AapWinJobObject]::Start($p.Handle, $script:ChildMemoryBytes, $wall) } catch { throw 'AAP_ChildUncapped: the call child could not be put in its job object' }
         $in = $p.StandardInput.BaseStream
         try {
-            $head = [Text.Encoding]::ASCII.GetBytes(('{0}{4}{1}{4}{2}{4}{3}{4}' -f $Call.VmId, $Call.User, $Call.Password, $Call.Envelope, "`n"))
-            try { $in.Write($head, 0, $head.Length) } finally { [Array]::Clear($head, 0, $head.Length) }
+            $head = [Text.Encoding]::ASCII.GetBytes(('{0}{2}{1}{2}' -f $Call.VmId, $Call.User, "`n"))
+            $tail = [Text.Encoding]::ASCII.GetBytes("`n" + $Call.Envelope + "`n")
+            $in.Write($head, 0, $head.Length)
+            $Call.Password.WriteTo($in)
+            $in.Write($tail, 0, $tail.Length)
             if ([int]$Call.PayloadLength -gt 0) { & $Call.WritePayload $in }
             $in.Flush()
         } catch {
@@ -722,10 +841,12 @@ function Get-AapWinVms($B) {
 }
 
 # The VM's settings against backend-lifecycle.md (create): checkpoints off, TurnOff/Nothing, Guest Service Interface and
-# Key-Value Pair Exchange off, the reserved CPU and memory, every file under the reservation's folders; with -Adapters
+# Key-Value Pair Exchange off, the reserved CPU and memory, every file under the reservation's folders, exactly the disks
+# create made, no COM port, DVD drive, GPU partition or assigned device (a VM the journal names is inventoried the same
+# way before it is reused); with -Adapters
 # also the guest network: at least one adapter, each on the internal switch with DHCP guard and router guard on and MAC
 # spoofing off.
-function Assert-AapWinVmConfig($B, $r, [string]$VmId, [string]$Clone, [string]$Scratch, [switch]$Adapters) {
+function Assert-AapWinVmConfig($B, $r, [string]$VmId, [string]$Clone, [string]$Scratch, [string[]]$Expected, [switch]$Adapters) {
     $c = & $B.Provider.GetVmConfig @{ VmId = $VmId }
     $bad = New-Object Collections.Generic.List[string]
     $under = { param($p, $dir) $p = [string]$p; $p -and ($p.TrimEnd('\') -ieq $dir -or $p.StartsWith($dir + '\', [StringComparison]::OrdinalIgnoreCase)) }
@@ -737,9 +858,16 @@ function Assert-AapWinVmConfig($B, $r, [string]$VmId, [string]$Clone, [string]$S
     foreach ($k in 'ConfigurationLocation', 'SnapshotFileLocation', 'SmartPagingFilePath') {
         if (-not (& $under (Get-AapWinField $c $k) $Clone)) { $bad.Add("$k is outside the reservation's clone folder") }   # check:vm-paths
     }
-    $disks = Get-AapWinField $c 'Disks'
-    foreach ($d in @($disks)) {
+    $vmDisks = Get-AapWinField $c 'Disks'
+    $vmDisks = @($vmDisks | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+    foreach ($d in $vmDisks) {
         if (-not ((& $under $d $Clone) -or (& $under $d $Scratch))) { $bad.Add('a disk is outside the reservation folders') }   # check:vm-paths
+    }
+    $same = $vmDisks.Count -eq $Expected.Count -and @($Expected | Where-Object { $vmDisks -notcontains $_ }).Count -eq 0
+    if (-not $same) { $bad.Add('the disks are not exactly os.avhdx and scratch.vhdx') }   # check:vm-devices
+    foreach ($k in 'ComPorts', 'DvdDrives', 'GpuPartitions', 'AssignedDevices') {
+        $v = Get-AapWinField $c $k
+        if ($null -eq $v -or [int]$v -ne 0) { $bad.Add("$k attached or unknown") }   # check:vm-devices
     }
     if ($Adapters) {
         $nics = Get-AapWinField $c 'Adapters'
@@ -759,10 +887,11 @@ function New-AapWinResult($r, [string]$Action, $Code = $null, $Summary = $null) 
     [pscustomobject][ordered]@{ ReservationId = [string]$r.reservation_id; LeaseGeneration = [long]$r.lease_generation; Action = $Action; State = [string]$r.state; Code = $Code; Summary = $Summary }
 }
 
-# create (backend-lifecycle.md): idempotent. Re-run after a crash it finds the named VM and reuses it, finds disks it made
-# and keeps them, and writes a fresh credential, which is safe only because the clone never booted (Step-AapWinCreating
-# destroys a booted clone whose credential died with the supervisor).
-function Invoke-AapWinCreate($B, $r, [string]$BaseSha256) {
+# create (backend-lifecycle.md): idempotent. Re-run after a crash it reuses only the VM whose id the journal recorded
+# right after New-VM (a VM found only by its name is never adopted: create fails and destroy removes it), keeps the disks
+# it made (a reused os.avhdx must still be a child of the pinned base), and writes a fresh credential, which is safe only
+# because the clone never booted (Step-AapWinCreating destroys a clone whose credential died with the supervisor).
+function Invoke-AapWinCreate($B, $r, [string]$BaseSha256, $j) {
     $rid = [string]$r.reservation_id
     $name = Get-AapWinVmName $r
     $gen = [string]$r.image_generation
@@ -775,49 +904,70 @@ function Invoke-AapWinCreate($B, $r, [string]$BaseSha256) {
     Invoke-AapWinFault 'create:after-intent'
     $problems = @(Get-AapWinStorageProblem -Backend $B)
     if ($problems.Count) { throw "AAP_StorageUntrusted: $($problems -join '; ')" }   # check:root-trust
+    $problems = @(Get-AapWinHostProblem -Backend $B)
+    if ($problems.Count) { throw ($problems -join '; ') }   # check:host-trust
     $baseRoot = $B.Storage.base_root.Path
     $base = Join-Path $baseRoot (($gen -replace '/', '\') + '\base.vhdx')
-    Assert-AapWinPlainPath -Root $baseRoot -Path (Split-Path -Parent $base) -Reason 'AAP_BaseUntrusted'
-    if ((Get-AapWinPathKind $base) -cne 'file') { throw "AAP_BaseMissing: $base is not a plain file" }   # check:base-kind
-    if ([string](& $B.Provider.HashFile @{ Path = $base }) -cne $BaseSha256) { throw "AAP_BaseHashMismatch: $gen does not match its pinned hash" }   # check:base-hash
+    $genDir = Split-Path -Parent $base
+    Assert-AapWinPlainPath -Root $baseRoot -Path $genDir -Reason 'AAP_BaseUntrusted'
+    if ((Get-AapWinPathKind $base) -cne 'file') { throw "AAP_BaseMissing: not a plain file: $base" }   # check:base-kind
+    foreach ($p in @($genDir, $base)) {
+        $why = Get-AapWinSealedProblem $B $p
+        if ($why) { throw "AAP_BaseUntrusted: $why" }   # check:base-sealed
+    }
     $clone = Join-Path $B.Storage.clone_root.Path $rid
     $scratch = Join-Path $B.Storage.scratch_root.Path $rid
-    Assert-AapWinPlainPath -Root $B.Storage.clone_root.Path -Path $clone -Reason 'AAP_UnsafePath' -Create
-    Assert-AapWinPlainPath -Root $B.Storage.scratch_root.Path -Path $scratch -Reason 'AAP_UnsafePath' -Create
-    Invoke-AapWinFault 'create:after-folders'
     $os = Join-Path $clone 'os.avhdx'
-    $kind = Get-AapWinPathKind $os
-    if ($kind -cne 'absent' -and $kind -cne 'file') { throw "AAP_UnsafePath: $os is a $kind" }   # check:disk-kind
-    if ($kind -ceq 'absent') { & $B.Provider.NewDiffDisk @{ Path = $os; Parent = $base } }
+    # One read handle that shares only reading, from the hash to the differencing disk: nobody can write, rename or delete
+    # the base in between. ponytail: Hyper-V opening the parent next to this handle is a P02.1 lab check.
+    $hold = New-Object IO.FileStream($base, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ([string](& $B.Provider.HashFile @{ Path = $base; Stream = $hold }) -cne $BaseSha256) { throw "AAP_BaseHashMismatch: $gen does not match its pinned hash" }   # check:base-hash
+        Assert-AapWinPlainPath -Root $B.Storage.clone_root.Path -Path $clone -Reason 'AAP_UnsafePath' -Create
+        Assert-AapWinPlainPath -Root $B.Storage.scratch_root.Path -Path $scratch -Reason 'AAP_UnsafePath' -Create
+        Invoke-AapWinFault 'create:after-folders'
+        $kind = Get-AapWinPathKind $os
+        if ($kind -cne 'absent' -and $kind -cne 'file') { throw "AAP_UnsafePath: os.avhdx is a ${kind}: $os" }   # check:disk-kind
+        if ($kind -ceq 'absent') { & $B.Provider.NewDiffDisk @{ Path = $os; Parent = $base } }
+        if ([string](& $B.Provider.GetVhdParent @{ Path = $os }) -ine $base) { throw "AAP_UnsafePath: os.avhdx is not a child of its generation's base: $os" }   # check:disk-parent
+    } finally { $hold.Dispose() }
     $scratchDisk = $null
     if ($scratchGib -gt 0) {
         $scratchDisk = Join-Path $scratch 'scratch.vhdx'
         $kind = Get-AapWinPathKind $scratchDisk
         # The scratch cap is enforced by the disk's own maximum size (backend-lifecycle.md, Disk paths and budgets).
-        if ($kind -cne 'absent' -and $kind -cne 'file') { throw "AAP_UnsafePath: $scratchDisk is a $kind" }   # check:disk-kind
+        if ($kind -cne 'absent' -and $kind -cne 'file') { throw "AAP_UnsafePath: scratch.vhdx is a ${kind}: $scratchDisk" }   # check:disk-kind
         if ($kind -ceq 'absent') { & $B.Provider.NewDisk @{ Path = $scratchDisk; SizeBytes = $scratchGib * $script:GiB - $script:ScratchHeadroomBytes } }
     }
     Invoke-AapWinFault 'create:after-disks'
     $named = @(Get-AapWinVms $B | Where-Object { $_.Name -ceq $name })
-    if ($named.Count -gt 1) { throw "AAP_DuplicateVm: more than one VM is named $name" }
+    $id = [string]$j.VmId
+    if ($id) {
+        if ($named.Count -ne 1 -or $named[0].Id -cne $id) { throw "AAP_VmMismatch: the VM the journal recorded is not the one VM named $name" }   # check:vm-journaled
+    } elseif ($named.Count) {
+        throw "AAP_VmNotJournaled: a VM named $name exists that this journal never recorded; it is destroyed, never adopted"   # a crash between New-VM and its record
+    }
     $pw = New-AapWinPassword
     & $B.Provider.WriteUnattend @{ Vhdx = $os; User = $script:User; Password = $pw }
+    if ($B.Guests.ContainsKey($rid)) { $B.Guests[$rid].Password.Clear() }
     $B.Guests[$rid] = @{ VmId = $null; Password = $pw; Seq = 0; Started = $false; Hostile = $null }
     Invoke-AapWinFault 'create:after-unattend'
-    if ($named.Count) {
-        $id = $named[0].Id   # the journal's create intent names this VM: reuse it, never create a second
-    } else {
+    $diskList = @(@($os, $scratchDisk) | Where-Object { $_ })
+    if (-not $id) {
         $id = ([string](Get-AapWinField (& $B.Provider.NewVm @{ Name = $name; Path = $clone; Cpus = [int]$r.cpus; MemGib = [int]$r.mem_gib; OsDisk = $os; ScratchDisk = $scratchDisk }) 'Id')).ToLowerInvariant()
+        if ($id -cnotmatch $script:GuidRe) { throw 'AAP_Unexpected: the new VM has no id' }
+        Invoke-AapWinFault 'create:after-newvm'
+        # The VM's id, before anything else touches it: the only VM a re-run may reuse.
+        Write-AapWinJournal $B $r 'create' 'intent' -VmId $id -Disks $disks
     }
-    if ($id -cnotmatch $script:GuidRe) { throw 'AAP_Unexpected: the new VM has no id' }
     $B.Guests[$rid].VmId = $id
     Invoke-AapWinFault 'create:after-vm'
-    Assert-AapWinVmConfig $B $r $id $clone $scratch
+    Assert-AapWinVmConfig $B $r $id $clone $scratch $diskList
     $net = @{ VmId = $id; VmName = $name; Profile = 'windows' }
     & $B.Network.Attach $net
     $problems = @(& $B.Network.Verify $net | Where-Object { $_ })
     if ($problems.Count) { throw "AAP_NetworkUntrusted: $(@($problems | ForEach-Object { Get-AapWinLine ([string]$_) 100 }) -join '; ')" }   # check:network-verify
-    Assert-AapWinVmConfig $B $r $id $clone $scratch -Adapters
+    Assert-AapWinVmConfig $B $r $id $clone $scratch $diskList -Adapters
     Write-AapWinJournal $B $r 'create' 'done' -VmId $id -Disks $disks -Code 'ok' -Detail 'differencing disk, scratch disk and VM created; network verified'
     Invoke-AapWinFault 'create:after-done'
     $id
@@ -835,31 +985,46 @@ function Get-AapWinRunnerProof($B, $r, $j) {
     if ($rel.Outcome -ceq 'already_gone') { return 'github-removed' }
     if ($rel.Outcome -ceq 'refused' -and $rel.Reason -ceq 'not_found') {
         $known = [string]$B.Leases[[string]$r.reservation_id]
-        if (@('issued', 'bad_reply') -ccontains $known) { return 'uncertain' }   # check:release-uncertain
+        if ($j.LeaseIssued -or @('issued', 'bad_reply') -ccontains $known) { return 'uncertain' }   # check:release-uncertain
         # A lease call the broker never recorded can no longer reach it (each broker run ends within 55 s).
         if ($null -ne $j.RunOneAt -and ((Get-AapWinNow $B) - $j.RunOneAt).TotalMinutes -ge $script:LeaseWindowMinutes) { return 'never_registered' }   # check:lease-window
     }
     'pending'
 }
 
-# True only when the VM (by id and by name) and both reservation folders are observed absent.
+# True only when the VM (by id and by name) and both reservation folders are observed absent, on both tier roots present
+# and on the volumes the storage document records: a root that is missing or on another volume (a USB disk not back yet)
+# would make every folder look gone.
 function Test-AapWinGone($B, [string]$VmId, [string]$Name, [string]$Clone, [string]$Scratch) {
-    try { $vms = @(Get-AapWinVms $B | Where-Object { ($VmId -and $_.Id -ceq $VmId) -or $_.Name -ceq $Name }) } catch { return $false }
-    if ($vms.Count) { return $false }   # check:observe-absent
-    if ((Get-AapWinPathKind $Clone) -cne 'absent' -or (Get-AapWinPathKind $Scratch) -cne 'absent') { return $false }   # check:observe-absent
+    try {
+        foreach ($t in 'clone_root', 'scratch_root') {
+            $root = $B.Storage[$t]
+            if ((Get-AapWinPathKind $root.Path) -cne 'dir' -or [string](& $B.Provider.GetVolumeGuid @{ Path = $root.Path }) -cne $root.Guid) { return $false }   # check:gone-volume
+        }
+        $vms = @(Get-AapWinVms $B | Where-Object { ($VmId -and $_.Id -ceq $VmId) -or $_.Name -ceq $Name })
+        if ($vms.Count) { return $false }   # check:observe-absent
+        if ((Get-AapWinPathKind $Clone) -cne 'absent') { return $false }   # check:observe-absent
+        if ((Get-AapWinPathKind $Scratch) -cne 'absent') { return $false }   # check:observe-scratch
+    } catch { return $false }
     $true
 }
 
 # destroy (backend-lifecycle.md): release the lease if one was ever asked for, turn the VM off and remove it, detach it
 # from the guest network, delete both reservation folders through reparse-checked paths, then observe absence. Only
-# observed absence plus a final runner proof completes the teardown (Complete-AapTeardown frees the slot); the VM goes
-# whatever the release or the allocator answered. A VM or folder that will not go after three tries quarantines the slot
-# (teardown_failed, capacity held); an uncertain runner does the same; a pending release keeps it deleting.
-function Invoke-AapWinDestroy($B, $r, $j, [switch]$Force) {
+# observed absence plus a final runner proof completes the teardown (Complete-AapTeardown frees the slot). The VM goes
+# whatever the release answered, except after a drain: a runner that was listening may still be listed, so its VM stays
+# until the release is final. -Urgent (a hostile guest, a broken limit, a failed op) removes the VM in every case. A VM
+# or folder that will not go after three tries quarantines the slot (teardown_failed, capacity held); an uncertain runner
+# does the same; a pending release keeps it deleting. A retry continues the journaled intent and repeats no identical
+# failure record; it runs at most once a minute (-Force: now).
+function Invoke-AapWinDestroy($B, $r, $j, [switch]$Force, [switch]$Urgent) {
     $rid = [string]$r.reservation_id
     $name = Get-AapWinVmName $r
     $now = Get-AapWinNow $B
-    if (-not $Force -and $null -ne $j.LastDestroyFail -and ($now - $j.LastDestroyFail).TotalSeconds -lt $script:RetrySeconds) { return (New-AapWinResult $r 'waiting' 'retry_later') }
+    $last = $j.LastDestroyFail
+    if ($B.Tried.ContainsKey($rid) -and ($null -eq $last -or $B.Tried[$rid] -gt $last)) { $last = $B.Tried[$rid] }
+    if (-not $Force -and $null -ne $last -and ($now - $last).TotalSeconds -lt $script:RetrySeconds) { return (New-AapWinResult $r 'waiting' 'retry_later') }
+    $B.Tried[$rid] = $now
     $clone = Join-Path $B.Storage.clone_root.Path $rid
     $scratch = Join-Path $B.Storage.scratch_root.Path $rid
     $vmId = [string](Get-AapWinField $r 'vm_id')
@@ -868,47 +1033,53 @@ function Invoke-AapWinDestroy($B, $r, $j, [switch]$Force) {
     if (-not $vmId -and $mine.Count) { $vmId = $mine[0].Id }
     if (-not $vmId) {
         # No VM ever existed for this reservation, so no lease either: remove the folders, free it as never registered.
-        Write-AapWinJournal $B $r 'create' 'failed' -Code 'fatal' -Detail 'abandoned before a VM existed; reservation folders removed'
+        Write-AapWinFailedOnce $B $r $j 'create' '' 'fatal' 'abandoned before a VM existed; reservation folders removed'
         foreach ($d in @(@($clone, $B.Storage.clone_root.Path), @($scratch, $B.Storage.scratch_root.Path))) { try { Remove-AapWinTree $d[0] $d[1] } catch { $null = $_ } }
-        if ((Get-AapWinPathKind $clone) -cne 'absent' -or (Get-AapWinPathKind $scratch) -cne 'absent') { return (New-AapWinResult $r 'held' 'folders_remain') }
+        if (-not (Test-AapWinGone $B '' $name $clone $scratch)) { return (New-AapWinResult $r 'held' 'folders_remain') }
         $proof = [ordered]@{ kind = 'vm'; observed_at = (Format-AapWinTime $now); vm_absent = $true; disks_absent = $true; vm_files_absent = $true; runner_deregistered = 'never_registered' }
         $a = Get-AapWinAllocArgs $B $r
         $c = Complete-AapTeardown @a -Proof $proof
         if ($c.Ok) { $next = Get-AapWinField $c 'Reservation'; if ($null -ne $next) { $r = $next }; return (New-AapWinResult $r 'destroyed') }
         return (New-AapWinResult $r 'held' $c.Reason)
     }
-    Write-AapWinJournal $B $r 'destroy' 'intent' -VmId $vmId
+    if ($j.Last -notlike 'destroy/*') { Write-AapWinJournal $B $r 'destroy' 'intent' -VmId $vmId }
     Invoke-AapWinFault 'destroy:after-intent'
     $runner = Get-AapWinRunnerProof $B $r $j
     Invoke-AapWinFault 'destroy:after-release'
+    if (-not $Urgent -and $runner -is [string] -and $runner -ceq 'pending' -and $j.DrainedOnline) {   # check:drain-keep
+        Write-AapWinFailedOnce $B $r $j 'destroy' $vmId 'retryable' 'runner release pending; the drained VM stays until it is final'
+        return (New-AapWinResult $r 'waiting' 'release_pending')
+    }
     $gone = $false
     for ($try = 1; $try -le $script:TeardownTries; $try++) {
+        $detached = $false
         try {
             foreach ($vm in @(Get-AapWinVms $B | Where-Object { $_.Id -ceq $vmId -or $_.Name -ceq $name })) {
                 if ($vm.State -cne 'Off') { & $B.Provider.StopVm @{ VmId = $vm.Id } }
                 & $B.Provider.RemoveVm @{ VmId = $vm.Id }
             }
-            Invoke-AapWinFault 'destroy:after-vm'
-            & $B.Network.Detach @{ VmId = $vmId; VmName = $name; Profile = 'windows' }
-            Remove-AapWinTree $clone $B.Storage.clone_root.Path
-            Remove-AapWinTree $scratch $B.Storage.scratch_root.Path
         } catch { $null = $_ }
+        Invoke-AapWinFault 'destroy:after-vm'
+        try { & $B.Network.Detach @{ VmId = $vmId; VmName = $name; Profile = 'windows' }; $detached = $true } catch { $null = $_ }
+        try { Remove-AapWinTree $clone $B.Storage.clone_root.Path } catch { $null = $_ }
+        try { Remove-AapWinTree $scratch $B.Storage.scratch_root.Path } catch { $null = $_ }
         $gone = Test-AapWinGone $B $vmId $name $clone $scratch
+        if (-not $detached) { $gone = $false }   # check:detach
         if ($gone) { break }
         if ($try -lt $script:TeardownTries) { & $B.Sleep $script:TeardownPauseSeconds }
     }
-    [void]$B.Guests.Remove($rid)   # the per-clone credential dies with the clone
+    if ($B.Guests.ContainsKey($rid)) { $B.Guests[$rid].Password.Clear(); [void]$B.Guests.Remove($rid) }   # the per-clone credential dies with the clone
     if (-not $gone) {
-        Write-AapWinJournal $B $r 'destroy' 'failed' -VmId $vmId -Code 'retryable' -Detail 'the VM or a reservation folder remains after 3 tries'
-        if ($r.state -ceq 'deleting') { [void](Set-AapWinState $B $r quarantined -Kind teardown_failed -Reason 'VM or reservation folders remain after 3 tries; capacity held') }
+        Write-AapWinFailedOnce $B $r $j 'destroy' $vmId 'retryable' 'the VM, its network or a reservation folder remains after 3 tries'
+        if ($r.state -ceq 'deleting') { [void](Set-AapWinState $B $r quarantined -Kind teardown_failed -Reason 'VM, network or reservation folders remain after 3 tries; capacity held') }
         return (New-AapWinResult $r 'held' 'teardown_failed')
     }
     if ($runner -is [string] -and $runner -ceq 'pending') {
-        Write-AapWinJournal $B $r 'destroy' 'failed' -VmId $vmId -Code 'retryable' -Detail 'VM gone; runner release pending'
+        Write-AapWinFailedOnce $B $r $j 'destroy' $vmId 'retryable' 'VM gone; runner release pending'
         return (New-AapWinResult $r 'waiting' 'release_pending')
     }
     if ($runner -is [string] -and $runner -ceq 'uncertain') {
-        Write-AapWinJournal $B $r 'destroy' 'failed' -VmId $vmId -Code 'fatal' -Detail 'VM gone; the broker has no record of an issued lease'
+        Write-AapWinFailedOnce $B $r $j 'destroy' $vmId 'fatal' 'VM gone; the broker has no record of an issued lease'
         if ($r.state -ceq 'deleting') { [void](Set-AapWinState $B $r quarantined -Kind teardown_failed -Reason 'runner deregistration uncertain; capacity held') }
         return (New-AapWinResult $r 'held' 'release_uncertain')
     }
@@ -918,7 +1089,7 @@ function Invoke-AapWinDestroy($B, $r, $j, [switch]$Force) {
     $a = Get-AapWinAllocArgs $B $r
     $c = Complete-AapTeardown @a -Proof $proof
     if ($c.Ok) {
-        [void]$B.Leases.Remove($rid)
+        foreach ($t in $B.Leases, $B.Tried, $B.StatusAt, $B.StatusBusy) { [void]$t.Remove($rid) }
         $next = Get-AapWinField $c 'Reservation'
         if ($null -ne $next) { $r = $next }
         return (New-AapWinResult $r 'destroyed')
@@ -931,13 +1102,13 @@ function Invoke-AapWinAbandon($B, $r, $j, [string]$Op, [string]$Code, [string]$D
     $vmId = [string]$j.VmId
     if (-not $vmId -and $B.Guests.ContainsKey([string]$r.reservation_id)) { $vmId = [string]$B.Guests[[string]$r.reservation_id].VmId }
     if ($Op -cne 'create' -and -not $vmId) { $Op = 'create' }   # a record after create must name its VM
-    Write-AapWinJournal $B $r $Op 'failed' -VmId $vmId -Code $Code -Detail $Detail
+    Write-AapWinFailedOnce $B $r $j $Op $vmId $Code $Detail
     $j = Read-AapWinJournal $B $r
     if ($vmId -or $r.state -cne 'creating') {
         $next = Move-AapWinState $B $r 'deleting' $vmId
         if ($null -ne $next) { $r = $next }
     }
-    $out = Invoke-AapWinDestroy $B $r $j -Force
+    $out = Invoke-AapWinDestroy $B $r $j -Force -Urgent
     if (-not $out.Code) { $out.Code = $Code }
     $out
 }
@@ -955,22 +1126,37 @@ function Invoke-AapWinHostile($B, $r, $j, [string]$Op, [string]$Code) {
         $next = Get-AapWinField $s 'Reservation'
         if ($s.Ok -and $null -ne $next) { $r = $next }
     } catch { $null = $_ }
-    $out = Invoke-AapWinDestroy $B $r (Read-AapWinJournal $B $r) -Force
+    $out = Invoke-AapWinDestroy $B $r (Read-AapWinJournal $B $r) -Force -Urgent
     $out.Code = $Code
     $out
 }
 
+# The limits backend-lifecycle.md lets end a running VM, checked from the host on every step of a reservation that has a
+# VM, with or without a guest channel (a guest that silences its agent is measured all the same): a paused VM, and a
+# clone folder over clone_gib. Returns the reason, or $null.
+function Get-AapWinLimitBreach($B, $r, $j) {
+    if (-not $j.VmId) { return $null }
+    $vm = @(Get-AapWinVms $B | Where-Object { $_.Id -ceq [string]$j.VmId })
+    if (-not $vm.Count) { return $null }
+    if ($vm[0].State -like 'Paused*') { return 'vm paused' }   # check:vm-paused
+    $clone = Join-Path $B.Storage.clone_root.Path ([string]$r.reservation_id)
+    if ([double](& $B.Provider.MeasureBytes @{ Path = $clone }) -gt [double]$r.clone_gib * $script:GiB) { return 'clone over cap' }   # check:clone-cap
+    $null
+}
+
 function Step-AapWinCreating($B, $r, $j, $g, [string]$BaseSha256) {
-    # A clone that already booted without this process: its credential died with the supervisor, so it cannot be probed
-    # (crash table: boot or ready in flight -> re-probe; on timeout destroy).
-    if ($j.Has['boot/intent'] -and $null -eq $g) { return (Invoke-AapWinAbandon $B $r $j 'ready' 'retryable' 'credential lost with the supervisor before ready') }   # check:lost-credential
     # An earlier step gave this clone up and its teardown is not finished: finish it, never create again.
     if ($j.Has['create/failed'] -or $j.Has['boot/failed'] -or $j.Has['ready/failed']) {   # check:no-recreate
         if ($j.VmId) { $next = Move-AapWinState $B $r 'deleting' ([string]$j.VmId); if ($null -ne $next) { $r = $next } }
         return (Invoke-AapWinDestroy $B $r $j)
     }
+    # A clone created or booted without this process: its credential died with the supervisor, so it is never booted or
+    # probed (crash table: boot or ready in flight -> re-probe; on timeout destroy).
+    if (($j.Has['create/done'] -or $j.Has['boot/intent']) -and $null -eq $g) {   # check:lost-credential
+        return (Invoke-AapWinAbandon $B $r $j $(if ($j.Has['boot/intent']) { 'ready' } else { 'boot' }) 'retryable' 'credential lost with the supervisor before ready')
+    }
     if (-not $j.Has['create/done']) {
-        try { [void](Invoke-AapWinCreate $B $r $BaseSha256) }
+        try { [void](Invoke-AapWinCreate $B $r $BaseSha256 $j) }
         catch { return (Invoke-AapWinAbandon $B $r (Read-AapWinJournal $B $r) 'create' 'fatal' (Get-AapWinError $_)) }
         return (New-AapWinResult $r 'created')
     }
@@ -1013,6 +1199,8 @@ function Invoke-AapWinRunOne($B, $r, $j, $g) {
     $B.Leases[$rid] = [string]$lease.Outcome
     $jit = $lease.JitConfig
     try {
+        if ($lease.Outcome -ceq 'issued') { Write-AapWinJournal $B $r 'ready' 'done' -VmId $j.VmId -Code 'ok' -Detail $script:LeaseAnswers[0] }
+        elseif ($lease.Outcome -ceq 'bad_reply') { Write-AapWinJournal $B $r 'ready' 'done' -VmId $j.VmId -Code 'ok' -Detail $script:LeaseAnswers[1] }
         Invoke-AapWinFault 'run_one:after-lease'
         $j = Read-AapWinJournal $B $r
         if ($lease.Outcome -cne 'issued') { return (Invoke-AapWinAbandon $B $r $j 'run_one' 'retryable' "lease $($lease.Outcome)") }
@@ -1032,7 +1220,7 @@ function Invoke-AapWinRunOne($B, $r, $j, $g) {
         Invoke-AapWinFault 'run_one:after-start'
         New-AapWinResult $r 'running'
     } finally {
-        if ($null -ne $jit) { $jit.Clear() }
+        if ($null -ne $jit) { $jit.Clear() }   # check:jit-clear
     }
 }
 
@@ -1041,6 +1229,7 @@ function Step-AapWinCollect($B, $r, $j, $g) {
     $summary = $null
     if (-not $j.Has['collect/done'] -and -not $j.Has['collect/failed']) {
         Write-AapWinJournal $B $r 'collect' 'intent' -VmId $j.VmId
+        Invoke-AapWinFault 'collect:after-intent'
         if ($null -ne $g -and $g.Started -and -not $g.Hostile) {
             $c = Invoke-AapWinCommand $B $r 'collect'
             if ($c.Kind -ceq 'hostile') { return (Invoke-AapWinHostile $B $r $j 'collect' $c.Code) }
@@ -1064,6 +1253,8 @@ function Step-AapWinCollect($B, $r, $j, $g) {
 # ready (runner started), busy, draining: one heartbeat. The guest's `status` reply proves liveness over this VM's own
 # channel; whether a job runs comes from the broker's record of the runner, never from the guest.
 function Step-AapWinRunning($B, $r, $j, $g) {
+    $breach = Get-AapWinLimitBreach $B $r $j
+    if ($breach) { return (Invoke-AapWinAbandon $B $r $j 'run_one' 'fatal' $breach) }
     if ($j.Has['run_one/done'] -or $j.Has['run_one/failed']) {
         if ($j.Has['run_one/failed']) { return (Invoke-AapWinAbandon $B $r $j 'run_one' 'retryable' 'run_one failed earlier') }
         $next = Move-AapWinState $B $r 'collecting'
@@ -1075,6 +1266,12 @@ function Step-AapWinRunning($B, $r, $j, $g) {
         if ($null -eq $g -or $r.state -cne 'ready') { return (Invoke-AapWinAbandon $B $r $j 'run_one' 'retryable' 'no lease and no guest channel') }
         return (Invoke-AapWinRunOne $B $r $j $g)
     }
+    $rid = [string]$r.reservation_id
+    $now = Get-AapWinNow $B
+    if ($B.StatusAt.ContainsKey($rid) -and ($now - $B.StatusAt[$rid]).TotalSeconds -lt $B.StatusSeconds) {
+        return (New-AapWinResult $r $(if ($B.StatusBusy[$rid]) { 'busy' } else { 'listening' }) 'not_due')
+    }
+    $B.StatusAt[$rid] = $now
     $live = $null -ne $g -and $g.Started -and -not $g.Hostile
     $hb = $null
     if ($live) {
@@ -1085,15 +1282,10 @@ function Step-AapWinRunning($B, $r, $j, $g) {
     $bs = Invoke-AapBrokerStatus -LeaseId $j.LeaseId @ba
     $known = $bs.Outcome -ceq 'ok'
     $busy = $known -and $bs.RunnerBusy -eq $true
+    $B.StatusBusy[$rid] = $busy
     if ($live -and $hb.Kind -ceq 'ok') {
         $a = Get-AapWinAllocArgs $B $r
         [void](Update-AapHeartbeat @a -JobRunning:$busy)
-    }
-    if ($live) {
-        $vm = @(Get-AapWinVms $B | Where-Object { $_.Id -ceq [string]$j.VmId })
-        if ($vm.Count -and $vm[0].State -like 'Paused*') { return (Invoke-AapWinAbandon $B $r $j 'run_one' 'fatal' 'vm paused') }   # check:vm-paused
-        $clone = Join-Path $B.Storage.clone_root.Path ([string]$r.reservation_id)
-        if ([double](& $B.Provider.MeasureBytes @{ Path = $clone }) -gt [double]$r.clone_gib * $script:GiB) { return (Invoke-AapWinAbandon $B $r $j 'run_one' 'fatal' 'clone over cap') }   # check:clone-cap
     }
     if ($known -and -not $busy -and ($bs.RunnerStatus -ceq 'absent' -or $bs.RunnerStatus -ceq 'offline')) {
         Write-AapWinJournal $B $r 'run_one' 'done' -VmId $j.VmId -Code 'ok' -Detail "runner $($bs.RunnerStatus) and idle: job ended"
@@ -1106,7 +1298,8 @@ function Step-AapWinRunning($B, $r, $j, $g) {
         # drain: a listening runner without a job is stopped (deregistered by the release in destroy); a busy runner is
         # never touched. Without a guest channel the same holds for ready, and for a lease the broker never recorded.
         Write-AapWinJournal $B $r 'drain' 'intent' -VmId $j.VmId
-        Write-AapWinJournal $B $r 'drain' 'done' -VmId $j.VmId -Code 'ok' -Detail 'runner online and idle; released at destroy'
+        Invoke-AapWinFault 'drain:after-intent'
+        Write-AapWinJournal $B $r 'drain' 'done' -VmId $j.VmId -Code 'ok' -Detail $(if ($known) { $script:DrainOnline } else { 'the broker has no runner for this lease; released at destroy' })
         $next = Move-AapWinState $B $r 'collecting'
         if ($null -eq $next) { return (New-AapWinResult $r 'held' 'allocator') }
         return (Step-AapWinCollect $B $next (Read-AapWinJournal $B $next) $g)
@@ -1118,15 +1311,18 @@ function Step-AapWinRunning($B, $r, $j, $g) {
 
 function Step-AapWinQuarantined($B, $r, $j, $g) {
     $kind = [string](Get-AapWinField $r 'quarantine_kind')
-    if ($kind -ceq 'hostile_guest' -or $kind -ceq 'teardown_failed') { return (Invoke-AapWinDestroy $B $r $j) }
+    if ($kind -ceq 'hostile_guest' -or $kind -ceq 'teardown_failed' -or $j.Has['destroy/intent']) { return (Invoke-AapWinDestroy $B $r $j) }
+    $breach = Get-AapWinLimitBreach $B $r $j
+    if ($breach) { return (Invoke-AapWinAbandon $B $r $j 'run_one' 'fatal' $breach) }
     if ($kind -ceq 'heartbeat' -and $null -ne $g -and $g.Started -and -not $g.Hostile -and $j.LeaseId) {
         $hb = Invoke-AapWinCommand $B $r 'status'
         if ($hb.Kind -ceq 'hostile') { return (Invoke-AapWinHostile $B $r $j 'run_one' $hb.Code) }
         if ($hb.Kind -ceq 'ok') {
             $ba = $B.BrokerArgs
             $bs = Invoke-AapBrokerStatus -LeaseId $j.LeaseId @ba
+            if ($bs.Outcome -cne 'ok') { return (New-AapWinResult $r 'held' 'broker_unavailable') }   # check:recover-broker
             $a = Get-AapWinAllocArgs $B $r
-            $h = Update-AapHeartbeat @a -JobRunning:($bs.Outcome -ceq 'ok' -and $bs.RunnerBusy -eq $true)
+            $h = Update-AapHeartbeat @a -JobRunning:($bs.RunnerBusy -eq $true)
             $next = Get-AapWinField $h 'Reservation'
             if ($null -ne $next) { $r = $next }
             return (New-AapWinResult $r 'recovered')
@@ -1182,25 +1378,32 @@ function New-AapWinBackend {
         Provider = $Provider; Network = $Network; Storage = $storage; AllocatorRoot = $AllocatorRoot; JournalRoot = $JournalRoot
         AllocArgs = @{ LockTimeoutSeconds = $LockTimeoutSeconds; RelaxedTrustForTests = [bool]$RelaxedTrustForTests }
         BrokerArgs = $broker; Relaxed = [bool]$RelaxedTrustForTests; TrustedSids = $trusted
-        Transport = $Transport; Now = $Clock; Sleep = $Sleep
-        Guests = @{}; Leases = @{}
+        Transport = $Transport; Now = $Clock; Sleep = $Sleep; StatusSeconds = $script:StatusSeconds
+        Guests = @{}; Leases = @{}; Tried = @{}; StatusAt = @{}; StatusBusy = @{}
     }
     if ($null -eq $B.Transport) { $B.Transport = { param($Call) Invoke-AapWinGuestChild $Call } }
     if ($null -eq $B.Now) { $B.Now = { [DateTime]::UtcNow } }
     if ($null -eq $B.Sleep) { $B.Sleep = { param($Seconds) Start-Sleep -Seconds $Seconds } }
-    if ((Get-AapWinPathKind $JournalRoot) -ceq 'absent' -and (Get-AapWinPathKind (Split-Path -Parent $JournalRoot)) -ceq 'dir') {
-        # A new journal folder is admin-only from its creation (P09's New-AapFolder): protected DACL, SYSTEM and
-        # Administrators full control; relaxed mode adds the current user so an unelevated test can write.
-        $sddl = 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
-        if ($RelaxedTrustForTests) { $sddl += "(A;OICI;FA;;;$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))" }
-        $sec = New-Object Security.AccessControl.DirectorySecurity
-        $sec.SetSecurityDescriptorSddlForm($sddl)
-        $ext = 'System.IO.FileSystemAclExtensions' -as [type]
-        if ($ext -and $ext.GetMethod('Create', [type[]]@([IO.DirectoryInfo], [Security.AccessControl.DirectorySecurity]))) { [void]$ext::Create([IO.DirectoryInfo]$JournalRoot, $sec) }
-        else { [void][IO.Directory]::CreateDirectory($JournalRoot, $sec) }
-    }
+    # A new journal folder, and its compile folder, are admin-only from their creation (P09's New-AapFolder): protected
+    # DACL, SYSTEM and Administrators full control; relaxed mode adds the current user so an unelevated test can write.
+    $sddl = 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
+    if ($RelaxedTrustForTests) { $sddl += "(A;OICI;FA;;;$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))" }
+    $sec = New-Object Security.AccessControl.DirectorySecurity
+    $sec.SetSecurityDescriptorSddlForm($sddl)
+    if ((Get-AapWinPathKind $JournalRoot) -ceq 'absent' -and (Get-AapWinPathKind (Split-Path -Parent $JournalRoot)) -ceq 'dir') { New-AapWinDir $JournalRoot $sec }
     $problems = @(Get-AapWinTrustProblem $B $JournalRoot)
     if ($problems.Count) { throw "AAP_JournalUntrusted: $($problems -join '; ')" }   # check:journal-trust
+    # Windows PowerShell compiles Add-Type through csc.exe with temporary files under %TMP%: in the elevated supervisor
+    # they must not sit in a folder a user can write, or a planted file could join the compiled job object type.
+    $compile = Join-Path $JournalRoot 'compile'
+    if ((Get-AapWinPathKind $compile) -ceq 'absent') { New-AapWinDir $compile $sec }
+    $problems = @(Get-AapWinTrustProblem $B $compile)
+    if ($problems.Count) { throw "AAP_CompileUntrusted: $($problems -join '; ')" }   # check:compile-trust
+    if (-not ('AapWinJobObject' -as [type])) {
+        $saved = @($env:TMP, $env:TEMP)
+        try { $env:TMP = $compile; $env:TEMP = $compile; Add-Type -TypeDefinition $script:JobSource }
+        finally { $env:TMP = $saved[0]; $env:TEMP = $saved[1] }
+    }
     $B
 }
 
@@ -1217,10 +1420,20 @@ function Invoke-AapWinStep {
     if ((Get-AapWinField $r 'profile') -cne 'windows' -or (Get-AapWinField $r 'backend') -cne 'hyperv-vm' -or [string](Get-AapWinField $r 'reservation_id') -cnotmatch $script:RidRe) {
         throw 'AAP_BadRequest: the Windows backend steps windows hyperv-vm reservations only'
     }
+    $lock = $null
+    try { $lock = New-Object IO.FileStream((Join-Path $B.JournalRoot ([string]$r.reservation_id + '.lock')), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose) } catch { $lock = $null }
+    if ($null -eq $lock) { return (New-AapWinResult $r 'held' 'step_in_progress') }   # check:step-lock
+    try { Step-AapWinOne $B $r $BaseSha256 } finally { $lock.Dispose() }
+}
+
+function Step-AapWinOne($B, $r, [string]$BaseSha256) {
     try { $j = Read-AapWinJournal $B $r }
     catch {
-        # Journal unreadable: quarantine the reservation, capacity held (backend-lifecycle.md, crash table).
-        if (@('creating', 'ready', 'busy', 'draining', 'collecting') -ccontains [string]$r.state) { [void](Set-AapWinState $B $r quarantined -Kind crash -Reason 'journal unreadable; capacity held') }
+        # Journal unreadable: quarantine the reservation, capacity held (backend-lifecycle.md, crash table); a deleting
+        # one as teardown_failed (the only quarantine a deleting slot may enter), never left deleting for ever.
+        $s = [string]$r.state
+        $qk = $(if ($s -ceq 'deleting') { 'teardown_failed' } else { 'crash' })
+        if (@('creating', 'ready', 'busy', 'draining', 'collecting', 'deleting') -ccontains $s) { [void](Set-AapWinState $B $r quarantined -Kind $qk -Reason 'journal unreadable; capacity held') }   # check:journal-deleting
         return (New-AapWinResult $r 'held' 'journal_unreadable')
     }
     $g = $null
@@ -1228,7 +1441,7 @@ function Invoke-AapWinStep {
     # A hostile guest is final: once journaled, the slot only goes down, even after a crash between the journal and the
     # allocator write.
     $kind = [string](Get-AapWinField $r 'quarantine_kind')
-    if ($j.Hostile -and $r.state -cne 'deleting' -and -not ($r.state -ceq 'quarantined' -and @('hostile_guest', 'teardown_failed') -ccontains $kind)) {   # check:hostile-final
+    if ($j.Hostile -and $r.state -cne 'deleting' -and $r.state -cne 'reconciled' -and -not ($r.state -ceq 'quarantined' -and @('hostile_guest', 'teardown_failed') -ccontains $kind)) {   # check:hostile-final
         return (Invoke-AapWinHostile $B $r $j 'run_one' $j.Hostile)
     }
     switch -CaseSensitive ([string]$r.state) {
@@ -1282,4 +1495,4 @@ function Get-AapWinBrokerStatus {
 }
 
 Export-ModuleMember -Function New-AapWinBackend, Invoke-AapWinStep, Get-AapWinInventory, Get-AapWinBrokerStatus, Get-AapWinStorageProblem,
-    Write-AapWinGuestFile, Select-AapWinPartition, New-AapWinUnattend
+    Get-AapWinHostProblem, Select-AapWinPartition, Write-AapWinUnattend

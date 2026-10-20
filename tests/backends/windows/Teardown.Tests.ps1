@@ -111,6 +111,24 @@ Describe 'no slot reuse before the teardown is observed' {
         (Request-AapReservation -Root $x.W.Cap -Profile windows -MemOverheadMib 512 -CloneGib 60 -ScratchGib 40 -IoMbps 100 -RelaxedTrustForTests).Ok | Should -BeTrue
     }
 
+    It 'a scratch folder that will not go, a network that will not detach, or a root on another volume holds the slot' -Tag 'observe-scratch', 'detach', 'gone-volume' {
+        foreach ($case in @('scratch', 'detach', 'volume')) {
+            $x = New-WinEndedJob
+            $w = $x.W   # the fakes find their world as $w
+            $h = $null
+            if ($case -eq 'scratch') { $h = [IO.File]::Open((Join-Path $x.W.Scratch "$($x.Id)\held.bin"), 'Create', 'ReadWrite', 'None') }
+            if ($case -eq 'detach') { Set-WinKnob $w @{ DetachFails = $true } }
+            if ($case -eq 'volume') { Set-WinKnob $w @{ WrongVolume = 'scratch' } }
+            try { $s = Step-Win $x } finally { if ($h) { $h.Dispose() } }
+            $s.Code | Should -Be 'teardown_failed' -Because $case
+            (Get-WinRes $x.W $x.Id).state | Should -Be 'quarantined'
+            Set-WinKnob $w @{ DetachFails = $false; WrongVolume = '' }
+            $x.B.Now = { [DateTime]::UtcNow.AddSeconds(60) }
+            [void](Step-Win $x)
+            (Get-WinRes $x.W $x.Id).state | Should -Be 'reconciled' -Because $case
+        }
+    }
+
     It 'a reservation folder that will not go holds the slot too' -Tag 'observe-absent' {
         $x = New-WinEndedJob
         $w = $x.W   # the fakes find their world as $w
@@ -167,6 +185,16 @@ Describe 'links in a clone folder never redirect a delete' {
         [void](Step-Win $x)
         Test-Path -LiteralPath (Join-Path $outside 'keep.txt') | Should -BeTrue
         Test-Path -LiteralPath $dir | Should -BeFalse
+    }
+
+    It 'never re-permissions a link (an ACL write would land on its target)' -Tag 'grant-link' {
+        $target = Join-Path $TestDrive 'acl-target'
+        [void][IO.Directory]::CreateDirectory($target)
+        $before = (Get-Acl -LiteralPath $target).Sddl
+        $link = Join-Path $TestDrive 'acl-link'
+        & cmd.exe /c mklink /J $link $target | Out-Null
+        { Invoke-WinInModule { param($p) Grant-AapWinOwnerAccess $p $true } @($link) } | Should -Throw '*AAP_UnsafeDelete: a link*'
+        (Get-Acl -LiteralPath $target).Sddl | Should -Be $before
     }
 
     It 'refuses to walk through a link on the way to the folder' -Tag 'safe-delete' {

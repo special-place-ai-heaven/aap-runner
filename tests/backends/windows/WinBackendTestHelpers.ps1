@@ -5,7 +5,8 @@
 # parent then recovers from. Nothing here calls Hyper-V, wsl.exe or the network.
 # The fakes resolve $w (the world) at call time from the calling scope, as P06's do: a test names its world $w.
 # No secret is ever written: the fake broker keeps the SHA-256 of each JIT config, the fake disk the SHA-256 of the
-# per-clone password, and the fake guest the SHA-256 and length of what it received.
+# per-clone password, and the fake guest the SHA-256 and length of what it received. The password is the backend's
+# secret object (Length, WriteTo, Clear); Get-WinSecretBytes reads it the way the call child does, from a stream.
 
 $script:Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $script:BackendModule = $(if ($env:AAP_WINBACKEND_MODULE) { $env:AAP_WINBACKEND_MODULE } else { Join-Path $script:Repo 'supervisor\backends\windows\AapWinBackend.psm1' })
@@ -22,6 +23,15 @@ $script:GiB = 1073741824
 function Get-WinSha([byte[]]$Bytes) {
     $h = [Security.Cryptography.SHA256]::Create()
     try { ([BitConverter]::ToString($h.ComputeHash($Bytes)) -replace '-', '').ToLowerInvariant() } finally { $h.Dispose() }
+}
+function Get-WinSecretBytes($Secret) { $ms = New-Object IO.MemoryStream; $Secret.WriteTo($ms); , $ms.ToArray() }
+# A secret object like New-AapWinPassword's, around a test value.
+function New-WinSecret([string]$Text) {
+    $bytes = [Text.Encoding]::ASCII.GetBytes($Text)
+    $s = [pscustomobject]@{ Length = $bytes.Length }
+    $s.PSObject.Methods.Add([Management.Automation.PSScriptMethod]::new('WriteTo', { param([IO.Stream]$Stream) $Stream.Write($bytes, 0, $bytes.Length) }.GetNewClosure()))
+    $s.PSObject.Methods.Add([Management.Automation.PSScriptMethod]::new('Clear', { [Array]::Clear($bytes, 0, $bytes.Length) }.GetNewClosure()))
+    $s
 }
 function ConvertFrom-WinJson([string]$Text) {
     if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) { return , (ConvertFrom-Json -InputObject $Text -DateKind String) }
@@ -64,6 +74,11 @@ function New-WinWorld {
     $w.BaseFile = Join-Path $genDir 'base.vhdx'
     [IO.File]::WriteAllText($w.BaseFile, 'fake sealed base disk')
     $w.BaseSha = (Get-FileHash -LiteralPath $w.BaseFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    # Sealed as P06 leaves it: protected DACL, no write for anyone but the admins (here: the test user), ReadOnly.
+    New-WinAclDir $genDir
+    $out = & icacls.exe $w.BaseFile /inheritance:r /grant:r '*S-1-5-18:F' '*S-1-5-32-544:F' "*$($script:UserSid):F" '*S-1-5-83-0:RX' 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "icacls failed: $out" }
+    [IO.File]::SetAttributes($w.BaseFile, [IO.FileAttributes]::ReadOnly)
     $roots = [ordered]@{
         base_root = [ordered]@{ path = $w.Base; volume_guid = $script:VolGuid }; clone_root = [ordered]@{ path = $w.Clones; volume_guid = $script:VolGuid }
         scratch_root = [ordered]@{ path = $w.Scratch; volume_guid = $script:VolGuid }; staging_root = $null
@@ -120,14 +135,23 @@ function Save-WinLeases($World, $Leases) { Write-WinJson (Join-Path $World.Fake 
 function New-WinProvider {
     $p = @{}
     $p.GetVolumeGuid = { param($a) $bad = Get-WinKnob $w 'WrongVolume' ''; if ($bad -and $a.Path -like "*$bad*") { return $script:OtherGuid }; $script:VolGuid }
-    $p.HashFile = { param($a) Add-WinCall $w "HashFile $($a.Path)"; $o = Get-WinKnob $w 'HashOverride' ''; if ($o) { return $o }; (Get-FileHash -LiteralPath $a.Path -Algorithm SHA256).Hash.ToLowerInvariant() }
-    $p.NewDiffDisk = { param($a) Add-WinCall $w "NewDiffDisk $($a.Path) $($a.Parent)"; [IO.File]::WriteAllText($a.Path, 'differencing child of ' + (Split-Path -Leaf $a.Parent)) }
+    $p.GetHostSecurity = { param($a)
+        if (Get-WinKnob $w 'HostFails' $false) { throw 'fake: Get-VMHost failed' }
+        @{ EnhancedSessionMode = (Get-WinKnob $w 'EnhancedSession' $false); HyperVAdmins = [object[]]@(Get-WinKnob $w 'HyperVAdmins' @()) }
+    }
+    $p.HashFile = { param($a)
+        Add-WinCall $w "HashFile $($a.Path)"
+        if (-not ($a.Stream -is [IO.FileStream]) -or $a.Stream.CanWrite) { throw 'fake: HashFile needs the backend''s read handle' }
+        $o = Get-WinKnob $w 'HashOverride' ''; if ($o) { return $o }; (Get-FileHash -LiteralPath $a.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $p.NewDiffDisk = { param($a) Add-WinCall $w "NewDiffDisk $($a.Path) $($a.Parent)"; [IO.File]::WriteAllText($a.Path, 'differencing child of ' + $a.Parent) }
+    $p.GetVhdParent = { param($a) $o = Get-WinKnob $w 'VhdParent' ''; if ($o) { return $o }; [IO.File]::ReadAllText($a.Path).Substring('differencing child of '.Length) }
     $p.NewDisk = { param($a) Add-WinCall $w "NewDisk $($a.Path) $($a.SizeBytes)"; [IO.File]::WriteAllText($a.Path, "dynamic vhdx max $($a.SizeBytes)") }
     $p.WriteUnattend = { param($a)
         Add-WinCall $w "WriteUnattend $($a.Vhdx) $($a.User)"
         if (Get-WinKnob $w 'UnattendFails' $false) { throw 'AAP_DiskLayout: fake mount failed' }
-        if ($a.Password.Length -ne 32) { throw 'fake: the password is not 32 characters' }
-        [IO.File]::WriteAllText($a.Vhdx + '.cred', (Get-WinSha ($script:Utf8.GetBytes($a.Password))))
+        if ($a.Password -is [string] -or $a.Password.Length -ne 32) { throw 'fake: the password is not a 32-character secret object' }
+        [IO.File]::WriteAllText($a.Vhdx + '.cred', (Get-WinSha (Get-WinSecretBytes $a.Password)))
     }
     $p.NewVm = { param($a)
         Add-WinCall $w "NewVm $($a.Name)"
@@ -139,8 +163,9 @@ function New-WinProvider {
         $vm = [ordered]@{ Id = $id; Name = $a.Name; State = 'Off'; Cpus = $a.Cpus; MemGib = $a.MemGib; Generation = 2; CheckpointType = 'Disabled'
             AutomaticStopAction = 'TurnOff'; AutomaticStartAction = 'Nothing'; GuestServiceInterface = $false; KeyValuePairExchange = $false
             ConfigurationLocation = $a.Path; SnapshotFileLocation = $a.Path; SmartPagingFilePath = $a.Path; Cred = ($a.OsDisk + '.cred')
-            Disks = @(@($a.OsDisk, $a.ScratchDisk) | Where-Object { $_ }); Adapters = @()
+            Disks = @(@($a.OsDisk, $a.ScratchDisk) | Where-Object { $_ }); Adapters = @(); ComPorts = 0; DvdDrives = 0; GpuPartitions = 0; AssignedDevices = 0
         }
+        if (Get-WinKnob $w 'ExtraDisk' $false) { $vm.Disks = @($vm.Disks) + (Join-Path $a.Path 'extra.vhdx') }
         $o = Get-WinKnob $w 'VmOverride' $null
         if ($null -ne $o) { foreach ($q in $o.PSObject.Properties) { $vm[$q.Name] = $q.Value } }
         Save-WinVms $w (@(Get-WinVms $w) + [pscustomobject]$vm)
@@ -180,14 +205,16 @@ function New-WinNetwork {
             }
             Save-WinVms $w $vms
         }
-        Detach = { param($a) Add-WinCall $w "NetDetach $($a.VmId)" }
+        Detach = { param($a) Add-WinCall $w "NetDetach $($a.VmId)"; if (Get-WinKnob $w 'DetachFails' $false) { throw 'fake: detach failed' } }
         Verify = { param($a) @(Get-WinKnob $w 'NetProblems' @()) }
     }
 }
 
 # The guest agent of guest-transport.md, file-backed per VM: it refuses a wrong vm_id, a lease generation other than the
-# first it saw, a seq that is not previous + 1, a reused nonce, an expired command and a second one-shot command. Knob
-# 'Guest' maps a command (or '*') to a misbehaviour.
+# first it saw, a seq not strictly greater than the last one it accepted (guest-transport.md, Sequence rule: gaps are
+# fine), a reused nonce, an expired command and a second one-shot command. Knob 'Guest' maps a command (or '*') to a misbehaviour; 'NotUp' is a
+# count of calls that find no PowerShell Direct yet (the agent never sees them); 'LoseReply' a count of calls the agent
+# accepts whose reply never arrives.
 function New-WinGuest {
     {
         param($Call)
@@ -197,14 +224,16 @@ function New-WinGuest {
         $none = @{ ExitCode = 0; Stdout = [byte[]]@(); TimedOut = $false; Overflow = $false }
         $vm = @(Get-WinVms $w | Where-Object { $_.Id -eq $Call.VmId })
         if (-not $vm.Count -or $vm[0].State -ne 'Running') { return $none }
+        $notUp = [int](Get-WinKnob $w 'NotUp' 0)
+        if ($notUp -gt 0) { Set-WinKnob $w @{ NotUp = $notUp - 1 }; return $none }
         $cred = [IO.File]::ReadAllText($vm[0].Cred)
-        if ((Get-WinSha ($script:Utf8.GetBytes($Call.Password))) -ne $cred) { Add-WinCall $w "GuestAuthRefused $($Call.VmId)"; return $none }
+        if ((Get-WinSha (Get-WinSecretBytes $Call.Password)) -ne $cred) { Add-WinCall $w "GuestAuthRefused $($Call.VmId)"; return $none }
         $sf = Join-Path $w.Fake "guests\$($Call.VmId).json"
         $st = Read-WinJson $sf ([pscustomobject]@{ Seq = 0; Gen = 0; Nonces = @(); Shots = @(); Probes = 0; PayloadSha = ''; PayloadLen = 0 })
         $status = 'ok'; $state = 'booting'; $exit = $null; $diag = ''
         $shot = @('deliver_registration', 'start_runner', 'shutdown') -contains $hc.cmd
         $expired = [DateTime]::ParseExact($hc.expires_at, "yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture, 'AssumeUniversal, AdjustToUniversal') -lt [DateTime]::UtcNow.AddSeconds([double](Get-WinKnob $w 'ClockOffset' 0) - 5)
-        if ($hc.vm_id -ne $Call.VmId -or ($st.Gen -and $st.Gen -ne $hc.lease_generation) -or $hc.seq -ne $st.Seq + 1 -or @($st.Nonces) -contains $hc.nonce -or
+        if ($hc.vm_id -ne $Call.VmId -or ($st.Gen -and $st.Gen -ne $hc.lease_generation) -or $hc.seq -le $st.Seq -or @($st.Nonces) -contains $hc.nonce -or
             ($shot -and @($st.Shots) -contains $hc.cmd) -or $expired) {
             $status = 'refused'; $diag = 'refused by the agent'
         } else {
@@ -219,6 +248,8 @@ function New-WinGuest {
             }
         }
         Write-WinJson $sf $st
+        $lose = [int](Get-WinKnob $w 'LoseReply' 0)
+        if ($lose -gt 0) { Set-WinKnob $w @{ LoseReply = $lose - 1 }; return $none }
         $reply = [ordered]@{ schema = 1; kind = 'guest_reply'; vm_id = $hc.vm_id; reservation_id = $hc.reservation_id; lease_generation = $hc.lease_generation
             seq = $hc.seq; nonce = $hc.nonce; status = $status; guest_state = $state; runner_exit_code = $exit; diag = $diag
         }
@@ -314,11 +345,14 @@ function New-WinBroker {
 
 # ---- driving it ----------------------------------------------------------------------------------------------------
 
+# The status cadence is off (StatusSeconds 0) so every step heartbeats; one test puts it back.
 function New-WinBackend($World) {
     $w = $World
-    New-AapWinBackend -Provider (New-WinProvider) -Network (New-WinNetwork) -Transport (New-WinGuest) -BrokerInvoker (New-WinBroker) `
+    $B = New-AapWinBackend -Provider (New-WinProvider) -Network (New-WinNetwork) -Transport (New-WinGuest) -BrokerInvoker (New-WinBroker) `
         -AllocatorRoot $w.Cap -JournalRoot $w.Journal -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue `
         -Clock { [DateTime]::UtcNow.AddSeconds([double](Get-WinKnob $w 'ClockOffset' 0)) } -Sleep { param($s) }
+    $B.StatusSeconds = 0
+    $B
 }
 
 function New-WinReservation($World) {

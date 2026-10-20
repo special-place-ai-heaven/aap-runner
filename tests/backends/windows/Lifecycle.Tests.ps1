@@ -63,10 +63,13 @@ Describe 'one job, end to end' {
         $ex = @([IO.Directory]::GetFiles((Join-Path $w.Fake 'exchanges')) | ForEach-Object { [IO.File]::ReadAllText($_) })
         $ex.Count | Should -BeGreaterOrEqual 6
         Invoke-WinValidator $w 'guest-transport' $ex | Should -BeNullOrEmpty
-        # The ops in order, intent before every outcome.
+        # The ops in order, intent before every outcome; the VM id is journaled right after New-VM (a second create intent)
+        # and the lease outcome right after the lease call (a repeated ready done).
         $j = Get-WinJournal $w $rid
-        ($j | ForEach-Object { "$($_.op)/$($_.phase)" }) -join ' ' | Should -Be ('create/intent create/done boot/intent boot/done ready/intent ready/done run_one/intent run_one/done ' +
-            'collect/intent collect/done destroy/intent destroy/done')
+        ($j | ForEach-Object { "$($_.op)/$($_.phase)" }) -join ' ' | Should -Be ('create/intent create/intent create/done boot/intent boot/done ready/intent ready/done ' +
+            'run_one/intent ready/done run_one/done collect/intent collect/done destroy/intent destroy/done')
+        $j[1].vm.vm_id | Should -Be $vm[0].Id
+        $j[8].result.detail | Should -Be 'lease issued by the broker'
     }
 
     It 'sizes the scratch disk inside scratch_gib and records the hard caps' -Tag 'disk-kind' {
@@ -94,6 +97,62 @@ Describe 'one job, end to end' {
         $s.Action | Should -Be 'destroyed'
         (Get-WinRes $w $rid).teardown_proof.runner_deregistered | Should -Be 'never_registered'
         @(Get-WinVms $w).Count | Should -Be 0
+    }
+
+    It 'a guest whose PowerShell Direct is not up yet, or whose reply was lost, still gets to ready: seq only grows' {
+        foreach ($k in @(@{ NotUp = 3 }, @{ LoseReply = 2 })) {
+            $w = New-WinWorld
+            $B = New-WinBackend $w
+            Set-WinKnob $w $k
+            $r = New-WinReservation $w
+            $rid = $r.reservation_id
+            $acts = @(Invoke-WinSteps $B $w $rid -Max 8 -Until { param($x) $x.state -eq 'ready' } | ForEach-Object { $_.Action })
+            ($acts -join ',') | Should -Be $(if ($k.NotUp) { 'created,booted,probing,probing,probing,ready' } else { 'created,booted,probing,probing,ready' })
+            (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Action | Should -Be 'running'
+            $seqs = @(Get-ChildItem -LiteralPath (Join-Path $w.Fake 'exchanges') | ForEach-Object { (Read-WinJson $_.FullName $null).cmd.seq } | Sort-Object)
+            $seqs[-1] | Should -BeGreaterThan $seqs.Count -Because 'the commands the guest never answered left gaps'
+        }
+    }
+
+    It 'asks the guest and the broker at most every 30 s per reservation' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))   # running
+        $B.StatusSeconds = 30
+        Set-WinKnob $w @{ RunnerBusy = $true }
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Action | Should -Be 'busy'
+        $n = @(Get-WinCalls $w 'Broker status_request *').Count
+        $s = Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)
+        $s.Action | Should -Be 'busy'
+        $s.Code | Should -Be 'not_due'
+        @(Get-WinCalls $w 'Broker status_request *').Count | Should -Be $n
+        $B.Now = { [DateTime]::UtcNow.AddSeconds(31) }
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Code | Should -Not -Be 'not_due'
+        @(Get-WinCalls $w 'Broker status_request *').Count | Should -Be ($n + 1)
+    }
+
+    It 'a drained runner whose release is not final keeps its VM until it is' -Tag 'drain-keep' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))   # running, listening, no job
+        [void](Set-AapSlotState -Root $w.Cap -ReservationId $rid -LeaseGeneration $r.lease_generation -State draining -RelaxedTrustForTests)
+        Set-WinKnob $w @{ ReleaseOutcome = 'retry' }
+        $s = Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)
+        $s.Code | Should -Be 'release_pending'
+        (Get-WinRes $w $rid).state | Should -Be 'deleting'
+        @(Get-WinVms $w).Count | Should -Be 1
+        @(Get-WinCalls $w 'RemoveVm *').Count | Should -Be 0
+        Set-WinKnob $w @{ ReleaseOutcome = 'normal' }
+        $B.Now = { [DateTime]::UtcNow.AddSeconds(60) }
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Action | Should -Be 'destroyed'
+        @(Get-WinVms $w).Count | Should -Be 0
+        (Get-WinRes $w $rid).teardown_proof.runner_deregistered | Should -BeTrue
     }
 
     It 'drains an idle runner: deregisters it and destroys the VM; a busy one keeps running' -Tag 'jobrunning' {
@@ -149,7 +208,30 @@ Describe 'one job, end to end' {
         }
     }
 
-    It 'a heartbeat-quarantined slot returns to busy on a validated reply, with JobRunning from the broker' -Tag 'jobrunning' {
+    It 'a heartbeat-quarantined clone over its cap or paused is destroyed from the host, with or without a guest channel' -Tag 'clone-cap', 'vm-paused' {
+        foreach ($case in @(@{ Knob = @{ CloneBytes = 61 * $script:GiB }; Restart = $false }, @{ Knob = @{ CloneBytes = 61 * $script:GiB }; Restart = $true }, @{ Knob = @{ Paused = $true }; Restart = $true })) {
+            $w = New-WinWorld
+            $B = New-WinBackend $w
+            $r = New-WinReservation $w
+            $rid = $r.reservation_id
+            [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+            [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))
+            Set-WinKnob $w @{ RunnerBusy = $true; Guest = @{ status = 'silent' } }   # the guest stops answering
+            [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))
+            & (Get-Module AapCapacity) { function script:Get-AapUtcNow { [DateTime]::UtcNow.AddSeconds(120) } }
+            try { [void](Invoke-AapReconcile -Root $w.Cap -RelaxedTrustForTests) } finally { & (Get-Module AapCapacity) { function script:Get-AapUtcNow { [DateTime]::UtcNow } } }
+            (Get-WinRes $w $rid).quarantine_kind | Should -Be 'heartbeat'
+            Set-WinKnob $w $case.Knob
+            if ($case.Restart) { $B = New-WinBackend $w }
+            $s = Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)
+            $s.Action | Should -Be 'destroyed' -Because ($case.Knob.Keys -join ',')
+            @(Get-WinVms $w).Count | Should -Be 0
+            (Get-WinRes $w $rid).state | Should -Be 'reconciled'
+            @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'run_one' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeIn @('clone over cap', 'vm paused')
+        }
+    }
+
+    It 'a heartbeat-quarantined slot returns to busy on a validated reply, with JobRunning from the broker' -Tag 'jobrunning', 'recover-broker' {
         $w = New-WinWorld
         $B = New-WinBackend $w
         $r = New-WinReservation $w
@@ -162,6 +244,10 @@ Describe 'one job, end to end' {
         & (Get-Module AapCapacity) { function script:Get-AapUtcNow { [DateTime]::UtcNow.AddSeconds(120) } }
         try { [void](Invoke-AapReconcile -Root $w.Cap -RelaxedTrustForTests) } finally { & (Get-Module AapCapacity) { Remove-Item function:script:Get-AapUtcNow; function script:Get-AapUtcNow { [DateTime]::UtcNow } } }
         (Get-WinRes $w $rid).quarantine_kind | Should -Be 'heartbeat'
+        Set-WinKnob $w @{ StatusOutcome = 'unavailable' }   # a reply alone is not enough: the broker must answer too
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Code | Should -Be 'broker_unavailable'
+        (Get-WinRes $w $rid).state | Should -Be 'quarantined'
+        Set-WinKnob $w @{ StatusOutcome = 'ok' }
         (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Action | Should -Be 'recovered'
         (Get-WinRes $w $rid).state | Should -Be 'busy'
     }

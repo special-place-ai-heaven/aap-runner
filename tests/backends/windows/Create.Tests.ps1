@@ -1,6 +1,7 @@
 # create refuses, before any guest runs, everything backend-lifecycle.md forbids: untrusted roots (the admin-only
 # definition), a base that is not the pinned one or not a plain file, a VM whose settings or files are off, a guest
-# network other than P10.0's verified internal switch. Each refusal is journaled and frees the slot as never registered.
+# network other than P10.0's verified internal switch, host settings that open another way into a guest. Each refusal is
+# journaled and frees the slot as never registered (held instead when the roots cannot prove the folders gone).
 # Also the storage document, the journal folder, and the offline disk helpers. Pester 5, Windows PowerShell 5.1 and
 # PowerShell 7.5+.
 
@@ -21,11 +22,15 @@ BeforeAll {
         $fail = @(Get-WinJournal $w $r.reservation_id | Where-Object { $_.op -eq 'create' -and $_.phase -eq 'failed' })
         [pscustomobject]@{ Step = $s; W = $w; Res = (Get-WinRes $w $r.reservation_id); Detail = $(if ($fail.Count) { $fail[0].result.detail } else { '' }) }
     }
-    # A refused create: freed as never registered, no VM left, nothing booted.
-    function Assert-WinRefused($x, [string]$Like) {
+    # A refused create: freed as never registered, no VM left, nothing booted. -Held: a root that cannot prove absence (a
+    # link, another volume) keeps the slot instead.
+    function Assert-WinRefused($x, [string]$Like, [switch]$Held) {
         $x.Detail | Should -BeLike $Like
-        $x.Res.state | Should -Be 'reconciled'
-        $x.Res.teardown_proof.runner_deregistered | Should -Be 'never_registered'
+        if ($Held) { $x.Res.state | Should -Be 'creating'; $x.Step.Code | Should -Be 'folders_remain' }
+        else {
+            $x.Res.state | Should -Be 'reconciled'
+            $x.Res.teardown_proof.runner_deregistered | Should -Be 'never_registered'
+        }
         @(Get-WinVms $x.W).Count | Should -Be 0
         @(Get-WinCalls $x.W 'StartVm *').Count | Should -Be 0
         @(Get-ChildItem -LiteralPath $x.W.Clones).Count | Should -Be 0
@@ -60,7 +65,7 @@ Describe 'trusted roots only' {
             [IO.Directory]::Delete($w.Clones)
             & cmd.exe /c mklink /J $w.Clones $real | Out-Null
         }
-        Assert-WinRefused $x '*AAP_StorageUntrusted*clone_root*reparse point*'
+        Assert-WinRefused $x '*AAP_StorageUntrusted*clone_root*reparse point*' -Held
     }
 
     It 'a junction above a root is refused' -Tag 'ancestor-reparse', 'root-trust' {
@@ -71,12 +76,12 @@ Describe 'trusted roots only' {
             $doc.roots.scratch_root.path = Join-Path $j 'scratch'
             Write-WinJson $w.StoragePath $doc
         }
-        Assert-WinRefused $x '*AAP_StorageUntrusted*scratch_root*reparse point*via*'
+        Assert-WinRefused $x '*AAP_StorageUntrusted*scratch_root: reparse point above the root*'
     }
 
     It 'a root on another volume than recorded is refused' -Tag 'volume', 'root-trust' {
         $x = Invoke-WinCreate -Knobs @{ WrongVolume = 'scratch' }
-        Assert-WinRefused $x '*AAP_StorageUntrusted*scratch_root: on volume*recorded*'
+        Assert-WinRefused $x '*AAP_StorageUntrusted*scratch_root: on volume*recorded*' -Held
     }
 
     It 'an owner outside the trusted SIDs is a problem' -Tag 'root-owner' {
@@ -84,7 +89,7 @@ Describe 'trusted roots only' {
         $B = New-WinBackend $w
         $B.TrustedSids = @('S-1-5-18', 'S-1-5-32-544')   # the test user, who owns the test roots, no longer trusted
         $p = @(Get-AapWinStorageProblem -Backend $B)
-        @($p | Where-Object { $_ -like 'clone_root: owner * is not an admin' }).Count | Should -Be 1
+        @($p | Where-Object { $_ -like 'clone_root: owner * is not an admin: *' }).Count | Should -Be 1
     }
 
     It 'a path on a drive that is not a fixed local drive is a problem' -Tag 'fixed-drive' {
@@ -109,7 +114,7 @@ Describe 'the base' {
     }
 
     It 'a base that is not a plain file is refused, whatever its hash' -Tag 'base-kind' {
-        $x = Invoke-WinCreate { param($w) [IO.File]::Delete($w.BaseFile); [void][IO.Directory]::CreateDirectory($w.BaseFile) } -Knobs @{ HashOverride = ('a' * 64) } -Sha ('a' * 64)
+        $x = Invoke-WinCreate { param($w) [IO.File]::SetAttributes($w.BaseFile, 'Normal'); [IO.File]::Delete($w.BaseFile); [void][IO.Directory]::CreateDirectory($w.BaseFile) } -Knobs @{ HashOverride = ('a' * 64) } -Sha ('a' * 64)
         Assert-WinRefused $x '*AAP_BaseMissing*'
     }
 
@@ -118,11 +123,53 @@ Describe 'the base' {
             $gen = Split-Path -Parent $w.BaseFile
             $real = Join-Path $w.Root 'elsewhere'
             [void][IO.Directory]::CreateDirectory($real)
+            [IO.File]::SetAttributes($w.BaseFile, 'Normal')
             Copy-Item -LiteralPath $w.BaseFile -Destination $real
             [IO.Directory]::Delete($gen, $true)
             & cmd.exe /c mklink /J $gen $real | Out-Null
         }
         Assert-WinRefused $x '*AAP_BaseUntrusted*a link*'
+    }
+
+    It 'a base that is not sealed read-only (<Name>) is refused' -Tag 'base-sealed', 'sealed-acl', 'sealed-readonly' -ForEach @(
+        @{ Name = 'generation folder inherits'; Like = '*AAP_BaseUntrusted: inherits its DACL*'; Prep = { param($w) & icacls.exe (Split-Path -Parent $w.BaseFile) /inheritance:e | Out-Null } }
+        @{ Name = 'Users may write the base'; Like = '*AAP_BaseUntrusted: grants S-1-5-32-545 more than Virtual Machines read*'; Prep = { param($w) [IO.File]::SetAttributes($w.BaseFile, 'Normal'); & icacls.exe $w.BaseFile /grant '*S-1-5-32-545:(W)' | Out-Null; [IO.File]::SetAttributes($w.BaseFile, 'ReadOnly') } }
+        @{ Name = 'Virtual Machines may write'; Like = '*AAP_BaseUntrusted: grants S-1-5-83-0 more*'; Prep = { param($w) [IO.File]::SetAttributes($w.BaseFile, 'Normal'); & icacls.exe $w.BaseFile /grant '*S-1-5-83-0:(M)' | Out-Null; [IO.File]::SetAttributes($w.BaseFile, 'ReadOnly') } }
+        @{ Name = 'no ReadOnly attribute'; Like = '*AAP_BaseUntrusted: not ReadOnly*'; Prep = { param($w) [IO.File]::SetAttributes($w.BaseFile, 'Normal') } }
+    ) {
+        $x = Invoke-WinCreate $Prep
+        Assert-WinRefused $x $Like
+        @(Get-WinCalls $x.W 'HashFile *').Count | Should -Be 0
+    }
+
+    It 'a sealed entry owned by anyone but an admin is a problem' -Tag 'sealed-owner' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        Invoke-WinInModule { param($B, $p) Get-AapWinSealedProblem $B $p } @($B, $w.BaseFile) | Should -BeNullOrEmpty
+        $B.TrustedSids = @('S-1-5-18', 'S-1-5-32-544')   # the test user owns the test base
+        Invoke-WinInModule { param($B, $p) Get-AapWinSealedProblem $B $p } @($B, $w.BaseFile) | Should -BeLike 'owner * is not an admin: *'
+    }
+
+    It 'the hash reads the backend''s own read handle, and a reused os.avhdx must be a child of the pinned base' -Tag 'disk-parent' {
+        $x = Invoke-WinCreate
+        $x.Step.Action | Should -Be 'created'
+        $x = Invoke-WinCreate -Knobs @{ VhdParent = 'C:\elsewhere\base.vhdx' }
+        Assert-WinRefused $x '*AAP_UnsafePath: os.avhdx is not a child of its generation''s base*'
+        # The handle shares reading only: while create holds it nobody can write the base.
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $probe = Join-Path $w.Root 'probe.txt'
+        $B.Provider.HashFile = { param($a)
+            [IO.File]::SetAttributes($a.Path, 'Normal')   # attribute writes ignore share modes; opening for write does not
+            $res = try { $f = [IO.File]::Open($a.Path, 'Open', 'ReadWrite', 'ReadWrite'); $f.Dispose(); 'writable' } catch { 'locked' }
+            [IO.File]::SetAttributes($a.Path, 'ReadOnly')
+            [IO.File]::WriteAllText($probe, $res)
+            'mismatch'
+        }.GetNewClosure()
+        $r = New-WinReservation $w
+        [void](Invoke-AapWinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [IO.File]::ReadAllText($probe) | Should -Be 'locked'
+        @(Get-WinJournal $w $r.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_BaseHashMismatch*'
     }
 
     It 'a clone disk path that is already a folder is refused' -Tag 'disk-kind' {
@@ -131,7 +178,7 @@ Describe 'the base' {
         $r = New-WinReservation $w
         [void][IO.Directory]::CreateDirectory((Join-Path $w.Clones "$($r.reservation_id)\os.avhdx"))
         $s = Invoke-AapWinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha
-        @(Get-WinJournal $w $r.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_UnsafePath*os.avhdx is a dir*'
+        @(Get-WinJournal $w $r.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_UnsafePath: os.avhdx is a dir*'
         @(Get-WinCalls $w 'NewVm *').Count | Should -Be 0
         $w2 = New-WinWorld
         $w = $w2
@@ -139,7 +186,19 @@ Describe 'the base' {
         $r = New-WinReservation $w
         [void][IO.Directory]::CreateDirectory((Join-Path $w.Scratch "$($r.reservation_id)\scratch.vhdx"))
         [void](Invoke-AapWinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
-        @(Get-WinJournal $w $r.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_UnsafePath*scratch.vhdx is a dir*'
+        @(Get-WinJournal $w $r.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_UnsafePath: scratch.vhdx is a dir*'
+    }
+}
+
+Describe 'the host' {
+    It 'refuses Enhanced Session Mode, a non-admin Hyper-V Administrator and an unreadable host' -Tag 'host-trust', 'enhanced-session', 'hyperv-admins' {
+        Assert-WinRefused (Invoke-WinCreate -Knobs @{ EnhancedSession = $true }) '*AAP_EnhancedSession*'
+        Assert-WinRefused (Invoke-WinCreate -Knobs @{ HyperVAdmins = @('S-1-5-21-1-2-3-1001') }) '*AAP_HyperVAdmins: S-1-5-21-1-2-3-1001 is a member*'
+        Assert-WinRefused (Invoke-WinCreate -Knobs @{ HostFails = $true }) '*AAP_HostUnreadable*'
+        (Invoke-WinCreate -Knobs @{ HyperVAdmins = @('S-1-5-32-544', 'S-1-5-18') }).Step.Action | Should -Be 'created'
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        Get-AapWinHostProblem -Backend $B | Should -BeNullOrEmpty
     }
 }
 
@@ -155,10 +214,47 @@ Describe 'the VM and its network' {
         @{ Field = 'ConfigurationLocation'; Value = 'C:\ProgramData\Microsoft\Windows\Hyper-V'; Like = "*ConfigurationLocation is outside*" }
         @{ Field = 'SmartPagingFilePath'; Value = 'C:\ProgramData\Microsoft\Windows\Hyper-V'; Like = "*SmartPagingFilePath is outside*" }
         @{ Field = 'Disks'; Value = @('C:\other\os.avhdx'); Like = '*a disk is outside*' }
+        @{ Field = 'DvdDrives'; Value = 1; Like = '*DvdDrives attached*' }
+        @{ Field = 'ComPorts'; Value = 1; Like = '*ComPorts attached*' }
+        @{ Field = 'GpuPartitions'; Value = 1; Like = '*GpuPartitions attached*' }
+        @{ Field = 'AssignedDevices'; Value = 1; Like = '*AssignedDevices attached*' }
     ) {
         $x = Invoke-WinCreate -Knobs @{ VmOverride = @{ $Field = $Value } }
         Assert-WinRefused $x "*AAP_VmUntrusted*$($Like.Trim('*'))*"
         @(Get-WinCalls $x.W 'RemoveVm *').Count | Should -Be 1   # the VM it made is gone again
+    }
+
+    It 'refuses a VM with a disk create did not make, even inside the reservation folder' -Tag 'vm-devices' {
+        Assert-WinRefused (Invoke-WinCreate -Knobs @{ ExtraDisk = $true }) '*AAP_VmUntrusted*not exactly os.avhdx and scratch.vhdx*'
+    }
+
+    It 'never adopts a VM found only by its name: create fails, the VM is destroyed, no second VM is made' -Tag 'vm-journaled' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $name = Get-AapVmName -Profile windows -Slot $r.slot -LeaseGeneration $r.lease_generation -ReservationId $r.reservation_id
+        Save-WinVms $w @([pscustomobject]@{ Id = [guid]::NewGuid().ToString(); Name = $name; State = 'Off'; Cpus = 2; MemGib = 4; ConfigurationLocation = $w.Root })
+        [void](Invoke-AapWinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        @(Get-WinJournal $w $r.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_VmNotJournaled*'
+        @(Get-WinCalls $w 'NewVm *').Count | Should -Be 0
+        @(Get-WinVms $w).Count | Should -Be 0
+        (Get-WinRes $w $r.reservation_id).state | Should -Be 'reconciled'
+    }
+
+    It 'reuses only the VM whose id the journal recorded: another VM under that name is refused' -Tag 'vm-journaled' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-AapWinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        # A crash before create/done: drop that record, and swap the VM for another one with the same name.
+        $path = Join-Path $w.Journal "$rid.jsonl"
+        [IO.File]::WriteAllText($path, ((@(Get-WinJournalLines $w $rid | Where-Object { $_ -notlike '*"phase":"done"*' }) -join "`n") + "`n"))
+        $vms = @(Get-WinVms $w); $vms[0].Id = [guid]::NewGuid().ToString(); Save-WinVms $w $vms
+        $B2 = New-WinBackend $w
+        [void](Invoke-AapWinStep -Backend $B2 -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha)
+        @(Get-WinJournal $w $rid | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_VmMismatch*'
+        @(Get-WinCalls $w 'NewVm *').Count | Should -Be 1
     }
 
     It 'refuses a guest adapter on <Name> (<Type>), or without DHCP guard, or with MAC spoofing' -Tag 'switch' -ForEach @(
@@ -196,6 +292,7 @@ Describe 'the VM and its network' {
         $h = [IO.File]::Open((Join-Path $w.Clones "$($r.reservation_id)\held.bin"), [IO.FileMode]::Create, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         try { (Invoke-AapWinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha).Code | Should -Be 'folders_remain' } finally { $h.Dispose() }
         Set-WinKnob $w @{ NewVmFails = $false }
+        $B.Now = { [DateTime]::UtcNow.AddSeconds(60) }   # a teardown retry runs at most once a minute
         (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $r.reservation_id) -BaseSha256 $w.BaseSha).Action | Should -Be 'destroyed'
         @(Get-WinCalls $w 'NewVm *').Count | Should -Be 1
         (Get-WinRes $w $r.reservation_id).teardown_proof.runner_deregistered | Should -Be 'never_registered'
@@ -221,6 +318,13 @@ Describe 'the backend context' {
         [void](New-WinBackend $w)
         Grant-WinAce $w.Journal '*S-1-5-32-545:(R)'
         { New-WinBackend $w } | Should -Throw '*AAP_JournalUntrusted*S-1-5-32-545*'
+    }
+
+    It 'refuses a compile folder anyone else can read (Add-Type''s temporary files go there)' -Tag 'compile-trust' {
+        $w = New-WinWorld
+        [void](New-WinBackend $w)
+        Grant-WinAce (Join-Path $w.Journal 'compile') '*S-1-1-0:(R)'
+        { New-WinBackend $w } | Should -Throw '*AAP_CompileUntrusted*S-1-1-0*'
     }
 
     It 'creates a missing journal folder admin-only (protected, no other ACE)' {
@@ -260,25 +364,33 @@ Describe 'the backend context' {
 }
 
 Describe 'offline disk helpers (the production provider uses them)' {
-    It 'writes the answer file through plain folders only' -Tag 'plain-path', 'guest-write' {
+    It 'writes the answer file through plain folders only, SYSTEM/Administrators-only, replacing an old one' -Tag 'guest-write' {
+        $pw = New-WinSecret 'Abc123-def456-Ghi789-jkl012-MNO3'
         $root = Join-Path $TestDrive 'disk1'
         [void][IO.Directory]::CreateDirectory($root)
-        Write-AapWinGuestFile -Root $root -RelPath 'Windows\Panther\unattend.xml' -Bytes ([byte[]](65, 66))
-        [IO.File]::ReadAllText("$root\Windows\Panther\unattend.xml") | Should -Be 'AB'
-        Write-AapWinGuestFile -Root $root -RelPath 'Windows\Panther\unattend.xml' -Bytes ([byte[]](67))
-        [IO.File]::ReadAllText("$root\Windows\Panther\unattend.xml") | Should -Be 'C'
+        Write-AapWinUnattend -Root $root -UserName 'runneradmin' -Password $pw
+        $file = "$root\Windows\Panther\unattend.xml"
+        [IO.File]::ReadAllText($file) | Should -Match '<Value>Abc123-def456-Ghi789-jkl012-MNO3</Value>'
+        foreach ($p in "$root\Windows", "$root\Windows\Panther", $file) {
+            $acl = Get-Acl -LiteralPath $p
+            $acl.AreAccessRulesProtected | Should -BeTrue -Because $p
+            @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } | Sort-Object -Unique) |
+                Should -Be @(@('S-1-5-18', 'S-1-5-32-544', $script:UserSid) | Sort-Object -Unique) -Because $p
+        }
+        Write-AapWinUnattend -Root $root -UserName 'runneradmin' -Password (New-WinSecret 'Second-pass-word-0123456789-abcd')
+        [IO.File]::ReadAllText($file) | Should -Match 'Second-pass-word'
         $outside = Join-Path $TestDrive 'outside1'
         [void][IO.Directory]::CreateDirectory($outside)
         $root2 = Join-Path $TestDrive 'disk2'
         [void][IO.Directory]::CreateDirectory("$root2\Windows")
         & cmd.exe /c mklink /J "$root2\Windows\Panther" $outside | Out-Null
-        { Write-AapWinGuestFile -Root $root2 -RelPath 'Windows\Panther\unattend.xml' -Bytes ([byte[]](65)) } | Should -Throw '*AAP_UnsafePath*Panther is a link*'
+        { Write-AapWinUnattend -Root $root2 -UserName 'runneradmin' -Password $pw } | Should -Throw '*AAP_UnsafePath: a link, not a plain folder*Panther'
         @(Get-ChildItem -LiteralPath $outside).Count | Should -Be 0
         $root3 = Join-Path $TestDrive 'disk3'
         [void][IO.Directory]::CreateDirectory("$root3\Windows\Panther")
         & cmd.exe /c mklink /J "$root3\Windows\Panther\unattend.xml" $outside | Out-Null
-        { Write-AapWinGuestFile -Root $root3 -RelPath 'Windows\Panther\unattend.xml' -Bytes ([byte[]](65)) } | Should -Throw '*AAP_UnsafePath*unattend.xml is a link*'
-        { Write-AapWinGuestFile -Root $root -RelPath '..\escape.txt' -Bytes ([byte[]](65)) } | Should -Throw '*AAP_UnsafePath*'
+        { Write-AapWinUnattend -Root $root3 -UserName 'runneradmin' -Password $pw } | Should -Throw '*AAP_UnsafePath: a link where the answer file goes*'
+        @(Get-ChildItem -LiteralPath $outside).Count | Should -Be 0
     }
 
     It 'takes the Windows partition only from the EFI, MSR, data layout' -Tag 'disk-layout' {
@@ -291,11 +403,14 @@ Describe 'offline disk helpers (the production provider uses them)' {
     }
 
     It 'the answer file escapes the password, never enables autologon and keeps SanPolicy 1' {
-        $xml = New-AapWinUnattend -UserName 'runneradmin' -Password 'a<b&c"d''e>f'
+        $root = Join-Path $TestDrive 'disk4'
+        [void][IO.Directory]::CreateDirectory($root)
+        Write-AapWinUnattend -Root $root -UserName 'runneradmin' -Password (New-WinSecret 'a<b&c"d''e>f')
+        $xml = [IO.File]::ReadAllText("$root\Windows\Panther\unattend.xml")
         ([xml]$xml).unattend | Should -Not -BeNullOrEmpty
         $xml | Should -Match 'a&lt;b&amp;c&quot;d&apos;e&gt;f'
         $xml | Should -Not -Match 'AutoLogon'
         $xml | Should -Match '<SanPolicy>1</SanPolicy>'
-        { New-AapWinUnattend -UserName 'bad name' -Password 'x' } | Should -Throw '*AAP_UnattendInvalid*'
+        { Write-AapWinUnattend -Root $root -UserName 'bad name' -Password (New-WinSecret 'x') } | Should -Throw '*AAP_UnattendInvalid*'
     }
 }

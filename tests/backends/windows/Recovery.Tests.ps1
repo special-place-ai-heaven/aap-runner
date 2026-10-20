@@ -49,11 +49,51 @@ Describe 'the journal is the state' {
         (Get-WinRes $w $x.Id).quarantine_kind | Should -Be 'crash'
     }
 
-    It 'a torn last line (no newline: the write never finished) is ignored' {
+    It 'a torn last line (no newline: the write never finished) is ignored, and cut off by the next record' -Tag 'journal-torn' {
         $x = New-WinAt 'busy'
         $w = $x.W
         [IO.File]::AppendAllText((Join-Path $w.Journal "$($x.Id).jsonl"), '{"schema":2,"kind":"op","reserv')
         (Invoke-AapWinStep -Backend $x.B -Reservation (Get-WinRes $w $x.Id)).Action | Should -Be 'busy'
+        Set-WinKnob $w @{ RunnerBusy = $false; RunnerStatus = 'absent' }
+        (Invoke-AapWinStep -Backend $x.B -Reservation (Get-WinRes $w $x.Id)).Action | Should -Be 'destroyed'
+        (Get-WinRes $w $x.Id).state | Should -Be 'reconciled'
+        Invoke-WinValidator $w 'backend-lifecycle' @(Get-WinJournalLines $w $x.Id) | Should -BeNullOrEmpty
+    }
+
+    It 'a deleting reservation with an unreadable journal is quarantined (teardown_failed), never left deleting' -Tag 'journal-deleting' {
+        $x = New-WinAt 'busy'
+        $w = $x.W
+        Set-WinKnob $w @{ RunnerBusy = $false; RunnerStatus = 'absent'; ReleaseOutcome = 'retry' }
+        (Invoke-AapWinStep -Backend $x.B -Reservation (Get-WinRes $w $x.Id)).Code | Should -Be 'release_pending'
+        (Get-WinRes $w $x.Id).state | Should -Be 'deleting'
+        [IO.File]::AppendAllText((Join-Path $w.Journal "$($x.Id).jsonl"), "not json`n")
+        (Invoke-AapWinStep -Backend $x.B -Reservation (Get-WinRes $w $x.Id)).Code | Should -Be 'journal_unreadable'
+        (Get-WinRes $w $x.Id).state | Should -Be 'quarantined'
+        (Get-WinRes $w $x.Id).quarantine_kind | Should -Be 'teardown_failed'
+    }
+
+    It 'a teardown that keeps failing the same way writes its failure once' -Tag 'journal-dedup' {
+        $x = New-WinAt 'busy'
+        $w = $x.W
+        Set-WinKnob $w @{ RunnerBusy = $false; RunnerStatus = 'absent'; ReleaseOutcome = 'retry' }
+        foreach ($i in 1..4) {
+            $x.B.Now = { [DateTime]::UtcNow.AddMinutes($i) }.GetNewClosure()
+            (Invoke-AapWinStep -Backend $x.B -Reservation (Get-WinRes $w $x.Id)).Code | Should -Be 'release_pending'
+        }
+        @(Get-WinCalls $w 'Broker release_request *').Count | Should -Be 4
+        @(Get-WinJournal $w $x.Id | Where-Object { $_.op -eq 'destroy' }).Count | Should -Be 2   # one intent, one failure
+    }
+
+    It 'one step at a time per reservation: a held step lock is never waited on' -Tag 'step-lock' {
+        $x = New-WinAt 'busy'
+        $w = $x.W
+        $n = @(Get-WinCalls $w).Count
+        $lock = [IO.File]::Open((Join-Path $w.Journal "$($x.Id).lock"), 'OpenOrCreate', 'ReadWrite', 'None')
+        try { $s = Invoke-AapWinStep -Backend $x.B -Reservation (Get-WinRes $w $x.Id) } finally { $lock.Dispose() }
+        $s.Code | Should -Be 'step_in_progress'
+        @(Get-WinCalls $w).Count | Should -Be $n
+        (Invoke-AapWinStep -Backend $x.B -Reservation (Get-WinRes $w $x.Id)).Action | Should -Be 'busy'
+        Test-Path -LiteralPath (Join-Path $w.Journal "$($x.Id).lock") | Should -BeFalse   # deleted on close
     }
 
     It 'a booted clone whose credential died with the supervisor is destroyed, never probed' -Tag 'lost-credential' {
@@ -77,6 +117,9 @@ Describe 'the journal is the state' {
         $s.Code | Should -Be 'wrong_echo'
         (Get-WinRes $w $x.Id).state | Should -Be 'reconciled'
         @(Get-WinVms $w).Count | Should -Be 0
+        $n = @(Get-WinCalls $w).Count   # a reconciled reservation stays reconciled: nothing runs again
+        (Invoke-AapWinStep -Backend $B2 -Reservation (Get-WinRes $w $x.Id)).Code | Should -Be 'state'
+        @(Get-WinCalls $w).Count | Should -Be $n
     }
 
     It 'a restarted supervisor never cancels a busy job: it waits on the broker, then tears down once the job ended' {
@@ -90,6 +133,15 @@ Describe 'the journal is the state' {
         Set-WinKnob $w @{ RunnerBusy = $false; RunnerStatus = 'absent' }
         (Invoke-AapWinStep -Backend $B2 -Reservation (Get-WinRes $w $x.Id)).Action | Should -Be 'destroyed'
         (Get-WinRes $w $x.Id).teardown_proof.runner_deregistered | Should -BeTrue
+    }
+
+    It 'a restarted supervisor never takes a lost issued lease for one never recorded: uncertain, capacity held' -Tag 'release-uncertain' {
+        $x = New-WinAt 'busy'
+        $w = $x.W
+        $B2 = New-WinBackend $w   # no memory of the lease outcome; the journal has it
+        Set-WinKnob $w @{ RunnerBusy = $false; RunnerStatus = 'absent'; ReleaseOutcome = 'not_found' }
+        (Invoke-AapWinStep -Backend $B2 -Reservation (Get-WinRes $w $x.Id)).Code | Should -Be 'release_uncertain'
+        (Get-WinRes $w $x.Id).quarantine_kind | Should -Be 'teardown_failed'
     }
 
     It 'a restarted supervisor retires a listening runner it can no longer reach (drain, release, destroy)' {

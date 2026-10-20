@@ -31,8 +31,12 @@ supervisor, the installer, the guest image, the network or CI yet. How the backe
 
    One step at a time; a step makes at most one guest command plus one broker call, except that create, a job's end and
    a hostile reply run on through destroy. A step can still take minutes: create re-hashes the base (a 130 GB file on
-   the USB volume) and destroy waits up to 3 x 5 s. Run Windows steps so that a slow one never delays heartbeats of the
-   others past 30 s (one runspace per reservation, or the slow ops first).
+   the USB volume) and destroy waits up to 3 x 5 s. `$B` belongs to ONE runspace: its hashtables, its scriptblocks
+   (runspace-affine) and the process-wide `[Console]::InputEncoding` swap around each child start are not thread-safe.
+   Steps of one reservation never overlap: `Invoke-AapWinStep` holds `<JournalRoot>\<reservation_id>.lock`
+   (`FileShare.None`, deleted on close) and returns `held`/`step_in_progress` when another step has it. If a slow create
+   must not delay the heartbeats of the others, run it in a second runspace with its own `New-AapWinBackend` context (the
+   lock keeps the two apart per reservation); never share one `$B` across runspaces.
    - `Action`: `created`, `booted`, `probing`, `ready`, `running`, `listening`, `busy`, `recovered`, `destroyed`,
      `waiting`, `held`. `Code` is a fixed word (`hostile_guest` codes, `teardown_failed`, `release_pending`,
      `release_uncertain`, `journal_unreadable`, `timeout`, `no_reply`, ...): put it in `detail` as is.
@@ -42,7 +46,10 @@ supervisor, the installer, the guest image, the network or CI yet. How the backe
    - `-BaseSha256` comes from the admin-only pin (`approved-images.json`, P24), never from the catalog under
      `base_root`. Create refuses without it (`AAP_BaseUnpinned`).
 5. **Admission** stays P12's (`Request-AapReservation` with the generation's measured budget). Request no Windows VM
-   while `Get-AapWinStorageProblem` is non-empty or the P10.0 module is missing.
+   while `Get-AapWinStorageProblem` or `Get-AapWinHostProblem -Backend $B` is non-empty (show their `AAP_` lines:
+   `AAP_EnhancedSession`, `AAP_HyperVAdmins`, `AAP_HostUnreadable`) or the P10.0 module is missing. The supervisor's
+   `TEMP`/`TMP`, and those of every child it starts, must be admin-only folders (the backend points `%TMP%` at
+   `<JournalRoot>\compile` only around its own `Add-Type`).
 6. **Reconcile** every 10 minutes and at start:
 
    ```powershell
@@ -70,6 +77,10 @@ supervisor, the installer, the guest image, the network or CI yet. How the backe
   backend creates it the same way when missing.
 - `clone_root` and `scratch_root` must be admin-only (no ACE for any other SID, not even read): the per-clone credential
   sits in the clone disk until first boot.
+- `install-supervisor.ps1` (line 184) runs `Add-Type` in the elevated installer with the user's `%TEMP%`: the same
+  hazard as S-Med4 of the P10 review. Point `TMP`/`TEMP` at an admin-only folder around it (as `New-AapWinBackend` does).
+- A runtime check (P19 at install, P12 at start) that `supervisor\backends\windows\` (with `psdirect-call.ps1`),
+  `capacity\` and `broker\` are admin-only: anyone who can write them runs code in the elevated supervisor.
 
 ## P10.0: the guest network module
 
@@ -82,8 +93,11 @@ The interface the backend calls, each op one hashtable `@{ VmId; VmName; Profile
 | `Detach` | Remove whatever Attach made for this VM beyond the VM itself (per-guest switch, NAT entries, rules). Idempotent: absent is done. Called at every destroy attempt, after `Remove-VM` |
 
 The backend also checks, from the VM's own settings, that every adapter is on `aap-guests-win` of type Internal with
-DHCP guard and router guard on and MAC spoofing off; Enhanced session and the Guest Service Interface stay off per VM
-(`NewVm`), Key-Value Pair Exchange too.
+DHCP guard and router guard on and MAC spoofing off, and that the Guest Service Interface and Key-Value Pair Exchange are
+off per VM (`NewVm`, by integration service id). Enhanced Session Mode is a host setting, not a per-VM one: the backend
+only checks it (`Get-AapWinHostProblem`, create refuses `AAP_EnhancedSession`); turning it off for the host
+(`Set-VMHost -EnableEnhancedSessionMode $false`) and keeping Hyper-V Administrators empty belong to P10.0/P19's elevated
+host preparation.
 
 ## Every child with redirected stdin (P12, P14)
 
@@ -104,12 +118,28 @@ DHCP guard and router guard on and MAC spoofing off; Enhanced session and the Gu
 - The job user is `runneradmin`, local administrator, created by the per-clone answer file
   (`Windows\Panther\unattend.xml`, which the agent deletes at first boot with every other bootstrap file).
 - The refusals of guest-transport.md, Envelope, are the agent's: own `vm_id` from the hypervisor, first
-  `lease_generation`, `seq` exactly previous + 1, fresh `nonce`, one-shot classes once, not expired.
+  `lease_generation`, `seq` strictly greater than the last accepted one (guest-transport.md, Sequence rule, merged in
+  PR #48: the host increments `seq` for every send, including one that times out, fails or is retried, so gaps are
+  normal; a `seq` less than or equal to the last accepted one is a replay and refused), fresh `nonce`, one-shot classes
+  once, not expired. Echo the request's `nonce` and `seq`: a wrong echo is `hostile_guest`.
+- Read stdin as bytes and tolerate a leading UTF-8 BOM (`EF BB BF`) before the envelope line: the host starts every child
+  without one, but a guest-side `[Console]::InputEncoding` of 65001 would add it.
 - Replies the backend accepts per command: `probe` `booting` or `ready`; `deliver_registration` `registered` or
   `listening`; `start_runner` `listening` or `busy`; `status` `listening`, `busy`, `job_done` or `failed`; `collect` any
   but `booting`, `ready` and `registered`. `collect`'s reply is the job summary (`runner_exit_code`, `diag`).
 
 ## P02.1: what the lab must show for this backend
+
+- **Secret oracle (lab step 5): add the per-clone password.** Run the lab with a marked synthetic password and search
+  for it, as for `SYNTHETIC-JIT-MARKER`, in the host's PowerShell logs (module logging 4103, script block logging 4104,
+  transcripts), the supervisor's logs and status files, the journal, the clone and scratch folders after teardown, and
+  the guest after first boot (the answer file must be gone).
+- `Mount-VHD -NoDriveLetter` plus `Add-PartitionAccessPath` at `<clone>\<rid>\mnt\` leaves no drive letter and no
+  access path behind, and `Write-AapWinUnattend`'s protected DACL on the new `unattend.xml` does not stop Windows Setup.
+- `New-VHD -Differencing` works while the backend holds its `FileShare.Read` handle on `base.vhdx`, and `Get-VHD`
+  reports the parent path the backend compares.
+- `GetHostSecurity`: the ADSI member listing of Hyper-V Administrators and `Get-VMHost` on Server 2025; the integration
+  service ids `6C09BB55-...` (Guest Service Interface) and `2A34B1C2-...` (Key-Value Pair Exchange) match.
 
 - PowerShell Direct through `psdirect-call.ps1` with the job object's limits: a real session fits in 512 MiB and the CPU
   cap; remote `Write-Host`, prompts and stream floods end in a non-zero exit or an extra stdout byte (both hostile), never
@@ -128,9 +158,10 @@ DHCP guard and router guard on and MAC spoofing off; Enhanced session and the Gu
 
 ## Contract requests and open questions
 
-1. **Lease id in the journal.** The `op` record has no lease field, and an `intent` record has no result, so the lease id
-   rides in the `ready` record's `done` detail (`probe ready; lease l-<32 hex>`), written before the lease call. A
-   contract revision could add `lease_id` (nullable) to `op` records.
+1. **Lease id and outcome in the journal.** The `op` record has no lease field, and an `intent` record has no result, so
+   the lease id rides in the `ready` record's `done` detail (`probe ready; lease l-<32 hex>`), written before the lease
+   call, and the broker's answer in a repeated `ready` `done` right after it (`lease issued by the broker`, `lease answer
+   unreadable`). A contract revision could add `lease_id` and `lease_outcome` (nullable) to `op` records.
 2. **Teardown of a reservation that never got a VM.** `validate.py` requires a `vm_id` on every op after create, so such a
    cleanup is journaled as `create` `failed` (`abandoned before a VM existed`), not as `destroy`.
 3. **No guest channel after a supervisor restart.** guest-transport.md keeps the Windows credential in supervisor memory
@@ -141,7 +172,24 @@ DHCP guard and router guard on and MAC spoofing off; Enhanced session and the Gu
 4. **Hard VM lifetime cap (broker INTEGRATION.md, F4).** A guest that holds its runner credential can keep GitHub
    reporting it online and busy, so a heartbeat-quarantined slot may never be freed. The contract says the wall clock
    only flags; the owner decision on a hard cap is still open. Nothing here destroys for time.
-5. **Clone cap without a guest channel.** The clone folder is sampled only while this process can heartbeat the guest.
-   After a restart a runaway job is bounded by the volume floor only.
+5. **Crash between `New-VM` and its record.** backend-lifecycle.md's crash table says a re-run create "finds the named
+   VM and records its id". This backend journals the id right after `New-VM` and never adopts a VM found only by its
+   name: in that window create fails and destroy removes the VM (the reservation ends never registered). A contract
+   revision should say so.
 6. **Base re-hash cost.** Every create re-hashes the whole base (130-140 GB planned). Measured in P02.1/P22 it may need a
    cheaper pinned check (for example a hash cached against the file's identity and the read-only ACL).
+
+## Follow-ups recorded by the P10 review (not built here)
+
+- **(a) HIGH: the call child runs with the supervisor's full elevated token.** A guest that replaced its remoting
+  endpoint feeds CLIXML to an elevated deserializer in `psdirect-call.ps1`. Preferred D2 outcome: the hvsocket framed
+  protocol (no CLIXML at all); otherwise run the child under a restricted token or a dedicated account that is only in
+  Hyper-V Administrators. P02.1 decides.
+- **(b) No hard VM lifetime cap** (owner decision F4, request 4 above).
+- **(c) TEMP of the supervisor and its children** must be admin-only (P12); `install-supervisor.ps1` line 184 has the
+  same `Add-Type` hazard (P19).
+- **(d) Admin-only code folders** checked at run time (P19/P12, see P19 above).
+- **(e) Accepted hypervisor surface:** no per-VM IOPS or bandwidth cap; nested virtualization exposed and Secure Boot off
+  (the image's needs).
+- **(f) P14** implements guest-transport.md's Sequence rule (strictly greater, gaps allowed) and tolerates a BOM (P14
+  above).

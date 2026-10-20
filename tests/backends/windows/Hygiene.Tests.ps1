@@ -27,8 +27,10 @@ Describe 'no secret anywhere' {
         $r = New-WinReservation $w
         $rid = $r.reservation_id
         [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
-        $pw = $B.Guests[$rid].Password
-        $pw.Length | Should -Be 32
+        $secret = $B.Guests[$rid].Password
+        $secret.Length | Should -Be 32
+        "$secret" | Should -Be '@{Length=32}'
+        $pw = [Text.Encoding]::ASCII.GetString((Get-WinSecretBytes $secret))
         [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))
         Set-WinKnob $w @{ RunnerStatus = 'absent' }
         [void](Invoke-WinSteps $B $w $rid -Max 4)
@@ -40,6 +42,33 @@ Describe 'no secret anywhere' {
         # The guest got exactly the issued JIT config's bytes.
         $g = @(Get-ChildItem -LiteralPath (Join-Path $w.Fake 'guests'))[0]
         (Read-WinJson $g.FullName $null).PayloadSha | Should -Be (@(Get-WinLeases $w))[0].jit_sha
+    }
+
+    It 'never gives the password, the answer file or their bytes to a command as a parameter value' {
+        # Module logging (event 4103) records the parameter values of every command a module runs. The variables that
+        # hold password text or answer-file bytes are read by .NET calls only; the password itself travels as an object
+        # whose only property is Length.
+        $held = @('pwBytes', 'pwText', 'password', 'xml', 'xmlBytes', 'buf')
+        $found = New-Object Collections.Generic.List[string]
+        $total = 0
+        foreach ($name in 'AapWinBackend.psm1', 'AapWinBackend.HyperV.psm1', 'psdirect-call.ps1') {
+            $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:Repo "supervisor\backends\windows\$name"), [ref]$null, [ref]$null)
+            $commands = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] }, $true))
+            $total += $commands.Count
+            foreach ($c in $commands) {
+                foreach ($e in @($c.CommandElements | Select-Object -Skip 1)) {
+                    $uses = @($e.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] -and $held -contains $n.VariablePath.UserPath }, $true))
+                    if ($uses.Count) { $found.Add(('{0} line {1}: {2}' -f $name, $c.Extent.StartLineNumber, $c.Extent.Text)) }
+                }
+            }
+            foreach ($p in @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.ParameterAst] }, $true))) {
+                if ($p.Name.VariablePath.UserPath -match '^(Password|Bytes)$' -and @($p.Attributes | Where-Object { $_.TypeName.Name -match '^(string|byte\[\])$' }).Count) {
+                    $found.Add(('{0}: parameter {1} is typed {2}' -f $name, $p.Name, $p.StaticType))
+                }
+            }
+        }
+        $total | Should -BeGreaterThan 50
+        $found.ToArray() | Should -BeNullOrEmpty
     }
 
     It 'no source holds a token-shaped or key-shaped value' {
