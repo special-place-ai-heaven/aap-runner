@@ -315,7 +315,27 @@ function Invoke-AapBrokerProcess {
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     $buf = New-Object byte[] ($MaxStdoutBytes + 1)
     $n = 0
-    $p = [Diagnostics.Process]::Start($psi)
+    # Windows PowerShell 5.1 (.NET Framework) builds the child's StandardInput writer from [Console]::InputEncoding and
+    # flushes that encoding's preamble into the pipe at Start. With a UTF-8 console input code page the child would read
+    # EF BB BF before the request. Swap in a BOM-less encoding for the Start call only (the request bytes below are
+    # written raw), then put the caller's encoding back. No console, or an encoding without a preamble: nothing to do.
+    $savedEncoding = $null
+    try {
+        $current = [Console]::InputEncoding
+        if ($current.GetPreamble().Length -gt 0) {
+            [Console]::InputEncoding = New-Object Text.UTF8Encoding($false)
+            $savedEncoding = $current
+        }
+    } catch {
+        $null = $_
+    }
+    try {
+        $p = [Diagnostics.Process]::Start($psi)
+    } finally {
+        if ($null -ne $savedEncoding) {
+            try { [Console]::InputEncoding = $savedEncoding } catch { $null = $_ }
+        }
+    }
     try {
         try {
             $p.StandardInput.BaseStream.Write($StdIn, 0, $StdIn.Length)

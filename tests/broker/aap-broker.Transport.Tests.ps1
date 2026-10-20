@@ -3,11 +3,32 @@
 BeforeAll { . (Join-Path $PSScriptRoot 'BrokerTestHelpers.ps1') }
 
 Describe 'hidden process transport' {
-    It 'writes the request to stdin, returns stdout bytes and passes the exit code through' {
-        $r = Invoke-Child 'findstr.exe' '"^"' ([Text.Encoding]::ASCII.GetBytes('{"schema":1}'))
-        $r.ExitCode | Should -Be 0
-        $r.TimedOut | Should -BeFalse
-        Get-Text $r.Stdout | Should -BeExactly '{"schema":1}'
+    # Windows PowerShell 5.1 flushes the console input encoding's preamble into the child's stdin at Start, so a UTF-8
+    # console input code page used to prepend EF BB BF to the request. The child must get exactly the caller's bytes.
+    It 'writes exactly the request bytes to stdin and returns stdout bytes (console input code page <Name>)' -TestCases @(
+        @{ Name = 'current'; Cp = 0 }
+        @{ Name = '65001'; Cp = 65001 }
+        @{ Name = '850'; Cp = 850 }
+    ) {
+        $saved = [Console]::InputEncoding
+        try {
+            if ($Cp -ne 0) {
+                try { [Console]::InputEncoding = [Text.Encoding]::GetEncoding($Cp) } catch {
+                    Set-ItResult -Skipped -Because "the console input code page cannot be set to $Cp here"
+                    return
+                }
+            }
+            $request = [Text.Encoding]::ASCII.GetBytes('{"schema":1}')
+            $r = Invoke-Child 'findstr.exe' '"^"' $request
+            $r.ExitCode | Should -Be 0
+            $r.TimedOut | Should -BeFalse
+            # findstr echoes its stdin and ends the line with CRLF: any preamble would show as extra leading bytes.
+            ($r.Stdout -join ',') | Should -BeExactly ((@($request) + [byte[]](13, 10)) -join ',')
+            Get-Text $r.Stdout | Should -BeExactly '{"schema":1}'
+            [Console]::InputEncoding.CodePage | Should -Be $(if ($Cp -ne 0) { $Cp } else { $saved.CodePage })
+        } finally {
+            try { [Console]::InputEncoding = $saved } catch { $null = $_ }
+        }
         $r = Invoke-Child 'cmd.exe' '/d /c exit 3'
         $r.ExitCode | Should -Be 3
         $r.Stdout.Length | Should -Be 0
