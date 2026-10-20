@@ -22,7 +22,7 @@
     "P10",
     "P13"
   ],
-  "cleanup_barrier_state": "CLOSED: P18 and coord-ci-wiring-2 are merged and cleaned but await the independent cleanup verifier",
+  "cleanup_barrier_state": "OPEN: no merged item awaits cleanup verification (in-flight P07, P10 and P13 are not merged)",
   "tasks": [
     {
       "id": "P00",
@@ -392,7 +392,7 @@
         "merge_sha": "c621999704c4b4d3e2304f62b22e79c7188922b5",
         "ci_run": "39354581645"
       },
-      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P06-attempt-1.receipt.json (independently verified CLEAN per the coordinator; the receipt file's verifier field still reads 'pending')",
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P06-attempt-1.receipt.json (independently verified)",
       "branch": "parity/p06-windows-image",
       "reviewed_head": "d0169ca7f7d179978823035b9d12a2e870aa37ee",
       "base_sha": "9ff0da34789acd82f193e19420dd33d6d4cc9eaf",
@@ -474,7 +474,7 @@
         "merge_sha": "f36ae7e0c0684069d2ab9ff8daa1ce5dce70dd5f",
         "ci_run": "39353711710"
       },
-      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P08-attempt-1.receipt.json (independently verified CLEAN per the coordinator; the receipt file's verifier field still reads 'pending')",
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P08-attempt-1.receipt.json (independently verified)",
       "branch": "parity/p08-broker",
       "reviewed_head": "36c23e35455f42cf9c1ea0e2935ec7d954d5ba2a",
       "base_sha": "1a2741ae59344776a35a1f8e9d7aca003a11f5ca",
@@ -527,7 +527,7 @@
         "accepted_head": "042248f199f59d82044c8dc937e79bab659e4bc4",
         "merge_sha": "af2ad5306aa90569047b11631bae466740d575b5"
       },
-      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P09-attempt-1.receipt.json (independently verified CLEAN per the coordinator; the receipt file's verifier field still reads 'pending')",
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P09-attempt-1.receipt.json (independently verified)",
       "branch": "parity/p09-allocator",
       "reviewed_head": "042248f199f59d82044c8dc937e79bab659e4bc4",
       "base_sha": "1a2741ae59344776a35a1f8e9d7aca003a11f5ca",
@@ -736,7 +736,7 @@
         "merge_sha": "4de3674df5b3f62f8ba8a029a91a414629f7dcac",
         "ci_run": "39443851806"
       },
-      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P17-attempt-1.receipt.json (independently verified CLEAN per the coordinator; the receipt file's verifier field still reads 'pending')",
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P17-attempt-1.receipt.json (independently verified)",
       "branch": "parity/p17-windows-workloads",
       "reviewed_head": "b8d28daea87002a2e231943613814785b73dc700",
       "base_sha": "544d2d0004997c9c4bade6bacf76cb1bbffbd3d5",
@@ -763,7 +763,7 @@
         "parity/workloads/xwin/**"
       ],
       "lane": "Luna high",
-      "delivery_state": "MERGED_CLEANUP_REQUIRED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Same hosted/local Rust/C/C++/.NET/Node/Python/Java/Android/browser/container/service workload suite. Separately qualify Linux-to-Windows xwin with Clang/LLD/SDK and execute produced artifacts on native Windows.",
       "acceptance": "Cross compilation alone never certifies Windows execution. Positive/negative setup, package-registry/TLS, container job/action/services, cache/artifact and shell-step propagation cases fail honestly when a requirement is missing. This authoring leaf closes on hosted-reference oracle validation and negative controls; final candidate execution is owned by P22/P24 after P14/P15, not claimed here.",
       "merge_proof": {
@@ -773,13 +773,12 @@
         "merge_sha": "4637f84bdafbe7fab78a11d490626f67c9251b0d",
         "ci_run": "39455561368"
       },
-      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P18-attempt-1.receipt.json (cleanup done; independent verification pending)",
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P18-attempt-1.receipt.json (independently verified)",
       "branch": "parity/p18-linux-workloads",
       "reviewed_head": "0284871586f2d35274b3cff1ad5206e966a9047e",
       "base_sha": "4de3674df5b3f62f8ba8a029a91a414629f7dcac",
-      "evidence": "test_workloads.py 15/15; check_hosted_run.py ok: 44 definitions match hosted run 39454534510 (ubuntu-24.04 image 20261012.334.1; earlier runs 39450814977 39/44, 39451894408 44/44), tree sha256 9418bbd76e16290f6e678278909b91c3f624c7e6a679452e1bc29d076471fc57; lib_test.sh ok; shellcheck 0.11.0 -S warning clean on 22 files (as reported by the coordinator); review FIX-FIRST (3 must-fix) -> fixed -> MERGE at 0284871; remote branch deleted after merge",
+      "evidence": "test_workloads.py 15/15; check_hosted_run.py ok: 44 definitions match hosted run 39454534510 (ubuntu-24.04 image 20261012.334.1; earlier runs 39450814977 39/44, 39451894408 44/44), tree sha256 9418bbd76e16290f6e678278909b91c3f624c7e6a679452e1bc29d076471fc57; lib_test.sh ok; shellcheck 0.11.0 -S warning clean on 22 files (as reported by the coordinator); review FIX-FIRST (3 must-fix) -> fixed -> MERGE at 0284871; remote branch deleted after merge; independent cleanup verifier CLEAN 2026-10-20",
       "declared_gaps": [
-        "cleanup verification pending (independent verifier not yet run; the global barrier stays closed until it signs)",
         "Actions container:/services:/docker actions, cache/artifact round trips, Maven builds, sdkmanager and xwin/sdk-cross are unqualified (no Windows SDK on the image)",
         "a Linux-built PE executed on a hosted Windows runner is left to P22/P24"
       ],
@@ -980,7 +979,8 @@
       "deliverable": "Let the tray replace its own executable through the existing elevated helper: one UAC click, no console window, no wsl.exe, no tokens in the tray; contract docs and both sides' tests updated in the same PR.",
       "acceptance": "cargo fmt/clippy/test green; update succeeds with the tray running or quits it itself; a bad or unsigned replacement is refused and the old build stays; independent security review of the helper verb. Overlaps crates/tray/** with P19/P20, so the coordinator serializes the claims.",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "note": "Overlaps crates/tray/** with P19 and P20: the coordinator serializes the claims, so P25.1 is not dispatched while a P19 or P20 claim holds the lease."
     },
     {
       "id": "P26",
@@ -1099,7 +1099,7 @@
       "reviewed_head": "11daf864dcb073ff48443f4877d4a374fbcaff62",
       "merge_sha": "88a9a25acbc623a4435cfdab0656e28926081c16",
       "what": "CI runs the P17/P18 workload suites and harness_test.sh; shellcheck on the workload scripts",
-      "cleanup": "pending"
+      "cleanup": "verified"
     }
   ]
 }
