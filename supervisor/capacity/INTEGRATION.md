@@ -1,7 +1,8 @@
 # Capacity allocator: integration requests (ledger item P09)
 
 `AapCapacity.psm1` implements the frozen allocator contract
-([`parity/contracts/allocator.md`](../../parity/contracts/allocator.md), version 1). This file lists
+([`parity/contracts/allocator.md`](../../parity/contracts/allocator.md), version 2:
+`allocator.json` schema 2 with per-volume disk budgets). This file lists
 what the consuming items have to do with it. P09 owns only `supervisor/capacity/**` and
 `tests/capacity/**`; nothing below is wired into the supervisor, the providers, the distro or the
 tray yet.
@@ -59,11 +60,11 @@ tray yet.
 
 | Function | Use |
 |---|---|
-| `Initialize-AapAllocator -HostInfo @{cpu_cores; mem_gib; disk_gib; io_mbps; control_distro_mem_gib} -Linux -Windows [-ShareMode -LinuxShare -WindowsShare -HostReservePercent -LinuxBackend]` | Creates the folder if missing and writes revision 1 once; never overwrites an existing state |
+| `Initialize-AapAllocator -HostInfo @{cpu_cores; mem_gib; volumes = @(@{volume_guid; tiers; available_gib; floor_gib; held_gib}); io_mbps; control_distro_mem_gib} -Linux -Windows [-ShareMode -LinuxShare -WindowsShare -HostReservePercent -LinuxBackend]` | Creates the folder if missing and writes revision 1 once; never overwrites an existing state |
 | `Get-AapAllocatorState` | The state plus `UsedSlots`, `FreeSlots`, `PoolCpus`, `PoolMemGib`, `UsedCpus`, `UsedMemGib`, and per profile `Count`, `Admitted`, `Live`, `EachCpus`, `EachMemGib`, `CapCpus`, `CapMemGib` |
 | `Set-AapProfileCounts -Linux -Windows [-ShareMode -LinuxShare -WindowsShare -HostReservePercent -LinuxBackend -LinuxGeneration -WindowsGeneration]` | The two live controls and the shares; returns `Drained` and `Cancelled` |
 | `Set-AapHostMeasurement -HostInfo` | A new host measurement. One the live reservations no longer fit is stored clamped to them and refused (`pool_over_live`, with `Clamped` and `Host`) |
-| `Request-AapReservation -Profile linux\|windows [-Cpus -MemGib -MemOverheadMib -DiskGib -IoMbps -ImageGeneration]` | Admission. Returns `Reservation`, `VmName`, `RunnerName` and `IdempotencyKey` |
+| `Request-AapReservation -Profile linux\|windows [-Cpus -MemGib -MemOverheadMib -CloneGib -ScratchGib -IoMbps -ImageGeneration]` | Admission. Returns `Reservation`, `VmName`, `RunnerName` and `IdempotencyKey` |
 | `Register-AapLegacySlots -ManagerStatus <status.json object> -ManagerVersion` or `-ManagerStopped` | Adopts the legacy pool, once |
 | `Get-AapLegacyLimits [-JobCpus -JobMemoryGib]` | What `limits.conf` must say, and the size of the next legacy grant |
 | `Update-AapHeartbeat -ReservationId -LeaseGeneration [-JobRunning]` | VM heartbeat |
@@ -88,7 +89,8 @@ tray yet.
 | refused | `share` | Over the per-runner share or the profile cap, VM memory overhead included |
 | refused | `pool` | CPU over the pool; every live reservation counts |
 | refused | `memory` | Memory over the pool, with the control VM paid first and VM overhead counted |
-| refused | `disk` | Over the image-root disk budget |
+| refused | `disk` | A volume that holds the clone or scratch tier has no room: its live clone and scratch caps plus the new ones exceed `available_gib - floor_gib - held_gib`. `Detail` names the volume |
+| refused | `storage` | A VM request while `host.volumes` lacks the base, clone or scratch tier: no trusted storage layout |
 | refused | `io` | Over the IO budget, or IO reserved while host IO is not measured |
 | refused | `io_unmeasured` | A VM admission while `host.io_mbps` is 0 |
 | refused | `legacy_not_adopted` | Any admission before `Register-AapLegacySlots` succeeded |
@@ -114,15 +116,34 @@ tray yet.
    instead.
 3. **Start order.** Run these before the first admission:
    1. `Initialize-AapAllocator`, with the measured host. `cpu_cores` is logical CPUs.
-      `mem_gib` is RAM. `disk_gib` is the image-root free space minus one `replacement_gib`, and
-      minus `staging_gib` while a build runs. `io_mbps` is 0 until measured.
-      `control_distro_mem_gib` is the control VM's resident memory.
+      `mem_gib` is RAM. `io_mbps` is the throughput of the slowest volume that holds the clone or
+      scratch tier, or 0 until measured. `control_distro_mem_gib` is the control VM's resident
+      memory. `volumes` holds one entry per volume that holds a tier of
+      `capacity\storage.json`, only while every tier's trust checks pass:
+      - `volume_guid` and `tiers` come from the storage document's roots.
+      - `available_gib` is the volume's free space plus what live reservations already hold
+        there: their `clone_gib` if it holds the clone tier, and their `scratch_gib` if it holds
+        the scratch tier.
+      - `floor_gib` is the storage document's `volume_floor_gib`, copied at every write, because
+        no rule cross-checks the two files.
+      - `held_gib` is `replacement_gib` plus `staging_gib` while a build or replacement is
+        planned on that volume, else 0.
+      - Pass `volumes = @()` while storage is unconfigured or any tier is not `ok`.
       - An `invalid_state` here means `allocator.json` was lost while files of a running pool
         remain. Stop, show status `error`, and leave the restore to the owner.
-      - Later measurements go through `Set-AapHostMeasurement`. On `pool_over_live` it has
-        stored the host clamped to the live reservations: disk and IO up to their sums, CPUs up,
-        and the control VM's memory down, then RAM up. Each value moves the least that still
-        holds the live reservations.
+      - Later measurements go through `Set-AapHostMeasurement`. Call it before each VM
+        admission, because `available_gib` is measured at admission. On `pool_over_live` it has
+        stored the host clamped to the live reservations. Each value moves the least that still
+        holds them:
+        - Each clone or scratch volume's `available_gib` rises to what its live reservations
+          hold plus its floor and held space.
+        - IO rises to the live sum, and CPUs rise.
+        - The control VM's memory goes down, then RAM goes up.
+      - A measurement without the base, clone or scratch tier while a VM is live keeps the
+        stored layout, each such volume exactly full. That covers storage that turned
+        `untrusted`, `missing` or `low`. The live VMs keep running and nothing more is admitted.
+        A measurement that lists a volume twice or puts a tier on two volumes is refused with
+        `bad_request`.
       - Disk, IO and the memory pool are then exactly full. In `even` mode each admitted runner
         must keep its share, and the share is computed from the pool. So a clamped CPU or RAM
         pool can still leave room on paper. Admit nothing while the last measurement was
@@ -143,8 +164,10 @@ tray yet.
      `NextSlotCpus`/`NextSlotMemGib`, computed with the settings' `job_cpus` and
      `job_memory_gib`.
    - A VM request passes the generation's measured budget, before the provider's `create`:
-     `-MemOverheadMib` is `boot_mem_overhead_mib`, `-DiskGib` is `clone_peak_gib` plus
-     `scratch_peak_gib`, and `-IoMbps` is the per-VM IO reservation.
+     `-MemOverheadMib` is `boot_mem_overhead_mib`, `-CloneGib` is `clone_gib_max` (at least 1),
+     `-ScratchGib` is `scratch_gib_max`, and `-IoMbps` is the per-VM IO reservation.
+   - Request no VM while `status.v5.json` `storage.state` is not `ok`. The allocator refuses one
+     with `storage` when the base, clone or scratch tier is missing from `host.volumes`.
 6. **`limits.conf`.** Write `RunnerCount`, `JobCpus` and `JobMemoryGib` from
    `Get-AapLegacyLimits` when they differ.
    - `Stop = $true`: drain and stop the manager, and write no `limits.conf` with 0.
@@ -165,6 +188,16 @@ tray yet.
    - `profiles` comes from `Profiles.*`: count, share, `EachCpus`/`EachMemGib` and
      `CapCpus`/`CapMemGib`.
    - `slots` comes from the live reservations, with `state` as the allocator lifecycle state.
+   - `storage` does not come from the allocator. P12 builds it from `capacity\storage.json` and
+     its own trust checks of each root, as status-settings.md says:
+     - `unconfigured` without a storage document, with no tiers and no floor.
+     - Otherwise `volume_floor_gib` and all four tiers, each with its root, the free GiB of its
+       volume, and a state of `ok`, `low`, `untrusted` or `missing`. The overall state is the
+       worst tier state, and `detail` is `<tier>: <code>` entries only.
+     - While it is not `ok`, every `hyperv-vm` profile reports `available: false`, and P12
+       passes `volumes = @()` to `Set-AapHostMeasurement`.
+   - A `detail` that holds an allocator reason starts with the fixed word `resize_waits` or
+     `pool_over_live`, then a short ASCII explanation.
    - Any `Status` of `error` makes the supervisor state `error`.
 9. **Pause and off** need no new operation. Stop admitting, and move every `ready` or `busy`
    reservation to `draining` with `Set-AapSlotState`. A busy job keeps running.
@@ -200,14 +233,22 @@ tray yet.
      broker's status. `Set-AapSlotState` refuses that edge with `illegal_edge`.
 5. **Quarantines.**
    - Hostile reply: `-State quarantined -QuarantineKind hostile_guest -Reason <fixed code>`,
-     then destroy. This works from any guest state, including a `heartbeat` or `crash`
-     quarantine. The quarantine is final, and heartbeats are ignored (`quarantine_final`).
-   - Pass a fixed reason code, such as `nonce_mismatch` or `protocol_violation`, never guest
-     text. A credential-shaped reason is stored as "reason withheld" and the quarantine is
+     then destroy. It is immediate and final. From a guest state (`creating` with a VM id,
+     `ready`, `busy`, `draining` or `collecting`) the slot goes straight to `deleting` in one
+     write.
+   - From a `heartbeat` or `crash` quarantine the kind is rewritten to `hostile_guest` first, then
+     the slot moves to `deleting`, in two writes, so rule 10 holds at each. A crash between the two
+     leaves a final hostile quarantine (heartbeats get `quarantine_final`), and the provider's
+     retry of the same call moves it on.
+   - Destroy, then `Complete-AapTeardown`. Heartbeats for a `deleting` slot are ignored.
+     `hostile_guest` applies to VM guests only.
+   - Pass a fixed reason code from the hostile cases in guest-transport.md, never guest text.
+     P10 defines the code list. Examples are `oversized_reply`, `extra_fields`, `wrong_echo`,
+     `non_printable` and `child_exit`. A credential-shaped reason is stored as "reason withheld" and the quarantine is
      still recorded.
    - Destroy a hostile VM even when the allocator call returns an error.
-   - `busy -> deleting` is not offered. A hostile reply goes through `quarantined`. A busy job
-     otherwise ends through `collecting`.
+   - `busy -> deleting` happens only on a hostile reply. A finished job goes through
+     `collecting`.
    - Teardown failed after the retries: from `deleting`, `-QuarantineKind teardown_failed`.
    - Unreadable journal: `-QuarantineKind crash`.
 6. **Cancelled boot.** A resize may move a `creating` VM that has a `vm_id` to `deleting`. If a
@@ -269,40 +310,37 @@ tray yet.
   must:
   - open it shared for read, write and delete (Rust's default), so the supervisor's replace never
     fails;
-  - reject `schema` other than 1;
+  - reject `schema` other than 2;
   - ignore a lower `revision`;
   - never show free capacity from a missing or invalid file.
 - Show per profile `Count`, `EachCpus`/`EachMemGib`, `CapCpus`/`CapMemGib` and the reserve. Flag
   `cleanup_uncertain` slots.
 
-## Contract points decided here, for a ledger revision (coordinator)
+## Contract points
 
-1. **Legacy `busy -> ready`.** A legacy pool slot runs one ephemeral runner after another. The
-   legacy heartbeat pass uses this extra edge when the manager reports the slot idle again.
-   `Set-AapSlotState` does not offer it.
-2. **`hostile_guest`.** Rule 10 forbids a quarantine kind on `deleting`. So the slot goes to
-   `quarantined` (kind `hostile_guest`, final, never back to service), then to `deleting` or
-   straight to `reconciled` with a proof. ARCHITECTURE.md's `busy --> deleting: hostile guest
-   reply` edge is therefore not offered by `Set-AapSlotState`. A `heartbeat` or `crash`
-   quarantine may turn into `hostile_guest`; this is the only quarantine-to-quarantine edge.
-   Reconcile alone moves a busy slot whose VM is gone straight to `deleting`.
-3. **Wall clock.** `allocator.json` has no lease issue time, so the wall clock counts from
-   `acquired_at`, which is earlier: the flag never comes later than the contract asks. Behaviour
-   follows `allocator.md`: a busy runner is never destroyed. The contracts README's "wall clock +
-   60 min" summary disagrees with that and should be corrected.
-4. **Unknown folders.** A clone or scratch folder without a VM cannot hold a slot, because rule 9
-   requires a `vm_id` past `creating`. It blocks admission (`unresolved.json`) until it is
-   resolved. An unknown VM is placed in a free slot only when it fits the pool and its profile
-   has an active generation to record. Otherwise it also blocks admission.
-5. **Resize.** Leaving admission works like this:
-   - Ready runners go first, then creating ones (to `deleting`), then busy ones (to `draining`,
-     with the job still running).
-   - In `even` mode a larger total count shrinks every runner's share. Every admitted runner over
-     the new share drains, as the legacy manager does on any limits change.
-   - A heartbeat quarantine cannot leave admission, so the resize waits (`resize_waits`).
-6. **A larger reserve** that the live reservations cannot hold is refused (`pool_over_live`)
-   until enough slots are reconciled, for example after a pause.
-7. **Heartbeat quarantine of `draining` and `collecting` VMs.** Only `ready` and `busy` are
-   heartbeat-quarantined today, as the contract says. A draining or collecting VM that stops
-   answering stays as it is until the provider moves it on. Quarantining those states too would
-   change the contract. It is recorded for P10 and P02.2 and not implemented here.
+Contract revision 2 (P02.2) settled the points this module raised. Allocator.md now states:
+
+- The legacy `busy -> ready` loop. Only the legacy heartbeat pass uses it; `Set-AapSlotState` does
+  not offer it.
+- `hostile_guest` from a heartbeat or crash quarantine, by rewriting the kind first.
+- The wall clock counts from `acquired_at` and only flags.
+- No eviction: a smaller count waits (`resize_waits`), and a smaller measurement is stored clamped
+  (`pool_over_live`). A larger reserve that the live reservations cannot hold is refused with
+  `pool_over_live` and nothing changes.
+- In `even` mode a count increase drains every admitted runner.
+- An unknown folder blocks admission until it is resolved.
+- The inventory callback returns a complete list or throws.
+
+Still open in the contracts README:
+
+- Whether `even` mode should drain everything on a count increase. That is the owner's call.
+- Heartbeat quarantine of `draining` and `collecting` VMs. Today only `ready` and `busy` are
+  heartbeat-quarantined, as the contract says.
+
+How this module resolves the rest:
+
+- An unknown VM is placed in a free slot only when it fits the pool, a volume budget for the
+  minimum 1 GiB clone cap, and its profile has an active generation to record. Otherwise it blocks
+  admission (`unresolved.json`).
+- A heartbeat quarantine cannot leave admission, so a resize that would need it to leave waits
+  (`resize_waits`).

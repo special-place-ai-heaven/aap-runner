@@ -52,7 +52,7 @@ Describe 'initialize and read' {
         $doc = Read-CapJson (Join-Path $script:FixtureDir 'valid\owner-example-2win-3lin-30-60-10.json')
         $doc.host_reserve_percent = 5
         Write-CapJson (Join-Path $root 'allocator.json') $doc
-        $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100
+        $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100
         $r.Status | Should -Be 'error'
         $r.Reason | Should -Be 'invalid_state'
         $r.Detail | Should -BeLike '*below minimum 10*'
@@ -69,7 +69,7 @@ Describe 'initialize and read' {
         $root = New-CapAllocator -Linux 1 -Windows 1 -LegacySlots 1
         [void](New-CapVm $root)
         (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Disk 1500)).Ok | Should -BeTrue
-        (Get-CapDoc $root).host.disk_gib | Should -Be 1500
+        (Get-CapDoc $root).host.volumes[0].available_gib | Should -Be 1510
         $rev = (Get-CapDoc $root).revision
         (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Cpu 0)).Reason | Should -Be 'bad_request'
         (Get-CapDoc $root).revision | Should -Be $rev
@@ -82,16 +82,43 @@ Describe 'initialize and read' {
         $r = Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Disk 200 -Io 100)
         $r.Status | Should -Be 'refused'
         $r.Reason | Should -Be 'pool_over_live'
-        @($r.Clamped) | Should -Be @('disk_gib', 'io_mbps')
+        @($r.Clamped) | Should -Be @('volumes', 'io_mbps')
         (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
         $h = (Get-CapDoc $root).host
-        $h.disk_gib | Should -Be 380
+        $h.volumes[0].available_gib | Should -Be 390
         $h.io_mbps | Should -Be 223
         $h.cpu_cores | Should -Be 32
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'disk'
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 0 -IoMbps 100).Reason | Should -Be 'io'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'disk'
+        $r = Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Disk 600 -Io 100)
+        @($r.Clamped) | Should -Be @('io_mbps')
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'io'
         (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Disk 600)).Ok | Should -BeTrue
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Ok | Should -BeTrue
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Ok | Should -BeTrue
+    }
+
+    It 'a measurement without the storage tiers keeps the live VMs layout, exactly full' {
+        $root = New-CapAllocator -Linux 1 -Windows 2
+        [void](New-CapVm $root)
+        $r = Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -NoStorage)
+        $r.Reason | Should -Be 'pool_over_live'
+        @($r.Clamped) | Should -Be @('volumes')
+        $v = @((Get-CapDoc $root).host.volumes)
+        $v.Count | Should -Be 1
+        $v[0].available_gib | Should -Be 200
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 1 -ScratchGib 0 -IoMbps 100).Reason | Should -Be 'disk'
+        (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
+    }
+
+    It 'refuses a measurement that lists a volume twice or a tier on two volumes' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        $rev = (Get-CapDoc $root).revision
+        $twice = @((New-CapVolume 'e1' @('base', 'staging') 500), (New-CapVolume 'e1' @('clone', 'scratch') 500))
+        (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Volumes $twice)).Detail | Should -BeLike '*a volume is listed twice*'
+        $split = @((New-CapVolume 'e1' @('base', 'clone') 500), (New-CapVolume 'e2' @('clone', 'scratch') 500))
+        $r = Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Volumes $split)
+        $r.Reason | Should -Be 'bad_request'
+        $r.Detail | Should -BeLike '*tier clone is on more than one volume*'
+        (Get-CapDoc $root).revision | Should -Be $rev
     }
 
     It 'a larger control VM is stored cut to what the live reservations leave, so nothing more is admitted' {
@@ -158,14 +185,14 @@ Describe 'admission' {
         Get-AapVmName -Profile windows -Slot 1 -LeaseGeneration 1 -ReservationId 'r-0123456789abcdef' | Should -BeExactly 'aap-w-1-1-01234567'
         $root = New-CapAllocator -Linux 1 -Windows 1
         { Request-AapReservation -Root $root -Profile LINUX -ImageGeneration 'legacy-manager-2' } | Should -Throw
-        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         { Set-AapSlotState -Root $root -ReservationId $res.reservation_id -LeaseGeneration $res.lease_generation -State Ready -VmId (New-CapVmId) } | Should -Throw
         (Get-CapRes (Get-CapDoc $root) $res.reservation_id).state | Should -Be 'creating'
     }
 
     It 'echoes no control characters from rejected ids in its detail' {
         $root = New-CapAllocator -Linux 1 -Windows 1
-        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         $r = Set-AapSlotState -Root $root -ReservationId $res.reservation_id -LeaseGeneration $res.lease_generation -State ready -VmId "evil`r`nstatus: ok"
         $r.Reason | Should -Be 'bad_request'
         $r.Detail | Should -Not -Match '[\r\n]'
@@ -177,7 +204,7 @@ Describe 'admission' {
 
     It 'persists the reservation, generation first, before it returns the derived VM and runner name' {
         $root = New-CapAllocator
-        $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100
+        $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100
         $r.Ok | Should -BeTrue
         $res = $r.Reservation
         $doc = Get-CapDoc $root
@@ -200,7 +227,7 @@ Describe 'admission' {
         $root = New-CapRoot
         (Initialize-AapAllocator -Root $root -HostInfo (New-CapHostInfo) -Linux 3 -Windows 2).Ok | Should -BeTrue
         [void](Set-AapProfileCounts -Root $root -Linux 3 -Windows 2 -WindowsGeneration $script:WinGen)
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'legacy_not_adopted'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'legacy_not_adopted'
         (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2').Reason | Should -Be 'legacy_not_adopted'
     }
 
@@ -209,7 +236,7 @@ Describe 'admission' {
         [void](New-CapVm $root)
         [void](New-CapVm $root)
         (Get-AapAllocatorState -Root $root).UsedSlots | Should -Be 5
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'count'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'count'
         (Request-AapReservation -Root $root -Profile linux).Reason | Should -Be 'count'
         # 4 Linux + 1 Windows: a Windows VM drains, Linux has room in its count but no slot is free.
         $r = Set-AapProfileCounts -Root $root -Linux 4 -Windows 1
@@ -224,10 +251,10 @@ Describe 'admission' {
 
     It 'keeps per-runner shares: VM memory overhead is paid from the share, never from the reserve' {
         $root = New-CapAllocator -Mode per_profile -LinuxShare 60 -WindowsShare 30
-        $r = Request-AapReservation -Root $root -Profile windows -MemGib 14 -MemOverheadMib 512 -DiskGib 190 -IoMbps 100
+        $r = Request-AapReservation -Root $root -Profile windows -MemGib 14 -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100
         $r.Reason | Should -Be 'share'
-        (Request-AapReservation -Root $root -Profile windows -Cpus 5 -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'share'
-        $ok = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100
+        (Request-AapReservation -Root $root -Profile windows -Cpus 5 -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'share'
+        $ok = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100
         $ok.Ok | Should -BeTrue
         $ok.Reservation.cpus | Should -Be 4
         $ok.Reservation.mem_gib | Should -Be 13
@@ -236,34 +263,54 @@ Describe 'admission' {
     It 'pays the control VM first: memory over the pool is refused (memory)' {
         $root = New-CapAllocator -Mode per_profile -LinuxShare 60 -WindowsShare 30 -HostInfo (New-CapHostInfo -Ctl 5) -LegacySlots 3
         [void](New-CapVm $root)
-        $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100
+        $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100
         $r.Reason | Should -Be 'memory'
         @(Get-CapLive (Get-CapDoc $root)).Count | Should -Be 4
+    }
+
+    It 'counts clone and scratch caps on the volume that holds each tier' {
+        $vols = @((New-CapVolume 'a1' @('base', 'staging') 520 50 140), (New-CapVolume 'b2' @('clone') 200 50), (New-CapVolume 'c3' @('scratch') 100 50))
+        $root = New-CapAllocator -Linux 1 -Windows 3 -HostInfo (New-CapHostInfo -Volumes $vols)
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 100 -ScratchGib 40 -IoMbps 100).Ok | Should -BeTrue
+        $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 40 -ScratchGib 20 -IoMbps 100
+        $r.Reason | Should -Be 'disk'
+        $r.Detail | Should -BeLike '*0000000000c3*'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 60 -ScratchGib 10 -IoMbps 100).Detail | Should -BeLike '*0000000000b2*'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 50 -ScratchGib 10 -IoMbps 100).Ok | Should -BeTrue
+        (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
+    }
+
+    It 'admits no VM without a trusted storage layout, a legacy slot still' {
+        $root = New-CapAllocator -HostInfo (New-CapHostInfo -NoStorage)
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'storage'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 0 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'bad_request'
+        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2').Ok | Should -BeTrue
     }
 
     It 'refuses storage pressure (disk) and unmeasured or exhausted IO' {
         $root = New-CapAllocator -HostInfo (New-CapHostInfo -Disk 300)
         [void](New-CapVm $root)
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'disk'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'disk'
         $root = New-CapAllocator -HostInfo (New-CapHostInfo -Io 0)
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 0).Reason | Should -Be 'io_unmeasured'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 0).Reason | Should -Be 'io_unmeasured'
         (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2').Ok | Should -BeTrue
         $root = New-CapAllocator -HostInfo (New-CapHostInfo -Io 200)
         [void](New-CapVm $root -Io 100)
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'io'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'io'
     }
 
     It 'admits a VM only on the active generation with its measured budget' {
         $root = New-CapAllocator
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190).Reason | Should -Be 'bad_request'
-        (Request-AapReservation -Root $root -Profile windows -ImageGeneration 'win25-vs2026-x64/20261007.264.1-aap.2' -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'generation'
-        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2' -DiskGib 10).Reason | Should -Be 'bad_request'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40).Reason | Should -Be 'bad_request'
+        (Request-AapReservation -Root $root -Profile windows -ImageGeneration 'win25-vs2026-x64/20261007.264.1-aap.2' -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'generation'
+        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2' -CloneGib 10).Reason | Should -Be 'bad_request'
+        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2' -ScratchGib 1).Reason | Should -Be 'bad_request'
     }
 
     It 'never puts two live reservations in one slot (duplicate lease)' {
         $root = New-CapAllocator
-        $a = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
-        $b = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $a = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
+        $b = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         $a.slot | Should -Not -Be $b.slot
         $a.reservation_id | Should -Not -Be $b.reservation_id
         # A replayed transition for a lease that is no longer live changes nothing.
@@ -359,13 +406,13 @@ Describe 'profile counts and shares' {
         $l = Get-AapLegacyLimits -Root $root
         $l.Stop | Should -BeTrue
         $l.RunnerCount | Should -Be 0
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'pool'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'pool'
         (Request-AapReservation -Root $root -Profile linux).Reason | Should -Be 'count'
         $u = Update-AapHeartbeat -Root $root -ManagerStopped
         $u.Ok | Should -BeTrue
         $doc = Get-CapDoc $root
         @($doc.reservations | Where-Object { $_.backend -eq 'wsl-legacy' -and $_.state -eq 'reconciled' -and $_.teardown_proof.kind -eq 'legacy' }).Count | Should -Be 3
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Ok | Should -BeTrue
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Ok | Should -BeTrue
     }
 
     It 'cancels a creating legacy slot and waits for a heartbeat quarantine instead of cancelling a job' {
@@ -412,7 +459,7 @@ Describe 'heartbeats and quarantine' {
         $q.quarantine_kind | Should -Be 'heartbeat'
         $q.cleanup_uncertain | Should -BeTrue
         (Get-AapAllocatorState -Root $root).UsedSlots | Should -Be 1
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'count'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'count'
         (Complete-AapTeardown -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -Proof $null).Reason | Should -Be 'invalid_proof'
         Add-CapSeconds 3600
         [void](Invoke-AapReconcile -Root $root)
@@ -478,16 +525,26 @@ Describe 'heartbeats and quarantine' {
         $r.Flags[0] | Should -BeLike 'slot 1 *wall clock*busy True*held*'
     }
 
-    It 'a hostile guest is final: never back to service, only torn down' {
+    It 'a hostile guest is immediate and final: straight to deleting, never back to service' {
         $root = New-CapAllocator -Linux 1 -Windows 1
         $w = New-CapVm $root -Busy
         (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State deleting).Reason | Should -Be 'illegal_edge'
-        $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'reply did not echo the nonce'
+        $rev = (Get-CapDoc $root).revision
+        $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'wrong_echo'
         $r.Ok | Should -BeTrue
-        (Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning).Reason | Should -Be 'quarantine_final'
+        $r.Reservation.state | Should -Be 'deleting'
+        $r.Reservation.cleanup_uncertain | Should -BeTrue
+        (Get-CapDoc $root).revision | Should -Be ($rev + 1)
+        (Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning).Status | Should -Be 'ignored'
         (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State ready).Reason | Should -Be 'illegal_edge'
-        (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State deleting).Ok | Should -BeTrue
         (Complete-AapTeardown -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -Proof (New-CapProof 'vm')).Ok | Should -BeTrue
+        [IO.File]::ReadAllText((Join-Path $root 'allocator.log')) | Should -BeLike '*busy->deleting hostile_guest wrong_echo*'
+    }
+
+    It 'hostile_guest applies to VM guests only' {
+        $root = New-CapAllocator -Linux 1 -Windows 1 -LegacySlots 1
+        $l = @((Get-CapDoc $root).reservations | Where-Object { $_.backend -eq 'wsl-legacy' })[0]
+        (Set-AapSlotState -Root $root -ReservationId $l.reservation_id -LeaseGeneration $l.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'wrong_echo').Reason | Should -Be 'bad_request'
     }
 
     It 'a heartbeat quarantine goes to deleting only through reconcile, never on a provider call' {
@@ -503,12 +560,14 @@ Describe 'heartbeats and quarantine' {
     It 'a credential-shaped hostile reason is withheld, and the quarantine is still recorded' {
         $root = New-CapAllocator -Linux 1 -Windows 1
         $w = New-CapVm $root -Busy
+        [void](Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind crash -Reason 'journal_unreadable')
         $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'guest replied SYNTHETIC-JIT-MARKER'
         $r.Ok | Should -BeTrue
         $r.Detail | Should -BeLike '*reason withheld*'
-        $q = Get-CapRes (Get-CapDoc $root) $w.reservation_id
-        $q.quarantine_kind | Should -Be 'hostile_guest'
-        $q.quarantine_reason | Should -Be 'reason withheld: it looked like a credential'
+        (Get-CapRes (Get-CapDoc $root) $w.reservation_id).state | Should -Be 'deleting'
+        $log = [IO.File]::ReadAllText((Join-Path $root 'allocator.log'))
+        $log | Should -BeLike '*quarantined->quarantined hostile_guest reason withheld*'
+        $log | Should -Not -BeLike '*SYNTHETIC*'
         (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
     }
 
@@ -533,15 +592,18 @@ Describe 'heartbeats and quarantine' {
         [void](Invoke-AapReconcile -Root $root)
         (Get-CapRes (Get-CapDoc $root) $a.reservation_id).quarantine_kind | Should -Be 'heartbeat'
         foreach ($w in @($a, $b)) {
-            $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'reply did not echo the nonce'
+            $rev = (Get-CapDoc $root).revision
+            $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'wrong_echo'
             $r.Ok | Should -BeTrue
-            $r.Reservation.quarantine_kind | Should -Be 'hostile_guest'
-            (Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning).Reason | Should -Be 'quarantine_final'
+            $r.Reservation.state | Should -Be 'deleting'
+            (Get-CapDoc $root).revision | Should -Be ($rev + 2)
+            (Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning).Status | Should -Be 'ignored'
             (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind heartbeat -Reason 'x').Reason | Should -Be 'illegal_edge'
             $q = Get-CapRes (Get-CapDoc $root) $w.reservation_id
-            $q.state | Should -Be 'quarantined'
-            $q.quarantine_kind | Should -Be 'hostile_guest'
+            $q.state | Should -Be 'deleting'
+            $q.quarantine_kind | Should -BeNullOrEmpty
         }
+        [IO.File]::ReadAllText((Join-Path $root 'allocator.log')) | Should -BeLike '*quarantined->quarantined hostile_guest wrong_echo*quarantined->deleting hostile_guest wrong_echo*'
         (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
     }
 }
@@ -552,7 +614,7 @@ Describe 'teardown, edges and generations' {
 
     It 'refuses every edge that is not in the state machine' {
         $root = New-CapAllocator -Linux 1 -Windows 1
-        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         $set = { param($state, $extra) Set-AapSlotState -Root $root -ReservationId $res.reservation_id -LeaseGeneration $res.lease_generation -State $state @extra }
         (& $set 'busy' @{}).Reason | Should -Be 'illegal_edge'
         (& $set 'draining' @{}).Reason | Should -Be 'illegal_edge'
@@ -606,9 +668,9 @@ Describe 'teardown, edges and generations' {
         $q.state | Should -Be 'quarantined'
         $q.quarantine_kind | Should -Be 'teardown_failed'
         (Get-AapAllocatorState -Root $root).UsedSlots | Should -Be 2
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'pool'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'pool'
         (Complete-AapTeardown -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -Proof (New-CapProof 'vm')).Ok | Should -BeTrue
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Ok | Should -BeTrue
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Ok | Should -BeTrue
     }
 
     It 'ignores and logs a late completion for an older lease generation after the slot was reset' {
@@ -647,7 +709,7 @@ Describe 'teardown, edges and generations' {
 
     It 'releases a VM that never got one (create failed before any lease) straight from creating' {
         $root = New-CapAllocator -Linux 1 -Windows 1
-        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         (Complete-AapTeardown -Root $root -ReservationId $res.reservation_id -LeaseGeneration 1 -Proof (New-CapProof 'vm')).Reason | Should -Be 'illegal_edge'
         (Complete-AapTeardown -Root $root -ReservationId $res.reservation_id -LeaseGeneration 1 -Proof (New-CapProof 'vm' 'never_registered')).Ok | Should -BeTrue
     }
@@ -687,14 +749,14 @@ Describe 'legacy pool' {
         $r.Target.RunnerCount | Should -Be 3
         $r.Target.JobCpus | Should -Be 15
         $r.Target.JobMemoryGib | Should -Be 51
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'legacy_not_adopted'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'legacy_not_adopted'
         (Register-AapLegacySlots -Root $root -ManagerStatus (New-CapStatus 3 21 60 @('idle', 'idle', 'idle'))).Reason | Should -Be 'legacy_over_share'
         $l = Get-AapLegacyLimits -Root $root -JobCpus 26 -JobMemoryGib 80
         $l.Adopted | Should -BeFalse
         $l.RunnerCount | Should -Be 3
         $l.JobCpus | Should -Be 15
         (Register-AapLegacySlots -Root $root -ManagerStatus (New-CapStatus 3 15 51 @('idle', 'idle', 'idle'))).Ok | Should -BeTrue
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Ok | Should -BeTrue
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Ok | Should -BeTrue
     }
 
     It 'adopts only from a sample at most 90 s old (and not from the future)' {
@@ -766,7 +828,7 @@ Describe 'reconcile repairs' {
         Set-CapNow '2026-10-20T10:00:00Z'
         $root = New-CapAllocator -Linux 1 -Windows 2
         $w = New-CapVm $root -Busy
-        $c = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $c = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         $rev = (Get-CapDoc $root).revision
         $r = Invoke-AapReconcile -Root $root -Inventory $Inv
         $r.Status | Should -Be 'error'
@@ -791,8 +853,8 @@ Describe 'reconcile repairs' {
 
     It 'frees a reservation that never reached create (no VM, folder or journal) with a never_registered proof' {
         $root = New-CapAllocator -Linux 1 -Windows 2
-        $orphan = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
-        $kept = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $orphan = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
+        $kept = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         $r = Invoke-AapReconcile -Root $root -Inventory { @{ vms = @(); folders = @($kept.reservation_id); journaled = @($kept.reservation_id) } }.GetNewClosure()
         $doc = Get-CapDoc $root
         $o = Get-CapRes $doc $orphan.reservation_id

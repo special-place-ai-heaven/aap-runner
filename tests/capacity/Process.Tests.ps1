@@ -34,7 +34,7 @@ BeforeAll {
         foreach ($r in @($doc.reservations | Where-Object { $_.state -eq 'reconciled' })) { $r.teardown_proof | Should -Not -BeNullOrEmpty }
     }
 
-    $script:VmArgs = '-MemOverheadMib 512 -DiskGib 190 -IoMbps 100'
+    $script:VmArgs = '-MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100'
 }
 
 AfterAll {
@@ -80,7 +80,7 @@ Describe 'the lock file' {
         $fs = [IO.File]::Open((Join-Path $root 'allocator.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         try {
             $sw = [Diagnostics.Stopwatch]::StartNew()
-            $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100 -LockTimeoutSeconds 2
+            $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100 -LockTimeoutSeconds 2
             $sw.Stop()
             $r.Status | Should -Be 'error'
             $r.Reason | Should -Be 'lock_timeout'
@@ -100,10 +100,10 @@ Describe 'the lock file' {
             if ([DateTime]::UtcNow -gt $deadline) { throw 'child did not take the lock' }
             Start-Sleep -Milliseconds 20
         }
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100 -LockTimeoutSeconds 1).Reason | Should -Be 'lock_timeout'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100 -LockTimeoutSeconds 1).Reason | Should -Be 'lock_timeout'
         $c.Process.Kill()
         $c.Process.WaitForExit()
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100 -LockTimeoutSeconds 2).Ok | Should -BeTrue
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100 -LockTimeoutSeconds 2).Ok | Should -BeTrue
     }
 }
 
@@ -112,7 +112,7 @@ Describe 'a controller killed at every persisted boundary' {
 
     It 'initialize, killed before its first file is in place: initialize again' {
         $root = New-CapRoot
-        $h = '@{ cpu_cores = 32; mem_gib = 96; disk_gib = 2000; io_mbps = 1000; control_distro_mem_gib = 1 }'
+        $h = "@{ cpu_cores = 32; mem_gib = 96; volumes = @(@{ volume_guid = '00000000-0000-4000-8000-0000000000e1'; tiers = @('base', 'clone', 'scratch', 'staging'); available_gib = 2010; floor_gib = 10; held_gib = 0 }); io_mbps = 1000; control_distro_mem_gib = 1 }"
         Invoke-CapCrash $root "param(`$root) Initialize-AapAllocator -Root `$root -HostInfo ($h) -Linux 1 -Windows 1" 'after-temp'
         Test-Path -LiteralPath (Join-Path $root 'allocator.json') | Should -BeFalse
         (Initialize-AapAllocator -Root $root -HostInfo (New-CapHostInfo) -Linux 1 -Windows 1).Ok | Should -BeTrue
@@ -130,7 +130,7 @@ Describe 'a controller killed at every persisted boundary' {
         Test-Path -LiteralPath (Join-Path $root 'allocator.json.tmp') | Should -BeTrue
         [void](Invoke-AapReconcile -Root $root -Inventory { @{ vms = @(); folders = @(); journaled = @() } })
         Test-Path -LiteralPath (Join-Path $root 'allocator.json.tmp') | Should -BeFalse
-        $r = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $r = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         $r.slot | Should -Be 1
         $r.lease_generation | Should -Be 1
         Assert-CapSound $root
@@ -148,7 +148,7 @@ Describe 'a controller killed at every persisted boundary' {
         $o = Get-CapRes (Get-CapDoc $root) $orphan[0].reservation_id
         $o.state | Should -Be 'reconciled'
         $o.teardown_proof.runner_deregistered | Should -Be 'never_registered'
-        $again = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $again = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         $again.slot | Should -Be $orphan[0].slot
         $again.lease_generation | Should -Be ($orphan[0].lease_generation + 1)
         Assert-CapSound $root
@@ -161,14 +161,14 @@ Describe 'a controller killed at every persisted boundary' {
         $r = Invoke-AapReconcile -Root $root -Inventory { @{ vms = @(); folders = @(); journaled = @($orphan.reservation_id) } }.GetNewClosure()
         @($r.Actions | Where-Object { $_.action -eq 'replay' }).Count | Should -Be 1
         (Get-CapRes (Get-CapDoc $root) $orphan.reservation_id).state | Should -Be 'creating'
-        $next = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $next = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         $next.slot | Should -Not -Be $orphan.slot
         Assert-CapSound $root
     }
 
     It 'creating -> ready, killed before the replace: still creating, kept for replay while its VM exists' {
         $root = New-CapAllocator -Linux 1 -Windows 2
-        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reservation
+        $res = (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reservation
         $vmId = New-CapVmId
         Invoke-CapCrash $root "param(`$root) Set-AapSlotState -Root `$root -ReservationId $($res.reservation_id) -LeaseGeneration $($res.lease_generation) -State ready -VmId $vmId" 'after-temp'
         (Get-CapRes (Get-CapDoc $root) $res.reservation_id).state | Should -Be 'creating'
@@ -251,9 +251,23 @@ Describe 'a controller killed at every persisted boundary' {
         $status = "[pscustomobject]@{ state = 'idle'; runner_count = 3; job_cpus = 15; job_memory_gib = 51; sampled_at = '$at'; slots = @([pscustomobject]@{ slot = 1; state = 'idle' }, [pscustomobject]@{ slot = 2; state = 'idle' }, [pscustomobject]@{ slot = 3; state = 'idle' }) }"
         Invoke-CapCrash $root "param(`$root) Register-AapLegacySlots -Root `$root -ManagerStatus ($status) -ManagerVersion manager-2" 'after-temp'
         (Get-CapDoc $root).legacy_adopted | Should -BeFalse
-        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -DiskGib 190 -IoMbps 100).Reason | Should -Be 'legacy_not_adopted'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'legacy_not_adopted'
         $script:Now = [DateTime]::UtcNow
         (Register-AapLegacySlots -Root $root -ManagerVersion 'manager-2' -ManagerStatus (New-CapStatus 3 15 51 @('idle', 'idle', 'idle') -State 'idle')).Ok | Should -BeTrue
+        Assert-CapSound $root
+    }
+
+    It 'hostile reply from a crash quarantine, killed between its two writes: final, and the retry deletes' {
+        $root = New-CapAllocator -Linux 1 -Windows 2
+        $w = New-CapVm $root -Busy
+        [void](Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind crash -Reason 'journal_unreadable')
+        Invoke-CapCrash $root "param(`$root) Set-AapSlotState -Root `$root -ReservationId $($w.reservation_id) -LeaseGeneration $($w.lease_generation) -State quarantined -QuarantineKind hostile_guest -Reason wrong_echo" 'after-replace'
+        $q = Get-CapRes (Get-CapDoc $root) $w.reservation_id
+        $q.state | Should -Be 'quarantined'
+        $q.quarantine_kind | Should -Be 'hostile_guest'
+        (Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning).Reason | Should -Be 'quarantine_final'
+        $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'wrong_echo'
+        $r.Reservation.state | Should -Be 'deleting'
         Assert-CapSound $root
     }
 

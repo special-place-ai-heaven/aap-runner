@@ -1,6 +1,6 @@
 # Host-wide runner slot allocator (ledger item P09). Windows PowerShell 5.1 and PowerShell 7.5+.
 #
-# Contract: parity/contracts/allocator.md, version 1. The schema next to this module,
+# Contract: parity/contracts/allocator.md, version 2 (allocator.json schema 2). The schema next to this module,
 # allocator.schema.json, is a byte copy of parity/contracts/allocator.schema.json (a test checks it).
 # Test-AapAllocatorState implements the same checks, in the same order and with the same messages,
 # as parity/contracts/validate.py (schema subset, secret-value scan, sem_allocator).
@@ -37,12 +37,13 @@ $script:Edges = @{
 # Which states may enter each quarantine kind. unknown_vm is only created by Invoke-AapReconcile.
 $script:QuarantineFrom = @{
     heartbeat       = @('ready', 'busy')
-    hostile_guest   = @('creating', 'ready', 'busy', 'draining', 'collecting')
     crash           = @('creating', 'ready', 'busy', 'draining', 'collecting')
     teardown_failed = @('deleting')
 }
-# A quarantine that may still turn hostile: hostile_guest is immediate and final from any guest state.
-$script:HostileOver = @('heartbeat', 'crash')
+# hostile_guest (Set-AapSlotState) is immediate and final: from a guest state straight to deleting;
+# from one of these quarantines the kind is rewritten first (rule 10 holds at every write).
+$script:GuestStates = @('creating', 'ready', 'busy', 'draining', 'collecting')
+$script:HostileOver = @('heartbeat', 'crash', 'hostile_guest')
 # Legal edge paths down to deleting (draining always passes through collecting).
 $script:ToDeleting = @{
     creating = @('deleting'); ready = @('draining', 'collecting', 'deleting'); busy = @('deleting')
@@ -61,7 +62,7 @@ $script:Known = @('$schema', '$id', '$defs', '$comment', 'title', 'description',
     'pattern', '$ref', 'oneOf', 'anyOf', 'allOf', 'not', 'if', 'then', 'else')
 # ponytail: validate.py knows these too; allocator.schema.json uses none of them, so a schema
 # revision that needs one fails closed here until it is implemented.
-$script:NotImplemented = @('uniqueItems', 'oneOf', 'allOf', 'not', 'if', 'then', 'else')
+$script:NotImplemented = @('oneOf', 'allOf', 'not', 'if', 'then', 'else')
 $script:Fault = $null            # test hook: a fault point name; the process kills itself there
 $script:Seen = @{}               # highest revision applied per folder, in this process
 $script:Warned = @{}
@@ -212,8 +213,9 @@ function Read-AapText([string]$Path, [int]$Max) {
     $text
 }
 
-# Python's json.dumps for the values validate.py prints (ensure_ascii, ', ' and ': ').
-function ConvertTo-AapPyJson($Value) {
+# Python's json.dumps for the values validate.py prints (ensure_ascii, ', ' and ': '); -SortKeys
+# as json.dumps(sort_keys=True), which uniqueItems compares.
+function ConvertTo-AapPyJson($Value, [switch]$SortKeys) {
     if ($null -eq $Value) { return 'null' }
     if ($Value -is [bool]) { if ($Value) { return 'true' } else { return 'false' } }
     if ($Value -is [string]) {
@@ -237,9 +239,15 @@ function ConvertTo-AapPyJson($Value) {
         if ([Math]::Floor($d) -eq $d -and [Math]::Abs($d) -lt 1e16) { return $d.ToString('0.0', $script:Inv) }
         return ($d.ToString('R', $script:Inv) -creplace 'E', 'e')
     }
-    if ($Value -is [array]) { return '[' + ((@($Value) | ForEach-Object { ConvertTo-AapPyJson $_ }) -join ', ') + ']' }
+    if ($Value -is [array]) { return '[' + ((@($Value) | ForEach-Object { ConvertTo-AapPyJson $_ -SortKeys:$SortKeys }) -join ', ') + ']' }
     if ($Value -is [Management.Automation.PSCustomObject]) {
-        return '{' + ((@($Value.PSObject.Properties) | ForEach-Object { (ConvertTo-AapPyJson $_.Name) + ': ' + (ConvertTo-AapPyJson $_.Value) }) -join ', ') + '}'
+        $props = @($Value.PSObject.Properties)
+        if ($SortKeys) {
+            $names = [string[]]@($props | ForEach-Object { $_.Name })
+            [Array]::Sort($names, [StringComparer]::Ordinal)
+            $props = @($names | ForEach-Object { Get-AapProp $Value $_ })
+        }
+        return '{' + (($props | ForEach-Object { (ConvertTo-AapPyJson $_.Name) + ': ' + (ConvertTo-AapPyJson $_.Value -SortKeys:$SortKeys) }) -join ', ') + '}'
     }
     return [string]$Value
 }
@@ -338,7 +346,9 @@ function Test-AapNode($Schema, $Value, $Root, [string]$Path) {
         $p = Get-AapProp $Schema 'maxLength'
         if ($p -and (Get-AapCodePoints $Value) -gt $p.Value) { return "${Path}: longer than $($p.Value)" }
         $p = Get-AapProp $Schema 'pattern'
-        if ($p -and -not [regex]::IsMatch($Value, [string]$p.Value)) { return "${Path}: does not match pattern $($p.Value)" }
+        # validate.py _ecma(): a pattern's `$` is the end of input, as in ECMA-262 (.NET `$` would
+        # also match before a final newline).
+        if ($p -and -not [regex]::IsMatch($Value, [regex]::Replace([string]$p.Value, '(?<!\\)\$', '\z'))) { return "${Path}: does not match pattern $($p.Value)" }
     }
     if ($Value -is [array]) {
         $items = @($Value)
@@ -346,6 +356,11 @@ function Test-AapNode($Schema, $Value, $Root, [string]$Path) {
         if ($p -and $items.Count -lt $p.Value) { return "${Path}: fewer than $($p.Value) items" }
         $p = Get-AapProp $Schema 'maxItems'
         if ($p -and $items.Count -gt $p.Value) { return "${Path}: more than $($p.Value) items" }
+        $p = Get-AapProp $Schema 'uniqueItems'
+        if ($p -and $p.Value -is [bool] -and $p.Value) {
+            $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+            foreach ($it in $items) { if (-not $seen.Add((ConvertTo-AapPyJson $it -SortKeys))) { return "${Path}: items not unique" } }
+        }
         $p = Get-AapProp $Schema 'items'
         if ($p) {
             for ($i = 0; $i -lt $items.Count; $i++) {
@@ -441,6 +456,45 @@ function Test-AapShares([string]$Mode, $Reserve, $Pairs) {
     return $null
 }
 
+# validate.py _volumes(): rule 5 for disk and rule 11. Every live reservation's clone and scratch
+# caps count on the volume that holds that tier, within available - floor - held.
+function Test-AapVolumes($Volumes, $Live) {
+    $vols = @($Volumes)
+    $guids = [string[]]@($vols | ForEach-Object { $_.volume_guid })
+    if ((New-Object 'System.Collections.Generic.HashSet[string]' (, $guids)).Count -ne $guids.Count) { return 'a volume is listed twice' }
+    $tiers = New-Object System.Collections.Generic.List[string]
+    foreach ($v in $vols) {
+        foreach ($t in @($v.tiers)) {
+            if ($tiers.Contains($t)) { return "tier $t is on more than one volume" }
+            $tiers.Add($t)
+        }
+    }
+    if (@($Live | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count -and -not ($tiers.Contains('base') -and $tiers.Contains('clone') -and $tiers.Contains('scratch'))) {
+        return 'a VM reservation needs the base, clone and scratch tiers in host.volumes'
+    }
+    foreach ($v in $vols) {
+        $clone = @($v.tiers) -ccontains 'clone'
+        $scratch = @($v.tiers) -ccontains 'scratch'
+        if (-not ($clone -or $scratch)) { continue }
+        if ((Get-AapVolumeNeed $v $Live) -gt [long]$v.available_gib - [long]$v.floor_gib - [long]$v.held_gib) {
+            return "volume $($v.volume_guid): reservations exceed its disk budget (available minus floor minus held)"
+        }
+    }
+    return $null
+}
+
+# What the live reservations hold on one volume: clone caps on the clone tier, scratch caps on the scratch tier.
+function Get-AapVolumeNeed($Volume, $Live) {
+    $clone = @($Volume.tiers) -ccontains 'clone'
+    $scratch = @($Volume.tiers) -ccontains 'scratch'
+    $need = [long]0
+    foreach ($r in @($Live)) {
+        if ($clone) { $need += [long]$r.clone_gib }
+        if ($scratch) { $need += [long]$r.scratch_gib }
+    }
+    $need
+}
+
 # validate.py sem_allocator(), rule by rule.
 function Test-AapSemantic($Doc) {
     $profiles = @($Doc.profiles.PSObject.Properties | ForEach-Object { $_.Value })
@@ -469,7 +523,8 @@ function Test-AapSemantic($Doc) {
         if ((Get-AapSum $admitted { $args[0].cpus }) -gt $c.CapCpus -or (Get-AapSum $admitted { Get-AapMem $args[0] }) -gt $c.CapMemGib) { return "${name}: admitted reservations exceed the profile cap" }
     }
     if ((Get-AapSum $live { $args[0].cpus }) -gt $caps.PoolCpus -or (Get-AapSum $live { Get-AapMem $args[0] }) -gt $caps.PoolMemGib) { return 'reservations exceed the pool; the host reserve is never given away' }
-    if ((Get-AapSum $live { $args[0].disk_gib }) -gt [long]$Doc.host.disk_gib) { return 'reservations exceed the image-root disk budget' }
+    $e = Test-AapVolumes $Doc.host.volumes $live
+    if ($e) { return $e }
     if ([long]$Doc.host.io_mbps -eq 0) {
         if (@($live | Where-Object { [long]$_.io_mbps -ne 0 }).Count) { return 'io_mbps reserved while host IO is unmeasured' }
     } elseif ((Get-AapSum $live { $args[0].io_mbps }) -gt $caps.IoBudget) { return 'reservations exceed the IO budget' }
@@ -481,7 +536,9 @@ function Test-AapSemantic($Doc) {
         if ([long]$r.lease_generation -gt $current) { return "${rid}: lease_generation ahead of the slot counter" }
         if ($r.backend -ceq 'wsl-legacy') {
             if ($r.profile -cne 'linux' -or $null -ne $r.vm_id -or -not $r.image_generation.StartsWith('legacy-', [StringComparison]::Ordinal)) { return "${rid}: legacy reservations are linux, vm_id null, generation legacy-*" }
+            if ([long]$r.clone_gib -ne 0 -or [long]$r.scratch_gib -ne 0) { return "${rid}: legacy reservations reserve no VM disk" }
         } else {
+            if ([long]$r.clone_gib -lt 1) { return "${rid}: a VM reservation reserves at least 1 GiB of clone disk" }
             if ($r.state -cne 'creating' -and $r.state -cne 'reconciled' -and $null -eq $r.vm_id) { return "${rid}: a VM reservation past creating names its vm_id" }
             if ($null -ne $r.runner_name -and $r.runner_name -cne (Get-AapVmNameOf $r)) { return "${rid}: runner_name must be the VM name aap-<w|l>-<slot>-<generation>-<reservation hex>" }
         }
@@ -824,12 +881,12 @@ function New-AapId {
 }
 
 function New-AapReservationObject {
-    param($Id, $Slot, $ProfileName, $Backend, $Generation, $Lease, $State, $Now, $Cpus, $MemGib, $OverheadMib, $DiskGib, $IoMbps)
+    param($Id, $Slot, $ProfileName, $Backend, $Generation, $Lease, $State, $Now, $Cpus, $MemGib, $OverheadMib, $CloneGib, $ScratchGib, $IoMbps)
     [pscustomobject][ordered]@{
         reservation_id = $Id; slot = $Slot; profile = $ProfileName; backend = $Backend; image_generation = $Generation
         lease_generation = $Lease; state = $State; idempotency_key = "$Id/$Lease"
         acquired_at = $Now; state_changed_at = $Now; heartbeat_at = $null
-        cpus = $Cpus; mem_gib = $MemGib; mem_overhead_mib = $OverheadMib; disk_gib = $DiskGib; io_mbps = $IoMbps
+        cpus = $Cpus; mem_gib = $MemGib; mem_overhead_mib = $OverheadMib; clone_gib = $CloneGib; scratch_gib = $ScratchGib; io_mbps = $IoMbps
         vm_id = $null; runner_name = $null; cleanup_uncertain = $false
         quarantine_kind = $null; quarantine_reason = $null; teardown_proof = $null
     }
@@ -845,7 +902,7 @@ function Add-AapReservation($Doc, [hashtable]$Spec, [string]$Now) {
     $gens[$slot - 1] = $gens[$slot - 1] + 1
     $Doc.slot_generations = $gens
     $r = New-AapReservationObject -Id $id -Slot $slot -ProfileName $Spec.Profile -Backend $Spec.Backend -Generation $Spec.Generation `
-        -Lease $gens[$slot - 1] -State $Spec.State -Now $Now -Cpus $Spec.Cpus -MemGib $Spec.MemGib -OverheadMib $Spec.OverheadMib -DiskGib $Spec.DiskGib -IoMbps $Spec.IoMbps
+        -Lease $gens[$slot - 1] -State $Spec.State -Now $Now -Cpus $Spec.Cpus -MemGib $Spec.MemGib -OverheadMib $Spec.OverheadMib -CloneGib $Spec.CloneGib -ScratchGib $Spec.ScratchGib -IoMbps $Spec.IoMbps
     $Doc.reservations = @($Doc.reservations) + @($r)
     $r
 }
@@ -865,17 +922,30 @@ function Test-AapAdmission($Doc, [hashtable]$Spec) {
     if ((Get-AapSum $admitted { $args[0].cpus }) + [long]$Spec.Cpus -gt $c.CapCpus -or (Get-AapSum $admitted { Get-AapMem $args[0] }) + $mem -gt $c.CapMemGib) { return @('share', "$name cap of $($c.CapCpus) CPUs and $($c.CapMemGib) GiB is used") }
     if ((Get-AapSum $live { $args[0].cpus }) + [long]$Spec.Cpus -gt $caps.PoolCpus) { return @('pool', "the pool of $($caps.PoolCpus) CPUs is held by live reservations, draining ones included") }
     if ((Get-AapSum $live { Get-AapMem $args[0] }) + $mem -gt $caps.PoolMemGib) { return @('memory', "the pool of $($caps.PoolMemGib) GiB (control VM paid first) is held by live reservations, VM overhead and draining ones included") }
-    if ((Get-AapSum $live { $args[0].disk_gib }) + [long]$Spec.DiskGib -gt [long]$Doc.host.disk_gib) { return @('disk', "the image-root disk budget of $($Doc.host.disk_gib) GiB is held") }
+    $with = @($live) + @([pscustomobject]@{ backend = $Spec.Backend; clone_gib = [long]$Spec.CloneGib; scratch_gib = [long]$Spec.ScratchGib })
+    $e = Test-AapVolumes $Doc.host.volumes $with
+    if ($e -and $e.StartsWith('a VM reservation needs', [StringComparison]::Ordinal)) { return @('storage', 'no trusted storage layout: host.volumes lacks the base, clone or scratch tier, so no VM is admitted') }
+    if ($e) { return @('disk', "$e; the new reservation's clone and scratch caps do not fit") }
     if ([long]$Doc.host.io_mbps -eq 0) {
         if ([long]$Spec.IoMbps -ne 0) { return @('io', 'host IO is not measured, so no reservation may reserve IO') }
     } elseif ((Get-AapSum $live { $args[0].io_mbps }) + [long]$Spec.IoMbps -gt $caps.IoBudget) { return @('io', "the IO budget of $($caps.IoBudget) MB/s is held") }
     return $null
 }
 
+# HostInfo: cpu_cores, mem_gib, io_mbps, control_distro_mem_gib and volumes (a list of volume_guid,
+# tiers, available_gib, floor_gib, held_gib; empty while storage is unconfigured or failing).
 function ConvertTo-AapHost($HostInfo, [string]$Now) {
+    $volumes = @(foreach ($v in @(Get-AapField $HostInfo 'volumes')) {
+            if ($null -ne $v) {
+                [pscustomobject][ordered]@{
+                    volume_guid = Get-AapField $v 'volume_guid'; tiers = @(Get-AapField $v 'tiers'); available_gib = Get-AapField $v 'available_gib'
+                    floor_gib = Get-AapField $v 'floor_gib'; held_gib = Get-AapField $v 'held_gib'
+                }
+            }
+        })
     [pscustomobject][ordered]@{
         cpu_cores = Get-AapField $HostInfo 'cpu_cores'; mem_gib = Get-AapField $HostInfo 'mem_gib'
-        disk_gib = Get-AapField $HostInfo 'disk_gib'; io_mbps = Get-AapField $HostInfo 'io_mbps'
+        volumes = $volumes; io_mbps = Get-AapField $HostInfo 'io_mbps'
         control_distro_mem_gib = Get-AapField $HostInfo 'control_distro_mem_gib'; measured_at = $Now
     }
 }
@@ -938,8 +1008,8 @@ function Test-AapAllocatorState {
         [Parameter(Mandatory, ParameterSetName = 'State')]$State)
     try {
         if ($PSCmdlet.ParameterSetName -eq 'Path') {
-            $Json = Read-AapText $Path 65536
-            if ($null -eq $Json) { return [pscustomobject]@{ Valid = $false; Error = "$(Split-Path -Leaf $Path): fixture over 64 KiB" } }
+            $Json = Read-AapText $Path 262144
+            if ($null -eq $Json) { return [pscustomobject]@{ Valid = $false; Error = "$(Split-Path -Leaf $Path): document over 256 KiB" } }
         }
         if ($PSCmdlet.ParameterSetName -ne 'State') { $State = ConvertFrom-AapJson $Json }
     } catch {
@@ -981,7 +1051,7 @@ function Initialize-AapAllocator {
         }
         $now = Format-AapTime (Get-AapUtcNow)
         $doc = [pscustomobject][ordered]@{
-            schema = 1; revision = 0; written_at = $now; max_slots = 5
+            schema = 2; revision = 0; written_at = $now; max_slots = 5
             host = ConvertTo-AapHost $HostInfo $now
             host_reserve_percent = 10; share_mode = 'even'
             profiles = [pscustomobject][ordered]@{
@@ -1054,8 +1124,19 @@ function Limit-AapHost($Doc, $Old) {
     $live = @(Get-AapLive $Doc)
     $keep = 100 - [long]$Doc.host_reserve_percent
     $fits = { $null -eq (Test-AapSemantic $Doc) }
-    $disk = Get-AapSum $live { $args[0].disk_gib }
-    if ([long]$h.disk_gib -lt $disk) { $h.disk_gib = $disk; $clamped.Add('disk_gib') }
+    # Disk: a VM admitted on a layout keeps it; a measurement without the base, clone or scratch
+    # tier keeps the old layout. Every clone or scratch volume gets at least what its live
+    # reservations hold, and a kept old layout exactly that.
+    $tiers = @(@($h.volumes) | ForEach-Object { @($_.tiers) })
+    $keepOld = @($live | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count -and -not (($tiers -ccontains 'base') -and ($tiers -ccontains 'clone') -and ($tiers -ccontains 'scratch'))
+    if ($keepOld) { $h.volumes = (ConvertFrom-AapJson (ConvertTo-AapJson $Old)).volumes }
+    $moved = $keepOld
+    foreach ($v in @($h.volumes)) {
+        if (-not ((@($v.tiers) -ccontains 'clone') -or (@($v.tiers) -ccontains 'scratch'))) { continue }
+        $fit = (Get-AapVolumeNeed $v $live) + [long]$v.floor_gib + [long]$v.held_gib
+        if ([long]$v.available_gib -lt $fit -or ($keepOld -and [long]$v.available_gib -gt $fit)) { $v.available_gib = $fit; $moved = $true }
+    }
+    if ($moved) { $clamped.Add('volumes') }
     $io = Get-AapSum $live { $args[0].io_mbps }
     if ($io -gt 0 -and (Get-AapFloorDiv ([long]$h.io_mbps * $keep) 100) -lt $io) {
         $h.io_mbps = Find-AapLeast ([long]$h.io_mbps) ([long]$Old.io_mbps) { param($v) (Get-AapFloorDiv ($v * $keep) 100) -ge $io }
@@ -1098,6 +1179,8 @@ function Set-AapHostMeasurement {
         $doc.host = ConvertTo-AapHost $HostInfo (Format-AapTime (Get-AapUtcNow))
         $e = Test-AapDoc (ConvertFrom-AapJson (ConvertTo-AapJson $doc))
         if ($e -and $e.StartsWith('$.host', [StringComparison]::Ordinal)) { return (New-AapResult 'refused' 'bad_request' $e) }
+        $layout = Test-AapVolumes $doc.host.volumes @()
+        if ($layout) { return (New-AapResult 'refused' 'bad_request' "host.volumes: $layout") }
         if (-not $e) {
             Save-AapDoc $Root $doc "host $(ConvertTo-AapJson $doc.host)"
             return (New-AapResult 'ok' $null 'host measurement stored')
@@ -1178,12 +1261,13 @@ function Set-AapProfileCounts {
 # Admission. Persisted before the provider's create (or before a legacy slot may start) and before
 # any broker lease; returns the reservation and the derived VM and runner name. Sizes default to
 # the profile's per-runner share (memory minus the VM overhead). VM reservations take their
-# measured budget explicitly: -MemOverheadMib, -DiskGib, -IoMbps.
+# measured budget explicitly: -MemOverheadMib, -CloneGib (clone_gib_max, at least 1), -ScratchGib
+# (scratch_gib_max) and -IoMbps.
 function Request-AapReservation {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root,
         [Parameter(Mandatory)][ValidateSet('linux', 'windows', IgnoreCase = $false)][string]$Profile,
-        $Cpus = $null, $MemGib = $null, $MemOverheadMib = $null, $DiskGib = $null, $IoMbps = $null,
+        $Cpus = $null, $MemGib = $null, $MemOverheadMib = $null, $CloneGib = $null, $ScratchGib = $null, $IoMbps = $null,
         [string]$ImageGeneration = '',
         [int]$LockTimeoutSeconds = 30, [switch]$RelaxedTrustForTests)
     Invoke-AapLocked $Root ([bool]$RelaxedTrustForTests) $LockTimeoutSeconds {
@@ -1195,17 +1279,18 @@ function Request-AapReservation {
         }
         if (-not $doc.legacy_adopted) { return (New-AapResult 'refused' 'legacy_not_adopted' 'the legacy pool is not adopted yet (Register-AapLegacySlots)') }
         $backend = $doc.profiles.$Profile.backend
-        foreach ($pair in @(@('Cpus', $Cpus), @('MemGib', $MemGib), @('MemOverheadMib', $MemOverheadMib), @('DiskGib', $DiskGib), @('IoMbps', $IoMbps))) {
+        foreach ($pair in @(@('Cpus', $Cpus), @('MemGib', $MemGib), @('MemOverheadMib', $MemOverheadMib), @('CloneGib', $CloneGib), @('ScratchGib', $ScratchGib), @('IoMbps', $IoMbps))) {
             if ($null -ne $pair[1] -and (-not (Test-AapInt $pair[1]) -or $pair[1] -lt 0)) { return (New-AapResult 'refused' 'bad_request' "$($pair[0]) must be a whole number") }
         }
         if ($backend -ceq 'hyperv-vm') {
-            if ($null -eq $MemOverheadMib -or $null -eq $DiskGib -or $null -eq $IoMbps) { return (New-AapResult 'refused' 'bad_request' 'a VM reservation needs the measured -MemOverheadMib, -DiskGib and -IoMbps') }
+            if ($null -eq $MemOverheadMib -or $null -eq $CloneGib -or $null -eq $ScratchGib -or $null -eq $IoMbps) { return (New-AapResult 'refused' 'bad_request' 'a VM reservation needs the measured -MemOverheadMib, -CloneGib, -ScratchGib and -IoMbps') }
+            if ($CloneGib -lt 1) { return (New-AapResult 'refused' 'bad_request' 'a VM reservation reserves at least 1 GiB of clone disk (-CloneGib)') }
             $generation = $ImageGeneration
             if (-not $generation) { $generation = $doc.profiles.$Profile.active_generation }
             if (-not $generation -or $generation -cne $doc.profiles.$Profile.active_generation) { return (New-AapResult 'refused' 'generation' "the $Profile profile admits only its active generation ($($doc.profiles.$Profile.active_generation))") }
             if ([long]$doc.host.io_mbps -eq 0) { return (New-AapResult 'refused' 'io_unmeasured' 'image-root IO is not measured; VM admission waits for it') }
         } else {
-            if (($null -ne $MemOverheadMib -and $MemOverheadMib -ne 0) -or ($null -ne $DiskGib -and $DiskGib -ne 0) -or ($null -ne $IoMbps -and $IoMbps -ne 0)) { return (New-AapResult 'refused' 'bad_request' 'legacy reservations have no VM overhead, image-root disk or IO') }
+            if (($null -ne $MemOverheadMib -and $MemOverheadMib -ne 0) -or ($null -ne $CloneGib -and $CloneGib -ne 0) -or ($null -ne $ScratchGib -and $ScratchGib -ne 0) -or ($null -ne $IoMbps -and $IoMbps -ne 0)) { return (New-AapResult 'refused' 'bad_request' 'legacy reservations have no VM overhead, VM disk or IO') }
             $generation = $ImageGeneration
             if (-not $generation) {
                 $newest = @($doc.reservations | Where-Object { $_.backend -ceq 'wsl-legacy' } | Sort-Object -Property @{ Expression = { $_.acquired_at } } | Select-Object -Last 1)
@@ -1220,12 +1305,12 @@ function Request-AapReservation {
         if ($null -eq $Cpus) { $Cpus = $c.EachCpus }
         if ($null -eq $MemGib) { $MemGib = $c.EachMemGib - [long][Math]::Ceiling([double]$ovh / 1024) }
         $spec = @{ Profile = $Profile; Backend = $backend; Generation = $generation; State = 'creating'; Cpus = [long]$Cpus; MemGib = [long]$MemGib; OverheadMib = $ovh
-            DiskGib = [long]$(if ($null -ne $DiskGib) { $DiskGib } else { 0 }); IoMbps = [long]$(if ($null -ne $IoMbps) { $IoMbps } else { 0 }) }
+            CloneGib = [long]$(if ($null -ne $CloneGib) { $CloneGib } else { 0 }); ScratchGib = [long]$(if ($null -ne $ScratchGib) { $ScratchGib } else { 0 }); IoMbps = [long]$(if ($null -ne $IoMbps) { $IoMbps } else { 0 }) }
         $refusal = Test-AapAdmission $doc $spec
         if ($refusal) { return (New-AapResult 'refused' $refusal[0] $refusal[1]) }
         if ($spec.Cpus -lt 1 -or $spec.MemGib -lt 1) { return (New-AapResult 'refused' 'share' "the $Profile per-runner share ($($c.EachCpus) CPUs, $($c.EachMemGib) GiB) is too small for one runner") }
         $r = Add-AapReservation $doc $spec (Format-AapTime (Get-AapUtcNow))
-        Save-AapDoc $Root $doc "reserve $($r.reservation_id) slot $($r.slot) generation $($r.lease_generation) $Profile $backend cpus=$($r.cpus) mem=$($r.mem_gib) overhead=$($r.mem_overhead_mib) disk=$($r.disk_gib) io=$($r.io_mbps)"
+        Save-AapDoc $Root $doc "reserve $($r.reservation_id) slot $($r.slot) generation $($r.lease_generation) $Profile $backend cpus=$($r.cpus) mem=$($r.mem_gib) overhead=$($r.mem_overhead_mib) clone=$($r.clone_gib) scratch=$($r.scratch_gib) io=$($r.io_mbps)"
         $vm = Get-AapVmNameOf $r
         New-AapResult 'ok' $null "slot $($r.slot) reserved" ([ordered]@{ Reservation = $r; VmName = $vm; RunnerName = $vm; IdempotencyKey = $r.idempotency_key })
     }
@@ -1281,7 +1366,7 @@ function Register-AapLegacySlots {
             # A retired or unreported slot gets no heartbeat, so reconcile quarantines it (held).
             $to = 'ready'
             if ($st -ceq 'running' -or $st -ceq 'draining') { $to = 'busy' } elseif ($st -ceq 'starting') { $to = 'creating' }
-            $r = Add-AapReservation $doc @{ Profile = 'linux'; Backend = 'wsl-legacy'; Generation = "legacy-$ManagerVersion"; State = $to; Cpus = $each[0]; MemGib = $each[1]; OverheadMib = 0; DiskGib = 0; IoMbps = 0 } $now
+            $r = Add-AapReservation $doc @{ Profile = 'linux'; Backend = 'wsl-legacy'; Generation = "legacy-$ManagerVersion"; State = $to; Cpus = $each[0]; MemGib = $each[1]; OverheadMib = 0; CloneGib = 0; ScratchGib = 0; IoMbps = 0 } $now
             if (@('idle', 'running', 'draining', 'starting') -ccontains $st) { $r.heartbeat_at = Format-AapTime $(if ($sample -lt $nowDt) { $sample } else { $nowDt }) }
             $added.Add($r)
         }
@@ -1445,11 +1530,16 @@ function Set-AapSlotState {
         $r = $f.Reservation
         $from = $r.state
         $withheld = ''
-        if ($from -ceq $State -and ($State -cne 'quarantined' -or $r.quarantine_kind -ceq $QuarantineKind)) { return (New-AapResult 'unchanged' $null "already $State") }
-        $toHostile = $from -ceq 'quarantined' -and $State -ceq 'quarantined' -and $QuarantineKind -ceq 'hostile_guest' -and $script:HostileOver -ccontains $r.quarantine_kind
-        if (-not $toHostile -and $script:Edges[$from] -cnotcontains $State) { return (New-AapResult 'refused' 'illegal_edge' "$from -> $State is not an edge of the slot state machine") }
+        $hostile = $State -ceq 'quarantined' -and $QuarantineKind -ceq 'hostile_guest'
+        if (-not $hostile -and $from -ceq $State -and ($State -cne 'quarantined' -or $r.quarantine_kind -ceq $QuarantineKind)) { return (New-AapResult 'unchanged' $null "already $State") }
+        if ($hostile) {
+            if ($r.backend -cne 'hyperv-vm') { return (New-AapResult 'refused' 'bad_request' 'hostile_guest applies to a VM guest') }
+            if ($script:GuestStates -cnotcontains $from -and -not ($from -ceq 'quarantined' -and $script:HostileOver -ccontains $r.quarantine_kind)) {
+                return (New-AapResult 'refused' 'illegal_edge' "$from -> deleting (hostile_guest) is not allowed")
+            }
+        } elseif ($script:Edges[$from] -cnotcontains $State) { return (New-AapResult 'refused' 'illegal_edge' "$from -> $State is not an edge of the slot state machine") }
         if ($State -ceq 'quarantined') {
-            if (-not $QuarantineKind -or (-not $toHostile -and $script:QuarantineFrom[$QuarantineKind] -cnotcontains $from)) { return (New-AapResult 'refused' 'illegal_edge' "$from -> quarantined ($QuarantineKind) is not allowed") }
+            if (-not $QuarantineKind -or (-not $hostile -and $script:QuarantineFrom[$QuarantineKind] -cnotcontains $from)) { return (New-AapResult 'refused' 'illegal_edge' "$from -> quarantined ($QuarantineKind) is not allowed") }
             if (-not $Reason -or $Reason -match '[\x00-\x1f]' -or $Reason.Length -gt 200) { return (New-AapResult 'refused' 'bad_request' 'a quarantine needs a one-line -Reason of at most 200 characters') }
             # A credential-shaped reason would make the whole write fail the contract; the quarantine
             # matters more than its text.
@@ -1466,6 +1556,22 @@ function Set-AapSlotState {
         }
         if ($r.backend -ceq 'hyperv-vm' -and $null -eq $r.vm_id) { return (New-AapResult 'refused' 'bad_request' 'a VM reservation leaves creating only with its -VmId (or is reconciled with a never_registered proof)') }
         $now = Format-AapTime (Get-AapUtcNow)
+        if ($hostile) {
+            # From a heartbeat or crash quarantine, first the kind (quarantined -> quarantined), then
+            # deleting: two writes, so rule 10 holds at each, and a crash between them leaves a final
+            # hostile quarantine that the provider's retry moves on.
+            if ($from -ceq 'quarantined' -and $r.quarantine_kind -cne 'hostile_guest') {
+                $r.quarantine_kind = 'hostile_guest'
+                $r.quarantine_reason = $Reason
+                $r.state_changed_at = $now
+                $r.cleanup_uncertain = $true
+                Save-AapDoc $Root $doc "$($r.reservation_id) slot $($r.slot) quarantined->quarantined hostile_guest $Reason"
+            }
+            Set-AapEdge $r 'deleting' $now
+            $r.cleanup_uncertain = $true
+            Save-AapDoc $Root $doc "$($r.reservation_id) slot $($r.slot) $from->deleting hostile_guest $Reason"
+            return (New-AapResult 'ok' $null "$from -> deleting (hostile_guest, final)$withheld" ([ordered]@{ Reservation = $r }))
+        }
         Set-AapEdge $r $State $now
         if ($State -ceq 'ready') {
             $r.heartbeat_at = $now
@@ -1663,7 +1769,7 @@ function Invoke-AapReconcile {
                 if (-not $why) {
                     # Tried on a copy: the unknown VM's CPUs and memory must fit the pool too.
                     $copy = ConvertFrom-AapJson (ConvertTo-AapJson $doc)
-                    $q = Add-AapReservation $copy @{ Profile = $profileName; Backend = 'hyperv-vm'; Generation = $doc.profiles.$profileName.active_generation; State = 'quarantined'; Cpus = [long]$cpus; MemGib = [long]$mem; OverheadMib = 0; DiskGib = 0; IoMbps = 0 } $now
+                    $q = Add-AapReservation $copy @{ Profile = $profileName; Backend = 'hyperv-vm'; Generation = $doc.profiles.$profileName.active_generation; State = 'quarantined'; Cpus = [long]$cpus; MemGib = [long]$mem; OverheadMib = 0; CloneGib = 1; ScratchGib = 0; IoMbps = 0 } $now
                     $q.vm_id = $vmId
                     $q.quarantine_kind = 'unknown_vm'
                     $q.quarantine_reason = "unknown VM $name; never adopted, deleted only with a journal entry naming it"

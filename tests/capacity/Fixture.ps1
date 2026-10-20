@@ -43,8 +43,16 @@ function Add-CapSeconds([int]$Seconds) { $script:Now = $script:Now.AddSeconds($S
 
 function Get-CapTime { $script:Now.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture) }
 
-function New-CapHostInfo([int]$Cpu = 32, [int]$Mem = 96, [int]$Disk = 2000, [int]$Io = 1000, [int]$Ctl = 1) {
-    @{ cpu_cores = $Cpu; mem_gib = $Mem; disk_gib = $Disk; io_mbps = $Io; control_distro_mem_gib = $Ctl }
+# One volume with every tier and a disk budget of Disk GiB (available Disk + floor 10, nothing
+# held), unless -Volumes gives the layout or -NoStorage leaves it unconfigured.
+function New-CapHostInfo([int]$Cpu = 32, [int]$Mem = 96, [int]$Disk = 2000, [int]$Io = 1000, [int]$Ctl = 1, [object[]]$Volumes = $null, [switch]$NoStorage) {
+    if ($NoStorage) { $Volumes = @() }
+    elseif ($null -eq $Volumes) { $Volumes = @(New-CapVolume 'e1' @('base', 'clone', 'scratch', 'staging') ($Disk + 10) 10 0) }
+    @{ cpu_cores = $Cpu; mem_gib = $Mem; volumes = $Volumes; io_mbps = $Io; control_distro_mem_gib = $Ctl }
+}
+
+function New-CapVolume([string]$Tail, [string[]]$Tiers, [int]$Available, [int]$Floor = 10, [int]$Held = 0) {
+    @{ volume_guid = '00000000-0000-4000-8000-0000000000' + $Tail; tiers = $Tiers; available_gib = $Available; floor_gib = $Floor; held_gib = $Held }
 }
 
 # status.json as the supervisor writes it (schema 4): the manager's applied limits and slots.
@@ -82,8 +90,8 @@ function New-CapAllocator {
 }
 
 # A Windows VM admitted and moved to ready (or busy) with a vm id.
-function New-CapVm([string]$Root, [switch]$Busy, [int]$Overhead = 512, [int]$Disk = 190, [int]$Io = 100) {
-    $r = Request-AapReservation -Root $Root -Profile windows -MemOverheadMib $Overhead -DiskGib $Disk -IoMbps $Io
+function New-CapVm([string]$Root, [switch]$Busy, [int]$Overhead = 512, [int]$Clone = 150, [int]$Scratch = 40, [int]$Io = 100) {
+    $r = Request-AapReservation -Root $Root -Profile windows -MemOverheadMib $Overhead -CloneGib $Clone -ScratchGib $Scratch -IoMbps $Io
     if (-not $r.Ok) { throw "request: $($r.Reason) $($r.Detail)" }
     $res = $r.Reservation
     $s = Set-AapSlotState -Root $Root -ReservationId $res.reservation_id -LeaseGeneration $res.lease_generation -State ready -VmId (New-CapVmId)

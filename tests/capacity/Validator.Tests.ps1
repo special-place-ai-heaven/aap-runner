@@ -28,9 +28,9 @@ Describe 'the allocator contract fixtures' {
         $script:Ref = Invoke-CapReference $files
     }
 
-    It 'has the fixtures the contract lists (7 valid, 19 invalid)' {
-        $ValidCases.Count | Should -Be 7
-        $InvalidCases.Count | Should -Be 19
+    It 'has the fixtures the contract lists (8 valid, 25 invalid)' {
+        $ValidCases.Count | Should -Be 8
+        $InvalidCases.Count | Should -Be 25
     }
 
     It 'the reference validator passes on its own fixtures' {
@@ -70,7 +70,7 @@ Describe 'single-fault mutations agree with the reference validator' {
         $emoji = [char]::ConvertFromUtf32(0x1F600)
         $quarantine = { param($d, $reason) $r = $d.reservations[3]; $r.state = 'quarantined'; $r.quarantine_kind = 'heartbeat'; $r.quarantine_reason = $reason }
         $edits = [ordered]@{
-            'schema 2'                     = { param($d) $d.schema = 2 }
+            'schema 1'                     = { param($d) $d.schema = 1 }
             'schema true'                  = { param($d) $d.schema = $true }
             'revision negative'            = { param($d) $d.revision = -1 }
             'revision fractional'          = { param($d) $d.revision = 1.5 }
@@ -121,14 +121,28 @@ Describe 'single-fault mutations agree with the reference validator' {
             'busy VM without vm_id'        = { param($d) $d.reservations[3].vm_id = $null }
             'idempotency key wrong'        = { param($d) $d.reservations[1].idempotency_key = 'r-00000000000000a2/8' }
             'IO budget exceeded'           = { param($d) $d.host.io_mbps = 150 }
-            'disk budget exceeded'         = { param($d) $d.host.disk_gib = 379 }
+            'disk budget exceeded'         = { param($d) $d.host.volumes[0].available_gib = 129 }
+            'volumes missing'              = { param($d) $d.host.PSObject.Properties.Remove('volumes') }
+            'disk_gib of schema 1'         = { param($d) $d.host | Add-Member -NotePropertyName disk_gib -NotePropertyValue 2000 }
+            'tier listed twice'            = { param($d) $d.host.volumes[0].tiers = @('base', 'base', 'clone', 'scratch') }
+            'tier unknown'                 = { param($d) $d.host.volumes[0].tiers = @('base', 'clone', 'scratch', 'cache') }
+            'no tiers'                     = { param($d) $d.host.volumes[0].tiers = @() }
+            'volume guid upper case'       = { param($d) $d.host.volumes[0].volume_guid = $d.host.volumes[0].volume_guid.ToUpperInvariant() + 'E' }
+            'floor 9'                      = { param($d) $d.host.volumes[0].floor_gib = 9 }
+            'five volumes'                 = { param($d) $v = $d.host.volumes[0]; $d.host.volumes = @($v, $v, $v, $v, $v) }
+            'volume held over budget'      = { param($d) $d.host.volumes[0].held_gib = 1931 }
+            'VM without storage'           = { param($d) $d.host.volumes = @() }
+            'legacy reserves clone disk'   = { param($d) $d.reservations[0].clone_gib = 1 }
+            'legacy reserves scratch disk' = { param($d) $d.reservations[0].scratch_gib = 1 }
+            'VM without clone disk'        = { param($d) $d.reservations[3].clone_gib = 0 }
+            'id with a final newline'      = { param($d) $d.reservations[0].reservation_id += "`n" }
             'pool exceeded by control VM'  = { param($d) $d.host.control_distro_mem_gib = 15 }
             'windows over its count'       = { param($d) $d.profiles.windows.count = 1; $d.profiles.linux.count = 4 }
         }
         $texts = [ordered]@{
             'max_slots 5.0 (accepted by both)' = { param($t) $t -creplace '"max_slots": 5', '"max_slots": 5.0' }
             'revision 42.0'                    = { param($t) $t -creplace '"revision": 42', '"revision": 42.0' }
-            'schema key in another case'       = { param($t) $t -creplace '"schema": 1', '"Schema": 1' }
+            'schema key in another case'       = { param($t) $t -creplace '"schema": 2', '"Schema": 2' }
             'a top-level array'                = { param($t) '[]' }
             'a top-level string'               = { param($t) '"allocator"' }
         }
@@ -161,8 +175,8 @@ Describe 'single-fault mutations agree with the reference validator' {
             }
         }
         $mismatch | Should -BeNullOrEmpty
-        $script:Mutations.Count | Should -Be 59
-        $rejected | Should -Be 57
+        $script:Mutations.Count | Should -Be 73
+        $rejected | Should -Be 71
     }
 }
 
