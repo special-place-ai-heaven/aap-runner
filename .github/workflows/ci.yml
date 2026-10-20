@@ -19,6 +19,10 @@ jobs:
       - run: bash tests/run.sh
       - run: python3 -B -I -m unittest discover -s tests/parity/cache/qualification -p "test_*.py"
       - run: python3 -B -I parity/contracts/validate.py
+      - run: python3 -B -I tests/parity/workloads/linux/test_workloads.py
+      - run: python3 -B -I tests/parity/workloads/linux/check_hosted_run.py .
+      - run: bash tests/parity/workloads/linux/lib_test.sh
+      - run: bash tests/parity/cache/qualification/harness_test.sh
       # Pinned: the hosted image's shellcheck is a different version from the 0.11.0 the repo rule names
       # (it flags SC2218 in tests/manager_reap_test.sh). The sha256 is the GitHub release asset digest
       # and equals the sha256 of the tarball checked locally.
@@ -31,7 +35,7 @@ jobs:
           echo "$sha  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum --check -
           tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" --version
-      - run: $RUNNER_TEMP/shellcheck-v0.11.0/shellcheck -S warning distro/*.sh tests/*.sh tests/parity/cache/qualification/*.sh parity/cache/qualification/harness/*.sh tools/parity-certify/probe/linux.sh
+      - run: $RUNNER_TEMP/shellcheck-v0.11.0/shellcheck -S warning distro/*.sh tests/*.sh tests/parity/cache/qualification/*.sh parity/cache/qualification/harness/*.sh tools/parity-certify/probe/linux.sh parity/workloads/linux/*.sh parity/workloads/linux/*/*.sh parity/workloads/actions/linux/*/*.sh parity/workloads/xwin/*.sh tests/parity/workloads/linux/*.sh
 
   pester:
     runs-on: windows-latest
@@ -44,7 +48,7 @@ jobs:
           Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
           Import-Module Pester -RequiredVersion 5.7.1
           $c = New-PesterConfiguration
-          $c.Run.Path = @('supervisor', 'tests/parity-work', 'tests/capacity', 'tests/broker', 'tests/images/common', 'tests/images/windows', 'tests/parity-certify')
+          $c.Run.Path = @('supervisor', 'tests/parity-work', 'tests/capacity', 'tests/broker', 'tests/images/common', 'tests/images/windows', 'tests/parity-certify', 'tests/parity/workloads/windows')
           $c.Filter.ExcludeTag = @('Network')
           $c.Run.Exit = $true
           Invoke-Pester -Configuration $c
