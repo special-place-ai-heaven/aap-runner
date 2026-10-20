@@ -15,14 +15,15 @@
   "max_full_test_suites": 1,
   "cleanup_barrier": "GLOBAL_NO_NEW_ITEM_WHILE_MERGED_UNCLEAN",
   "as_of": "2026-10-20",
-  "origin_main": "88a9a25acbc623a4435cfdab0656e28926081c16",
+  "origin_main": "7ff6052b04f496b9e67dbc9c296f624a788d7c49",
   "current_wave": 5,
   "in_flight": [
     "P07",
-    "P10",
-    "P13"
+    "P06.1",
+    "P11",
+    "P13.1"
   ],
-  "cleanup_barrier_state": "OPEN: no merged item awaits cleanup verification (in-flight P07, P10 and P13 are not merged)",
+  "cleanup_barrier_state": "OPEN: no merged item awaits cleanup verification (P10, P13 and the coordinator PRs are verified CLEAN; in-flight P07, P06.1, P11 and P13.1 are not merged)",
   "tasks": [
     {
       "id": "P00",
@@ -207,6 +208,7 @@
       "acceptance": "validate.py PASS with the new fixtures; oversized, replayed, unbound-class and arbitrary-exec negatives refused; independent security review. Requires the owner decision on giving the GitHub App actions:read + contents:read for cache trust-class lookups (installed only on the aap-crrr runner group's repositories); never implemented against the live App before that decision.",
       "merge_proof": null,
       "cleanup_receipt": null,
+      "why": "P13 landed without a host-side way to bind a job's trust class to the guest cache root; a bind_cache command is needed, and it is gated on the owner's GitHub App permission decision.",
       "open_inputs": "owner decision: GitHub App actions:read + contents:read for cache trust-class lookups (PENDING); interim Windows host runner can reach the App key, so the interim-runner exposure must be closed (separate low-privilege account or retire it) before the App gains permissions"
     },
     {
@@ -261,7 +263,8 @@
       "deliverable": "Add the actions/runner-images trees for the pinned build commits aee0669 (Windows) and 7e7dc1b (Ubuntu) to the P03 manifest so the 82 null upstream script hashes in P06 (and the P07 equivalents) become non-null; add the Ubuntu 24.04 server ISO entry with hash, provenance and license.",
       "acceptance": "No consumer script hash is null; builds no longer stop with AAP_ScriptUnpinned for lack of a pin; a changed or corrupt tree and a missing ISO hash are rejected by tests; unreproducible inputs remain explicit blockers.",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "why": "P06 and P07 real builds are refused (AAP_ScriptUnpinned) because the runner-images script hashes are null until their trees are pinned in the manifest."
     },
     {
       "id": "P04",
@@ -314,7 +317,8 @@
       "deliverable": "Extend the Linux -g rows and land the harness follow-ups from the P04 reviews; align retention.md requirement 4 with cache rule 6 revision 3 (trust namespace = repository + job trust class).",
       "acceptance": "Every new row has a recorded direct-versus-cached comparison or an explicit unqualified marker; retention.md no longer contradicts cache-qualification.md rule 6; Pester and unittest suites green on both PowerShell hosts and in hosted CI.",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "why": "P04 left Linux -g rows unqualified and retention.md requirement 4 still contradicts cache rule 6 revision 3."
     },
     {
       "id": "P05",
@@ -368,7 +372,8 @@
       "deliverable": "Use the evidence-bundle waivers field in certify and bind exit_code; fix the certify.py re.match $ trailing-newline acceptance (use fullmatch or \\Z).",
       "acceptance": "Each fix has a test that fails without it; a waiver unbound to its workload is refused; a trailing-newline value is rejected; both PowerShell hosts green.",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "why": "P05 review follow-ups: certify ignores the evidence-bundle waivers and exit_code binding, and its regex accepts a trailing newline."
     },
     {
       "id": "P06",
@@ -412,7 +417,7 @@
     },
     {
       "id": "P06.1",
-      "title": "Per-test waivers for the verify phase and a reviewed secret-scan skip list",
+      "title": "Per-adapter network controls, elevated-context hardening, per-test waivers and a reviewed secret-scan skip list",
       "earliest_wave": 6,
       "needs": [
         "P06",
@@ -422,12 +427,15 @@
         "images/windows/**",
         "tests/images/windows/**"
       ],
-      "lane": "Luna high",
-      "delivery_state": "NOT_STARTED",
-      "deliverable": "The verify phase needs failed-test names in the verify reply to apply per-test waivers; extend the reviewed secret-scan skip list from D2 evidence (currently only System Volume Information).",
-      "acceptance": "Waivers apply only to named failed tests bound to the workload; every skip-list entry cites observed lab evidence; Pester green on both hosts. Skip-list extension needs a real build from the D2 lab, so that part is gated on P02.1/D2.",
+      "lane": "Sol medium (Claude: Opus medium)",
+      "delivery_state": "IN_PROGRESS",
+      "deliverable": "Per-adapter network controls and elevated-context hardening in the Windows image builder, found by the P07 reviews. Also (carried from the original P06.1 scope): the verify phase needs failed-test names in the verify reply to apply per-test waivers, and the reviewed secret-scan skip list is extended from D2 evidence (currently only System Volume Information).",
+      "acceptance": "Each hardening finding has a test that fails without its fix; Pester green on both hosts and in hosted CI; waivers apply only to named failed tests bound to the workload; every skip-list entry cites observed lab evidence. The skip-list extension needs a real build from the D2 lab, so that part is gated on P02.1/D2.",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "branch": "parity/p06-1-nic-controls",
+      "base_sha": "f40a45478da18b456ffa18f890b6df563425e59f",
+      "evidence": "attempt-1 worktree on parity/p06-1-nic-controls (base f40a454); not yet pushed"
     },
     {
       "id": "P07",
@@ -448,7 +456,8 @@
       "cleanup_receipt": null,
       "branch": "parity/p07-ubuntu-image",
       "base_sha": "4637f84bdafbe7fab78a11d490626f67c9251b0d",
-      "evidence": "attempt-1 worktree authoring with fakes only (mirror of the merged P06 hostile-guest builder patterns); not yet pushed; real builds stay refused until P03.1 pins the script hashes"
+      "evidence": "PR #49 draft at 354d216 (authoring, fakes only; never run against a real VM): host-built NoCloud seed ISOs, results only through a capped vsock agent, secret scan in a disposable scanner VM, build plan from the pinned template (hashes null so real builds are refused), verification as the job user with P05 certify compare; 219 Pester tests, 51 builder mutations, guest bash tests; review round FIX-FIRST in progress",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/49"
     },
     {
       "id": "P08",
@@ -504,7 +513,8 @@
       "deliverable": "Move the audit log dir from /var/log to /var/lib/aap-runner/broker; rm -f the lease file on create failure only when it is empty; raise the client TimeoutSeconds floor to 60; correct the exit-code comment.",
       "acceptance": "Each change has a test that fails without it; worker_auth_test.sh green on real Linux in hosted CI; both PowerShell hosts green; independent security review (secret-bearing path).",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "why": "P08 review notes that were non-blocking: audit log location, lease-file removal on create failure, client timeout floor and an exit-code comment."
     },
     {
       "id": "P09",
@@ -572,15 +582,51 @@
         "tests/backends/windows/**"
       ],
       "lane": "Sol high",
-      "delivery_state": "PR_OPEN",
+      "delivery_state": "COMPLETE",
       "deliverable": "Implement create/boot/ready/one-job/drain/collect/reset-or-destroy/reconcile against frozen contracts using immutable base and task-owned differential/scratch disks. Use the approved guest management transport.",
       "acceptance": "Crash at every lifecycle boundary; discover orphan guest safely; cancellation and cleanup are idempotent. Guest Administrator cannot access host shares/control key. No slot reuse before verified guest teardown.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/45",
+        "method": "merge-commit",
+        "accepted_head": "a2fc4923c7fab51c5b08631de8876b4fa3d9a862",
+        "merge_sha": "2e4adb5358ea265c83fa6ac7882e03cd570ac6b9",
+        "ci_run": "39485881809"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P10-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p10-windows-backend",
+      "reviewed_head": "a2fc4923c7fab51c5b08631de8876b4fa3d9a862",
+      "base_sha": "f36ae7e0c0684069d2ab9ff8daa1ce5dce70dd5f",
+      "evidence": "Pester tests/backends/windows 212/212 on pwsh 7.6.6 and Windows PowerShell 5.1 (coordinator-reported); 79 mutation checks (78/78 on 5.1; 77/78 on pwsh, the one survivor stdin-bom is 5.1-only); p10-review FIX-FIRST (7 must-fix) -> fixed -> FIX-FIRST (call-site test) -> MERGE at a2fc492; p10-sec FIX-FIRST (1 High + 3 Medium) -> fixed -> FIX-FIRST (3 more) -> MERGE; hosted CI run 39485881809 green; independent cleanup verifier CLEAN 2026-10-20",
+      "declared_gaps": [
+        "provider and psdirect-call.ps1 never run against a real VM (P02.1 lab)",
+        "P10.0 network module is a seam with a fake only",
+        "the PowerShell Direct call child runs with the supervisor's elevated token (P02.1 decides: hvsocket framed protocol or restricted token)",
+        "no hard VM lifetime cap (owner decision queued)",
+        "Hyper-V Administrators membership and Enhanced Session Mode host checks make the Windows profile refuse create on a default Windows 11 host until changed",
+        "'clone not measurable' destroys the VM (transient race; hardening in P10.1)"
+      ],
+      "closed_gaps": [
+        "tests/backends/windows not in the CI Run.Path: closed by PR #50 (coord-ci-wiring-3, hosted run 39494258241)"
+      ]
+    },
+    {
+      "id": "P10.1",
+      "title": "Harden the Windows VM backend after the P10 reviews",
+      "earliest_wave": 6,
+      "needs": [
+        "P10"
+      ],
+      "owns": [
+        "supervisor/backends/windows/**",
+        "tests/backends/windows/**"
+      ],
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Make the backend's tests stop leaving SY+BA-locked fixtures that only an owner self-grant can delete; harden clone measurement against files that vanish mid-walk so a transient race no longer destroys the VM; dismount a stale mount left behind.",
+      "acceptance": "Each item has a test that fails without its fix; the suite leaves nothing that needs elevation to delete; a vanished file during clone measurement retries or fails closed without destroying a healthy VM; a stale mount is dismounted by the reconcile path; both PowerShell hosts green.",
       "merge_proof": null,
       "cleanup_receipt": null,
-      "branch": "parity/p10-windows-backend",
-      "base_sha": "f36ae7e0c0684069d2ab9ff8daa1ce5dce70dd5f",
-      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/45",
-      "evidence": "PR #45 open at bd1bfdc (authored with fakes only; no VM and no switch, P10.0/P02.1 lab gates still open); independent reviews not yet recorded"
+      "why": "P10 shipped with test fixtures that need an owner self-grant to delete, a 'clone not measurable' path that destroys on a transient race, and a stale-mount case it does not dismount."
     },
     {
       "id": "P11",
@@ -595,11 +641,14 @@
         "tests/backends/linux/**"
       ],
       "lane": "Sol high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "IN_PROGRESS",
       "deliverable": "Implement the same lifecycle for Ubuntu VM guests, isolated management access, ephemeral runner and deterministic workspace/service/process/network cleanup.",
       "acceptance": "Restart and cancellation recover without duplicate registration. Guest root stays inside guest boundary. A subsequent job cannot observe prior system/HOME/workspace/listener changes.",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "branch": "parity/p11-linux-backend",
+      "base_sha": "cec295b9fbe976964c74764c05e5491cbf6b84eb",
+      "evidence": "attempt-1 worktree authoring with fakes only (mirror of the merged P10 with all its review lessons); no PR yet"
     },
     {
       "id": "P12",
@@ -636,15 +685,55 @@
         "tests/guests/cache/**"
       ],
       "lane": "Sol high",
-      "delivery_state": "PR_OPEN",
+      "delivery_state": "COMPLETE",
       "deliverable": "Package verified per-platform zccache and initialize only qualified wrappers before Actions starts. Isolate mutable daemon/index roots; use supported cache transport and daemon retention. Bound total artifact+metadata+log+temp bytes.",
       "acceptance": "Daemon failure and unsupported compiler modes preserve direct build correctness; no hardlink poisoning, shared mutable index assumption or raw oldest-file eviction. Cold/warm/concurrent/crash cases pass; product cache namespaces have explicit trust and retention owners.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/40",
+        "method": "merge-commit",
+        "accepted_head": "97990b5be1eb3936606b8708cb6e6309ec907f72",
+        "merge_sha": "cec295b9fbe976964c74764c05e5491cbf6b84eb",
+        "ci_run": "39486269433"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P13-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p13-zccache-guest",
+      "reviewed_head": "97990b5be1eb3936606b8708cb6e6309ec907f72",
+      "base_sha": "f36ae7e0c0684069d2ab9ff8daa1ce5dce70dd5f",
+      "evidence": "Pester tests/guests/cache 134/134 on pwsh 7.6.6 and Windows PowerShell 5.1; Git Bash suite 168/168; python 9/9; gen_wrappers --check OK; shellcheck 0.11.0 clean (CI pins it); mutation 82/84 (survivors LNX-BIND-LINK and LNX-DIR-LINK need a real Linux); zccache_test.sh via parity-workloads on hosted ubuntu-24.04: 172 passed, 0 failed (run 39488966417); p13-review FIX-FIRST (5 must-fix) -> FIX-FIRST (timeout tree-kill) -> MERGE at 97990b5; p13-sec FIX-FIRST (2 High) -> MERGE; hosted CI run 39486269433 green; independent cleanup verifier CLEAN 2026-10-20",
+      "declared_gaps": [
+        "no matrix row is qualified, so every build is direct",
+        "shared roots default OFF; the host must not bind before the lab proof",
+        "the trust source needs the owner's GitHub App decision (actions:read + contents:read, selected repos); the bind_cache transport command is P02.3",
+        "zccache 1.15.6 AGPL-3.0-only compliance decision pending with the owner",
+        "Windows launcher needs pwsh 7 (else direct)",
+        "mutate.py under bash on Windows needs a work folder outside %TEMP% (cygpath)",
+        "t_shim_concurrent ('and all equal direct') flaked on hosted push CI run 39496833364; root cause pending (P13.1)"
+      ],
+      "closed_gaps": [
+        "tests/guests/cache not in the CI Run.Path: closed by PR #50 (coord-ci-wiring-3, hosted run 39494258241)"
+      ]
+    },
+    {
+      "id": "P13.1",
+      "title": "Root-cause and fix the flaky t_shim_concurrent in the zccache guest tests",
+      "earliest_wave": 5,
+      "needs": [
+        "P13"
+      ],
+      "owns": [
+        "guests/cache/**",
+        "tests/guests/cache/**"
+      ],
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "IN_PROGRESS",
+      "deliverable": "Root-cause the intermittent 'and all equal direct' failure of tests/guests/cache/zccache_test.sh t_shim_concurrent seen on hosted push CI run 39496833364; fix the shim or the test.",
+      "acceptance": "Root cause recorded; stress-loop proof in WSL Ubuntu-24.04 (and a hosted CI rerun series) without a failure; no weakening of the 'equal direct' assertion unless the cause is shown to be the test.",
       "merge_proof": null,
       "cleanup_receipt": null,
-      "branch": "parity/p13-zccache-guest",
-      "base_sha": "f36ae7e0c0684069d2ab9ff8daa1ce5dce70dd5f",
-      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/40",
-      "evidence": "PR #40 open at 3da64e5 (authoring, no network; every build direct until rows are qualified); review fixes in progress in the attempt-1 worktree (uncommitted guests/cache docs); zccache 1.15.6 AGPL-3.0-only compliance decision and the cache trust-class source are pending with the owner"
+      "branch": "parity/p13-1-shim-concurrency",
+      "base_sha": "7ff6052b04f496b9e67dbc9c296f624a788d7c49",
+      "evidence": "attempt-1 worktree on parity/p13-1-shim-concurrency (base 7ff6052); root cause pending",
+      "why": "t_shim_concurrent flaked on the first push CI run after P13 merged, so the guarantee that concurrent shim calls equal direct builds is not yet trustworthy."
     },
     {
       "id": "P14",
@@ -980,6 +1069,7 @@
       "acceptance": "cargo fmt/clippy/test green; update succeeds with the tray running or quits it itself; a bad or unsigned replacement is refused and the old build stays; independent security review of the helper verb. Overlaps crates/tray/** with P19/P20, so the coordinator serializes the claims.",
       "merge_proof": null,
       "cleanup_receipt": null,
+      "why": "Replacing the tray executable today needs the owner to quit it and swap by hand; the existing elevated helper can do it with one UAC click and no console.",
       "note": "Overlaps crates/tray/** with P19 and P20: the coordinator serializes the claims, so P25.1 is not dispatched while a P19 or P20 claim holds the lease."
     },
     {
@@ -1100,6 +1190,62 @@
       "merge_sha": "88a9a25acbc623a4435cfdab0656e28926081c16",
       "what": "CI runs the P17/P18 workload suites and harness_test.sh; shellcheck on the workload scripts",
       "cleanup": "verified"
+    },
+    {
+      "item": "coord-ledger-close-2",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/47",
+      "reviewed_head": "8066e5ec1d29f533c0f391abcc05893c258425d6",
+      "merge_sha": "12ab8d4a7ae996b80f0be73004c2da9a14c303a0",
+      "what": "ledger closure for P01-P06, P08, P09, P17, P18, P02.2",
+      "cleanup": "verified"
+    },
+    {
+      "item": "coord-seq-amend",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/48",
+      "reviewed_head": "7e2a0a0db2d3e8a37f1247c78565b27827fb6764",
+      "merge_sha": "f40a45478da18b456ffa18f890b6df563425e59f",
+      "what": "guest-transport seq rule is strictly greater, not previous + 1",
+      "cleanup": "verified"
+    },
+    {
+      "item": "coord-ci-wiring-3",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/50",
+      "reviewed_head": "783cfb20bbdbe15d454ed1a3bafee2e1e1a73a98",
+      "merge_sha": "7ff6052b04f496b9e67dbc9c296f624a788d7c49",
+      "what": "CI Pester split into pester and pester-backends; P10 and P13 suites wired; P10 owner and SDDL checks no longer assume a non-elevated, non-RID-500 user",
+      "cleanup": "verified"
+    }
+  ],
+  "owner_decisions_queued": [
+    {
+      "id": "Q1",
+      "urgent": true,
+      "topic": "interim runner exposure",
+      "detail": "FRESH-win-interim (group aap-win-interim, label windows-host-interim) runs jobs as the owner's account and can read the GitHub App key. If the runner group admits public repositories and fork-PR workflows need no approval, an outsider's fork PR can run there. Decide the fork-PR path explicitly: restrict the group, require approval for all outside collaborators, or stop the runner until the VM profile is certified. Must be closed before the App gains more permissions."
+    },
+    {
+      "id": "Q2",
+      "urgent": false,
+      "topic": "zccache AGPL-3.0-only compliance",
+      "detail": "Images containing zccache 1.15.6 must not be redistributed until a compliance decision is recorded (internal use is fine). Gates P13 activation."
+    },
+    {
+      "id": "Q3",
+      "urgent": false,
+      "topic": "GitHub App actions:read + contents:read on selected repos",
+      "detail": "Needed for the host's per-job cache trust-class lookups, installed only on the aap-crrr runner group's repositories. Cost: a stolen App key could also read run logs, artifacts and source of those repos. Gates P02.3 and cache sharing; Q1 is a precondition."
+    },
+    {
+      "id": "Q4",
+      "urgent": false,
+      "topic": "hard VM lifetime cap",
+      "detail": "A hostile guest that keeps its runner credential can look busy forever; the allocator only flags it. Decide a cap before the Windows profile serves public repos (open gap in P10)."
+    },
+    {
+      "id": "Q5",
+      "urgent": false,
+      "topic": "even-mode drain",
+      "detail": "In even mode, raising a runner count drains every admitted runner (legacy manager stop/start each time). Accept that or choose a smoother rule."
     }
   ]
 }
