@@ -133,21 +133,27 @@ hosted reference and a correct candidate and `compare_artifacts` stays `sha256`.
   under `oracle/hosted-runs/39450814977/`, and every report hash is pinned from it. Negatives that lacked a proof
   fact got one (.NET: the net8.0 targeting pack present, net7.0's absent; Java: the JDK still installed with
   JAVA_HOME unset; file-commands: the real marker present).
-- Hosted-validated: run 39451894408 (image 20261012.334.1, head 35baccc): 44/44, all 23 qualified positives and all
+- Hosted iteration 2: run 39451894408 (image 20261012.334.1, head 35baccc): 44/44, all 23 qualified positives and all
   21 qualified negatives, and its `summary.json` tree manifest equalled the tree at 35baccc; `xwin/sdk-cross` and its negative
   are listed as unqualified, not run. Every negative fails with its expected text as the first error line, its
   positive twin passed in the same run, and its observed facts show the sabotage held (a `sabotage.*` fact, or for
   `runner-env` the tool-cache variables unchanged and for `registry-tls` the TLS server reachable) and no other failed
   check except the ones the sabotage implies (every tool cache entry; rustc, cargo and rustup all live in
-  `~/.cargo/bin`). `oracle/hosted-runs/39451894408/` keeps its `summary.json` and `results.json`.
+  `~/.cargo/bin`). Its evidence was replaced by iteration 3's (below).
 - Independent review of 038b208, fixed: the three cited iteration-1 logs were ignored by `.gitignore` (`*.log`) and
   are now tracked, and the tests require every cited evidence file to be tracked; `xwin/sdk-cross.neg-no-sysroot`
   first proves a sysroot was set (`sabotage.sysroot_was_set`), so naming it on a host without one fails instead of
   passing; `handoff.py verdict` fails closed (sha256 of 64 hex digits, same artifact name, integer exit codes, string
   output); `Invoke-HandoffExecution.ps1` accepts only a plain artifact file name; the version queries, npm and
   headless Chrome keep their state in the work folder; the Gradle and import-library negatives record what they
-  still have (JDK 17, the .def file); `wl_end` runs a dying `wl_cleanup` once. These change the tree, so a new hosted
-  run replaces the evidence above (`check_hosted_run.py` is red until then).
+  still have (JDK 17, the .def file); `wl_end` runs a dying `wl_cleanup` once. These changed the tree, so iteration 3 replaced
+  the evidence above.
+- Hosted-validated: run 39454534510 (image 20261012.334.1, head 0931d5b): 44/44, and its `summary.json` tree manifest
+  equals the tree at 0931d5b. No definition hash, report hash or first error moved from iteration 2. Every negative
+  again fails with its expected first error line next to a passing positive twin, records its sabotage proof (now
+  also `sabotage.def_file` for the import-library negative and `sabotage.jdk_17_installed` for the Gradle one) and
+  no other failed check except the ones the sabotage implies. `oracle/hosted-runs/39454534510/` keeps its
+  `summary.json` and `results.json`.
 - `tests/parity/workloads/linux/check_hosted_run.py` compares the tree with the run named in the oracle's
   `hosted_validation.run`: every definition hash, report hash and first error in its `results.json`, the
   unqualified list and the content manifest in its `summary.json` (added, removed or changed files are listed).

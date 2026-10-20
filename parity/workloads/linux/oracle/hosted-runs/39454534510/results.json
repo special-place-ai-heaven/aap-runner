@@ -14,10 +14,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:49:15Z",
-      "ended_at": "2026-10-20T15:49:15Z",
-      "duration_s": 0.115,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/file-commands/run.sh --work /home/runner/work/_temp/parity-out/work/wl-4n2iha96 --id actions/linux/file-commands",
+      "started_at": "2026-10-20T16:06:52Z",
+      "ended_at": "2026-10-20T16:06:52Z",
+      "duration_s": 0.116,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/file-commands/run.sh --work /home/runner/work/_temp/parity-out/work/wl-k74a2zx8 --id actions/linux/file-commands",
       "artifacts": [
         {
           "name": "report.txt",
@@ -27,7 +27,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "69ec659985e6d55338e7c203f084c3d65d8452b02e1cf96a9c9a4ad169afe409",
+      "log_sha256": "603ecb96f0246a5766fefdad25614341d7121beb27daaf2d39b6ecccec53130a",
       "log_claim": "success",
       "reasons": []
     },
@@ -43,10 +43,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:49:15Z",
-      "ended_at": "2026-10-20T15:49:16Z",
-      "duration_s": 0.114,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/file-commands/run.sh --work /home/runner/work/_temp/parity-out/work/wl-kncx5nq4 --id actions/linux/file-commands.neg-missing-marker --sabotage missing-marker",
+      "started_at": "2026-10-20T16:06:52Z",
+      "ended_at": "2026-10-20T16:06:52Z",
+      "duration_s": 0.115,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/file-commands/run.sh --work /home/runner/work/_temp/parity-out/work/wl-_o9gym4v --id actions/linux/file-commands.neg-missing-marker --sabotage missing-marker",
       "artifacts": [],
       "first_error": {
         "message": "error: file-commands marker not found: run uses: ./parity/workloads/actions/linux/file-commands earlier in this job",
@@ -69,10 +69,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:49:16Z",
-      "ended_at": "2026-10-20T15:49:16Z",
-      "duration_s": 0.365,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/runner-env/run.sh --work /home/runner/work/_temp/parity-out/work/wl-kljowvta --id actions/linux/runner-env",
+      "started_at": "2026-10-20T16:06:52Z",
+      "ended_at": "2026-10-20T16:06:53Z",
+      "duration_s": 0.465,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/runner-env/run.sh --work /home/runner/work/_temp/parity-out/work/wl-8k0e2yl2 --id actions/linux/runner-env",
       "artifacts": [],
       "first_error": null,
       "log_sha256": "98a6100747e8772fb2be7a890213694bd12529c386163d2b752e57dd147aba8a",
@@ -91,10 +91,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:49:16Z",
-      "ended_at": "2026-10-20T15:49:16Z",
-      "duration_s": 0.114,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/runner-env/run.sh --work /home/runner/work/_temp/parity-out/work/wl-xdryzdnm --id actions/linux/runner-env.neg-no-tool-cache --sabotage no-tool-cache",
+      "started_at": "2026-10-20T16:06:53Z",
+      "ended_at": "2026-10-20T16:06:53Z",
+      "duration_s": 0.115,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/runner-env/run.sh --work /home/runner/work/_temp/parity-out/work/wl-z5neibep --id actions/linux/runner-env.neg-no-tool-cache --sabotage no-tool-cache",
       "artifacts": [],
       "first_error": {
         "message": "error: oracle tool_cache.CodeQL/2.27.2 expected 'yes' observed ''",
@@ -117,10 +117,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:49:16Z",
-      "ended_at": "2026-10-20T15:49:22Z",
-      "duration_s": 5.476,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/shell-semantics/run.sh --work /home/runner/work/_temp/parity-out/work/wl-h58y7_3c --id actions/linux/shell-semantics",
+      "started_at": "2026-10-20T16:06:53Z",
+      "ended_at": "2026-10-20T16:06:59Z",
+      "duration_s": 6.38,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/shell-semantics/run.sh --work /home/runner/work/_temp/parity-out/work/wl-m96bxj2s --id actions/linux/shell-semantics",
       "artifacts": [
         {
           "name": "report.txt",
@@ -150,10 +150,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:49:22Z",
-      "ended_at": "2026-10-20T15:49:22Z",
-      "duration_s": 0.114,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/shell-semantics/run.sh --work /home/runner/work/_temp/parity-out/work/wl-9yw6c4w2 --id actions/linux/shell-semantics.neg-dash-as-bash --sabotage dash-as-bash",
+      "started_at": "2026-10-20T16:06:59Z",
+      "ended_at": "2026-10-20T16:06:59Z",
+      "duration_s": 0.115,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/shell-semantics/run.sh --work /home/runner/work/_temp/parity-out/work/wl-wtlqjiit --id actions/linux/shell-semantics.neg-dash-as-bash --sabotage dash-as-bash",
       "artifacts": [],
       "first_error": {
         "message": "error: bash on PATH is not GNU bash: <work>/fakebin/bash",
@@ -176,10 +176,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:49:22Z",
-      "ended_at": "2026-10-20T15:49:28Z",
-      "duration_s": 6.278,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/android/run.sh --work /home/runner/work/_temp/parity-out/work/wl-iuk5kdhl --id linux/android",
+      "started_at": "2026-10-20T16:06:59Z",
+      "ended_at": "2026-10-20T16:07:13Z",
+      "duration_s": 13.549,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/android/run.sh --work /home/runner/work/_temp/parity-out/work/wl-8wg0r755 --id linux/android",
       "artifacts": [
         {
           "name": "report.txt",
@@ -205,10 +205,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:49:28Z",
-      "ended_at": "2026-10-20T15:49:28Z",
-      "duration_s": 0.114,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/android/run.sh --work /home/runner/work/_temp/parity-out/work/wl-d7h2ewnq --id linux/android.neg-missing-ndk --sabotage missing-ndk",
+      "started_at": "2026-10-20T16:07:13Z",
+      "ended_at": "2026-10-20T16:07:13Z",
+      "duration_s": 0.115,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/android/run.sh --work /home/runner/work/_temp/parity-out/work/wl-ywppos6e --id linux/android.neg-missing-ndk --sabotage missing-ndk",
       "artifacts": [],
       "first_error": {
         "message": "error: NDK clang not found under ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/99.0.0/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang",
@@ -231,10 +231,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:49:28Z",
-      "ended_at": "2026-10-20T15:49:48Z",
-      "duration_s": 20.159,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/browsers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-we_p9g_9 --id linux/browsers",
+      "started_at": "2026-10-20T16:07:13Z",
+      "ended_at": "2026-10-20T16:07:47Z",
+      "duration_s": 33.998,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/browsers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-15xcyjaq --id linux/browsers",
       "artifacts": [
         {
           "name": "report.txt",
@@ -244,11 +244,11 @@
         }
       ],
       "first_error": {
-        "message": "[3146:3173:1020/154943.286790:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
-        "file": "[3146",
-        "line": 3173
+        "message": "[3144:3174:1020/160743.049911:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+        "file": "[3144",
+        "line": 3174
       },
-      "log_sha256": "c8c32c4eb12666a259dac109ee784d0a30b1ed05ba5245f3f85573d290f230e8",
+      "log_sha256": "02fd70c4508cdfe5b05736418c76f224204c9e649ebfcdb2b06e9893b64dbac3",
       "log_claim": "success",
       "reasons": []
     },
@@ -264,10 +264,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:49:48Z",
-      "ended_at": "2026-10-20T15:49:48Z",
+      "started_at": "2026-10-20T16:07:47Z",
+      "ended_at": "2026-10-20T16:07:47Z",
       "duration_s": 0.114,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/browsers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-kmwm2t_x --id linux/browsers.neg-no-chrome --sabotage no-chrome",
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/browsers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-7h_d8d2h --id linux/browsers.neg-no-chrome --sabotage no-chrome",
       "artifacts": [],
       "first_error": {
         "message": "error: CHROME_BIN is not an executable: <work>/no-chrome/google-chrome",
@@ -290,10 +290,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:49:48Z",
-      "ended_at": "2026-10-20T15:49:55Z",
-      "duration_s": 6.329,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-bqai__ix --id linux/clang --cc clang",
+      "started_at": "2026-10-20T16:07:47Z",
+      "ended_at": "2026-10-20T16:07:57Z",
+      "duration_s": 10.241,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-ugdzwadh --id linux/clang --cc clang",
       "artifacts": [
         {
           "name": "report.txt",
@@ -319,10 +319,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:49:55Z",
-      "ended_at": "2026-10-20T15:49:55Z",
-      "duration_s": 0.265,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-_ymi0wkm --id linux/clang.neg-no-lld --cc clang --sabotage no-lld",
+      "started_at": "2026-10-20T16:07:57Z",
+      "ended_at": "2026-10-20T16:07:58Z",
+      "duration_s": 0.215,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-67txo_0_ --id linux/clang.neg-no-lld --cc clang --sabotage no-lld",
       "artifacts": [],
       "first_error": {
         "message": "clang: error: invalid linker name in argument '--ld-path=<work>/no-lld/ld.lld'",
@@ -345,10 +345,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:49:55Z",
-      "ended_at": "2026-10-20T15:50:01Z",
-      "duration_s": 5.627,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/cmake/run.sh --work /home/runner/work/_temp/parity-out/work/wl-sh8cr1th --id linux/cmake-make --generator make",
+      "started_at": "2026-10-20T16:07:58Z",
+      "ended_at": "2026-10-20T16:08:00Z",
+      "duration_s": 2.621,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/cmake/run.sh --work /home/runner/work/_temp/parity-out/work/wl-mm1ffpfx --id linux/cmake-make --generator make",
       "artifacts": [
         {
           "name": "report.txt",
@@ -358,7 +358,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "2510396454ed9387e19469cfa223a608f1d220cbaea3e7285e1a96b8d0b4add1",
+      "log_sha256": "a78c12aaa7d50d6b57af4ed8df96484071fb9d0485732829149d8affe984c697",
       "log_claim": "success",
       "reasons": []
     },
@@ -374,10 +374,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:50:01Z",
-      "ended_at": "2026-10-20T15:50:01Z",
-      "duration_s": 0.666,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/cmake/run.sh --work /home/runner/work/_temp/parity-out/work/wl-b9cvbb4b --id linux/cmake-ninja --generator ninja",
+      "started_at": "2026-10-20T16:08:00Z",
+      "ended_at": "2026-10-20T16:08:01Z",
+      "duration_s": 0.616,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/cmake/run.sh --work /home/runner/work/_temp/parity-out/work/wl-bd1a62xq --id linux/cmake-ninja --generator ninja",
       "artifacts": [
         {
           "name": "report.txt",
@@ -387,7 +387,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "b099dab4697b9db14a6cdf291c1457a7d61f2860f1016f997fde6042d8159784",
+      "log_sha256": "3ef43086ba33599a58987dcb11426d3102fe881b47470fab714792c01196975d",
       "log_claim": "success",
       "reasons": []
     },
@@ -403,10 +403,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:50:01Z",
-      "ended_at": "2026-10-20T15:50:01Z",
+      "started_at": "2026-10-20T16:08:01Z",
+      "ended_at": "2026-10-20T16:08:01Z",
       "duration_s": 0.114,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/cmake/run.sh --work /home/runner/work/_temp/parity-out/work/wl-yddl7hda --id linux/cmake-ninja.neg-no-ninja --generator ninja --sabotage no-ninja",
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/cmake/run.sh --work /home/runner/work/_temp/parity-out/work/wl-0nvbtect --id linux/cmake-ninja.neg-no-ninja --generator ninja --sabotage no-ninja",
       "artifacts": [],
       "first_error": {
         "message": "CMake Error: CMake was unable to find a build program corresponding to \"Ninja\".  CMAKE_MAKE_PROGRAM is not set.  You probably need to select a different build tool.",
@@ -429,10 +429,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:50:01Z",
-      "ended_at": "2026-10-20T15:50:08Z",
-      "duration_s": 7.181,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/containers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-d14wfb5a --id linux/containers",
+      "started_at": "2026-10-20T16:08:01Z",
+      "ended_at": "2026-10-20T16:08:05Z",
+      "duration_s": 3.624,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/containers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-ywtmd5m0 --id linux/containers",
       "artifacts": [
         {
           "name": "report.txt",
@@ -442,7 +442,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "1ac770720328845d45ed1b5b6e60f70b74ba9296fdf43e20d9c1b9ec070f267c",
+      "log_sha256": "0ef669c6188cf7cb5447abbe42a51fed79cd9be08dc6c963a3d78d17c0817d81",
       "log_claim": "success",
       "reasons": []
     },
@@ -458,10 +458,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:50:08Z",
-      "ended_at": "2026-10-20T15:50:09Z",
+      "started_at": "2026-10-20T16:08:05Z",
+      "ended_at": "2026-10-20T16:08:05Z",
       "duration_s": 0.165,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/containers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-9un5e2ln --id linux/containers.neg-no-daemon --sabotage no-daemon",
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/containers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-fxkyj3c3 --id linux/containers.neg-no-daemon --sabotage no-daemon",
       "artifacts": [],
       "first_error": {
         "message": "error: docker exited with code 1: Cannot connect to the Docker daemon at unix://<work>/no-docker.sock. Is the docker daemon running?",
@@ -484,10 +484,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:50:09Z",
-      "ended_at": "2026-10-20T15:50:23Z",
-      "duration_s": 14.798,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/dotnet/run.sh --work /home/runner/work/_temp/parity-out/work/wl-wk255bmv --id linux/dotnet-net10 --tfm net10.0 --sdk-band 10.0.100",
+      "started_at": "2026-10-20T16:08:05Z",
+      "ended_at": "2026-10-20T16:08:13Z",
+      "duration_s": 8.533,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/dotnet/run.sh --work /home/runner/work/_temp/parity-out/work/wl-h9wshag9 --id linux/dotnet-net10 --tfm net10.0 --sdk-band 10.0.100",
       "artifacts": [
         {
           "name": "report.txt",
@@ -497,7 +497,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "f8a320f8bc0a2837fc36357729db68f92f64c191cb120d51f7819eb0d357f083",
+      "log_sha256": "9e3cd81d9edb2467db5eac00a0a110ef571cbef0bf16d72198a9c4fcd67b043e",
       "log_claim": "success",
       "reasons": []
     },
@@ -513,10 +513,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:50:23Z",
-      "ended_at": "2026-10-20T15:50:38Z",
-      "duration_s": 14.948,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/dotnet/run.sh --work /home/runner/work/_temp/parity-out/work/wl-xqfsqiif --id linux/dotnet-net8 --tfm net8.0 --sdk-band 8.0.100",
+      "started_at": "2026-10-20T16:08:13Z",
+      "ended_at": "2026-10-20T16:08:28Z",
+      "duration_s": 14.7,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/dotnet/run.sh --work /home/runner/work/_temp/parity-out/work/wl-dcs0f_wi --id linux/dotnet-net8 --tfm net8.0 --sdk-band 8.0.100",
       "artifacts": [
         {
           "name": "report.txt",
@@ -526,7 +526,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "d1202ee90828948501277aceea5cd1639ce0f894d39957cffe1298685ceb41a7",
+      "log_sha256": "7c654bf3604849a756d5a183220f940af574a5b58d4c43c9a8190ee3af49dcfa",
       "log_claim": "success",
       "reasons": []
     },
@@ -542,17 +542,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:50:38Z",
-      "ended_at": "2026-10-20T15:50:39Z",
-      "duration_s": 0.966,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/dotnet/run.sh --work /home/runner/work/_temp/parity-out/work/wl-z5r67ytn --id linux/dotnet-net8.neg-missing-targeting-pack --tfm net8.0 --sdk-band 8.0.100 --sabotage missing-targeting-pack",
+      "started_at": "2026-10-20T16:08:28Z",
+      "ended_at": "2026-10-20T16:08:29Z",
+      "duration_s": 0.866,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/dotnet/run.sh --work /home/runner/work/_temp/parity-out/work/wl-35ze9tsm --id linux/dotnet-net8.neg-missing-targeting-pack --tfm net8.0 --sdk-band 8.0.100 --sabotage missing-targeting-pack",
       "artifacts": [],
       "first_error": {
         "message": "<work>/app/ParityApp.csproj : error NU1100: Unable to resolve 'Microsoft.NETCore.App.Ref (= 7.0.20)' for 'net7.0'.",
         "file": null,
         "line": null
       },
-      "log_sha256": "89c6db7884cba5e8c36aa4d2b5049f3bae062a09a3dbb15df24b3800effc7fad",
+      "log_sha256": "b2022633a63dce8a4db8c3d1c7e52974ed6ca18a65e552bebf7f3fdc02614a0d",
       "log_claim": "failure",
       "reasons": []
     },
@@ -568,10 +568,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:50:39Z",
-      "ended_at": "2026-10-20T15:50:40Z",
-      "duration_s": 1.017,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-_lzg07vy --id linux/gcc --cc gcc",
+      "started_at": "2026-10-20T16:08:29Z",
+      "ended_at": "2026-10-20T16:08:30Z",
+      "duration_s": 0.816,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-r_p__wvc --id linux/gcc --cc gcc",
       "artifacts": [
         {
           "name": "report.txt",
@@ -597,10 +597,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:50:40Z",
-      "ended_at": "2026-10-20T15:50:41Z",
+      "started_at": "2026-10-20T16:08:30Z",
+      "ended_at": "2026-10-20T16:08:30Z",
       "duration_s": 0.315,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-0c5hlrmh --id linux/gcc.neg-no-openssl-headers --cc gcc --sabotage no-openssl-headers",
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-g7k_lzev --id linux/gcc.neg-no-openssl-headers --cc gcc --sabotage no-openssl-headers",
       "artifacts": [],
       "first_error": {
         "message": "<repo>/parity/workloads/linux/gcc/src/hello.c:3:10: fatal error: openssl/evp.h: No such file or directory",
@@ -623,10 +623,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:50:41Z",
-      "ended_at": "2026-10-20T15:50:55Z",
-      "duration_s": 14.657,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/go/run.sh --work /home/runner/work/_temp/parity-out/work/wl-l00lj4rd --id linux/go",
+      "started_at": "2026-10-20T16:08:30Z",
+      "ended_at": "2026-10-20T16:08:45Z",
+      "duration_s": 14.999,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/go/run.sh --work /home/runner/work/_temp/parity-out/work/wl-f7tld9ft --id linux/go",
       "artifacts": [
         {
           "name": "report.txt",
@@ -652,10 +652,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:50:55Z",
-      "ended_at": "2026-10-20T15:51:00Z",
-      "duration_s": 5.102,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/go/run.sh --work /home/runner/work/_temp/parity-out/work/wl-2hq2m6on --id linux/go.neg-no-gcc --sabotage no-gcc",
+      "started_at": "2026-10-20T16:08:45Z",
+      "ended_at": "2026-10-20T16:08:50Z",
+      "duration_s": 4.95,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/go/run.sh --work /home/runner/work/_temp/parity-out/work/wl-209kkgpw --id linux/go.neg-no-gcc --sabotage no-gcc",
       "artifacts": [],
       "first_error": {
         "message": "error: go exited with code 1: cgo: C compiler \"gcc\" not found: exec: \"gcc\": executable file not found in $PATH",
@@ -678,10 +678,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:51:00Z",
-      "ended_at": "2026-10-20T15:51:05Z",
-      "duration_s": 4.175,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/cxx23.sh --work /home/runner/work/_temp/parity-out/work/wl-g7atn9s7 --id linux/gxx14-cxx23",
+      "started_at": "2026-10-20T16:08:50Z",
+      "ended_at": "2026-10-20T16:08:56Z",
+      "duration_s": 5.729,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/cxx23.sh --work /home/runner/work/_temp/parity-out/work/wl-fnu3rfqh --id linux/gxx14-cxx23",
       "artifacts": [
         {
           "name": "report.txt",
@@ -707,10 +707,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:51:05Z",
-      "ended_at": "2026-10-20T15:51:05Z",
+      "started_at": "2026-10-20T16:08:56Z",
+      "ended_at": "2026-10-20T16:08:56Z",
       "duration_s": 0.114,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/cxx23.sh --work /home/runner/work/_temp/parity-out/work/wl-rhm47d0r --id linux/gxx14-cxx23.neg-default-gxx --sabotage default-gxx",
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/cxx23.sh --work /home/runner/work/_temp/parity-out/work/wl-fel7cup7 --id linux/gxx14-cxx23.neg-default-gxx --sabotage default-gxx",
       "artifacts": [],
       "first_error": {
         "message": "<repo>/parity/workloads/linux/gcc/src/print.cpp:2:10: fatal error: print: No such file or directory",
@@ -733,10 +733,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:51:05Z",
-      "ended_at": "2026-10-20T15:51:25Z",
-      "duration_s": 19.972,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-yx7bv4li --id linux/java-gradle --tool gradle",
+      "started_at": "2026-10-20T16:08:56Z",
+      "ended_at": "2026-10-20T16:09:06Z",
+      "duration_s": 10.653,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-508rnocg --id linux/java-gradle --tool gradle",
       "artifacts": [
         {
           "name": "report.txt",
@@ -762,17 +762,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:51:25Z",
-      "ended_at": "2026-10-20T15:51:25Z",
-      "duration_s": 0.114,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-h9_vf5h2 --id linux/java-gradle.neg-empty-java-home --tool gradle --sabotage empty-java-home",
+      "started_at": "2026-10-20T16:09:06Z",
+      "ended_at": "2026-10-20T16:09:06Z",
+      "duration_s": 0.115,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-tucy37so --id linux/java-gradle.neg-empty-java-home --tool gradle --sabotage empty-java-home",
       "artifacts": [],
       "first_error": {
         "message": "ERROR: JAVA_HOME is set to an invalid directory: <work>/no-jdk",
         "file": null,
         "line": null
       },
-      "log_sha256": "70cc66665b641e7c157dfb97c3e5421afe940a93ee830218f5d8bed1c5edb5a7",
+      "log_sha256": "bc370a35bd2ac019a9f1784a942c73003d6a42e3d9c19d8b4fae15eeff047f39",
       "log_claim": "failure",
       "reasons": []
     },
@@ -788,10 +788,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:51:25Z",
-      "ended_at": "2026-10-20T15:51:30Z",
-      "duration_s": 5.377,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-9kn7ncfm --id linux/java --tool jdk",
+      "started_at": "2026-10-20T16:09:06Z",
+      "ended_at": "2026-10-20T16:09:10Z",
+      "duration_s": 3.173,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-2fbdiit9 --id linux/java --tool jdk",
       "artifacts": [
         {
           "name": "report.txt",
@@ -817,10 +817,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:51:30Z",
-      "ended_at": "2026-10-20T15:51:30Z",
+      "started_at": "2026-10-20T16:09:10Z",
+      "ended_at": "2026-10-20T16:09:10Z",
       "duration_s": 0.114,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-hjm835dm --id linux/java.neg-no-java-home --tool jdk --sabotage no-java-home",
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-7xpv5mm8 --id linux/java.neg-no-java-home --tool jdk --sabotage no-java-home",
       "artifacts": [],
       "first_error": {
         "message": "error: JAVA_HOME is not set",
@@ -843,10 +843,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:51:30Z",
-      "ended_at": "2026-10-20T15:51:31Z",
-      "duration_s": 0.415,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/node-addon/run.sh --work /home/runner/work/_temp/parity-out/work/wl-07owk5yy --id linux/node-addon",
+      "started_at": "2026-10-20T16:09:10Z",
+      "ended_at": "2026-10-20T16:09:11Z",
+      "duration_s": 0.867,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/node-addon/run.sh --work /home/runner/work/_temp/parity-out/work/wl-26o4qq5f --id linux/node-addon",
       "artifacts": [
         {
           "name": "report.txt",
@@ -872,10 +872,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:51:31Z",
-      "ended_at": "2026-10-20T15:51:31Z",
+      "started_at": "2026-10-20T16:09:11Z",
+      "ended_at": "2026-10-20T16:09:11Z",
       "duration_s": 0.114,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/node-addon/run.sh --work /home/runner/work/_temp/parity-out/work/wl-m9x8_laj --id linux/node-addon.neg-no-node-headers --sabotage no-node-headers",
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/node-addon/run.sh --work /home/runner/work/_temp/parity-out/work/wl-840doehi --id linux/node-addon.neg-no-node-headers --sabotage no-node-headers",
       "artifacts": [],
       "first_error": {
         "message": "<repo>/parity/workloads/linux/node-addon/addon.c:2:10: fatal error: node_api.h: No such file or directory",
@@ -898,10 +898,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:51:31Z",
-      "ended_at": "2026-10-20T15:51:34Z",
-      "duration_s": 2.67,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/python-wheel/run.sh --work /home/runner/work/_temp/parity-out/work/wl-4n9f54ho --id linux/python-wheel",
+      "started_at": "2026-10-20T16:09:11Z",
+      "ended_at": "2026-10-20T16:09:14Z",
+      "duration_s": 2.821,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/python-wheel/run.sh --work /home/runner/work/_temp/parity-out/work/wl-1epys3vy --id linux/python-wheel",
       "artifacts": [
         {
           "name": "report.txt",
@@ -927,10 +927,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:51:34Z",
-      "ended_at": "2026-10-20T15:51:34Z",
-      "duration_s": 0.816,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/python-wheel/run.sh --work /home/runner/work/_temp/parity-out/work/wl-40kkz_sl --id linux/python-wheel.neg-no-dep-wheel --sabotage no-dep-wheel",
+      "started_at": "2026-10-20T16:09:14Z",
+      "ended_at": "2026-10-20T16:09:14Z",
+      "duration_s": 0.716,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/python-wheel/run.sh --work /home/runner/work/_temp/parity-out/work/wl-v9r4me33 --id linux/python-wheel.neg-no-dep-wheel --sabotage no-dep-wheel",
       "artifacts": [],
       "first_error": {
         "message": "ERROR: Could not find a version that satisfies the requirement aap-parity-dep (from aap-parity-ext) (from versions: none)",
@@ -953,10 +953,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:51:34Z",
-      "ended_at": "2026-10-20T15:51:35Z",
-      "duration_s": 1.067,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/registry-tls/run.sh --work /home/runner/work/_temp/parity-out/work/wl-b0go70x_ --id linux/registry-tls",
+      "started_at": "2026-10-20T16:09:14Z",
+      "ended_at": "2026-10-20T16:09:15Z",
+      "duration_s": 1.017,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/registry-tls/run.sh --work /home/runner/work/_temp/parity-out/work/wl-dhphbumx --id linux/registry-tls",
       "artifacts": [
         {
           "name": "report.txt",
@@ -966,7 +966,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "b58545545b2ca6d0b0de2725f656b7d2225079e0d3fb43f42db3b5f37f05a267",
+      "log_sha256": "b41686753349308aeb487c424ec3d0a74a268d89a06e554520de33d8d3835692",
       "log_claim": "success",
       "reasons": []
     },
@@ -982,17 +982,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:51:35Z",
-      "ended_at": "2026-10-20T15:51:36Z",
+      "started_at": "2026-10-20T16:09:15Z",
+      "ended_at": "2026-10-20T16:09:16Z",
       "duration_s": 0.365,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/registry-tls/run.sh --work /home/runner/work/_temp/parity-out/work/wl-9xztmzpx --id linux/registry-tls.neg-untrusted-ca --sabotage untrusted-ca",
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/registry-tls/run.sh --work /home/runner/work/_temp/parity-out/work/wl-jxws1n9i --id linux/registry-tls.neg-untrusted-ca --sabotage untrusted-ca",
       "artifacts": [],
       "first_error": {
         "message": "error: curl exited with code 60: curl: (60) SSL certificate problem: self-signed certificate",
         "file": null,
         "line": null
       },
-      "log_sha256": "9f23c7c991092f1f0b71b1e2961adec4f8026fcdbf84c49b70727b1e470ea36b",
+      "log_sha256": "34c41daafaf21f5c4d31d86f0ee2df22557b5f4180dcd3f6806348163908a772",
       "log_claim": "failure",
       "reasons": []
     },
@@ -1008,10 +1008,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:51:36Z",
-      "ended_at": "2026-10-20T15:51:50Z",
-      "duration_s": 14.298,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/rust/run.sh --work /home/runner/work/_temp/parity-out/work/wl-_0jgxrdw --id linux/rust",
+      "started_at": "2026-10-20T16:09:16Z",
+      "ended_at": "2026-10-20T16:09:33Z",
+      "duration_s": 17.71,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/rust/run.sh --work /home/runner/work/_temp/parity-out/work/wl-juaecuy7 --id linux/rust",
       "artifacts": [
         {
           "name": "report.txt",
@@ -1021,7 +1021,7 @@
         }
       ],
       "first_error": null,
-      "log_sha256": "2e954645e5fc3c7c168431b9b041c72d29c256eabbf955a96d936a772f5fbab7",
+      "log_sha256": "adf39bac91724b2d6fc54c3925fb0c439ffcaee62024097bbb33a7e32505f7d3",
       "log_claim": "success",
       "reasons": []
     },
@@ -1037,10 +1037,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:51:50Z",
-      "ended_at": "2026-10-20T15:51:51Z",
+      "started_at": "2026-10-20T16:09:33Z",
+      "ended_at": "2026-10-20T16:09:34Z",
       "duration_s": 0.515,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/rust/run.sh --work /home/runner/work/_temp/parity-out/work/wl-cx0w1re9 --id linux/rust.neg-no-cc --sabotage no-cc",
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/rust/run.sh --work /home/runner/work/_temp/parity-out/work/wl-8nps0tyj --id linux/rust.neg-no-cc --sabotage no-cc",
       "artifacts": [],
       "first_error": {
         "message": "error: linker `cc` not found",
@@ -1063,10 +1063,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:51:51Z",
-      "ended_at": "2026-10-20T15:51:59Z",
-      "duration_s": 8.884,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/services/run.sh --work /home/runner/work/_temp/parity-out/work/wl-qh9k437t --id linux/services",
+      "started_at": "2026-10-20T16:09:34Z",
+      "ended_at": "2026-10-20T16:09:46Z",
+      "duration_s": 12.489,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/services/run.sh --work /home/runner/work/_temp/parity-out/work/wl-aj7ytnai --id linux/services",
       "artifacts": [
         {
           "name": "report.txt",
@@ -1092,10 +1092,10 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:51:59Z",
-      "ended_at": "2026-10-20T15:52:00Z",
-      "duration_s": 0.165,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/services/run.sh --work /home/runner/work/_temp/parity-out/work/wl-_nz7pjcj --id linux/services.neg-not-started --sabotage not-started",
+      "started_at": "2026-10-20T16:09:46Z",
+      "ended_at": "2026-10-20T16:09:47Z",
+      "duration_s": 0.164,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/services/run.sh --work /home/runner/work/_temp/parity-out/work/wl-ndhvz8pf --id linux/services.neg-not-started --sabotage not-started",
       "artifacts": [],
       "first_error": {
         "message": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: No such file or directory",
@@ -1118,13 +1118,13 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:52:00Z",
-      "ended_at": "2026-10-20T15:52:07Z",
-      "duration_s": 6.934,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/versions/run.sh --work /home/runner/work/_temp/parity-out/work/wl-9d8z2flg --id linux/toolchain-versions",
+      "started_at": "2026-10-20T16:09:47Z",
+      "ended_at": "2026-10-20T16:09:53Z",
+      "duration_s": 6.379,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/versions/run.sh --work /home/runner/work/_temp/parity-out/work/wl-edkln112 --id linux/toolchain-versions",
       "artifacts": [],
       "first_error": null,
-      "log_sha256": "c4d10e5e277466934dd995771f1c1ec811775ac79a1baf388ef6c9042365db51",
+      "log_sha256": "95dd6a35259609b0878819c525c0519584eefd2159135ca7a3e3963a60595327",
       "log_claim": "success",
       "reasons": []
     },
@@ -1140,17 +1140,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:52:07Z",
-      "ended_at": "2026-10-20T15:52:08Z",
-      "duration_s": 1.623,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/versions/run.sh --work /home/runner/work/_temp/parity-out/work/wl-likv1vlk --id linux/toolchain-versions.neg-no-cargo-bin --sabotage no-cargo-bin",
+      "started_at": "2026-10-20T16:09:53Z",
+      "ended_at": "2026-10-20T16:09:54Z",
+      "duration_s": 1.42,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/versions/run.sh --work /home/runner/work/_temp/parity-out/work/wl-5p5vlgka --id linux/toolchain-versions.neg-no-cargo-bin --sabotage no-cargo-bin",
       "artifacts": [],
       "first_error": {
         "message": "error: oracle version.rustc expected '1.99.0' observed ''",
         "file": null,
         "line": null
       },
-      "log_sha256": "5c25b6a96a070b9b237a1994ebf3fae4c2b1ff58bdd7bb4ee21220afa21f7b24",
+      "log_sha256": "05d08116aa02ffb4675c3d0c5b907d25af265b3dc7b7594e6633a34eda65320e",
       "log_claim": "failure",
       "reasons": []
     },
@@ -1166,10 +1166,10 @@
       "expected_exit_codes": [
         0
       ],
-      "started_at": "2026-10-20T15:52:08Z",
-      "ended_at": "2026-10-20T15:52:09Z",
+      "started_at": "2026-10-20T16:09:54Z",
+      "ended_at": "2026-10-20T16:09:55Z",
       "duration_s": 0.415,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/xwin/run.sh --work /home/runner/work/_temp/parity-out/work/wl-f7j3q2jf --id xwin/clang-lld-pe --kind freestanding",
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/xwin/run.sh --work /home/runner/work/_temp/parity-out/work/wl-7wxb33s2 --id xwin/clang-lld-pe --kind freestanding",
       "artifacts": [
         {
           "name": "report.txt",
@@ -1207,17 +1207,17 @@
       "expected_exit_codes": [
         1
       ],
-      "started_at": "2026-10-20T15:52:09Z",
-      "ended_at": "2026-10-20T15:52:09Z",
-      "duration_s": 0.164,
-      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/xwin/run.sh --work /home/runner/work/_temp/parity-out/work/wl-zutucmlb --id xwin/clang-lld-pe.neg-no-import-lib --kind freestanding --sabotage no-import-lib",
+      "started_at": "2026-10-20T16:09:55Z",
+      "ended_at": "2026-10-20T16:09:55Z",
+      "duration_s": 0.114,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/xwin/run.sh --work /home/runner/work/_temp/parity-out/work/wl-il5xeehh --id xwin/clang-lld-pe.neg-no-import-lib --kind freestanding --sabotage no-import-lib",
       "artifacts": [],
       "first_error": {
         "message": "lld-link: error: could not open 'kernel32.lib': No such file or directory",
         "file": null,
         "line": null
       },
-      "log_sha256": "cbbba9264e01ec5ba16e7286d854711a1e5a6df7cafad9066820caa0cc482bd7",
+      "log_sha256": "64fdb012296b589d235670693c0354ccf0df7e06976ea3256bd1aeed1653d06f",
       "log_claim": "failure",
       "reasons": []
     }
