@@ -31,6 +31,9 @@ Exit code 0 means every selected workload passed its oracle. Without `--name`, t
 - run: bash parity/workloads/linux/invoke-workloads.sh
 ```
 
+Certifying a candidate (P22/P24) passes only the qualified definitions to `certify.py`, the ones a run without
+`--name` selects; the unqualified ones would fail there by design.
+
 Workloads that change or query machine state (`linux/containers`, `linux/services`, `actions/linux/runner-env`,
 `actions/linux/file-commands`) run only inside an Actions job (`GITHUB_ACTIONS=true`); elsewhere they fail with
 `not inside a GitHub Actions job`. The others need no root and no network and also run on a developer's Linux.
@@ -51,7 +54,16 @@ Workloads keep the caches they control in their work folder (TMPDIR, XDG_CACHE_H
 NUGET_PACKAGES, DOTNET_CLI_HOME, GRADLE_USER_HOME, pip `--target`). Nothing is downloaded: cargo runs `--offline`,
 Go has `GOPROXY=off GOTOOLCHAIN=local`, NuGet has no package source, pip runs `--no-index`, Gradle runs `--offline`
 with core plugins only, containers are `FROM scratch` (nothing is pulled), and registry configuration is read, never
-fetched. Maven is not driven (its first build downloads plugins), nor is sdkmanager (it contacts Google).
+fetched. Maven is not driven (its first build downloads plugins), nor is sdkmanager (it contacts Google). npm's
+cache and logs, Gradle's and .NET's homes and headless Chrome's profile are in the work folder too, and Chrome runs
+without background networking or component updates.
+
+What stays on the machine after a run: `linux/containers` removes its service container, user network and image
+(`docker rm -f`, `docker network rm`, `docker rmi -f`, `podman rmi -f`, also when it fails), but Docker's BuildKit
+build cache keeps the layers of that FROM-scratch build (a few KB; `docker builder prune` would also drop the job's
+other cache, so it is left) and the first rootless Podman use creates its storage under `~/.local/share/containers`.
+`linux/services` stops the PostgreSQL and MySQL services it started. On a hosted runner the VM is discarded anyway;
+on a candidate these are the leftovers to expect.
 
 ## Layout
 
@@ -93,11 +105,13 @@ Every definition runs `bash {fixtures}/../../../../parity/workloads/<path>/run.s
 | `actions/linux/runner-env` | default and image variables, file-command files, PATH order, tool cache layout, action archive cache, user and groups, passwordless sudo, limits, sysctls, Docker socket | tool cache looked up in an empty folder (`oracle tool_cache.CodeQL/2.27.2 expected 'yes' observed ''`) |
 | `actions/linux/file-commands` | marker from the composite action: GITHUB_ENV (incl. multiline) from bash, sh and pwsh, GITHUB_PATH, GITHUB_OUTPUT from python, step summary, working-directory | a marker that was never written (`file-commands marker not found`) |
 | `xwin/clang-lld-pe` | Linux-to-Windows: clang + lld-link build a CRT-free x64 PE with an llvm-lib import library; PE-inspected; hand-off record | the import library the link names is missing (`lld-link: error: could not open 'kernel32.lib'`) |
-| `xwin/sdk-cross` | Linux-to-Windows with the MSVC CRT and Windows SDK from an xwin sysroot: **unqualified on this profile** | XWIN_SYSROOT unset (`XWIN_SYSROOT is not set`) |
+| `xwin/sdk-cross` | Linux-to-Windows with the MSVC CRT and Windows SDK from an xwin sysroot: **unqualified on this profile** | XWIN_SYSROOT unset after proving it was set (`XWIN_SYSROOT is not set`) |
 
 Every negative first proves its sabotage held (a `sabotage.*` fact: the header absent from the sysroot, nothing at
 the lld path, ninja/cc/gcc not resolvable, the dep wheel absent, the socket absent, PostgreSQL inactive, the fake
-bash on PATH), so it cannot pass because of an unrelated failure, and its expected text is the first error line.
+bash on PATH, JDK 17 still installed for the Gradle negative, the .def file there for the import-library negative,
+a sysroot that was really set for the xwin SDK negative), so it cannot pass because of an unrelated failure, and its
+expected text is the first error line.
 
 ## Artifacts and comparison
 
@@ -120,12 +134,20 @@ hosted reference and a correct candidate and `compare_artifacts` stays `sha256`.
   fact got one (.NET: the net8.0 targeting pack present, net7.0's absent; Java: the JDK still installed with
   JAVA_HOME unset; file-commands: the real marker present).
 - Hosted-validated: run 39451894408 (image 20261012.334.1, head 35baccc): 44/44, all 23 qualified positives and all
-  21 qualified negatives, and its `summary.json` tree manifest equals this tree; `xwin/sdk-cross` and its negative
+  21 qualified negatives, and its `summary.json` tree manifest equalled the tree at 35baccc; `xwin/sdk-cross` and its negative
   are listed as unqualified, not run. Every negative fails with its expected text as the first error line, its
   positive twin passed in the same run, and its observed facts show the sabotage held (a `sabotage.*` fact, or for
   `runner-env` the tool-cache variables unchanged and for `registry-tls` the TLS server reachable) and no other failed
   check except the ones the sabotage implies (every tool cache entry; rustc, cargo and rustup all live in
   `~/.cargo/bin`). `oracle/hosted-runs/39451894408/` keeps its `summary.json` and `results.json`.
+- Independent review of 038b208, fixed: the three cited iteration-1 logs were ignored by `.gitignore` (`*.log`) and
+  are now tracked, and the tests require every cited evidence file to be tracked; `xwin/sdk-cross.neg-no-sysroot`
+  first proves a sysroot was set (`sabotage.sysroot_was_set`), so naming it on a host without one fails instead of
+  passing; `handoff.py verdict` fails closed (sha256 of 64 hex digits, same artifact name, integer exit codes, string
+  output); `Invoke-HandoffExecution.ps1` accepts only a plain artifact file name; the version queries, npm and
+  headless Chrome keep their state in the work folder; the Gradle and import-library negatives record what they
+  still have (JDK 17, the .def file); `wl_end` runs a dying `wl_cleanup` once. These change the tree, so a new hosted
+  run replaces the evidence above (`check_hosted_run.py` is red until then).
 - `tests/parity/workloads/linux/check_hosted_run.py` compares the tree with the run named in the oracle's
   `hosted_validation.run`: every definition hash, report hash and first error in its `results.json`, the
   unqualified list and the content manifest in its `summary.json` (added, removed or changed files are listed).

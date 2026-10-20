@@ -138,7 +138,8 @@ wl_start() {
   WORK=$(cd "${WORK}" && pwd -P)
   WL_OBS_DIR=${PARITY_OBS_DIR:-${WORK}}
   mkdir -p "${WORK}/tmp" "${WL_OBS_DIR}"
-  export TMPDIR="${WORK}/tmp" XDG_CACHE_HOME="${WORK}/tmp/cache"
+  export TMPDIR="${WORK}/tmp" XDG_CACHE_HOME="${WORK}/tmp/cache" npm_config_cache="${WORK}/tmp/npm-cache" \
+    npm_config_logs_dir="${WORK}/tmp/npm-logs"
   WL_PROFILE=${PARITY_PROFILE:-ubuntu-24.04}
   WL_FACTS="${WORK}/tmp/facts.tsv"
   WL_ORACLE="${WORK}/tmp/oracle.tsv"
@@ -151,7 +152,8 @@ wl_start() {
 
 wl_end() {
   local code=1 k
-  if declare -F wl_cleanup > /dev/null; then wl_cleanup; fi
+  # a wl_cleanup that dies comes back here: clean up once
+  [ -n "${WL_ENDING:-}" ] || { WL_ENDING=1; if declare -F wl_cleanup > /dev/null; then wl_cleanup; fi; }
   if [ -f "${WORK}/tmp/oracle-missing" ]; then
     while read -r k; do WL_FAILS+=("oracle-key:${k}"); done < "${WORK}/tmp/oracle-missing"
   fi

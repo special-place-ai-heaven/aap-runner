@@ -25,6 +25,8 @@ case ${ARG_kind:-} in
       -c "${src}/freestanding.c" -o freestanding.obj
     if [ "${SABOTAGE}" = no-import-lib ]; then
       line "sabotage no-import-lib applied"
+      # the sabotage holds: what the import library is made from is there, the library itself is not
+      fact sabotage.def_file "$([ -r "${src}/kernel32.def" ] && echo yes)" yes
       fact sabotage.import_lib "$([ -e kernel32.lib ] && echo yes)" ''
     elif [ -n "${SABOTAGE}" ]; then
       die "unknown sabotage ${SABOTAGE}"
@@ -37,6 +39,8 @@ case ${ARG_kind:-} in
   sdk)
     name=parity-sdk exit_code=43 stdout='hello from xwin sdk tick=1'
     if [ "${SABOTAGE}" = no-sysroot ]; then
+      # the sabotage must remove a sysroot that is really there; on a host without one this negative proves nothing
+      fact sabotage.sysroot_was_set "$([ -n "${XWIN_SYSROOT:-}" ] && echo yes)" yes
       unset XWIN_SYSROOT
       line "sabotage no-sysroot applied"
     elif [ -n "${SABOTAGE}" ]; then

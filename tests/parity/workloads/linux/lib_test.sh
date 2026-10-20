@@ -61,6 +61,12 @@ has 'error: named reason'
 has 'cleaned'
 [ "$(obs 'd["failures"]')" = "['exception']" ] || fail 'die not recorded'
 
+# a wl_cleanup that itself dies runs once and the workload still ends
+rc=0; wl 'wl_cleanup() { line cleaned; die "cleanup failed"; }; die first' || rc=$?
+[ "${rc}" = 1 ] || fail "dying cleanup exited ${rc}"
+[ "$(grep -cx cleaned "${tmp}/log")" = 1 ] || fail 'wl_cleanup ran more than once'
+has 'error: cleanup failed'
+
 # oracle: values, lists and members; a missing key fails the workload even from inside $(...)
 wl 'fact gcc "$(oracle versions/gcc)" 13.3.0; fact n "$(oracle_list java_home_vars | wc -l)" 5; fact k "$(oracle_keys services | grep -c "^docker$")" 1' \
   || fail 'oracle lookups failed'

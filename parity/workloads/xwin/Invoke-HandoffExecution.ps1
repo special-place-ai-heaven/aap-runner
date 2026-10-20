@@ -8,6 +8,7 @@ next to it has the recorded sha256, runs it (60 s limit), and writes <name>.exec
 version, exit code, stdout, run id. `python handoff.py verdict <built> <executed>` then says executed-on-windows only
 when the bytes, exit code and output match. This is the only way a cross build becomes Windows execution evidence;
 P22/P24 call it on the Windows twin with the artifacts of a Linux run. Windows PowerShell 5.1 and pwsh 7.
+It runs what the hand-off names: give it artifacts only from runs of trusted refs of this repository.
 
 .EXAMPLE
 pwsh -NoProfile -File parity\workloads\xwin\Invoke-HandoffExecution.ps1 -Dir C:\t\xwin-artifacts
@@ -22,6 +23,10 @@ if (-not $found.Count) { throw "no *.handoff.json in $Dir" }
 $bad = 0
 foreach ($h in $found) {
     $b = Get-Content -Raw -LiteralPath $h.FullName | ConvertFrom-Json
+    # the artifact name comes from JSON: only a plain file name in -Dir, never a path elsewhere
+    if (-not ($b.artifact -is [string]) -or -not $b.artifact -or [IO.Path]::GetFileName($b.artifact) -ne $b.artifact) {
+        throw "$($h.Name): artifact '$($b.artifact)' is not a plain file name"
+    }
     $exe = Join-Path $Dir $b.artifact
     $sha = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
     $rec = [ordered]@{

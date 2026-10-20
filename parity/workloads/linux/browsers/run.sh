@@ -25,7 +25,8 @@ else
   die "unknown sabotage ${SABOTAGE}"
 fi
 [ -x "${CHROME_BIN:-}" ] || die "CHROME_BIN is not an executable: ${CHROME_BIN:-<unset>}"
-run timeout 120 "${CHROME_BIN}" --headless=new --disable-gpu --no-first-run --user-data-dir="${WORK}/chrome-profile" \
+run timeout 120 "${CHROME_BIN}" --headless=new --disable-gpu --no-first-run --disable-background-networking \
+  --disable-component-update --user-data-dir="${WORK}/chrome-profile" \
   --dump-dom "file://${WL_LIB_DIR}/browsers/page.html"
 dom=$(grep -o '<p id="out">[^<]*</p>' <<< "${OUT}")
 fact chrome.dump_dom "${dom}" '<p id="out">js ran 10</p>'

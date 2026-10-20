@@ -6,13 +6,17 @@
 
 The rule: a cross build is evidence that an artifact was built, never that it runs on Windows. A built record always
 says windows_execution 'not-claimed'. Only an executed record written on Windows by Invoke-HandoffExecution.ps1
-(runner_os Windows, same sha256, the expected exit code and output) turns it into executed-on-windows evidence.
+(runner_os Windows, the same artifact name and sha256, the expected integer exit code and output) turns it into
+executed-on-windows evidence; any missing or malformed field means built-only.
 """
 import hashlib
 import json
 import os
 import platform
+import re
 import sys
+
+SHA = re.compile(r"^[0-9a-f]{64}$")
 
 
 def sha256(path):
@@ -29,21 +33,36 @@ def built(artifact, exit_code, stdout, out):
         f.write("\n")
 
 
+def _int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
 def verdict(b, e):
+    """Fails closed: every field it compares must be present and well typed. Output is compared after CRLF -> LF and
+    stripping leading and trailing whitespace (the program's trailing newline)."""
     why = []
     if b.get("kind") != "xwin-built" or b.get("windows_execution") != "not-claimed":
         why.append("the built record is not a plain xwin-built record")
+    if not (isinstance(b.get("sha256"), str) and SHA.match(b["sha256"])):
+        why.append("the built record has no sha256")
+    if not (isinstance(b.get("artifact"), str) and b["artifact"]):
+        why.append("the built record names no artifact")
+    if not _int(b.get("expected_exit")) or not isinstance(b.get("expected_stdout"), str):
+        why.append("the built record's expected exit code or output is malformed")
     if e is None:
         why.append("no Windows execution record")
     else:
         if e.get("kind") != "xwin-executed" or e.get("runner_os") != "Windows":
             why.append(f"execution record is not from Windows (runner_os {e.get('runner_os')!r})")
+        if e.get("artifact") != b.get("artifact"):
+            why.append(f"executed artifact {e.get('artifact')!r} is not the built one {b.get('artifact')!r}")
         if e.get("sha256") != b.get("sha256"):
             why.append("executed artifact differs from the built one (sha256)")
-        if e.get("exit_code") != b.get("expected_exit"):
-            why.append(f"exit code {e.get('exit_code')} != expected {b.get('expected_exit')}")
-        if (e.get("stdout") or "").replace("\r\n", "\n").strip() != b.get("expected_stdout"):
-            why.append(f"output {e.get('stdout')!r} != expected {b.get('expected_stdout')!r}")
+        if not _int(e.get("exit_code")) or e.get("exit_code") != b.get("expected_exit"):
+            why.append(f"exit code {e.get('exit_code')!r} != expected {b.get('expected_exit')!r}")
+        out = e.get("stdout")
+        if not isinstance(out, str) or out.replace("\r\n", "\n").strip() != b.get("expected_stdout"):
+            why.append(f"output {out!r} != expected {b.get('expected_stdout')!r}")
     return "executed-on-windows" if not why else "built-only: " + "; ".join(why)
 
 

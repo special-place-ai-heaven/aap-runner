@@ -1,0 +1,124 @@
+workload linux/toolchain-versions profile=ubuntu-24.04 sabotage=none
+> rustc --version
+rustc 1.99.0 (b940084d7 2026-09-28)
+ok   version.rustc = 1.99.0
+> cargo --version
+cargo 1.99.0 (5f94df478 2026-08-27)
+ok   version.cargo = 1.99.0
+> rustup --version
+rustup 1.29.1 (d95a37b6a 2026-08-13)
+info: This is the version for the rustup toolchain manager, not the rustc compiler.
+info: the currently active `rustc` version is `rustc 1.99.0 (b940084d7 2026-09-28)`
+ok   version.rustup = 1.29.1
+> gcc-12 -dumpfullversion
+12.4.0
+ok   version.gcc_12 = 12.4.0
+> gcc-14 -dumpfullversion
+14.2.0
+ok   version.gcc_14 = 14.2.0
+> clang-16 --version
+Ubuntu clang version 16.0.6 (23ubuntu4)
+Target: x86_64-pc-linux-gnu
+Thread model: posix
+InstalledDir: /usr/bin
+ok   version.clang_16 = 16.0.6
+> clang-17 --version
+Ubuntu clang version 17.0.6 (9ubuntu1)
+Target: x86_64-pc-linux-gnu
+Thread model: posix
+InstalledDir: /usr/bin
+ok   version.clang_17 = 17.0.6
+> go version
+go version go1.24.13 linux/amd64
+ok   version.go = 1.24.13
+> node --version
+v22.23.3
+ok   version.node = 22.23.3
+> npm --version
+10.9.9
+ok   version.npm = 10.9.9
+> yarn --version
+1.22.22
+ok   version.yarn = 1.22.22
+> python3 --version
+Python 3.12.3
+ok   version.python = 3.12.3
+> pip --version
+pip 24.0 from /usr/lib/python3/dist-packages/pip (python 3.12)
+ok   version.pip = 24.0
+> java -version
+openjdk version "17.0.20.1" 2026-08-18
+OpenJDK Runtime Environment Temurin-17.0.20.1+1 (build 17.0.20.1+1)
+OpenJDK 64-Bit Server VM Temurin-17.0.20.1+1 (build 17.0.20.1+1, mixed mode, sharing)
+error: oracle version.java expected '17.0.20+1' observed '17.0.20.1+1'
+> mvn -v
+Apache Maven 3.10.0 (c43a36b8d67be7e0805a411bc0898af1a51f5472)
+Maven home: /usr/share/apache-maven-3.10.0
+Java version: 17.0.20.1, vendor: Eclipse Adoptium, runtime: /usr/lib/jvm/temurin-17-jdk-amd64
+Default locale: en, platform encoding: UTF-8, time zone: Etc/UTC
+OS name: "linux", version: "6.17.0-1022-azure", arch: "amd64", family: "unix"
+ok   version.maven = 3.10.0
+> gradle --version
+
+Welcome to Gradle 9.8.1!
+
+Here are the highlights of this release:
+ - Java 27 support
+ - Maven mirror settings reuse
+ - Linked problem locations in build output
+
+For more details see https://docs.gradle.org/9.8.1/release-notes.html
+
+
+------------------------------------------------------------
+Gradle 9.8.1
+------------------------------------------------------------
+
+Build time:    2026-10-07 16:57:46 UTC
+Revision:      39daf39feb60a18b1b6ddccde53366522fef516f
+
+Kotlin:        2.4.10
+Groovy:        4.0.33
+Ant:           Apache Ant(TM) version 1.10.17 compiled on April 6 2026
+Launcher JVM:  17.0.20.1 (Eclipse Adoptium 17.0.20.1+1)
+Daemon JVM:    /usr/lib/jvm/temurin-17-jdk-amd64 (no Daemon JVM specified, using current Java home)
+OS:            Linux 6.17.0-1022-azure amd64
+ok   version.gradle = 9.8.1
+> ant -version
+Apache Ant(TM) version 1.10.14 compiled on September 25 2023
+ok   version.ant = 1.10.14
+> pwsh --version
+PowerShell 7.6.6
+ok   version.pwsh = 7.6.6
+> bash -c echo "${BASH_VERSION}"
+5.2.21(1)-release
+ok   version.bash = 5.2.21(1)-release
+> git --version
+git version 2.55.0
+ok   version.git = 2.55.0
+> git lfs version
+git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0)
+ok   version.git_lfs = 3.8.0
+> perl -e print $^V
+v5.38.2
+ok   version.perl = 5.38.2
+> ruby --version
+ruby 3.2.3 (2024-01-18 revision 52bb2ac0a6) [x86_64-linux-gnu]
+ok   version.ruby = 3.2.3
+> yq --version
+yq (https://github.com/mikefarah/yq/) version v4.54.1
+ok   version.yq = 4.54.1
+> dotnet --list-sdks
+8.0.131 [/usr/share/dotnet/sdk]
+8.0.206 [/usr/share/dotnet/sdk]
+8.0.319 [/usr/share/dotnet/sdk]
+8.0.425 [/usr/share/dotnet/sdk]
+9.0.121 [/usr/share/dotnet/sdk]
+9.0.205 [/usr/share/dotnet/sdk]
+9.0.318 [/usr/share/dotnet/sdk]
+10.0.112 [/usr/share/dotnet/sdk]
+10.0.204 [/usr/share/dotnet/sdk]
+10.0.303 [/usr/share/dotnet/sdk]
+10.0.401 [/usr/share/dotnet/sdk]
+ok   version.dotnet_sdks = 8.0.131,8.0.206,8.0.319,8.0.425,9.0.121,9.0.205,9.0.318,10.0.112,10.0.204,10.0.303,10.0.401
+workload linux/toolchain-versions: 1 oracle check(s) not met

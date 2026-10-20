@@ -19,7 +19,12 @@ case ${SABOTAGE} in
     # the sabotage holds: the JDK is still installed, only the variable is gone
     fact sabotage.jdk_17_installed "$([ -x "${JAVA_HOME_17_X64:-}/bin/javac" ] && echo yes)" yes
     ;;
-  empty-java-home) export JAVA_HOME="${WORK}/no-jdk"; mkdir -p "${JAVA_HOME}"; line "sabotage empty-java-home applied" ;;
+  empty-java-home)
+    export JAVA_HOME="${WORK}/no-jdk"
+    mkdir -p "${JAVA_HOME}"
+    line "sabotage empty-java-home applied"
+    fact sabotage.jdk_17_installed "$([ -x "${JAVA_HOME_17_X64:-}/bin/javac" ] && echo yes)" yes
+    ;;
   '') ;;
   *) die "unknown sabotage ${SABOTAGE}" ;;
 esac

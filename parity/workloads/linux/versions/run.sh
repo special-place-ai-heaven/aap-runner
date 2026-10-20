@@ -6,6 +6,8 @@
 # shellcheck source-path=SCRIPTDIR source=../lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../lib.sh"
 wl_start "$@"
+# the version queries write nothing outside the work folder
+export GRADLE_USER_HOME="${WORK}/gradle-home" DOTNET_CLI_HOME="${WORK}/dotnet-home" JAVA_TOOL_OPTIONS=-XX:-UsePerfData
 
 # check KEY SED-EXPR CMD...: the tool's output, filtered by sed -n -E 'EXPR', equals oracle versions/KEY
 check() {

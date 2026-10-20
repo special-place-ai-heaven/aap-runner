@@ -186,8 +186,8 @@
     "passwordless_sudo": {"v": "yes", "src": "capture:passwordless_sudo=yes"}
   },
   "limits": {
-    "nofile": {"v": "65536", "src": "capture:65536"},
-    "stack_kb": {"v": "16384", "src": "capture:16384"}
+    "nofile": {"v": "65536", "src": "readme:Open file limit is 65536 soft and hard for all users; stack size is 16384 KB soft and hard"},
+    "stack_kb": {"v": "16384", "src": "readme:Open file limit is 65536 soft and hard for all users; stack size is 16384 KB soft and hard"}
   },
   "sysctl": {
     "vm.max_map_count": {"v": "262144", "src": "capture:vm.max_map_count = 262144"},
