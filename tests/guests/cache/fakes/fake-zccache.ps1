@@ -6,8 +6,19 @@
 #                                       A miss runs the compiler and stores its output. fake-journal.log gets hit/miss.
 # Every call appends the environment variable NAMES it received (never values) to fake-env.log.
 # Faults: FAKE_ZC_CRASH=1 exits 139 at once; with FAKE_ZC_VERIFY=1 a stored entry that no longer matches its .sha
-# sidecar is refused with exit 5 (a cache that detects a corrupted entry).
+# sidecar is refused with exit 5 (a cache that detects a corrupted entry); FAKE_ZC_HANG=SECONDS records this process in
+# fake-client.pid and sleeps that long before exiting 0 (a hung client).
+# FAKE_ZC_ARGV_LOG=PATH writes the arguments it received to PATH as JSON and exits 0, before anything else; it then
+# needs no cache root. The arguments come from the process command line, as zcshim.ps1 takes them.
 $ErrorActionPreference = 'Stop'
+$all = [Environment]::GetCommandLineArgs()
+$i = 1
+while ($i -lt $all.Count -and $all[$i] -ne '-File') { $i++ }
+$argv = @($all | Select-Object -Skip ($i + 2))
+if ($env:FAKE_ZC_ARGV_LOG) {
+    [IO.File]::WriteAllText($env:FAKE_ZC_ARGV_LOG, (ConvertTo-Json -InputObject ([object[]]$argv) -Compress), (New-Object System.Text.UTF8Encoding($false)))
+    exit 0
+}
 function Add-Line([string]$Path, [string]$Line) {
     for ($i = 0; $i -lt 50; $i++) { try { [IO.File]::AppendAllText($Path, $Line + "`n"); return } catch { Start-Sleep -Milliseconds 20 } }
 }
@@ -18,7 +29,7 @@ $null = New-Item -ItemType Directory -Force -Path (Join-Path $root 'artifacts')
 $names = @(Get-ChildItem Env: | ForEach-Object { $_.Name } | Sort-Object)
 Add-Line (Join-Path $root 'fake-env.log') (($names -join ' ') + ' MODE=' + $env:ZCCACHE_MODE + ' SIZE=' + $env:ZCCACHE_CACHE_SIZE_BYTES)
 if ($env:FAKE_ZC_CRASH -eq '1') { exit 139 }
-if ($args[0] -eq 'session-start') {
+if ($argv[0] -eq 'session-start') {
     $pidFile = Join-Path $root 'fake-daemon.pid'
     $alive = $false
     if (Test-Path -LiteralPath $pidFile) { $alive = [bool](Get-Process -Id ([int](Get-Content -LiteralPath $pidFile)) -ErrorAction SilentlyContinue) }
@@ -31,9 +42,14 @@ if ($args[0] -eq 'session-start') {
     '{"session_id":"fake-session"}'
     exit 0
 }
-if ($args[0] -eq 'session-end') { exit 0 }
-$cc = $args[0]
-$rest = @($args | Select-Object -Skip 1)
+if ($argv[0] -eq 'session-end') { exit 0 }
+if ($env:FAKE_ZC_HANG) {
+    Set-Content -LiteralPath (Join-Path $root 'fake-client.pid') -Value $PID
+    Start-Sleep -Seconds ([int]$env:FAKE_ZC_HANG)
+    exit 0
+}
+$cc = $argv[0]
+$rest = @($argv | Select-Object -Skip 1)
 $out = $null; $in = $null; $keyArgs = @()
 for ($i = 0; $i -lt $rest.Count; $i++) {
     if ($rest[$i] -eq '-o' -and $i + 1 -lt $rest.Count) { $out = $rest[$i + 1]; $i++; continue }

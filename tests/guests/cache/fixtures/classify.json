@@ -12,6 +12,7 @@
     {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["-c", "a.c", "-S"], "classes": null},
     {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["a.o", "-o", "app"], "classes": null},
     {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["-c", "a.c", "-###"], "classes": null},
+    {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["-x", "c", "-c", "-", "-o", "a.o"], "classes": null},
     {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["-print-file-name=libc.so"], "classes": null},
     {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["@RSP"], "rsp": "-c a.c -o a.o", "classes": ["compile-object", "response-file"]},
     {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["@RSP"], "rsp": "-c \"src dir/a.c\"", "classes": ["compile-object", "path-with-spaces", "response-file"]},

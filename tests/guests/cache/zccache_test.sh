@@ -22,7 +22,7 @@ case "$(uname -s)" in
       local a=() skip=0 x
       for x in "$@"; do
         if ((skip > 0)); then a+=("${x}"); skip=$((skip - 1)); continue; fi
-        case "${x}" in --arg | --argjson) a+=("${x}"); skip=2; continue ;; esac
+        case "${x}" in --arg | --argjson) a+=("${x}"); skip=2; continue ;; --slurpfile | --rawfile) a+=("${x}"); skip=1; continue ;; esac
         if [[ "${x}" == /* && -e "${x}" ]]; then a+=("$(cygpath -m "${x}")"); else a+=("${x}"); fi
       done
       MSYS_NO_PATHCONV=1 command jq -b "${a[@]}"
@@ -90,7 +90,7 @@ install_pkg() {
   bash "${SCRIPT}" install "${P}/test.tar.gz" "${P}/test.tar.gz.provenance.json" "${P}/install" "${P}/toolchains.json" "${P}/wrappers.json" &&
     cp -- "$(command -v sleep)" "${P}/install/bin/zccache-daemon"
 }
-init_pkg() { install_pkg > /dev/null 2>&1 && bash "${SCRIPT}" init "${P}/install" "${P}/job" "${1:-104857600}" > /dev/null; }
+init_pkg() { install_pkg > /dev/null 2>&1 && bash "${SCRIPT}" init "${P}/install" "${P}/job" "${1:-104857600}" "${@:2}" > /dev/null; }
 shim() { AAP_ZC_STATE="${CFG}" "${P}/install/zcshim" "$@"; }
 compile() { # SOURCE [EXTRA ARGS...] -> OUT, RC, ERR (environment: whatever the caller exported)
   local src=$1
@@ -103,6 +103,7 @@ direct() { local o="${P}/direct.$$.o"; "${P}/tc/fake-cc" -c "${P}/src/a.c" -o "$
 journal() { local j="${P}/job/roots/${1:-private}/fake-journal.log"; if [[ -f "${j}" ]]; then wc -l < "${j}" | tr -d ' '; else echo 0; fi; }
 flag() { cat -- "${P}/job/shim/degraded-${1:-private}" 2> /dev/null; }
 same_as_direct() { [[ -f "$1" ]] && cmp -s -- "$1" <(direct); }
+wait_for() { local i; for ((i = 0; i < 300; i++)); do [[ -e "$1" ]] && return 0; sleep 0.1; done; return 1; }
 
 # ---- install ----
 t_install_ok() {
@@ -113,6 +114,16 @@ t_install_ok() {
   check "install: receipt carries the toolchain digest" \
     [ "$(jq -r .toolchain_digest "${P}/install/install.json")" == "$(zc_digest "$(jq -c .toolchains "${P}/install/toolchains.json")")" ]
   check "install: zcshim installed" [ -x "${P}/install/zcshim" ]
+}
+t_install_tmp() {
+  new_pkg
+  mkdir "${P}/tmp"
+  TMPDIR="${P}/tmp" bash "${SCRIPT}" install "${P}/test.tar.gz" "${P}/test.tar.gz.provenance.json" "${P}/install" "${P}/toolchains.json" "${P}/wrappers.json" > /dev/null 2> "${P}/err"
+  check "install: leaves no temp folder behind" [ -z "$(ls -A "${P}/tmp")" ]
+  check "install: and prints no unbound-variable error at exit" bash -c '! grep -q unbound "$1"' _ "${P}/err"
+  printf 'x' >> "${P}/test.tar.gz"
+  TMPDIR="${P}/tmp" bash "${SCRIPT}" install "${P}/test.tar.gz" "${P}/test.tar.gz.provenance.json" "${P}/install2" "${P}/toolchains.json" "${P}/wrappers.json" > /dev/null 2>&1
+  check "install: nor after a refusal" [ -z "$(ls -A "${P}/tmp")" ]
 }
 t_install_archive() {
   new_pkg
@@ -178,7 +189,9 @@ t_init_qualified() {
   init_pkg 104857600
   check "init: qualified pairs turn on a private root" [ "$(jq -r .state "${CFG}")" == qualified ]
   check "init: artifact budget is 3/4 of the job budget" [ "$(jq -r .roots.private.artifact_budget_bytes "${CFG}")" == 78643200 ]
-  check "init: daemon recorded" [ "$(jq -r '.roots.private.daemon.pid | type' "${CFG}")" == number ]
+  check "init: the daemon recorded is the one zccache started" [ "$(jq -r .roots.private.daemon.pid "${CFG}")" == "$(cat "${P}/job/roots/private/fake-daemon.pid")" ]
+  check "init: shared roots off, a 60 s wrapper bound and the zccache version by default" \
+    jq -e '.shared_roots == false and .wrapper_timeout_seconds == 60 and .zccache_version == "1.15.6"' "${CFG}" > /dev/null
   check "init: runner env names the state and the CMake launchers" \
     grep -qx "CMAKE_C_COMPILER_LAUNCHER=${P}/install/zcshim" "${P}/job/state/runner.env"
   check "init: no RUSTC_WRAPPER without a qualified rustc pair, no ZCCACHE_* for jobs" \
@@ -197,6 +210,20 @@ t_init_env() {
   GH_TOKEN=synthetic-p13 HTTPS_PROXY=http://u:synthetic@proxy:3128 ZCCACHE_ENDPOINT=shared init_pkg
   check "init: the daemon gets no credentials or inherited ZCCACHE_* variables" \
     bash -c '! grep -Eq "(^| )(GH_TOKEN|HTTPS_PROXY|ZCCACHE_ENDPOINT) " "$1"' _ "${P}/job/roots/private/fake-env.log"
+}
+t_init_daemon_env() {
+  new_pkg
+  AAP_P13_CANARY=1 init_pkg
+  check "init: the daemon starts under env -i with the allowlist only" bash -c '! grep -q "AAP_P13_CANARY" "$1"' _ "${P}/job/roots/private/fake-env.log"
+  check "init: which keeps PATH" grep -q "PATH " "${P}/job/roots/private/fake-env.log"
+}
+t_init_args() {
+  new_pkg
+  install_pkg > /dev/null 2>&1
+  check "init: refuses a budget written with a leading zero" bash -c '! bash "$1" init "$2" "$3" 00 > /dev/null 2>&1' _ "${SCRIPT}" "${P}/install" "${P}/job"
+  check "init: refuses a wrapper bound of 0" bash -c '! bash "$1" init "$2" "$3" 1048576 --wrapper-timeout 0 > /dev/null 2>&1' _ "${SCRIPT}" "${P}/install" "${P}/job"
+  bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 --shared-roots --wrapper-timeout 7 > /dev/null
+  check "init: records --shared-roots and --wrapper-timeout" jq -e '.shared_roots == true and .wrapper_timeout_seconds == 7' "${CFG}" > /dev/null
 }
 t_init_boot_binary() {
   new_pkg
@@ -259,10 +286,16 @@ t_shim_direct_cases() {
 t_shim_env() {
   new_pkg
   init_pkg
-  ACTIONS_RUNTIME_TOKEN=synthetic DATABASE_URL=postgres://a:synthetic@db/x ZCCACHE_MODE=LINK ZCCACHE_ENDPOINT=x compile a.c
+  ACTIONS_RUNTIME_TOKEN=synthetic DATABASE_URL=postgres://a:synthetic@db/x ZCCACHE_MODE=LINK ZCCACHE_ENDPOINT=x ZCCACHE_PATH_REMAP=auto compile a.c
   check "shim: zccache gets no credentials or foreign ZCCACHE_* variables" \
-    bash -c '! tail -n 1 "$1" | grep -Eq "(^| )(ACTIONS_RUNTIME_TOKEN|DATABASE_URL|ZCCACHE_ENDPOINT) "' _ "${P}/job/roots/private/fake-env.log"
+    bash -c '! tail -n 1 "$1" | grep -Eq "(^| )(ACTIONS_RUNTIME_TOKEN|DATABASE_URL|ZCCACHE_ENDPOINT|ZCCACHE_PATH_REMAP) "' _ "${P}/job/roots/private/fake-env.log"
   check "shim: and always COPY mode" bash -c 'tail -n 1 "$1" | grep -q "MODE=COPY "' _ "${P}/job/roots/private/fake-env.log"
+  check "shim: with the explicit artifact budget" bash -c 'tail -n 1 "$1" | grep -q "SIZE=78643200$"' _ "${P}/job/roots/private/fake-env.log"
+  AAP_ZC_STATE="${CFG}" env 'ODD-TOKEN=synthetic' 'npm_config_//registry.example/:_authToken=synthetic' 'ODD-NAME=keep' \
+    "${P}/install/zcshim" "${P}/tc/fake-cc" -c "${P}/src/a.c" -o "${P}/odd.o" > /dev/null 2>&1
+  check "shim: drops secret-shaped names bash cannot hold as variables" \
+    bash -c '! tail -n 1 "$1" | grep -Eq "(^| )(ODD-TOKEN|npm_config_//registry.example/:_authToken) "' _ "${P}/job/roots/private/fake-env.log"
+  check "shim: and keeps the harmless ones" bash -c 'tail -n 1 "$1" | grep -q " ODD-NAME "' _ "${P}/job/roots/private/fake-env.log"
 }
 t_shim_hardlink() {
   new_pkg
@@ -339,6 +372,37 @@ t_shim_over_budget() {
   check "shim: stops using the root" [ "$(flag)" == over-budget ]
   check "shim: and deletes nothing from it" [ "$(find "${dir}" -type f | sort)" == "${before}" ]
 }
+t_shim_over_budget_total() {
+  new_pkg
+  init_pkg 4194304
+  local dir
+  dir=$(jq -r .roots.private.dir "${CFG}")
+  mkdir -p "${dir}/artifacts" && head -c 5242880 /dev/zero > "${dir}/artifacts/big"
+  compile a.c
+  check "shim: artifacts past the whole budget stop the root too" [ "$(flag)" == over-budget ]
+  check "shim: without calling zccache" [ "$(journal)" == 0 ]
+}
+t_shim_timeout() {
+  new_pkg
+  init_pkg 104857600 --wrapper-timeout 2
+  local t0=${SECONDS}
+  FAKE_ZC_HANG=20 compile a.c
+  local took=$((SECONDS - t0))
+  [[ -f "${P}/job/roots/private/fake-client.pid" ]] && kill "$(cat "${P}/job/roots/private/fake-client.pid")" 2> /dev/null
+  check "shim: a hung zccache call is killed at the bound" [ "${took}" -lt 15 ]
+  check "shim: and the compiler runs directly" same_as_direct "${OUT}"
+  check "shim: with its exit code" [ "${RC}" == 0 ]
+  check "shim: and the root is marked degraded" [ "$(flag)" == wrapper-timeout ]
+}
+t_shim_usage_unwritable() {
+  new_pkg
+  init_pkg
+  mkdir "${P}/job/shim/usage-private"
+  compile a.c
+  check "shim: a usage stamp it cannot write builds directly" same_as_direct "${OUT}"
+  check "shim: says nothing on the compile's stderr" [ -z "${ERR}" ]
+  check "shim: and records degraded" [ "$(flag)" == usage-unwritable ]
+}
 t_shim_flag() {
   new_pkg
   init_pkg
@@ -356,83 +420,127 @@ t_shim_log() {
 }
 
 # ---- attach ----
-binding() { # CLASS [RUNNER] [DIGEST] -> JSON
-  jq -cn --arg c "$1" --arg r "${2:-aap-l-1-7-0011aabb}" --arg d "${3:-$(jq -r .toolchain_digest "${CFG}")}" \
+binding() { # CLASS [RUNNER] [DIGEST] [VERSION] -> JSON
+  jq -cn --arg c "$1" --arg r "${2:-aap-l-1-7-0011aabb}" --arg d "${3:-$(jq -r .toolchain_digest "${CFG}")}" --arg v "${4:-1.15.6}" \
     '{schema: 1, runner_name: $r, root_id: "ns-00112233aabbccdd", budget_bytes: 52428800,
-      namespace: {repository_id: 4242, repository: "org/repo", trust_class: $c, platform: "linux-x86_64", toolchain_digest: $d}}'
+      namespace: {repository_id: 4242, repository: "org/repo", trust_class: $c, platform: "linux-x86_64", toolchain_digest: $d, zccache_version: $v}}'
 }
-mount_for() { # BINDING_JSON [MARKER_CLASS] -> mount dir
-  local m
+mount_for() { # BINDING_JSON [MARKER_NAMESPACE_OVERRIDE_JSON] -> mount dir
+  local m o
   m=$(mktemp -d "${P}/mount.XXXXXX")
-  jq -c --arg mc "${2:-}" '{schema: 1, root_id: .root_id, namespace: (.namespace + (if $mc == "" then {} else {trust_class: $mc} end))}' <<< "$1" > "${m}/aap-cache-root.json"
+  o=${2:-}
+  [[ -n "${o}" ]] || o='{}'
+  jq -c --argjson o "${o}" '{schema: 1, root_id: .root_id, namespace: (.namespace + $o)}' <<< "$1" > "${m}/aap-cache-root.json"
   echo "${m}"
 }
 attach() { # BINDING_JSON_OR_EMPTY MOUNT [RUNNER] -> reply JSON
   local b="${P}/binding.$$.${RANDOM}.json"
   [[ -n "$1" ]] && printf '%s' "$1" > "${b}"
-  bash "${SCRIPT}" attach "${P}/job" "${b}" "$2" "${3:-aap-l-1-7-0011aabb}"
+  bash "${SCRIPT}" attach "${P}/install" "${P}/job" "${b}" "$2" "${3:-aap-l-1-7-0011aabb}"
 }
 reason() { jq -r .reason <<< "$1"; }
 t_attach_ok() {
   new_pkg
-  init_pkg
+  init_pkg 104857600 --shared-roots
   local b m r
   b=$(binding trusted); m=$(mount_for "${b}")
   r=$(attach "${b}" "${m}")
   check "attach: a trusted root with a matching marker attaches" [ "$(jq -r .attached <<< "${r}")" == true ]
   check "attach: wrapped calls move to it" [ "$(jq -r .active_root "${CFG}")" == shared ]
-  check "attach: with its own daemon" [ "$(jq -r .roots.shared.daemon.pid "${CFG}")" != "$(jq -r .roots.private.daemon.pid "${CFG}")" ]
+  check "attach: the daemon recorded is the shared root's own" [ "$(jq -r .roots.shared.daemon.pid "${CFG}")" == "$(cat "${m}/root/fake-daemon.pid")" ]
   compile a.c
   check "attach: the compile lands in the shared root" [ "$(wc -l < "${m}/root/fake-journal.log" | tr -d ' ')" == 1 ]
   check "attach: and not the private one" [ "$(journal)" == 0 ]
-  r=$(attach "$(binding untrusted)" "$(mount_for "$(binding untrusted)")")
+  b=$(jq -c '.root_id = "ns-0000000000000002"' <<< "${b}")
+  r=$(attach "${b}" "$(mount_for "${b}")")
   check "attach: binds at most once" [ "$(reason "${r}")" == already-bound ]
+}
+t_attach_switch() {
+  new_pkg
+  init_pkg
+  local b m
+  b=$(binding trusted); m=$(mount_for "${b}")
+  check "attach: nothing unless init turned shared roots on" [ "$(reason "$(attach "${b}" "${m}")")" == shared-roots-off ]
+  check "attach: and no daemon touched the root" [ ! -e "${m}/root" ]
 }
 t_attach_untrusted() {
   new_pkg
-  init_pkg
-  local b m r
-  b=$(binding untrusted); m=$(mount_for "${b}" trusted)
-  r=$(attach "${b}" "${m}")
-  check "attach: an untrusted job never gets a trusted root" [ "$(reason "${r}")" == marker-mismatch ]
+  init_pkg 104857600 --shared-roots
+  local b m c
+  for c in 'untrusted {}' 'untrusted {"trust_class":"trusted"}' 'maybe {}'; do
+    b=$(binding "${c%% *}"); m=$(mount_for "${b}" "${c#* }")
+    check "attach: an untrusted job never gets a shared root (${c})" [ "$(reason "$(attach "${b}" "${m}")")" == not-trusted ]
+    compile a.c
+    check "attach: nothing touched that root (${c})" [ ! -e "${m}/root" ]
+  done
   check "attach: the job keeps its private root" [ "$(jq -r .active_root "${CFG}")" == private ]
-  compile a.c
-  check "attach: nothing touched the trusted root" [ ! -e "${m}/root" ]
 }
 t_attach_missing() {
   new_pkg
-  init_pkg
+  init_pkg 104857600 --shared-roots
   local b m
   b=$(binding trusted); m=$(mount_for "${b}")
   check "attach: no binding file means no shared root" [ "$(reason "$(attach "" "${m}")")" == binding-missing ]
   check "attach: a binding that is not JSON" [ "$(reason "$(attach "{not json" "${m}")")" == binding-missing ]
   check "attach: no namespace" [ "$(reason "$(attach "$(jq -c 'del(.namespace)' <<< "${b}")" "${m}")")" == binding-missing ]
   check "attach: no trust class" [ "$(reason "$(AAP_CACHE_TRUST_CLASS=trusted attach "$(jq -c 'del(.namespace.trust_class)' <<< "${b}")" "${m}")")" == binding-missing ]
+  check "attach: no zccache version" [ "$(reason "$(attach "$(jq -c 'del(.namespace.zccache_version)' <<< "${b}")" "${m}")")" == binding-missing ]
   check "attach: empty root id" [ "$(reason "$(attach "$(jq -c '.root_id = ""' <<< "${b}")" "${m}")")" == binding-missing ]
   check "attach: still private" [ "$(jq -r .active_root "${CFG}")" == private ]
 }
 t_attach_refusals() {
   new_pkg
-  init_pkg
-  local b
-  b=$(binding maybe)
-  check "attach: an unknown trust class" [ "$(reason "$(attach "${b}" "$(mount_for "${b}")")")" == trust-class-unknown ]
+  init_pkg 104857600 --shared-roots
+  local b m o
   b=$(binding trusted aap-l-2-9-ffffffff)
   check "attach: a binding for another runner" [ "$(reason "$(attach "${b}" "$(mount_for "${b}")")")" == runner-mismatch ]
   b=$(binding trusted aap-l-1-7-0011aabb "$(printf 'a%.0s' {1..64})")
   check "attach: a root made for other toolchains" [ "$(reason "$(attach "${b}" "$(mount_for "${b}")")")" == toolchain-mismatch ]
+  b=$(binding trusted aap-l-1-7-0011aabb "" 1.15.7)
+  check "attach: a root made for another zccache version" [ "$(reason "$(attach "${b}" "$(mount_for "${b}")")")" == toolchain-mismatch ]
   b=$(binding trusted)
-  local m
   m=$(mount_for "${b}")
   check "attach: a marker naming another root id" [ "$(reason "$(attach "$(jq -c '.root_id = "ns-ffffffffffffffff"' <<< "${b}")" "${m}")")" == marker-mismatch ]
+  for o in '{"trust_class":"untrusted"}' '{"zccache_version":"1.0.0"}'; do
+    check "attach: a marker naming ${o}" [ "$(reason "$(attach "${b}" "$(mount_for "${b}" "${o}")")")" == marker-mismatch ]
+  done
   if [[ ${MSYS} == 0 ]]; then
     mkdir "${P}/other" && ln -s "${P}/other" "${m}/root"
     check "attach: a root that is a symbolic link" [ "$(reason "$(attach "${b}" "${m}")")" == root-is-link ]
   fi
   new_pkg '[]'
-  init_pkg
+  init_pkg 104857600 --shared-roots
   b=$(binding trusted)
   check "attach: nothing qualified" [ "$(reason "$(attach "${b}" "$(mount_for "${b}")")")" == no-qualified-wrappers ]
+}
+t_attach_during_compile() {
+  new_pkg
+  init_pkg 104857600 --shared-roots
+  local b m r bg client
+  FAKE_ZC_HANG=60 compile a.c &
+  bg=$!
+  client="${P}/job/roots/private/fake-client.pid"
+  check "attach: a wrapped compile is running" wait_for "${client}"
+  b=$(binding trusted); m=$(mount_for "${b}")
+  r=$(attach "${b}" "${m}")
+  kill "$(cat "${client}")" 2> /dev/null
+  wait "${bg}"
+  check "attach: attaches while a wrapped compile runs" [ "$(jq -r .attached <<< "${r}")" == true ]
+  check "attach: and never takes the compile client for the shared daemon" [ "$(jq -r .roots.shared.daemon.pid "${CFG}")" == "$(cat "${m}/root/fake-daemon.pid")" ]
+}
+t_attach_ambiguous() {
+  new_pkg
+  init_pkg 104857600 --shared-roots
+  local b m stray
+  b=$(binding trusted); m=$(mount_for "${b}")
+  mkdir -p "${m}/root"
+  ZCCACHE_CACHE_DIR="${m}/root" "${P}/install/bin/zccache-daemon" 600 < /dev/null > /dev/null 2>&1 &
+  stray=$!
+  check "attach: an ambiguous daemon attaches nothing" [ "$(reason "$(attach "${b}" "${m}")")" == daemon-start-failed ]
+  sleep 0.3
+  check "attach: and stops every candidate" bash -c '! kill -0 "$1" 2> /dev/null && ! kill -0 "$2" 2> /dev/null' _ "${stray}" "$(cat "${m}/root/fake-daemon.pid")"
+  check "attach: the job keeps its private root" jq -e '.active_root == "private" and (.roots | has("shared") | not)' "${CFG}" > /dev/null
+  check "attach: no temp file left in state" [ -z "$(find "${P}/job/state" -name '*.tmp')" ]
 }
 
 # ---- state, classes, digest ----
@@ -442,6 +550,8 @@ t_state() {
   init_pkg
   check "state: direct, printable detail, byte counts" \
     jq -e '.state == "direct" and (.detail | test("^[ -~]{1,200}$")) and .bytes.private.budget == 104857600' <<< "$(zc_state "${P}/job")" > /dev/null
+  printf '{"a":1}' > "${P}/w.json"
+  check "zc_write: refuses empty content and keeps the file" bash -c 'source "$1"; ! printf "" | zc_write "$2" && [ "$(cat "$2")" == "{\"a\":1}" ]' _ "${SCRIPT}" "${P}/w.json"
 }
 t_classify() {
   local v compiler want got args=() a rsp
@@ -468,6 +578,7 @@ t_digest() {
 }
 
 run t_install_ok
+run t_install_tmp
 run t_install_archive LNX-ARCHIVE-HASH
 run t_install_provenance LNX-PROVENANCE
 run t_install_member LNX-MEMBER-HASH
@@ -477,24 +588,32 @@ run t_init_direct
 run t_init_qualified LNX-COPY-MODE LNX-BUDGET-SET
 run t_init_rustc
 run t_init_env LNX-ENV-SECRET LNX-ENV-ZCCACHE
+run t_init_daemon_env LNX-DAEMON-ENV
+run t_init_args
 run t_init_boot_binary LNX-BOOT-BINARY
 run t_init_boot_toolchain LNX-BOOT-TOOLCHAIN
 run t_init_job_link LNX-DIR-LINK
 run t_shim_cold_warm LNX-SHIM-QUALIFIED LNX-SHIM-DAEMON
 run t_shim_direct_cases LNX-SHIM-QUALIFIED
-run t_shim_env LNX-ENV-SECRET LNX-ENV-ZCCACHE LNX-COPY-MODE
+run t_shim_env LNX-ENV-SECRET LNX-ENV-ZCCACHE LNX-COPY-MODE LNX-BUDGET-SET
 run t_shim_hardlink LNX-COPY-MODE
 run t_shim_concurrent
 run t_shim_daemon_down LNX-SHIM-DAEMON LNX-DAEMON-ALIVE
 run t_shim_crash LNX-SHIM-FALLBACK
 run t_shim_toolchain_changed LNX-SHIM-TOOLCHAIN
 run t_shim_over_budget LNX-OVER-BUDGET
+run t_shim_over_budget_total LNX-OVER-BUDGET
+run t_shim_timeout LNX-SHIM-TIMEOUT
+run t_shim_usage_unwritable
 run t_shim_flag LNX-SHIM-FLAG
 run t_shim_log LNX-LOG-BOUND
 run t_attach_ok LNX-BIND-ONCE
-run t_attach_untrusted LNX-BIND-MARKER
+run t_attach_switch LNX-BIND-SWITCH
+run t_attach_untrusted LNX-BIND-CLASS
 run t_attach_missing LNX-BIND-MISSING
-run t_attach_refusals LNX-BIND-CLASS LNX-BIND-RUNNER LNX-BIND-TOOLCHAIN LNX-BIND-MARKER LNX-BIND-LINK
+run t_attach_refusals LNX-BIND-RUNNER LNX-BIND-TOOLCHAIN LNX-BIND-MARKER LNX-BIND-LINK
+run t_attach_during_compile LNX-DAEMON-ID
+run t_attach_ambiguous
 run t_state
 run t_classify
 run t_digest

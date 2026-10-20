@@ -18,6 +18,11 @@ $script:Platform = 'windows-x86_64'
 $script:SecretName = '(?i)token|secret|pass|credential|jit|jwt|private_?key|(^|_)(api_?)?key$|pem$|(^|_)(pat|auth)($|_)|_pwd$'
 $script:UrlCredential = '://[^/@\s]*:[^/@\s]*@'
 $script:Compilers = @('rustc', 'clang', 'clang++', 'clang-cl', 'cl', 'link', 'lld-link')
+# A shared root's namespace: binding, disk marker and the guest's own identity must agree on every field.
+$script:NamespaceKeys = @('repository_id', 'repository', 'trust_class', 'platform', 'toolchain_digest', 'zccache_version')
+# The compiler launcher runs zcshim.ps1 under PowerShell 7: Windows PowerShell 5.1's -File refuses a bare '-' argument
+# (a compiler reading stdin) before the script runs, which would fail the compile itself.
+$script:LauncherShell = $(if ($PSVersionTable.PSEdition -eq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe' })
 $script:LogLimit = 1MB
 $script:UsageEverySeconds = 30
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -47,13 +52,26 @@ function Test-AapZcLink([string]$Path) {
     return ($null -ne $i -and ([int]$i.Attributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0)
 }
 
-function Read-AapZcJson([string]$Path) { [IO.File]::ReadAllText($Path) | ConvertFrom-Json }
+# Read with every share mode, so a writer can replace the file while a shim is reading it.
+function Read-AapZcJson([string]$Path) {
+    $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    $fs = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
+    try { (New-Object IO.StreamReader($fs, $script:Utf8)).ReadToEnd() | ConvertFrom-Json } finally { $fs.Dispose() }
+}
 
-# Readers (the shim) see the old file or the new one, never half of one.
+# Readers (the shim) see the old file or the new one, never half of one. A reader that opened the file without
+# delete sharing (an older shim, antivirus) only delays the replacement.
 function Write-AapZcJson($Object, [string]$Path) {
     $tmp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
-    [IO.File]::WriteAllText($tmp, ($Object | ConvertTo-Json -Depth 8), $script:Utf8)
-    if ([IO.File]::Exists($Path)) { [IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [IO.File]::Move($tmp, $Path) }
+    try {
+        [IO.File]::WriteAllText($tmp, ($Object | ConvertTo-Json -Depth 8), $script:Utf8)
+        for ($i = 0; ; $i++) {
+            try {
+                if ([IO.File]::Exists($Path)) { [IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [IO.File]::Move($tmp, $Path) }
+                return
+            } catch { if ($i -ge 40) { throw }; Start-Sleep -Milliseconds 50 }
+        }
+    } finally { if ([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp) } }
 }
 
 function New-AapZcDir([string]$Path) {
@@ -94,31 +112,37 @@ function ConvertTo-AapZcArg([string]$Arg) {
     return $sb.ToString()
 }
 
-# Runs a program hidden. Output is streamed to this process (default) or captured (-Capture) as bytes.
+# Runs a program. -Capture: hidden, output captured as bytes, and with -TimeoutSeconds killed (TimedOut) when it runs
+# longer. Otherwise the program shares this process's console and standard handles, as a direct compiler must (the
+# shim always runs in a console, so no window appears).
 function Invoke-AapZcProcess {
-    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [System.Collections.IDictionary]$Environment, [switch]$Capture)
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [System.Collections.IDictionary]$Environment, [switch]$Capture, [int]$TimeoutSeconds = 0)
     $si = New-Object System.Diagnostics.ProcessStartInfo
     $si.FileName = $FilePath
     $si.Arguments = (@($Arguments | ForEach-Object { ConvertTo-AapZcArg $_ }) -join ' ')
     $si.UseShellExecute = $false
-    $si.CreateNoWindow = $true
-    $si.RedirectStandardOutput = $true
-    $si.RedirectStandardError = $true
+    $si.CreateNoWindow = [bool]$Capture
+    $si.RedirectStandardOutput = [bool]$Capture
+    $si.RedirectStandardError = [bool]$Capture
     if ($null -ne $Environment) {
         $si.EnvironmentVariables.Clear()
         foreach ($k in $Environment.Keys) { $si.EnvironmentVariables[[string]$k] = [string]$Environment[$k] }
     }
     $p = [System.Diagnostics.Process]::Start($si)
     try {
-        if ($Capture) { $out = New-Object IO.MemoryStream; $err = New-Object IO.MemoryStream }
-        else { $out = [Console]::OpenStandardOutput(); $err = [Console]::OpenStandardError() }
+        $r = [pscustomobject]@{ ExitCode = $null; TimedOut = $false; Stdout = $null; Stderr = $null }
+        if (-not $Capture) { $p.WaitForExit(); $r.ExitCode = $p.ExitCode; return $r }
+        $out = New-Object IO.MemoryStream; $err = New-Object IO.MemoryStream
         $t1 = $p.StandardOutput.BaseStream.CopyToAsync($out)
         $t2 = $p.StandardError.BaseStream.CopyToAsync($err)
-        $p.WaitForExit()
+        if (-not $p.WaitForExit($(if ($TimeoutSeconds -gt 0) { $TimeoutSeconds * 1000 } else { -1 }))) {
+            try { $p.Kill() } catch { $null = $_ }
+            $r.TimedOut = $true
+            return $r
+        }
         # A grandchild that inherited the pipes (a daemon this call started) must not hold the call open.
         [void]$t1.Wait(10000); [void]$t2.Wait(10000)
-        $r = [pscustomobject]@{ ExitCode = $p.ExitCode; Stdout = $null; Stderr = $null }
-        if ($Capture) { $r.Stdout = $out.ToArray(); $r.Stderr = $err.ToArray() } else { $out.Flush(); $err.Flush() }
+        $r.ExitCode = $p.ExitCode; $r.Stdout = $out.ToArray(); $r.Stderr = $err.ToArray()
         return $r
     } finally { $p.Dispose() }
 }
@@ -145,6 +169,11 @@ function Get-AapZcPlatform([string]$WrappersPath) {
     $plat = Get-AapZcProp (Get-AapZcProp $w 'platforms') $script:Platform
     if ($null -eq $plat) { throw "AAP_ZC_Wrappers: $WrappersPath has no $($script:Platform) entry" }
     [pscustomobject]@{ Version = $w.zccache.version; Platform = $plat }
+}
+
+# The installed zccache: always <install>\bin\<pinned member>, never a path from the job's config.
+function Get-AapZcBinary([string]$InstallDir) {
+    Join-Path (Join-Path $InstallDir 'bin') (Get-AapZcPlatform (Join-Path $InstallDir 'wrappers.json')).Platform.members[0].name
 }
 
 function Install-AapZcCache {
@@ -229,13 +258,26 @@ function Get-AapZcToolchainDigest($Toolchains) {
     Get-AapZcBytesHash ($script:Utf8.GetBytes(($lines -join "`n")))
 }
 
-# zccache processes running from the installed bin folder that started at or after $After.
-function Get-AapZcDaemonProcess([string]$BinDir, [datetime]$After, [int[]]$Exclude = @()) {
+# Every process with its executable, start time and command line (CIM gives command lines in both editions).
+function Get-AapZcProcessList {
+    foreach ($p in @(Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue)) {
+        [pscustomobject]@{ Id = [int]$p.ProcessId; Path = [string]$p.ExecutablePath; Start = $p.CreationDate; CommandLine = [string]$p.CommandLine }
+    }
+}
+
+# Daemon candidates for a root being primed: processes running from the installed bin folder, started at or after
+# $After, not a recorded daemon, and not a compile client. Every client the shim starts names a recorded compiler on
+# its command line, so a wrapped compile running during an attach is never taken for the new root's daemon.
+# ponytail: Windows cannot read another process's environment without native code; Linux matches the daemon by its
+# ZCCACHE_CACHE_DIR instead. The lab (P22) records the daemon's own command line, which can then be matched exactly.
+function Get-AapZcDaemonProcess([string]$BinDir, [datetime]$After, [int[]]$Exclude = @(), $Toolchains) {
     $prefix = $BinDir.TrimEnd('\') + '\'
-    foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
-        try {
-            if ($p.Path -and $p.Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and $p.StartTime -ge $After -and $Exclude -notcontains $p.Id) { $p }
-        } catch { $null = $_ }
+    $compilers = @($Toolchains | ForEach-Object { [string](Get-AapZcProp $_ 'path') } | Where-Object { $_ })
+    foreach ($p in @(Get-AapZcProcessList)) {
+        if (-not $p.Path -or -not $p.Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or $null -eq $p.Start -or $p.Start -lt $After -or $Exclude -contains $p.Id) { continue }
+        $line = [string]$p.CommandLine
+        if (@($compilers | Where-Object { $line.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count) { continue }  # SAFETY:WIN-DAEMON-ID
+        $p
     }
 }
 
@@ -247,40 +289,50 @@ function Test-AapZcDaemonAlive($Daemon) {
 
 # Starts the root's daemon from this (the agent's) environment, never from a job step. zccache starts its daemon on
 # demand (README 379-381); an empty journaled session is the documented call that does it. To confirm in lab.
-function Start-AapZcDaemon($Config, [string]$RootId) {
+function Start-AapZcDaemon($Config, [string]$RootId, [string]$InstallDir) {
     $root = Get-AapZcProp $Config.roots $RootId
     New-AapZcDir ([string]$root.dir)
+    $zc = Get-AapZcBinary $InstallDir
     $before = [DateTime]::Now.AddSeconds(-2)
     $envVars = Get-AapZcChildEnv $root
     $journal = Join-Path $Config.job_root ('state\prime-' + $RootId + '.jsonl')
-    $r = Invoke-AapZcProcess -FilePath $Config.zccache -Arguments @('session-start', '--journal', $journal) -Environment $envVars -Capture
-    if ($r.ExitCode -ne 0) { return $false }
+    $r = Invoke-AapZcProcess -FilePath $zc -Arguments @('session-start', '--journal', $journal) -Environment $envVars -Capture -TimeoutSeconds 60
     $sid = $null
-    try { $sid = ($script:Utf8.GetString($r.Stdout) | ConvertFrom-Json).session_id } catch { $null = $_ }
-    if ($sid) { $null = Invoke-AapZcProcess -FilePath $Config.zccache -Arguments @('session-end', [string]$sid) -Environment $envVars -Capture }
+    if ($r.ExitCode -eq 0) { try { $sid = ($script:Utf8.GetString($r.Stdout) | ConvertFrom-Json).session_id } catch { $null = $_ } }
+    if ($sid) { $null = Invoke-AapZcProcess -FilePath $zc -Arguments @('session-end', [string]$sid) -Environment $envVars -Capture -TimeoutSeconds 60 }
     $names = $(if ($Config.roots -is [System.Collections.IDictionary]) { @($Config.roots.Keys) } else { @($Config.roots.PSObject.Properties | ForEach-Object { $_.Name }) })
     $known = @(foreach ($n in $names) { $k = Get-AapZcProp (Get-AapZcProp $Config.roots $n) 'daemon'; if ($k) { [int](Get-AapZcProp $k 'pid') } })
-    $d = @(Get-AapZcDaemonProcess -BinDir (Split-Path -Parent $Config.zccache) -After $before -Exclude $known) | Select-Object -First 1
-    if (-not $d) { return $false }
-    Set-AapZcProp $root 'daemon' ([ordered]@{ pid = $d.Id; start = $d.StartTime.ToUniversalTime().Ticks })
+    $d = @(Get-AapZcDaemonProcess -BinDir (Split-Path -Parent $zc) -After $before -Exclude $known -Toolchains (Get-AapZcProp $Config 'toolchains'))
+    $p = $(if ($r.ExitCode -eq 0 -and $d.Count -eq 1) { Get-Process -Id $d[0].Id -ErrorAction SilentlyContinue })
+    if (-not $p) {
+        # A failed start, or none or several candidates: stop every candidate rather than leave an unrecorded daemon on a
+        # root this job will not use.
+        foreach ($x in $d) { Stop-Process -Id $x.Id -Force -ErrorAction SilentlyContinue }
+        return $false
+    }
+    Set-AapZcProp $root 'daemon' ([ordered]@{ pid = $p.Id; start = $p.StartTime.ToUniversalTime().Ticks })
     return $true
 }
 
 function Get-AapZcConfigPath([string]$JobRoot) { Join-Path $JobRoot 'state\config.json' }
 
 function Initialize-AapZcJob {
-    <# Guest agent, before the Actions runner starts. BudgetBytes is this job's whole cache allowance on the scratch disk
-       (artifacts, index, metadata, logs, temp). Returns the config; writes state\config.json and state\runner.env (KEY=VALUE
-       lines P14 merges into the runner's environment; empty when nothing is qualified). #>
+    <# Guest agent, before the Actions runner starts. BudgetBytes is the private root's allowance on the scratch disk
+       (artifacts, index, metadata, zccache's logs and temp); state\ and shim\ come on top (README). Returns the config;
+       writes state\config.json and state\runner.env (KEY=VALUE lines P14 merges into the runner's environment; empty
+       when nothing is qualified). SharedRoots lets Connect-AapZcSharedRoot attach a host root at all; it stays off
+       until the lab proof for shared roots exists (P04/P22). WrapperTimeoutSeconds bounds each wrapped zccache call. #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$InstallDir, [Parameter(Mandatory)][string]$JobRoot, [Parameter(Mandatory)][long]$BudgetBytes)
+    param([Parameter(Mandatory)][string]$InstallDir, [Parameter(Mandatory)][string]$JobRoot, [Parameter(Mandatory)][long]$BudgetBytes,
+        [switch]$SharedRoots, [ValidateRange(1, 3600)][int]$WrapperTimeoutSeconds = 60)
     New-AapZcDir $JobRoot
     foreach ($d in 'state', 'roots', 'shim') { New-AapZcDir (Join-Path $JobRoot $d) }
     $w = Get-AapZcPlatform (Join-Path $InstallDir 'wrappers.json')
     $artifactBudget = [long][Math]::Floor($BudgetBytes * 3 / 4)
     $cfg = [ordered]@{
-        schema = 1; platform = $script:Platform; install_dir = $InstallDir; job_root = $JobRoot
-        zccache = Join-Path (Join-Path $InstallDir 'bin') $w.Platform.members[0].name; state = 'direct'; detail = 'no qualified compiler and invocation pair'
+        schema = 1; platform = $script:Platform; install_dir = $InstallDir; job_root = $JobRoot; zccache_version = [string]$w.Version
+        shared_roots = [bool]$SharedRoots; wrapper_timeout_seconds = $WrapperTimeoutSeconds
+        state = 'direct'; detail = 'no qualified compiler and invocation pair'
         toolchains = @(); toolchain_digest = $null; qualified = @(); active_root = 'private'
         roots = [ordered]@{ private = [ordered]@{ dir = Join-Path $JobRoot 'roots\private'; budget_bytes = $BudgetBytes; artifact_budget_bytes = $artifactBudget; daemon = $null } }
     }
@@ -300,15 +352,16 @@ function Initialize-AapZcJob {
         $cfg.toolchain_digest = Get-AapZcToolchainDigest $active
         $cfg.qualified = @($w.Platform.qualified | Where-Object { $q = $_; @($active | Where-Object { $_.compiler -eq $q.compiler -and $_.compiler_version -eq $q.compiler_version }).Count })
         $cc = @($cfg.qualified | Where-Object { $_.compiler -ne 'rustc' })
-        if ($cfg.qualified.Count) {
-            if (Start-AapZcDaemon ([pscustomobject]$cfg) 'private') {
+        # ponytail: rustc rows get no RUSTC_WRAPPER here: it needs one executable, and a .cmd launcher mangles
+        # arguments; P14 ships a native launcher (INTEGRATION.md, gap G3) before a Windows rustc row is qualified.
+        if ($cfg.qualified.Count -and -not $cc.Count) { $cfg.detail = 'only rustc pairs are qualified; RUSTC_WRAPPER needs the native launcher (G3)' }
+        elseif ($cc.Count -and -not [IO.File]::Exists($script:LauncherShell)) { $cfg.detail = 'the compiler launcher needs PowerShell 7' }
+        elseif ($cc.Count) {
+            if (Start-AapZcDaemon ([pscustomobject]$cfg) 'private' $InstallDir) {
                 $cfg.state = 'qualified'; $cfg.detail = '{0} qualified pairs' -f $cfg.qualified.Count
-                $shell = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' })
-                $launcher = '{0};-NoProfile;-NonInteractive;-ExecutionPolicy;Bypass;-File;{1}' -f $shell, (Join-Path $InstallDir 'zcshim.ps1')
+                $launcher = '{0};-NoProfile;-NonInteractive;-ExecutionPolicy;Bypass;-File;{1}' -f $script:LauncherShell, (Join-Path $InstallDir 'zcshim.ps1')
                 $envLines.Add('AAP_ZC_STATE=' + (Get-AapZcConfigPath $JobRoot))
-                if ($cc.Count) { $envLines.Add('CMAKE_C_COMPILER_LAUNCHER=' + $launcher); $envLines.Add('CMAKE_CXX_COMPILER_LAUNCHER=' + $launcher) }
-                # ponytail: rustc rows get no RUSTC_WRAPPER here: it needs a single executable path and a .cmd launcher
-                # mangles arguments; add a native launcher (INTEGRATION.md, gap G3) before qualifying rustc on Windows.
+                $envLines.Add('CMAKE_C_COMPILER_LAUNCHER=' + $launcher); $envLines.Add('CMAKE_CXX_COMPILER_LAUNCHER=' + $launcher)
             } else { $cfg.state = 'degraded'; $cfg.detail = 'daemon did not start; compilers run directly' }
         }
     }
@@ -318,12 +371,14 @@ function Initialize-AapZcJob {
 }
 
 function Connect-AapZcSharedRoot {
-    <# Guest agent, when the host binds a shared root (INTEGRATION.md). BindingPath is the record the agent received over the
-       management transport; MountPath is where the agent mounted the root disk the host attached; RunnerName is this VM's
-       name. Nothing is read from the environment. Returns [pscustomobject]@{ Attached; Reason }; on any refusal the job
-       keeps its private root. #>
+    <# Guest agent, when the host binds a shared root (INTEGRATION.md). InstallDir is the cache install; BindingPath is
+       the record the agent received over the management transport; MountPath is where the agent mounted the root disk
+       the host attached; RunnerName is this VM's name. Nothing is read from the environment. Only a trusted binding is
+       ever attached, and only when Initialize-AapZcJob turned shared roots on. Returns
+       [pscustomobject]@{ Attached; Reason }; on any refusal the job keeps its private root. #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$JobRoot, [Parameter(Mandatory)][string]$BindingPath, [Parameter(Mandatory)][string]$MountPath, [Parameter(Mandatory)][string]$RunnerName)
+    param([Parameter(Mandatory)][string]$InstallDir, [Parameter(Mandatory)][string]$JobRoot, [Parameter(Mandatory)][string]$BindingPath,
+        [Parameter(Mandatory)][string]$MountPath, [Parameter(Mandatory)][string]$RunnerName)
     $cfgPath = Get-AapZcConfigPath $JobRoot
     $cfg = Read-AapZcJson $cfgPath
     $reason = $null
@@ -332,13 +387,15 @@ function Connect-AapZcSharedRoot {
     $ns = Get-AapZcProp $b 'namespace'
     $budget = 0L
     try { $budget = [long](Get-AapZcProp $b 'budget_bytes') } catch { $budget = 0L }
-    if ($cfg.state -ne 'qualified') { $reason = 'no-qualified-wrappers' }
+    if ((Get-AapZcProp $cfg 'state') -ne 'qualified') { $reason = 'no-qualified-wrappers' }
+    elseif ((Get-AapZcProp $cfg 'shared_roots') -ne $true) { $reason = 'shared-roots-off' }  # SAFETY:WIN-BIND-SWITCH
     elseif ($null -ne (Get-AapZcProp $cfg.roots 'shared')) { $reason = 'already-bound' }  # SAFETY:WIN-BIND-ONCE
     elseif ($null -eq $b -or (Get-AapZcProp $b 'schema') -ne 1 -or $null -eq $ns -or [string]::IsNullOrEmpty([string](Get-AapZcProp $b 'root_id')) -or
-        @('repository_id', 'repository', 'trust_class', 'platform', 'toolchain_digest' | Where-Object { [string]::IsNullOrEmpty([string](Get-AapZcProp $ns $_)) }).Count) { $reason = 'binding-missing' }  # SAFETY:WIN-BIND-MISSING
-    elseif (@('trusted', 'untrusted') -notcontains [string](Get-AapZcProp $ns 'trust_class')) { $reason = 'trust-class-unknown' }  # SAFETY:WIN-BIND-CLASS
+        @($script:NamespaceKeys | Where-Object { [string]::IsNullOrEmpty([string](Get-AapZcProp $ns $_)) }).Count) { $reason = 'binding-missing' }  # SAFETY:WIN-BIND-MISSING
+    elseif ([string](Get-AapZcProp $ns 'trust_class') -cne 'trusted') { $reason = 'not-trusted' }  # SAFETY:WIN-BIND-CLASS
     elseif ([string](Get-AapZcProp $b 'runner_name') -cne $RunnerName) { $reason = 'runner-mismatch' }  # SAFETY:WIN-BIND-RUNNER
-    elseif ([string](Get-AapZcProp $ns 'platform') -ne $script:Platform -or [string](Get-AapZcProp $ns 'toolchain_digest') -ne [string]$cfg.toolchain_digest) { $reason = 'toolchain-mismatch' }  # SAFETY:WIN-BIND-TOOLCHAIN
+    elseif ([string](Get-AapZcProp $ns 'platform') -ne $script:Platform -or [string](Get-AapZcProp $ns 'toolchain_digest') -ne [string](Get-AapZcProp $cfg 'toolchain_digest') -or
+        [string](Get-AapZcProp $ns 'zccache_version') -cne [string](Get-AapZcPlatform (Join-Path $InstallDir 'wrappers.json')).Version) { $reason = 'toolchain-mismatch' }  # SAFETY:WIN-BIND-TOOLCHAIN
     elseif ((Test-AapZcLink $MountPath) -or (Test-AapZcLink (Join-Path $MountPath 'root'))) { $reason = 'root-is-link' }  # SAFETY:WIN-BIND-LINK
     elseif ($budget -le 0) { $reason = 'budget-invalid' }
     else {
@@ -346,15 +403,15 @@ function Connect-AapZcSharedRoot {
         try { $marker = Read-AapZcJson (Join-Path $MountPath 'aap-cache-root.json') } catch { $marker = $null }
         $mns = Get-AapZcProp $marker 'namespace'
         $same = ($null -ne $mns -and [string](Get-AapZcProp $marker 'root_id') -ceq [string](Get-AapZcProp $b 'root_id'))
-        foreach ($k in 'repository_id', 'repository', 'trust_class', 'platform', 'toolchain_digest') {
+        foreach ($k in $script:NamespaceKeys) {
             if ($same -and [string](Get-AapZcProp $mns $k) -cne [string](Get-AapZcProp $ns $k)) { $same = $false }
         }
         if (-not $same) { $reason = 'marker-mismatch' }  # SAFETY:WIN-BIND-MARKER
     }
     if (-not $reason) {
         Set-AapZcProp $cfg.roots 'shared' ([pscustomobject]@{ dir = Join-Path $MountPath 'root'; budget_bytes = $budget
-                artifact_budget_bytes = [long][Math]::Floor($budget * 3 / 4); daemon = $null; root_id = [string]$b.root_id; trust_class = [string]$ns.trust_class })
-        if (Start-AapZcDaemon $cfg 'shared') { $cfg.active_root = 'shared' }
+                artifact_budget_bytes = [long][Math]::Floor($budget * 3 / 4); daemon = $null; root_id = [string]$b.root_id; trust_class = 'trusted' })
+        if (Start-AapZcDaemon $cfg 'shared' $InstallDir) { $cfg.active_root = 'shared' }
         else { $cfg.roots.PSObject.Properties.Remove('shared'); $reason = 'daemon-start-failed' }
     }
     Set-AapZcProp $cfg 'last_bind' ([ordered]@{ attached = (-not $reason); reason = $reason })
@@ -428,7 +485,7 @@ function Get-AapZcInvocation {
             $compile = $false; $pch = $false
             for ($i = 0; $i -lt $t.Count; $i++) {
                 $a = $t[$i]
-                if ($a -cin @('-E', '-S', '-M', '-MM', '-fsyntax-only', '-###', '--version', '-dumpversion', '-dumpmachine') -or $a -clike '-print-*') { return $null }
+                if ($a -cin @('-', '-E', '-S', '-M', '-MM', '-fsyntax-only', '-###', '--version', '-dumpversion', '-dumpmachine') -or $a -clike '-print-*') { return $null }
                 if ($a -ceq '-c') { $compile = $true }
                 if (($a -ceq '-x' -and $i + 1 -lt $t.Count -and $t[$i + 1] -like '*-header') -or $a -clike '-x*-header') { $pch = $true }
                 if ($a -cin @('-MD', '-MMD', '-MT', '-MQ') -or $a -clike '-MF*') { $classes.Add('depfile') }
@@ -526,7 +583,10 @@ function Get-AapZcDecision([string]$ConfigPath, [string]$Compiler, [string[]]$Ar
 }
 
 function Invoke-AapZcShim {
-    param([string]$ConfigPath, [string[]]$Argv)
+    <# ConfigPath: AAP_ZC_STATE. InstallDir: the folder zcshim.ps1 runs from; zccache is always its bin\ member.
+       Argv: the compiler and its arguments exactly as the caller passed them (zcshim.ps1 takes them from the process
+       command line, not from PowerShell's parameter parsing). #>
+    param([string]$ConfigPath, [string]$InstallDir, [string[]]$Argv)
     if (-not $Argv -or $Argv.Count -lt 1) { [Console]::Error.WriteLine('zcshim: usage: zcshim <compiler> [arguments]'); return 2 }
     $compiler = $Argv[0]
     $rest = @($Argv | Select-Object -Skip 1)
@@ -535,18 +595,25 @@ function Invoke-AapZcShim {
     $exe = $(if ($d.Path) { $d.Path } else { $compiler })
     if ($d.Mode -eq 'zccache') {
         $r = $null
-        try { $r = Invoke-AapZcProcess -FilePath $d.Config.zccache -Arguments (@($exe) + $rest) -Environment (Get-AapZcChildEnv $d.Root) -Capture } catch { $r = $null }
-        if ($null -ne $r -and $r.ExitCode -eq 0) {
+        $timeout = [int](Get-AapZcProp $d.Config 'wrapper_timeout_seconds')
+        if ($timeout -le 0) { $timeout = 60 }
+        try {
+            $r = Invoke-AapZcProcess -FilePath (Get-AapZcBinary $InstallDir) -Arguments (@($exe) + $rest) -Environment (Get-AapZcChildEnv $d.Root) -Capture -TimeoutSeconds $timeout  # SAFETY:WIN-SHIM-TIMEOUT
+        } catch { $r = $null }
+        if ($null -ne $r -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
             $o = [Console]::OpenStandardOutput(); $o.Write($r.Stdout, 0, $r.Stdout.Length); $o.Flush()
             $e = [Console]::OpenStandardError(); $e.Write($r.Stderr, 0, $r.Stderr.Length); $e.Flush()
             Write-AapZcLog $d.Config ('zccache {0} exit 0' -f [IO.Path]::GetFileName($exe))
             return 0
         }
         # Any zccache failure, a compile error included, is answered by the direct compiler: its exit code and output
-        # are the build's (contract rule 7). The wrapped call's output is dropped so errors are not reported twice.
+        # are the build's (contract rule 7). The wrapped call's output is dropped so errors are not reported twice, and a
+        # compile error costs two compiler runs. A call that ran past the bound marks the root degraded either way.
         $code = (Invoke-AapZcProcess -FilePath $exe -Arguments $rest).ExitCode  # SAFETY:WIN-SHIM-FALLBACK
-        if ($code -eq 0) { Set-AapZcDegraded $d.Config $d.RootId 'wrapper-failure' }
-        Write-AapZcLog $d.Config ('fallback {0} zccache-exit {1} direct-exit {2}' -f [IO.Path]::GetFileName($exe), $(if ($r) { $r.ExitCode } else { 'none' }), $code)
+        $timedOut = ($null -ne $r -and $r.TimedOut)
+        if ($timedOut) { Set-AapZcDegraded $d.Config $d.RootId 'wrapper-timeout' }
+        elseif ($code -eq 0) { Set-AapZcDegraded $d.Config $d.RootId 'wrapper-failure' }
+        Write-AapZcLog $d.Config ('fallback {0} zccache-exit {1} direct-exit {2}' -f [IO.Path]::GetFileName($exe), $(if ($timedOut) { 'timeout' } elseif ($r) { $r.ExitCode } else { 'none' }), $code)
         return $code
     }
     try { $code = (Invoke-AapZcProcess -FilePath $exe -Arguments $rest).ExitCode }

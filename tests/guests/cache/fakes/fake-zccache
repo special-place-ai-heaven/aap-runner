@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Fake zccache for the P13 tests; the same model as fake-zccache.ps1 (the key leaves out the -o name). The fake
-# daemon is zccache-daemon beside this file (the tests copy `sleep` there), so the real discovery finds it by its path.
+# daemon is zccache-daemon beside this file (the tests copy `sleep` there), so the real discovery finds it by its path
+# and its environment. FAKE_ZC_HANG=SECONDS turns a compile call into a hung client: it records its pid in
+# fake-client.pid and becomes zccache-daemon (a process from the bin folder, like a real client) for that long.
 root=${ZCCACHE_CACHE_DIR:?}
 mkdir -p "${root}/artifacts"
-printf '%s MODE=%s SIZE=%s\n' "$(compgen -e | sort | tr '\n' ' ')" "${ZCCACHE_MODE:-}" "${ZCCACHE_CACHE_SIZE_BYTES:-}" >> "${root}/fake-env.log"
+names=$(env -0 | while IFS= read -r -d '' kv; do printf '%s\n' "${kv%%=*}"; done | sort | tr '\n' ' ')
+printf '%s MODE=%s SIZE=%s\n' "${names}" "${ZCCACHE_MODE:-}" "${ZCCACHE_CACHE_SIZE_BYTES:-}" >> "${root}/fake-env.log"
 [[ "${FAKE_ZC_CRASH:-}" == 1 ]] && exit 139
 case "$1" in
   session-start)
@@ -16,6 +19,10 @@ case "$1" in
     exit 0 ;;
   session-end) exit 0 ;;
 esac
+if [[ -n "${FAKE_ZC_HANG:-}" ]]; then
+  echo $$ > "${root}/fake-client.pid"
+  exec "$(dirname "$0")/zccache-daemon" "${FAKE_ZC_HANG}"
+fi
 cc=$1; shift
 out="" in="" args=("$@") keyargs=()
 for ((i = 0; i < ${#args[@]}; i++)); do
