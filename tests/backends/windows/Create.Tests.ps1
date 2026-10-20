@@ -87,7 +87,9 @@ Describe 'trusted roots only' {
     It 'an owner outside the trusted SIDs is a problem' -Tag 'root-owner' {
         $w = New-WinWorld
         $B = New-WinBackend $w
-        $B.TrustedSids = @('S-1-5-18', 'S-1-5-32-544')   # the test user, who owns the test roots, no longer trusted
+        # Whoever owns the test roots is no longer trusted: the user when the session is not elevated, Administrators (the
+        # default owner of an elevated token's files, as on the hosted runner) when it is. Only SYSTEM stays trusted.
+        $B.TrustedSids = @('S-1-5-18')
         $p = @(Get-AapWinStorageProblem -Backend $B)
         @($p | Where-Object { $_ -like 'clone_root: owner * is not an admin: *' }).Count | Should -Be 1
     }
@@ -146,7 +148,7 @@ Describe 'the base' {
         $w = New-WinWorld
         $B = New-WinBackend $w
         Invoke-WinInModule { param($B, $p) Get-AapWinSealedProblem $B $p } @($B, $w.BaseFile) | Should -BeNullOrEmpty
-        $B.TrustedSids = @('S-1-5-18', 'S-1-5-32-544')   # the test user owns the test base
+        $B.TrustedSids = @('S-1-5-18')   # the owner of the test base (the user, or Administrators when elevated) is no longer trusted
         Invoke-WinInModule { param($B, $p) Get-AapWinSealedProblem $B $p } @($B, $w.BaseFile) | Should -BeLike 'owner * is not an admin: *'
     }
 
@@ -412,7 +414,13 @@ Describe 'offline disk helpers (the production provider uses them)' {
         $m = Get-Module AapWinBackend
         (& $m { New-AapWinSecurity $true $true }).GetSecurityDescriptorSddlForm('Access') | Should -BeExactly 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
         (& $m { New-AapWinSecurity $false $true }).GetSecurityDescriptorSddlForm('Access') | Should -BeExactly 'D:P(A;;FA;;;SY)(A;;FA;;;BA)'
-        (& $m { New-AapWinSecurity $false $false }).GetSecurityDescriptorSddlForm('Access') | Should -BeExactly "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;$($script:UserSid))"
+        # Not an SDDL string comparison: the SDDL writer renders the built-in Administrator (RID 500, the hosted runner's user)
+        # as the alias LA, not as its SID, so compare the protected flag and each ACE's type, SID, mask and flags.
+        $sddl = (& $m { New-AapWinSecurity $false $false }).GetSecurityDescriptorSddlForm('Access')
+        $raw = New-Object Security.AccessControl.RawSecurityDescriptor $sddl
+        ([int]$raw.ControlFlags -band 0x1000) | Should -Be 0x1000
+        @($raw.DiscretionaryAcl | ForEach-Object { '{0}|{1}|{2:x}|{3}' -f $_.AceType, $_.SecurityIdentifier.Value, $_.AccessMask, [int]$_.AceFlags }) |
+            Should -Be @('AccessAllowed|S-1-5-18|1f01ff|0', 'AccessAllowed|S-1-5-32-544|1f01ff|0', "AccessAllowed|$($script:UserSid)|1f01ff|0")
     }
 
     It 'takes the Windows partition only from the EFI, MSR, data layout' -Tag 'disk-layout' {
