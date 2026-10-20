@@ -1,0 +1,61 @@
+name: aap parity file commands (linux)
+description: >-
+  Step-to-step Actions behaviour on Linux: GITHUB_ENV (single and multiline), GITHUB_PATH, GITHUB_OUTPUT and
+  GITHUB_STEP_SUMMARY written from bash, sh, pwsh and python steps, working-directory, and an env var a step sets for
+  itself. The last step verifies everything and writes $RUNNER_TEMP/aap-parity-file-commands.json, which the workload
+  actions/linux/file-commands checks. Use it in the same job before parity/workloads/linux/invoke-workloads.sh.
+outputs:
+  value:
+    description: The value the python step wrote to GITHUB_OUTPUT.
+    value: ${{ steps.out.outputs.value }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        echo "PARITY_FROM_BASH=bash-ok" >> "$GITHUB_ENV"
+        {
+          echo 'PARITY_MULTI<<AAP_PARITY_EOF'
+          echo 'line1'
+          echo 'line2'
+          echo 'AAP_PARITY_EOF'
+        } >> "$GITHUB_ENV"
+        bin="$RUNNER_TEMP/aap-parity-fc-bin"
+        mkdir -p "$bin"
+        printf '#!/bin/sh\necho parity-path-ok\n' > "$bin/aap-parity-fc-tool"
+        chmod +x "$bin/aap-parity-fc-tool"
+        echo "$bin" >> "$GITHUB_PATH"
+    - shell: sh
+      run: echo "PARITY_FROM_SH=sh-ok" >> "$GITHUB_ENV"
+    - shell: pwsh
+      run: |
+        "PARITY_FROM_PWSH=pwsh-ok" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+    - id: out
+      shell: python
+      run: |
+        import os
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write("value=out-ok\n")
+        with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+            f.write("### aap parity file commands\n")
+    - shell: bash
+      working-directory: ${{ runner.temp }}
+      env:
+        PARITY_STEP_OUTPUT: ${{ steps.out.outputs.value }}
+      run: |
+        # each step has its own GITHUB_STEP_SUMMARY file: this step's append must read back
+        echo "aap parity file commands verified" >> "$GITHUB_STEP_SUMMARY"
+        check() { if eval "$1"; then echo true; else echo false; fi; }
+        env_bash=$(check '[ "${PARITY_FROM_BASH:-}" = bash-ok ]')
+        env_sh=$(check '[ "${PARITY_FROM_SH:-}" = sh-ok ]')
+        env_pwsh=$(check '[ "${PARITY_FROM_PWSH:-}" = pwsh-ok ]')
+        env_multiline=$(check '[ "${PARITY_MULTI:-}" = "$(printf "line1\nline2")" ]')
+        path=$(check '[ "$(aap-parity-fc-tool 2> /dev/null)" = parity-path-ok ]')
+        output=$(check '[ "${PARITY_STEP_OUTPUT:-}" = out-ok ]')
+        summary=$(check 'grep -q "aap parity file commands verified" "$GITHUB_STEP_SUMMARY"')
+        working_dir=$(check '[ "$(pwd -P)" = "$(cd "$RUNNER_TEMP" && pwd -P)" ]')
+        printf '{"run_id": "%s", "run_attempt": "%s", "checks": {"env_bash": %s, "env_sh": %s, "env_pwsh": %s, "env_multiline": %s, "path": %s, "output": %s, "summary": %s, "working_dir": %s}}\n' \
+          "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$env_bash" "$env_sh" "$env_pwsh" "$env_multiline" "$path" "$output" "$summary" "$working_dir" \
+          > "$RUNNER_TEMP/aap-parity-file-commands.json"
+        # no failing exit here: the workload actions/linux/file-commands judges the marker
+        cat "$RUNNER_TEMP/aap-parity-file-commands.json"

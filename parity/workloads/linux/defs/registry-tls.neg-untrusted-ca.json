@@ -1,0 +1,25 @@
+{
+  "id": "linux/registry-tls.neg-untrusted-ca",
+  "description": "Negative control: curl to the local TLS server without its CA must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/registry-tls/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/registry-tls.neg-untrusted-ca",
+      "--sabotage",
+      "untrusted-ca"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "curl exited with code 60: curl: (60) SSL certificate"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

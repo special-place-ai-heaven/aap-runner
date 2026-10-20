@@ -1,0 +1,26 @@
+{
+  "id": "linux/rust",
+  "description": "cargo test, release build and run offline; build.rs compiles C with cc/ar and links it; ELF-inspected.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/rust/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/rust"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "826abc092f58de1782a9612058bf16e478e479c8c969a0540b83e40fb80b1303"
+  }
+}

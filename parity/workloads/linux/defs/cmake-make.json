@@ -1,0 +1,28 @@
+{
+  "id": "linux/cmake-make",
+  "description": "CMake + Unix Makefiles with the default compilers: configure, build, ctest, cpack TGZ, package read back.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/cmake/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/cmake-make",
+      "--generator",
+      "make"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "cb5014404560d78fafd8a3b2850432e8f0f5618c35fd4dc51996003d1edebc84"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "linux/node-addon",
+  "description": "Node-API addon compiled with gcc against the installed Node.js headers, loaded by node; ELF-inspected.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/node-addon/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/node-addon"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "18912f491660b27e92d5ee8bbb7d1912959b867bcde2a642671906c64221a072"
+  }
+}

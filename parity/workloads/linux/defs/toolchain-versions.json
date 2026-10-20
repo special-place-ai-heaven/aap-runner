@@ -1,0 +1,20 @@
+{
+  "id": "linux/toolchain-versions",
+  "description": "Every build tool on PATH reports the inventory version (compilers, Rust, Go, Node, Python, Java, .NET, shells, Git).",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/versions/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/toolchain-versions"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

@@ -1,0 +1,412 @@
+{
+ "schema": 1,
+ "kind": "p18-workload-summary",
+ "profile": "ubuntu-24.04",
+ "image": {
+  "ImageOS": "ubuntu24",
+  "ImageVersion": "20261012.334.1",
+  "RUNNER_ENVIRONMENT": "github-hosted",
+  "os": "Ubuntu 24.04.5 LTS kernel 6.17.0-1022-azure",
+  "imagedata": [
+   {
+    "group": "Operating System",
+    "detail": "Ubuntu\n24.04.5\nLTS"
+   },
+   {
+    "group": "Runner Image",
+    "detail": "Image: ubuntu-24.04\nVersion: 20261012.334.1\nIncluded Software: https://github.com/actions/runner-images/blob/ubuntu24/20261012.334/images/ubuntu/Ubuntu2404-Readme.md\nImage Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20261012.334"
+   }
+  ]
+ },
+ "source": {
+  "repo_head": "0931d5bcbc5c1136f709910d1c31fcbbef6f0c04",
+  "GITHUB_SHA": "dad6c2ece6502b472b6bf5bcd31e3ebb683a30e9",
+  "GITHUB_RUN_ID": "39454534510",
+  "GITHUB_RUN_ATTEMPT": "1"
+ },
+ "tree": {
+  "sha256": "9418bbd76e16290f6e678278909b91c3f624c7e6a679452e1bc29d076471fc57",
+  "files": {
+   "parity/workloads/actions/linux/defs/file-commands.json": "a447ce599992ccb0966678d8fd1dc7ce064aaf265a3183c23214d8b76fd41fe0",
+   "parity/workloads/actions/linux/defs/file-commands.neg-missing-marker.json": "5c3bc376b0e1d936daeb54c0710dc132e7e54f91d67c53eaccebaac8ab00f0bb",
+   "parity/workloads/actions/linux/defs/runner-env.json": "be45b2508148cfc0b7b7a0cc453aa1d8e4e96aa518540cf691a3fc185386ce8e",
+   "parity/workloads/actions/linux/defs/runner-env.neg-no-tool-cache.json": "0055c8809d0feeb00ebcbcf0a0eceaefcb786a59a85f0e184c022ec940133686",
+   "parity/workloads/actions/linux/defs/shell-semantics.json": "ff4760709b0f16df71240323bb652dfc0d253c0857ea716385a9a4704e7c2800",
+   "parity/workloads/actions/linux/defs/shell-semantics.neg-dash-as-bash.json": "d42344e4ce8f88c86f4c9c98c20d968dcee20b232a5dffcd624c416994a7ab1d",
+   "parity/workloads/actions/linux/file-commands/action.yml": "2e7d60e482c094d57d26a7690fe5ee290222cd2f8347f85c16235d52b9b8d670",
+   "parity/workloads/actions/linux/file-commands/run.sh": "7f99dcdb1b89d037a08622372a11c33f9fa5378a6cf5a80b479f9087f25114bc",
+   "parity/workloads/actions/linux/runner-env/run.sh": "20d473e80e60a0c1ed47d1223fd2b42914c41b67d7056e75dfbdf029bc01d125",
+   "parity/workloads/actions/linux/shell-semantics/run.sh": "2a536a32d144878ca276a01fe17a82d6dc03fd77c4fa180d8666927cbeb0c06d",
+   "parity/workloads/linux/android/hello.c": "35b1d2c1a32a1a763239aa320ad388e8c25aa4fe78e6d4d529e951c03eb18adc",
+   "parity/workloads/linux/android/run.sh": "3b7754e98c51e666a5e726473b92ef11f2ab0016206bc12d6560b3da8c0beeb6",
+   "parity/workloads/linux/browsers/page.html": "01aae033f6f8c36fdc3195161a85c134cec586b876d9c34567ff696dcf09e965",
+   "parity/workloads/linux/browsers/run.sh": "ed9707fb54a0c6c17033ed1399581675af8b4a67139a57586ad16c93b720210d",
+   "parity/workloads/linux/cmake/run.sh": "3623c3198ba84448766db7a78de6b5b29226399eb812033e721f166279a4a034",
+   "parity/workloads/linux/cmake/src/CMakeLists.txt": "d640bc7bc468129177807c74e44effbb2f3dbfec5e52d31315362cbc39eeb8d6",
+   "parity/workloads/linux/cmake/src/main.cpp": "2d9ed638406b07e94b9eaf26600aeeddc2bc6dc769f03277d26c9663bb4616ad",
+   "parity/workloads/linux/cmake/src/parity.c": "f39a2ca0020f24b31da8bbf70b765a970ee4001f326e5f99b73b46cb25df93f0",
+   "parity/workloads/linux/containers/Dockerfile": "193478a25f2247ba90aa8e0040aa3d20785dbcaef8afa76fa380aa1c7f4a7922",
+   "parity/workloads/linux/containers/run.sh": "883e79fdb7961f12241fa68d08c695b53dfdcda02f9adabb9b8d24405f5a1ef2",
+   "parity/workloads/linux/containers/srv.c": "fa9158c91c8be1a967eeac5f27d0a894e73b5739429bc8b4055e3a7f1e9526fa",
+   "parity/workloads/linux/defs/android.json": "54a3b4f86106204837b01d611b0e4d205184e31d998e3f60f4b688cc37ccb51d",
+   "parity/workloads/linux/defs/android.neg-missing-ndk.json": "8a4b8b69460a65e5e2bcdab84ec9a8bdb6163f5c34aa4cb592903661cbaafeff",
+   "parity/workloads/linux/defs/browsers.json": "275d23a80a800a7a9e80aa287f5caabb641d0738b3e4589b82ff993186a8e526",
+   "parity/workloads/linux/defs/browsers.neg-no-chrome.json": "af967b8791652648116125311c11fbe09f21b3a09e861864db8d89aeb6ded204",
+   "parity/workloads/linux/defs/clang.json": "499b60a1fec1768f9ba26efb431769b7c8a09c711b25a84e6d4d7d6e40cefed4",
+   "parity/workloads/linux/defs/clang.neg-no-lld.json": "28de1e5a6f89ca45055b93e19d566aa7febe44a5318d813626a90ea4ec3b8237",
+   "parity/workloads/linux/defs/cmake-make.json": "5985933f73fcc47281dd4eaa554f772091a4cc3ad5181c39114ee38307a8889c",
+   "parity/workloads/linux/defs/cmake-ninja.json": "4339002729493c3eb654114079f700c1e432d985598ad3f0b62424835594a637",
+   "parity/workloads/linux/defs/cmake-ninja.neg-no-ninja.json": "5f3e07162849b8048d985868e3348678fc9a2c2349bc82e5bc3f6cbfd26bc805",
+   "parity/workloads/linux/defs/containers.json": "2e6cc30270d4bae72a4d37c4a929ab6a998357bcd9a8441ddc656ed5c5f6e715",
+   "parity/workloads/linux/defs/containers.neg-no-daemon.json": "adf810eb83c941ba9dd5116a1233b9276963bcefc56a9b046bc14dbad0684165",
+   "parity/workloads/linux/defs/dotnet-net10.json": "79935731efdbd37baed62bd2ebbdda38fc701d72f893c9c994002425cef69775",
+   "parity/workloads/linux/defs/dotnet-net8.json": "c13745cb10822e5de8e5d357ef7a4d9a559832ec0fe280af38ff35c3b08784c8",
+   "parity/workloads/linux/defs/dotnet-net8.neg-missing-targeting-pack.json": "efbef4ec68565913f5aa624f4e73f94af5a38035680c9e952f498d7260897176",
+   "parity/workloads/linux/defs/gcc.json": "1bd71c644c358cd803fb0bc9df6de01714e355de5a13e84a2aa1fc35259c5b15",
+   "parity/workloads/linux/defs/gcc.neg-no-openssl-headers.json": "7719498b014e9c9b519ac2f157e6fb531d1ee84bb2796c15d7a6ff2fad9dc975",
+   "parity/workloads/linux/defs/go.json": "e0ff2fc1e5e8c7c4d987134e5e00ab055fe112c8f471f3f532d248bc2f33e09e",
+   "parity/workloads/linux/defs/go.neg-no-gcc.json": "0a993949b0179ec6b7bdfd1e22f6cbcda902b13e2c102a5dad1d72f10b3c18fa",
+   "parity/workloads/linux/defs/gxx14-cxx23.json": "d50bb764043a087c080ffa3b6936681a909569485424d43585c6ca841c93feb9",
+   "parity/workloads/linux/defs/gxx14-cxx23.neg-default-gxx.json": "ee3aa71bf02efd2f32e00d83db170c3f70e71bdda32c23ef311f9b125b6d6062",
+   "parity/workloads/linux/defs/java-gradle.json": "97a90094c47bc82d807f2556f787d2e24cb913a40f3978424690c369022a13ca",
+   "parity/workloads/linux/defs/java-gradle.neg-empty-java-home.json": "6bbd0a4e8fbebbb8de5a9a1130174f8da986438aa7c955bd94e9559aa8d0d532",
+   "parity/workloads/linux/defs/java.json": "5336364dd018f42a4719767b59c3c78ddd4f39318cb2b5e9e83b63726c09cba7",
+   "parity/workloads/linux/defs/java.neg-no-java-home.json": "6bbf0627fc042b205d8a08dfcc03c72363561d2f86a62b3fcac4f5d25800c4d6",
+   "parity/workloads/linux/defs/node-addon.json": "4681335a25511abb1e0deb6af4310a96eb7c285f3997b20823d91eca1a4976d5",
+   "parity/workloads/linux/defs/node-addon.neg-no-node-headers.json": "87783a116bb91e5498137a7a8a329570abcaf3fa62462b985bdcd5be7d7000cd",
+   "parity/workloads/linux/defs/python-wheel.json": "179ccbb188fa904db1e4ea74624d88d3bbfcca9b4648e35f97296b99d4d39e28",
+   "parity/workloads/linux/defs/python-wheel.neg-no-dep-wheel.json": "69669a257bed575a455ad3160bd6031bd0c815853559ccc7dd17dcba18900d52",
+   "parity/workloads/linux/defs/registry-tls.json": "16d78031ebe0bf655563fb4f33510b7d3817776d31dd497be8655a4e8f08d98e",
+   "parity/workloads/linux/defs/registry-tls.neg-untrusted-ca.json": "e4694141c0456f87fbd38b9483f0a775bc6ebd7c32e89f5638c419c85e3b1069",
+   "parity/workloads/linux/defs/rust.json": "934866d73527d932ac3c4d07041f953edf1699a040d869f0b18e6f1f66589233",
+   "parity/workloads/linux/defs/rust.neg-no-cc.json": "d50cd1e250ee5068f96e978fc8070a737cdd6e1faea5008d13f2e73cab914d13",
+   "parity/workloads/linux/defs/services.json": "a41e1ed4ad3c5cc62723453ca8dbf25e5c8a3491422e84666e02cf01ea667094",
+   "parity/workloads/linux/defs/services.neg-not-started.json": "790fbb0b1a2dd05732c258dd2f4498ea3ccc5f60b0bc5beba8947e307e1fad20",
+   "parity/workloads/linux/defs/toolchain-versions.json": "f8c8dfb267548c716fe27c00ddd79af918a73876a94e1e14622afed6651809f0",
+   "parity/workloads/linux/defs/toolchain-versions.neg-no-cargo-bin.json": "aef37acbe1b8b29925916751622f5fe567e2174ef357bca72807e1ec5eb09d50",
+   "parity/workloads/linux/dotnet/app/ParityApp.csproj": "6e6b58b8ab28f832e51ea0872ff725dbc92f6bd6111f404d08a4be0fc08e465b",
+   "parity/workloads/linux/dotnet/app/Program.cs": "cd1cb64b5598d2ce8c29a1450e26ddee08a90a3254eb901f44308652546f0dcf",
+   "parity/workloads/linux/dotnet/app/nuget.config": "a2cd6e0da2252a23ead64e93fd5bdd6bffae510ce0ee4c1ec7d5d5fa71335a84",
+   "parity/workloads/linux/dotnet/run.sh": "00a2508c7479922beb189409f1f0d4b8acde229a552892aa2e8b24088d167b47",
+   "parity/workloads/linux/gcc/cxx23.sh": "dc86a4ef13d4fa050c737a63aa5a5a93ce675a36c2b791d267272e3dc7cef2e3",
+   "parity/workloads/linux/gcc/run.sh": "abdc59ec15887f04127651e73ac7496d5b1f0c4481ac5a7f33c708fd487136c3",
+   "parity/workloads/linux/gcc/src/hello.c": "238ce14baee7f7ed5824c5ab50607caeaa79ca97cb4322298ca849e1899aa32f",
+   "parity/workloads/linux/gcc/src/hello.cpp": "d5e17809e2c04a27fe2c3e6d2000fd001a99a65d6b7e42b52a5c7f81c3d86aa5",
+   "parity/workloads/linux/gcc/src/parity.c": "f39a2ca0020f24b31da8bbf70b765a970ee4001f326e5f99b73b46cb25df93f0",
+   "parity/workloads/linux/gcc/src/print.cpp": "88ff8aa92f7fc2ef77fc6d095fe5038482acbc0e7b744732ba74d12457ba226c",
+   "parity/workloads/linux/gcc/src/use_lib.c": "579ac6719980acdb7024d838255941ad3960d7340fd81443f553a332e431e1ac",
+   "parity/workloads/linux/go/mod/go.mod": "afa384b29dcb873a1373e7be19a136586050303c13deb4ff855db52a846acdac",
+   "parity/workloads/linux/go/mod/main.go": "fe80fb7c6b696d55cdf251c746218ef8fbea47857f43cf39741cfd7cbd674dd3",
+   "parity/workloads/linux/go/mod/main_test.go": "22508c2d36720d7b742521001f469efc5ed133a6eb1e1bc6ff3f1574aaf84e46",
+   "parity/workloads/linux/go/run.sh": "8601581853b1afbe4c30c9867e90cff402e9c9c9367a046e0693f5eb701c8b8b",
+   "parity/workloads/linux/invoke-workloads.sh": "82281a618d9986c57ae6f4df7822d1d0c42eb77b58eedc05245ffb0f5c439d34",
+   "parity/workloads/linux/invoke_workloads.py": "106066825e53d9ac94ce1dca626da4e87b30cb07b5d997b895c6cfb5f0fd009f",
+   "parity/workloads/linux/java/gradle/build.gradle": "f6a380a63961aa3d1e1fdee056d9f261c9069cbfcc21cfd8bd41383bd15f9ae9",
+   "parity/workloads/linux/java/gradle/settings.gradle": "df7f65c25b0a18108326b9f422cbb7118ccfcb6d80b30cc2e7c18e1dda243512",
+   "parity/workloads/linux/java/gradle/src/main/java/parity/Main.java": "689e492d157c81fb9fdc073850cfa18957f7adf697d02e285f44fa3e6aa8bd6d",
+   "parity/workloads/linux/java/run.sh": "ce31d94a3e97f48161576cc51abd41ed71da5b5e4990ae259996cb2fd42927d8",
+   "parity/workloads/linux/java/src/parity/Main.java": "689e492d157c81fb9fdc073850cfa18957f7adf697d02e285f44fa3e6aa8bd6d",
+   "parity/workloads/linux/lib.sh": "bdd7cc7de9ba32da578e9307cd18df651f9d4ab64d48bb3472dbe44525e005d1",
+   "parity/workloads/linux/node-addon/addon.c": "665e97ffea68efcd86b94626436753218e2441905c281e8767570a5198ac7344",
+   "parity/workloads/linux/node-addon/run.sh": "fb5c4d2c0376f9812d56fc18d5be8a44bcb19acce5ffcad739bb03d79c1c7436",
+   "parity/workloads/linux/node-addon/test.js": "d81f4770f4f285c2b1bdd830f4ebdcc808874d48214a1fc686384031e7e1586a",
+   "parity/workloads/linux/oracle/ubuntu-24.04.json": "fd09c0d702dda061b625a0d29255fb1ecae4bef9786e4e926ecb123911838d31",
+   "parity/workloads/linux/python-wheel/check.py": "b2143db0bf146985ea0ead18f3328bce70d7f79c932736eb85aff183f5745ff0",
+   "parity/workloads/linux/python-wheel/parity_ext.c": "0789d5cce76ec541a86390626762bbf715fc82bef57b902bc24bd047e3c96bf6",
+   "parity/workloads/linux/python-wheel/run.sh": "3c95a30d10fa4bea399794dddc75a3b0187da3e9aba5087ad2a4bf8632810dcb",
+   "parity/workloads/linux/registry-tls/run.sh": "4a854de5bb00d7debe30902a2e15e46166daa52206f65688c7d6b90e09985698",
+   "parity/workloads/linux/rust/crate/Cargo.toml": "64e23d42fdb988c507ad518c0b663ced2d1dda2fd083dd8e370e541327f524de",
+   "parity/workloads/linux/rust/crate/build.rs": "e70ed9127b9163ff96c104936012c3b29b7b1d988d6a180b258be30e65e689f3",
+   "parity/workloads/linux/rust/crate/native.c": "3b2f5f1cc295b45673fc9dd92282848f81d408e879c5a133e2ccd31288bba6be",
+   "parity/workloads/linux/rust/crate/src/main.rs": "731eefc85b757c506f52cacbd92d683ce61147e886cb1af360a0a14b51fc3f5d",
+   "parity/workloads/linux/rust/run.sh": "25619310f7891ec6f8a2de4cabc0d20006639497a3b605dcc67fa02bdaf798dc",
+   "parity/workloads/linux/services/run.sh": "08824793616389732ef82aca0170b339af822b7845fb89fbc44db48ec326726a",
+   "parity/workloads/linux/tree_manifest.py": "d9f9d38d31a02e6a2de1e7f147f0c1415dae39b34029f022d274001043a03fa2",
+   "parity/workloads/linux/versions/run.sh": "8a486ec55ff96e301fb9dd443a07e04bc39ec898c22c62f4517fe0661a4191b3",
+   "parity/workloads/linux/wl.py": "df566ec7ff2e8249e34e049e69f9f5d0e2a134192372b5efde989c43eb5a52ff",
+   "parity/workloads/xwin/Invoke-HandoffExecution.ps1": "a99a4e010a8cda3dff13b5feb33758e39848c3f7548c28438c5ca9e7fec11274",
+   "parity/workloads/xwin/defs/clang-lld-pe.json": "a425d0723a28b9671afa04a81ab2d9c7d007b6f9b7392ccb64a8e1b3c1abdf73",
+   "parity/workloads/xwin/defs/clang-lld-pe.neg-no-import-lib.json": "67124d159c71d296702b592142d2ed8a616f57949e0308b6ca4ed84dcc954607",
+   "parity/workloads/xwin/defs/sdk-cross.json": "d0455f1a607c5028962b051a3c551e76b71678f2c8650d06125a0fb6e7460ff2",
+   "parity/workloads/xwin/defs/sdk-cross.neg-no-sysroot.json": "2a23377d5b1580760a5b14b6d99913cc4cad56ee25d3d417fbdff1d0c9af3d86",
+   "parity/workloads/xwin/handoff.py": "cfc7071ebbf58f1c14597530cb758432919a13f53219657e824a8723aacf91f9",
+   "parity/workloads/xwin/run.sh": "e1b4291d9c0904b12e169e265656f1b8aa277b4a3e2c350700d0ddf6b1257ea3",
+   "parity/workloads/xwin/src/freestanding.c": "be4d765801d74e6982d72478e2e32ce32831583b1928367bfdb7664f105b953d",
+   "parity/workloads/xwin/src/hello.c": "eb86d4e9357582073f135694c29f2fa3e37dcf9afe2e15286075e9ef6fad2fb4",
+   "parity/workloads/xwin/src/kernel32.def": "fe3ff14fd283ae889796eb296c4b46daba15619c069c50e677e1a68a5ab58bd5",
+   "tools/parity-certify/certify.py": "7ec01a395bad894ba53d4bda2286eba18840dd5d9f5eccd4d6967a068212440a"
+  }
+ },
+ "pass": 44,
+ "total": 44,
+ "workloads": [
+  {
+   "id": "actions/linux/file-commands",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 0.116
+  },
+  {
+   "id": "actions/linux/file-commands.neg-missing-marker",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.115
+  },
+  {
+   "id": "actions/linux/runner-env",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 0.465
+  },
+  {
+   "id": "actions/linux/runner-env.neg-no-tool-cache",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.115
+  },
+  {
+   "id": "actions/linux/shell-semantics",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 6.38
+  },
+  {
+   "id": "actions/linux/shell-semantics.neg-dash-as-bash",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.115
+  },
+  {
+   "id": "linux/android",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 13.549
+  },
+  {
+   "id": "linux/android.neg-missing-ndk",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.115
+  },
+  {
+   "id": "linux/browsers",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 33.998
+  },
+  {
+   "id": "linux/browsers.neg-no-chrome",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.114
+  },
+  {
+   "id": "linux/clang",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 10.241
+  },
+  {
+   "id": "linux/clang.neg-no-lld",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.215
+  },
+  {
+   "id": "linux/cmake-make",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 2.621
+  },
+  {
+   "id": "linux/cmake-ninja",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 0.616
+  },
+  {
+   "id": "linux/cmake-ninja.neg-no-ninja",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.114
+  },
+  {
+   "id": "linux/containers",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 3.624
+  },
+  {
+   "id": "linux/containers.neg-no-daemon",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.165
+  },
+  {
+   "id": "linux/dotnet-net10",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 8.533
+  },
+  {
+   "id": "linux/dotnet-net8",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 14.7
+  },
+  {
+   "id": "linux/dotnet-net8.neg-missing-targeting-pack",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.866
+  },
+  {
+   "id": "linux/gcc",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 0.816
+  },
+  {
+   "id": "linux/gcc.neg-no-openssl-headers",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.315
+  },
+  {
+   "id": "linux/go",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 14.999
+  },
+  {
+   "id": "linux/go.neg-no-gcc",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 4.95
+  },
+  {
+   "id": "linux/gxx14-cxx23",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 5.729
+  },
+  {
+   "id": "linux/gxx14-cxx23.neg-default-gxx",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.114
+  },
+  {
+   "id": "linux/java-gradle",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 10.653
+  },
+  {
+   "id": "linux/java-gradle.neg-empty-java-home",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.115
+  },
+  {
+   "id": "linux/java",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 3.173
+  },
+  {
+   "id": "linux/java.neg-no-java-home",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.114
+  },
+  {
+   "id": "linux/node-addon",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 0.867
+  },
+  {
+   "id": "linux/node-addon.neg-no-node-headers",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.114
+  },
+  {
+   "id": "linux/python-wheel",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 2.821
+  },
+  {
+   "id": "linux/python-wheel.neg-no-dep-wheel",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.716
+  },
+  {
+   "id": "linux/registry-tls",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 1.017
+  },
+  {
+   "id": "linux/registry-tls.neg-untrusted-ca",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.365
+  },
+  {
+   "id": "linux/rust",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 17.71
+  },
+  {
+   "id": "linux/rust.neg-no-cc",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.515
+  },
+  {
+   "id": "linux/services",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 12.489
+  },
+  {
+   "id": "linux/services.neg-not-started",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.164
+  },
+  {
+   "id": "linux/toolchain-versions",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 6.379
+  },
+  {
+   "id": "linux/toolchain-versions.neg-no-cargo-bin",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 1.42
+  },
+  {
+   "id": "xwin/clang-lld-pe",
+   "status": "pass",
+   "exit_code": 0,
+   "duration_s": 0.415
+  },
+  {
+   "id": "xwin/clang-lld-pe.neg-no-import-lib",
+   "status": "pass",
+   "exit_code": 1,
+   "duration_s": 0.114
+  }
+ ],
+ "unqualified_not_run": {
+  "xwin/sdk-cross": "no xwin Windows CRT/SDK sysroot on the hosted image (the inventory lists neither xwin nor a Windows SDK) and P18 downloads nothing; runs only where XWIN_SYSROOT is provisioned",
+  "xwin/sdk-cross.neg-no-sysroot": "negative of xwin/sdk-cross: meaningful only where the positive can pass"
+ }
+}

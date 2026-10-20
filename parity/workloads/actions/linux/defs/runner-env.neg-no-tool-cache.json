@@ -1,0 +1,25 @@
+{
+  "id": "actions/linux/runner-env.neg-no-tool-cache",
+  "description": "Negative control: The tool cache layout looked up in an empty folder must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 120,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/actions/linux/runner-env/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "actions/linux/runner-env.neg-no-tool-cache",
+      "--sabotage",
+      "no-tool-cache"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "oracle tool_cache.CodeQL/2.27.2 expected 'yes' observed ''"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

@@ -1,0 +1,25 @@
+{
+  "id": "linux/toolchain-versions.neg-no-cargo-bin",
+  "description": "Negative control: rustc and cargo removed from PATH must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/versions/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/toolchain-versions.neg-no-cargo-bin",
+      "--sabotage",
+      "no-cargo-bin"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "oracle version.rustc expected '1.99.0' observed ''"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

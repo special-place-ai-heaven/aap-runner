@@ -1,0 +1,20 @@
+{
+  "id": "actions/linux/runner-env",
+  "description": "Job environment: default and image variables, file-command files, PATH order, tool cache layout, action archive cache, user, sudo, limits, sysctls, Docker socket.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 120,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/actions/linux/runner-env/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "actions/linux/runner-env"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

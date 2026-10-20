@@ -1,0 +1,51 @@
+workload actions/linux/shell-semantics profile=ubuntu-24.04 sabotage=none
+ok   resolve.bash = /usr/bin/bash
+ok   resolve.sh = /usr/bin/sh
+ok   resolve.pwsh = /usr/bin/pwsh
+ok   resolve.python = /usr/bin/python
+ok   resolve.sh_target = /usr/bin/dash
+ok   runner.step_shell = /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+> bash --noprofile --norc -e -o pipefail <work>/step0.sh
+ok   exit.bash.ok = 0
+> bash --noprofile --norc -e -o pipefail <work>/step1.sh
+ok   exit.bash.errexit = 1
+> bash --noprofile --norc -e -o pipefail <work>/step2.sh
+ok   exit.bash.pipefail = 1
+> bash --noprofile --norc -e -o pipefail <work>/step3.sh
+ok   exit.bash.exit = 5
+> bash -e <work>/step4.sh
+ok   exit.default.errexit = 1
+> bash -e <work>/step5.sh
+ok   exit.default.pipefail = 0
+> sh -e <work>/step6.sh
+ok   exit.sh.errexit = 1
+> sh -e <work>/step7.sh
+ok   exit.sh.pipefail = 0
+> sh -e <work>/step8.sh
+ok   exit.sh.exit = 4
+> pwsh -command . '<work>/step9.ps1'
+error: oracle exit.pwsh.native_last expected '3' observed '1'
+> pwsh -command . '<work>/step10.ps1'
+ok   exit.pwsh.native_then_ok = 0
+> pwsh -command . '<work>/step11.ps1'
+Write-Error: parity cmdlet error
+ok   exit.pwsh.cmdlet_error = 1
+> pwsh -command . '<work>/step12.ps1'
+error: oracle exit.pwsh.exit expected '7' observed '1'
+> python <work>/step13.py
+ok   exit.python.exit = 6
+report bash.ok=0
+report bash.errexit=1
+report bash.pipefail=1
+report bash.exit=5
+report default.errexit=1
+report default.pipefail=0
+report sh.errexit=1
+report sh.pipefail=0
+report sh.exit=4
+report pwsh.native_last=1
+report pwsh.native_then_ok=0
+report pwsh.cmdlet_error=1
+report pwsh.exit=1
+report python.exit=6
+workload actions/linux/shell-semantics: 2 oracle check(s) not met

@@ -1,0 +1,26 @@
+{
+  "id": "linux/go",
+  "description": "Default Go: test, build and run a cgo module offline (GOPROXY=off, GOTOOLCHAIN=local); ELF-inspected.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/go/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/go"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "4ea3b02abd2aba9a574e81767a35c69cc3402774bc4a4204143f239af5e7d76c"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "linux/containers.neg-no-daemon",
+  "description": "Negative control: DOCKER_HOST at a socket that does not exist must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/containers/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/containers.neg-no-daemon",
+      "--sabotage",
+      "no-daemon"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "Cannot connect to the Docker daemon at unix://<work>/no-docker.sock"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

@@ -1,0 +1,11 @@
+{
+    "schema":  1,
+    "kind":  "xwin-executed",
+    "artifact":  "parity-freestanding.exe",
+    "sha256":  "e713b3b44aa4d73ce5586feb6755f2f9f4ed6310f12740702ebb03106e41b6c7",
+    "runner_os":  "Windows",
+    "os_version":  "Microsoft Windows NT 10.0.26300.0",
+    "exit_code":  42,
+    "stdout":  "hello from xwin freestanding\r\n",
+    "run_id":  null
+}

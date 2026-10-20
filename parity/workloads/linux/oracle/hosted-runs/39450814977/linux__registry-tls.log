@@ -1,0 +1,41 @@
+workload linux/registry-tls profile=ubuntu-24.04 sabotage=none
+ok   openssl.package = 3.0.13-0ubuntu3.16
+obs  ca.bundle_certs = 121
+ok   ca.bundle_over_100_certs = yes
+> python3 -B -I -c import ssl; c = ssl.create_default_context(); print(ssl.get_default_verify_paths().openssl_cafile); print(c.cert_store_stats()["x509_ca"])
+/usr/lib/ssl/cert.pem
+121
+obs  python.cafile = /usr/lib/ssl/cert.pem
+ok   python.default_context_over_100_cas = yes
+> node -p require("tls").rootCertificates.length
+119
+obs  node.root_certificates = 119
+obs  env.SSL_CERT_FILE = <unset>
+obs  env.NODE_EXTRA_CA_CERTS = <unset>
+ok   apt.mirrors = azure.archive.ubuntu.com,archive.ubuntu.com,security.ubuntu.com
+obs  apt.uris = https://packages.microsoft.com/ubuntu/24.04/prod,mirror+file:/etc/apt/apt-mirrors.txt
+> npm config get registry
+https://registry.npmjs.org/
+ok   npm.registry = https://registry.npmjs.org/
+> python3 -m pip config list
+global.break-system-packages='true'
+error: oracle pip.config expected '' observed 'global.break-system-packages='true''
+obs  env.PIP_INDEX_URL = <unset>
+> dotnet nuget list source --format short
+E https://api.nuget.org/v3/index.json
+ok   nuget.sources = E https://api.nuget.org/v3/index.json
+> openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout key.pem -out cert.pem -days 1 -subj /CN=localhost -addext subjectAltName=DNS:localhost,IP:127.0.0.1
+-----
+> python3 -B -I -c import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])
+53399
+ok   tls.server_up = yes
+> curl --fail -sS --cacert cert.pem -o page.html https://localhost:53399/
+error: oracle tls.curl expected '1' observed '2'
+> python3 -B -I -c import ssl, sys, urllib.request
+ctx = ssl.create_default_context(cafile=sys.argv[1])
+print(urllib.request.urlopen(sys.argv[2], context=ctx, timeout=10).status) cert.pem https://localhost:53399/
+200
+ok   tls.python = 200
+report tls.curl=ok
+report tls.python=200
+workload linux/registry-tls: 2 oracle check(s) not met

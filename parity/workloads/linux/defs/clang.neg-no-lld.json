@@ -1,0 +1,27 @@
+{
+  "id": "linux/clang.neg-no-lld",
+  "description": "Negative control: clang given an lld path that does not exist must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/gcc/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/clang.neg-no-lld",
+      "--cc",
+      "clang",
+      "--sabotage",
+      "no-lld"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "clang: error: invalid linker name in argument '--ld-path=<work>/no-lld/ld.lld'"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

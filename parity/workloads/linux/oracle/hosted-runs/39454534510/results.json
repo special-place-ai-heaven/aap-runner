@@ -1,0 +1,1225 @@
+{
+  "schema": 1,
+  "kind": "workload-results",
+  "results": [
+    {
+      "id": "actions/linux/file-commands",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "2388455fed80d286a926e464a76a8d6d2bbcd60b9ec046410de812aeb2673908",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:06:52Z",
+      "ended_at": "2026-10-20T16:06:52Z",
+      "duration_s": 0.116,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/file-commands/run.sh --work /home/runner/work/_temp/parity-out/work/wl-k74a2zx8 --id actions/linux/file-commands",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 111,
+          "sha256": "a06c3cd1d8bb07a4ea6d73258bcf18beb60f99354b1901470b3b0e6385a106c0",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "603ecb96f0246a5766fefdad25614341d7121beb27daaf2d39b6ecccec53130a",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "actions/linux/file-commands.neg-missing-marker",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "a7dcc3396ff827bf1f28f719b62ec44a3d18847a1866b15fba96871de1bf641e",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:06:52Z",
+      "ended_at": "2026-10-20T16:06:52Z",
+      "duration_s": 0.115,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/file-commands/run.sh --work /home/runner/work/_temp/parity-out/work/wl-_o9gym4v --id actions/linux/file-commands.neg-missing-marker --sabotage missing-marker",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: file-commands marker not found: run uses: ./parity/workloads/actions/linux/file-commands earlier in this job",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "273a4b8c7ba73f4d6ca1555b028980233b7bdcaddeeeaa8092c4e44f15ed2e9a",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "actions/linux/runner-env",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "0fb89fed2517a0f3df1cfd79c7f041af528f8511ae8bcdaa4a8c44628a97df72",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:06:52Z",
+      "ended_at": "2026-10-20T16:06:53Z",
+      "duration_s": 0.465,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/runner-env/run.sh --work /home/runner/work/_temp/parity-out/work/wl-8k0e2yl2 --id actions/linux/runner-env",
+      "artifacts": [],
+      "first_error": null,
+      "log_sha256": "98a6100747e8772fb2be7a890213694bd12529c386163d2b752e57dd147aba8a",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "actions/linux/runner-env.neg-no-tool-cache",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "c1652f332c6b6b3ad08c0dca4fba9afb8ff13902bf3dbe07c82d28f2c6f9a1a7",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:06:53Z",
+      "ended_at": "2026-10-20T16:06:53Z",
+      "duration_s": 0.115,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/runner-env/run.sh --work /home/runner/work/_temp/parity-out/work/wl-z5neibep --id actions/linux/runner-env.neg-no-tool-cache --sabotage no-tool-cache",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: oracle tool_cache.CodeQL/2.27.2 expected 'yes' observed ''",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "e5ef0878ca119ef1c6ea319fe2bf159235b5f3ef38e53f94f7d9b2b83f3e6e38",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "actions/linux/shell-semantics",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "7e522c68c1fd7d72a9582de6878bf5406ff9e36cc030b998da2a47eb57c6f5a2",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:06:53Z",
+      "ended_at": "2026-10-20T16:06:59Z",
+      "duration_s": 6.38,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/shell-semantics/run.sh --work /home/runner/work/_temp/parity-out/work/wl-m96bxj2s --id actions/linux/shell-semantics",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 214,
+          "sha256": "3a4dc003aaf7af2ecb43af6a63b7162cb6d68bb87fc4baf1fd0bab2515d4478e",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": {
+        "message": "Write-Error: parity cmdlet error",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "0e32ee14c078e3557e93cfe31dfce8009212376f9833ee0e6cbe2c1d218a57f3",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "actions/linux/shell-semantics.neg-dash-as-bash",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "2e982faac0a4b42494abd923889f20723af3a3aee17d5dd7d33bd67b865cc86d",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:06:59Z",
+      "ended_at": "2026-10-20T16:06:59Z",
+      "duration_s": 0.115,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/actions/linux/shell-semantics/run.sh --work /home/runner/work/_temp/parity-out/work/wl-wtlqjiit --id actions/linux/shell-semantics.neg-dash-as-bash --sabotage dash-as-bash",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: bash on PATH is not GNU bash: <work>/fakebin/bash",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "f861a2fd940469336ba89c0104b59b27415e83a13e44cfc2a8805d1d4ba1c06e",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/android",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "9ec5f451b7cf4352ae576884ed08839a838fc17f8a4b709ccf710561a2d5af95",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:06:59Z",
+      "ended_at": "2026-10-20T16:07:13Z",
+      "duration_s": 13.549,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/android/run.sh --work /home/runner/work/_temp/parity-out/work/wl-8wg0r755 --id linux/android",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 80,
+          "sha256": "a0dd8875c192f0309a4dc6423270845464efcaea30213505fd3ace8961007661",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "c8a45f354f5403e36be6691bd8b5215d2c34791cbeec6691c7eb5a58693b993f",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/android.neg-missing-ndk",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "7aaa1f7856fc486b22052873bf84b3f560b8beb79c8905fb05b04febcf59d8a1",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:07:13Z",
+      "ended_at": "2026-10-20T16:07:13Z",
+      "duration_s": 0.115,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/android/run.sh --work /home/runner/work/_temp/parity-out/work/wl-ywppos6e --id linux/android.neg-missing-ndk --sabotage missing-ndk",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: NDK clang not found under ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/99.0.0/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "b583417394668f4d6acf610fa8a600c13c30e80c634ba2495bdb50af8176cf6c",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/browsers",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "8f8e4c08783e51f6410120128fc76abc525b1cdc60f7931aa612071772c3889a",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:07:13Z",
+      "ended_at": "2026-10-20T16:07:47Z",
+      "duration_s": 33.998,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/browsers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-15xcyjaq --id linux/browsers",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 42,
+          "sha256": "890786d0485a564fed43095925656d5181c1d3e5da8db979095674c8e913031c",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": {
+        "message": "[3144:3174:1020/160743.049911:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")",
+        "file": "[3144",
+        "line": 3174
+      },
+      "log_sha256": "02fd70c4508cdfe5b05736418c76f224204c9e649ebfcdb2b06e9893b64dbac3",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/browsers.neg-no-chrome",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "251a5a4e98dbbb59d7bdb33d1bbcfcb634b1660ba40e64cf3a5e061fb30db2b8",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:07:47Z",
+      "ended_at": "2026-10-20T16:07:47Z",
+      "duration_s": 0.114,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/browsers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-7h_d8d2h --id linux/browsers.neg-no-chrome --sabotage no-chrome",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: CHROME_BIN is not an executable: <work>/no-chrome/google-chrome",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "8f74bed1d297d3236c32c4a6c53441a687998823a92c99f5ae580cd37bf08841",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/clang",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "2e98d60c737b5967c8b763bc59adf0e5ccaae5d15fe6fac2564a64791dc98224",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:07:47Z",
+      "ended_at": "2026-10-20T16:07:57Z",
+      "duration_s": 10.241,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-ugdzwadh --id linux/clang --cc clang",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 684,
+          "sha256": "12ebd04d0274be54cf6dbdf3c52dc1cb6b01ca317dc3450679b990cb5c6559f9",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "61f8a086f988581138f9f9cf7c0902108a70ff69888f2e6773d1785d6cbb0a14",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/clang.neg-no-lld",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "d50d46083c5f9d3a7bf589b5a09afb84464018a96d969f3b5973c19a9f9dce42",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:07:57Z",
+      "ended_at": "2026-10-20T16:07:58Z",
+      "duration_s": 0.215,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-67txo_0_ --id linux/clang.neg-no-lld --cc clang --sabotage no-lld",
+      "artifacts": [],
+      "first_error": {
+        "message": "clang: error: invalid linker name in argument '--ld-path=<work>/no-lld/ld.lld'",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "c57528cf2f3e93c242fb14fe8f293ac9f6756a6898f89eb7924240b1d56c5b4a",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/cmake-make",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "74a062f4b8435fc1aefe86f384da79a56fc7ed69967cd95d0dcb11ef3646f873",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:07:58Z",
+      "ended_at": "2026-10-20T16:08:00Z",
+      "duration_s": 2.621,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/cmake/run.sh --work /home/runner/work/_temp/parity-out/work/wl-mm1ffpfx --id linux/cmake-make --generator make",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 87,
+          "sha256": "cb5014404560d78fafd8a3b2850432e8f0f5618c35fd4dc51996003d1edebc84",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "a78c12aaa7d50d6b57af4ed8df96484071fb9d0485732829149d8affe984c697",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/cmake-ninja",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "027c040bd9c60b26f19bed3230b19480ae2abf259c90fe9bf68abaf7eb2f1107",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:08:00Z",
+      "ended_at": "2026-10-20T16:08:01Z",
+      "duration_s": 0.616,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/cmake/run.sh --work /home/runner/work/_temp/parity-out/work/wl-bd1a62xq --id linux/cmake-ninja --generator ninja",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 87,
+          "sha256": "cb5014404560d78fafd8a3b2850432e8f0f5618c35fd4dc51996003d1edebc84",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "3ef43086ba33599a58987dcb11426d3102fe881b47470fab714792c01196975d",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/cmake-ninja.neg-no-ninja",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "80ae58a9187202bf53629c47f941e84d70b40b249dc5baa60db1be3975a7a71e",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:08:01Z",
+      "ended_at": "2026-10-20T16:08:01Z",
+      "duration_s": 0.114,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/cmake/run.sh --work /home/runner/work/_temp/parity-out/work/wl-0nvbtect --id linux/cmake-ninja.neg-no-ninja --generator ninja --sabotage no-ninja",
+      "artifacts": [],
+      "first_error": {
+        "message": "CMake Error: CMake was unable to find a build program corresponding to \"Ninja\".  CMAKE_MAKE_PROGRAM is not set.  You probably need to select a different build tool.",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "62cb5f9de7b0157fc37d454e637f3a43d5415bbb104a03f9c8fb7e48d1acb9f8",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/containers",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "a3799bf061e62bea8da01daceaf396651f6ee0c197246a31b1f6790a92af4f29",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:08:01Z",
+      "ended_at": "2026-10-20T16:08:05Z",
+      "duration_s": 3.624,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/containers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-ywtmd5m0 --id linux/containers",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 200,
+          "sha256": "4c02f9e41fde0d032398e1d6b7cff7e9471551ef29c9a68df8335d9e61ca3dba",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "0ef669c6188cf7cb5447abbe42a51fed79cd9be08dc6c963a3d78d17c0817d81",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/containers.neg-no-daemon",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "ff358e83961ee5bd9bb97a1e6d7da7a520957e150ee81a395d19ea8e7137c2a3",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:08:05Z",
+      "ended_at": "2026-10-20T16:08:05Z",
+      "duration_s": 0.165,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/containers/run.sh --work /home/runner/work/_temp/parity-out/work/wl-fxkyj3c3 --id linux/containers.neg-no-daemon --sabotage no-daemon",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: docker exited with code 1: Cannot connect to the Docker daemon at unix://<work>/no-docker.sock. Is the docker daemon running?",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "d201faf7d1aa875df4d89b1355729aec10ae4eb3cd306400d08aab6e2428d31a",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/dotnet-net10",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "d11aa0d170cabf275c841819a8a3694530c86c2f1d0a259be72d3d50fe5266af",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:08:05Z",
+      "ended_at": "2026-10-20T16:08:13Z",
+      "duration_s": 8.533,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/dotnet/run.sh --work /home/runner/work/_temp/parity-out/work/wl-h9wshag9 --id linux/dotnet-net10 --tfm net10.0 --sdk-band 10.0.100",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 622,
+          "sha256": "8e3f572a4643f570d22dcae54d36892da07d4d8ec4b55c8914b1eb1030b395b7",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "9e3cd81d9edb2467db5eac00a0a110ef571cbef0bf16d72198a9c4fcd67b043e",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/dotnet-net8",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "4cc0fdcce6fcc70220590338a0a9d5e19ae6767b339a3899017ac58ee3103ac4",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:08:13Z",
+      "ended_at": "2026-10-20T16:08:28Z",
+      "duration_s": 14.7,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/dotnet/run.sh --work /home/runner/work/_temp/parity-out/work/wl-dcs0f_wi --id linux/dotnet-net8 --tfm net8.0 --sdk-band 8.0.100",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 582,
+          "sha256": "7481ef65e682477796bfcb227b1db215e127410534709195cb708e0412a2cfff",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "7c654bf3604849a756d5a183220f940af574a5b58d4c43c9a8190ee3af49dcfa",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/dotnet-net8.neg-missing-targeting-pack",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "f005980effbc1def1fff0b65988e3810d9183ab2910b03a959b52f9aca394226",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:08:28Z",
+      "ended_at": "2026-10-20T16:08:29Z",
+      "duration_s": 0.866,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/dotnet/run.sh --work /home/runner/work/_temp/parity-out/work/wl-35ze9tsm --id linux/dotnet-net8.neg-missing-targeting-pack --tfm net8.0 --sdk-band 8.0.100 --sabotage missing-targeting-pack",
+      "artifacts": [],
+      "first_error": {
+        "message": "<work>/app/ParityApp.csproj : error NU1100: Unable to resolve 'Microsoft.NETCore.App.Ref (= 7.0.20)' for 'net7.0'.",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "b2022633a63dce8a4db8c3d1c7e52974ed6ca18a65e552bebf7f3fdc02614a0d",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/gcc",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "a13e7c40612d756af2f8ccff064020a1a07550c67671a0c180f4b53cd4b551c8",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:08:29Z",
+      "ended_at": "2026-10-20T16:08:30Z",
+      "duration_s": 0.816,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-r_p__wvc --id linux/gcc --cc gcc",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 628,
+          "sha256": "bd218570ffee11d7ca1ebf543c7e6e375f0f79ac00be4198ce0c0fc15fc7729f",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "af93861189ed46737ebf4f23670d94dffa68cf081159112d1ae9e302c84c522c",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/gcc.neg-no-openssl-headers",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "e223418945c6e94f9cff6a3d451604a6cafbb001bb55467b4038e24407e468ee",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:08:30Z",
+      "ended_at": "2026-10-20T16:08:30Z",
+      "duration_s": 0.315,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/run.sh --work /home/runner/work/_temp/parity-out/work/wl-g7k_lzev --id linux/gcc.neg-no-openssl-headers --cc gcc --sabotage no-openssl-headers",
+      "artifacts": [],
+      "first_error": {
+        "message": "<repo>/parity/workloads/linux/gcc/src/hello.c:3:10: fatal error: openssl/evp.h: No such file or directory",
+        "file": "<repo>/parity/workloads/linux/gcc/src/hello.c",
+        "line": 3
+      },
+      "log_sha256": "716cd645323cbd04154a5fb775cd1ff42aed7d153242747396454c8972b94b26",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/go",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "229cd7f7faf5d824c170236feefcf5a7a2b679700904e79b62569c292e70c4a1",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:08:30Z",
+      "ended_at": "2026-10-20T16:08:45Z",
+      "duration_s": 14.999,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/go/run.sh --work /home/runner/work/_temp/parity-out/work/wl-f7tld9ft --id linux/go",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 105,
+          "sha256": "4ea3b02abd2aba9a574e81767a35c69cc3402774bc4a4204143f239af5e7d76c",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "ca075e7d1da5f043d7c758856270c6617de67b9c6f3c0b72a425adf2af3783d1",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/go.neg-no-gcc",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "be1ca2e1772c1cedebf229dfdc0ca753a098d53a0aad0ceb999fb602749b8683",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:08:45Z",
+      "ended_at": "2026-10-20T16:08:50Z",
+      "duration_s": 4.95,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/go/run.sh --work /home/runner/work/_temp/parity-out/work/wl-209kkgpw --id linux/go.neg-no-gcc --sabotage no-gcc",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: go exited with code 1: cgo: C compiler \"gcc\" not found: exec: \"gcc\": executable file not found in $PATH",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "9cb9058c99b527faf85c41079442841a092095c2086ed38d7997ec8c971ab326",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/gxx14-cxx23",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "f92149de656eeaee201ade5e3caed27e31c9c5d440b62b41f16dbb78e601baad",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:08:50Z",
+      "ended_at": "2026-10-20T16:08:56Z",
+      "duration_s": 5.729,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/cxx23.sh --work /home/runner/work/_temp/parity-out/work/wl-fnu3rfqh --id linux/gxx14-cxx23",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 33,
+          "sha256": "d76867698abeffbeb8fff18160f38403f826e0822be48b645d0f77b3a1891f1f",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "9c3cea69646bc348de3c60aeb3c2dfa3018ed75a86d4dbce22914eb6fc331238",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/gxx14-cxx23.neg-default-gxx",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "6f6db8797b7e05697f4f12d750a9c8ca78435937b0371b54c344e12d611be6bd",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:08:56Z",
+      "ended_at": "2026-10-20T16:08:56Z",
+      "duration_s": 0.114,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/gcc/cxx23.sh --work /home/runner/work/_temp/parity-out/work/wl-fel7cup7 --id linux/gxx14-cxx23.neg-default-gxx --sabotage default-gxx",
+      "artifacts": [],
+      "first_error": {
+        "message": "<repo>/parity/workloads/linux/gcc/src/print.cpp:2:10: fatal error: print: No such file or directory",
+        "file": "<repo>/parity/workloads/linux/gcc/src/print.cpp",
+        "line": 2
+      },
+      "log_sha256": "2502eb75e4c711ae028864fa893086b5f7d3d30545d850b5fda7e016ec3ce286",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/java-gradle",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "15be0678c685110d3ea045afd342d4ad0c19ead0c26ac30a1ebb6cdf423b44f4",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:08:56Z",
+      "ended_at": "2026-10-20T16:09:06Z",
+      "duration_s": 10.653,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-508rnocg --id linux/java-gradle --tool gradle",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 138,
+          "sha256": "23f2c80ae2b61678d8b0cc51e4feaa031c8a4e35e87a238330aeaebeba0df788",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "ded6e72270285e4c6d1e7f56e6e4293f35798ff35fae89728f64870b4f1160e9",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/java-gradle.neg-empty-java-home",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "662b663f6a102c5080567e3bd165a4ca55417500b0096c8b2510eb74c1da9b03",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:09:06Z",
+      "ended_at": "2026-10-20T16:09:06Z",
+      "duration_s": 0.115,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-tucy37so --id linux/java-gradle.neg-empty-java-home --tool gradle --sabotage empty-java-home",
+      "artifacts": [],
+      "first_error": {
+        "message": "ERROR: JAVA_HOME is set to an invalid directory: <work>/no-jdk",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "bc370a35bd2ac019a9f1784a942c73003d6a42e3d9c19d8b4fae15eeff047f39",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/java",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "17f885c86677984df5a398b1afe8f653a9f48dec4ad300edbd21a9a093e72861",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:09:06Z",
+      "ended_at": "2026-10-20T16:09:10Z",
+      "duration_s": 3.173,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-2fbdiit9 --id linux/java --tool jdk",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 138,
+          "sha256": "23f2c80ae2b61678d8b0cc51e4feaa031c8a4e35e87a238330aeaebeba0df788",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "5a1afb476e44309fe66f49d156beaf542938de0ae877f63baaa8c7626cea1fa4",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/java.neg-no-java-home",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "53b56ed9f75db17fe8bb1b582dfb8a6b2ef8f16c9dbd53dc9d7f1dcb370c37c3",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:09:10Z",
+      "ended_at": "2026-10-20T16:09:10Z",
+      "duration_s": 0.114,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/java/run.sh --work /home/runner/work/_temp/parity-out/work/wl-7xpv5mm8 --id linux/java.neg-no-java-home --tool jdk --sabotage no-java-home",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: JAVA_HOME is not set",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "933862eacc24c2f39f12c19df401e7fa736b8c307f59c59a4259b33b170cabfd",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/node-addon",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "2d4fb8163aa80b5e62eacf8fc14c3f52c388280695cd2795300d2346f68204b3",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:09:10Z",
+      "ended_at": "2026-10-20T16:09:11Z",
+      "duration_s": 0.867,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/node-addon/run.sh --work /home/runner/work/_temp/parity-out/work/wl-26o4qq5f --id linux/node-addon",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 102,
+          "sha256": "18912f491660b27e92d5ee8bbb7d1912959b867bcde2a642671906c64221a072",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "904e88be34d73c8012ae009e4f524858707fefe333594a5301ee101af0be60c1",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/node-addon.neg-no-node-headers",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "1f90070dbde1c0ad719b127dab082107a4a145376fc1182de4848148ac823959",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:09:11Z",
+      "ended_at": "2026-10-20T16:09:11Z",
+      "duration_s": 0.114,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/node-addon/run.sh --work /home/runner/work/_temp/parity-out/work/wl-840doehi --id linux/node-addon.neg-no-node-headers --sabotage no-node-headers",
+      "artifacts": [],
+      "first_error": {
+        "message": "<repo>/parity/workloads/linux/node-addon/addon.c:2:10: fatal error: node_api.h: No such file or directory",
+        "file": "<repo>/parity/workloads/linux/node-addon/addon.c",
+        "line": 2
+      },
+      "log_sha256": "35d044cc956480c3544cd83af50b6a5f2b3ac3f8d2227791f98ed293a3de509a",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/python-wheel",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "53db6d2b33eba7f13844dbc1617015d0f1d252dd6e2474c4fc0da41217fc7930",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:09:11Z",
+      "ended_at": "2026-10-20T16:09:14Z",
+      "duration_s": 2.821,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/python-wheel/run.sh --work /home/runner/work/_temp/parity-out/work/wl-1epys3vy --id linux/python-wheel",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 236,
+          "sha256": "1e2445284d5d2547d5534d193abbf94e80507f2621eb6d454ee8ac3637671a8d",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "f37fd28b9deac4f574da1a8e7cf334ecfb76e7836532d7a14fe0ad10dc9f6a15",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/python-wheel.neg-no-dep-wheel",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "c5dcaf471827c19f5b92eb9d3583883180d042adb5835cbf997144cf05b71e92",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:09:14Z",
+      "ended_at": "2026-10-20T16:09:14Z",
+      "duration_s": 0.716,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/python-wheel/run.sh --work /home/runner/work/_temp/parity-out/work/wl-v9r4me33 --id linux/python-wheel.neg-no-dep-wheel --sabotage no-dep-wheel",
+      "artifacts": [],
+      "first_error": {
+        "message": "ERROR: Could not find a version that satisfies the requirement aap-parity-dep (from aap-parity-ext) (from versions: none)",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "6892f950d96ef923a1e0fad00e6eed9b47590a5b7966b7dae23c9fb9fa79c8df",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/registry-tls",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "1f0e5facde60ed67bdb70da7b5f078c7cbd03e67627c94d2ef37958d9e9f2a77",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:09:14Z",
+      "ended_at": "2026-10-20T16:09:15Z",
+      "duration_s": 1.017,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/registry-tls/run.sh --work /home/runner/work/_temp/parity-out/work/wl-dhphbumx --id linux/registry-tls",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 27,
+          "sha256": "59c23553b27602999edbf45041f8c5ae48f6937510c221127dab7fd980f5dc15",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "b41686753349308aeb487c424ec3d0a74a268d89a06e554520de33d8d3835692",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/registry-tls.neg-untrusted-ca",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "cbf5c7651e726a6021cbf2e69b0bd088960b6d5132ac8300f3567694f361789c",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:09:15Z",
+      "ended_at": "2026-10-20T16:09:16Z",
+      "duration_s": 0.365,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/registry-tls/run.sh --work /home/runner/work/_temp/parity-out/work/wl-jxws1n9i --id linux/registry-tls.neg-untrusted-ca --sabotage untrusted-ca",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: curl exited with code 60: curl: (60) SSL certificate problem: self-signed certificate",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "34c41daafaf21f5c4d31d86f0ee2df22557b5f4180dcd3f6806348163908a772",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/rust",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "9be28f2c182dcb01911ffb96122336e2d6ae34baf6364477342d37e3246e3422",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:09:16Z",
+      "ended_at": "2026-10-20T16:09:33Z",
+      "duration_s": 17.71,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/rust/run.sh --work /home/runner/work/_temp/parity-out/work/wl-juaecuy7 --id linux/rust",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 166,
+          "sha256": "826abc092f58de1782a9612058bf16e478e479c8c969a0540b83e40fb80b1303",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "adf39bac91724b2d6fc54c3925fb0c439ffcaee62024097bbb33a7e32505f7d3",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/rust.neg-no-cc",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "b55d21709fea17c79f7a58564b2e8a4cada56da3c12fccee71ec073f5d4a78db",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:09:33Z",
+      "ended_at": "2026-10-20T16:09:34Z",
+      "duration_s": 0.515,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/rust/run.sh --work /home/runner/work/_temp/parity-out/work/wl-8nps0tyj --id linux/rust.neg-no-cc --sabotage no-cc",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: linker `cc` not found",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "91a9895bea68a48e217d802fb325f0c5768b9791a17c361bacebd8190c9e4579",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/services",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "d88f1ddf443b870d7972630c6803c81dbe01cf37db03d5b7ca70ff51ccc160aa",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:09:34Z",
+      "ended_at": "2026-10-20T16:09:46Z",
+      "duration_s": 12.489,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/services/run.sh --work /home/runner/work/_temp/parity-out/work/wl-aj7ytnai --id linux/services",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 40,
+          "sha256": "940e47c61a328ea788cdd5e7a877b1c82d95ca07c926bcaf13b91b833a5d75a3",
+          "glob": "report.txt"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "81a8d5c524209d5f74b33c5af63af216a34183979493eb1369dcb67f00fa1816",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/services.neg-not-started",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "0f728e096c55e1f01803f0c9e2262bca4e1473a1a40e26e7bda05672f0c65551",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:09:46Z",
+      "ended_at": "2026-10-20T16:09:47Z",
+      "duration_s": 0.164,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/services/run.sh --work /home/runner/work/_temp/parity-out/work/wl-ndhvz8pf --id linux/services.neg-not-started --sabotage not-started",
+      "artifacts": [],
+      "first_error": {
+        "message": "psql: error: connection to server on socket \"/var/run/postgresql/.s.PGSQL.5432\" failed: No such file or directory",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "6d0e616271b9245df4bdc210d5ec5c96f710ed4e384e2f8569a69a0dd02f44df",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "linux/toolchain-versions",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "82c04a894d69640b5e9fa004df5a30b9c732ddd88714d27608bcbdaab2dff285",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:09:47Z",
+      "ended_at": "2026-10-20T16:09:53Z",
+      "duration_s": 6.379,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/versions/run.sh --work /home/runner/work/_temp/parity-out/work/wl-edkln112 --id linux/toolchain-versions",
+      "artifacts": [],
+      "first_error": null,
+      "log_sha256": "95dd6a35259609b0878819c525c0519584eefd2159135ca7a3e3963a60595327",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "linux/toolchain-versions.neg-no-cargo-bin",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "cd9f6890d209d6eaaec65f42c31af501bd07fcb6365b2a94db2028264524f4d4",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:09:53Z",
+      "ended_at": "2026-10-20T16:09:54Z",
+      "duration_s": 1.42,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/linux/versions/run.sh --work /home/runner/work/_temp/parity-out/work/wl-5p5vlgka --id linux/toolchain-versions.neg-no-cargo-bin --sabotage no-cargo-bin",
+      "artifacts": [],
+      "first_error": {
+        "message": "error: oracle version.rustc expected '1.99.0' observed ''",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "05d08116aa02ffb4675c3d0c5b907d25af265b3dc7b7594e6633a34eda65320e",
+      "log_claim": "failure",
+      "reasons": []
+    },
+    {
+      "id": "xwin/clang-lld-pe",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "35f9248c2956efc8e0250e4ac791b99c6bcf57170b64785c6c8813d6d33aaf86",
+      "status": "pass",
+      "expected": "success",
+      "observed": "success",
+      "exit_code": 0,
+      "expected_exit_codes": [
+        0
+      ],
+      "started_at": "2026-10-20T16:09:54Z",
+      "ended_at": "2026-10-20T16:09:55Z",
+      "duration_s": 0.415,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/xwin/run.sh --work /home/runner/work/_temp/parity-out/work/wl-7wxb33s2 --id xwin/clang-lld-pe --kind freestanding",
+      "artifacts": [
+        {
+          "name": "report.txt",
+          "bytes": 158,
+          "sha256": "326e4e42c1183143b19fd1f58638f2e861dc7b39c87297e333f8de3cd8f5afe0",
+          "glob": "report.txt"
+        },
+        {
+          "name": "parity-freestanding.exe",
+          "bytes": 2048,
+          "sha256": "e713b3b44aa4d73ce5586feb6755f2f9f4ed6310f12740702ebb03106e41b6c7",
+          "glob": "parity-freestanding.exe"
+        },
+        {
+          "name": "parity-freestanding.handoff.json",
+          "bytes": 292,
+          "sha256": "747d3c462c6ce075412b8c43cfc098be20f59681f236bfb6cb22891d73b451b2",
+          "glob": "parity-freestanding.handoff.json"
+        }
+      ],
+      "first_error": null,
+      "log_sha256": "7550580f5a3d5222530f67752f185c60a69bc5f2a13cf81ff2f28bfbd509ce15",
+      "log_claim": "success",
+      "reasons": []
+    },
+    {
+      "id": "xwin/clang-lld-pe.neg-no-import-lib",
+      "variant": "default",
+      "variant_index": 0,
+      "def_sha256": "4ddc38de2247388bc69c7f144d504f978ea5a06022395ffc12f7f3e657e88d1f",
+      "status": "pass",
+      "expected": "failure",
+      "observed": "failure",
+      "exit_code": 1,
+      "expected_exit_codes": [
+        1
+      ],
+      "started_at": "2026-10-20T16:09:55Z",
+      "ended_at": "2026-10-20T16:09:55Z",
+      "duration_s": 0.114,
+      "command": "bash /home/runner/work/aap-runner/aap-runner/tools/parity-certify/workloads/fixtures/../../../../parity/workloads/xwin/run.sh --work /home/runner/work/_temp/parity-out/work/wl-il5xeehh --id xwin/clang-lld-pe.neg-no-import-lib --kind freestanding --sabotage no-import-lib",
+      "artifacts": [],
+      "first_error": {
+        "message": "lld-link: error: could not open 'kernel32.lib': No such file or directory",
+        "file": null,
+        "line": null
+      },
+      "log_sha256": "64fdb012296b589d235670693c0354ccf0df7e06976ea3256bd1aeed1653d06f",
+      "log_claim": "failure",
+      "reasons": []
+    }
+  ]
+}

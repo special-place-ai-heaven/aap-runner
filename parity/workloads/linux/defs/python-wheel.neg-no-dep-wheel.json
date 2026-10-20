@@ -1,0 +1,25 @@
+{
+  "id": "linux/python-wheel.neg-no-dep-wheel",
+  "description": "Negative control: pip --no-index without the required wheel (incomplete package registry) must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/python-wheel/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/python-wheel.neg-no-dep-wheel",
+      "--sabotage",
+      "no-dep-wheel"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "ERROR: Could not find a version that satisfies the requirement aap-parity-dep"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

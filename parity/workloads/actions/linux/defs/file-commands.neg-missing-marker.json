@@ -1,0 +1,25 @@
+{
+  "id": "actions/linux/file-commands.neg-missing-marker",
+  "description": "Negative control: A marker that was never written must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 120,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/actions/linux/file-commands/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "actions/linux/file-commands.neg-missing-marker",
+      "--sabotage",
+      "missing-marker"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "file-commands marker not found"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

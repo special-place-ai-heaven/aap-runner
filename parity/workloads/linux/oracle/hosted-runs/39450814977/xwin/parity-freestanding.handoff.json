@@ -1,0 +1,10 @@
+{
+ "schema": 1,
+ "kind": "xwin-built",
+ "artifact": "parity-freestanding.exe",
+ "sha256": "e713b3b44aa4d73ce5586feb6755f2f9f4ed6310f12740702ebb03106e41b6c7",
+ "expected_exit": 42,
+ "expected_stdout": "hello from xwin freestanding",
+ "built_on": "Linux",
+ "windows_execution": "not-claimed"
+}
