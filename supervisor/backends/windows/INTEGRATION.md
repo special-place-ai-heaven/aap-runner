@@ -40,6 +40,10 @@ supervisor, the installer, the guest image, the network or CI yet. How the backe
    - `Action`: `created`, `booted`, `probing`, `ready`, `running`, `listening`, `busy`, `recovered`, `destroyed`,
      `waiting`, `held`. `Code` is a fixed word (`hostile_guest` codes, `teardown_failed`, `release_pending`,
      `release_uncertain`, `journal_unreadable`, `timeout`, `no_reply`, ...): put it in `detail` as is.
+     `drain_overdue` is a flag for the owner: a drained VM whose runner release is still pending 6 h after the drain (its
+     runner may be running a job GitHub handed it); the VM is kept and still held to its limits.
+   - A reservation stays in ONE backend context for its whole life: its per-clone credential lives only in that
+     context's `Guests` table, so stepping it from another context (a second runspace) loses its guest channel.
    - `Summary` (collect only) is guest-authored text, bounded and printable: never a status reason, never logged
      unfiltered.
    - Any exception is a provider failure: log its `AAP_<Reason>`, retry next tick.
@@ -147,6 +151,14 @@ host preparation.
 - Hyper-V attaches `os.avhdx` to a read-only `base.vhdx` (P06's ACL) and mounts a clone disk attached to an Off VM for
   the answer-file rewrite after a crash.
 - How close a full scratch VHDX comes to its maximum size (the backend leaves 64 MiB under `scratch_gib`).
+- Whether Hyper-V adds per-VM entries (`S-1-5-83-1-...`) to the ACL of `base.vhdx` or its folder when a VM starts. If it
+  does, `Get-AapWinSealedProblem` refuses every later create of that generation (fail closed); decide in the lab whether
+  to accept those entries.
+- That the supervisor can enumerate Hyper-V's runtime folders inside a clone folder: a `MeasureBytes` error is a broken
+  limit (fail closed: the VM is destroyed at its first step), so an unreadable runtime folder would end every job.
+- A crash inside `WriteUnattend` leaves `os.avhdx` mounted: the folder delete then fails and the slot ends
+  `teardown_failed` (fail closed). P02.1 decides whether destroy should `Dismount-VHD` first and create detect a stale
+  mount (a new provider op).
 - That a VM created with `New-VM -Path <clone>\<id>` and the smart paging and snapshot paths there leaves no file outside
   the clone folder (the backend checks the paths Hyper-V reports).
 

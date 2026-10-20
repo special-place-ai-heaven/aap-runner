@@ -155,6 +155,53 @@ Describe 'one job, end to end' {
         (Get-WinRes $w $rid).teardown_proof.runner_deregistered | Should -BeTrue
     }
 
+    It 'a drained VM kept for its release is held to its limits on every step, before the retry gate, after a restart too' -Tag 'deleting-limits' {
+        foreach ($knob in @(@{ CloneBytes = 61 * $script:GiB }, @{ Paused = $true }, @{ MeasureFails = $true })) {
+            foreach ($restart in $false, $true) {
+                $w = New-WinWorld
+                $B = New-WinBackend $w
+                $r = New-WinReservation $w
+                $rid = $r.reservation_id
+                [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+                [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))   # running, listening, no job
+                [void](Set-AapSlotState -Root $w.Cap -ReservationId $rid -LeaseGeneration $r.lease_generation -State draining -RelaxedTrustForTests)
+                Set-WinKnob $w @{ ReleaseOutcome = 'retry' }
+                (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Code | Should -Be 'release_pending'
+                @(Get-WinVms $w).Count | Should -Be 1
+                # GitHub hands the still-listed runner a job; it writes past clone_gib, or the VM is paused.
+                Set-WinKnob $w $knob
+                if ($restart) { $B = New-WinBackend $w }
+                $s = Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)
+                @(Get-WinVms $w).Count | Should -Be 0 -Because "$($knob.Keys) restart=$restart"
+                $s.Code | Should -Be 'release_pending' -Because 'the VM is gone; the release still decides the slot'
+                (Get-WinRes $w $rid).state | Should -Be 'deleting'
+                @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'destroy' -and $_.result.detail -like 'limit broken while kept: *' }).Count | Should -Be 1
+            }
+        }
+    }
+
+    It 'a drained VM kept past 6 h is flagged, never destroyed for time; a limit still removes it' -Tag 'drain-overdue', 'deleting-limits' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))
+        [void](Set-AapSlotState -Root $w.Cap -ReservationId $rid -LeaseGeneration $r.lease_generation -State draining -RelaxedTrustForTests)
+        Set-WinKnob $w @{ ReleaseOutcome = 'retry' }
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Code | Should -Be 'release_pending'
+        $B.Now = { [DateTime]::UtcNow.AddHours(6).AddMinutes(1) }
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Code | Should -Be 'drain_overdue'
+        $B.Now = { [DateTime]::UtcNow.AddHours(6).AddMinutes(3) }
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Code | Should -Be 'drain_overdue'
+        @(Get-WinVms $w).Count | Should -Be 1
+        @(Get-WinCalls $w 'RemoveVm *').Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.result.detail -like 'drained VM kept 6 h*' }).Count | Should -Be 1
+        Set-WinKnob $w @{ CloneBytes = 61 * $script:GiB }
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))
+        @(Get-WinVms $w).Count | Should -Be 0
+    }
+
     It 'drains an idle runner: deregisters it and destroys the VM; a busy one keeps running' -Tag 'jobrunning' {
         $w = New-WinWorld
         $B = New-WinBackend $w
@@ -189,8 +236,8 @@ Describe 'one job, end to end' {
         @(Get-WinVms $w).Count | Should -Be 0
     }
 
-    It 'destroys a VM whose clone folder passes clone_gib (fatal, clone over cap), and a paused VM' -Tag 'clone-cap', 'vm-paused' {
-        foreach ($knob in @(@{ CloneBytes = 61 * $script:GiB }, @{ Paused = $true })) {
+    It 'destroys a VM whose clone folder passes clone_gib (fatal, clone over cap) or cannot be measured, and a paused VM' -Tag 'clone-cap', 'vm-paused' {
+        foreach ($knob in @(@{ CloneBytes = 61 * $script:GiB }, @{ Paused = $true }, @{ MeasureFails = $true })) {
             $w = New-WinWorld
             $B = New-WinBackend $w
             $r = New-WinReservation $w
@@ -203,7 +250,7 @@ Describe 'one job, end to end' {
             $s.Action | Should -Be 'destroyed'
             $fail = @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'run_one' -and $_.phase -eq 'failed' })
             $fail[0].result.code | Should -Be 'fatal'
-            $fail[0].result.detail | Should -BeIn @('clone over cap', 'vm paused')
+            $fail[0].result.detail | Should -BeIn @('clone over cap', 'vm paused', 'clone not measurable')
             @(Get-WinVms $w).Count | Should -Be 0
         }
     }

@@ -27,7 +27,7 @@ tick.
 | `creating` | **create**: trust-check the roots and the host (Enhanced Session Mode off, nobody but SYSTEM and Administrators in Hyper-V Administrators), check that the generation folder and `base.vhdx` are sealed read-only, re-hash the base against the pin through a read handle held until the differencing disk exists, the reservation folders, `os.avhdx` (differencing child of the base), `scratch.vhdx` (its maximum size inside `scratch_gib`), a fresh per-clone password written offline into the clone's answer file, `New-VM` and its id journaled at once (or the VM whose id the journal already recorded), read back and verify every VM setting, its disks and devices, attach the guest network and verify it. Then **boot**, then **ready** (`probe` until `ready`, at most 15 minutes after boot) and `Set-AapSlotState ready` |
 | `ready` | **run_one**: `Invoke-AapBrokerLease`, `deliver_registration` with the JIT config on the call child's stdin, `start_runner` |
 | `ready`, `busy`, `draining` | **heartbeat**, at most every 30 s per reservation: guest `status` over this VM's own channel, broker status for `JobRunning`, `Update-AapHeartbeat`. A runner that GitHub reports gone ends the job (`collecting`); a draining runner that is idle is stopped; a busy one is never touched |
-| every state with a VM | **limits**, from the host on every step, with or without a guest channel: a paused VM or a clone folder over `clone_gib` destroys the VM (`fatal`), the slot held until the teardown proof |
+| every state with a VM | **limits**, from the host on every step, with or without a guest channel, `deleting` included (a drained VM kept for its pending release), before the once-a-minute retry gate: a paused VM or a clone folder over `clone_gib` (or one that cannot be measured) destroys the VM (`fatal`), the slot held until the teardown proof |
 | `collecting` | **collect**: the agent's bounded summary (returned as `Summary`, never written), then `deleting` |
 | `deleting` | **destroy**: `Invoke-AapBrokerRelease` if a lease was ever asked for, `Stop-VM -TurnOff`, `Remove-VM`, P10.0 detach, delete both reservation folders without following links, observe absence, `Complete-AapTeardown` |
 | `quarantined` | `heartbeat`: a validated reply plus a broker answer returns it; `hostile_guest`, `teardown_failed`, or a destroy already journaled: destroy again; `crash`, `unknown_vm`: held. The limits apply here too |
@@ -71,8 +71,9 @@ offline clone disk (`Windows\Panther\unattend.xml`, user `runneradmin`), and pas
 lives in an object whose only property is `Length` (`WriteTo(stream)`, `Clear()`, the broker's JIT config pattern), so it
 is never a command's parameter value (module logging, event 4103), and it is zeroed at destroy. It is never in the
 journal, the allocator, a log or a result. The clone disk is mounted with no drive letter at an access path inside the
-admin-only reservation folder; the answer file and every folder created for it get a protected SYSTEM/Administrators
-DACL from their creation. After a supervisor restart it
+admin-only reservation folder (the mount point itself is a reparse point by design; every folder below it must be
+plain); the answer file and every folder created for it get a protected SYSTEM/Administrators DACL from their creation,
+with no entry for the supervisor's own account (only an unelevated test run adds its own). After a supervisor restart it
 is gone, so the guest channel is gone; the backend then relies on the broker's view of the runner (table above).
 
 ### The guest channel
@@ -128,7 +129,9 @@ create) and the runner part is final:
 | `retry`, `unavailable`, `bad_reply`, other refusals | pending: the slot stays `deleting`; asked again at most once a minute |
 
 The VM goes whatever the release answered, except after a drain: a runner that was listening may still be listed, so
-its VM stays until the release is final. A hostile guest, a broken limit or a failed op removes the VM in every case.
+its VM stays until the release is final, and stays held to every limit on every step. Kept 6 h past the drain, it is
+flagged (`waiting`/`drain_overdue`, journaled once), never destroyed for time. A hostile guest, a broken limit or a
+failed op removes the VM in every case.
 Absence counts only with both tier roots present on the volumes the storage document records, and only after the
 network detach succeeded. A VM, network or folder still there after three tries 5 s apart quarantines the slot
 (`teardown_failed`, capacity held); the next steps try again, at most once a minute. Deletes never follow a junction or

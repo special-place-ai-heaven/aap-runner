@@ -364,7 +364,10 @@ Describe 'the backend context' {
 }
 
 Describe 'offline disk helpers (the production provider uses them)' {
-    It 'writes the answer file through plain folders only, SYSTEM/Administrators-only, replacing an old one' -Tag 'guest-write' {
+    It 'writes the answer file through plain folders only, SYSTEM/Administrators-only, replacing an old one' -Tag 'guest-write', 'own-sid', 'unattend-root' {
+        # An elevated run (the supervisor, a hosted CI runner) gets no entry for its own account; an unelevated test does.
+        $admin = (New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        $sids = @(@('S-1-5-18', 'S-1-5-32-544') + @($(if (-not $admin) { $script:UserSid })) | Sort-Object -Unique)
         $pw = New-WinSecret 'Abc123-def456-Ghi789-jkl012-MNO3'
         $root = Join-Path $TestDrive 'disk1'
         [void][IO.Directory]::CreateDirectory($root)
@@ -375,7 +378,7 @@ Describe 'offline disk helpers (the production provider uses them)' {
             $acl = Get-Acl -LiteralPath $p
             $acl.AreAccessRulesProtected | Should -BeTrue -Because $p
             @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } | Sort-Object -Unique) |
-                Should -Be @(@('S-1-5-18', 'S-1-5-32-544', $script:UserSid) | Sort-Object -Unique) -Because $p
+                Should -Be $sids -Because $p
         }
         Write-AapWinUnattend -Root $root -UserName 'runneradmin' -Password (New-WinSecret 'Second-pass-word-0123456789-abcd')
         [IO.File]::ReadAllText($file) | Should -Match 'Second-pass-word'
@@ -391,6 +394,25 @@ Describe 'offline disk helpers (the production provider uses them)' {
         & cmd.exe /c mklink /J "$root3\Windows\Panther\unattend.xml" $outside | Out-Null
         { Write-AapWinUnattend -Root $root3 -UserName 'runneradmin' -Password $pw } | Should -Throw '*AAP_UnsafePath: a link where the answer file goes*'
         @(Get-ChildItem -LiteralPath $outside).Count | Should -Be 0
+        # The provider's root is a volume mount point, a reparse point: taken as the root, never below it.
+        $vol5 = Join-Path $TestDrive 'vol5'
+        [void][IO.Directory]::CreateDirectory($vol5)
+        & cmd.exe /c mklink /J "$TestDrive\mnt5" $vol5 | Out-Null
+        Write-AapWinUnattend -Root "$TestDrive\mnt5" -UserName 'runneradmin' -Password $pw
+        [IO.File]::ReadAllText("$vol5\Windows\Panther\unattend.xml") | Should -Match '<Value>Abc123-def456-Ghi789-jkl012-MNO3</Value>'
+        $vol6 = Join-Path $TestDrive 'vol6'
+        [void][IO.Directory]::CreateDirectory("$vol6\Windows")
+        & cmd.exe /c mklink /J "$vol6\Windows\Panther" $outside | Out-Null
+        & cmd.exe /c mklink /J "$TestDrive\mnt6" $vol6 | Out-Null
+        { Write-AapWinUnattend -Root "$TestDrive\mnt6" -UserName 'runneradmin' -Password $pw } | Should -Throw '*AAP_UnsafePath: a link, not a plain folder*Panther'
+        @(Get-ChildItem -LiteralPath $outside).Count | Should -Be 0
+    }
+
+    It 'production entries are SYSTEM and Administrators only: never the elevated owner account' -Tag 'own-sid' {
+        $m = Get-Module AapWinBackend
+        (& $m { New-AapWinSecurity $true $true }).GetSecurityDescriptorSddlForm('Access') | Should -BeExactly 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
+        (& $m { New-AapWinSecurity $false $true }).GetSecurityDescriptorSddlForm('Access') | Should -BeExactly 'D:P(A;;FA;;;SY)(A;;FA;;;BA)'
+        (& $m { New-AapWinSecurity $false $false }).GetSecurityDescriptorSddlForm('Access') | Should -BeExactly "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;$($script:UserSid))"
     }
 
     It 'takes the Windows partition only from the EFI, MSR, data layout' -Tag 'disk-layout' {

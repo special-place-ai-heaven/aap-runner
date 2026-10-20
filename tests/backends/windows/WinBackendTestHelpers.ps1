@@ -189,7 +189,7 @@ function New-WinProvider {
         if (Get-WinKnob $w 'ListFails' $false) { throw 'fake: Get-VM failed (access denied)' }
         @(Get-WinVms $w | ForEach-Object { @{ Id = $_.Id; Name = $_.Name; State = $(if (Get-WinKnob $w 'Paused' $false) { 'Paused' } else { $_.State }); Cpus = $_.Cpus; MemGib = $_.MemGib } })
     }
-    $p.MeasureBytes = { param($a) [double](Get-WinKnob $w 'CloneBytes' $script:GiB) }
+    $p.MeasureBytes = { param($a) if (Get-WinKnob $w 'MeasureFails' $false) { throw 'access denied' }; [double](Get-WinKnob $w 'CloneBytes' $script:GiB) }
     $p
 }
 

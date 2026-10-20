@@ -98,7 +98,11 @@ try {
     $feed.Add($envelope)
     $feed.Add($payload)
     $feed.Complete()
-    try { $result = $ps.Invoke($feed) } catch { exit (Get-AapCallExit $_ $session) }
+    try { $result = $ps.Invoke($feed) }
+    catch {
+        if ((Get-AapCallExit $_ $session) -eq 0) { exit 0 }   # check:invoke-drop
+        exit 3
+    }
     if ($ps.InvocationStateInfo.State -ne 'Completed' -or $result.Count -ne 1 -or $null -eq $result[0] -or -not ($result[0].BaseObject -is [string])) { exit 4 }
     $text = [string]$result[0].BaseObject
     if ($text.Length -gt 8192) { exit 5 }

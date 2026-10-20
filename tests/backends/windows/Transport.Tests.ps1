@@ -352,6 +352,31 @@ Start-Sleep -Seconds 600
         Get-AapCallExit (& $er (New-Object Management.Automation.RuntimeException 'a remote script error')) $null | Should -Be 3
     }
 
+    It 'psdirect-call.ps1 sends every exception of the remote call through Get-AapCallExit' -Tag 'invoke-drop', 'transport-drop' {
+        $src = Join-Path (Split-Path -Parent $script:BackendModule) 'psdirect-call.ps1'
+        $ast = [Management.Automation.Language.Parser]::ParseFile($src, [ref]$null, [ref]$null)
+        $tries = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.TryStatementAst] -and $n.Body.Extent.Text -match '\$ps\.Invoke\(' }, $true) |
+            Where-Object { -not $_.Body.Find({ param($n) $n -is [Management.Automation.Language.TryStatementAst] }, $false) })
+        $tries.Count | Should -Be 1
+        $tries[0].CatchClauses.Count | Should -Be 1
+        $tries[0].CatchClauses[0].CatchTypes.Count | Should -Be 0 -Because 'every exception, not one type'
+        $calls = @($tries[0].CatchClauses[0].Body.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Get-AapCallExit' }, $true))
+        $calls.Count | Should -Be 1
+        # End to end: the real child, with New-PSSession answered by a session whose runspace is no longer open (the VM
+        # stopped mid-call). Its Invoke throws; the child must end as a failed guest: exit 0, no output.
+        $kid = Join-Path $script:Kids 'drop.ps1'
+        [IO.File]::WriteAllText($kid, @"
+function New-PSSession { [CmdletBinding()] param(`$VMId, `$Credential) `$rs = [runspacefactory]::CreateRunspace(); `$rs.Open(); `$rs.Close(); [pscustomobject]@{ Runspace = `$rs } }
+function Remove-PSSession { [CmdletBinding()] param(`$Session) }
+& '$src'
+exit `$LASTEXITCODE
+"@)
+        $c = Invoke-WinChild 'drop.ps1' 30
+        $c.Raw.TimedOut | Should -BeFalse
+        $c.Raw.ExitCode | Should -Be 0
+        $c.Raw.Stdout | Should -BeNullOrEmpty
+    }
+
     It 'the real psdirect-call.ps1 refuses a malformed stdin with exit 2, before any session is opened' {
         # Only the input checks run: no PowerShell Direct session is attempted (no Hyper-V call in this suite).
         Set-WinModuleVar 'ChildScript' $script:Saved
