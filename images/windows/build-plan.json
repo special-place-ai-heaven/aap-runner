@@ -1,0 +1,911 @@
+{
+  "schema": 1,
+  "profile": "win25-vs2026-x64",
+  "generated_by": "images/windows/New-AapWinBuildPlan.ps1",
+  "baseline": {
+    "runner_images_commit": "aee0669dd04510a11756664eb77f5630debabed3",
+    "image_version": "20261007.264.1",
+    "inventory_path": "parity/baselines/windows-2025-vs2026-x64/inventory.json",
+    "inventory_sha256": "cf842a07fd309da0100d955383883f9423bb2b7524e78bd33a67ecdcfc953f25",
+    "template_path": "parity/baselines/windows-2025-vs2026-x64/sources/build-commit-aee0669/build.windows-2025-vs2026.pkr.hcl",
+    "template_sha256": "f1057bf63d180ff8392acb2bd0604523fa701a10397dcac5579de52009b35241",
+    "locals_path": "parity/baselines/windows-2025-vs2026-x64/sources/pin/locals.windows.pkr.hcl",
+    "locals_sha256": "4e8051e8e82597087f859f5104859bcaf5b6f63dbc66338ea5ed79d59aed9e27"
+  },
+  "os_disk_gib": 150,
+  "temp_disk_gib": 150,
+  "variables": {
+    "image_version": "20261007.264.1",
+    "image_os": "win25-vs2026",
+    "agent_tools_directory": "C:\\hostedtoolcache\\windows",
+    "imagedata_file": "C:\\imagedata.json",
+    "image_folder": "C:\\image",
+    "temp_dir": "D:\\temp",
+    "helper_script_folder": "C:\\Program Files\\WindowsPowerShell\\Modules\\",
+    "install_user": "installer"
+  },
+  "variables_source": "upstream images/windows/templates/variable.windows.pkr.hcl defaults at aee0669, not stored in parity/baselines; image_version is the P01 baseline",
+  "blockers": [
+    {
+      "id": "p06-upstream-source-archive",
+      "reason": "images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at aee0669 (images/windows scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive.",
+      "owner_action": "P03 owner adds a literal-pinned entry for the archive of actions/runner-images at aee0669dd04510a11756664eb77f5630debabed3, then this generator is rerun with -ScriptsDir to pin every script hash."
+    },
+    {
+      "id": "p06-upstream-variables-unverified",
+      "reason": "The variable defaults above come from the upstream variables file, which P01 did not store. They are not yet checked against the pinned bytes.",
+      "owner_action": "Compare them with variable.windows.pkr.hcl inside the P03-staged archive and drop this blocker in the same change."
+    }
+  ],
+  "phases": [
+    {
+      "id": "p01",
+      "kind": "action",
+      "action": "prepare-folders",
+      "upstream": {
+        "block": 1,
+        "type": "powershell",
+        "body_sha256": "134362332457fbe3e2931bdc1403f47807978a993b98a6115bf0c5d5df134961"
+      },
+      "deviation": null,
+      "elevated": false
+    },
+    {
+      "id": "p02",
+      "kind": "action",
+      "action": "upload-sources",
+      "upstream": {
+        "block": 2,
+        "type": "file",
+        "body_sha256": "c3a42a3457c6ad8753872c09bec1baa3c56f66509736ecf29bff96e8471d33ee"
+      },
+      "deviation": "assets, scripts and toolsets come from the P03-staged runner-images archive at the build commit, copied into the guest over the management session",
+      "elevated": false
+    },
+    {
+      "id": "p03",
+      "kind": "action",
+      "action": "upload-report-base",
+      "upstream": {
+        "block": 3,
+        "type": "file",
+        "body_sha256": "b4e6eb4b236fe5ac43760773a23a4023bb8001a69e38142a4654af291396f9dd"
+      },
+      "deviation": "from the same P03-staged archive",
+      "elevated": false
+    },
+    {
+      "id": "p04",
+      "kind": "action",
+      "action": "layout-image-folder",
+      "upstream": {
+        "block": 4,
+        "type": "powershell",
+        "body_sha256": "f635c4e45100287ab61e209a80a36c7c3c5115ffb2042b7f2e6bf674bce4d5ef"
+      },
+      "deviation": null,
+      "elevated": false
+    },
+    {
+      "id": "p05",
+      "kind": "action",
+      "action": "create-install-user",
+      "upstream": {
+        "block": 5,
+        "type": "windows-shell",
+        "body_sha256": "8a1e3624543486ae892af4fbd4b39bad6da927b02479e2a53f1c16adf6a7c969"
+      },
+      "deviation": "the answer file creates the install user with a per-build random password held in memory only; WinRM basic auth is not enabled because the builder uses PowerShell Direct",
+      "elevated": false
+    },
+    {
+      "id": "p06",
+      "kind": "action",
+      "action": "check-install-user",
+      "upstream": {
+        "block": 6,
+        "type": "powershell",
+        "body_sha256": "e0b9b0524c9860f2f4e4b07b57c69fefd79899dedce47d1fbbcbf191065440d4"
+      },
+      "deviation": null,
+      "elevated": false
+    },
+    {
+      "id": "p07",
+      "kind": "action",
+      "action": "bcdedit-testsigning",
+      "upstream": {
+        "block": 7,
+        "type": "powershell",
+        "body_sha256": "0821ac3b267060e0adaef3b1426cc8314f4e3171195156ce53f87b8efd50907e"
+      },
+      "deviation": null,
+      "elevated": true
+    },
+    {
+      "id": "p08",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 8,
+        "type": "powershell",
+        "body_sha256": "b5b1120f35e4b7200844c7ea36d5cb499278b8df52534764732d995e1b427583"
+      },
+      "scripts": [
+        {
+          "name": "Configure-WindowsDefender.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-PowerShell.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-PowerShellModules.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-WSL2.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-WindowsFeatures.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Chocolatey.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-BaseImage.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-ImageDataFile.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-SystemEnvironment.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-DotnetSecureChannel.ps1",
+          "dir": "build",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "IMAGE_VERSION": "${var.image_version}",
+        "IMAGE_OS": "${var.image_os}",
+        "AGENT_TOOLSDIRECTORY": "${var.agent_tools_directory}",
+        "IMAGEDATA_FILE": "${var.imagedata_file}",
+        "IMAGE_FOLDER": "${var.image_folder}",
+        "TEMP_DIR": "${var.temp_dir}",
+        "INSTALL_VS_2026": "true"
+      },
+      "elevated": false,
+      "execution_policy": "unrestricted",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "skip_clean": false
+    },
+    {
+      "id": "p09",
+      "kind": "restart",
+      "action": null,
+      "upstream": {
+        "block": 9,
+        "type": "windows-restart",
+        "body_sha256": "9ffd79e5739348ca6feffc0066f9e466aaa9f501923e7cf10e37366e67aa04dc"
+      },
+      "timeout_seconds": 600,
+      "check_registry": true,
+      "check": "wait-containers-feature"
+    },
+    {
+      "id": "p10",
+      "kind": "action",
+      "action": "wlansvc-manual",
+      "upstream": {
+        "block": 10,
+        "type": "powershell",
+        "body_sha256": "bfa3b77e12510c7b9b3ea34f1c0bd571312a6e5660b7005b4cbf489b04cd8cdf"
+      },
+      "deviation": null,
+      "elevated": false
+    },
+    {
+      "id": "p11",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 11,
+        "type": "powershell",
+        "body_sha256": "81f4e5b4e09b493006f2af901f8f5ff7a00f4f78bf53945b11b543fdd8498f75"
+      },
+      "scripts": [
+        {
+          "name": "Install-Docker.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-DockerWinCred.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-DockerCompose.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-PowershellCore.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-WebPlatformInstaller.ps1",
+          "dir": "build",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "IMAGE_FOLDER": "${var.image_folder}",
+        "TEMP_DIR": "${var.temp_dir}"
+      },
+      "elevated": false,
+      "execution_policy": "bypass",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "skip_clean": false
+    },
+    {
+      "id": "p12",
+      "kind": "restart",
+      "action": null,
+      "upstream": {
+        "block": 12,
+        "type": "windows-restart",
+        "body_sha256": "08d08ed3cee78ffd71fd27bb8ea90e3e47f19cda26fcd63327860fce2012c838"
+      },
+      "timeout_seconds": 1800,
+      "check_registry": false,
+      "check": null
+    },
+    {
+      "id": "p13",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 13,
+        "type": "powershell",
+        "body_sha256": "9d754d13c077da26c96f4ed42934f067820960f312d546a5f50d805b7cf8d4b5"
+      },
+      "scripts": [
+        {
+          "name": "Install-VisualStudio.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-KubernetesTools.ps1",
+          "dir": "build",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "IMAGE_FOLDER": "${var.image_folder}",
+        "TEMP_DIR": "${var.temp_dir}",
+        "INSTALL_VS_2026": "true"
+      },
+      "elevated": true,
+      "execution_policy": "bypass",
+      "valid_exit_codes": [
+        0,
+        3010
+      ],
+      "pause_before_seconds": 0,
+      "skip_clean": false
+    },
+    {
+      "id": "p14",
+      "kind": "restart",
+      "action": null,
+      "upstream": {
+        "block": 14,
+        "type": "windows-restart",
+        "body_sha256": "2b74b9db3c6a583a31ffbb11660f872d9528786830d0ab0879008047e0322923"
+      },
+      "timeout_seconds": 600,
+      "check_registry": true,
+      "check": null
+    },
+    {
+      "id": "p15",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 15,
+        "type": "powershell",
+        "body_sha256": "5705e48d992ff636a01c781d035f6e8a0ee0baaf60f23bcd2c9f3c5588f1c939"
+      },
+      "scripts": [
+        {
+          "name": "Install-Wix.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-VSExtensions.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-AzureCli.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-AzureDevOpsCli.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-ChocolateyPackages.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-JavaTools.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Kotlin.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-OpenSSL.ps1",
+          "dir": "build",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "IMAGE_FOLDER": "${var.image_folder}",
+        "TEMP_DIR": "${var.temp_dir}"
+      },
+      "elevated": false,
+      "execution_policy": "bypass",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 120,
+      "skip_clean": false
+    },
+    {
+      "id": "p16",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 16,
+        "type": "powershell",
+        "body_sha256": "a8ec1c2a4305d80ecccc83c2d2202eefb94a1af2d4990f0f5a00c29fc19d4840"
+      },
+      "scripts": [
+        {
+          "name": "Install-ServiceFabricSDK.ps1",
+          "dir": "build",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "IMAGE_FOLDER": "${var.image_folder}",
+        "TEMP_DIR": "${var.temp_dir}"
+      },
+      "elevated": false,
+      "execution_policy": "remotesigned",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "skip_clean": false
+    },
+    {
+      "id": "p17",
+      "kind": "restart",
+      "action": null,
+      "upstream": {
+        "block": 17,
+        "type": "windows-restart",
+        "body_sha256": "9bf217226ee8eb0816a65bb50706756570b08f23911588c38b8bc46085ac70f5"
+      },
+      "timeout_seconds": 600,
+      "check_registry": false,
+      "check": null
+    },
+    {
+      "id": "p18",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 18,
+        "type": "powershell",
+        "body_sha256": "d0a02bf0a8b2bf400b990d22769c2ba2a1bb9ae77abfb7d39d6096e685b7345f"
+      },
+      "scripts": [
+        {
+          "name": "Install-ActionsCache.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Ruby.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-PyPy.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Toolset.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-Toolset.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-NodeJS.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-AndroidSDK.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-PowershellAzModules.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Pipx.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Git.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-GitHub-CLI.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-PHP.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Rust.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Sbt.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Chrome.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-EdgeDriver.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Firefox.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Selenium.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-IEWebDriver.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Apache.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Nginx.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Msys2.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-WinAppDriver.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-R.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-AWSTools.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-DACFx.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-MysqlCli.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-SQLPowerShellTools.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-SQLOLEDBDriver.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-DotnetSDK.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Mingw64.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Haskell.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Stack.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Miniconda.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-AzureCosmosDbEmulator.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Zstd.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Vcpkg.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-Bazel.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-RootCA.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-MongoDB.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-CodeQLBundle.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-Diagnostics.ps1",
+          "dir": "build",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "IMAGE_FOLDER": "${var.image_folder}",
+        "TEMP_DIR": "${var.temp_dir}"
+      },
+      "elevated": false,
+      "execution_policy": "bypass",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "skip_clean": false
+    },
+    {
+      "id": "p19",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 19,
+        "type": "powershell",
+        "body_sha256": "c5c0bfdd9953bcaf5242014a9c5bb78075e3d2eb2d72fcea228060d4706268f9"
+      },
+      "scripts": [
+        {
+          "name": "Install-LLVM.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-PostgreSQL.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Install-WindowsUpdates.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-DynamicPort.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-GDIProcessHandleQuota.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-Shell.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-DeveloperMode.ps1",
+          "dir": "build",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "IMAGE_FOLDER": "${var.image_folder}",
+        "TEMP_DIR": "${var.temp_dir}"
+      },
+      "elevated": true,
+      "execution_policy": "bypass",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "skip_clean": false
+    },
+    {
+      "id": "p20",
+      "kind": "restart",
+      "action": null,
+      "upstream": {
+        "block": 20,
+        "type": "windows-restart",
+        "body_sha256": "311ad18f249f16b3136053efa04703bb18e32bd12b960b5788fa3e27a8e7908b"
+      },
+      "timeout_seconds": 1800,
+      "check_registry": true,
+      "check": "wait-tiworker-idle"
+    },
+    {
+      "id": "p21",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 21,
+        "type": "powershell",
+        "body_sha256": "562b1d094478cb2c8581a9a56abccb73c61c38ada6fcedb5cadbf7a0815bf62a"
+      },
+      "scripts": [
+        {
+          "name": "Install-WindowsUpdatesAfterReboot.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Invoke-Cleanup.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "RunAll-Tests.ps1",
+          "dir": "tests",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "IMAGE_FOLDER": "${var.image_folder}",
+        "TEMP_DIR": "${var.temp_dir}"
+      },
+      "elevated": false,
+      "execution_policy": "bypass",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 120,
+      "skip_clean": false
+    },
+    {
+      "id": "p22",
+      "kind": "action",
+      "action": "assert-test-results",
+      "upstream": {
+        "block": 22,
+        "type": "powershell",
+        "body_sha256": "521ff8f6a7354cd755593d799a5ee7fe7eac0739ccc6e48421c0780685d4b602"
+      },
+      "deviation": null,
+      "elevated": false
+    },
+    {
+      "id": "p23",
+      "kind": "action",
+      "action": "software-report",
+      "upstream": {
+        "block": 23,
+        "type": "powershell",
+        "body_sha256": "ae6079005bf563e2068ba630b333db5375a3c0b2cf0d5dfea890aa1498da242f"
+      },
+      "deviation": null,
+      "elevated": false
+    },
+    {
+      "id": "p24",
+      "kind": "action",
+      "action": "assert-software-report",
+      "upstream": {
+        "block": 24,
+        "type": "powershell",
+        "body_sha256": "3769d791bd3adec35a466ea7842f9dbfe7919378e5f74cc2362237d2ec9eb7c2"
+      },
+      "deviation": null,
+      "elevated": false
+    },
+    {
+      "id": "p25",
+      "kind": "action",
+      "action": "download-software-report-md",
+      "upstream": {
+        "block": 25,
+        "type": "file",
+        "body_sha256": "2f20afcdf37ee93d547373975fe7b4dc4b10b6155545e0426d6f9d066231aecf"
+      },
+      "deviation": "copied to the build evidence, size-bounded, never parsed as code",
+      "elevated": false
+    },
+    {
+      "id": "p26",
+      "kind": "action",
+      "action": "download-software-report-json",
+      "upstream": {
+        "block": 26,
+        "type": "file",
+        "body_sha256": "1300b025294b249dfe2017d798adbc81a65e777b0294af449565a5720505c7c7"
+      },
+      "deviation": "copied to the build evidence, size-bounded, never parsed as code",
+      "elevated": false
+    },
+    {
+      "id": "p27",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 27,
+        "type": "powershell",
+        "body_sha256": "a1dc98f12abbef26ba4c9f0bb704cf785c2d2008e228813de0800b81069922a1"
+      },
+      "scripts": [
+        {
+          "name": "Install-NativeImages.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-System.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Configure-User.ps1",
+          "dir": "build",
+          "sha256": null
+        },
+        {
+          "name": "Post-Build-Validation.ps1",
+          "dir": "build",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "INSTALL_USER": "${var.install_user}"
+      },
+      "elevated": false,
+      "execution_policy": "bypass",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "skip_clean": true
+    },
+    {
+      "id": "p28",
+      "kind": "restart",
+      "action": null,
+      "upstream": {
+        "block": 28,
+        "type": "windows-restart",
+        "body_sha256": "9bf217226ee8eb0816a65bb50706756570b08f23911588c38b8bc46085ac70f5"
+      },
+      "timeout_seconds": 600,
+      "check_registry": false,
+      "check": null
+    },
+    {
+      "id": "p29",
+      "kind": "action",
+      "action": "sysprep-generalize",
+      "upstream": {
+        "block": 29,
+        "type": "powershell",
+        "body_sha256": "07dd17bb5ed41b68143f484527a0952b8f4a8ba143ff46c81dfbd599926c3dd6"
+      },
+      "deviation": "before sysprep the builder deletes every answer file and gives the install user a fresh random password that never leaves the guest",
+      "elevated": false
+    }
+  ]
+}
