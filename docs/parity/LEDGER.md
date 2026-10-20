@@ -1,15 +1,19 @@
 # Parity implementation ledger
 
-Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 on origin/main `88a9a25`: P00, P01, P02, P03, P04, P05, P06, P08, P09, P17, P18, P20.0 and the child P02.2 are COMPLETE with no merged item awaiting cleanup verification (barrier open), P10 and P13 have open PRs, P07 is in progress; wave 5 is current. States below are current; everything not listed otherwise is NOT_STARTED. `ledger.json` is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in [WORKTREES.md](WORKTREES.md). Only `COMPLETE` dependencies unlock work; merged or gate-verified alone does not.
+Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 on origin/main `7ff6052`: P00, P01, P02, P03, P04, P05, P06, P08, P09, P10, P13, P17, P18, P20.0 and the child P02.2 are COMPLETE with no merged item awaiting cleanup verification (barrier open); in flight: P07 (PR #49 draft, FIX-FIRST round), P06.1, P11 and P13.1; wave 5 is current. States below are current; everything not listed otherwise is NOT_STARTED. `ledger.json` is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in [WORKTREES.md](WORKTREES.md). Only `COMPLETE` dependencies unlock work; merged or gate-verified alone does not.
 
 ## Owner decisions and open gates
 
 - 2026-10-19: native Windows runner is the critical path (Windows chain first after P02); the live five-runner legacy pool is untouched until certified cutover (D5); per-profile resource shares are a hard requirement (example 30 % Windows / 60 % Linux / 10 % owner desktop); agents merge reviewed green PRs, the owner never merges; profile counts are two live controls, Linux 0-5 and Windows 0-5 with a total of at most 5.
 - 2026-10-20 lab budget approved (gate D2 budget met), `E:\aap-runner` only: base generation <= 200 GB, rollback generation <= 200 GB, per-runner clone+scratch <= 60 GB, at least 15 % of the volume free; one build VM at a time with 4 vCPU and 10 GiB static RAM at the lowest scheduling weight; internal switch + NAT only. `E:\` root locked to Administrators 2026-10-20. Windows Server 2025 Evaluation ISO provided and verified.
 - Partitions and volumes are never touched; only plain files inside `E:\aap-runner\` after approval.
-- Interim Windows host runner approved unisolated (group `aap-win-interim`, label `windows-host-interim`); retire it when the VM profile is certified. It can reach the App key, an accepted risk that is a precondition to close before the App gains permissions.
-- PENDING: zccache 1.15.6 AGPL-3.0-only compliance decision (images containing it must not be redistributed until decided).
-- PENDING: GitHub App `actions: read` + `contents: read` for cache trust-class lookups (gates P02.3 and P13 activation).
+- Interim Windows host runner approved unisolated (group `aap-win-interim`, label `windows-host-interim`); retire it when the VM profile is certified.
+- Queued for the owner, not decided here (details in `ledger.json` `owner_decisions_queued`):
+  - Q1 URGENT: interim runner exposure; the runner group may admit public repositories and fork PRs, and the runner can reach the App key.
+  - Q2: zccache 1.15.6 AGPL-3.0-only compliance (no redistribution of images containing it until decided).
+  - Q3: GitHub App `actions: read` + `contents: read` on selected repositories for cache trust-class lookups (gates P02.3; Q1 is a precondition).
+  - Q4: hard VM lifetime cap before the Windows profile serves public repositories.
+  - Q5: even-mode drain when a runner count is raised.
 
 ## P00 — Build the worktree, lease and cleanup gate
 
@@ -65,7 +69,8 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `parity/contracts/**`.
 - Deliverable: Specify a one-shot guest-transport command bind_cache (at most 1 KiB) that binds the job's cache trust class (event, ref, head repository) to the guest cache root, with schema, positive and negative fixtures and the broker-side narrowed per-lookup token flow.
 - Acceptance: validate.py PASS with the new fixtures; oversized, replayed, unbound-class and arbitrary-exec negatives refused; independent security review. Requires the owner decision on giving the GitHub App actions:read + contents:read for cache trust-class lookups (installed only on the aap-crrr runner group's repositories); never implemented against the live App before that decision.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED. Open input: owner decision on the GitHub App `actions: read` + `contents: read` grant for cache trust-class lookups (PENDING), with the interim-runner/App-key exposure closed first.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned). Open input: owner decision Q3.
+- Why: P13 landed without a host-side way to bind a job's trust class to the guest cache root; a bind_cache command is needed, and it is gated on the owner's GitHub App permission decision.
 
 ## P03 — Implement verified artifact acquisition
 
@@ -81,7 +86,8 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Pinned execution lane: Luna high; ownership: `images/common/artifacts.manifest*.json`, `images/common/New-AapManifest.ps1`, `tests/images/common/**`.
 - Deliverable: Add the actions/runner-images trees for the pinned build commits aee0669 (Windows) and 7e7dc1b (Ubuntu) to the P03 manifest so the 82 null upstream script hashes in P06 (and the P07 equivalents) become non-null; add the Ubuntu 24.04 server ISO entry with hash, provenance and license.
 - Acceptance: No consumer script hash is null; builds no longer stop with AAP_ScriptUnpinned for lack of a pin; a changed or corrupt tree and a missing ISO hash are rejected by tests; unreproducible inputs remain explicit blockers.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Why: P06 and P07 real builds are refused (AAP_ScriptUnpinned) because the runner-images script hashes are null until their trees are pinned in the manifest.
 
 ## P04 — Qualify zccache 1.15.6 interfaces and platforms
 
@@ -97,7 +103,8 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `parity/cache/qualification/**`, `tests/parity/cache/qualification/**`.
 - Deliverable: Extend the Linux -g rows and land the harness follow-ups from the P04 reviews; align retention.md requirement 4 with cache rule 6 revision 3 (trust namespace = repository + job trust class).
 - Acceptance: Every new row has a recorded direct-versus-cached comparison or an explicit unqualified marker; retention.md no longer contradicts cache-qualification.md rule 6; Pester and unittest suites green on both PowerShell hosts and in hosted CI.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Why: P04 left Linux -g rows unqualified and retention.md requirement 4 still contradicts cache rule 6 revision 3.
 
 ## P05 — Build differential certification harness
 
@@ -113,7 +120,8 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Pinned execution lane: Luna high; ownership: `tools/parity-certify/**`, `tests/parity-certify/**`.
 - Deliverable: Use the evidence-bundle waivers field in certify and bind exit_code; fix the certify.py re.match $ trailing-newline acceptance (use fullmatch or \Z).
 - Acceptance: Each fix has a test that fails without it; a waiver unbound to its workload is refused; a trailing-newline value is rejected; both PowerShell hosts green.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Why: P05 review follow-ups: certify ignores the evidence-bundle waivers and exit_code binding, and its regex accepts a trailing newline.
 
 ## P06 — Build the native Windows image
 
@@ -123,13 +131,13 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Acceptance: Fresh guest and actual job user pass full inventory/upstream tests; native compiler/SDK/resource discovery works. No host-specific credential or App key in image. Measure image, staging, replacement and scratch storage; do not inherit the 60 GiB Linux default.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #38 merged at `c621999` (accepted head `d0169ca`; hosted CI run 39354581645; Pester 254/254 on both hosts; mutation 53/53); attempt-1 cleaned and independently verified (receipt in the parity evidence store). No real build has run (D2 lab first); 82 upstream script hashes null until P03.1; per-test waivers and the secret-scan skip list are P06.1. `tests/images/windows` entered CI with PR #41.
 
-## P06.1 — Per-test waivers for the verify phase and a reviewed secret-scan skip list
+## P06.1 — Per-adapter network controls, elevated-context hardening, per-test waivers and a reviewed secret-scan skip list
 
 - Earliest wave: 6; prerequisites: P06, P02.2.
-- Pinned execution lane: Luna high; ownership: `images/windows/**`, `tests/images/windows/**`.
-- Deliverable: The verify phase needs failed-test names in the verify reply to apply per-test waivers; extend the reviewed secret-scan skip list from D2 evidence (currently only System Volume Information).
-- Acceptance: Waivers apply only to named failed tests bound to the workload; every skip-list entry cites observed lab evidence; Pester green on both hosts. Skip-list extension needs a real build from the D2 lab, so that part is gated on P02.1/D2.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (skip-list part gated on a D2 lab build).
+- Pinned execution lane: Sol medium (Claude: Opus medium); ownership: `images/windows/**`, `tests/images/windows/**`.
+- Deliverable: Per-adapter network controls and elevated-context hardening in the Windows image builder, found by the P07 reviews. Also (carried from the original P06.1 scope): the verify phase needs failed-test names in the verify reply to apply per-test waivers, and the reviewed secret-scan skip list is extended from D2 evidence (currently only System Volume Information).
+- Acceptance: Each hardening finding has a test that fails without its fix; Pester green on both hosts and in hosted CI; waivers apply only to named failed tests bound to the workload; every skip-list entry cites observed lab evidence. The skip-list extension needs a real build from the D2 lab, so that part is gated on P02.1/D2.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: IN_PROGRESS — attempt-1 worktree on `parity/p06-1-nic-controls` (base `f40a454`); not yet pushed. The skip-list part is gated on a D2 lab build.
 
 ## P07 — Build the Ubuntu 24.04 VM image
 
@@ -137,7 +145,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Pinned execution lane: Luna high; ownership: `images/ubuntu-24.04/**`, `tests/images/ubuntu-24.04/**`.
 - Deliverable: Build the full pinned Ubuntu 24.04 VM environment using upstream install/config/tool-cache/test/post-generation logic, with guest-only passwordless sudo, systemd and baseline container capabilities.
 - Acceptance: All inventory categories and cached versions verified; fresh job shell/environment and baseline services work. No Ubuntu 26.04; Sysbox compatibility is not certified as full VM equivalence.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: IN_PROGRESS — attempt-1 worktree on `parity/p07-ubuntu-image` (base `4637f84`), authoring with fakes only; not yet pushed. Real builds stay refused until P03.1 pins the script hashes.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: IN_PROGRESS — PR #49 (draft) at `354d216` on `parity/p07-ubuntu-image`, authoring with fakes only; review round FIX-FIRST in progress. Real builds stay refused until P03.1 pins the script hashes.
 
 ## P08 — Implement protected registration and management transport
 
@@ -153,7 +161,8 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Pinned execution lane: Luna high; ownership: `supervisor/broker/**`, `distro/worker-auth.sh`, `tests/broker/**`, `tests/worker_auth_test.sh`.
 - Deliverable: Move the audit log dir from /var/log to /var/lib/aap-runner/broker; rm -f the lease file on create failure only when it is empty; raise the client TimeoutSeconds floor to 60; correct the exit-code comment.
 - Acceptance: Each change has a test that fails without it; worker_auth_test.sh green on real Linux in hosted CI; both PowerShell hosts green; independent security review (secret-bearing path).
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Why: P08 review notes that were non-blocking: audit log location, lease-file removal on create failure, client timeout floor and an exit-code comment.
 
 ## P09 — Implement one mixed-fleet capacity allocator
 
@@ -177,7 +186,16 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Pinned execution lane: Sol high; ownership: `supervisor/backends/windows/**`, `tests/backends/windows/**`.
 - Deliverable: Implement create/boot/ready/one-job/drain/collect/reset-or-destroy/reconcile against frozen contracts using immutable base and task-owned differential/scratch disks. Use the approved guest management transport.
 - Acceptance: Crash at every lifecycle boundary; discover orphan guest safely; cancellation and cleanup are idempotent. Guest Administrator cannot access host shares/control key. No slot reuse before verified guest teardown.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: PR_OPEN — PR #45 at `bd1bfdc` on `parity/p10-windows-backend` (base `f36ae7e`), authored with fakes only; no VM and no switch (P10.0/P02.1 lab gates still open); independent reviews pending.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #45 merged at `2e4adb5` (accepted head `a2fc492`; hosted CI run 39485881809; Pester 212/212 on both hosts; 79 mutation checks); attempt-1 cleaned and independently verified (receipt in the parity evidence store). Never run against a real VM (P02.1 lab); network module is a seam (P10.0); no hard VM lifetime cap (owner decision Q4); hardening in P10.1. `tests/backends/windows` entered CI with PR #50.
+
+## P10.1 — Harden the Windows VM backend after the P10 reviews
+
+- Earliest wave: 6; prerequisites: P10.
+- Pinned execution lane: Sol high (Claude: Opus high); ownership: `supervisor/backends/windows/**`, `tests/backends/windows/**`.
+- Deliverable: Make the backend's tests stop leaving SY+BA-locked fixtures that only an owner self-grant can delete; harden clone measurement against files that vanish mid-walk so a transient race no longer destroys the VM; dismount a stale mount left behind.
+- Acceptance: Each item has a test that fails without its fix; the suite leaves nothing that needs elevation to delete; a vanished file during clone measurement retries or fails closed without destroying a healthy VM; a stale mount is dismounted by the reconcile path; both PowerShell hosts green.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Why: P10 shipped with test fixtures that need an owner self-grant to delete, a 'clone not measurable' path that destroys on a transient race, and a stale-mount case it does not dismount.
 
 ## P11 — Implement Linux VM backend
 
@@ -185,7 +203,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Pinned execution lane: Sol high; ownership: `supervisor/backends/linux/**`, `tests/backends/linux/**`.
 - Deliverable: Implement the same lifecycle for Ubuntu VM guests, isolated management access, ephemeral runner and deterministic workspace/service/process/network cleanup.
 - Acceptance: Restart and cancellation recover without duplicate registration. Guest root stays inside guest boundary. A subsequent job cannot observe prior system/HOME/workspace/listener changes.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: IN_PROGRESS — attempt-1 worktree on `parity/p11-linux-backend` (base `cec295b`), authoring with fakes only as a mirror of the merged P10; no PR yet.
 
 ## P12 — Integrate supervisor and versioned file contracts
 
@@ -201,7 +219,16 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Pinned execution lane: Sol high; ownership: `guests/cache/**`, `tests/guests/cache/**`.
 - Deliverable: Package verified per-platform zccache and initialize only qualified wrappers before Actions starts. Isolate mutable daemon/index roots; use supported cache transport and daemon retention. Bound total artifact+metadata+log+temp bytes.
 - Acceptance: Daemon failure and unsupported compiler modes preserve direct build correctness; no hardlink poisoning, shared mutable index assumption or raw oldest-file eviction. Cold/warm/concurrent/crash cases pass; product cache namespaces have explicit trust and retention owners.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: PR_OPEN — PR #40 at `3da64e5` on `parity/p13-zccache-guest` (base `f36ae7e`), authoring only; review fixes in progress in the attempt-1 worktree. The zccache AGPL-3.0-only compliance decision and the cache trust-class source (App permission) are pending with the owner.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #40 merged at `cec295b` (accepted head `97990b5`; hosted CI run 39486269433; Pester 134/134 on both hosts, Git Bash 168/168, hosted ubuntu-24.04 172/172); attempt-1 cleaned and independently verified (receipt in the parity evidence store). No matrix row qualified so every build is direct; shared roots default OFF; the trust source needs the App decision (Q3) and bind_cache (P02.3); t_shim_concurrent flaked on push CI (P13.1). `tests/guests/cache` entered CI with PR #50.
+
+## P13.1 — Root-cause and fix the flaky t_shim_concurrent in the zccache guest tests
+
+- Earliest wave: 5; prerequisites: P13.
+- Pinned execution lane: Sol high (Claude: Opus high); ownership: `guests/cache/**`, `tests/guests/cache/**`.
+- Deliverable: Root-cause the intermittent 'and all equal direct' failure of tests/guests/cache/zccache_test.sh t_shim_concurrent seen on hosted push CI run 39496833364; fix the shim or the test.
+- Acceptance: Root cause recorded; stress-loop proof in WSL Ubuntu-24.04 (and a hosted CI rerun series) without a failure; no weakening of the 'equal direct' assertion unless the cause is shown to be the test.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: IN_PROGRESS — attempt-1 worktree on `parity/p13-1-shim-concurrency` (base `7ff6052`); root cause pending.
+- Why: t_shim_concurrent flaked on the first push CI run after P13 merged, so the guarantee that concurrent shim calls equal direct builds is not yet trustworthy.
 
 ## P14 — Implement Windows guest bootstrap
 
@@ -313,7 +340,8 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-20 
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `crates/tray/**`.
 - Deliverable: Let the tray replace its own executable through the existing elevated helper: one UAC click, no console window, no wsl.exe, no tokens in the tray; contract docs and both sides' tests updated in the same PR.
 - Acceptance: cargo fmt/clippy/test green; update succeeds with the tray running or quits it itself; a bad or unsigned replacement is refused and the old build stays; independent security review of the helper verb. Overlaps crates/tray/** with P19/P20, so the coordinator serializes the claims.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Why: Replacing the tray executable today needs the owner to quit it and swap by hand; the existing elevated helper can do it with one UAC click and no console.
 
 ## P26 — Independent final security and release review
 
