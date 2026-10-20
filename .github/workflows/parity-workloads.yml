@@ -138,6 +138,11 @@ jobs:
           ref: ${{ inputs.ref }}
           persist-credentials: false
 
+      # Local action from the checked-out ref; it exists only when that ref ships it.
+      - name: Local composite action (P18 file-commands marker)
+        if: hashFiles('parity/workloads/actions/linux/file-commands/action.yml') != ''
+        uses: ./parity/workloads/actions/linux/file-commands
+
       - name: Run entry
         timeout-minutes: 60
         run: |
