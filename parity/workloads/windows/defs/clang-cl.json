@@ -1,0 +1,31 @@
+{
+  "id": "windows/clang-cl",
+  "description": "LLVM clang-cl and lld-link from PATH in a plain job environment; clang-cl discovers MSVC and the Windows SDK itself.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/clang-cl/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/clang-cl"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "6132c9d5b7e048d571a9050d5a7c555e42b2c537057547e7f0fddfd7e1081dac"
+  }
+}

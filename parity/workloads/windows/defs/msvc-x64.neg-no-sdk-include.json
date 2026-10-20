@@ -1,0 +1,32 @@
+{
+  "id": "windows/msvc-x64.neg-no-sdk-include",
+  "description": "Negative control: Developer environment without the Windows SDK headers must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/msvc/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/msvc-x64.neg-no-sdk-include",
+      "-Arch",
+      "x64",
+      "-Sabotage",
+      "no-sdk-include"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "C1083: Cannot open include file: 'windows.h'"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

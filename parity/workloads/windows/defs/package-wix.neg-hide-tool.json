@@ -1,0 +1,32 @@
+{
+  "id": "windows/package-wix.neg-hide-tool",
+  "description": "Negative control: Without the WIX locator variable the MSI build must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/packaging/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/package-wix.neg-hide-tool",
+      "-Tool",
+      "wix",
+      "-Sabotage",
+      "hide-tool"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "WIX is not set"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

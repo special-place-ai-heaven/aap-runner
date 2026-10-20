@@ -1,0 +1,32 @@
+{
+  "id": "windows/package-7zip.neg-hide-tool",
+  "description": "Negative control: Without a 7-Zip install the archive step must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/packaging/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/package-7zip.neg-hide-tool",
+      "-Tool",
+      "7zip",
+      "-Sabotage",
+      "hide-tool"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "7-Zip install location not found"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

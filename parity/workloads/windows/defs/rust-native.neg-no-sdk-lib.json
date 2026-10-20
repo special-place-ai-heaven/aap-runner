@@ -1,0 +1,32 @@
+{
+  "id": "windows/rust-native.neg-no-sdk-lib",
+  "description": "Negative control: The crate without the Windows SDK libraries must fail to link.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 900,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/rust/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/rust-native.neg-no-sdk-lib",
+      "-Crate",
+      "native",
+      "-Sabotage",
+      "no-sdk-lib"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "linking with `link.exe` failed: exit code: 1181"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

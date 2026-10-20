@@ -1,0 +1,33 @@
+{
+  "id": "windows/msvc-x86",
+  "description": "MSVC x64-hosted x86 target: same programs as msvc-x64, run under WOW64.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/msvc/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/msvc-x86",
+      "-Arch",
+      "x86"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "281cf8089f9b42714944280e44657576f51ad412fffed6848f53f73a69f47c3d"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "id": "windows/package-7zip",
+  "description": "7-Zip from its install location creates and lists an archive.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/packaging/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/package-7zip",
+      "-Tool",
+      "7zip"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "3cbf17ebc3056fa652a5d747e131fbb99cc647da93afebd6af224a45c9b4a67e"
+  }
+}

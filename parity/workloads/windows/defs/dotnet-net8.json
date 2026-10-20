@@ -1,0 +1,35 @@
+{
+  "id": "windows/dotnet-net8",
+  "description": ".NET SDK 8.0 band (global.json): build, run, framework-dependent publish (apphost) and pack with no package source.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 900,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/dotnet/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/dotnet-net8",
+      "-Tfm",
+      "net8.0",
+      "-SdkBand",
+      "8.0.100"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "4f317e0c0e5bfc4eb746d18abbed8eaa91ed30fc8b1f5adc2c21fc458e86e379"
+  }
+}

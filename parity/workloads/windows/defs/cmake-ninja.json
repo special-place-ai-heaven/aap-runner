@@ -1,0 +1,33 @@
+{
+  "id": "windows/cmake-ninja",
+  "description": "CMake + Ninja + cl in the developer environment: configure, build, ctest, cpack ZIP; package inspected.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 600,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/cmake/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/cmake-ninja",
+      "-Generator",
+      "ninja"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ],
+  "expected_hashes": {
+    "report.txt": "290249726b622fb4a185bfdd750ebfc1c21fd0df389da2b9c97c9cefa136a332"
+  }
+}

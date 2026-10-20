@@ -1,0 +1,32 @@
+{
+  "id": "windows/rust-plain.neg-git-link",
+  "description": "Negative control: A claimed developer environment that leaves Git's link.exe first on PATH must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 900,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/rust/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/rust-plain.neg-git-link",
+      "-Crate",
+      "plain",
+      "-Sabotage",
+      "git-link"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "linking with `link.exe` failed"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

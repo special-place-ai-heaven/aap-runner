@@ -1,0 +1,30 @@
+{
+  "id": "windows/msvc-toolset-14.29.neg-missing-toolset",
+  "description": "Negative control: A side-by-side toolset the profile does not install must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "{fixtures}/../../../../parity/workloads/windows/msvc/run.ps1",
+      "-Work",
+      "{work}",
+      "-Id",
+      "windows/msvc-toolset-14.29.neg-missing-toolset",
+      "-VcVarsVer",
+      "14.99"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "Toolset directory for version '14.99' was not found"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}
