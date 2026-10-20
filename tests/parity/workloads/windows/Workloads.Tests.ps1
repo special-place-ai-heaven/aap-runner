@@ -81,6 +81,11 @@ Describe 'workload definitions' {
         }
     }
 
+    It 'are the definitions the stored hosted run validated (def hash, report hashes, first errors)' {
+        $r = Run $Py @('-B', '-I', (Join-Path $PSScriptRoot 'check_hosted_run.py'), $Repo)
+        $r.Code | Should -Be 0 -Because $r.Out
+    }
+
     It 'list every definition through Invoke-Workloads -List' {
         $r = RunEntry @('-List')
         $r.Code | Should -Be 0 -Because $r.Out

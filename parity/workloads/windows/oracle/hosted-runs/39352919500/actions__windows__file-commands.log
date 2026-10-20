@@ -1,0 +1,20 @@
+workload actions/windows/file-commands profile=windows-2025-vs2026 sabotage=none
+ok   marker.run_id = 39352919500
+ok   marker.run_attempt = 1
+ok   check.env_pwsh = True
+ok   check.env_cmd = True
+ok   check.env_bash = True
+ok   check.env_multiline = True
+ok   check.path = True
+ok   check.output = True
+ok   check.summary = True
+ok   check.working_dir = True
+report env_pwsh=True
+report env_cmd=True
+report env_bash=True
+report env_multiline=True
+report path=True
+report output=True
+report summary=True
+report working_dir=True
+workload actions/windows/file-commands: all oracle checks met

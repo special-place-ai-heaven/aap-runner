@@ -1,7 +1,11 @@
 {
   "schema": 1,
   "profile": "windows-2025-vs2026",
-  "note": "Oracle for the P17 workloads. Every value cites its source: 'inventory:<category>|<name>' is parity/baselines/windows-2025-vs2026-x64/inventory.json, 'capture:<text>' is a line of sources/hosted-capture-39303666617.log, 'readme:<text>' is that profile's README.md, 'docs:<url>' is GitHub's published runner behaviour. tests/parity/workloads/windows checks every inventory, capture and readme citation.",
+  "note": "Oracle for the P17 workloads. Every value cites its source: 'inventory:<category>|<name>' is parity/baselines/windows-2025-vs2026-x64/inventory.json, 'capture:<text>' is a line of sources/hosted-capture-39303666617.log, 'readme:<text>' is that profile's README.md, 'docs:<url>' is GitHub's published runner behaviour. 'hosted:<run>/<file>:<text>' is a line of oracle/hosted-runs/<run>/<file>, stored evidence from a parity-workloads.yml run on the hosted image. tests/parity/workloads/windows checks every inventory, capture, hosted and readme citation.",
+  "hosted_validation": {
+    "run": "39352919500",
+    "note": "parity-workloads.yml on windows-2025-vs2026 20261007.264.1: 47 of 47 definitions pass (24 positives, 23 negative controls with their named first error). oracle/hosted-runs/39352919500/results.json pins every definition (def_sha256), report hash and first error; tests/parity/workloads/windows checks the definitions still match it. First full run of actions/windows/runner-env and actions/windows/file-commands. Run 39351642738 (39 of 47) fixed the oracle values cited from it."
+  },
   "image": {
     "ImageOS": {
       "v": "win25-vs2026",
@@ -344,11 +348,11 @@
     },
     "CI": {
       "v": "true",
-      "src": "docs:https://docs.github.com/en/actions/reference/workflows-and-actions/variables#default-environment-variables"
+      "src": "hosted:39352919500/actions__windows__runner-env.log:ok   env.CI = true"
     },
     "GITHUB_ACTIONS": {
       "v": "true",
-      "src": "docs:https://docs.github.com/en/actions/reference/workflows-and-actions/variables#default-environment-variables"
+      "src": "hosted:39352919500/actions__windows__runner-env.log:ok   env.GITHUB_ACTIONS = true"
     }
   },
   "services": {
@@ -479,11 +483,11 @@
     },
     "LongPathsEnabled": {
       "v": "1",
-      "src": "readme:Long paths are enabled"
+      "src": "hosted:39352919500/actions__windows__runner-env.log:ok   registry.LongPathsEnabled = 1"
     },
     "AllowDevelopmentWithoutDevLicense": {
       "v": "1",
-      "src": "readme:`AllowDevelopmentWithoutDevLicense=1`"
+      "src": "hosted:39352919500/actions__windows__runner-env.log:ok   registry.AllowDevelopmentWithoutDevLicense = 1"
     }
   },
   "is_administrator": {
@@ -492,7 +496,7 @@
   },
   "docker_server_os": {
     "v": "windows",
-    "src": "readme:Docker engine | Moby 29.7.2 from the static Docker CE build"
+    "src": "hosted:39352919500/actions__windows__runner-env.log:ok   docker.server_os = windows"
   },
   "shell_templates": {
     "v": {

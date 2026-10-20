@@ -80,7 +80,7 @@ $image = [ordered]@{
 }
 $source = [ordered]@{ repo_head = $null; GITHUB_SHA = $env:GITHUB_SHA; GITHUB_RUN_ID = $env:GITHUB_RUN_ID; GITHUB_RUN_ATTEMPT = $env:GITHUB_RUN_ATTEMPT }
 $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($git) { $source.repo_head = (& $git.Source -C $repo rev-parse HEAD 2>$null) }
+if ($git) { try { $source.repo_head = (& $git.Source -C $repo rev-parse HEAD 2>$null) } catch { } }  # not a git checkout: no head
 
 $rows = @()
 foreach ($r in (Get-Content -Raw -LiteralPath $results | ConvertFrom-Json).results) {

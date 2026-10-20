@@ -1,0 +1,62 @@
+workload actions/windows/shell-semantics profile=windows-2025-vs2026 sabotage=none
+ok   bare_path.pwsh.exe = C:\Program Files\PowerShell\7\pwsh.exe
+ok   bare_path.bash.exe = C:\Program Files\Git\bin\bash.exe
+ok   bare_path.python_dir = C:\hostedtoolcache\windows\Python\3.12.10\x64
+ok   shells_dir.gitbash.exe = True
+ok   shells_dir.msys2bash.cmd = True
+ok   shells_dir.wslbash.exe = True
+> pwsh -command ". '<work>\step0.ps1'"
+ok   exit.pwsh.native_last = 1
+> pwsh -command ". '<work>\step1.ps1'"
+ok   exit.pwsh.native_then_ok = 0
+> pwsh -command ". '<work>\step2.ps1'"
+  | [31;1mWrite-Error: [31;1mparity cmdlet error[0m
+ok   exit.pwsh.cmdlet_error = 1
+> pwsh -command ". '<work>\step3.ps1'"
+ok   exit.pwsh.exit = 1
+> powershell -command ". '<work>\step4.ps1'"
+ok   exit.powershell.native_last = 1
+> powershell -command ". '<work>\step5.ps1'"
+ok   exit.powershell.native_then_ok = 0
+> powershell -command ". '<work>\step6.ps1'"
+  | <work>\step6.ps1 : parity cmdlet error
+  | At line:1 char:1
+  | + . '<work>\step6.ps1'
+  | + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  |     + CategoryInfo          : NotSpecified: (:) [Write-Error], WriteErrorException
+  |     + FullyQualifiedErrorId : Microsoft.PowerShell.Commands.WriteErrorException,step6.ps1
+  |  
+ok   exit.powershell.cmdlet_error = 1
+> powershell -command ". '<work>\step7.ps1'"
+ok   exit.powershell.exit = 1
+> cmd /D /E:ON /V:OFF /S /C "CALL "<work>\step8.cmd""
+ok   exit.cmd.exit_b = 4
+> cmd /D /E:ON /V:OFF /S /C "CALL "<work>\step9.cmd""
+  | ok
+ok   exit.cmd.ok = 0
+> bash --noprofile --norc -eo pipefail <work>\step10.sh
+ok   exit.bash.errexit = 1
+> bash --noprofile --norc -eo pipefail <work>\step11.sh
+ok   exit.bash.pipefail = 1
+> bash --noprofile --norc -eo pipefail <work>\step12.sh
+ok   exit.bash.exit = 5
+> bash --noprofile --norc -eo pipefail <work>\step13.sh
+ok   exit.bash.ok = 0
+> python <work>\step14.py
+ok   exit.python.exit = 6
+report pwsh.native_last=1
+report pwsh.native_then_ok=0
+report pwsh.cmdlet_error=1
+report pwsh.exit=1
+report powershell.native_last=1
+report powershell.native_then_ok=0
+report powershell.cmdlet_error=1
+report powershell.exit=1
+report cmd.exit_b=4
+report cmd.ok=0
+report bash.errexit=1
+report bash.pipefail=1
+report bash.exit=5
+report bash.ok=0
+report python.exit=6
+workload actions/windows/shell-semantics: all oracle checks met

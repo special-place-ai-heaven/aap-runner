@@ -87,8 +87,8 @@ Linux containers are not assumed on hosted Windows: `runner-env` requires Docker
 Each build workload writes `report.txt`: program output, PE machine and subsystem, required imports, version
 resources, package entry lists (nupkg, wheel, jar, cpack zip, MSI properties). No versions, paths or times, so the
 report hash is the same on the hosted reference and a correct candidate and `compare_artifacts` stays `sha256`
-(no waivers). Every report hash is pinned in `expected_hashes` (owner's host, confirmed by hosted run 39351642738;
-`file-commands` is its eight marker checks, all True). Compiled binaries are inspected, not hashed (they embed times
+(no waivers). Every report hash is pinned in `expected_hashes` (owner's host, confirmed by hosted runs 39351642738
+and 39352919500; `file-commands` is its eight marker checks, all True). Compiled binaries are inspected, not hashed (they embed times
 and paths).
 
 Logs replace the work and repository paths with `<work>` and `<repo>`, so first causal errors compare across machines.
@@ -96,6 +96,18 @@ The log claim is each workload's own verdict line (`workload <id>: all oracle ch
 
 ## Validation status and gaps
 
+- Hosted-validated: all 47 definitions (24 positives, 23 negative controls) pass on `windows-2025-vs2026`
+  20261007.264.1 in run 39352919500 (head 6829bb4). `oracle/hosted-runs/39352919500/results.json` pins each
+  definition's hash, report hash and first error, and the tests fail when a definition drifts from it (rerun
+  `parity-workloads.yml` and replace that evidence, plus `hosted_validation.run` in the oracle, after changing one).
+  `actions/windows/runner-env` and `actions/windows/file-commands` first ran in full there; the oracle values that only
+  docs or the README backed (CI, GITHUB_ACTIONS, LongPathsEnabled, AllowDevelopmentWithoutDevLicense, Docker's server
+  OS) now cite that run.
+- Every negative fails on its sabotage, not incidentally: its expected text is the first error line of its log, its
+  positive twin passed in the same run, and its observed facts show no other failed check (or only the ones the
+  sabotage implies: the bogus SDK's or toolset's developer-environment values, the redirected tool cache). `rust-plain.neg-git-link`
+  has the least specific first error (`linking with link.exe failed`); its log names the cause next to it
+  (`link.exe on PATH is C:\Program Files\Git\usr\bin\link.exe`, `/usr/bin/link: extra operand`).
 - Hosted iteration 1 (run 39351642738, image 20261007.264.1, head c2ba84e): 39/47. Fixed after it: two oracle values
   copied wrongly from the capture (ImageOS, ImageVersion), the default JDK's version string (the inventory lists the
   tool-cache folder 17.0.20+101, the JDK reports 17.0.20.1+1), CTest 4.x's summary line, the .NET negatives' first
