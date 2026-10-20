@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "kind": "host_network_readback",
+  "declaration": {
+    "schema": 1,
+    "kind": "host_network_attach",
+    "vm_id": "0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b",
+    "vm_name": "aap-lbuild-9f8e7d6c",
+    "profile": "linux",
+    "subnet": "172.31.251.0/24",
+    "endpoints": [
+      {
+        "role": "gateway",
+        "address": "172.31.251.1"
+      },
+      {
+        "role": "dns",
+        "address": "172.31.251.2"
+      }
+    ]
+  },
+  "adapters": [
+    {
+      "SwitchName": "aap-guests-linux",
+      "SwitchType": "Internal",
+      "DhcpGuard": true,
+      "RouterGuard": true,
+      "MacAddressSpoofing": false,
+      "Acls": [
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "10.0.0.0/8",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "172.16.0.0/12",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "192.168.0.0/16",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "169.254.0.0/16",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "100.64.0.0/10",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "224.0.0.0/4",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "ff00::/8",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "fe80::/10",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "fc00::/7",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "172.31.250.1/32",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "172.29.16.1/32",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "2001:db8:5::1/128",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "2001:db8:1::/64",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Deny",
+          "Direction": "Outbound",
+          "RemoteAddress": "172.31.251.0/24",
+          "Scoped": false,
+          "Weight": 10
+        },
+        {
+          "Action": "Allow",
+          "Direction": "Outbound",
+          "RemoteAddress": "172.31.251.1/32",
+          "Scoped": false,
+          "Weight": 100
+        },
+        {
+          "Action": "Allow",
+          "Direction": "Outbound",
+          "RemoteAddress": "172.31.251.2",
+          "Scoped": false,
+          "Weight": 100
+        }
+      ]
+    }
+  ]
+}

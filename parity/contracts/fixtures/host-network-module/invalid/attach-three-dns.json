@@ -1,0 +1,29 @@
+{
+  "expect": "at most two dns endpoints",
+  "instance": {
+    "schema": 1,
+    "kind": "host_network_attach",
+    "vm_id": "0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b",
+    "vm_name": "aap-lbuild-9f8e7d6c",
+    "profile": "linux",
+    "subnet": "172.31.251.0/24",
+    "endpoints": [
+      {
+        "role": "gateway",
+        "address": "172.31.251.1"
+      },
+      {
+        "role": "dns",
+        "address": "172.31.251.2"
+      },
+      {
+        "role": "dns",
+        "address": "172.31.251.3"
+      },
+      {
+        "role": "dns",
+        "address": "172.31.251.4"
+      }
+    ]
+  }
+}

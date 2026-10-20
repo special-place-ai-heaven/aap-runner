@@ -25,6 +25,7 @@ names the error it must produce, so it cannot pass for the wrong reason.
 | [Cache qualification](cache-qualification.md) | 2 | `cache-qualification.schema.json` | P04 | P13, P14, P15, P16, P20, P22, P24 | DECIDED |
 | [Status and settings](status-settings.md) | settings 3, status 5 (drafts, revision 2); tray-local 1 | `settings-v3`, `status-v5`, `tray-windows-choice` schemas | P12, P20 | P19, P22 | shape DECIDED, lands in P12 |
 | [Evidence and cleanup](evidence-cleanup.md) | evidence 2, receipt 1 | `evidence-bundle`, `cleanup-receipt` schemas | P05, P00 | every item, P24, P26, P28 | DECIDED |
+| [Host network module](host-network-module.md) | 1 | `host-network-module.schema.json`; shared fake `tests/common/AapHostNetworkFake.psm1` | P10.0 | P06, P07, P10, P11, P12, P19 | interface DECIDED (coordinator, 2026-10-21); mechanism CANDIDATE (D2); consumers not yet conformant |
 
 ## Decided
 
@@ -160,7 +161,9 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 ## Security review (2026-10-19) items carried by other owners
 
 - **P10.0 guest network module** (new ledger item, coordinator adds it): the one shared guest
-  network module for P10 and P11, implementing the enforcement shape in guest-transport.md.
+  network module for P10 and P11, implementing the enforcement shape in guest-transport.md. Its
+  interface, call order, declaration, read-back and failure codes are frozen in
+  [host-network-module.md](host-network-module.md) (2026-10-21).
 - **P02.1**: lab cases added for crafted CLIXML, remote host-UI calls, stream floods, a
   guest-replaced endpoint, IPv6 and host-port reachability, ARP/DHCP/RA spoofing, WSL mirrored
   mode, host PowerShell 4103/4104 and transcription, and a stolen runner credential; plus the
@@ -238,3 +241,4 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 | 2026-10-20 | P13 security review | cache-qualification | 2 (text only) | rule 6: `workflow_dispatch` untrusted; tag push trusted only when `head_sha` is reachable from the default branch; class from the job record matched by `runner_id` and `runner_group_id` (owner decision: App gains `actions: read`, `contents: read`); untrusted jobs get a private per-job root only; namespace key adds the zccache version; host never mounts a namespace disk after a guest has had it. No schema change |
 | 2026-10-20 | coord-ci-wiring | evidence-cleanup | receipt 1 | cleanup-receipt `item` also accepts `coord-<slug>` (lowercase letters, digits, hyphens) for coordinator jobs; fixtures `coord-manual-shape` and `coord-item-uppercase`; `schema` stays 1 |
 | 2026-10-20 | P10 review | guest-transport | 1 (text only) | sequence rule: the host raises `seq` on every send and never reuses one; the agent accepts any `seq` strictly greater than the last accepted (gaps allowed), refuses less than or equal as a replay, and echoes nonce and `seq`; a timeout never changes the counter rules, so a lost reply cannot cause a false `refused`; lab cases added. Replaces exact previous + 1, which wedged the channel after one failed or lost probe |
+| 2026-10-21 | coord-net-contract | host-network-module | 1 | new: one `Attach`/`Detach`/`Verify` interface for P06, P07, P10, P11; callers remove the VM, then Detach (enforced: Detach refuses while the VM exists); a journal record before any change and a reconcile at module start; Attach returns the declared endpoints; consumers read back from Hyper-V that the allows are exactly those, one address each, above every deny by weight; `AAP_NetworkUnavailable`, `AAP_NetworkInvalid`, `AAP_NetworkUntrusted`, fail closed; shared strict fake in `tests/common`. `validate.py` gains its semantic rule, including the reference read-back |

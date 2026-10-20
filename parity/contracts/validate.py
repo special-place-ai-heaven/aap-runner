@@ -19,6 +19,7 @@ A pattern's `$` means end of input, as in ECMA-262: Python's `$` would also matc
 newline, so check() anchors at the end of the string instead. Documents are bounded to 256 KiB.
 Exit 0 when everything holds, 1 otherwise.
 """
+import ipaddress
 import json
 import math
 import re
@@ -630,6 +631,94 @@ def sem_cleanup_receipt(doc):
             raise Invalid(f"disposed {d.get('id', d.get('resource'))}: absence not observed")
 
 
+HOST_NET_FIXED_DENY = ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10",
+                       "224.0.0.0/4", "ff00::/8", "fe80::/10", "fc00::/7")
+HOST_NET_SWITCH = {"windows": "aap-guests-win", "linux": "aap-guests-linux"}
+
+
+def _host_net_declaration(d):
+    """host-network-module.md, Attach: the name's letter is the profile's, one gateway, at most one dhcp
+    and two dns endpoints, each a host address of the clone subnet."""
+    if d["vm_name"][4] != d["profile"][0]:
+        raise Invalid(f"vm_name {d['vm_name']} does not match profile {d['profile']}")
+    try:
+        net = ipaddress.ip_network(d["subnet"])
+    except ValueError:
+        raise Invalid(f"subnet {d['subnet']} is not a network address")
+    roles = [e["role"] for e in d["endpoints"]]
+    if roles.count("gateway") != 1:
+        raise Invalid("exactly one gateway endpoint")
+    if roles.count("dhcp") > 1:
+        raise Invalid("at most one dhcp endpoint")
+    if roles.count("dns") > 2:
+        raise Invalid("at most two dns endpoints")
+    for e in d["endpoints"]:
+        ip = ipaddress.ip_address(e["address"])
+        if ip not in net or ip in (net.network_address, net.broadcast_address):
+            raise Invalid(f"endpoint {e['address']} is not a host address of {d['subnet']}")
+
+
+def _one_address(text):
+    """A rule's remote address naming exactly one host (alone, /32 or /128), normalized; None otherwise."""
+    host, slash, plen = text.partition("/")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if slash and plen != str(ip.max_prefixlen):
+        return None
+    return str(ip)
+
+
+def _host_net_readback(doc):
+    """host-network-module.md, Consumer obligations: the reference read-back. The host-specific denies
+    are the module's Verify alone; everything else a consumer reads from Hyper-V must hold here."""
+    d = doc["declaration"]
+    _host_net_declaration(d)
+    if len(doc["adapters"]) != 1:
+        raise Invalid(f"{len(doc['adapters'])} network adapters, not 1")
+    n = doc["adapters"][0]
+    switch = HOST_NET_SWITCH[d["profile"]]
+    if n["SwitchName"] != switch or n["SwitchType"] != "Internal":
+        raise Invalid(f"the adapter is not on the internal switch {switch}")
+    if not (n["DhcpGuard"] is True and n["RouterGuard"] is True and n["MacAddressSpoofing"] is False):
+        raise Invalid("DHCP guard or router guard is off, or MAC address spoofing is on")
+    rules = n["Acls"]
+    for r in rules:
+        if r["Action"] not in ("Allow", "Deny"):
+            raise Invalid(f"rule action {r['Action']!r} is neither Allow nor Deny")
+    denied = {r["RemoteAddress"].lower() for r in rules
+              if r["Action"] == "Deny" and r["Direction"] == "Outbound" and r["Scoped"] is False}
+    missing = [x for x in HOST_NET_FIXED_DENY if x not in denied]
+    if missing:
+        raise Invalid("no unscoped outbound deny for " + ", ".join(missing))
+    allowed = set()
+    for r in rules:
+        if r["Action"] == "Allow":
+            one = _one_address(r["RemoteAddress"])
+            if r["Direction"] != "Outbound" or one is None:
+                raise Invalid(f"allow rule {r['RemoteAddress']!r} is not an outbound rule for one address")
+            allowed.add(one)
+    declared = {str(ipaddress.ip_address(e["address"])) for e in d["endpoints"]}
+    if allowed != declared:
+        raise Invalid(f"allowed addresses {sorted(allowed)} differ from the declared endpoints {sorted(declared)}")
+    if min(r["Weight"] for r in rules if r["Action"] == "Allow") <= max(r["Weight"] for r in rules if r["Action"] == "Deny"):
+        raise Invalid("an allow rule does not outrank every deny rule (weight)")
+
+
+def sem_host_network_module(doc):
+    if isinstance(doc, list):
+        return  # Verify's problem list: the schema is the whole rule
+    if doc["kind"] == "host_network_attach":
+        _host_net_declaration(doc)
+    elif doc["kind"] == "host_network_record":
+        _host_net_declaration(doc["declaration"])
+        if [c["kind"] for c in doc["created"]].count("adapter") != 1:
+            raise Invalid("a record names exactly one adapter")
+    else:
+        _host_net_readback(doc)
+
+
 SEMANTIC = {
     "allocator": sem_allocator,
     "backend-lifecycle": sem_backend_lifecycle,
@@ -642,6 +731,7 @@ SEMANTIC = {
     "tray-windows-choice": None,
     "evidence-bundle": sem_evidence_bundle,
     "cleanup-receipt": sem_cleanup_receipt,
+    "host-network-module": sem_host_network_module,
 }
 
 

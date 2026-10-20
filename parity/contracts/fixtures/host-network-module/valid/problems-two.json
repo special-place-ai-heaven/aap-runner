@@ -1,0 +1,4 @@
+[
+  "the adapter allows 192.168.1.1, which is not a declared endpoint",
+  "no deny covers the host's 2001:db8:1::/64"
+]

@@ -376,7 +376,10 @@ CANDIDATE (D2):
   session and Guest Service Interface off; host ports blocked on the guest vEthernet). The
   mechanism (internal switch per profile with NAT, or an internal switch per guest; a private switch has no host adapter and is not viable) is CANDIDATE D2,
   owned by the P10.0 guest network module. The lab proves internet egress works and every denied
-  path fails, over IPv4 and IPv6.
+  path fails, over IPv4 and IPv6. The module's interface for both backends and both image
+  builders (`Attach`, `Detach`, `Verify`; remove the VM, then detach; the declared endpoints and
+  the consumers' read-back of them; failure codes) is
+  [host-network-module.md](../../parity/contracts/host-network-module.md).
 
 ```mermaid
 sequenceDiagram
@@ -519,6 +522,7 @@ flowchart LR
 | cache-qualification | P04 | P13, P14, P15, P16, P20, P22, P24 |
 | status-settings | P12 (supervisor and docs), P20 (tray) | P19, P22 |
 | evidence-cleanup | P05, P00 | every item, P24, P26, P28 |
+| host-network-module | P10.0; journal folder, switches and host rules P19 | P06, P07, P10, P11, P12 |
 
 ## 12. Hardening notes
 
