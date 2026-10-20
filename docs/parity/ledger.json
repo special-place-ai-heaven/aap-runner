@@ -14,6 +14,15 @@
   "max_compile_heavy": 2,
   "max_full_test_suites": 1,
   "cleanup_barrier": "GLOBAL_NO_NEW_ITEM_WHILE_MERGED_UNCLEAN",
+  "as_of": "2026-10-20",
+  "origin_main": "88a9a25acbc623a4435cfdab0656e28926081c16",
+  "current_wave": 5,
+  "in_flight": [
+    "P07",
+    "P10",
+    "P13"
+  ],
+  "cleanup_barrier_state": "OPEN: no merged item awaits cleanup verification (in-flight P07, P10 and P13 are not merged)",
   "tasks": [
     {
       "id": "P00",
@@ -90,7 +99,8 @@
       },
       "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P01-attempt-1.receipt.json (independently verified)",
       "branch": "parity/p01-baselines",
-      "reviewed_head": "99d2734",
+      "reviewed_head": "99d273431f2faebb1b368a6c510d5de43261c0a5",
+      "base_sha": "3772e344e84665217ca333bf189ba854436960d8",
       "evidence": "Inventories 382/382 (Windows) and 224/224 (Ubuntu) entries with line coverage verified by scripts; baselines pinned to the build commits aee0669 (Windows 20261007.264.1) and 7e7dc1b (Ubuntu 20261012.334.1); hosted captures runs 39303666617 and 39305649952 on GitHub-hosted runners stored as sources; zccache 1.15.6 pinned at 15ec953; independent review at b0407c2 (FIX-THEN-MERGE, docs-only) with fixes in 99d2734; reviewer re-verified counts, source hashes, image identity and zccache assets against upstream",
       "open_inputs": "Azure Marketplace base images; Windows Server 2025 media + activation and the update level behind build 33438; Visual Studio 2026 Enterprise channel/entitlement; vendor latest feeds without stored hashes; six unlisted :latest Docker images on Ubuntu; private consumer repos not fetched; owner's local zccache binary unverified against the release archive"
     },
@@ -106,14 +116,24 @@
         "docs/parity/ARCHITECTURE.md"
       ],
       "lane": "Sol high (Claude: Opus high)",
-      "delivery_state": "REVIEWED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Specify immutable image/catalog, host-wide resource lease, backend lifecycle, guest bootstrap, auth/JIT transport, cache qualification, status/settings compatibility, evidence and cleanup schemas. Prove management transport feasibility in an explicitly authorized disposable lab before backend fan-out.",
       "acceptance": "Independent security review; concrete schema examples and negative fixtures; no missing interface decision delegated to two workers. Preserve App key custody in existing control distro. PR20 is merged and reconciled before consumers depend on its helper APIs.",
-      "merge_proof": null,
-      "cleanup_receipt": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/29",
+        "method": "merge-commit",
+        "accepted_head": "5f69452198be7e47bc49faf2c1160dbbcf0a1efd",
+        "merge_sha": "ef702977e37800c2569bfe1260d4f42e14b01f31"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P02-attempt-1.receipt.json (independently verified)",
       "branch": "parity/p02-contracts",
       "reviewed_head": "3a52d4482dedcf09a44406fb506fb1bf5ab41bd6",
-      "evidence": "parity/contracts validate.py PASS (11 schemas, positive and negative fixtures); independent architecture review (FIX-THEN-MERGE, 8 contract defects + ledger gap) and security review (FIX-THEN-MERGE, 3 high / 7 medium / 4 low, all contract text) at ef4251e, fixes applied; delta re-review at the final head",
+      "base_sha": "fc3bbc6a995370329b82041fbd51534bfd0e26d3",
+      "evidence": "parity/contracts validate.py PASS (11 schemas, 35 valid and 98 invalid fixtures; coordinator rerun at 3a52d44; real receipts P00/P20.0/P01 validate); architecture review at ef4251e (FIX-THEN-MERGE, 8 defects) -> e6efc85 -> delta (4) -> a8be7c0 -> d731021 -> MERGE; security review at ef4251e (3 high / 7 medium / 4 low) -> 4c22433 -> delta (2) -> 3a52d44, no further pass needed; hosted CI bash/pester/tray green on the final head",
+      "declared_gaps": [
+        "management transport feasibility not proven in a lab (split to P02.1, gated on D2)",
+        "contracts amended after merge by P02.2; remaining contract gaps tracked as P02.3 (bind_cache)"
+      ],
       "decisions": [
         "labels: Windows self-hosted,Windows,X64,aap-win25-vs2026; Ubuntu self-hosted,Linux,X64,aap-ubuntu-24.04; group aap-crrr",
         "image root D:\\aap-runner\\images with base/, clones/, scratch/ (one folder per generation, never moved; rollback is catalog state)",
@@ -141,6 +161,55 @@
       "cleanup_receipt": null
     },
     {
+      "id": "P02.2",
+      "title": "Revise the frozen contracts after the P03-P05 reviews and the storage decisions",
+      "earliest_wave": 4,
+      "needs": [
+        "P02"
+      ],
+      "owns": [
+        "parity/contracts/**",
+        "docs/parity/ARCHITECTURE.md"
+      ],
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "COMPLETE",
+      "deliverable": "Contract revision after P02 (additive and backward compatible where possible): separate base/clone/scratch/staging roots in an admin-only storage.json with no hard-coded drive letters, allocator/backend-lifecycle/image-catalog schema 2, cache-qualification 256-row matrices with the cache trust namespace = repository + the job trust class (event, ref, head repository), optional evidence-bundle waivers bound to their workload, validate.py storage/waiver/anchoring rules (+ lint), status-v5 storage reporting, P09 contract points.",
+      "acceptance": "validate.py PASS with the revised fixtures; independent code and security review with fix rounds; nothing live touched; mutation script kills every injected contract break.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/34",
+        "method": "merge-commit",
+        "accepted_head": "9678a30a3ea6b11c5c0e040114e8780cebc01f3e",
+        "merge_sha": "544d2d0004997c9c4bade6bacf76cb1bbffbd3d5"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P02.2-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p02-2-contract-revision",
+      "reviewed_head": "9678a30a3ea6b11c5c0e040114e8780cebc01f3e",
+      "base_sha": "a127534e38d8a30880d1fbfa18b48b5cc271c39d",
+      "evidence": "parity/contracts/validate.py PASS (11 schemas, 43 valid, 150 invalid fixtures); mutation script 34/34 killed; p022-review FIX-FIRST then fixed; p022-sec FIX-FIRST then closed (retention.md supersession); hosted CI bash/pester/tray green on 9678a30 (PR is 139 changed files); independent cleanup verifier CLEAN 2026-10-20",
+      "declared_gaps": [
+        "job trust class cannot be looked up without a GitHub App actions:read + contents:read grant (owner decision pending; P02.3)",
+        "retention.md requirement 4 not yet aligned with cache rule 6 revision 3 (P04.1)"
+      ]
+    },
+    {
+      "id": "P02.3",
+      "title": "Add the guest-transport bind_cache command for cache trust-class binding",
+      "earliest_wave": 6,
+      "needs": [
+        "P02.2"
+      ],
+      "owns": [
+        "parity/contracts/**"
+      ],
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Specify a one-shot guest-transport command bind_cache (at most 1 KiB) that binds the job's cache trust class (event, ref, head repository) to the guest cache root, with schema, positive and negative fixtures and the broker-side narrowed per-lookup token flow.",
+      "acceptance": "validate.py PASS with the new fixtures; oversized, replayed, unbound-class and arbitrary-exec negatives refused; independent security review. Requires the owner decision on giving the GitHub App actions:read + contents:read for cache trust-class lookups (installed only on the aap-crrr runner group's repositories); never implemented against the live App before that decision.",
+      "merge_proof": null,
+      "cleanup_receipt": null,
+      "open_inputs": "owner decision: GitHub App actions:read + contents:read for cache trust-class lookups (PENDING); interim Windows host runner can reach the App key, so the interim-runner exposure must be closed (separate low-privilege account or retire it) before the App gains permissions"
+    },
+    {
       "id": "P03",
       "title": "Implement verified artifact acquisition",
       "earliest_wave": 4,
@@ -152,9 +221,45 @@
         "tests/images/common/**"
       ],
       "lane": "Luna high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Download and retain reviewed upstream install inputs with hashes, provenance, licenses/redistribution restrictions and bounded retry; support offline staging. Do not pipe remote installers into a shell or silently float versions.",
       "acceptance": "Corrupt input, expired/changed upstream installer, interrupted publication and unavailable source reject the candidate. Unreproducible inputs remain explicit blockers, not omitted packages.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/32",
+        "method": "merge-commit",
+        "accepted_head": "ac13d055a5ab3d6220fd3d813fc0381c7de68df9",
+        "merge_sha": "9ff0da34789acd82f193e19420dd33d6d4cc9eaf"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P03-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p03-acquisition",
+      "reviewed_head": "ac13d055a5ab3d6220fd3d813fc0381c7de68df9",
+      "base_sha": "ef702977e37800c2569bfe1260d4f42e14b01f31",
+      "evidence": "Pester tests/images/common 217/217 on pwsh 7.6.6 and Windows PowerShell 5.1 (coordinator-reported); independent code review (p03-review) and security review (p03-sec); hosted CI bash/pester/tray green; independent cleanup verifier CLEAN 2026-10-20",
+      "declared_gaps": [
+        "actions/runner-images trees for the pinned build commits aee0669 and 7e7dc1b are not in the manifest, so the P06/P07 script hashes are null (P03.1)",
+        "no Ubuntu 24.04 server ISO manifest entry (P03.1)",
+        "unreproducible inputs stay explicit blockers by design (parity/baselines inputs.md)"
+      ],
+      "closed_gaps": [
+        "tests/images/common was not in the CI pester Run.Path: added by PR #41 (coord-ci-wiring, hosted run 39448488291)"
+      ]
+    },
+    {
+      "id": "P03.1",
+      "title": "Pin the hosted-image script trees and the Ubuntu server ISO in the acquisition manifest",
+      "earliest_wave": 5,
+      "needs": [
+        "P03"
+      ],
+      "owns": [
+        "images/common/artifacts.manifest*.json",
+        "images/common/New-AapManifest.ps1",
+        "tests/images/common/**"
+      ],
+      "lane": "Luna high",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Add the actions/runner-images trees for the pinned build commits aee0669 (Windows) and 7e7dc1b (Ubuntu) to the P03 manifest so the 82 null upstream script hashes in P06 (and the P07 equivalents) become non-null; add the Ubuntu 24.04 server ISO entry with hash, provenance and license.",
+      "acceptance": "No consumer script hash is null; builds no longer stop with AAP_ScriptUnpinned for lack of a pin; a changed or corrupt tree and a missing ISO hash are rejected by tests; unreproducible inputs remain explicit blockers.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -170,9 +275,44 @@
         "tests/parity/cache/qualification/**"
       ],
       "lane": "Sol high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Use zackees/zccache tag 1.15.6 and versioned documentation. Verify Linux musl evidence, Windows artifacts, Rust, GCC/Clang, clang-cl, cl.exe/link.exe, response files, paths, daemon/retention and unsupported invocation behavior.",
       "acceptance": "Uncached/cold/warm compiler exit codes and artifacts agree; deliberate errors remain errors; unsupported/unqualified modes run direct compilers. Windows archive availability alone is not a pass. No sccache fallback.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/31",
+        "method": "merge-commit",
+        "accepted_head": "81a459a89c06ec93a5775db042de7d9aa24fc847",
+        "merge_sha": "a127534e38d8a30880d1fbfa18b48b5cc271c39d"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P04-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p04-zccache",
+      "reviewed_head": "81a459a89c06ec93a5775db042de7d9aa24fc847",
+      "base_sha": "ef702977e37800c2569bfe1260d4f42e14b01f31",
+      "evidence": "tests/parity/cache/qualification Pester 85/85 on pwsh 7.6.6 and Windows PowerShell 5.1.26100; python -B -I unittest 11/11; validate.py PASS and cache-qualification ok on linux-x86_64.json and windows-x86_64.json; independent code review at 8597da4 (FIX-THEN-MERGE, 3 must-fix + 8 warnings) -> c36e730 -> MERGE; security review (2 medium) -> c36e730 -> hardening 81a459a -> MERGE; cleanup verifier accepted with the corrected criterion 'merged content identical to the reviewed head' (PR is 22 files, tree ids of both prefixes equal the reviewed head)",
+      "declared_gaps": [
+        "all 85 matrix rows run direct compilers; no row is qualified for caching yet (real hosts and the D2 lab are needed)",
+        "Linux -g rows and further harness follow-ups (P04.1)",
+        "retention.md requirement 4 is superseded by cache rule 6 revision 3 but the file is not yet aligned (P04.1)"
+      ],
+      "closed_gaps": [
+        "harness_test.sh needs a real Linux: runs in hosted CI bash job since PR #46 (coord-ci-wiring-2, hosted run 39459224292)"
+      ]
+    },
+    {
+      "id": "P04.1",
+      "title": "Extend the zccache qualification matrix and align retention with cache rule 6",
+      "earliest_wave": 5,
+      "needs": [
+        "P04"
+      ],
+      "owns": [
+        "parity/cache/qualification/**",
+        "tests/parity/cache/qualification/**"
+      ],
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Extend the Linux -g rows and land the harness follow-ups from the P04 reviews; align retention.md requirement 4 with cache rule 6 revision 3 (trust namespace = repository + job trust class).",
+      "acceptance": "Every new row has a recorded direct-versus-cached comparison or an explicit unqualified marker; retention.md no longer contradicts cache-qualification.md rule 6; Pester and unittest suites green on both PowerShell hosts and in hosted CI.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -188,9 +328,45 @@
         "tests/parity-certify/**"
       ],
       "lane": "Luna high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Produce allowlisted machine-readable job-process inventory, environment/capability probes, reference/local comparison, first-causal-error classification and evidence bundles. Canonicalize only documented machine-specific differences.",
       "acceptance": "Remove a non-default cached version, alter PATH order or SDK variable, skip a workload, mismatch source/action/image SHA or forge a green log: comparison fails. Inventory and behavioral results cannot substitute for each other.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/30",
+        "method": "merge-commit",
+        "accepted_head": "7d86d786c8ea917aa238a45f7186b3dd59ce7da0",
+        "merge_sha": "1a2741ae59344776a35a1f8e9d7aca003a11f5ca"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P05-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p05-certify",
+      "reviewed_head": "7d86d786c8ea917aa238a45f7186b3dd59ce7da0",
+      "base_sha": "ef702977e37800c2569bfe1260d4f42e14b01f31",
+      "evidence": "tests/parity-certify Pester 82 passed / 0 failed / 1 skipped (honest Linux-only probe) on pwsh 7.6.6 and Windows PowerShell 5.1.26100 (coordinator reruns at fa9a256 and 7d86d78); independent code review at fbbbf20 (FIX-THEN-MERGE, 7 must-fix + 10 follow-ups) -> fa9a256 -> delta (compare_artifacts guard) -> 7d86d78 -> MERGE; reviewer re-ran scratch repros",
+      "declared_gaps": [
+        "certify does not yet use the evidence-bundle waivers field or bind exit_code (P05.1)",
+        "certify.py re.match with $ accepts a trailing newline (P05.1)",
+        "one Linux-only probe skipped on Windows (honest skip, not a gap in coverage)"
+      ],
+      "closed_gaps": [
+        "tests/parity-certify was not in the CI pester Run.Path: added by PR #41 (coord-ci-wiring, hosted run 39448488291)"
+      ]
+    },
+    {
+      "id": "P05.1",
+      "title": "Harden the certification harness (waivers, exit_code binding, regex anchor)",
+      "earliest_wave": 5,
+      "needs": [
+        "P05",
+        "P02.2"
+      ],
+      "owns": [
+        "tools/parity-certify/**",
+        "tests/parity-certify/**"
+      ],
+      "lane": "Luna high",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Use the evidence-bundle waivers field in certify and bind exit_code; fix the certify.py re.match $ trailing-newline acceptance (use fullmatch or \\Z).",
+      "acceptance": "Each fix has a test that fails without it; a waiver unbound to its workload is refused; a trailing-newline value is rejected; both PowerShell hosts green.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -206,9 +382,50 @@
         "tests/images/windows/**"
       ],
       "lane": "Luna high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Port the pinned VS2026 upstream provisioning order to the approved local VM builder. Preserve reboots, users, environment, tool cache, services, upstream tests/software reports, sysprep and activation/source requirements.",
       "acceptance": "Fresh guest and actual job user pass full inventory/upstream tests; native compiler/SDK/resource discovery works. No host-specific credential or App key in image. Measure image, staging, replacement and scratch storage; do not inherit the 60 GiB Linux default.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/38",
+        "method": "merge-commit",
+        "accepted_head": "d0169ca7f7d179978823035b9d12a2e870aa37ee",
+        "merge_sha": "c621999704c4b4d3e2304f62b22e79c7188922b5",
+        "ci_run": "39354581645"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P06-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p06-windows-image",
+      "reviewed_head": "d0169ca7f7d179978823035b9d12a2e870aa37ee",
+      "base_sha": "9ff0da34789acd82f193e19420dd33d6d4cc9eaf",
+      "evidence": "Pester tests/images/windows 254/254 on pwsh 7.6.6 and 254/254 on Windows PowerShell 5.1 (worker-reported; code reviewer ran 254/254 on pwsh); mutation script 53/53 killed; validate.py PASS; p06-review FIX-FIRST (6 must-fix) -> fixed -> FIX-FIRST (reboot) -> MERGE at d0169ca; p06-sec FIX-FIRST (2 High, 3 Medium) -> fixed -> FIX-FIRST (cap bypass) -> MERGE at d0169ca",
+      "declared_gaps": [
+        "no real build has run (D2 lab first)",
+        "82 upstream script hashes are null until P03.1 (builds refused with AAP_ScriptUnpinned)",
+        "variables blocker open",
+        "S4U elevation and guest-side task/registry/sysprep code unproven until a real guest",
+        "hostile-guest residual (5 s poll + 16 records); no resume after a host crash",
+        "verify VM has no network, so per-test waivers are not built (P06.1)",
+        "secret-scan skip list contains only System Volume Information (P06.1)"
+      ],
+      "closed_gaps": [
+        "tests/images/windows was not in the CI Run.Path: added by PR #41 (coord-ci-wiring, hosted run 39448488291)"
+      ]
+    },
+    {
+      "id": "P06.1",
+      "title": "Per-test waivers for the verify phase and a reviewed secret-scan skip list",
+      "earliest_wave": 6,
+      "needs": [
+        "P06",
+        "P02.2"
+      ],
+      "owns": [
+        "images/windows/**",
+        "tests/images/windows/**"
+      ],
+      "lane": "Luna high",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "The verify phase needs failed-test names in the verify reply to apply per-test waivers; extend the reviewed secret-scan skip list from D2 evidence (currently only System Volume Information).",
+      "acceptance": "Waivers apply only to named failed tests bound to the workload; every skip-list entry cites observed lab evidence; Pester green on both hosts. Skip-list extension needs a real build from the D2 lab, so that part is gated on P02.1/D2.",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -224,11 +441,14 @@
         "tests/images/ubuntu-24.04/**"
       ],
       "lane": "Luna high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "IN_PROGRESS",
       "deliverable": "Build the full pinned Ubuntu 24.04 VM environment using upstream install/config/tool-cache/test/post-generation logic, with guest-only passwordless sudo, systemd and baseline container capabilities.",
       "acceptance": "All inventory categories and cached versions verified; fresh job shell/environment and baseline services work. No Ubuntu 26.04; Sysbox compatibility is not certified as full VM equivalence.",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "branch": "parity/p07-ubuntu-image",
+      "base_sha": "4637f84bdafbe7fab78a11d490626f67c9251b0d",
+      "evidence": "attempt-1 worktree authoring with fakes only (mirror of the merged P06 hostile-guest builder patterns); not yet pushed; real builds stay refused until P03.1 pins the script hashes"
     },
     {
       "id": "P08",
@@ -244,9 +464,45 @@
         "tests/broker/**"
       ],
       "lane": "Sol high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Keep App signing/key use root-only in the existing control distro; expose a fixed bounded lease/profile operation. Prefer verified one-use JIT config; never describe a reusable registration token as one-use. Deliver sensitive material through the qualified management channel without argv, logs, inbox or golden-image persistence.",
       "acceptance": "Expired/replayed/stale lease, arbitrary command/path, malformed request, cross-guest request, reparse transport and unavailable broker produce no registration. Secret-marker tests prove absence in logs, artifacts, state and guest images.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/33",
+        "method": "merge-commit",
+        "accepted_head": "36c23e35455f42cf9c1ea0e2935ec7d954d5ba2a",
+        "merge_sha": "f36ae7e0c0684069d2ab9ff8daa1ce5dce70dd5f",
+        "ci_run": "39353711710"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P08-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p08-broker",
+      "reviewed_head": "36c23e35455f42cf9c1ea0e2935ec7d954d5ba2a",
+      "base_sha": "1a2741ae59344776a35a1f8e9d7aca003a11f5ca",
+      "evidence": "Pester tests/broker 24/24 on pwsh 7.6.6 and Windows PowerShell 5.1 (worker-reported); worker_auth_test.sh 'worker_auth_test ok' on real Linux in hosted CI (run 39353711710); p08-review MERGE; p08-sec MERGE, fix batch, delta MERGE",
+      "declared_gaps": [
+        "non-blocking notes: audit log dir under /var/log, rm -f of the lease file on create failure, client TimeoutSeconds floor, exit-code comment (P08.1)"
+      ],
+      "closed_gaps": [
+        "tests/broker not in the CI Run.Path and shellcheck not run in CI: both closed by PR #41 (coord-ci-wiring, hosted run 39448488291)"
+      ]
+    },
+    {
+      "id": "P08.1",
+      "title": "Land the P08 non-blocking broker notes",
+      "earliest_wave": 5,
+      "needs": [
+        "P08"
+      ],
+      "owns": [
+        "supervisor/broker/**",
+        "distro/worker-auth.sh",
+        "tests/broker/**",
+        "tests/worker_auth_test.sh"
+      ],
+      "lane": "Luna high",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Move the audit log dir from /var/log to /var/lib/aap-runner/broker; rm -f the lease file on create failure only when it is empty; raise the client TimeoutSeconds floor to 60; correct the exit-code comment.",
+      "acceptance": "Each change has a test that fails without it; worker_auth_test.sh green on real Linux in hosted CI; both PowerShell hosts green; independent security review (secret-bearing path).",
       "merge_proof": null,
       "cleanup_receipt": null
     },
@@ -262,11 +518,27 @@
         "tests/capacity/**"
       ],
       "lane": "Sol high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Acquire durable generation-bound reservations before boot/registration. Count legacy, warm/listening and cleanup-uncertain workers; enforce five total runner slots plus aggregate CPU/RAM/disk/IO and physical-host reserve.",
       "acceptance": "Profile counts are two live controls, Linux 0-5 and Windows 0-5, with Linux + Windows <= 5; each control's maximum is recomputed from the other (3 Linux => Windows max 2; 5 Windows => Linux 0) and 0 is valid for either. Resource allotment follows the counts per profile and the host reserve is never given away. The tray shows the two profiles as separate groups with the OS on every runner card and per-profile totals and limits next to each control (owner requirement 2026-10-19). Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Sixth worker, duplicate lease, concurrent starts, lost heartbeat, controller crash, late completion, failed reset, memory overhead and storage pressure cannot over-admit or release capacity early. Legacy pool never remains autonomous at five plus Windows.",
-      "merge_proof": null,
-      "cleanup_receipt": null
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/35",
+        "method": "merge-commit",
+        "accepted_head": "042248f199f59d82044c8dc937e79bab659e4bc4",
+        "merge_sha": "af2ad5306aa90569047b11631bae466740d575b5"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P09-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p09-allocator",
+      "reviewed_head": "042248f199f59d82044c8dc937e79bab659e4bc4",
+      "base_sha": "1a2741ae59344776a35a1f8e9d7aca003a11f5ca",
+      "evidence": "Pester 154/154 on pwsh 7.6.6 and Windows PowerShell 5.1 (worker-reported; 154/154 on pwsh by two independent reviewers); validator parity with parity/contracts/validate.py on all 8 valid and 25 invalid allocator fixtures; p09-review and p09-sec FIX-THEN-MERGE, p09-delta-review FIX-FIRST then MERGE at 042248f, p09-sec delta closed",
+      "declared_gaps": [
+        "allocator is not wired into supervisor/providers/distro/tray (P12)",
+        "M3 and F-items recorded in INTEGRATION.md"
+      ],
+      "closed_gaps": [
+        "tests/capacity not in the CI Run.Path: closed by PR #41 (coord-ci-wiring, hosted run 39448488291)"
+      ]
     },
     {
       "id": "P10.0",
@@ -300,11 +572,15 @@
         "tests/backends/windows/**"
       ],
       "lane": "Sol high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "PR_OPEN",
       "deliverable": "Implement create/boot/ready/one-job/drain/collect/reset-or-destroy/reconcile against frozen contracts using immutable base and task-owned differential/scratch disks. Use the approved guest management transport.",
       "acceptance": "Crash at every lifecycle boundary; discover orphan guest safely; cancellation and cleanup are idempotent. Guest Administrator cannot access host shares/control key. No slot reuse before verified guest teardown.",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "branch": "parity/p10-windows-backend",
+      "base_sha": "f36ae7e0c0684069d2ab9ff8daa1ce5dce70dd5f",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/45",
+      "evidence": "PR #45 open at bd1bfdc (authored with fakes only; no VM and no switch, P10.0/P02.1 lab gates still open); independent reviews not yet recorded"
     },
     {
       "id": "P11",
@@ -360,11 +636,15 @@
         "tests/guests/cache/**"
       ],
       "lane": "Sol high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "PR_OPEN",
       "deliverable": "Package verified per-platform zccache and initialize only qualified wrappers before Actions starts. Isolate mutable daemon/index roots; use supported cache transport and daemon retention. Bound total artifact+metadata+log+temp bytes.",
       "acceptance": "Daemon failure and unsupported compiler modes preserve direct build correctness; no hardlink poisoning, shared mutable index assumption or raw oldest-file eviction. Cold/warm/concurrent/crash cases pass; product cache namespaces have explicit trust and retention owners.",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "branch": "parity/p13-zccache-guest",
+      "base_sha": "f36ae7e0c0684069d2ab9ff8daa1ce5dce70dd5f",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/40",
+      "evidence": "PR #40 open at 3da64e5 (authoring, no network; every build direct until rows are qualified); review fixes in progress in the attempt-1 worktree (uncommitted guests/cache docs); zccache 1.15.6 AGPL-3.0-only compliance decision and the cache trust-class source are pending with the owner"
     },
     {
       "id": "P14",
@@ -446,11 +726,29 @@
         "parity/workloads/actions/windows/**"
       ],
       "lane": "Luna high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Same pinned hosted/local workflows for MSVC, LLVM, SDK/resources, CMake/Ninja, Rust/native dependency/tests, .NET/MSBuild/publish, Node native addon, Python native wheel, Java and baseline-supported packaging/services/shell behavior.",
       "acceptance": "Each workload compiles, links, executes supported tests and produces inspected package artifacts. A missing SDK/library/env path must turn certification red. Linux containers are not assumed supported on hosted Windows. This authoring leaf closes on hosted-reference oracle validation and negative controls; final candidate execution is owned by P22/P24 after P14/P15, not claimed here.",
-      "merge_proof": null,
-      "cleanup_receipt": null
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/39",
+        "method": "merge-commit",
+        "accepted_head": "b8d28daea87002a2e231943613814785b73dc700",
+        "merge_sha": "4de3674df5b3f62f8ba8a029a91a414629f7dcac",
+        "ci_run": "39443851806"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P17-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p17-windows-workloads",
+      "reviewed_head": "b8d28daea87002a2e231943613814785b73dc700",
+      "base_sha": "544d2d0004997c9c4bade6bacf76cb1bbffbd3d5",
+      "evidence": "Pester tests/parity/workloads/windows 20/20 on pwsh 7.6.6 and Windows PowerShell 5.1 (worker-reported; reviewer ran 20/20 on pwsh); check_hosted_run.py ok: 47 definitions match hosted run 39437386210 (windows-2025-vs2026 image 20261007.264.1; earlier runs 39351642738 39/47, 39352919500 47/47), tree sha256 7290b8a9b6735a66cd804552e50a9a9ce81d2eaf0e0dc9af0bba2d7184734c90; p17-review FIX-FIRST (3 must-fix) -> fixed -> MERGE at b8d28da",
+      "declared_gaps": [
+        "node-gyp, Maven, Gradle, network acquisition, setup-* actions and the default shell are not covered; candidate execution is P22/P24",
+        "timeouts sum 13,740 s against a 60 min step (nit)",
+        "check_hosted_run does not recompute tree.sha256 itself (nit)"
+      ],
+      "closed_gaps": [
+        "tests/parity/workloads not in the CI Run.Path: closed by PR #46 (coord-ci-wiring-2, hosted run 39459224292)"
+      ]
     },
     {
       "id": "P18",
@@ -465,11 +763,28 @@
         "parity/workloads/xwin/**"
       ],
       "lane": "Luna high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Same hosted/local Rust/C/C++/.NET/Node/Python/Java/Android/browser/container/service workload suite. Separately qualify Linux-to-Windows xwin with Clang/LLD/SDK and execute produced artifacts on native Windows.",
       "acceptance": "Cross compilation alone never certifies Windows execution. Positive/negative setup, package-registry/TLS, container job/action/services, cache/artifact and shell-step propagation cases fail honestly when a requirement is missing. This authoring leaf closes on hosted-reference oracle validation and negative controls; final candidate execution is owned by P22/P24 after P14/P15, not claimed here.",
-      "merge_proof": null,
-      "cleanup_receipt": null
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/44",
+        "method": "merge-commit",
+        "accepted_head": "0284871586f2d35274b3cff1ad5206e966a9047e",
+        "merge_sha": "4637f84bdafbe7fab78a11d490626f67c9251b0d",
+        "ci_run": "39455561368"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P18-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p18-linux-workloads",
+      "reviewed_head": "0284871586f2d35274b3cff1ad5206e966a9047e",
+      "base_sha": "4de3674df5b3f62f8ba8a029a91a414629f7dcac",
+      "evidence": "test_workloads.py 15/15; check_hosted_run.py ok: 44 definitions match hosted run 39454534510 (ubuntu-24.04 image 20261012.334.1; earlier runs 39450814977 39/44, 39451894408 44/44), tree sha256 9418bbd76e16290f6e678278909b91c3f624c7e6a679452e1bc29d076471fc57; lib_test.sh ok; shellcheck 0.11.0 -S warning clean on 22 files (as reported by the coordinator); review FIX-FIRST (3 must-fix) -> fixed -> MERGE at 0284871; remote branch deleted after merge; independent cleanup verifier CLEAN 2026-10-20",
+      "declared_gaps": [
+        "Actions container:/services:/docker actions, cache/artifact round trips, Maven builds, sdkmanager and xwin/sdk-cross are unqualified (no Windows SDK on the image)",
+        "a Linux-built PE executed on a hosted Windows runner is left to P22/P24"
+      ],
+      "closed_gaps": [
+        "P18 suites not in CI: closed by PR #46 (coord-ci-wiring-2, hosted run 39459224292)"
+      ]
     },
     {
       "id": "P19",
@@ -518,8 +833,6 @@
       "delivery_state": "COMPLETE",
       "deliverable": "Pulled forward of P20 on the owner's demand 2026-10-19: Linux 0-5 and Windows 0-5 segmented controls (total <= 5, never 0+0, over-budget cells disabled and recomputed live; Linux 0 stays disabled until a Windows backend exists), per-profile Each/Total and host-reserve lines, green Linux / blue Windows identity with drawn OS glyphs on rows, header and cards, OS-titled cards with coloured edge, Windows placeholder cards 'Not installed', stacked per-profile segments in pool bars, card bars and the 60-min graph with legend, same controls on the wizard sizing page. inbox settings.json stays schema 2 with optional windows_runner_count (written only when non-zero; runner_count remains the Linux count; file totals are the Linux share cap/(linux+windows) floored). Supervisor validates and drops the key; a Windows-only change writes nothing and restarts nothing.",
       "acceptance": "Pure count rule tested for all combinations and both backend-flag values; settings round-trip with and without the key; supervisor rejects bad values and ignores Windows-only changes (Pester on 5.1 and 7); cargo fmt/clippy/test green; both contract READMEs updated in the same PR. Rollout: safe in any order — while no Windows backend exists the tray keeps the Windows choice in %LOCALAPPDATA%ap-runner\\windows-runners.json and never writes windows_runner_count to the inbox, so the previous supervisor (which rejects unknown keys) is unaffected.",
-      "reviewed_head": "13ec2e6c6ee6aec016cfaad27513b1780b0c52de",
-      "branch": "parity/p20-0-two-profile-controls",
       "merge_proof": {
         "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/26",
         "method": "merge-commit",
@@ -528,6 +841,9 @@
         "ci_run": "39302326259"
       },
       "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P20.0-attempt-1.receipt.json (independently verified)",
+      "branch": "parity/p20-0-two-profile-controls",
+      "reviewed_head": "13ec2e6c6ee6aec016cfaad27513b1780b0c52de",
+      "base_sha": "90ef9b6190394b4587dd4c28e0db68631a30b34f",
       "evidence": "cargo fmt/clippy clean, cargo test 147/147; supervisor Pester 232/232 on pwsh 7.6.6 and Windows PowerShell 5.1 (coordinator rerun at 5e87995; 13ec2e6 adds a wizard test only, 148/148 per worker and CI); independent code review (FIX-THEN-MERGE, 5 items fixed) and security review (MERGE; rollout hazard removed by tray-local storage)"
     },
     {
@@ -649,6 +965,24 @@
       "cleanup_receipt": null
     },
     {
+      "id": "P25.1",
+      "title": "Tray self-update through the existing elevated helper",
+      "earliest_wave": 6,
+      "needs": [
+        "P20.0"
+      ],
+      "owns": [
+        "crates/tray/**"
+      ],
+      "lane": "Sol high (Claude: Opus high)",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Let the tray replace its own executable through the existing elevated helper: one UAC click, no console window, no wsl.exe, no tokens in the tray; contract docs and both sides' tests updated in the same PR.",
+      "acceptance": "cargo fmt/clippy/test green; update succeeds with the tray running or quits it itself; a bad or unsigned replacement is refused and the old build stays; independent security review of the helper verb. Overlaps crates/tray/** with P19/P20, so the coordinator serializes the claims.",
+      "merge_proof": null,
+      "cleanup_receipt": null,
+      "note": "Overlaps crates/tray/** with P19 and P20: the coordinator serializes the claims, so P25.1 is not dispatched while a P19 or P20 claim holds the lease."
+    },
+    {
       "id": "P26",
       "title": "Independent final security and release review",
       "earliest_wave": 13,
@@ -703,13 +1037,69 @@
   ],
   "authorization": {
     "D0": "Owner authorized implementation 2026-10-19 (HANDOVER-CLAUDE-PARITY.md first prompt); P00 bootstrap attempt-1 is manual, registry at C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\registry",
-    "D2": "Host checked read-only 2026-10-19: Hyper-V fully enabled, vmms Automatic/Running, owner in Hyper-V Administrators, 32 LCPU / 94 GiB / >1 TB free. Still missing: Windows Server 2025 media and activation path, and an explicit compute/storage budget for image builds and test VMs."
+    "D2": "Host checked read-only 2026-10-19: Hyper-V fully enabled, vmms Automatic/Running, owner in Hyper-V Administrators, 32 LCPU / 94 GiB / >1 TB free. Still missing: Windows Server 2025 media and activation path, and an explicit compute/storage budget for image builds and test VMs. Update 2026-10-20: Windows Server 2025 Evaluation ISO provided (SHA-256 D0EF4502...B23D) and the lab compute/storage budget approved (see decisions); the lab GitHub App and test org/repo are not recorded as granted here."
   },
   "decisions": [
     "2026-10-19 owner: native Windows runner is the critical path; after P02 dispatch the Windows chain first (P03, P06, P08, P09, P10, P13, P14, P17), Ubuntu VM work takes leftover slots.",
     "2026-10-19 owner: the live five-runner legacy pool keeps serving jobs untouched until certified cutover (D5).",
     "2026-10-19 owner: Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop).",
     "2026-10-19 owner: agents merge reviewed green PRs; the owner never merges.",
-    "2026-10-19 owner: Profile counts are two live controls, Linux 0-5 and Windows 0-5, with Linux + Windows <= 5; each control's maximum is recomputed from the other (3 Linux => Windows max 2; 5 Windows => Linux 0) and 0 is valid for either. Resource allotment follows the counts per profile and the host reserve is never given away. The tray shows the two profiles as separate groups with the OS on every runner card and per-profile totals and limits next to each control (owner requirement 2026-10-19)."
+    "2026-10-19 owner: Profile counts are two live controls, Linux 0-5 and Windows 0-5, with Linux + Windows <= 5; each control's maximum is recomputed from the other (3 Linux => Windows max 2; 5 Windows => Linux 0) and 0 is valid for either. Resource allotment follows the counts per profile and the host reserve is never given away. The tray shows the two profiles as separate groups with the OS on every runner card and per-profile totals and limits next to each control (owner requirement 2026-10-19).",
+    "2026-10-20 owner: lab budget approved, E:\\aap-runner only: base generation <= 200 GB, rollback generation <= 200 GB, per-runner clone+scratch <= 60 GB each, keep >= 15 % of the volume free; one build VM at a time with 4 vCPU and 10 GiB static RAM at the lowest scheduling weight; internal switch + NAT only (no External/Default switch).",
+    "2026-10-20 owner: E:\\ root locked to Administrators (done by an elevated step 2026-10-20 ~01:04); E:\\aap-runner\\{base,clones,scratch,staging} created admin-only and the ISO copy verified by SHA-256.",
+    "2026-10-20 owner: partitions and volumes are never touched; only plain files inside E:\\aap-runner\\ after approval (C: = NVMe, D: and E: share one USB disk, D: holds owner data).",
+    "2026-10-20 owner: interim Windows host runner approved, unisolated by owner choice (FRESH-win-interim, group aap-win-interim, label windows-host-interim, hidden logon task); retire it when the VM profile is certified. It can reach the GitHub App key, an accepted risk that must be closed before the App gains more permissions.",
+    "PENDING owner: zccache 1.15.6 is AGPL-3.0-only; images containing it must not be redistributed until the owner records a compliance decision (internal use is fine).",
+    "PENDING owner: give the GitHub App actions:read + contents:read, installed only on the aap-crrr runner group's repositories, so the host can look up each job's trust class for cache sharing (gates P02.3 and P13 activation). Cost: a stolen App key could also read run logs, artifacts and source of those repos. The interim-runner/App-key exposure above is a precondition."
+  ],
+  "coordinator_prs": [
+    {
+      "item": "coord-hosted-workloads",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/36",
+      "reviewed_head": "2c0e328751b2c557d2045550b9bac5feba1fdf00",
+      "merge_sha": "1638e8a25e4674cbb3f75ee172b9523162d908e5",
+      "what": "parity-workloads hosted reference workflow",
+      "cleanup": "verified"
+    },
+    {
+      "item": "coord-wf-file-commands",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/37",
+      "reviewed_head": "7ef5f2b3c98b052993c306fa4ab415633c20be9d",
+      "merge_sha": "2614f496f239c0f48749ea3de7ca5945998c6008",
+      "what": "Windows workflow file-command step",
+      "cleanup": "verified"
+    },
+    {
+      "item": "coord-ci-wiring",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/41",
+      "reviewed_head": "a7d80bcfc6dc0866480ab35c3e858804759a30d1",
+      "merge_sha": "dad6c2ece6502b472b6bf5bcd31e3ebb683a30e9",
+      "what": "CI Run.Path gains tests/capacity, tests/broker, tests/images/common, tests/images/windows, tests/parity-certify; pinned shellcheck 0.11.0; broker client BOM fix",
+      "cleanup": "verified"
+    },
+    {
+      "item": "coord-rule6-amend",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/42",
+      "reviewed_head": "64708d606158d9123f81d0728af71a20aa36a9e7",
+      "merge_sha": "d34c1c79e177b3446d44ed2d663da6509f87a576",
+      "what": "cache rule 6 amended: workflow_dispatch is not a trusted cache class",
+      "cleanup": "verified"
+    },
+    {
+      "item": "coord-wf-ubuntu-file-commands",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/43",
+      "reviewed_head": "f379f76674d159404a6eb7cb972e65ee406f48c9",
+      "merge_sha": "83de020a568c24ee50c9ed27cf7e0db7248f7410",
+      "what": "Ubuntu job file-command step for P18",
+      "cleanup": "verified"
+    },
+    {
+      "item": "coord-ci-wiring-2",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/46",
+      "reviewed_head": "11daf864dcb073ff48443f4877d4a374fbcaff62",
+      "merge_sha": "88a9a25acbc623a4435cfdab0656e28926081c16",
+      "what": "CI runs the P17/P18 workload suites and harness_test.sh; shellcheck on the workload scripts",
+      "cleanup": "verified"
+    }
   ]
 }

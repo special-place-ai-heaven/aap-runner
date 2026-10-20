@@ -40,6 +40,33 @@ C:\AI_STUFF\PROGRAMMING\aap-runner-work\parity\Pxx\attempt-N\
   logs\                 temporary, sanitized diagnostics
 ```
 
+Layout in use (as of 2026-10-20, after P00 landed and 13 items plus 6 coordinator
+PRs were run through it):
+
+```text
+C:\AI_STUFF\PROGRAMMING\aap-runner-work\parity\
+  P<nn>\attempt-<N>\repo\        item worktree (target\, tmp\, ... sit beside repo\ only while in use)
+  coord\<name>\repo\             coordinator-only PRs (CI wiring, workflow, ledger, contract amendments):
+                                 one worktree, same claim -> review -> merge -> cleanup lifecycle
+  registry\<item>-attempt-<N>.manifest.json    claim manifest, written before the worktree exists
+                                 (P00 itself is P00-attempt-1.bootstrap.json; coord-ledger-p00-close.manifest.json
+                                 predates the naming rule)
+  evidence\<item>-attempt-<N>.receipt.json     durable cleanup receipt, the source of truth for ledger closure
+  MORNING-BRIEF.md               the chair's running brief for the owner
+```
+
+Branches are `parity/<slug>` (`parity/p06-windows-image`, `parity/coord-ci-wiring`).
+Every PR so far merged with a merge commit; the receipt records both parents, so the
+second parent equals the accepted reviewed head. A receipt's `verifier` field is
+`pending` until the independent verifier signs; the item stays MERGED_CLEANUP_REQUIRED
+and the global barrier stays closed until then (the ledger has no separate
+"pending verify" state). Remote task branches are left in place by default; deleting
+one is a separate step allowed only when its tip equals the reviewed head already
+merged (done once, P18). The base clone is never built in; its fast-forward of `main`
+is a standing HOLD while the owner's uncommitted `.gitignore` edit conflicts, and its
+dirty inventory is compared before and after every cleanup and left untouched.
+Concurrency in force: 3 workers, 2 compile-heavy, 1 full suite.
+
 The registry and compact evidence must live outside disposable roots. A manifest
 records item/attempt, canonical root paths, branch and base SHA, registered worktree
 IDs, target/temp environment, process/job handles with start times, lab VM/disk IDs,
