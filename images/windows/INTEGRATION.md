@@ -44,8 +44,27 @@ tell them apart.
    is ever resolved through guest-authored file system metadata (reparse points refused). The builder reaches them over
    PowerShell Direct by VM id with capped receives (`Receive-AapCappedJob`); runner clones use P10's hardened transport
    (guest-transport.md, wire framing). The image does not contain `C:\Program Files\aap-guest`.
-7. **Switch.** The build VM attaches only to `aap-guests-win` (P10.0's internal switch with NAT); the builder refuses to
-   start unless it exists with type Internal. The verification VM has no network adapter.
+7. **Switch.** The build VM attaches only to `aap-guests-win` (P10.0's internal switch with NAT), through the P10.0 module
+   (below); the builder refuses to start unless the switch exists with type Internal. The verification VM has no network
+   adapter, read back from Hyper-V before it boots.
+
+## P10.0: guest network module
+
+The builder takes the module as `-Network`, the same `Attach`, `Detach`, `Verify` hashtable P10's backend takes, each
+called with `@{ VmId; VmName; Profile = 'windows' }`. The build VM arrives with no adapter.
+
+- `Attach` gives it exactly one adapter on `aap-guests-win` with `Set-VMNetworkAdapter -DhcpGuard On -RouterGuard On
+  -MacAddressSpoofing Off` and the extended port ACLs of guest-transport.md (Guest network attachment): outbound deny for
+  the host's vEthernet addresses (except the DHCP and DNS endpoints the design uses), RFC 1918, `169.254.0.0/16`,
+  `100.64.0.0/10`, IPv4 and IPv6 multicast (`224.0.0.0/4`, `ff00::/8`), `fe80::/10`, `fc00::/7`, the LAN's IPv6 prefix
+  and the clone subnet except its gateway. Write each fixed range in exactly that form, with no port, protocol or local
+  address; an allow rule names one address only.
+- `Verify` returns one line per problem (nothing when the attachment is right). It owns the host-specific rules the
+  builder cannot know: the vEthernet addresses, the LAN prefix and the clone subnet.
+- `Detach` undoes `Attach` and is idempotent; the builder calls it before it removes the VM and again, best effort, on a
+  failed run.
+- The builder then reads the adapter back through the provider's `GetVmNetwork` (Hyper-V, not the module) and refuses
+  anything but one adapter with those settings and the fixed denies (README, Build flow step 3).
 
 ## P14: Windows guest bootstrap
 
@@ -68,7 +87,7 @@ tell them apart.
   folders.
 - `EvidenceRoot` must be admin-only (protected DACL, Administrators and SYSTEM only, no reparse point on it or its
   ancestors); the builder trust-checks it like the storage roots.
-- `SwitchName` is `aap-guests-win`, P10.0's internal switch, and nothing else.
+- `SwitchName` is `aap-guests-win`, P10.0's internal switch, and nothing else. Pass the P10.0 module as `-Network`.
 - Deploy `images/windows`, `images/common` and the verification payload it sends (`tools/parity-certify/probe/windows.ps1`,
   `tools/parity-certify/workloads/fixtures/hello.c`) to an Administrators-only folder and run the builder from there. Never
   run the elevated builder from a user-writable checkout: it refuses (`AAP_BuilderUntrusted`) unless its own folder,
@@ -82,7 +101,8 @@ tell them apart.
 - A build runs for hours, elevated, with no console. Run it from the hidden supervisor context or a helper verb that
   starts it hidden; never hand the owner a script.
 - Import `AapWinImage.psm1` before `New-AapWinHyperVProvider`; the provider imports `images/common/AapArtifact.psm1` and
-  its manifest by relative path.
+  its manifest by relative path, and only after `images/common` passes its admin-only check (README, What the builder's
+  self-check protects).
 
 ## P12: supervisor and status
 
@@ -109,10 +129,12 @@ tell them apart.
 
 - P03.1 (chair) adds a literal-pinned entry for the `actions/runner-images` archive at
   `aee0669dd04510a11756664eb77f5630debabed3` (images/windows scripts, assets, toolsets, helpers/software-report-base). Then
-  rerun `New-AapWinBuildPlan.ps1 -ScriptsDir <extracted images\windows\scripts>` with pwsh 7 to pin the 82 script hashes,
-  and drop the plan blockers it resolves.
+  rerun `New-AapWinBuildPlan.ps1 -ScriptsDir <extracted images\windows\scripts> -SourceSha256 <the entry's SHA-256>`
+  (and `-SourceEntry <name>` if the entry is not `runner-images-aee0669`) with pwsh 7 to pin the 82 script hashes and the
+  archive; that drops `p06-upstream-source-archive`, which no waiver clears.
 - The 14 Windows blockers stay blockers. A build needs each resolved, or waived by id with a chair approval record
   (`id`, `rationale`, `plan_sha256`, `approver`) passed in `Waivers` and recorded in `build.json`; a bare id is refused.
+  `windows-server-2025-media` is never waivable: the builder's media check against the pinned `MediaSha256` clears it.
 
 ## Decisions recorded (chair, 2026-10-20)
 

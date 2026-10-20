@@ -10,11 +10,11 @@
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$script:Common = Join-Path $PSScriptRoot '..\common\AapArtifact.psm1'
+$script:CommonDir = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\common'))
+$script:Common = Join-Path $script:CommonDir 'AapArtifact.psm1'
 $script:Manifest = Join-Path $PSScriptRoot '..\common\artifacts.manifest.json'
 $script:TrustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 $script:VmSid = 'S-1-5-83-0'   # NT VIRTUAL MACHINE\Virtual Machines: VM worker processes read the parent of a differencing disk
-$script:SwitchName = 'aap-guests-win'
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 
 function Get-AapGuestCredential([string]$User, [string]$Password) {
@@ -47,6 +47,20 @@ function Get-AapWindowsPartitionRoot([int]$DiskNumber) {
     if ((Get-AapPathKind $sys) -ne 'dir') { throw 'AAP_HostileGuest: the Windows partition has no \Windows\System32' }
     return $root
 }
+# The admin-only rule of backend-lifecycle.md revision 2 for one folder: not a link, owned by an admin SID, a protected
+# DACL and no ACE, inheritable or inherit-only included, for anyone but the admin SIDs. Plain .NET and Get-Acl, no module,
+# so it can run before images\common is loaded.
+function Get-AapAdminOnlyProblems([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+    if (([int][IO.File]::GetAttributes($Path) -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { "${Path}: is a link"; return }
+    $admins = @('S-1-5-18', 'S-1-5-32-544', $script:TrustedInstaller)
+    $acl = Get-Acl -LiteralPath $Path
+    if ($admins -notcontains $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value) { "${Path}: the owner is not an administrator SID" }
+    if (-not $acl.AreAccessRulesProtected) { "${Path}: the DACL inherits from its parent" }
+    foreach ($r in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+        if ($admins -notcontains $r.IdentityReference.Value) { "${Path}: $($r.IdentityReference.Value) has an access entry" }
+    }
+}
 function Get-AapTreeBytes([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force
     if (-not $item.PSIsContainer) { return [double]$item.Length }
@@ -64,17 +78,13 @@ function New-AapWinHyperVProvider {
     if (-not (Get-Command Write-AapGuestFile -ErrorAction SilentlyContinue)) { throw 'AAP_ProviderInvalid: import AapWinImage.psm1 before creating the Hyper-V provider' }
     $p = @{}
     $p.TestRootTrust = { param($a)
-        # P03's rules (owner, ACL masks, reparse, ancestors, fixed drive) plus the admin-only rule of backend-lifecycle.md
-        # revision 2: a protected DACL and no ACE, inheritable or inherit-only included, for anyone but the admin SIDs.
+        # images\common is P03's code: it is loaded only after its own folder passes the admin-only rule here. Then P03's
+        # rules (owner, ACL masks, reparse, ancestors, fixed drive) and the admin-only rule for the folder asked about.
+        $common = @(Get-AapAdminOnlyProblems $script:CommonDir)
+        if ($common.Count) { return @($common | ForEach-Object { "images\common is not admin-only, so it was not loaded: $_" }) }
         Import-Module $script:Common -Force
         @(Get-AapStagingProblems -Root $a.Path | ForEach-Object { $_.Text })
-        if (Test-Path -LiteralPath $a.Path -PathType Container) {
-            $acl = Get-Acl -LiteralPath $a.Path
-            if (-not $acl.AreAccessRulesProtected) { "$($a.Path): the DACL inherits from its parent" }
-            foreach ($r in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
-                if (@('S-1-5-18', 'S-1-5-32-544', $script:TrustedInstaller) -notcontains $r.IdentityReference.Value) { "$($a.Path): $($r.IdentityReference.Value) has an access entry" }
-            }
-        }
+        @(Get-AapAdminOnlyProblems $a.Path)
     }
     $p.GetVolume = { param($a)
         $v = Get-Volume -FilePath $a.Path
@@ -154,14 +164,9 @@ function New-AapWinHyperVProvider {
         Hyper-V\Add-VMHardDiskDrive -VM $vm -Path $a.TempDisk
         # No file copy and no key-value exchange between host and guest; PowerShell Direct is the only channel.
         foreach ($svc in 'Guest Service Interface', 'Key-Value Pair Exchange') { Hyper-V\Disable-VMIntegrationService -VM $vm -Name $svc }
-        $nic = @(Hyper-V\Get-VMNetworkAdapter -VM $vm)
-        if ($a.SwitchName) {
-            $s = @(Hyper-V\Get-VMSwitch -Name $a.SwitchName -ErrorAction SilentlyContinue)
-            if ([string]$a.SwitchName -cne $script:SwitchName -or $s.Count -ne 1 -or [string]$s[0].SwitchType -ne 'Internal') { throw "AAP_NetworkUntrusted: guests attach only to the internal switch $($script:SwitchName)" }
-            $nic | Hyper-V\Connect-VMNetworkAdapter -SwitchName $a.SwitchName
-        } else {
-            $nic | Hyper-V\Remove-VMNetworkAdapter
-        }
+        # No adapter: the P10.0 guest network module gives the build VM its one adapter (switch, guards, port ACLs); the
+        # verification VM keeps none.
+        Hyper-V\Get-VMNetworkAdapter -VM $vm | Hyper-V\Remove-VMNetworkAdapter
         @{ Id = [string]$vm.Id }
     }
     $p.StartVm = { param($a) $vm = Get-AapVm $a; if ($vm.State -ne 'Running') { Hyper-V\Start-VM -VM $vm } }
@@ -251,6 +256,20 @@ function New-AapWinHyperVProvider {
     $p.SetReadOnlyAcl = { param($a)
         # Owner Administrators; SYSTEM, Administrators and the VM worker group may read; nobody may write. Inheritance off.
         Set-AapReadOnlyAcl -Path $a.Path -Owner 'S-1-5-32-544' -Readers @('S-1-5-18', 'S-1-5-32-544', $script:VmSid)
+    }
+    $p.GetVmNetwork = { param($a)
+        # What Hyper-V reports, never what the network module says. A rule is Scoped when a local address, a port or a
+        # protocol narrows it; '', '*' and 'ANY' read as unrestricted (the D2 lab confirms how Hyper-V shows an unset field).
+        $any = { param($v) @('', '*', 'any') -contains ([string]$v).Trim() }
+        foreach ($n in @(Hyper-V\Get-VMNetworkAdapter -VM (Get-AapVm $a))) {
+            $name = ''; $type = ''
+            if ($n.SwitchId) { $sw = Hyper-V\Get-VMSwitch -Id $n.SwitchId -ErrorAction Stop; $name = [string]$sw.Name; $type = [string]$sw.SwitchType }
+            $acls = @(Hyper-V\Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter $n | ForEach-Object {
+                    @{ Action = [string]$_.Action; Direction = [string]$_.Direction; RemoteAddress = [string]$_.RemoteIPAddress
+                        Scoped = -not ((& $any $_.LocalIPAddress) -and (& $any $_.LocalPort) -and (& $any $_.RemotePort) -and (& $any $_.Protocol)) } })
+            @{ SwitchName = $name; SwitchType = $type; DhcpGuard = ([string]$n.DhcpGuard -eq 'On'); RouterGuard = ([string]$n.RouterGuard -eq 'On')
+                MacAddressSpoofing = ([string]$n.MacAddressSpoofing -ne 'Off'); Acls = $acls }
+        }
     }
     $p.GetVmMemoryOverheadMib = { param($a)
         $id = [string](Get-AapVm $a).Id

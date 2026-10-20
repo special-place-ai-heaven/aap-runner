@@ -16,7 +16,7 @@ $script:GiB = 1073741824
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 $script:ProviderOps = @('TestRootTrust', 'GetVolume', 'MeasureBytes', 'VerifyInputs', 'NewBuildDisk', 'ApplyWindowsImage', 'NewDiffDisk',
     'WriteOfflineFiles', 'GetSwitch', 'NewVm', 'StartVm', 'StopVm', 'RestartVm', 'RemoveVm', 'WaitGuestReady', 'GetGuestBootTime', 'SendFile',
-    'InvokeGuest', 'ReceiveFile', 'OptimizeDisk', 'MountReadOnly', 'Dismount', 'SetReadOnlyAcl', 'GetVmMemoryOverheadMib')
+    'InvokeGuest', 'ReceiveFile', 'OptimizeDisk', 'MountReadOnly', 'Dismount', 'SetReadOnlyAcl', 'GetVmMemoryOverheadMib', 'GetVmNetwork')
 # Repository files the builder reads. Not configurable: a caller cannot point the builder at another plan, manifest or
 # guest payload (tests replace them in module scope).
 $script:PlanPath = Join-Path $PSScriptRoot 'build-plan.json'
@@ -25,6 +25,18 @@ $script:AllowlistPath = Join-Path $PSScriptRoot 'secret-allowlist.json'
 $script:ProbeScript = Join-Path $PSScriptRoot '..\..\tools\parity-certify\probe\windows.ps1'
 $script:HelloC = Join-Path $PSScriptRoot '..\..\tools\parity-certify\workloads\fixtures\hello.c'
 $script:SwitchName = 'aap-guests-win'   # the P10.0 internal switch (guest-transport.md candidate); never External or Default Switch
+# The P10.0 guest network module, through the interface P10's backend takes (guest-transport.md, Guest network attachment):
+# Attach gives the VM one adapter on the internal switch with DHCP guard and router guard on, MAC spoofing off and the
+# extended port ACLs; Verify returns what is wrong with that attachment (nothing when it is right); Detach undoes Attach.
+$script:NetworkOps = @('Attach', 'Detach', 'Verify')
+# Outbound deny rules every guest adapter must carry, read back from Hyper-V: RFC 1918, link-local, CGNAT, multicast,
+# IPv6 multicast, link-local and unique-local. The host's vEthernet addresses, the LAN's IPv6 prefix and the clone subnet
+# differ per host; the module's Verify owns those.
+$script:DenyRanges = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'ff00::/8', 'fe80::/10', 'fc00::/7')
+# Blockers no caller-supplied waiver clears. The media blocker is cleared only by the media check against the pinned
+# SHA-256; the source archive blocker only by a reviewed plan that pins the archive (New-AapWinBuildPlan.ps1 -SourceSha256).
+$script:Unwaivable = @('windows-server-2025-media', 'p06-upstream-source-archive')
+$script:MediaBlocker = 'windows-server-2025-media'
 $script:PollSeconds = 15
 # Folders on a Windows volume that are ACL-locked to SYSTEM and that the scan skips. Reviewed list: any OTHER unreadable
 # path makes the scan incomplete. Extend it only through review, with the reason.
@@ -364,6 +376,9 @@ function Read-AapWinBuildPlan {
     if ([int]$plan.os_disk_gib -lt 1) { throw 'AAP_PlanInvalid: os_disk_gib' }
     # The version names folders, VMs and the generation id.
     if ([string]$plan.baseline.image_version -cnotmatch '^[0-9]{8}\.[0-9]+\.[0-9]+\z') { throw 'AAP_PlanInvalid: baseline.image_version' }   # check:plan-version
+    # The upstream source archive: its P03 entry name, and its SHA-256 once P03 stages it (null until then).
+    $src = Get-AapProp $plan 'source'
+    if ([string](Get-AapProp $src 'entry') -cnotmatch '^[a-z0-9][a-z0-9.-]{0,79}\z' -or ($null -ne (Get-AapProp $src 'sha256') -and [string](Get-AapProp $src 'sha256') -cnotmatch '^[0-9a-f]{64}\z')) { throw 'AAP_PlanInvalid: source' }
     $i = 0
     foreach ($p in @($plan.phases)) {
         $i++
@@ -627,7 +642,7 @@ function Get-AapWinNames($Plan, [int]$AapBuild) {
 }
 
 function Assert-AapWinConfig($Config) {
-    foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'MediaFile', 'MediaSha256', 'Edition', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit', 'SourceEntry', 'SwitchName') {
+    foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'MediaFile', 'MediaSha256', 'Edition', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit', 'SwitchName') {
         if ($null -eq (Get-AapProp $Config $k) -or [string](Get-AapProp $Config $k) -eq '') { throw "AAP_ConfigInvalid: $k is required" }
     }
     if ([int]$Config.AapBuild -lt 1) { throw 'AAP_ConfigInvalid: AapBuild' }
@@ -647,6 +662,7 @@ function Get-AapWinWaivers($Config, [string[]]$Known, [string]$PlanSha) {
             throw 'AAP_ConfigInvalid: a waiver is an approval record with exactly id, rationale, plan_sha256 and approver'
         }
         $id = [string](Get-AapProp $wv 'id')
+        if ($script:Unwaivable -ccontains $id) { throw "AAP_ConfigInvalid: $id cannot be waived; only the media check or a reviewed build plan clears it" }   # check:unwaivable
         if ($Known -cnotcontains $id) { throw "AAP_ConfigInvalid: waiver for an unknown blocker: $(Get-AapPrintable $id 80)" }
         if ([string](Get-AapProp $wv 'plan_sha256') -cne $PlanSha) { throw "AAP_ConfigInvalid: the waiver for $id was approved for another build plan" }   # check:waiver
         $out.Add([ordered]@{ id = $id; rationale = [string]$wv.rationale; plan_sha256 = $PlanSha; approver = [string]$wv.approver })
@@ -796,6 +812,36 @@ function Invoke-AapPhase($Ctx, $P) {
     }
 }
 
+# The build VM's one adapter, through the P10.0 module and then read back from Hyper-V: the module's word is not enough.
+function Connect-AapBuildNetwork($Ctx) {
+    $net = @{ VmId = $Ctx.VmId; VmName = $Ctx.Vm; Profile = 'windows' }
+    $null = & $Ctx.Network.Attach $net
+    $problems = @(& $Ctx.Network.Verify $net | Where-Object { $_ })
+    if ($problems.Count) { throw "AAP_NetworkUntrusted: $(@($problems | ForEach-Object { Get-AapPrintable ([string]$_) 100 }) -join '; ')" }   # check:network-verify
+    Assert-AapVmAdapters $Ctx $Ctx.Vm $Ctx.VmId 1
+}
+
+# A VM's adapters as Hyper-V reports them: exactly $Count, each on the internal switch with DHCP guard and router guard on
+# and MAC spoofing off (booleans, nothing else), an unscoped outbound deny rule for every range in $script:DenyRanges, and
+# no rule other than a deny that names more than one address (an allow is for one gateway, DHCP or DNS endpoint).
+function Assert-AapVmAdapters($Ctx, [string]$VmName, [string]$VmId, [int]$Count) {
+    $nics = @(Invoke-AapProvider $Ctx.Provider 'GetVmNetwork' @{ VmName = $VmName; VmId = $VmId } | Where-Object { $null -ne $_ })
+    if ($nics.Count -ne $Count) { throw "AAP_NetworkUntrusted: $VmName has $($nics.Count) network adapters, not $Count" }   # check:nic-count
+    foreach ($n in $nics) {
+        if ([string](Get-AapProp $n 'SwitchName') -cne $script:SwitchName -or [string](Get-AapProp $n 'SwitchType') -cne 'Internal') { throw "AAP_NetworkUntrusted: an adapter of $VmName is not on the internal switch $($script:SwitchName)" }   # check:nic-switch
+        if (-not ([object]::Equals((Get-AapProp $n 'DhcpGuard'), $true) -and [object]::Equals((Get-AapProp $n 'RouterGuard'), $true) -and [object]::Equals((Get-AapProp $n 'MacAddressSpoofing'), $false))) {   # check:nic-guards
+            throw "AAP_NetworkUntrusted: an adapter of $VmName lacks DHCP guard or router guard, or allows MAC spoofing"
+        }
+        $rules = @(Get-AapProp $n 'Acls' | Where-Object { $null -ne $_ })
+        $denied = @($rules | Where-Object { [string](Get-AapProp $_ 'Action') -ceq 'Deny' -and [string](Get-AapProp $_ 'Direction') -ceq 'Outbound' -and [object]::Equals((Get-AapProp $_ 'Scoped'), $false) } |
+                ForEach-Object { ([string](Get-AapProp $_ 'RemoteAddress')).ToLowerInvariant() })
+        $missing = @($script:DenyRanges | Where-Object { $denied -cnotcontains $_ })
+        if ($missing.Count) { throw "AAP_NetworkUntrusted: an adapter of $VmName does not deny $($missing -join ', ')" }   # check:nic-acl
+        $wide = @($rules | Where-Object { [string](Get-AapProp $_ 'Action') -cne 'Deny' -and [string](Get-AapProp $_ 'RemoteAddress') -cnotmatch '^([0-9]{1,3}(\.[0-9]{1,3}){3}(/32)?|[0-9a-fA-F:]{2,39}(/128)?)\z' })
+        if ($wide.Count) { throw "AAP_NetworkUntrusted: an adapter of $VmName has a rule that lets traffic through to more than one address" }   # check:nic-acl
+    }
+}
+
 # Fresh guest from the sealed disk: a differencing child in the build folder, the job user from a new answer file, then
 # upstream tests, the P05 inventory probe and native toolchain discovery as that user (guest/AapGuestVerify.ps1). It gets
 # no network adapter: its checks are local, and nothing that ran internet installers gets a route out of it.
@@ -807,8 +853,9 @@ function Invoke-AapVerify($Ctx) {
     $null = Invoke-AapProvider $Ctx.Provider 'NewDiffDisk' @{ Parent = $Ctx.OsDisk; Path = $child }
     $null = Invoke-AapProvider $Ctx.Provider 'NewBuildDisk' @{ Path = $temp; SizeGib = [int]$Ctx.Plan.temp_disk_gib; Format = $true }
     $null = Invoke-AapProvider $Ctx.Provider 'WriteOfflineFiles' @{ Vhdx = $child; Files = @{ 'Windows\Panther\unattend.xml' = (New-AapWinUnattend -UserName $user -Password $pw) } }
-    $vm = Invoke-AapProvider $Ctx.Provider 'NewVm' @{ Name = $Ctx.Names.VerifyVm; Path = $dir; OsDisk = $child; TempDisk = $temp; Cpus = [int]$Ctx.Config.BuildCpus; MemGib = [int]$Ctx.Config.BuildMemGib; SwitchName = $null }
+    $vm = Invoke-AapProvider $Ctx.Provider 'NewVm' @{ Name = $Ctx.Names.VerifyVm; Path = $dir; OsDisk = $child; TempDisk = $temp; Cpus = [int]$Ctx.Config.BuildCpus; MemGib = [int]$Ctx.Config.BuildMemGib }
     $g = [pscustomobject]@{ Provider = $Ctx.Provider; BuildDir = $Ctx.BuildDir; Vm = $Ctx.Names.VerifyVm; VmId = (Get-AapVmId $vm); User = $user; Password = $pw; GuestScript = 'C:\aap-build\AapGuestVerify.ps1' }
+    Assert-AapVmAdapters $Ctx $g.Vm $g.VmId 0
     $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $g.Vm; VmId = $g.VmId }
     if (-not (Invoke-AapProvider $Ctx.Provider 'WaitGuestReady' @{ VmName = $g.Vm; VmId = $g.VmId; User = $user; Password = $pw; TimeoutSeconds = 1800 })) { throw 'AAP_VerifyFailed: fresh guest not ready' }
     foreach ($f in @(@{ H = $Ctx.VerifyScript; G = 'C:\aap-build\AapGuestVerify.ps1' }, @{ H = $Ctx.ProbeScript; G = 'C:\aap-build\probe-windows.ps1' }, @{ H = $Ctx.HelloC; G = 'C:\aap-build\hello.c' }, @{ H = $Ctx.SourceArchive; G = 'C:\aap-build\runner-images.zip' })) {
@@ -917,12 +964,16 @@ function Remove-AapWinBuild {
 function Invoke-AapWinImageBuild {
     <# Builds, scans, verifies, publishes and records one generation. Returns Ok, Status (built, unchanged, refused, failed),
        Reason, Detail, GenerationId and the record paths. A refusal before the build folder exists changes nothing; a failure
-       after it removes the VMs, build disks, any partly published generation and the evidence files it wrote. #>
-    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Provider)
+       after it removes the VMs, build disks, any partly published generation and the evidence files it wrote.
+       -Network is the P10.0 guest network module (Attach, Detach, Verify); without it nothing is built. #>
+    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Provider, [hashtable]$Network)
     $result = [ordered]@{ Ok = $false; Status = 'refused'; Reason = $null; Detail = $null; GenerationId = $null; RecordPath = $null; BudgetPath = $null; EvidencePath = $null; PartialCleaned = $false }
     $lock = $null; $started = $false; $published = $false; $ctx = $null; $storage = $null; $names = $null; $evidenceRoot = $null
     try {
         Assert-AapProvider $Provider
+        if ($null -eq $Network) { throw 'AAP_NetworkUnavailable: the P10.0 guest network module is not installed; no guest is attached' }   # check:network-module
+        $missing = @($script:NetworkOps | Where-Object { -not ($Network[$_] -is [scriptblock]) })
+        if ($missing.Count) { throw "AAP_NetworkInvalid: missing $($missing -join ', ')" }
         $here = $PSScriptRoot
         # The builder runs elevated: its own code, and every folder it sends files from, must be as protected as the roots
         # it writes (P19 deploys them admin-only). Folders are checked, not each file in them.
@@ -944,7 +995,7 @@ function Invoke-AapWinImageBuild {
         $known = @(Get-AapWinBlockers -Plan $plan -ManifestPath $script:ManifestPath)
         $waivers = @(Get-AapWinWaivers $Config $known $planSha)
         $waived = @($waivers | ForEach-Object { $_.id })
-        $open = @($known | Where-Object { $waived -cnotcontains $_ })
+        $open = @($known | Where-Object { $waived -cnotcontains $_ -and $_ -cne $script:MediaBlocker })   # the media check below clears the media blocker
         if ($open.Count) { throw "AAP_Blocked: unresolved input blockers: $($open -join ', ')" }   # check:blocked
 
         $evidenceDir = Join-Path (Join-Path $evidenceRoot 'P06') $names.BuildId
@@ -980,17 +1031,18 @@ function Invoke-AapWinImageBuild {
         Assert-AapBuildSpace $storage $Provider $plan ([int]$Config.StagingGibMax)
         $media = Join-Path (Join-Path $storage.Base.Path 'media') $Config.MediaFile
         if ((Get-AapPathKind $media) -ne 'file' -or (Get-AapSha256File $media) -cne $Config.MediaSha256) { throw "AAP_MediaMismatch: $($Config.MediaFile) is missing or its SHA-256 differs from the pinned value" }   # check:media
-        $inputs = Invoke-AapProvider $Provider 'VerifyInputs' @{ StagingRoot = $storage.Staging.Path; Names = @($Config.SourceEntry) + @(Get-AapProp $Config 'Inputs' | Where-Object { $_ }) }
+        $inputs = Invoke-AapProvider $Provider 'VerifyInputs' @{ StagingRoot = $storage.Staging.Path; Names = @([string]$plan.source.entry) + @(Get-AapProp $Config 'Inputs' | Where-Object { $_ }) }
         if (-not $inputs.Complete) { throw "AAP_InputsUnverified: P03 offline verification did not accept every input: $(Get-AapPrintable ([string]$inputs.Detail) 300)" }   # check:inputs
-        $source = [string]$inputs.Paths[[string]$Config.SourceEntry]
+        $source = [string]$inputs.Paths[[string]$plan.source.entry]
         if (-not $source -or (Get-AapPathKind $source) -ne 'file') { throw 'AAP_InputsUnverified: the upstream source archive is not staged' }
+        if ([string]$plan.source.sha256 -cnotmatch '^[0-9a-f]{64}\z' -or (Get-AapSha256File $source) -cne [string]$plan.source.sha256) { throw 'AAP_InputsUnverified: the upstream source archive is not the one the build plan pins' }   # check:source-pin
 
         # From here on a failure cleans up what it made.
         [void](New-Item -ItemType Directory -Path $buildDir)
         $started = $true
         $pw = New-AapWinPassword
         $ctx = [pscustomobject]@{
-            Config = $Config; Provider = $Provider; Plan = $plan; Names = $names; BuildDir = $buildDir; EvidenceDir = $evidenceDir
+            Config = $Config; Provider = $Provider; Network = $Network; Plan = $plan; Names = $names; BuildDir = $buildDir; EvidenceDir = $evidenceDir
             StatePath = (Join-Path $buildDir 'state.json'); OsDisk = (Join-Path $buildDir 'os.vhdx'); TempDisk = (Join-Path $buildDir 'temp.vhdx')
             Vm = $names.BuildVm; VmId = $null; User = [string]$plan.variables.install_user; Password = $pw; GuestScript = 'C:\aap-build\AapGuestRunner.ps1'
             SourceArchive = $source; VerifyScript = (Join-Path $here 'guest\AapGuestVerify.ps1'); ProbeScript = $script:ProbeScript; HelloC = $script:HelloC; Registry = $null
@@ -1019,8 +1071,9 @@ function Invoke-AapWinImageBuild {
         Set-AapStep $ctx 'disks' 'done'
 
         Set-AapStep $ctx 'vm' 'intent'
-        $vm = Invoke-AapProvider $Provider 'NewVm' @{ Name = $ctx.Vm; Path = $buildDir; OsDisk = $ctx.OsDisk; TempDisk = $ctx.TempDisk; Cpus = [int]$Config.BuildCpus; MemGib = [int]$Config.BuildMemGib; SwitchName = $script:SwitchName }
+        $vm = Invoke-AapProvider $Provider 'NewVm' @{ Name = $ctx.Vm; Path = $buildDir; OsDisk = $ctx.OsDisk; TempDisk = $ctx.TempDisk; Cpus = [int]$Config.BuildCpus; MemGib = [int]$Config.BuildMemGib }
         $ctx.VmId = Get-AapVmId $vm
+        Connect-AapBuildNetwork $ctx
         $null = Invoke-AapProvider $Provider 'StartVm' @{ VmName = $ctx.Vm; VmId = $ctx.VmId }
         if (-not (Invoke-AapProvider $Provider 'WaitGuestReady' @{ VmName = $ctx.Vm; VmId = $ctx.VmId; User = $ctx.User; Password = $pw; TimeoutSeconds = 1800 })) { throw 'AAP_RebootTimeout: build guest not ready after first boot' }
         $ctx.State.installed_at = Get-AapUtc
@@ -1036,6 +1089,7 @@ function Invoke-AapWinImageBuild {
 
         Set-AapStep $ctx 'seal' 'intent'
         $null = Invoke-AapProvider $Provider 'StopVm' @{ VmName = $ctx.Vm; VmId = $ctx.VmId; TimeoutSeconds = 1800 }
+        $null = & $Network.Detach @{ VmId = $ctx.VmId; VmName = $ctx.Vm; Profile = 'windows' }
         $null = Invoke-AapProvider $Provider 'RemoveVm' @{ Name = $ctx.Vm }
         $null = Invoke-AapProvider $Provider 'Dismount' @{ Vhdx = $ctx.TempDisk }
         Remove-AapTree $ctx.TempDisk $buildDir
@@ -1100,6 +1154,7 @@ function Invoke-AapWinImageBuild {
         if ($started -and -not $published) {
             $result.Status = 'failed'
             if ($ctx) { try { $ctx.State.status = 'failed'; Save-AapState $ctx } catch { $null = $_ } }
+            if ($ctx -and $ctx.VmId) { try { $null = & $Network.Detach @{ VmId = $ctx.VmId; VmName = $ctx.Vm; Profile = 'windows' } } catch { $null = $_ } }
             try { Remove-AapWinBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot } catch { $result.Detail = Get-AapPrintable "$($result.Detail); cleanup failed: $($_.Exception.Message)" 500 }
         }
     } finally {

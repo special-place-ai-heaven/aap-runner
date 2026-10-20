@@ -24,10 +24,15 @@ function New-TestRoot {
     return $root
 }
 
-# The committed plan with every script hash filled in (the real plan is unpinned until P03 stages the upstream archive).
-function New-PinnedPlan([string]$Path) {
+# The committed plan with every script hash filled in (the real plan is unpinned until P03 stages the upstream archive);
+# with -SourceSha also the archive pinned and its blocker gone, as New-AapWinBuildPlan.ps1 -SourceSha256 writes it.
+function New-PinnedPlan([string]$Path, [string]$SourceSha) {
     $plan = Get-Content -Raw -LiteralPath (Join-Path (Get-TestRepo) 'images\windows\build-plan.json') | ConvertFrom-Json
     foreach ($p in $plan.phases) { if ($p.kind -eq 'scripts') { foreach ($s in $p.scripts) { $s.sha256 = Get-TextSha $s.name } } }
+    if ($SourceSha) {
+        $plan.source.sha256 = $SourceSha
+        $plan.blockers = @($plan.blockers | Where-Object { $_.id -ne 'p06-upstream-source-archive' })
+    }
     Write-TestJson $plan $Path
     return $plan
 }
@@ -46,6 +51,7 @@ function New-FakeWorld {
         InventoryText = '{"schema":1,"probe":"fake"}'; ReportText = '# software report'; Vms = @{}; VmIds = @{}; ReadOnly = (New-Object System.Collections.Generic.List[string])
         LastRequest = $null; SourceZip = $null; MediaSha = $null; Provider = $null; BootTime = $null
         Switch = @{ Name = 'aap-guests-win'; SwitchType = 'Internal' }
+        Network = $null; Nics = @{}; NetProblems = @(); NicEdit = { param($l) $l }; VerifyHasNic = $false
     }
     $w.Staging = $(if ($SeparateStaging) { Join-Path $root 'vol3\staging' } else { Join-Path $w.Base 'staging' })
     foreach ($d in $w.Base, $w.Clone, $w.Scratch, $w.Staging, $w.Capacity, $w.Evidence, $w.Disk, (Join-Path $w.Base 'media')) { [void][IO.Directory]::CreateDirectory($d) }
@@ -64,7 +70,7 @@ function New-FakeWorld {
     [void][IO.Directory]::CreateDirectory($zipDir)
     $w.SourceZip = Join-Path $zipDir 'runner-images.zip'
     [IO.File]::WriteAllText($w.SourceZip, 'fake archive')
-    $w.Plan = New-PinnedPlan $w.PlanPath
+    $w.Plan = New-PinnedPlan $w.PlanPath (Get-FileSha $w.SourceZip)
     $repo = Get-TestRepo
     $manifest = Join-Path $repo 'images\common\artifacts.manifest.json'
     # The builder's repository files are fixed in module scope, never in Config; the fake world swaps them there.
@@ -78,15 +84,33 @@ function New-FakeWorld {
     $w.Config = @{
         StoragePath = $w.StoragePath; EvidenceRoot = $w.Evidence; AapBuild = 1; MediaFile = 'SERVER_EVAL_x64FRE_en-us.iso'; MediaSha256 = $w.MediaSha
         Edition = 'Windows Server 2025 Datacenter Evaluation (Desktop Experience)'; BuildCpus = 4; BuildMemGib = 10; StagingGibMax = 400; BaseGibMax = 186; JobDiskGibMax = 55
-        BuilderCommit = '0123456789abcdef0123456789abcdef01234567'; SourceEntry = 'runner-images-aee0669'; Inputs = @(); SwitchName = 'aap-guests-win'
-        Waivers = @(Get-AapWinBlockers -Plan $w.Plan -ManifestPath $manifest | ForEach-Object { New-TestWaiver $_ $planSha })
+        BuilderCommit = '0123456789abcdef0123456789abcdef01234567'; Inputs = @(); SwitchName = 'aap-guests-win'
+        Waivers = @(Get-AapWinBlockers -Plan $w.Plan -ManifestPath $manifest | Where-Object { $_ -notin 'windows-server-2025-media', 'p06-upstream-source-archive' } | ForEach-Object { New-TestWaiver $_ $planSha })
     }
     $w.Sizes['os.vhdx'] = [double]128 * $script:GiB
     $w.Sizes['os.avhdx'] = [double]18 * $script:GiB
     $w.Sizes['temp.vhdx'] = [double]9 * $script:GiB
     $w.Guest = { param($w, $req) Get-FakeGuestReply $w $req }
     $w.Provider = New-FakeProvider $w
+    $w.Network = New-FakeNetwork
     return $w
+}
+
+# One adapter as the P10.0 module should leave it, written out here rather than taken from the module under test.
+function New-FakeNic {
+    $acls = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'ff00::/8', 'fe80::/10', 'fc00::/7') |
+        ForEach-Object { @{ Action = 'Deny'; Direction = 'Outbound'; RemoteAddress = $_; Scoped = $false } }
+    $acls = @($acls) + @(@{ Action = 'Allow'; Direction = 'Outbound'; RemoteAddress = '192.168.240.1'; Scoped = $true })
+    @{ SwitchName = 'aap-guests-win'; SwitchType = 'Internal'; DhcpGuard = $true; RouterGuard = $true; MacAddressSpoofing = $false; Acls = $acls }
+}
+
+# The P10.0 interface (Attach, Detach, Verify). Attach records the adapter list $w.NicEdit makes of one good adapter.
+function New-FakeNetwork {
+    @{
+        Attach = { param($a) Add-FakeCall 'NetAttach' $a; $w.Nics[$a.VmId] = @(& $w.NicEdit @(New-FakeNic)) }
+        Detach = { param($a) Add-FakeCall 'NetDetach' $a; $w.Nics.Remove($a.VmId) }
+        Verify = { param($a) Add-FakeCall 'NetVerify' $a; $w.NetProblems }
+    }
 }
 
 function New-TestWaiver([string]$Id, [string]$PlanSha) { [ordered]@{ id = $Id; rationale = 'fake world: every blocker waived for the test'; plan_sha256 = $PlanSha; approver = 'chair (test)' } }
@@ -171,7 +195,10 @@ function New-FakeProvider($w) {
     $p.WriteOfflineFiles = { param($a) Add-FakeCall 'WriteOfflineFiles' $a
         foreach ($k in @($a.Files.Keys)) { Write-AapGuestFile -Root $w.Disk -RelPath $k -Bytes ([Text.Encoding]::UTF8.GetBytes($a.Files[$k])); $w.Unattend.Add($a.Files[$k]) } }
     $p.GetSwitch = { param($a) Add-FakeCall 'GetSwitch' $a; $w.Switch }
-    $p.NewVm = { param($a) Add-FakeCall 'NewVm' $a; $w.Vms[$a.Name] = 'Off'; $w.VmIds[$a.Name] = [guid]::NewGuid().ToString(); @{ Id = $w.VmIds[$a.Name] } }
+    $p.NewVm = { param($a) Add-FakeCall 'NewVm' $a; $w.Vms[$a.Name] = 'Off'; $w.VmIds[$a.Name] = [guid]::NewGuid().ToString()
+        if ($w.VerifyHasNic -and $a.Name -like 'aap-wverify-*') { $w.Nics[$w.VmIds[$a.Name]] = @(New-FakeNic) }
+        @{ Id = $w.VmIds[$a.Name] } }
+    $p.GetVmNetwork = { param($a) Add-FakeCall 'GetVmNetwork' $a; if ($w.Nics.ContainsKey($a.VmId)) { $w.Nics[$a.VmId] } }
     $p.GetGuestBootTime = { param($a) Add-FakeCall 'GetGuestBootTime' $a
         if ($w.BootTime) { return (& $w.BootTime $w) }
         [string](630000000000000000 + @($w.Calls | Where-Object { $_.Op -eq 'RestartVm' }).Count) }
