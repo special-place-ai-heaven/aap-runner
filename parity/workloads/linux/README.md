@@ -118,8 +118,18 @@ hosted reference and a correct candidate and `compare_artifacts` stays `sha256`.
   first reports the missing `kernel32.lib` the link names). Every `provisional:` value now cites that run's logs
   under `oracle/hosted-runs/39450814977/`, and every report hash is pinned from it. Negatives that lacked a proof
   fact got one (.NET: the net8.0 targeting pack present, net7.0's absent; Java: the JDK still installed with
-  JAVA_HOME unset; file-commands: the real marker present). Hosted validation of the full suite (`hosted_validation`
-  and `check_hosted_run.py`) waits for iteration 2.
+  JAVA_HOME unset; file-commands: the real marker present).
+- Hosted-validated: run 39451894408 (image 20261012.334.1, head 35baccc): 44/44, all 23 qualified positives and all
+  21 qualified negatives, and its `summary.json` tree manifest equals this tree; `xwin/sdk-cross` and its negative
+  are listed as unqualified, not run. Every negative fails with its expected text as the first error line, its
+  positive twin passed in the same run, and its observed facts show the sabotage held (a `sabotage.*` fact, or for
+  `runner-env` the tool-cache variables unchanged and for `registry-tls` the TLS server reachable) and no other failed
+  check except the ones the sabotage implies (every tool cache entry; rustc, cargo and rustup all live in
+  `~/.cargo/bin`). `oracle/hosted-runs/39451894408/` keeps its `summary.json` and `results.json`.
+- `tests/parity/workloads/linux/check_hosted_run.py` compares the tree with the run named in the oracle's
+  `hosted_validation.run`: every definition hash, report hash and first error in its `results.json`, the
+  unqualified list and the content manifest in its `summary.json` (added, removed or changed files are listed).
+  After changing anything the manifest covers, rerun `parity-workloads.yml` and replace that evidence.
 - The hosted Linux-built `parity-freestanding.exe` (sha256 e713b3b4..., byte-identical to an LLVM 22 Windows build
   of the same source thanks to `/brepro`) was run on a native Windows 11 host (the owner's, build 26300) with
   `Invoke-HandoffExecution.ps1` under Windows PowerShell 5.1: exit 42, expected output, `handoff.py verdict`
