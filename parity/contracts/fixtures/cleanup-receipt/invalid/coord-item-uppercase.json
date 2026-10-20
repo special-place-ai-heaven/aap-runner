@@ -1,0 +1,41 @@
+{
+  "expect": "$.item: does not match pattern",
+  "instance": {
+    "item": "Coord-X",
+    "attempt": 1,
+    "kind": "manual-cleanup",
+    "written": "2026-10-19T20:45:00+02:00",
+    "cleanup_actor": "coordinator",
+    "verifier": "independent read-only verifier agent: checks 1-7 PASS",
+    "branch": "parity/p20-0-two-profile-controls",
+    "base_sha": "90ef9b6190394b4587dd4c28e0db68631a30b34f",
+    "reviewed_head": "13ec2e6c6ee6aec016cfaad27513b1780b0c52de",
+    "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/26",
+    "merge": {
+      "method": "merge-commit",
+      "merge_sha": "f682e03a4386fd52010fb9640c41c50fad67de75",
+      "origin_main_after": "f682e03a4386fd52010fb9640c41c50fad67de75",
+      "comparison": "second parent equals the pushed PR head"
+    },
+    "disposed": [
+      {
+        "resource": "worktree",
+        "path": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\P20.0\\attempt-1\\repo",
+        "how": "inventory empty; git worktree remove (no --force)",
+        "observed_absent": true
+      }
+    ],
+    "retained": [
+      {
+        "path": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P20.0-attempt-1.receipt.json",
+        "owner": "coordinator",
+        "retention": "durable receipt"
+      }
+    ],
+    "lab_vms": [],
+    "leases_released": [
+      "crates/tray/src/**"
+    ],
+    "secrets": "none recorded"
+  }
+}

@@ -17,6 +17,12 @@ jobs:
       - run: bash distro/bootstrap.sh --self-check
       - run: bash distro/manager.sh --self-check
       - run: bash tests/run.sh
+      - run: python3 -B -I -m unittest discover -s tests/parity/cache/qualification -p "test_*.py"
+      - run: python3 -B -I parity/contracts/validate.py
+      # TODO(chair): make blocking after the first green run. Local shellcheck 0.11.0 -S warning is
+      # clean except SC2115 at tests/worker_auth_test.sh:578; the hosted image's version may differ.
+      - run: shellcheck -S warning distro/*.sh tests/*.sh
+        continue-on-error: true
 
   pester:
     runs-on: windows-latest
@@ -29,7 +35,8 @@ jobs:
           Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
           Import-Module Pester -RequiredVersion 5.7.1
           $c = New-PesterConfiguration
-          $c.Run.Path = @('supervisor', 'tests/parity-work')
+          $c.Run.Path = @('supervisor', 'tests/parity-work', 'tests/capacity', 'tests/broker', 'tests/images/common', 'tests/images/windows', 'tests/parity-certify')
+          $c.Filter.ExcludeTag = @('Network')
           $c.Run.Exit = $true
           Invoke-Pester -Configuration $c
 
