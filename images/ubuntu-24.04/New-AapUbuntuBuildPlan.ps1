@@ -1,5 +1,6 @@
 # Generates build-plan.json, the P07 phase table, from the pinned upstream Packer template. Reads files only.
-#   pwsh -File images/ubuntu-24.04/New-AapUbuntuBuildPlan.ps1 [-ScriptsDir <runner-images images/ubuntu/scripts>] [-OutFile <path>]
+#   pwsh -File images/ubuntu-24.04/New-AapUbuntuBuildPlan.ps1 [-ScriptsDir <runner-images images/ubuntu/scripts>]
+#       [-SourceEntry <P03 entry> -SourceSha256 <hex>] [-MediaEntry <P03 entry> -MediaSha256 <hex>] [-OutFile <path>]
 # The template is the byte copy P01 stored for build commit 7e7dc1b; it, the locals, the toolset and the hosted capture log
 # are pinned by SHA-256 below and checked first. Every upstream provisioner becomes one phase, in template order. Script
 # phases keep their upstream script list, environment, the way Packer ran them (root through sudo, root through pwsh, or
@@ -7,8 +8,11 @@
 # matches no known action stops the generator, so a template change cannot slip through unreviewed.
 # -ScriptsDir: the upstream scripts folder extracted from the P03-staged source archive. With it, each script's SHA-256 is
 # recorded; without it the hash stays null and the builder refuses to run (AAP_ScriptUnpinned).
+# -SourceEntry/-SourceSha256 and -MediaEntry/-MediaSha256: the P03 manifest entries of the upstream source archive and the
+# Ubuntu ISO with the SHA-256 their staged files must have. Until a pair is given, the plan carries its unwaivable blocker.
 param(
     [string]$ScriptsDir,
+    [string]$SourceEntry, [string]$SourceSha256, [string]$MediaEntry, [string]$MediaSha256,
     [string]$OutFile = (Join-Path $PSScriptRoot 'build-plan.json')
 )
 Set-StrictMode -Version 2.0
@@ -125,7 +129,8 @@ foreach ($blk in $blocks) {
         $row.kind = 'action'
         $row.action = $hit[0].Action
         $row.deviation = $hit[0].Deviation
-        $row.exec = $(if ($blk.Type -eq 'file') { 'root' } else { $exec })
+        # Packer's file provisioner uploaded over SFTP as the build user.
+        $row.exec = $(if ($blk.Type -eq 'file') { 'user' } else { $exec })
         $envBlock = [regex]::Match($body, 'environment_vars\s*=\s*\[([^\]]*)\]')
         $env = [ordered]@{}
         if ($envBlock.Success) { foreach ($e in [regex]::Matches($envBlock.Groups[1].Value, '"([A-Z0-9_]+)=([^"]*)"')) { $env[$e.Groups[1].Value] = $e.Groups[2].Value } }
@@ -182,12 +187,17 @@ $plan = [ordered]@{
         reference_path   = $referenceRel
         reference_sha256 = (Get-Sha256Rel $referenceRel)
         allowlist_path   = 'tools/parity-certify/allowlist.json'
-        gate_sections    = @('coverage', 'tool_cache', 'tool_cache.defaults', 'services', 'path.process', 'path.machine', 'action_archive_cache', 'user')
+        # tool_cache.defaults is not gated: the hosted capture records no defaults, so the reference has nothing to compare.
+        gate_sections    = @('coverage', 'tool_cache', 'services', 'path.process', 'path.machine', 'action_archive_cache', 'user')
+    }
+    inputs            = [ordered]@{
+        source = [ordered]@{ entry = $(if ($SourceEntry) { $SourceEntry } else { $null }); sha256 = $(if ($SourceSha256) { $SourceSha256.ToLowerInvariant() } else { $null }) }
+        media  = [ordered]@{ entry = $(if ($MediaEntry) { $MediaEntry } else { $null }); sha256 = $(if ($MediaSha256) { $MediaSha256.ToLowerInvariant() } else { $null }) }
     }
     blockers          = @(
-        [ordered]@{ id = 'p07-upstream-source-archive'; reason = 'images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at 7e7dc1b (images/ubuntu scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive.'; owner_action = 'P03 owner adds a literal-pinned entry for the archive of actions/runner-images at 7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe, then this generator is rerun with -ScriptsDir to pin every script hash.' }
-        [ordered]@{ id = 'p07-upstream-variables-unverified'; reason = 'The variable defaults above come from the upstream variables file, which P01 did not store. They are not yet checked against the pinned bytes.'; owner_action = 'Compare them with variable.ubuntu.pkr.hcl inside the P03-staged archive and drop this blocker in the same change.' }
-        [ordered]@{ id = 'p07-ubuntu-server-media'; reason = 'The Ubuntu 24.04 live-server ISO is not a P03 manifest entry; the caller pins its SHA-256 in MediaSha256, but nothing here ties that value to the signed Canonical SHA256SUMS.'; owner_action = 'P03 adds the ISO with Canonical''s signed SHA256SUMS as its hash source and records the point release (the hosted image reports 24.04.5).' }
+        if (-not ($SourceEntry -and $SourceSha256)) { [ordered]@{ id = 'p07-upstream-source-archive'; waivable = $false; reason = 'images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at 7e7dc1b (images/ubuntu scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive, pinned here in inputs.source.'; owner_action = 'P03 owner adds a literal-pinned entry for the archive of actions/runner-images at 7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe, then this generator is rerun with -ScriptsDir, -SourceEntry and -SourceSha256.' } }
+        [ordered]@{ id = 'p07-upstream-variables-unverified'; waivable = $true; reason = 'The variable defaults above come from the upstream variables file, which P01 did not store. They are not yet checked against the pinned bytes.'; owner_action = 'Compare them with variable.ubuntu.pkr.hcl inside the P03-staged archive and drop this blocker in the same change.' }
+        if (-not ($MediaEntry -and $MediaSha256)) { [ordered]@{ id = 'p07-ubuntu-server-media'; waivable = $false; reason = 'The Ubuntu 24.04 live-server ISO is not a P03 manifest entry, so nothing ties the media a build boots to the signed Canonical SHA256SUMS.'; owner_action = 'P03 adds the ISO with Canonical''s signed SHA256SUMS as its hash source and records the point release (the hosted image reports 24.04.5); this generator is rerun with -MediaEntry and -MediaSha256.' } }
     )
     phases            = $phases
 }

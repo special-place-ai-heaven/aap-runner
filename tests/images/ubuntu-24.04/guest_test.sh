@@ -23,7 +23,7 @@ cat > "${stub}/sudo" <<'EOF'
 while [ $# -gt 0 ]; do case "$1" in -H|-n) shift ;; -u) shift 2 ;; *) break ;; esac; done
 exec "$@"
 EOF
-for c in systemd-run systemctl userdel cloud-init fstrim; do
+for c in systemd-run systemctl userdel cloud-init fstrim journalctl; do
   printf '#!/bin/bash\necho "%s $*" >> "${STUB_LOG}"\n' "${c}" > "${stub}/${c}"
 done
 printf '#!/bin/bash\necho "waagent $*" >> "${STUB_LOG}"\nexit "${FAKE_WAAGENT_RC:-0}"\n' > "${stub}/waagent"
@@ -117,6 +117,13 @@ run "${base}script=a.sh $(printf '%064d' 0)"$'\n'"${vars}"
 [ ! -e "${tmp}/ran" ] || fail 'a script with the wrong hash ran'
 run "${base}script=a.sh $(sha "${b}/a.sh")"$'\n'"${vars}"
 [ "$(reply 'r["status"], r["scripts"][0]["sha256"]')" = "('ok', '$(sha "${b}/a.sh")')" ] || fail "a pinned script: $(out)"
+# What a provisioner saw under Packer: the system locale, SUDO_USER for root, /etc/environment for the build user.
+mkdir -p "${tmp}/sys/etc"; printf 'AAP_ENV_TEST=from-etc-environment\n' > "${tmp}/sys/etc/environment"
+printf '#!/bin/bash\necho "$1 SUDO_USER=${SUDO_USER:-} LANG=${LANG:-} LC_ALL=${LC_ALL:-unset} AAP_ENV_TEST=${AAP_ENV_TEST:-unset}" >> "%s/ran"\n' "${tmp}" > "${b}/e.sh"
+rm -f "${tmp}/ran"
+run "${base}script=e.sh $(sha "${b}/e.sh")"$'\n'"${vars}"
+run $'schema=1\nphase=p03\nkind=scripts\nexec=user\n'"script=e.sh $(sha "${b}/e.sh")"$'\n'"${vars}"
+[ "$(cat "${tmp}/ran")" = " SUDO_USER=${ME} LANG=C.UTF-8 LC_ALL=unset AAP_ENV_TEST=unset"$'\n'" SUDO_USER= LANG=C.UTF-8 LC_ALL=unset AAP_ENV_TEST=from-etc-environment" ] || fail "provisioner environment: $(cat "${tmp}/ran")"
 
 # --- upload actions: the P03 archive, one top folder, Packer's rule for existing and missing destinations --------------
 reset_root
@@ -141,10 +148,21 @@ run $'schema=1\nphase=p02\nkind=action\naction=upload-helpers\n'"${avars}"
 # --- deprovision and the seal check -------------------------------------------------------------------------------------
 seal_world() {
   reset_root
-  mkdir -p "${tmp}/root/logs" "${tmp}/sys/etc/ssh" "${tmp}/sys/etc/sudoers.d" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/root" "${tmp}/sys/home/runner"
+  mkdir -p "${tmp}/root/logs" "${tmp}/sys/etc/ssh" "${tmp}/sys/etc/sudoers.d" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/root" "${tmp}/sys/home/runner" \
+    "${tmp}/sys/etc/ssl/private" "${tmp}/sys/etc/ssl/certs" "${tmp}/sys/var/lib/systemd" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/sockets.target.wants"
   printf 'root:x:0:0::/root:/bin/bash\n' > "${tmp}/sys/etc/passwd"
   printf 'root:*:20000:0:99999:7:::\n' > "${tmp}/sys/etc/shadow"
   echo key > "${tmp}/sys/etc/ssh/ssh_host_ed25519_key"
+  echo key > "${tmp}/sys/etc/ssl/private/ssl-cert-snakeoil.key"; echo cert > "${tmp}/sys/etc/ssl/certs/ssl-cert-snakeoil.pem"
+  echo seed > "${tmp}/sys/var/lib/systemd/random-seed"
+  echo agent > "${tmp}/sys/usr/local/libexec/aap-build/agent"
+  echo unit > "${tmp}/sys/etc/systemd/system/aap-agent.socket"; echo unit > "${tmp}/sys/etc/systemd/system/aap-agent@.service"
+  ln -s /etc/systemd/system/aap-agent.socket "${tmp}/sys/etc/systemd/system/sockets.target.wants/aap-agent.socket"
+}
+# seal_check alone, sourced, over the current world
+seal_only() {
+  AAP_AGENT_SOURCE_ONLY=1 AAP_AGENT_ROOT="${tmp}/root" AAP_SYSROOT="${tmp}/sys" \
+    bash -c '. "$1"; VARS_K=(install_user); VARS_V=(installer); seal_check' _ "${guest}/aap-agent.sh" > "${tmp}/out"
 }
 dvars=$'var=install_user=installer\nvar=image_folder=/imagegeneration\n'
 seal_world
@@ -152,8 +170,28 @@ run $'schema=1\nphase=p30\nkind=action\naction=deprovision\n'"${dvars}"
 [ "$(reply 'r["status"], sorted(r["data"]["seal"]["checked"]), r["data"]["seal"]["findings"], r["data"]["seal"]["unreadable"]')" = \
   "('ok', ['install-user-absent', 'no-agent', 'no-authorized-keys', 'no-build-sudoers', 'no-cloud-state', 'no-password-hash', 'no-ssh-host-keys'], [], [])" ] || fail "deprovision: $(out)"
 [ ! -e "${tmp}/sys/etc/ssh/ssh_host_ed25519_key" ] && [ ! -e "${tmp}/root" ] && [ ! -e "${tmp}/sys/var/lib/cloud/instance" ] || fail 'deprovision left build state'
+for f in etc/ssl/private/ssl-cert-snakeoil.key etc/ssl/certs/ssl-cert-snakeoil.pem var/lib/systemd/random-seed usr/local/libexec/aap-build \
+  etc/systemd/system/aap-agent.socket etc/systemd/system/aap-agent@.service etc/systemd/system/sockets.target.wants/aap-agent.socket; do
+  [ ! -e "${tmp}/sys/${f}" ] && [ ! -L "${tmp}/sys/${f}" ] || fail "deprovision left ${f}"
+done
 grep -qx 'datasource_list: \[ NoCloud, None \]' "${tmp}/sys/etc/cloud/cloud.cfg.d/90-aap-nocloud.cfg" || fail 'cloud-init is not pointed at NoCloud'
 grep -q '^waagent -force -deprovision$' "${STUB_LOG}" && grep -q '^userdel -r installer$' "${STUB_LOG}" || fail "deprovision calls: $(cat "${STUB_LOG}")"
+grep -q '^journalctl --rotate --vacuum-time=1s$' "${STUB_LOG}" || fail "the journal was not rotated and vacuumed: $(cat "${STUB_LOG}")"
+# Anything of the agent left behind fails the seal check, a dangling unit link included.
+for left in root usr/local/libexec/aap-build etc/systemd/system/aap-agent.socket etc/systemd/system/aap-agent@.service etc/systemd/system/sockets.target.wants/aap-agent.socket; do
+  seal_world; rm -rf "${tmp}/root" "${tmp}/sys/etc/ssh/ssh_host_ed25519_key" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/aap-agent"*
+  rm -f "${tmp}/sys/etc/systemd/system/sockets.target.wants/aap-agent.socket"
+  seal_only
+  [ "$(reply 'r["findings"]')" = '[]' ] || fail "a clean seal world: $(out)"
+  case "${left}" in
+    root) mkdir -p "${tmp}/root" ;;
+    usr/local/libexec/aap-build) mkdir -p "${tmp}/sys/${left}" ;;
+    etc/systemd/system/sockets.target.wants/aap-agent.socket) ln -s /nonexistent "${tmp}/sys/${left}" ;;
+    *) echo unit > "${tmp}/sys/${left}" ;;
+  esac
+  seal_only
+  [ "$(reply 'r["findings"]')" = "['no-agent']" ] || fail "the seal check missed ${left}: $(out)"
+done
 seal_world
 mkdir -p "${tmp}/sys/home/runner/.ssh"; echo k > "${tmp}/sys/home/runner/.ssh/authorized_keys"
 printf 'root:$6$salt$hash:20000:0:99999:7:::\n' > "${tmp}/sys/etc/shadow"
@@ -188,13 +226,22 @@ echo 'int main(void) { return 0; }' > "${tmp}/root/in/hello.c"
 printf 'PATH=%s:/usr/bin:/bin\nImageVersion=20261012.334.1\n' "${vstub}" > "${tmp}/environment"
 printf 'schema=1\nphase=verify\nkind=verify\nvar=job_user=%s\nvar=post_generation=/imagegeneration/post-generation\n' "${ME}" > "${tmp}/request"
 { printf 'aap1 %s run - %s\n' "${TOKEN}" "$(stat -c %s "${tmp}/request")"; cat "${tmp}/request"; } > "${tmp}/conn"
-RC=0
-TMPDIR="${tmp}" AAP_AGENT_ROOT="${tmp}/root" AAP_SYSROOT="${tmp}/sys" AAP_ENVIRONMENT_FILE="${tmp}/environment" PATH="${vstub}:${stub}:${PATH}" \
-  bash "${guest}/aap-agent.sh" < "${tmp}/conn" > "${tmp}/out" 2> "${tmp}/err" || RC=$?
+verify_run() {
+  RC=0
+  TMPDIR="${tmp}" AAP_AGENT_ROOT="${tmp}/root" AAP_SYSROOT="${tmp}/sys" AAP_ENVIRONMENT_FILE="${tmp}/environment" PATH="${vstub}:${stub}:${PATH}" \
+    bash "${guest}/aap-agent.sh" < "${tmp}/conn" > "${tmp}/out" 2> "${tmp}/err" || RC=$?
+}
+verify_run
 [ -e "${tmp}/post-generation-ran" ] || fail "the post-generation scripts did not run before the checks: $(out) $(cat "${tmp}/err")"
 [ "$(reply 'r["status"], r["data"]["upstream_tests"]')" = "('ok', {'total': 7, 'passed': 5, 'failed': 1, 'skipped': 1})" ] || fail "verify: $(out) $(cat "${tmp}/err")"
 [ "$(reply 'sorted(k for k, v in r["data"]["discovery"].items() if v is not True)')" = '[]' ] || fail "discovery: $(out)"
 [ "$(reply 'r["data"]["facts"]["kernel"], r["data"]["inventory_sha256"]')" = "('6.17.0-1022-azure', '$(sha "${tmp}/root/out/job-inventory.json")')" ] || fail "facts or inventory hash: $(out)"
+# find -exec ignores a script's exit code; the agent must not: one failing post-generation script fails post_generation.
+printf '#!/bin/bash\nexit 7\n' > "${tmp}/sys/imagegeneration/post-generation/zz-fails.sh"
+rm -f "${tmp}/post-generation-ran"
+verify_run
+[ -e "${tmp}/post-generation-ran" ] && [ "$(reply 'r["data"]["discovery"]["post_generation"]')" = False ] || fail "a failing post-generation script passed: $(out)"
+rm -f "${tmp}/sys/imagegeneration/post-generation/zz-fails.sh"
 
 # --- secret scan over a planted tree -----------------------------------------------------------------------------------
 t="${tmp}/target"
@@ -208,26 +255,49 @@ printf 'x %s y\n' "${TOKEN}" > "${t}/opt/app/known.txt"
 python3 -B -I -c 'import sys; open(sys.argv[1], "wb").write(("z" + sys.argv[2]).encode("utf-16-le"))' "${t}/opt/app/known16.bin" "${TOKEN}"
 printf 'root:$6$salt$hash:20000:0:99999:7:::\n' > "${t}/etc/shadow"
 truncate -s 33M "${t}/opt/app/big.bin"
+# Over 32 MiB is no excuse: the token after 34 MiB of zeros is found, and so is one inside a .gz.
+truncate -s 34M "${t}/opt/app/big-known.bin"; printf 'x %s y\n' "${TOKEN}" >> "${t}/opt/app/big-known.bin"
+mkdir -p "${t}/var/log" "${t}/usr/share/doc/x" "${t}/home/u/.local/share/powershell/PSReadLine" "${t}/var/lib/aap-build" "${t}/etc/systemd/system/sockets.target.wants" "${t}/etc/sudoers.d" "${t}/boot/efi/EFI"
+printf 'log %s\n' "${TOKEN}" | gzip -c > "${t}/var/log/old.log.gz"
+printf 'token=ghp_%s\n' "$(printf '%036d' 0 | tr 0 Y)" | gzip -c > "${t}/usr/share/doc/x/changelog.gz"
+printf 'nothing here\n' | gzip -c > "${t}/usr/share/doc/x/clean.gz"
+python3 -B -I -c 'import sys; sys.stdout.buffer.write(("w" + sys.argv[1]).encode("utf-16-le"))' "${TOKEN}" | gzip -c > "${t}/var/log/wide.log.gz"
+echo 'Get-ChildItem' > "${t}/home/u/.local/share/powershell/PSReadLine/ConsoleHost_history.txt"
+echo 'left over' > "${t}/var/lib/aap-build/token-was-here"
+ln -s /etc/systemd/system/aap-agent.socket "${t}/etc/systemd/system/sockets.target.wants/aap-agent.socket"
+printf 'installer ALL=(ALL) NOPASSWD:ALL\n' > "${t}/etc/sudoers.d/90-cloud-init-users"
+printf '# a comment that mentions NOPASSWD\n' > "${t}/etc/sudoers.d/README"
+printf -- '-----BEGIN EC PRIVATE KEY-----\n' > "${t}/boot/efi/EFI/esp.key"
 printf -- '-----BEGIN RSA PRIVATE KEY-----\n' > "${tmp}/outside/secret.pem"
 ln -s "${tmp}/outside/secret.pem" "${t}/opt/app/link.pem"
 ln -s "${tmp}/outside" "${t}/opt/linkdir"
 echo 'clean' > "${t}/opt/app/readme"
-RC=0; bash "${guest}/aap-scan.sh" --known "${TOKEN}" --out "${tmp}/scan.json" --target "${t}" > "${tmp}/scan.log" 2>&1 || RC=$?
+printf '%s\n' "${TOKEN}" > "${tmp}/known"
+RC=0; bash "${guest}/aap-scan.sh" --known-file "${tmp}/known" --out "${tmp}/scan.json" --target "${t}" > "${tmp}/scan.log" 2>&1 || RC=$?
 [ "${RC}" = 0 ] || fail "scan: $(cat "${tmp}/scan.log")"
 cp "${tmp}/scan.json" "${tmp}/out"
 [ "$(reply 'sorted((f["rule"], f["path"]) for f in r["findings"])')" = "$(python3 -B -I -c 'print(sorted([
  ("build-credential", "opt/app/known.txt"), ("build-credential", "opt/app/known16.bin"), ("cloud-init-seed", "var/lib/cloud/seed/nocloud/user-data"),
  ("github-token", "opt/app/tok.txt"), ("pem-private-key", "opt/app/key.txt"), ("shadow-password-hash", "etc/shadow"),
- ("shell-history", "home/u/.bash_history"), ("ssh-host-key", "etc/ssh/ssh_host_rsa_key")]))')" ] || fail "scan findings: $(out)"
-[ "$(reply 'r["layout"], r["findings_count"], r["unreadable_count"], r["large_files_count"], [(f["path"], f["bytes"]) for f in r["large_files"]]')" = \
-  "('ok', 8, 0, 1, [('opt/app/big.bin', 34603008)])" ] || fail "scan counts: $(out)"
+ ("shell-history", "home/u/.bash_history"), ("ssh-host-key", "etc/ssh/ssh_host_rsa_key"),
+ ("build-credential", "opt/app/big-known.bin"), ("build-credential", "var/log/old.log.gz"), ("github-token", "usr/share/doc/x/changelog.gz"),
+ ("build-credential", "var/log/wide.log.gz"),
+ ("shell-history", "home/u/.local/share/powershell/PSReadLine/ConsoleHost_history.txt"), ("build-agent", "var/lib/aap-build/token-was-here"),
+ ("build-agent", "etc/systemd/system/sockets.target.wants/aap-agent.socket"), ("build-sudoers", "etc/sudoers.d/90-cloud-init-users"),
+ ("pem-private-key", "boot/efi/EFI/esp.key")]))')" ] || fail "scan findings: $(out)"
+[ "$(reply 'r["layout"], r["findings_count"], r["unreadable_count"], r["large_files_count"], sorted((f["path"], f["bytes"]) for f in r["large_files"])')" = \
+  "('ok', 17, 0, 2, [('opt/app/big-known.bin', $(stat -c %s "${t}/opt/app/big-known.bin")), ('opt/app/big.bin', 34603008)])" ] || fail "scan counts: $(out)"
 [ "$(reply '[f["sha256"] for f in r["findings"] if f["path"] == "opt/app/key.txt"][0]')" = "$(sha "${t}/opt/app/key.txt")" ] || fail 'a finding lacks its file hash'
-[ "$(reply 'r["large_files"][0]["sha256"]')" = "$(sha "${t}/opt/app/big.bin")" ] || fail 'a large file lacks its hash'
+[ "$(reply '[f["sha256"] for f in r["findings"] if f["path"].endswith("aap-agent.socket")][0]')" = "$(printf '%s\n' /etc/systemd/system/aap-agent.socket | sha256sum | cut -d' ' -f1)" ] || fail 'a link finding must hash its target text, not follow it'
+[ "$(reply '[f["sha256"] for f in r["large_files"] if f["path"] == "opt/app/big.bin"][0]')" = "$(sha "${t}/opt/app/big.bin")" ] || fail 'a large file lacks its hash'
 ! grep -q 'BEGIN\|ghp_\|'"${TOKEN}" "${tmp}/scan.json" || fail 'the scan report carries a matched value'
-RC=0; bash "${guest}/aap-scan.sh" --known nothex --out "${tmp}/scan2.json" --target "${t}" > /dev/null 2>&1 || RC=$?
-[ "${RC}" = 2 ] && [ ! -e "${tmp}/scan2.json" ] || fail 'a malformed --known was accepted'
+printf 'nothex\n' > "${tmp}/badknown"
+RC=0; bash "${guest}/aap-scan.sh" --known-file "${tmp}/badknown" --out "${tmp}/scan2.json" --target "${t}" > /dev/null 2>&1 || RC=$?
+[ "${RC}" = 2 ] && [ ! -e "${tmp}/scan2.json" ] || fail 'a malformed known token was accepted'
+RC=0; bash "${guest}/aap-scan.sh" --known-file "${tmp}/missing" --out "${tmp}/scan2.json" --target "${t}" > /dev/null 2>&1 || RC=$?
+[ "${RC}" = 2 ] && [ ! -e "${tmp}/scan2.json" ] || fail 'a scan ran without the known token'
 echo x > "${tmp}/notablock"
-RC=0; bash "${guest}/aap-scan.sh" --known "${TOKEN}" --out "${tmp}/out" --disk "${tmp}/notablock" > /dev/null 2>&1 || RC=$?
+RC=0; AAP_SCAN_WAIT=0 bash "${guest}/aap-scan.sh" --known-file "${tmp}/known" --out "${tmp}/out" --disk "${tmp}/notablock" > /dev/null 2>&1 || RC=$?
 [ "${RC}" = 3 ] && [ "$(reply 'r["layout"], r["detail"]')" = "('unexpected', '${tmp}/notablock is not a block device')" ] || fail "a non-disk was scanned: $(out)"
 
 echo 'guest_test: all checks passed'

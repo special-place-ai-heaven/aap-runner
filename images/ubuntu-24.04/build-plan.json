@@ -72,7 +72,6 @@
     "gate_sections": [
       "coverage",
       "tool_cache",
-      "tool_cache.defaults",
       "services",
       "path.process",
       "path.machine",
@@ -80,21 +79,34 @@
       "user"
     ]
   },
+  "inputs": {
+    "source": {
+      "entry": null,
+      "sha256": null
+    },
+    "media": {
+      "entry": null,
+      "sha256": null
+    }
+  },
   "blockers": [
     {
       "id": "p07-upstream-source-archive",
-      "reason": "images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at 7e7dc1b (images/ubuntu scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive.",
-      "owner_action": "P03 owner adds a literal-pinned entry for the archive of actions/runner-images at 7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe, then this generator is rerun with -ScriptsDir to pin every script hash."
+      "waivable": false,
+      "reason": "images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at 7e7dc1b (images/ubuntu scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive, pinned here in inputs.source.",
+      "owner_action": "P03 owner adds a literal-pinned entry for the archive of actions/runner-images at 7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe, then this generator is rerun with -ScriptsDir, -SourceEntry and -SourceSha256."
     },
     {
       "id": "p07-upstream-variables-unverified",
+      "waivable": true,
       "reason": "The variable defaults above come from the upstream variables file, which P01 did not store. They are not yet checked against the pinned bytes.",
       "owner_action": "Compare them with variable.ubuntu.pkr.hcl inside the P03-staged archive and drop this blocker in the same change."
     },
     {
       "id": "p07-ubuntu-server-media",
-      "reason": "The Ubuntu 24.04 live-server ISO is not a P03 manifest entry; the caller pins its SHA-256 in MediaSha256, but nothing here ties that value to the signed Canonical SHA256SUMS.",
-      "owner_action": "P03 adds the ISO with Canonical's signed SHA256SUMS as its hash source and records the point release (the hosted image reports 24.04.5)."
+      "waivable": false,
+      "reason": "The Ubuntu 24.04 live-server ISO is not a P03 manifest entry, so nothing ties the media a build boots to the signed Canonical SHA256SUMS.",
+      "owner_action": "P03 adds the ISO with Canonical's signed SHA256SUMS as its hash source and records the point release (the hosted image reports 24.04.5); this generator is rerun with -MediaEntry and -MediaSha256."
     }
   ],
   "phases": [
@@ -121,7 +133,7 @@
         "body_sha256": "24286d388fac3f21a05e16469b0fab884ab10c76279cd67c44e6135e44d76ef7"
       },
       "deviation": "images/ubuntu/scripts/helpers from the P03-staged runner-images archive becomes ${var.helper_script_folder}",
-      "exec": "root",
+      "exec": "user",
       "env": {}
     },
     {
@@ -214,7 +226,7 @@
         "body_sha256": "ca2f365514d132c8d8751c2054422d988114adb3609b2d21758af715cf475e8d"
       },
       "deviation": "images/ubuntu/scripts/build from the same archive becomes ${var.installer_script_folder}",
-      "exec": "root",
+      "exec": "user",
       "env": {}
     },
     {
@@ -227,7 +239,7 @@
         "body_sha256": "2b1bd6b34815f3a68d42887514fc4c94f24f8be6a3f59db86ca2f957f3dec83e"
       },
       "deviation": "assets/post-gen, scripts/tests and scripts/docs-gen from the same archive land inside ${var.image_folder}",
-      "exec": "root",
+      "exec": "user",
       "env": {}
     },
     {
@@ -240,7 +252,7 @@
         "body_sha256": "297d55ff5f531d04bbbdea6d679d5c341a7783f05b8634acf956770e77278c9e"
       },
       "deviation": "helpers/software-report-base from the same archive lands inside ${var.image_folder}/docs-gen",
-      "exec": "root",
+      "exec": "user",
       "env": {}
     },
     {
@@ -253,7 +265,7 @@
         "body_sha256": "fe6a7cff66a35fccf4f39f4ad0fc95642b4eb64151c1857a4b7e928f9f31d190"
       },
       "deviation": "from the same archive",
-      "exec": "root",
+      "exec": "user",
       "env": {}
     },
     {
@@ -850,7 +862,7 @@
         "body_sha256": "bb6534b71d3de6b6fd85244b489e19c5af8ac1eacfaefaf5a3705ce7dcc2f57c"
       },
       "deviation": "copied to the build evidence, size-bounded, never parsed as code",
-      "exec": "root",
+      "exec": "user",
       "env": {}
     },
     {
@@ -863,7 +875,7 @@
         "body_sha256": "e34fba657019f8d1d51b3307f6aa24dea0fb5787b55fe4f791db51f6ae50bfcf"
       },
       "deviation": "copied to the build evidence, size-bounded, never parsed as code",
-      "exec": "root",
+      "exec": "user",
       "env": {}
     },
     {

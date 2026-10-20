@@ -19,8 +19,8 @@ Import-Module (Join-Path $PSScriptRoot '..\windows\AapWinImage.psm1')
 $script:Profile = 'ubuntu-24.04-x64'
 $script:GiB = 1073741824
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
-$script:ProviderOps = @('TestRootTrust', 'GetVolume', 'MeasureBytes', 'VerifyInputs', 'NewBuildDisk', 'NewDiffDisk', 'NewSeedImage', 'GetSwitch', 'NewVm',
-    'StartVm', 'TypeBootCommand', 'WaitVmOff', 'RemoveDvds', 'StopVm', 'RemoveVm', 'WaitGuestReady', 'InvokeGuest', 'ReceiveFile', 'OptimizeDisk',
+$script:ProviderOps = @('TestRootTrust', 'ExecFolders', 'GetVolume', 'MeasureBytes', 'VerifyInputs', 'NewBuildDisk', 'NewDiffDisk', 'NewSeedImage', 'GetSwitch', 'NewVm',
+    'AttachDisk', 'StartVm', 'TypeBootCommand', 'WaitVmOff', 'RemoveDvds', 'StopVm', 'RemoveVm', 'WaitGuestReady', 'InvokeGuest', 'ReceiveFile', 'OptimizeDisk',
     'SetReadOnlyAcl', 'GetVmMemoryOverheadMib', 'CompareInventory')
 # Repository files the builder reads. Not configurable: a caller cannot point the builder at another plan, manifest, guest
 # payload or comparison reference (tests replace them in module scope).
@@ -39,7 +39,9 @@ $script:Actions = @('make-image-folder', 'upload-helpers', 'upload-build-scripts
 $script:SealRules = @('install-user-absent', 'no-password-hash', 'no-authorized-keys', 'no-ssh-host-keys', 'no-agent', 'no-cloud-state', 'no-build-sudoers')
 $script:ScanRules = @('runner-credentials', 'runner-config', 'ssh-host-key', 'ssh-authorized-keys', 'shell-history', 'app-key', 'cloud-init-seed',
     'installer-answers', 'azure-provisioning-data', 'shadow-password-hash', 'pem-private-key', 'github-token', 'github-pat', 'jit-config',
-    'synthetic-marker', 'build-credential')
+    'synthetic-marker', 'build-credential', 'build-agent', 'build-sudoers')
+# Findings no allowlist entry can cover: the build's own credential and agent.
+$script:NeverAllowed = @('build-credential', 'build-agent')
 $script:Discovery = @('gcc', 'gxx', 'clang', 'cmake', 'ninja', 'make', 'pkg_config', 'hello_gcc', 'hello_clang', 'pwsh', 'python3', 'docker_daemon',
     'sudo_nopasswd', 'systemd_pid1', 'kernel_azure', 'job_user', 'post_generation')
 $script:ScriptPhaseSeconds = 6 * 3600
@@ -55,6 +57,11 @@ $script:SendMaxBytes = 1GB
 $script:ListMax = 200
 $script:LargeFilesMax = 10000
 $script:CapHeadroom = 1.25              # cap = measured peak x 1.25, rounded up (backend-lifecycle: cap >= peak)
+# The VM worker's memory is measured on the host but grows with what the guest does; a reading above this is refused, not
+# recorded (Hyper-V's own overhead for a 10 GiB guest is a few hundred MiB).
+$script:MemOverheadMibMax = 1024
+# The owner-approved lab ceilings (contracts README, Resolved 2026-10-20): a config may ask for less, never more.
+$script:OwnerLimits = [ordered]@{ BuildCpus = 4; BuildMemGib = 10; BaseGibMax = 186; JobDiskGibMax = 55 }
 $script:Uuid = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 $script:Safe = '^[A-Za-z0-9_./:+-]{0,200}\z'   # every value that reaches the guest request or the seed
 
@@ -85,6 +92,23 @@ function Write-AapJson($Object, [string]$Path) {
 function Read-AapJson([string]$Path) { ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($Path)) }
 function Invoke-AapProvider($Provider, [string]$Op, [hashtable]$A = @{}) { & $Provider[$Op] $A }
 function Test-AapInt($Value, [long]$Min = 0) { ($Value -is [int] -or $Value -is [long]) -and $Value -ge $Min }
+
+# The per-guest channel credential: 64 random hex characters. They become a PowerShell string only inside this class and
+# while the seed text is assembled, never as a command parameter (PowerShell module logging, event 4103, records those) or
+# in a log or record; the object prints as '[aap token]' and the provider writes its bytes into the channel with WriteTo.
+class AapToken {
+    hidden [byte[]]$Bytes
+    [int]$Length
+    AapToken() {
+        $raw = New-Object byte[] 32
+        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($raw) } finally { $rng.Dispose() }
+        $this.Bytes = [Text.Encoding]::ASCII.GetBytes(([BitConverter]::ToString($raw) -replace '-', '').ToLowerInvariant())
+        $this.Length = $this.Bytes.Length
+    }
+    [void] WriteTo([IO.Stream]$Stream) { $Stream.Write($this.Bytes, 0, $this.Bytes.Length) }
+    [string] ToString() { return '[aap token]' }
+}
 
 function Assert-AapProvider($Provider) {
     if (-not ($Provider -is [Collections.IDictionary])) { throw 'AAP_ProviderInvalid: the provider must be a hashtable of scriptblocks' }
@@ -142,6 +166,16 @@ function Read-AapUbuntuBuildPlan {
     foreach ($v in $plan.variables.PSObject.Properties) { if ([string]$v.Value -cnotmatch $script:Safe) { throw "AAP_PlanInvalid: variable $($v.Name)" } }   # check:request-value
     $ref = Join-Path $script:RepoRoot ([string]$plan.verify.reference_path -replace '/', '\')
     if ((Get-AapPathKind $ref) -ne 'file' -or (Get-AapSha256File $ref) -cne [string]$plan.verify.reference_sha256) { throw 'AAP_PlanInvalid: the comparison reference does not match its pinned SHA-256' }   # check:plan-reference
+    # The upstream source archive and the installation media are P03 entries pinned here by name and SHA-256, so plan_sha256
+    # covers them. Until one is pinned, its blocker must be in the plan and must not be waivable.
+    foreach ($k in @(@{ Key = 'source'; Blocker = 'p07-upstream-source-archive' }, @{ Key = 'media'; Blocker = 'p07-ubuntu-server-media' })) {
+        $e = Get-AapProp (Get-AapProp $plan 'inputs') $k.Key
+        $entry = Get-AapProp $e 'entry'; $sha = Get-AapProp $e 'sha256'
+        $blocker = @($plan.blockers | Where-Object { [string]$_.id -ceq $k.Blocker -and $_.waivable -eq $false })
+        $pinned = [string]$entry -cmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,79}\z' -and [string]$sha -cmatch '^[0-9a-f]{64}\z'
+        if (-not $pinned -and ($null -ne $entry -or $null -ne $sha -or $blocker.Count -ne 1)) { throw "AAP_PlanInvalid: inputs.$($k.Key) is neither pinned by entry and SHA-256 nor blocked by an unwaivable $($k.Blocker)" }   # check:plan-inputs
+    }
+    foreach ($b in @($plan.blockers)) { if (-not ($b.waivable -is [bool])) { throw "AAP_PlanInvalid: blocker $($b.id) has no waivable flag" } }
     $i = 0
     foreach ($p in @($plan.phases)) {
         $i++
@@ -172,9 +206,10 @@ function Get-AapUbuntuBlockers {
     return @($ids + @($Plan.blockers | ForEach-Object { [string]$_.id }))
 }
 
-function Get-AapUbuntuWaivers($Config, [string[]]$Known, [string]$PlanSha) {
+function Get-AapUbuntuWaivers($Config, [string[]]$Known, [string]$PlanSha, [string[]]$Unwaivable = @()) {
     <# Chair-approved waivers of input blockers. Each is an approval record with exactly id, rationale, plan_sha256 and
-       approver, valid only for the build plan it names; a bare id is refused. #>
+       approver, valid only for the build plan it names; a bare id is refused, and so is a waiver of a blocker the plan marks
+       unwaivable (the source archive and the media: without them there is nothing verified to build from). #>
     $out = New-Object System.Collections.Generic.List[object]
     foreach ($wv in @(Get-AapProp $Config 'Waivers' | Where-Object { $null -ne $_ })) {
         $names = $(if ($wv -is [Collections.IDictionary]) { @($wv.Keys | ForEach-Object { [string]$_ }) } elseif ($wv -is [Management.Automation.PSCustomObject]) { Get-AapNames $wv } else { @() })
@@ -183,6 +218,7 @@ function Get-AapUbuntuWaivers($Config, [string[]]$Known, [string]$PlanSha) {
         }
         $id = [string](Get-AapProp $wv 'id')
         if ($Known -cnotcontains $id) { throw "AAP_ConfigInvalid: waiver for an unknown blocker: $(Get-AapPrintable $id 80)" }
+        if ($Unwaivable -ccontains $id) { throw "AAP_ConfigInvalid: $id cannot be waived; it is resolved only by pinning the input in the plan" }   # check:waiver-unwaivable
         if ([string](Get-AapProp $wv 'plan_sha256') -cne $PlanSha) { throw "AAP_ConfigInvalid: the waiver for $id was approved for another build plan" }   # check:waiver
         $out.Add([ordered]@{ id = $id; rationale = [string]$wv.rationale; plan_sha256 = $PlanSha; approver = [string]$wv.approver })
     }
@@ -190,13 +226,14 @@ function Get-AapUbuntuWaivers($Config, [string[]]$Known, [string]$PlanSha) {
 }
 
 function Assert-AapUbuntuConfig($Config) {
-    foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'MediaFile', 'MediaSha256', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit', 'SourceEntry', 'SwitchName') {
+    foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit', 'SwitchName') {
         if ($null -eq (Get-AapProp $Config $k) -or [string](Get-AapProp $Config $k) -eq '') { throw "AAP_ConfigInvalid: $k is required" }
     }
     if ([int]$Config.AapBuild -lt 1) { throw 'AAP_ConfigInvalid: AapBuild' }
-    if ([string]$Config.MediaSha256 -cnotmatch '^[0-9a-f]{64}\z') { throw 'AAP_ConfigInvalid: MediaSha256' }
     if ([string]$Config.BuilderCommit -cnotmatch '^[0-9a-f]{40}\z') { throw 'AAP_ConfigInvalid: BuilderCommit' }
-    if ([string]$Config.MediaFile -cnotmatch $script:MediaName) { throw 'AAP_ConfigInvalid: MediaFile must be an Ubuntu 24.04 live-server ISO under <base_root>\media' }   # check:media-name
+    foreach ($k in @($script:OwnerLimits.Keys)) {
+        if ([int](Get-AapProp $Config $k) -lt 1 -or [int](Get-AapProp $Config $k) -gt $script:OwnerLimits[$k]) { throw "AAP_ConfigInvalid: $k must be 1 to $($script:OwnerLimits[$k]), the owner-approved lab ceiling" }   # check:owner-limits
+    }
     if ([string]$Config.SwitchName -cne $script:SwitchName) { throw "AAP_NetworkUntrusted: SwitchName must be the internal switch $($script:SwitchName), never an External switch or the Default Switch" }   # check:network
 }
 
@@ -211,15 +248,6 @@ function Get-AapUbuntuNames($Plan, [int]$AapBuild) {
 # ---------------------------------------------------------------------------------------------------------------------
 # Seed images and requests. Everything a guest receives is host-authored here and written onto a new seed image.
 
-function New-AapUbuntuToken {
-    <# 64 random hex: the per-guest channel credential. Memory and the guest's own seed only: never in a host file other
-       than that seed (deleted with the build folder), a log or a record. #>
-    $b = New-Object byte[] 32
-    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-    try { $rng.GetBytes($b) } finally { $rng.Dispose() }
-    return ([BitConverter]::ToString($b) -replace '-', '').ToLowerInvariant()
-}
-
 function ConvertTo-AapYamlIndent([string]$Text, [int]$Indent) {
     $pad = ' ' * $Indent
     $lines = $Text.Replace("`r`n", "`n").TrimEnd("`n").Split("`n")
@@ -227,12 +255,15 @@ function ConvertTo-AapYamlIndent([string]$Text, [int]$Indent) {
 }
 
 function New-AapUbuntuSeed {
-    <# The cloud-init NoCloud seed (files user-data and meta-data) for one guest. build: the unattended install (autoinstall)
-       of the live-server ISO, whose installed system gets the install user (no password, key or login) and the agent. verify:
-       the job user and the agent for a fresh guest of the sealed image. scan: the agent for the live system that scans the
-       sealed disk. The agent listens on hvsocket only; no guest gets a password, an SSH key or a host share. #>
-    param([Parameter(Mandatory)][ValidateSet('build', 'verify', 'scan')][string]$Mode, [Parameter(Mandatory)][string]$Token, [Parameter(Mandatory)]$Plan, [Parameter(Mandatory)][string]$InstanceId)
-    if ($Token -cnotmatch '^[0-9a-f]{64}\z' -or $InstanceId -cnotmatch '^[a-z0-9-]{1,64}\z') { throw 'AAP_SeedInvalid: token or instance id' }   # check:seed-values
+    <# The cloud-init NoCloud seed (files user-data and meta-data) for one guest, and the new guest's channel token (an
+       AapToken, made here so it is never a parameter). build: the unattended install (autoinstall) of the live-server ISO,
+       whose installed system gets the install user (no password, key or login) and the agent. verify: the job user and the
+       agent for a fresh guest of the sealed image. scan: the agent for the live system that scans the sealed disk, and in
+       /var/lib/aap-build/known the build guest's token (-Known) to look for. The agent listens on hvsocket only; no guest gets
+       a password, an SSH key or a host share. Returns Files (user-data, meta-data) and Token. #>
+    param([Parameter(Mandatory)][ValidateSet('build', 'verify', 'scan')][string]$Mode, [Parameter(Mandatory)]$Plan, [Parameter(Mandatory)][string]$InstanceId, $Known)
+    if ($InstanceId -cnotmatch '^[a-z0-9-]{1,64}\z' -or (($Mode -eq 'scan') -ne ($Known -is [AapToken]))) { throw 'AAP_SeedInvalid: instance id, or a known token for anything but the scanner' }   # check:seed-values
+    $token = [AapToken]::new()
     $agent = [IO.File]::ReadAllText((Join-Path $script:GuestDir 'aap-agent.sh')).Replace("`r`n", "`n")
     if ($agent -match '[^\x0a\x20-\x7e]') { throw 'AAP_SeedInvalid: the agent must be printable ASCII without tabs' }
     $port = [int]$Plan.channel.vsock_port
@@ -244,14 +275,15 @@ function New-AapUbuntuSeed {
         $j = $Plan.job_user
         $users = "users:`n  - name: $($j.name)`n    uid: $([int]$j.uid)`n    groups: [$(@($j.groups) -join ', ')]`n    shell: /bin/bash`n    lock_passwd: true`n    sudo: 'ALL=(ALL) NOPASSWD:ALL'`n"
     }
+    $knownFile = $(if ($Mode -eq 'scan') { "  - path: /var/lib/aap-build/known`n    owner: root:root`n    permissions: '0600'`n    content: '@@AAP_KNOWN@@'`n" } else { '' })
     $config = @"
 hostname: $hostName
 $($users)write_files:
   - path: /var/lib/aap-build/token
     owner: root:root
     permissions: '0600'
-    content: '$Token'
-  - path: /usr/local/libexec/aap-build/agent
+    content: '@@AAP_TOKEN@@'
+$($knownFile)  - path: /usr/local/libexec/aap-build/agent
     owner: root:root
     permissions: '0755'
     content: |
@@ -332,7 +364,10 @@ $(ConvertTo-AapYamlIndent $config 4)
     foreach ($v in @($Plan.base.kernel_package) + @($Plan.base.packages) + @($Plan.base.masked_services) + @($Plan.variables.install_user, $Plan.job_user.name) + @($Plan.job_user.groups)) {
         if ([string]$v -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}\z') { throw "AAP_PlanInvalid: seed value $(Get-AapPrintable ([string]$v) 80)" }   # check:seed-values
     }
-    return [ordered]@{ 'user-data' = $userData; 'meta-data' = "instance-id: $InstanceId`nlocal-hostname: $hostName`n" }
+    # Only now, and only by method calls, do the token bytes enter the text.
+    $userData = $userData.Replace('@@AAP_TOKEN@@', [Text.Encoding]::ASCII.GetString($token.Bytes))
+    if ($Mode -eq 'scan') { $userData = $userData.Replace('@@AAP_KNOWN@@', [Text.Encoding]::ASCII.GetString($Known.Bytes)) }
+    return [pscustomobject]@{ Files = [ordered]@{ 'user-data' = $userData; 'meta-data' = "instance-id: $InstanceId`nlocal-hostname: $hostName`n" }; Token = $token }
 }
 
 function New-AapUbuntuRequest {
@@ -420,6 +455,7 @@ function Read-AapUbuntuAllowlist {
     foreach ($e in @($doc.entries | Where-Object { $null -ne $_ })) {
         $names = $(if ($e -is [Management.Automation.PSCustomObject]) { (@(Get-AapNames $e | Sort-Object) -join ',') } else { '' })
         $p = [string](Get-AapProp $e 'path')
+        if (@($out | Where-Object { $_.path -ceq $p }).Count) { throw "AAP_AllowlistInvalid: $(Get-AapPrintable $p 200) is listed twice" }   # check:allowlist-duplicate
         if ($names -cne 'justification,path,sha256' -or $p -cnotmatch '^[A-Za-z0-9._()+@ -]+(/[A-Za-z0-9._()+@ -]+)*\z' -or $p -match '(^|/)\.\.?(/|$)' -or   # check:allowlist
             [string](Get-AapProp $e 'sha256') -cnotmatch '^[0-9a-f]{64}\z' -or [string](Get-AapProp $e 'justification') -cnotmatch '^[\x20-\x7e]{10,1000}\z') {
             throw 'AAP_AllowlistInvalid: every entry needs exactly a relative path, its sha256 and a justification'
@@ -471,7 +507,7 @@ function Get-AapUbuntuScanResult {
     foreach ($f in @($Report.findings)) {
         $hit = $null
         foreach ($a in $allow) { if ($a.path -ceq [string]$f.path) { $hit = $a } }
-        if ([string]$f.rule -ceq 'build-credential' -or $null -eq $hit -or [string]$f.sha256 -cne $hit.sha256) {   # check:allowlist-exact
+        if ($script:NeverAllowed -ccontains [string]$f.rule -or $null -eq $hit -or [string]$f.sha256 -cne $hit.sha256) {   # check:allowlist-exact
             $findings.Add([pscustomobject]@{ rule = [string]$f.rule; path = [string]$f.path })
         } else {
             $allowed.Add([pscustomobject]@{ rule = [string]$f.rule; path = $hit.path; sha256 = $hit.sha256 }); $used[$hit.path] = $true
@@ -492,15 +528,19 @@ function Get-AapUbuntuScanResult {
 
 function Read-AapInventoryReport {
     <# The comparison report (written by P05's certify.py from the reference and the capped guest inventory). Fails the build
-       on any difference in a gate section (cached tool versions and defaults, services, PATH order, action archive cache,
-       the job user, probe coverage); every other difference is recorded for P24, which certifies. #>
+       on any difference in a gate section (cached tool versions, services, PATH order, action archive cache, the job user,
+       probe coverage) and on anything the reference requires that the image lacks (missing-required, in every section);
+       every other difference, and the count and first entries of what the image has beyond the reference (extra), is
+       recorded for P24, which certifies. #>
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$GateSections)
     if ((Get-AapPathKind $Path) -ne 'file' -or (New-Object IO.FileInfo $Path).Length -gt $script:CompareMaxBytes) { throw 'AAP_VerifyFailed: the inventory comparison wrote no report' }
     $r = Read-AapJson $Path
     $inv = Get-AapProp $r 'inventory'
     if ([string](Get-AapProp $r 'kind') -cne 'inventory-report' -or $null -eq $inv) { throw 'AAP_VerifyFailed: the inventory comparison report has the wrong shape' }
-    $diffs = @(Get-AapProp $inv 'differences' | Where-Object { $null -ne $_ -and @('extra', 'documented-rig-difference') -cnotcontains [string]$_.class })
-    $gate = @($diffs | Where-Object { $GateSections -ccontains [string]$_.section })
+    $all = @(Get-AapProp $inv 'differences' | Where-Object { $null -ne $_ })
+    $extra = @($all | Where-Object { [string]$_.class -ceq 'extra' })
+    $diffs = @($all | Where-Object { @('extra', 'documented-rig-difference') -cnotcontains [string]$_.class })
+    $gate = @($diffs | Where-Object { $GateSections -ccontains [string]$_.section -or [string]$_.class -ceq 'missing-required' })
     if ($gate.Count) {   # check:inventory-gate
         throw "AAP_VerifyFailed: the job inventory differs from the hosted reference: $(@($gate | Select-Object -First 5 | ForEach-Object { Get-AapPrintable "$($_.class) $($_.section).$($_.key)" 120 }) -join '; ')"
     }
@@ -508,7 +548,8 @@ function Read-AapInventoryReport {
     $c = Get-AapProp $inv 'counts'
     if ($null -ne $c) { foreach ($p in @($c.PSObject.Properties)) { $counts[(Get-AapPrintable $p.Name 40)] = [int]$p.Value } }
     return [ordered]@{ status = Get-AapPrintable ([string](Get-AapProp $inv 'status')) 10; counts = $counts; gate_sections = $GateSections
-        recorded = @($diffs | Select-Object -First $script:ListMax | ForEach-Object { [ordered]@{ class = Get-AapPrintable ([string]$_.class) 40; section = Get-AapPrintable ([string]$_.section) 80; key = Get-AapPrintable ([string]$_.key) 200 } }) }
+        recorded = @($diffs | Select-Object -First $script:ListMax | ForEach-Object { [ordered]@{ class = Get-AapPrintable ([string]$_.class) 40; section = Get-AapPrintable ([string]$_.section) 80; key = Get-AapPrintable ([string]$_.key) 200 } })
+        extra_count = $extra.Count; extra = @($extra | Select-Object -First $script:ListMax | ForEach-Object { [ordered]@{ section = Get-AapPrintable ([string]$_.section) 80; key = Get-AapPrintable ([string]$_.key) 200 } }) }
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -644,14 +685,13 @@ function Invoke-AapUbuntuPhase($Ctx, $P) {
 }
 
 # A guest with its own seed, VM and token. Build folder subfolder $Sub holds its disks and seed.
-function New-AapGuest($Ctx, [string]$Mode, [string]$Vm, [string]$Dir, [string]$OsDisk, [string[]]$Dvds, [bool]$BootFromDvd, $Switch) {
-    $token = New-AapUbuntuToken
-    $seedFiles = New-AapUbuntuSeed -Mode $Mode -Token $token -Plan $Ctx.Plan -InstanceId "aap-$($Ctx.Names.Tag)-$Mode"
+function New-AapGuest($Ctx, [string]$Mode, [string]$Vm, [string]$Dir, [string]$OsDisk, [string[]]$Dvds, [bool]$BootFromDvd, $Switch, $Known = $null) {
+    $made = New-AapUbuntuSeed -Mode $Mode -Plan $Ctx.Plan -InstanceId "aap-$($Ctx.Names.Tag)-$Mode" -Known $Known
     $seed = Join-Path $Dir 'seed.iso'
-    $null = Invoke-AapProvider $Ctx.Provider 'NewSeedImage' @{ Path = $seed; Label = 'CIDATA'; Files = $seedFiles }
-    $made = Invoke-AapProvider $Ctx.Provider 'NewVm' @{ Name = $Vm; Path = $Dir; OsDisk = $OsDisk; Dvds = @(@($Dvds) + $seed); BootFromDvd = $BootFromDvd
+    $null = Invoke-AapProvider $Ctx.Provider 'NewSeedImage' @{ Path = $seed; Label = 'CIDATA'; Files = $made.Files }
+    $vmMade = Invoke-AapProvider $Ctx.Provider 'NewVm' @{ Name = $Vm; Path = $Dir; OsDisk = $OsDisk; Dvds = @(@($Dvds) + $seed); BootFromDvd = $BootFromDvd
         Cpus = [int]$Ctx.Config.BuildCpus; MemGib = [int]$Ctx.Config.BuildMemGib; SwitchName = $Switch }
-    return [pscustomobject]@{ Provider = $Ctx.Provider; Vm = $Vm; VmId = (Get-AapVmId $made); Port = [int]$Ctx.Plan.channel.vsock_port; Token = $token; Seed = $seed }
+    return [pscustomobject]@{ Provider = $Ctx.Provider; Vm = $Vm; VmId = (Get-AapVmId $vmMade); Port = [int]$Ctx.Plan.channel.vsock_port; Token = $made.Token; Seed = $seed }
 }
 
 # The live-server ISO, installed unattended: the seed's autoinstall answers every question, the boot command adds
@@ -672,18 +712,21 @@ function Invoke-AapInstall($Ctx) {
     $Ctx.State.installed_at = Get-AapUtc
 }
 
-# The scanner: the pinned installation media booted with no network, the sealed disk attached as a differencing child, so
-# a trusted kernel and userland read the guest-authored file system inside a disposable guest, never on the host.
+# The scanner: the pinned installation media booted with no network and no disk, so firmware can only boot the media; the
+# sealed disk, as a differencing child, is hot-added once the live system answers, and a trusted kernel and userland read
+# the guest-authored file system inside a disposable guest, never on the host. The build token it looks for comes in the
+# scanner's own seed, never in a request.
 function Invoke-AapScan($Ctx) {
     $dir = Join-Path $Ctx.BuildDir 'scan'
     [void](New-Item -ItemType Directory -Path $dir)
     $child = Join-Path $dir 'os.avhdx'
     $null = Invoke-AapProvider $Ctx.Provider 'NewDiffDisk' @{ Parent = $Ctx.OsDisk; Path = $child }
-    $g = New-AapGuest $Ctx 'scan' $Ctx.Names.ScanVm $dir $child @($Ctx.Media) $true $null
+    $g = New-AapGuest $Ctx 'scan' $Ctx.Names.ScanVm $dir $null @($Ctx.Media) $true $null $Ctx.Token
     $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $g.Vm; VmId = $g.VmId }
     if (-not (Wait-AapGuestReady $g $script:ReadySeconds)) { throw 'AAP_ScanIncomplete: the scanner guest did not answer' }
+    $null = Invoke-AapProvider $Ctx.Provider 'AttachDisk' @{ VmName = $g.Vm; VmId = $g.VmId; Path = $child }
     Send-AapGuestFile $g (Join-Path $script:GuestDir 'aap-scan.sh') 'aap-scan.sh'
-    $r = Invoke-AapGuestRun $g (New-AapUbuntuRequest -Phase 'scan' -Kind 'scan' -Fields @{ known = $Ctx.Token }) 'scan' $script:ScriptPhaseSeconds
+    $r = Invoke-AapGuestRun $g (New-AapUbuntuRequest -Phase 'scan' -Kind 'scan') 'scan' $script:ScriptPhaseSeconds
     # A scanner that refused the disk layout still writes scan.json, which says so; any other failure has none.
     try { $report = Receive-AapGuestFile $Ctx $g 'scan.json' (Join-Path $Ctx.BuildDir 'scan.json') $script:ScanMaxBytes }
     catch { if ($r.status -cne 'ok') { throw "AAP_ScanIncomplete: the scanner reported failure: $(Get-AapPrintable (Get-AapProp $r 'message'))" }; throw }
@@ -721,6 +764,7 @@ function Invoke-AapVerify($Ctx) {
     $Ctx.Evidence.verify = $v
     $Ctx.State.clone_peak_bytes = [double](Invoke-AapProvider $Ctx.Provider 'MeasureBytes' @{ Path = $child })
     $Ctx.State.mem_overhead_mib = [int](Invoke-AapProvider $Ctx.Provider 'GetVmMemoryOverheadMib' @{ VmName = $g.Vm; VmId = $g.VmId })
+    if ($Ctx.State.mem_overhead_mib -lt 1 -or $Ctx.State.mem_overhead_mib -gt $script:MemOverheadMibMax) { throw "AAP_BudgetExceeded: the VM worker overhead $($Ctx.State.mem_overhead_mib) MiB is outside 1 to $($script:MemOverheadMibMax) MiB" }   # check:mem-overhead
     Assert-AapStagingBudget $Ctx   # the verification disk is part of the build folder's peak
     $null = Invoke-AapProvider $Ctx.Provider 'RemoveVm' @{ Name = $g.Vm }
     Remove-AapTree $dir $Ctx.BuildDir
@@ -823,10 +867,13 @@ function Invoke-AapUbuntuImageBuild {
     try {
         Assert-AapProvider $Provider
         $here = $PSScriptRoot
-        # The builder runs elevated: its own code, the P06 helpers it loads and every folder it sends files from must be as
-        # protected as the roots it writes (P19 deploys them admin-only). Folders are checked, not each file in them.
-        foreach ($d in $here, $script:GuestDir, [IO.Path]::GetFullPath((Join-Path $here '..\windows')), [IO.Path]::GetFullPath((Join-Path $here '..\common')),
-            [IO.Path]::GetFullPath((Join-Path $script:RepoRoot 'tools\parity-certify')), [IO.Path]::GetFullPath((Split-Path -Parent $script:ProbeScript)), [IO.Path]::GetFullPath((Split-Path -Parent $script:HelloC))) {
+        # The builder runs elevated: its own code, the P06 helpers it loads, every folder it sends files from and every folder
+        # whose code the provider runs (python) must be as protected as the roots it writes (P19 deploys them admin-only).
+        # Folders are checked, not each file in them. This runs after the modules loaded: it refuses a deployment anyone but
+        # the administrators can change, it cannot undo code that was already changed when it loaded (README, Trust).
+        foreach ($d in @($here, $script:GuestDir, [IO.Path]::GetFullPath((Join-Path $here '..\windows')), [IO.Path]::GetFullPath((Join-Path $here '..\common')),
+            [IO.Path]::GetFullPath((Join-Path $script:RepoRoot 'tools\parity-certify')), [IO.Path]::GetFullPath((Split-Path -Parent $script:ProbeScript)), [IO.Path]::GetFullPath((Split-Path -Parent $script:HelloC))) +
+            @(Invoke-AapProvider $Provider 'ExecFolders')) {
             $problems = @(Invoke-AapProvider $Provider 'TestRootTrust' @{ Path = $d } | Where-Object { $_ })
             if ($problems.Count) { throw "AAP_BuilderUntrusted: ${d}: $(@($problems | ForEach-Object { Get-AapPrintable ([string]$_) 300 }) -join '; ')" }   # check:builder-untrusted
         }
@@ -841,7 +888,7 @@ function Invoke-AapUbuntuImageBuild {
         $names = Get-AapUbuntuNames $plan ([int]$Config.AapBuild)
         $result.GenerationId = $names.GenerationId
         $known = @(Get-AapUbuntuBlockers -Plan $plan -ManifestPath $script:ManifestPath)
-        $waivers = @(Get-AapUbuntuWaivers $Config $known $planSha)
+        $waivers = @(Get-AapUbuntuWaivers $Config $known $planSha @($plan.blockers | Where-Object { $_.waivable -eq $false } | ForEach-Object { [string]$_.id }))
         $waived = @($waivers | ForEach-Object { $_.id })
         $open = @($known | Where-Object { $waived -cnotcontains $_ })
         if ($open.Count) { throw "AAP_Blocked: unresolved input blockers: $($open -join ', ')" }   # check:blocked
@@ -856,7 +903,8 @@ function Invoke-AapUbuntuImageBuild {
 
         $buildRoot = Join-Path $storage.Staging.Path 'build'
         Assert-AapPlainPath -Root $storage.Staging.Path -Path $buildRoot -Reason 'AAP_StorageUntrusted' -Create
-        try { $lock = [IO.File]::Open((Join-Path $buildRoot "$($names.BuildId).lock"), 'OpenOrCreate', 'ReadWrite', 'None') } catch { throw "AAP_BuildBusy: another builder holds $($names.BuildId)" }
+        # One build VM at a time on this machine (owner decision, gate D2): one lock for every image build in the staging root.
+        try { $lock = [IO.File]::Open((Join-Path $buildRoot 'aap-image-build.lock'), 'OpenOrCreate', 'ReadWrite', 'None') } catch { throw 'AAP_BuildBusy: another image build is running' }
 
         $buildDir = Join-Path $buildRoot $names.BuildId
         if ((Get-AapPathKind $buildDir) -ne 'absent') {
@@ -877,12 +925,17 @@ function Invoke-AapUbuntuImageBuild {
         if ((Get-AapPathKind $evidenceDir) -ne 'absent') { throw "AAP_GenerationExists: evidence for $($names.GenerationId) already exists; a rebuild takes a new aap.<n>" }   # check:evidence-exists
 
         Assert-AapBuildSpace $storage $Provider $plan ([int]$Config.StagingGibMax)
-        $media = Join-Path (Join-Path $storage.Base.Path 'media') $Config.MediaFile
-        if ((Get-AapPathKind $media) -ne 'file' -or (Get-AapSha256File $media) -cne $Config.MediaSha256) { throw "AAP_MediaMismatch: $($Config.MediaFile) is missing or its SHA-256 differs from the pinned value" }   # check:media
-        $inputs = Invoke-AapProvider $Provider 'VerifyInputs' @{ StagingRoot = $storage.Staging.Path; Names = @($Config.SourceEntry) + @(Get-AapProp $Config 'Inputs' | Where-Object { $_ }) }
+        # The source archive and the media are the P03 entries the plan pins; P03 verifies them offline, then each staged file
+        # must still have exactly the plan's SHA-256.
+        $pin = $plan.inputs
+        $inputs = Invoke-AapProvider $Provider 'VerifyInputs' @{ StagingRoot = $storage.Staging.Path; Names = @([string]$pin.source.entry, [string]$pin.media.entry) + @(Get-AapProp $Config 'Inputs' | Where-Object { $_ }) }
         if (-not $inputs.Complete) { throw "AAP_InputsUnverified: P03 offline verification did not accept every input: $(Get-AapPrintable ([string]$inputs.Detail) 300)" }   # check:inputs
-        $source = [string]$inputs.Paths[[string]$Config.SourceEntry]
-        if (-not $source -or (Get-AapPathKind $source) -ne 'file') { throw 'AAP_InputsUnverified: the upstream source archive is not staged' }
+        $source = [string]$inputs.Paths[[string]$pin.source.entry]
+        $media = [string]$inputs.Paths[[string]$pin.media.entry]
+        foreach ($x in @(@{ What = 'upstream source archive'; Path = $source; Sha = [string]$pin.source.sha256 }, @{ What = 'installation media'; Path = $media; Sha = [string]$pin.media.sha256 })) {
+            if (-not $x.Path -or (Get-AapPathKind $x.Path) -ne 'file' -or (Get-AapSha256File $x.Path) -cne $x.Sha) { throw "AAP_InputsUnverified: the $($x.What) is not staged with the plan's SHA-256" }   # check:input-pin
+        }
+        if ((Split-Path -Leaf $media) -cnotmatch $script:MediaName) { throw 'AAP_InputsUnverified: the media must be an Ubuntu 24.04 live-server amd64 ISO' }   # check:media-name
 
         # From here on a failure cleans up what it made.
         [void](New-Item -ItemType Directory -Path $buildDir)
@@ -895,7 +948,7 @@ function Invoke-AapUbuntuImageBuild {
                 evidence_created = $false; written = (New-Object System.Collections.Generic.List[string]); staging_peak_bytes = [double]0; clone_peak_bytes = [double]0; mem_overhead_mib = 0 }
             Evidence = [ordered]@{ schema = 2; item = 'P07'; build_id = $names.BuildId; generation_id = $names.GenerationId; builder_commit = $Config.BuilderCommit
                 plan_sha256 = $planSha; inputs_manifest_sha256 = (Get-AapSha256File $script:ManifestPath); template_sha256 = $plan.baseline.template_sha256
-                media = [ordered]@{ file = $Config.MediaFile; sha256 = $Config.MediaSha256 }; base = [ordered]@{ kernel_package = $plan.base.kernel_package; deviation = $plan.base.deviation }
+                media = [ordered]@{ entry = [string]$pin.media.entry; file = (Split-Path -Leaf $media); sha256 = [string]$pin.media.sha256 }; base = [ordered]@{ kernel_package = $plan.base.kernel_package; deviation = $plan.base.deviation }
                 switch = $script:SwitchName; waivers = $waivers; phases = (New-Object System.Collections.Generic.List[object]); reports = [ordered]@{}; verify = $null; seal_check = $null }
         }
         Save-AapState $ctx
@@ -988,6 +1041,6 @@ function Invoke-AapUbuntuImageBuild {
     return [pscustomobject]$result
 }
 
-Export-ModuleMember -Function Read-AapUbuntuBuildPlan, Get-AapUbuntuBlockers, New-AapUbuntuToken, New-AapUbuntuSeed, New-AapUbuntuRequest, ConvertFrom-AapUbuntuReply,
+Export-ModuleMember -Function Read-AapUbuntuBuildPlan, Get-AapUbuntuBlockers, New-AapUbuntuSeed, New-AapUbuntuRequest, ConvertFrom-AapUbuntuReply,
     Read-AapUbuntuAllowlist, ConvertFrom-AapScanReport, Get-AapUbuntuScanResult, Read-AapInventoryReport, New-AapUbuntuGenerationRecord, New-AapUbuntuBudgetRecord,
     Remove-AapUbuntuBuild, Invoke-AapUbuntuImageBuild, Get-AapUbuntuNames

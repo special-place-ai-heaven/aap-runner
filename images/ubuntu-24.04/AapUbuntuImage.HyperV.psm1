@@ -5,7 +5,9 @@
 # Invoke-AapManifest -Offline.
 # The guests are hostile. The host never attaches or mounts a guest disk: files go in on host-built seed images, and the
 # only channel back is an hvsocket connection to the guest agent (vsock port from the plan) whose reply is capped while it
-# is received. No guest gets a network adapter except the build VM, on the internal switch aap-guests-linux.
+# is received. No guest gets a network adapter except the build VM, on the internal switch aap-guests-linux, with the
+# per-adapter controls of guest-transport.md (DHCP and router guard on, MAC spoofing off, the extended port ACL set from the
+# P10.0 guest network module), read back after the VM is made; the scanner and verification VMs must have no adapter.
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -19,15 +21,21 @@ $script:VmSid = 'S-1-5-83-0'   # NT VIRTUAL MACHINE\Virtual Machines: VM worker 
 $script:SwitchName = 'aap-guests-linux'
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 $script:Python = $null
+$script:GuestNetwork = $null
+# The fixed part of guest-transport.md's deny set, which every guest adapter's extended port ACLs must carry outbound. The
+# host-specific entries (the host's vEthernet addresses, the LAN's IPv6 prefix, the guest subnet except its gateway) are
+# the P10.0 module's to add and prove.
+$script:DenyRanges = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'fe80::/10', 'fc00::/7', 'ff00::/8')
 
 # The hvsocket client: a SOCKADDR_HV endpoint (family 34, VM id, service id) and one call per connection that sends the
 # header and payload, closes the sending side, and reads the reply until the guest closes it, at most maxBytes.
-$script:ChannelSource = @'
+# The ISO writer for seed images: IMAPI2's result stream, copied block by block into a file created new.
+$script:TypeSource = @'
 using System;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
+using System.Runtime.InteropServices.ComTypes;
 public class AapHvEndPoint : EndPoint {
     readonly Guid vm, svc;
     public AapHvEndPoint(Guid vm, Guid svc) { this.vm = vm; this.svc = svc; }
@@ -67,13 +75,6 @@ public static class AapHvChannel {
         return total;
     }
 }
-'@
-
-# The ISO writer for seed images: IMAPI2's result stream, copied block by block into a file created new.
-$script:IsoSource = @'
-using System;
-using System.IO;
-using System.Runtime.InteropServices.ComTypes;
 public static class AapIsoWriter {
     public static void Save(object stream, string path, int blockSize, int blocks) {
         IStream s = (IStream)stream;
@@ -85,7 +86,31 @@ public static class AapIsoWriter {
 }
 '@
 
-function Initialize-AapType([string]$Name, [string]$Source) { if (-not ($Name -as [type])) { Add-Type -TypeDefinition $Source -Language CSharp } }
+# Compiled once, before the first guest exists, with TEMP and TMP pointing into the admin-only build folder: Windows
+# PowerShell compiles through files in the temp folder, and an elevated process must not load an assembly from a folder its
+# unelevated user can write.
+function Initialize-AapTypes([string]$TempDir) {
+    if ('AapHvChannel' -as [type]) { return }
+    $old = @($env:TEMP, $env:TMP)
+    try { $env:TEMP = $TempDir; $env:TMP = $TempDir; Add-Type -TypeDefinition $script:TypeSource -Language CSharp }
+    finally { $env:TEMP = $old[0]; $env:TMP = $old[1] }
+}
+
+# Problems with a VM's network adapters after NewVm. No switch: no adapter at all. The build VM: exactly one adapter, on
+# that switch, DHCP guard and router guard on, MAC spoofing off, and an outbound Deny entry for every fixed range.
+function Get-AapAdapterProblems($Adapters, $Acls, [string]$SwitchName) {
+    $nics = @($Adapters | Where-Object { $null -ne $_ })
+    if (-not $SwitchName) { if ($nics.Count) { "the VM has $($nics.Count) network adapters and must have none" }; return }
+    if ($nics.Count -ne 1) { "the VM has $($nics.Count) network adapters, not one"; return }
+    $n = $nics[0]
+    if ([string]$n.SwitchName -cne $SwitchName) { "the adapter is on '$($n.SwitchName)', not $SwitchName" }
+    if ([string]$n.DhcpGuard -ne 'On') { 'DHCP guard is not on' }
+    if ([string]$n.RouterGuard -ne 'On') { 'router guard is not on' }
+    if ([string]$n.MacAddressSpoofing -ne 'Off') { 'MAC address spoofing is not off' }
+    foreach ($r in $script:DenyRanges) {
+        if (-not @($Acls | Where-Object { $null -ne $_ -and [string]$_.Action -eq 'Deny' -and @('Outbound', 'Both') -contains [string]$_.Direction -and [string]$_.RemoteIPAddress -eq $r }).Count) { "no outbound Deny ACL for $r" }
+    }
+}
 
 function Get-AapVm($A) {
     $vm = @(Hyper-V\Get-VM -Id $A.VmId)
@@ -108,12 +133,18 @@ function Get-AapTreeBytes([string]$Path) {
 # A connection that cannot be made or breaks is AAP_GuestUnreachable, a slow one AAP_GuestTimeout, an oversized reply
 # AAP_HostileGuest; nothing a guest sends is ever an empty success.
 function Invoke-AapChannel($A, [IO.Stream]$Reply) {
-    Initialize-AapType 'AapHvChannel' $script:ChannelSource
+    if (-not ('AapHvChannel' -as [type])) { throw 'AAP_Unexpected: the guest channel type is not compiled (NewSeedImage compiles it)' }
     $len = 0; $payload = $null
     try {
         if ($A.ContainsKey('InputPath') -and $A.InputPath) { $payload = [IO.File]::OpenRead($A.InputPath); $len = $payload.Length }
         elseif ($A.ContainsKey('InputText') -and $null -ne $A.InputText) { $b = $script:Utf8.GetBytes([string]$A.InputText); $payload = New-Object IO.MemoryStream(, $b); $len = $b.Length }
-        $header = [Text.Encoding]::ASCII.GetBytes("aap1 $($A.Token) $($A.Verb) $($A.Name) $len`n")
+        # The token object writes its own bytes: it never becomes a string a command could log (PowerShell event 4103).
+        if ($A.Token.Length -ne 64) { throw 'AAP_Unexpected: the guest token is not 64 bytes' }
+        $hs = New-Object IO.MemoryStream
+        $pre = [Text.Encoding]::ASCII.GetBytes('aap1 '); $hs.Write($pre, 0, $pre.Length)
+        $A.Token.WriteTo($hs)
+        $post = [Text.Encoding]::ASCII.GetBytes(" $($A.Verb) $($A.Name) $len`n"); $hs.Write($post, 0, $post.Length)
+        $header = $hs.ToArray()
         $svc = [guid]('{0:x8}-facb-11e6-bd58-64006a7986d3' -f [int]$A.Port)
         try { return [AapHvChannel]::Call([guid]$A.VmId, $svc, $header, $payload, $Reply, [long]$A.MaxBytes, [int]$A.TimeoutSeconds * 1000) }
         catch {
@@ -127,11 +158,18 @@ function Invoke-AapChannel($A, [IO.Stream]$Reply) {
 
 function New-AapUbuntuHyperVProvider {
     <# The provider hashtable Invoke-AapUbuntuImageBuild expects. PythonPath: the python 3 the installer deploys for P05's
-       comparison (absolute path, admin-only folder). #>
-    param([Parameter(Mandatory)][string]$PythonPath)
+       comparison (absolute path to a real file, not an app execution alias or other reparse point; its folder must pass
+       the admin-only check, which the builder runs on ExecFolders before anything else). GuestNetwork: the P10.0 guest
+       network module's adapter step, called with @{ VmId; SwitchName } after the build VM's adapter is connected; it adds
+       the contract's extended port ACL set, which NewVm then reads back. #>
+    param([Parameter(Mandatory)][string]$PythonPath, [Parameter(Mandatory)][scriptblock]$GuestNetwork)
     if ($PythonPath -cnotmatch '^[A-Za-z]:\\' -or -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) { throw 'AAP_ProviderInvalid: PythonPath must be an absolute path to python.exe' }
+    if (([int][IO.File]::GetAttributes($PythonPath) -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'AAP_ProviderInvalid: PythonPath is a reparse point (an app execution alias or link), not an installed python' }
     $script:Python = $PythonPath
+    $script:GuestNetwork = $GuestNetwork
     $p = @{}
+    # Folders whose code this provider runs elevated, for the builder's admin-only check: python's install folder.
+    $p.ExecFolders = { param($a) @([IO.Path]::GetDirectoryName($script:Python)) }
     $p.TestRootTrust = { param($a)
         # P03's rules (owner, ACL masks, reparse, ancestors, fixed drive) plus the admin-only rule of backend-lifecycle.md
         # revision 2: a protected DACL and no ACE, inheritable or inherit-only included, for anyone but the admin SIDs.
@@ -164,7 +202,7 @@ function New-AapUbuntuHyperVProvider {
     $p.NewDiffDisk = { param($a) [void](Hyper-V\New-VHD -Path $a.Path -ParentPath $a.Parent -Differencing) }
     # The seed: an ISO 9660 + Joliet image labelled CIDATA (cloud-init NoCloud), built from files written into a new folder.
     $p.NewSeedImage = { param($a)
-        Initialize-AapType 'AapIsoWriter' $script:IsoSource
+        Initialize-AapTypes ([IO.Path]::GetDirectoryName($a.Path))
         $dir = "$($a.Path).files"
         [void][IO.Directory]::CreateDirectory($dir)
         try {
@@ -190,7 +228,8 @@ function New-AapUbuntuHyperVProvider {
         Hyper-V\Set-VM -VM $vm -ProcessorCount $a.Cpus -StaticMemory -CheckpointType Disabled -AutomaticStopAction TurnOff -AutomaticStartAction Nothing -SmartPagingFilePath $a.Path -SnapshotFileLocation $a.Path
         # Ubuntu's shim is signed by the Microsoft UEFI CA.
         Hyper-V\Set-VMFirmware -VM $vm -EnableSecureBoot On -SecureBootTemplate 'MicrosoftUEFICertificateAuthority'
-        Hyper-V\Add-VMHardDiskDrive -VM $vm -Path $a.OsDisk
+        # The scanner boots with no disk at all; its disk is added once its live system answers (AttachDisk).
+        if ($a.OsDisk) { Hyper-V\Add-VMHardDiskDrive -VM $vm -Path $a.OsDisk }
         foreach ($iso in @($a.Dvds)) { Hyper-V\Add-VMDvdDrive -VM $vm -Path $iso }
         $first = $(if ($a.BootFromDvd) { @(Hyper-V\Get-VMDvdDrive -VM $vm)[0] } else { @(Hyper-V\Get-VMHardDiskDrive -VM $vm)[0] })
         Hyper-V\Set-VMFirmware -VM $vm -FirstBootDevice $first
@@ -201,11 +240,19 @@ function New-AapUbuntuHyperVProvider {
             $s = @(Hyper-V\Get-VMSwitch -Name $a.SwitchName -ErrorAction SilentlyContinue)
             if ([string]$a.SwitchName -cne $script:SwitchName -or $s.Count -ne 1 -or [string]$s[0].SwitchType -ne 'Internal') { throw "AAP_NetworkUntrusted: guests attach only to the internal switch $($script:SwitchName)" }
             $nic | Hyper-V\Connect-VMNetworkAdapter -SwitchName $a.SwitchName
+            $nic | Hyper-V\Set-VMNetworkAdapter -DhcpGuard On -RouterGuard On -MacAddressSpoofing Off
+            $null = & $script:GuestNetwork @{ VmId = [string]$vm.Id; SwitchName = [string]$a.SwitchName }
         } else {
             $nic | Hyper-V\Remove-VMNetworkAdapter
         }
+        # Post-condition, read back from Hyper-V: a VM that does not have exactly the adapter state asked for never starts.
+        $now = @(Hyper-V\Get-VMNetworkAdapter -VM $vm)
+        $acls = $(if ($now.Count) { @(Hyper-V\Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter $now) } else { @() })
+        $problems = @(Get-AapAdapterProblems $now $acls ([string]$a.SwitchName))
+        if ($problems.Count) { throw "AAP_NetworkUntrusted: $($a.Name): $($problems -join '; ')" }
         @{ Id = [string]$vm.Id }
     }
+    $p.AttachDisk = { param($a) Hyper-V\Add-VMHardDiskDrive -VM (Get-AapVm $a) -ControllerType SCSI -Path $a.Path }
     $p.StartVm = { param($a) $vm = Get-AapVm $a; if ($vm.State -ne 'Running') { Hyper-V\Start-VM -VM $vm } }
     # Packer's hyperv-iso boot command: text and <enter> typed into the installer's GRUB through the synthetic keyboard
     # (Msvm_Keyboard), <waitN> pauses N seconds. Host to guest only; nothing comes back.
@@ -249,7 +296,7 @@ function New-AapUbuntuHyperVProvider {
             try {
                 $null = Invoke-AapChannel (@{ VmId = $a.VmId; Port = $a.Port; Token = $a.Token; Verb = 'ready'; Name = '-'; MaxBytes = 64; TimeoutSeconds = 30 }) $ms
                 if ($script:Utf8.GetString($ms.ToArray()).Trim() -ceq 'ready') { return $true }
-            } catch { $null = $_ } finally { $ms.Dispose() }
+            } catch { if ([string]$_.Exception.Message -match '^AAP_HostileGuest:') { throw }; $null = $_ } finally { $ms.Dispose() }
             Start-Sleep -Seconds 15
         }
         return $false
@@ -290,10 +337,10 @@ function New-AapUbuntuHyperVProvider {
         $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
         $proc = [Diagnostics.Process]::Start($psi)
         try {
-            $err = $proc.StandardError.ReadToEndAsync()
-            $null = $proc.StandardOutput.ReadToEnd()
-            if (-not $proc.WaitForExit(600000)) { $proc.Kill(); throw 'AAP_VerifyFailed: the inventory comparison did not finish' }
-            $null = $err.Result
+            # Both pipes drain asynchronously, so the timeout below is the only thing that waits.
+            $out = $proc.StandardOutput.ReadToEndAsync(); $err = $proc.StandardError.ReadToEndAsync()
+            if (-not $proc.WaitForExit(600000)) { try { $proc.Kill() } catch { $null = $_ }; throw 'AAP_VerifyFailed: the inventory comparison did not finish' }
+            $null = $out.Result; $null = $err.Result
             $proc.ExitCode
         } finally { $proc.Dispose() }
     }

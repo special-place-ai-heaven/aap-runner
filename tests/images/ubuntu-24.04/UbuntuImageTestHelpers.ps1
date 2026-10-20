@@ -24,14 +24,18 @@ function New-TestRoot {
     return $root
 }
 
-# The committed plan with every script hash filled in (the real plan is unpinned until P03 stages the upstream archive), and
-# a 3-second reboot timeout, so a reboot that never proves itself ends the test (or a mutant) in seconds, not half an hour.
-function New-PinnedPlan([string]$Path) {
+# The committed plan as P03.1 will leave it: every script hash filled in, the source archive and the media pinned by entry and
+# SHA-256 and their two unwaivable blockers gone. And a 3-second reboot timeout, so a reboot that never proves itself ends
+# the test (or a mutant) in seconds, not half an hour.
+function New-PinnedPlan([string]$Path, [string]$SourceSha = ('1' * 64), [string]$MediaSha = ('2' * 64)) {
     $plan = Get-Content -Raw -LiteralPath (Join-Path (Get-TestRepo) 'images\ubuntu-24.04\build-plan.json') | ConvertFrom-Json
     foreach ($p in $plan.phases) {
         if ($p.kind -eq 'scripts') { foreach ($s in $p.scripts) { $s.sha256 = Get-TextSha $s.name } }
         if ($p.kind -eq 'restart') { $p.timeout_seconds = 3 }
     }
+    $plan.inputs.source.entry = 'runner-images-7e7dc1b'; $plan.inputs.source.sha256 = $SourceSha
+    $plan.inputs.media.entry = 'ubuntu-24.04.5-live-server'; $plan.inputs.media.sha256 = $MediaSha
+    $plan.blockers = @($plan.blockers | Where-Object { $_.waivable })
     Write-TestJson $plan $Path
     return $plan
 }
@@ -53,7 +57,8 @@ function Get-FakeScanReport {
     [ordered]@{ schema = 1; layout = 'ok'; files_scanned = 412345; findings_count = 0; findings = @(); unreadable_count = 0; unreadable = @(); large_files_count = 1
         large_files = @([ordered]@{ path = 'usr/lib/big.so'; bytes = 40000000; sha256 = (Get-TextSha 'big') })
         rules = @('runner-credentials', 'runner-config', 'ssh-host-key', 'ssh-authorized-keys', 'shell-history', 'app-key', 'cloud-init-seed', 'installer-answers',
-            'azure-provisioning-data', 'shadow-password-hash', 'pem-private-key', 'github-token', 'github-pat', 'jit-config', 'synthetic-marker', 'build-credential') }
+            'azure-provisioning-data', 'shadow-password-hash', 'pem-private-key', 'github-token', 'github-pat', 'jit-config', 'synthetic-marker', 'build-credential',
+            'build-agent', 'build-sudoers') }
 }
 # What certify.py compare writes when the image matches the hosted reference except for the exact Azure kernel build.
 function Get-FakeCompareReport {
@@ -78,7 +83,7 @@ function New-FakeWorld {
         Guest = $null; InstallOff = $true; ReadyAfterReboot = $true; GuestReady = $true; InputsComplete = $true; BootId = $null
         InventoryText = '{"schema":1,"probe":"fake"}'; ReportText = '# software report'; ScanReport = $null; ScanText = $null
         CompareReport = $null; CompareExit = 1; Vms = @{}; VmIds = @{}; ReadOnly = (New-Object System.Collections.Generic.List[string])
-        SourceArchive = $null; MediaSha = $null; Provider = $null
+        SourceArchive = $null; MediaPath = $null; MediaSha = $null; Provider = $null; PythonDir = (Join-Path $root 'python'); MemOverheadMib = 280
         Switch = @{ Name = 'aap-guests-linux'; SwitchType = 'Internal' }
     }
     $w.Staging = $(if ($SeparateStaging) { Join-Path $root 'vol3\staging' } else { Join-Path $w.Base 'staging' })
@@ -91,14 +96,18 @@ function New-FakeWorld {
     }
     if ($SeparateStaging) { $roots.staging_root = [ordered]@{ path = $w.Staging; volume_guid = $w.Guids.vol3 } }
     Write-TestJson ([ordered]@{ schema = 2; kind = 'storage'; volume_floor_gib = 50; roots = $roots }) $w.StoragePath
-    $iso = Join-Path $w.Base 'media\ubuntu-24.04.5-live-server-amd64.iso'
-    [IO.File]::WriteAllText($iso, 'fake installation media')
-    $w.MediaSha = Get-FileSha $iso
+    # Both inputs as P03 stages them: <staging>\<entry>\<sha256>\<file>.
+    $isoDir = Join-Path $w.Staging 'ubuntu-24.04.5-live-server\fake'
+    [void][IO.Directory]::CreateDirectory($isoDir)
+    $w.MediaPath = Join-Path $isoDir 'ubuntu-24.04.5-live-server-amd64.iso'
+    [IO.File]::WriteAllText($w.MediaPath, 'fake installation media')
+    $w.MediaSha = Get-FileSha $w.MediaPath
     $arcDir = Join-Path $w.Staging 'runner-images-7e7dc1b\7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe'
     [void][IO.Directory]::CreateDirectory($arcDir)
     $w.SourceArchive = Join-Path $arcDir 'runner-images.tar.gz'
     [IO.File]::WriteAllText($w.SourceArchive, 'fake archive')
-    $w.Plan = New-PinnedPlan $w.PlanPath
+    [void][IO.Directory]::CreateDirectory($w.PythonDir)
+    $w.Plan = New-PinnedPlan $w.PlanPath (Get-FileSha $w.SourceArchive) $w.MediaSha
     $repo = Get-TestRepo
     $manifest = Join-Path $repo 'images\common\artifacts.manifest.json'
     # The builder's repository files are fixed in module scope, never in Config; the fake world swaps them there.
@@ -112,9 +121,9 @@ function New-FakeWorld {
     Set-ModuleVar 'PollSeconds' 0
     $planSha = Get-FileSha $w.PlanPath
     $w.Config = @{
-        StoragePath = $w.StoragePath; EvidenceRoot = $w.Evidence; AapBuild = 1; MediaFile = 'ubuntu-24.04.5-live-server-amd64.iso'; MediaSha256 = $w.MediaSha
+        StoragePath = $w.StoragePath; EvidenceRoot = $w.Evidence; AapBuild = 1
         BuildCpus = 4; BuildMemGib = 10; StagingGibMax = 400; BaseGibMax = 186; JobDiskGibMax = 55
-        BuilderCommit = '0123456789abcdef0123456789abcdef01234567'; SourceEntry = 'runner-images-7e7dc1b'; Inputs = @(); SwitchName = 'aap-guests-linux'
+        BuilderCommit = '0123456789abcdef0123456789abcdef01234567'; Inputs = @(); SwitchName = 'aap-guests-linux'
         Waivers = @(Get-AapUbuntuBlockers -Plan $w.Plan -ManifestPath $manifest | ForEach-Object { New-TestWaiver $_ $planSha })
     }
     $w.Sizes['os.vhdx'] = [double]61 * $script:GiB
@@ -158,19 +167,21 @@ function New-FakeProvider($w) {
     # Ops resolve $w at call time from the calling test scope (the test names its world $w); no closures, so the helpers here stay visible.
     $p = @{}
     $p.TestRootTrust = { param($a) Add-FakeCall 'TestRootTrust' $a; if ($w.Untrusted.ContainsKey($a.Path)) { $w.Untrusted[$a.Path] } }
+    $p.ExecFolders = { param($a) Add-FakeCall 'ExecFolders' $a; @($w.PythonDir) }
     $p.GetVolume = { param($a) Add-FakeCall 'GetVolume' $a; $g = Get-VolumeOf $w $a.Path; @{ Guid = $g; FreeBytes = $w.Free[$g] } }
     $p.MeasureBytes = { param($a) Add-FakeCall 'MeasureBytes' $a
         $leaf = Split-Path -Leaf $a.Path
         if ($w.Sizes.ContainsKey($leaf)) { return $w.Sizes[$leaf] }
         $w.MeasureCount++
         return (& $w.BuildDirBytes $w.MeasureCount) }
-    $p.VerifyInputs = { param($a) Add-FakeCall 'VerifyInputs' $a; @{ Complete = $w.InputsComplete; Paths = @{ 'runner-images-7e7dc1b' = $w.SourceArchive }; Detail = 'fake' } }
+    $p.VerifyInputs = { param($a) Add-FakeCall 'VerifyInputs' $a; @{ Complete = $w.InputsComplete; Paths = @{ 'runner-images-7e7dc1b' = $w.SourceArchive; 'ubuntu-24.04.5-live-server' = $w.MediaPath }; Detail = 'fake' } }
     $p.NewBuildDisk = { param($a) Add-FakeCall 'NewBuildDisk' $a; [IO.File]::WriteAllText($a.Path, 'empty disk') }
     $p.NewDiffDisk = { param($a) Add-FakeCall 'NewDiffDisk' $a; [IO.File]::WriteAllText($a.Path, 'diff') }
     $p.NewSeedImage = { param($a) Add-FakeCall 'NewSeedImage' $a; $w.Seeds.Add([pscustomobject]@{ Path = $a.Path; Label = $a.Label; Files = $a.Files })
         [IO.File]::WriteAllText($a.Path, [string]$a.Files['user-data']) }
     $p.GetSwitch = { param($a) Add-FakeCall 'GetSwitch' $a; $w.Switch }
     $p.NewVm = { param($a) Add-FakeCall 'NewVm' $a; $w.Vms[$a.Name] = 'Off'; $w.VmIds[$a.Name] = [guid]::NewGuid().ToString(); @{ Id = $w.VmIds[$a.Name] } }
+    $p.AttachDisk = { param($a) Add-FakeCall 'AttachDisk' $a }
     $p.StartVm = { param($a) Add-FakeCall 'StartVm' $a; $w.Vms[$a.VmName] = 'Running' }
     $p.TypeBootCommand = { param($a) Add-FakeCall 'TypeBootCommand' $a }
     $p.WaitVmOff = { param($a) Add-FakeCall 'WaitVmOff' $a; $w.InstallOff }
@@ -198,7 +209,7 @@ function New-FakeProvider($w) {
     $p.SetReadOnlyAcl = { param($a) Add-FakeCall 'SetReadOnlyAcl' $a; $w.ReadOnly.Add($a.Path)
         $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         Set-AapReadOnlyAcl -Path $a.Path -Owner $me -Readers @($me) }
-    $p.GetVmMemoryOverheadMib = { param($a) Add-FakeCall 'GetVmMemoryOverheadMib' $a; 280 }
+    $p.GetVmMemoryOverheadMib = { param($a) Add-FakeCall 'GetVmMemoryOverheadMib' $a; $w.MemOverheadMib }
     $p.CompareInventory = { param($a) Add-FakeCall 'CompareInventory' $a; Write-TestJson $w.CompareReport $a.Out; $w.CompareExit }
     return $p
 }

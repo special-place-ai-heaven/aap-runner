@@ -96,6 +96,28 @@ Describe 'build plan mirrors the pinned upstream template' {
         ($script:Plan.phases | Where-Object { $_.id -eq 'p12' }).env.IMAGE_OS | Should -Be '${var.image_os}'
         ($script:Plan.phases | Where-Object { $_.id -eq 'p16' }).scripts.Count | Should -Be 51
         ($script:Plan.phases | Where-Object { $_.id -eq 'p28' }).env.IMAGE_FOLDER | Should -Be '${var.image_folder}'
+        # Packer's file provisioner uploaded over SFTP as the build user.
+        @($script:Plan.phases | Where-Object { [string]$_.action -like 'upload-*' } | ForEach-Object { $_.exec } | Sort-Object -Unique) | Should -Be @('user')
+    }
+    It 'gates only sections the hosted reference has values for: no tool_cache.defaults gate while the capture records none' {
+        $ref = Get-Content -Raw (Join-Path $script:Repo 'images\ubuntu-24.04\reference-inventory.json') | ConvertFrom-Json
+        @($ref.tool_cache.defaults.PSObject.Properties).Count | Should -Be 0
+        $script:Plan.verify.gate_sections | Should -Not -Contain 'tool_cache.defaults'
+    }
+    It 'pins the source archive and the media nowhere yet, so both stay unwaivable blockers' {
+        $script:Plan.inputs.source.entry | Should -BeNullOrEmpty
+        $script:Plan.inputs.media.sha256 | Should -BeNullOrEmpty
+        @($script:Plan.blockers | Where-Object { $_.waivable -eq $false } | ForEach-Object { $_.id }) | Should -Be @('p07-upstream-source-archive', 'p07-ubuntu-server-media')
+    }
+    It 'refuses a plan whose <Case>' -Tag 'plan-inputs' -TestCases @(
+        @{ Case = 'media is neither pinned nor blocked'; Edit = { param($p) $p.inputs.media.entry = $null; $p.inputs.media.sha256 = $null } },
+        @{ Case = 'source entry has no hash'; Edit = { param($p) $p.inputs.source.sha256 = $null } },
+        @{ Case = 'media blocker is waivable'; Edit = { param($p) $p.inputs.media.entry = $null; $p.inputs.media.sha256 = $null
+                $p.blockers += [pscustomobject]@{ id = 'p07-ubuntu-server-media'; waivable = $true; reason = 'r'; owner_action = 'o' } } }) {
+        $p = New-PinnedPlan (Join-Path $TestDrive 'inputs.json')
+        & $Edit $p
+        Write-TestJson $p (Join-Path $TestDrive 'inputs.json')
+        { Read-AapUbuntuBuildPlan -Path (Join-Path $TestDrive 'inputs.json') } | Should -Throw 'AAP_PlanInvalid*inputs.*'
     }
     It 'runs the software report and upstream tests before deprovision, and deprovision last' {
         $ids = @($script:Plan.phases | ForEach-Object { if ($_.kind -eq 'action') { $_.action } elseif ($_.kind -eq 'scripts') { @($_.scripts.name)[-1] } else { 'restart' } })
@@ -199,10 +221,11 @@ Describe 'storage record and roots' {
     It 'refuses to run when <Which> is not admin-only' -Tag 'builder-untrusted' -TestCases @(
         @{ Which = 'its own folder'; Rel = '.' }, @{ Which = 'the guest payload'; Rel = '<repo>\images\ubuntu-24.04\guest' },
         @{ Which = 'the shared P06 helpers'; Rel = '..\windows' }, @{ Which = 'images\common'; Rel = '..\common' },
-        @{ Which = 'the P05 harness'; Rel = '<repo>\tools\parity-certify' }, @{ Which = 'the probe'; Rel = '<repo>\tools\parity-certify\probe' }) {
+        @{ Which = 'the P05 harness'; Rel = '<repo>\tools\parity-certify' }, @{ Which = 'the probe'; Rel = '<repo>\tools\parity-certify\probe' },
+        @{ Which = 'the python the provider runs'; Rel = '<python>' }) {
         # Folders next to the module are taken from where it was loaded (the mutation run loads a copy); the rest from the repository.
         $here = Split-Path -Parent (Get-Module AapUbuntuImage).Path
-        $path = $(if ($Rel.StartsWith('<repo>')) { Join-Path $script:Repo $Rel.Substring(7) } else { Join-Path $here $Rel })
+        $path = $(if ($Rel -eq '<python>') { $w.PythonDir } elseif ($Rel.StartsWith('<repo>')) { Join-Path $script:Repo $Rel.Substring(7) } else { Join-Path $here $Rel })
         $w.Untrusted[[IO.Path]::GetFullPath($path)] = @('writable by Users')
         $r = Invoke-Build
         $r.Reason | Should -Be 'AAP_BuilderUntrusted'
@@ -210,10 +233,23 @@ Describe 'storage record and roots' {
     }
     It 'the production provider refuses a user-owned folder with the real ACL rules (no Hyper-V call)' {
         Import-Module (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.HyperV.psm1') -Force
-        $p = New-AapUbuntuHyperVProvider -PythonPath (Get-Process -Id $PID).Path
+        $p = New-AapUbuntuHyperVProvider -PythonPath (Get-Process -Id $PID).Path -GuestNetwork { }
         $dir = Join-Path $w.Root 'userdir'
         [void](New-Item -ItemType Directory -Path $dir)
         @(& $p.TestRootTrust @{ Path = $dir }).Count | Should -BeGreaterThan 0
+    }
+    It 'the production provider names a python under %LOCALAPPDATA% for the trust check, which the real ACL rules refuse' {
+        Import-Module (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.HyperV.psm1') -Force
+        $py = Join-Path $w.Root 'py\python.exe'
+        [void](New-Item -ItemType Directory -Path (Split-Path -Parent $py)); [IO.File]::WriteAllText($py, 'not python')
+        $p = New-AapUbuntuHyperVProvider -PythonPath $py -GuestNetwork { }
+        $folders = @(& $p.ExecFolders @{})
+        $folders | Should -Be @((Split-Path -Parent $py))
+        @(& $p.TestRootTrust @{ Path = $folders[0] }).Count | Should -BeGreaterThan 0
+    }
+    It 'the production provider refuses the python app execution alias, a reparse point' -Skip:(-not (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\python.exe'))) {
+        Import-Module (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.HyperV.psm1') -Force
+        { New-AapUbuntuHyperVProvider -PythonPath (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\python.exe') -GuestNetwork { } } | Should -Throw 'AAP_ProviderInvalid*reparse*'
     }
 }
 
@@ -243,6 +279,16 @@ Describe 'preflight refusals change nothing' {
         (Invoke-Build).Reason | Should -Be 'AAP_ConfigInvalid'
         Assert-NothingStarted
     }
+    It 'refuses a waiver of the media or source blocker, which only pinning resolves' -Tag 'waiver-unwaivable' {
+        Update-TestPlan $w { param($p) $p.inputs.media.entry = $null; $p.inputs.media.sha256 = $null
+            $p.blockers += [pscustomobject]@{ id = 'p07-ubuntu-server-media'; waivable = $false; reason = 'not pinned'; owner_action = 'pin it' } }
+        (Invoke-Build).Reason | Should -Be 'AAP_Blocked'
+        $w.Config.Waivers += (New-TestWaiver 'p07-ubuntu-server-media' (Get-FileSha $w.PlanPath))
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_ConfigInvalid'
+        $r.Detail | Should -Match 'p07-ubuntu-server-media cannot be waived'
+        Assert-NothingStarted
+    }
     It 'refuses a waiver approved for another build plan' -Tag 'waiver' {
         $w.Config.Waivers[0].plan_sha256 = $script:Sha0
         $r = Invoke-Build
@@ -254,30 +300,39 @@ Describe 'preflight refusals change nothing' {
         (Invoke-Build).Reason | Should -Be 'AAP_InputsUnverified'
         Assert-NothingStarted
     }
-    It 'refuses media whose hash differs from the pin, or missing media' -Tag 'media' {
-        $w.Config.MediaSha256 = $script:Sha0
-        (Invoke-Build).Reason | Should -Be 'AAP_MediaMismatch'
-        $w.Config.MediaSha256 = $w.MediaSha
-        Remove-Item -LiteralPath (Join-Path $w.Base 'media\ubuntu-24.04.5-live-server-amd64.iso')
-        (Invoke-Build).Reason | Should -Be 'AAP_MediaMismatch'
+    It 'refuses a staged <What> whose bytes differ from the plan pin, or that is missing' -Tag 'input-pin' -TestCases @(@{ What = 'media'; Prop = 'MediaPath' }, @{ What = 'source archive'; Prop = 'SourceArchive' }) {
+        [IO.File]::AppendAllText($w.$Prop, 'changed')
+        (Invoke-Build).Reason | Should -Be 'AAP_InputsUnverified'
+        Remove-Item -LiteralPath $w.$Prop
+        (Invoke-Build).Reason | Should -Be 'AAP_InputsUnverified'
         Assert-NothingStarted
     }
-    It 'refuses media that is not an Ubuntu 24.04 live-server ISO: <File>' -Tag 'media-name' -TestCases @(
-        @{ File = 'ubuntu-26.04-live-server-amd64.iso' }, @{ File = 'ubuntu-24.04.5-desktop-amd64.iso' }, @{ File = '..\ubuntu-24.04.5-live-server-amd64.iso' }, @{ File = 'ubuntu-24.04.5-live-server-arm64.iso' }) {
-        Copy-Item (Join-Path $w.Base 'media\ubuntu-24.04.5-live-server-amd64.iso') (Join-Path $w.Base 'media\x.iso')
-        if ($File -notmatch '\\') { Copy-Item (Join-Path $w.Base 'media\ubuntu-24.04.5-live-server-amd64.iso') (Join-Path $w.Base "media\$File") }
-        $w.Config.MediaFile = $File
-        (Invoke-Build).Reason | Should -Be 'AAP_ConfigInvalid'
+    It 'refuses media that is not an Ubuntu 24.04 live-server amd64 ISO: <File>' -Tag 'media-name' -TestCases @(
+        @{ File = 'ubuntu-26.04-live-server-amd64.iso' }, @{ File = 'ubuntu-24.04.5-desktop-amd64.iso' }, @{ File = 'ubuntu-24.04.5-live-server-arm64.iso' }) {
+        $other = Join-Path (Split-Path -Parent $w.MediaPath) $File
+        Copy-Item -LiteralPath $w.MediaPath -Destination $other
+        $w.MediaPath = $other   # same bytes, so it passes the pin
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_InputsUnverified'
+        $r.Detail | Should -Match 'live-server amd64'
         Assert-NothingStarted
     }
-    It 'refuses a config without <Key>' -TestCases @(@{ Key = 'MediaSha256' }, @{ Key = 'BuilderCommit' }, @{ Key = 'StagingGibMax' }, @{ Key = 'SourceEntry' }, @{ Key = 'BaseGibMax' }, @{ Key = 'JobDiskGibMax' }, @{ Key = 'SwitchName' }) {
+    It 'refuses a config without <Key>' -TestCases @(@{ Key = 'BuilderCommit' }, @{ Key = 'StagingGibMax' }, @{ Key = 'BaseGibMax' }, @{ Key = 'JobDiskGibMax' }, @{ Key = 'BuildCpus' }, @{ Key = 'BuildMemGib' }, @{ Key = 'SwitchName' }) {
         $w.Config.Remove($Key)
         (Invoke-Build).Reason | Should -BeIn @('AAP_ConfigInvalid', 'AAP_NetworkUntrusted')
         Assert-NothingStarted
     }
-    It 'refuses while another builder holds the same generation' {
+    It 'refuses <Key> = <Value>, outside the owner-approved lab ceiling' -Tag 'owner-limits' -TestCases @(
+        @{ Key = 'BuildCpus'; Value = 5 }, @{ Key = 'BuildMemGib'; Value = 11 }, @{ Key = 'BaseGibMax'; Value = 187 }, @{ Key = 'JobDiskGibMax'; Value = 56 }, @{ Key = 'BuildCpus'; Value = 0 }) {
+        $w.Config[$Key] = $Value
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_ConfigInvalid'
+        $r.Detail | Should -Match "^$Key must be 1 to"
+        Assert-NothingStarted
+    }
+    It 'refuses while another image build is running' {
         [void][IO.Directory]::CreateDirectory((Join-Path $w.Staging 'build'))
-        $h = [IO.File]::Open((Join-Path $w.Staging "build\$script:BuildId.lock"), 'OpenOrCreate', 'ReadWrite', 'None')
+        $h = [IO.File]::Open((Join-Path $w.Staging 'build\aap-image-build.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
         try { (Invoke-Build).Reason | Should -Be 'AAP_BuildBusy' } finally { $h.Dispose() }
     }
     It 'refuses a provider that lacks an op' {
@@ -295,7 +350,9 @@ Describe 'preflight refusals change nothing' {
         Assert-NothingStarted
     }
     It 'refuses a plan whose image version could name a path' -Tag 'plan-version' {
-        Update-TestPlan $w { param($p) $p.baseline.image_version = '..\x' }
+        # A traversal made only of whole '..' steps: with this check disabled (the mutation run) the build escapes its folders
+        # but every name it creates stays deletable; a name ending in dots ('x_..') would not be, so Remove-World could not.
+        Update-TestPlan $w { param($p) $p.baseline.image_version = 'a\..\..\x' }
         (Invoke-Build).Reason | Should -Be 'AAP_PlanInvalid'
         Assert-NothingStarted
     }
@@ -396,9 +453,12 @@ Describe 'a full build with fakes' {
         $script:Ev.plan_sha256 | Should -Be (Get-FileSha $w.PlanPath)
         $script:Ev.inputs_manifest_sha256 | Should -Be (Get-FileSha (Join-Path $script:Repo 'images\common\artifacts.manifest.json'))
         $script:Ev.builder_commit | Should -Be '0123456789abcdef0123456789abcdef01234567'
-        @($script:Ev.waivers).Count | Should -Be 17
+        @($script:Ev.waivers).Count | Should -Be 15   # the P03 blockers and the variables blocker; source and media are pinned
         $script:Ev.base.kernel_package | Should -Be 'linux-azure'
         $script:Ev.media.sha256 | Should -Be $w.MediaSha
+        $script:Ev.media.entry | Should -Be 'ubuntu-24.04.5-live-server'
+        $script:Ev.verify.inventory_compare.extra_count | Should -Be 2
+        @($script:Ev.verify.inventory_compare.extra | ForEach-Object { "$($_.section).$($_.key)" }) | Should -Be @('tool_cache.node/24.22.0', 'env.AAP')
         $script:Ev.switch | Should -Be 'aap-guests-linux'
         $script:Ev.seal_check.findings.Count | Should -Be 0
         $script:Ev.verify.upstream_tests.failed | Should -Be 0
@@ -407,18 +467,30 @@ Describe 'a full build with fakes' {
         $script:Ev.verify.inventory_compare.counts.'version-mismatch' | Should -Be 1
         $script:Ev.reports.'software-report.md' | Should -Be (Get-TextSha $w.ReportText)
     }
-    It 'scans in a guest of the pinned media with no network, the sealed disk as a differencing child, looking for the build token' {
+    It 'scans in a guest of the pinned media with no network and no disk at boot, then hot-adds the sealed disk as a differencing child' {
         $vm = (Get-Ops $w 'NewVm')[1].Args
         $vm.Name | Should -Match '^aap-lscan-'
         $vm.SwitchName | Should -BeNullOrEmpty
+        $vm.OsDisk | Should -BeNullOrEmpty
         @($vm.Dvds | ForEach-Object { Split-Path -Leaf $_ }) | Should -Be @('ubuntu-24.04.5-live-server-amd64.iso', 'seed.iso')
         $vm.BootFromDvd | Should -BeTrue
         $d = (Get-Ops $w 'NewDiffDisk')[0].Args
-        $d.Parent | Should -Be $vm.OsDisk.Replace('\scan\os.avhdx', '\os.vhdx')
-        $q = $w.Requests | Where-Object { $_.kind -eq 'scan' }
-        $buildSeed = $w.Seeds[0].Files['user-data']
-        $buildSeed | Should -Match "content: '$($q.known)'"
+        $d.Parent | Should -Be (Join-Path $w.Staging "build\$script:BuildId\os.vhdx")
+        $ops = $w.Calls.ToArray()
+        $attach = @(0..($ops.Count - 1) | Where-Object { $ops[$_].Op -eq 'AttachDisk' })[0]
+        $ready = @(0..($ops.Count - 1) | Where-Object { $ops[$_].Op -eq 'WaitGuestReady' -and $ops[$_].Args.VmName -eq $vm.Name })[0]
+        $attach | Should -BeGreaterThan $ready
+        $ops[$attach].Args.Path | Should -Be $d.Path
+        $ops[$attach].Args.VmName | Should -Be $vm.Name
         ($w.Puts | Where-Object { $_.Vm -like 'aap-lscan-*' }).Name | Should -Be 'aap-scan.sh'
+    }
+    It 'gives the scanner the build token in its own seed, never in a request' {
+        $buildToken = [regex]::Match($w.Seeds[0].Files['user-data'], "content: '([0-9a-f]{64})'").Groups[1].Value
+        $w.Seeds[1].Files['user-data'] | Should -Match ("(?m)^  - path: /var/lib/aap-build/known\n    owner: root:root\n    permissions: '0600'\n    content: '" + $buildToken + "'$")
+        $tokens = @($w.Seeds | ForEach-Object { [regex]::Match($_.Files['user-data'], "content: '([0-9a-f]{64})'").Groups[1].Value })
+        foreach ($q in $w.Requests) { foreach ($t in $tokens) { $q.text.Contains($t) | Should -BeFalse -Because $q.phase }; $q.text | Should -Not -Match '(?m)^known=' }
+        $w.Seeds[0].Files['user-data'] | Should -Not -Match 'aap-build/known'
+        $w.Seeds[2].Files['user-data'] | Should -Not -Match 'aap-build/known'
     }
     It 'verifies in a fresh guest of the sealed disk with no network and no media, as the job user, then compares the inventory' {
         $vm = (Get-Ops $w 'NewVm')[2].Args
@@ -667,7 +739,8 @@ Describe 'failures roll back' {
         (Invoke-Build).Reason | Should -Be 'AAP_HostileGuest'
     }
     It 'fails when the inventory differs from the hosted reference in <Section>' -Tag 'inventory-gate' -TestCases @(
-        @{ Section = 'tool_cache'; Class = 'missing-required'; Key = 'Python/3.10.22' }, @{ Section = 'tool_cache.defaults'; Class = 'default-mismatch'; Key = 'go' },
+        @{ Section = 'tool_cache'; Class = 'missing-required'; Key = 'Python/3.10.22' }, @{ Section = 'tools'; Class = 'missing-required'; Key = 'gradle' },
+        @{ Section = 'shells'; Class = 'missing-required'; Key = 'zsh' }, @{ Section = 'docker.images'; Class = 'missing-required'; Key = 'alpine:3.22' },
         @{ Section = 'services'; Class = 'service-mismatch'; Key = 'docker' }, @{ Section = 'path.process'; Class = 'path-order'; Key = 'index 3' },
         @{ Section = 'user'; Class = 'env-mismatch'; Key = 'groups' }, @{ Section = 'action_archive_cache'; Class = 'missing-required'; Key = 'actions_checkout' },
         @{ Section = 'coverage'; Class = 'missing-required'; Key = 'docker' }) {
@@ -683,6 +756,13 @@ Describe 'failures roll back' {
         (Invoke-Build).Status | Should -Be 'built'
         $ev = Get-Content -Raw (Join-Path (Get-EvidenceDir) 'build.json') | ConvertFrom-Json
         @($ev.verify.inventory_compare.recorded | ForEach-Object { "$($_.section).$($_.key)" }) | Should -Be @('image.kernel', 'tools.gradle')
+    }
+    It 'refuses a VM worker memory overhead of <Mib> MiB instead of recording it' -Tag 'mem-overhead' -TestCases @(@{ Mib = 5000 }, @{ Mib = 0 }) {
+        $w.MemOverheadMib = $Mib
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_BudgetExceeded'
+        $r.Detail | Should -Match 'worker overhead'
+        Assert-CleanedUp
     }
     It 'fails when the inventory comparison cannot run' {
         $w.CompareExit = 2
@@ -792,12 +872,16 @@ Describe 'secret scan allowlist' {
         (Get-AapUbuntuScanResult -Report (Get-Report @([ordered]@{ rule = 'pem-private-key'; path = 'etc/ssl/private/ssl-cert-snakeoil.key'; sha256 = (Get-TextSha 'other') })) -AllowlistPath $script:Al).result | Should -Be 'found'
         (Get-AapUbuntuScanResult -Report (Get-Report @([ordered]@{ rule = 'pem-private-key'; path = 'ETC/ssl/private/ssl-cert-snakeoil.key'; sha256 = $sha })) -AllowlistPath $script:Al).result | Should -Be 'found'
     }
-    It 'never allowlists the build credential' -Tag 'allowlist-exact' {
+    It 'never allowlists the build <Rule>' -Tag 'allowlist-exact' -TestCases @(@{ Rule = 'build-credential' }, @{ Rule = 'build-agent' }) {
         $sha = Get-TextSha 'f'
-        Set-Allow @([ordered]@{ path = 'var/lib/x'; sha256 = $sha; justification = 'an attempt to hide the build token' })
-        $r = Get-AapUbuntuScanResult -Report (Get-Report @([ordered]@{ rule = 'build-credential'; path = 'var/lib/x'; sha256 = $sha })) -AllowlistPath $script:Al
+        Set-Allow @([ordered]@{ path = 'var/lib/x'; sha256 = $sha; justification = 'an attempt to hide the build token or agent' })
+        $r = Get-AapUbuntuScanResult -Report (Get-Report @([ordered]@{ rule = $Rule; path = 'var/lib/x'; sha256 = $sha })) -AllowlistPath $script:Al
         $r.result | Should -Be 'found'
-        @($r.findings | ForEach-Object { $_.rule }) | Should -Contain 'build-credential'
+        @($r.findings | ForEach-Object { $_.rule }) | Should -Contain $Rule
+    }
+    It 'refuses an allowlist that lists a path twice' -Tag 'allowlist-duplicate' {
+        Set-Allow @([ordered]@{ path = 'etc/x'; sha256 = ('a' * 64); justification = 'the first, reviewed entry' }, [ordered]@{ path = 'etc/x'; sha256 = ('b' * 64); justification = 'a second entry for other bytes' })
+        { Read-AapUbuntuAllowlist -Path $script:Al } | Should -Throw 'AAP_AllowlistInvalid*listed twice*'
     }
     It 'fails on an allowlist entry that matches nothing' -Tag 'allowlist-stale' {
         Set-Allow @([ordered]@{ path = 'etc/gone'; sha256 = (Get-TextSha 'g'); justification = 'a file the image no longer has' })
@@ -822,9 +906,13 @@ Describe 'secret scan allowlist' {
 
 Describe 'seeds and requests are host-authored and bounded' {
     BeforeAll { $script:SPlan = Get-PlanText | ConvertFrom-Json }
-    It 'refuses a malformed token or instance id' -Tag 'seed-values' {
-        { New-AapUbuntuSeed -Mode build -Token 'abc' -Plan $script:SPlan -InstanceId 'aap-1-build' } | Should -Throw 'AAP_SeedInvalid*'
-        { New-AapUbuntuSeed -Mode scan -Token ('a' * 64) -Plan $script:SPlan -InstanceId "x`nlocal-hostname: evil" } | Should -Throw 'AAP_SeedInvalid*'
+    It 'refuses a malformed instance id, a scanner without the build token, and a known token for any other guest' -Tag 'seed-values' {
+        $known = (New-AapUbuntuSeed -Mode build -Plan $script:SPlan -InstanceId 'aap-1-build').Token
+        { New-AapUbuntuSeed -Mode verify -Plan $script:SPlan -InstanceId "x`nlocal-hostname: evil" } | Should -Throw 'AAP_SeedInvalid*'
+        { New-AapUbuntuSeed -Mode scan -Plan $script:SPlan -InstanceId 'aap-1-scan' } | Should -Throw 'AAP_SeedInvalid*'
+        { New-AapUbuntuSeed -Mode scan -Plan $script:SPlan -InstanceId 'aap-1-scan' -Known ('a' * 64) } | Should -Throw 'AAP_SeedInvalid*'
+        { New-AapUbuntuSeed -Mode verify -Plan $script:SPlan -InstanceId 'aap-1-verify' -Known $known } | Should -Throw 'AAP_SeedInvalid*'
+        (New-AapUbuntuSeed -Mode scan -Plan $script:SPlan -InstanceId 'aap-1-scan' -Known $known).Files['user-data'] | Should -Match 'aap-build/known'
     }
     It 'refuses a plan value that could break out of the seed YAML: <Case>' -Tag 'seed-values' -TestCases @(
         @{ Case = 'kernel package'; Edit = { param($p) $p.base.kernel_package = "linux-azure`n  late-commands: [reboot]" } },
@@ -832,12 +920,40 @@ Describe 'seeds and requests are host-authored and bounded' {
         @{ Case = 'job user group'; Edit = { param($p) $p.job_user.groups = @('sudo]', 'x') } }) {
         $p = Get-PlanText | ConvertFrom-Json
         & $Edit $p
-        { New-AapUbuntuSeed -Mode build -Token ('a' * 64) -Plan $p -InstanceId 'aap-1-build' } | Should -Throw 'AAP_PlanInvalid*'
+        { New-AapUbuntuSeed -Mode build -Plan $p -InstanceId 'aap-1-build' } | Should -Throw 'AAP_PlanInvalid*'
     }
-    It 'makes distinct 64-hex tokens' {
-        $t = @(1..20 | ForEach-Object { New-AapUbuntuToken })
-        @($t | Sort-Object -Unique).Count | Should -Be 20
-        foreach ($x in $t) { $x | Should -MatchExactly '^[0-9a-f]{64}$' }
+    It 'makes a distinct token per seed, which prints as [aap token] and never as its value' {
+        $s = @(1..20 | ForEach-Object { New-AapUbuntuSeed -Mode verify -Plan $script:SPlan -InstanceId 'aap-1-verify' })
+        $hex = @($s | ForEach-Object { [regex]::Match($_.Files['user-data'], "content: '([0-9a-f]{64})'").Groups[1].Value })
+        @($hex | Sort-Object -Unique).Count | Should -Be 20
+        foreach ($x in $hex) { $x | Should -MatchExactly '^[0-9a-f]{64}$' }
+        $s[0].Token.Length | Should -Be 64
+        "$($s[0].Token)" | Should -Be '[aap token]'
+        $shown = (@("$($s[0])", ([pscustomobject]@{ Token = $s[0].Token } | Out-String), ($s[0].Token | Format-List * | Out-String), "$([pscustomobject]@{ Token = $s[0].Token })") -join "`n")
+        $shown.Contains($hex[0]) | Should -BeFalse
+        $ms = New-Object IO.MemoryStream
+        $s[0].Token.WriteTo($ms)
+        [Text.Encoding]::ASCII.GetString($ms.ToArray()) | Should -BeExactly $hex[0]
+    }
+    It 'turns token bytes into text only where the seed is assembled: no token parameter, interpolation or other byte read' {
+        # Tokens travel as AapToken objects (they print as [aap token]); PowerShell module logging (event 4103) records command
+        # parameters, so the raw value may become a string only in New-AapUbuntuSeed's two Replace calls, never in a parameter.
+        foreach ($f in 'AapUbuntuImage.psm1', 'AapUbuntuImage.HyperV.psm1') {
+            $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:Repo "images\ubuntu-24.04\$f"), [ref]$null, [ref]$null)
+            $seedFn = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'New-AapUbuntuSeed' }, $true))
+            $inSeed = { param($n) $seedFn.Count -eq 1 -and $n.Extent.StartOffset -ge $seedFn[0].Extent.StartOffset -and $n.Extent.EndOffset -le $seedFn[0].Extent.EndOffset }
+            $reads = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.MemberExpressionAst] -and $n.Member.Extent.Text -ceq 'Bytes' -and $n.Expression.Extent.Text -ne '$this' }, $true))
+            @($reads | Where-Object { -not (& $inSeed $_) } | ForEach-Object { $_.Extent.Text }) | Should -BeNullOrEmpty -Because $f
+            @($reads | Where-Object { $_.Parent.Extent.Text -notmatch '^\[Text\.Encoding\]::ASCII\.GetString\(' }).Count | Should -Be 0 -Because $f
+            $made = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Extent.Text -eq '[AapToken]::new()' }, $true))
+            @($made | Where-Object { -not (& $inSeed $_) }).Count | Should -Be 0 -Because $f
+            $strings = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.ExpandableStringExpressionAst] -and $n.Extent.Text -match '(?i)token|known' -and $n.Extent.Text -match '\$' }, $true) |
+                    Where-Object { @($_.NestedExpressions | Where-Object { $_.Extent.Text -match '(?i)\.Token\b|\$token\b|\.Known\b|\$known\b' }).Count })
+            @($strings | ForEach-Object { $_.Extent.Text }) | Should -BeNullOrEmpty -Because $f
+            @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.ParameterAst] -and $n.Name.VariablePath.UserPath -eq 'Token' }, $true)).Count | Should -Be 0 -Because $f
+        }
+        $seeds = @([Management.Automation.Language.Parser]::ParseFile((Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.psm1'), [ref]$null, [ref]$null).FindAll({ param($n) $n -is [Management.Automation.Language.MemberExpressionAst] -and $n.Member.Extent.Text -ceq 'Bytes' -and $n.Expression.Extent.Text -ne '$this' }, $true))
+        $seeds.Count | Should -Be 2
     }
     It 'writes a request the agent parses: fixed keys, then env, script and var lines' {
         $r = New-AapUbuntuRequest -Phase 'p04' -Kind 'scripts' -Fields @{ exec = 'root'; pause_before = 0 } -Env @('A=b') -Scripts @("x.sh $('a' * 64)") -Vars ([pscustomobject]@{ image_folder = '/imagegeneration' })
@@ -921,13 +1037,44 @@ Describe 'the production provider (static: it is never run here)' {
     BeforeAll {
         $script:ProvText = Get-Content -Raw (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.HyperV.psm1')
         Import-Module (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.HyperV.psm1') -Force
-        $script:Prov = New-AapUbuntuHyperVProvider -PythonPath (Get-Process -Id $PID).Path
+        $script:Prov = New-AapUbuntuHyperVProvider -PythonPath (Get-Process -Id $PID).Path -GuestNetwork { }
+        function Get-AdapterProblems($Adapters, $Acls, [string]$Switch) { & (Get-Module AapUbuntuImage.HyperV) { param($a, $b, $c) @(Get-AapAdapterProblems $a $b $c) } $Adapters $Acls $Switch }
+        function New-GoodAcls { @(& (Get-Module AapUbuntuImage.HyperV) { $script:DenyRanges }) | ForEach-Object { [pscustomobject]@{ Action = 'Deny'; Direction = 'Outbound'; RemoteIPAddress = $_ } } }
     }
     It 'implements every op the builder calls' {
         foreach ($op in (& (Get-Module AapUbuntuImage) { $script:ProviderOps })) { $script:Prov[$op] | Should -BeOfType [scriptblock] -Because $op }
     }
     It 'refuses a python path that is not an absolute file' {
-        { New-AapUbuntuHyperVProvider -PythonPath 'python.exe' } | Should -Throw 'AAP_ProviderInvalid*'
+        { New-AapUbuntuHyperVProvider -PythonPath 'python.exe' -GuestNetwork { } } | Should -Throw 'AAP_ProviderInvalid*'
+    }
+    It 'names the python install folder for the builder trust check' {
+        @(& $script:Prov.ExecFolders @{}) | Should -Be @((Split-Path -Parent (Get-Process -Id $PID).Path))
+    }
+    It 'sets the contract adapter controls on the build VM, has P10.0 add its ACLs, then reads both back before the VM can start' {
+        $script:ProvText | Should -Match 'Set-VMNetworkAdapter -DhcpGuard On -RouterGuard On -MacAddressSpoofing Off'
+        $script:ProvText | Should -Match '\$null = & \$script:GuestNetwork @\{ VmId'
+        $script:ProvText | Should -Match 'Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter \$now'
+        $script:ProvText | Should -Match 'if \(\$problems\.Count\) \{ throw "AAP_NetworkUntrusted'
+    }
+    It 'accepts the build adapter only with every control: <Case>' -TestCases @(
+        @{ Case = 'all set'; Edit = { param($n, $acl) }; Problem = $null },
+        @{ Case = 'DHCP guard off'; Edit = { param($n, $acl) $n.DhcpGuard = 'Off' }; Problem = 'DHCP guard' },
+        @{ Case = 'router guard off'; Edit = { param($n, $acl) $n.RouterGuard = 'Off' }; Problem = 'router guard' },
+        @{ Case = 'MAC spoofing on'; Edit = { param($n, $acl) $n.MacAddressSpoofing = 'On' }; Problem = 'MAC address spoofing' },
+        @{ Case = 'another switch'; Edit = { param($n, $acl) $n.SwitchName = 'Default Switch' }; Problem = 'not aap-guests-linux' },
+        @{ Case = 'CGNAT allowed'; Edit = { param($n, $acl) ($acl | Where-Object { $_.RemoteIPAddress -eq '100.64.0.0/10' }).Action = 'Allow' }; Problem = '100.64.0.0/10' },
+        @{ Case = 'a ULA rule inbound only'; Edit = { param($n, $acl) ($acl | Where-Object { $_.RemoteIPAddress -eq 'fc00::/7' }).Direction = 'Inbound' }; Problem = 'fc00::/7' }) {
+        $nic = [pscustomobject]@{ SwitchName = 'aap-guests-linux'; DhcpGuard = 'On'; RouterGuard = 'On'; MacAddressSpoofing = 'Off' }
+        $acl = @(New-GoodAcls)
+        & $Edit $nic $acl
+        $p = @(Get-AdapterProblems @($nic) $acl 'aap-guests-linux')
+        if ($Problem) { ($p -join '; ') | Should -Match ([regex]::Escape($Problem)) } else { $p | Should -BeNullOrEmpty }
+    }
+    It 'refuses a second build adapter, and any adapter on the scanner or verification VM' {
+        $nic = [pscustomobject]@{ SwitchName = 'aap-guests-linux'; DhcpGuard = 'On'; RouterGuard = 'On'; MacAddressSpoofing = 'Off' }
+        (@(Get-AdapterProblems @($nic, $nic) @(New-GoodAcls) 'aap-guests-linux') -join '') | Should -Match '2 network adapters'
+        (@(Get-AdapterProblems @($nic) @() '') -join '') | Should -Match 'must have none'
+        @(Get-AdapterProblems @() @() '') | Should -BeNullOrEmpty
     }
     It 'never attaches or mounts a guest disk, and never builds a seed by mounting one' {
         $script:ProvText | Should -Not -Match 'Mount-VHD|Mount-DiskImage|Add-PartitionAccessPath|Get-Partition|Expand-WindowsImage'
@@ -946,7 +1093,9 @@ Describe 'the production provider (static: it is never run here)' {
     }
     It 'caps a guest reply while it arrives: <Bytes> bytes against a <Cap>-byte cap' -TestCases @(
         @{ Bytes = 0; Cap = 64; Ok = $true }, @{ Bytes = 64; Cap = 64; Ok = $true }, @{ Bytes = 65; Cap = 64; Ok = $false }, @{ Bytes = 200000; Cap = 65536; Ok = $false }) {
-        & (Get-Module AapUbuntuImage.HyperV) { Initialize-AapType 'AapHvChannel' $script:ChannelSource }
+        $temp = $env:TEMP
+        & (Get-Module AapUbuntuImage.HyperV) { param($d) Initialize-AapTypes $d } ([string]$TestDrive)
+        $env:TEMP | Should -Be $temp
         $src = New-Object IO.MemoryStream(, (New-Object byte[] $Bytes)); $dst = New-Object IO.MemoryStream
         if ($Ok) { [AapHvChannel]::Copy($src, $dst, $Cap, 5000) | Should -Be $Bytes; $dst.Length | Should -Be $Bytes }
         else { { [AapHvChannel]::Copy($src, $dst, $Cap, 5000) } | Should -Throw '*AAP_HostileGuest*'; $dst.Length | Should -BeLessOrEqual $Cap }
@@ -961,9 +1110,42 @@ Describe 'the production provider (static: it is never run here)' {
         { & $script:Prov.ReceiveFile @{ VmId = [guid]::NewGuid().ToString(); Port = 5223; Token = ('a' * 64); Name = 'scan.json'; HostPath = $f; MaxBytes = 10; TimeoutSeconds = 1 } } | Should -Throw 'AAP_GuestUnreachable*'
         { & $script:Prov.ReceiveFile @{ VmId = [guid]::NewGuid().ToString(); Port = 5223; Token = ('a' * 64); Name = 'scan.json'; HostPath = $f; MaxBytes = 10; TimeoutSeconds = 1 } } | Should -Throw   # created new: an existing file is never written through
     }
-    It 'starts its one child process without a window' {
+    It 'starts its one child process without a window, and its timeout is the only wait' {
         $script:ProvText | Should -Match 'CreateNoWindow = \$true'
         $script:ProvText | Should -Match 'UseShellExecute = \$false'
+        $script:ProvText | Should -Match '\$out = \$proc\.StandardOutput\.ReadToEndAsync\(\); \$err = \$proc\.StandardError\.ReadToEndAsync\(\)'
+        $script:ProvText | Should -Not -Match 'StandardOutput\.ReadToEnd\(\)'
+    }
+    It 'compiles its types with TEMP and TMP in the build folder, and writes the token into the channel header by bytes' {
+        $script:ProvText | Should -Match '\$env:TEMP = \$TempDir; \$env:TMP = \$TempDir; Add-Type'
+        $script:ProvText | Should -Match 'Initialize-AapTypes \(\[IO.Path\]::GetDirectoryName\(\$a.Path\)\)'
+        $script:ProvText | Should -Match '\$A\.Token\.WriteTo\(\$hs\)'
+    }
+    It 'does not wait out a hostile guest while it waits for the guest to be ready' {
+        Mock -ModuleName AapUbuntuImage.HyperV Start-Sleep { }
+        Mock -ModuleName AapUbuntuImage.HyperV Invoke-AapChannel { throw 'AAP_HostileGuest: the guest sent over 64 bytes' }
+        { & $script:Prov.WaitGuestReady @{ VmId = [guid]::NewGuid().ToString(); Port = 5223; Token = $null; TimeoutSeconds = 60 } } | Should -Throw 'AAP_HostileGuest*'
+        Mock -ModuleName AapUbuntuImage.HyperV Invoke-AapChannel { throw 'AAP_GuestUnreachable: the guest channel failed' }
+        & $script:Prov.WaitGuestReady @{ VmId = [guid]::NewGuid().ToString(); Port = 5223; Token = $null; TimeoutSeconds = 1 } | Should -BeFalse
+    }
+}
+
+Describe 'the P06 helpers this builder shares (imported from images\windows, not copied)' {
+    # The builder calls these five by name and parameter. A change to any of their signatures in images\windows must fail
+    # here first (INTEGRATION.md, P06 dependency).
+    It '<Name> keeps the parameters P07 calls it with' -TestCases @(
+        @{ Name = 'Read-AapStorageRecord'; Params = @('Path') }, @{ Name = 'Get-AapPathKind'; Params = @('Path') },
+        @{ Name = 'Assert-AapPlainPath'; Params = @('Root', 'Path', 'Reason', 'Create') }, @{ Name = 'Remove-AapTree'; Params = @('Path', 'Under') },
+        @{ Name = 'Set-AapReadOnlyAcl'; Params = @('Path', 'Owner', 'Readers') }) {
+        $c = Get-Command -Module AapWinImage -Name $Name
+        $common = [Management.Automation.PSCmdlet]::CommonParameters + [Management.Automation.PSCmdlet]::OptionalCommonParameters
+        @($c.Parameters.Values | Where-Object { $common -notcontains $_.Name } | ForEach-Object { $_.Name }) | Should -Be $Params
+        $c.Module.Path | Should -Be ([IO.Path]::GetFullPath((Join-Path $script:Repo 'images\windows\AapWinImage.psm1')))
+    }
+    It 'is loaded by path from the folder beside the builder, which the self-check covers' {
+        $text = Get-Content -Raw (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.psm1')
+        $text | Should -Match ([regex]::Escape("Import-Module (Join-Path `$PSScriptRoot '..\windows\AapWinImage.psm1')"))
+        $text | Should -Match ([regex]::Escape("[IO.Path]::GetFullPath((Join-Path `$here '..\windows'))"))
     }
 }
 
