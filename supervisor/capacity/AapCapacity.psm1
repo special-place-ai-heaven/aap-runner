@@ -646,17 +646,25 @@ function Get-AapProcessRole {
     'user'
 }
 
-# -RelaxedTrustForTests is refused for SYSTEM, below ProgramData, Program Files or Windows, and in
-# an elevated process outside the temp folder (hosted CI runs tests elevated under TEMP).
+# -RelaxedTrustForTests is refused for SYSTEM, at or below the production data folder, ProgramData,
+# Program Files or Windows, and in an elevated process outside the temp folder (hosted CI runs tests
+# elevated under TEMP). The system folders come from GetFolderPath, never from environment variables:
+# an elevated logon task inherits the operator's HKCU\Environment.
 function Get-AapRelaxedProblem([string]$Root) {
-    $under = { param($dir) $dir -and $Root.StartsWith($dir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) }
-    foreach ($d in @($env:ProgramData, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:SystemRoot)) {
-        if (& $under $d) { return "relaxed trust is for test folders only, never below $d" }
+    $at = { param($dir) $dir -and ($Root + '\').StartsWith($dir.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) }
+    if (& $at 'C:\ProgramData\aap-runner\capacity') { return 'relaxed trust is refused for the production data folder' }
+    $sf = [Environment+SpecialFolder]
+    foreach ($d in @($sf::CommonApplicationData, $sf::ProgramFiles, $sf::ProgramFilesX86, $sf::Windows)) {
+        $dir = [Environment]::GetFolderPath($d)
+        if (& $at $dir) { return "relaxed trust is for test folders only, never below $dir" }
     }
     $role = Get-AapProcessRole
     if ($role -eq 'system') { return 'relaxed trust is refused for SYSTEM' }
-    $temp = [IO.Path]::GetTempPath()
-    if ($role -eq 'elevated' -and -not (& $under $temp)) { return "relaxed trust is refused in an elevated process outside $temp" }
+    # ponytail: GetTempPath still honours TMP/TEMP inside Win32; the refusals above are the hard stop.
+    $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if ($role -eq 'elevated' -and -not $Root.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) {
+        return "relaxed trust is refused in an elevated process outside $temp"
+    }
     return $null
 }
 

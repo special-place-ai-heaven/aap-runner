@@ -118,7 +118,9 @@ tray yet.
 3. **Start order.** Run these before the first admission:
    1. `Initialize-AapAllocator`, with the measured host. `cpu_cores` is logical CPUs.
       `mem_gib` is RAM. `io_mbps` is the throughput of the slowest volume that holds the clone or
-      scratch tier, or 0 until measured. `control_distro_mem_gib` is the control VM's resident
+      scratch tier, or 0 until measured. Volumes on one physical disk are measured together, with
+      clone and scratch load running at once: on this host `D:` and `E:` share one USB disk, so
+      a per-volume figure would count its IO twice. `control_distro_mem_gib` is the control VM's resident
       memory. `volumes` holds one entry per volume that holds a tier of
       `capacity\storage.json`, only while every tier's trust checks pass:
       - `volume_guid` and `tiers` come from the storage document's roots.
@@ -282,6 +284,10 @@ tray yet.
      inventory as complete. A VM missing from it is moved to `deleting`, and a `creating`
      reservation without a VM, folder or journal is reconciled as never registered. A throw makes
      the whole reconcile return `error` and write nothing.
+   - Every enumeration inside the callback (`Get-VM`, folder and journal listings) runs with
+     `-ErrorAction Stop`, never `SilentlyContinue` or `Ignore`. An inventory of the right shape
+     with empty lists is accepted as truth: a busy VM then goes to `deleting` and gets a
+     `destroy` action.
 8. **Keep the `clones` and `scratch` roots admin-only**, with the same rule as the capacity
    folder. An unknown folder there blocks admission (`unresolved_unknown`). So anyone who can
    create one can stop all VM admission.
@@ -290,6 +296,15 @@ tray yet.
    read-only `status_request`. Return `$null`, or throw, when the broker is unavailable.
    Destroy happens only for `offline` or `absent` with `busy = $false`, or `job_ended = $true`.
    Anything else keeps the slot held.
+10. **`clone_gib` and `scratch_gib` are hard maximums.** The allocator counts reserved caps, not
+    usage. The provider creates the clone differencing disk and the scratch disk as VHDX files
+    whose maximum size is the reservation's `clone_gib` and `scratch_gib`, and never grows or
+    replaces them past it. A disk without a fixed maximum lets one job fill the volume past the
+    floor that admission promised the others.
+11. **IO is per physical disk, not per volume.** Clone and scratch roots on volumes that share
+    one physical disk share its IO. On this host `D:` and `E:` are two partitions of one USB
+    disk. The provider places clone and scratch only on roots from `capacity\storage.json`, and
+    P12 measures their IO together (see P12, start order).
 
 ## P16: legacy adoption and the `AAP_RUNNER_COUNT` derivation
 

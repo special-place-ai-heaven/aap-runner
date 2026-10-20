@@ -118,6 +118,31 @@ Describe 'capacity folder trust' {
         Test-Path -LiteralPath $pd | Should -BeFalse
     }
 
+    It 'ignores faked ProgramData, ProgramFiles and SystemRoot variables and refuses the production folder' {
+        # Called directly in module scope: nothing below the real system folders is ever created.
+        $names = @('ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'SystemRoot', 'windir')
+        $saved = @{}
+        foreach ($n in $names) { $saved[$n] = [Environment]::GetEnvironmentVariable($n) }
+        try {
+            foreach ($n in $names) { [Environment]::SetEnvironmentVariable($n, (Join-Path $TestDrive 'fake')) }
+            Mock -ModuleName AapCapacity Get-AapProcessRole { 'user' }
+            $sf = [Environment+SpecialFolder]
+            foreach ($f in @($sf::CommonApplicationData, $sf::ProgramFiles, $sf::Windows)) {
+                $dir = [Environment]::GetFolderPath($f)
+                foreach ($root in @($dir, (Join-Path $dir 'aap-capacity-relaxed-probe'))) {
+                    InModuleScope AapCapacity -Parameters @{ R = $root } { param($R) Get-AapRelaxedProblem $R } |
+                        Should -BeLike '*never below*'
+                }
+            }
+            InModuleScope AapCapacity { Get-AapRelaxedProblem 'C:\ProgramData\aap-runner\capacity' } |
+                Should -BeLike '*production data folder*'
+            InModuleScope AapCapacity { Get-AapRelaxedProblem 'C:\ProgramData\aap-runner\capacity\sub' } |
+                Should -BeLike '*production data folder*'
+        } finally {
+            foreach ($n in $names) { [Environment]::SetEnvironmentVariable($n, $saved[$n]) }
+        }
+    }
+
     It 'refuses a folder that inherits Authenticated Users modify, as any folder under this scratch tree does' {
         $root = Join-Path $TestDrive ('inherit-' + [guid]::NewGuid().ToString('n').Substring(0, 8))
         [void](New-Item -ItemType Directory -Path $root)
