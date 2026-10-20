@@ -313,7 +313,13 @@ Describe 'the per-clone ssh client configuration' {
         @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } | Sort-Object -Unique) | Should -Be $sids
         $m = Get-Module AapLinBackend
         (& $m { New-AapLinSecurity $true $true }).GetSecurityDescriptorSddlForm('Access') | Should -BeExactly 'D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
-        (& $m { New-AapLinSecurity $true $false }).GetSecurityDescriptorSddlForm('Access') | Should -BeExactly "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;$($script:UserSid))"
+        # Not an SDDL string comparison: the SDDL writer renders the built-in Administrator (RID 500, the hosted runner's user)
+        # as the alias LA, not as its SID, so compare the protected flag and each ACE's type, SID, mask and flags.
+        $sddl = (& $m { New-AapLinSecurity $true $false }).GetSecurityDescriptorSddlForm('Access')
+        $raw = New-Object Security.AccessControl.RawSecurityDescriptor $sddl
+        ([int]$raw.ControlFlags -band 0x1000) | Should -Be 0x1000
+        @($raw.DiscretionaryAcl | ForEach-Object { '{0}|{1}|{2:x}|{3}' -f $_.AceType, $_.SecurityIdentifier.Value, $_.AccessMask, [int]$_.AceFlags }) |
+            Should -Be @('AccessAllowed|S-1-5-18|1f01ff|3', 'AccessAllowed|S-1-5-32-544|1f01ff|3', "AccessAllowed|$($script:UserSid)|1f01ff|3")
     }
 }
 

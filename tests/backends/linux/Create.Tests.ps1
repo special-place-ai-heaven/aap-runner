@@ -87,7 +87,9 @@ Describe 'trusted roots only' {
     It 'an owner outside the trusted SIDs is a problem' -Tag 'root-owner' {
         $w = New-LinWorld
         $B = New-LinBackend $w
-        $B.TrustedSids = @('S-1-5-18', 'S-1-5-32-544')   # the test user, who owns the test roots, no longer trusted
+        # Whoever owns the test roots is no longer trusted: the user when the session is not elevated, Administrators (the
+        # default owner of an elevated token's files, as on the hosted runner) when it is. Only SYSTEM stays trusted.
+        $B.TrustedSids = @('S-1-5-18')
         $p = @(Get-AapLinStorageProblem -Backend $B)
         @($p | Where-Object { $_ -like 'clone_root: owner * is not an admin: *' }).Count | Should -Be 1
     }
@@ -146,7 +148,7 @@ Describe 'the base' {
         $w = New-LinWorld
         $B = New-LinBackend $w
         Invoke-LinInModule { param($B, $p) Get-AapLinSealedProblem $B $p } @($B, $w.BaseFile) | Should -BeNullOrEmpty
-        $B.TrustedSids = @('S-1-5-18', 'S-1-5-32-544')   # the test user owns the test base
+        $B.TrustedSids = @('S-1-5-18')   # the owner of the test base (the user, or Administrators when elevated) is no longer trusted
         Invoke-LinInModule { param($B, $p) Get-AapLinSealedProblem $B $p } @($B, $w.BaseFile) | Should -BeLike 'owner * is not an admin: *'
     }
 
