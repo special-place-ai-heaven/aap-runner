@@ -45,7 +45,7 @@ run_pids() { # the processes started from TMPROOT: the fakes run from a package 
     ps -e | awk -v n="${n}" 'index($0, n) { print ($1 ~ /^[0-9]+$/) ? $1 : $2 }'
   else
     for f in /proc/[0-9]*/cmdline; do
-      [[ "$(tr '\0' ' ' < "${f}" 2> /dev/null)" == *"${n}"* ]] && f=${f#/proc/} && echo "${f%%/*}"
+      [[ "$(tr '\0' ' ' 2> /dev/null < "${f}")" == *"${n}"* ]] && f=${f#/proc/} && echo "${f%%/*}"
     done
   fi
 }
@@ -106,9 +106,12 @@ new_pkg() { # [QUALIFIED_JSON] [EXTRA_STAGE_SETUP_FUNCTION] -> P, the package tr
   printf '#error deliberate\n' > "${P}/src/bad.c"
   CFG="${P}/job/state/config.json"
 }
+# The fake daemon is a copy of sleep in the install's bin folder, so discovery finds it by its path. A multi-call
+# coreutils (uutils, Ubuntu 25.10 and later) picks the program by its own file name, so prefer GNU's single sleep.
+SLEEP_BIN=$(command -v gnusleep || command -v sleep)
 install_pkg() {
   bash "${SCRIPT}" install "${P}/test.tar.gz" "${P}/test.tar.gz.provenance.json" "${P}/install" "${P}/toolchains.json" "${P}/wrappers.json" &&
-    cp -- "$(command -v sleep)" "${P}/install/bin/zccache-daemon"
+    cp -- "${SLEEP_BIN}" "${P}/install/bin/zccache-daemon"
 }
 init_pkg() { install_pkg > /dev/null 2>&1 && bash "${SCRIPT}" init "${P}/install" "${P}/job" "${1:-104857600}" "${@:2}" > /dev/null; }
 shim() { AAP_ZC_STATE="${CFG}" "${P}/install/zcshim" "$@"; }
@@ -123,6 +126,16 @@ direct() { local o="${P}/direct.$$.o"; "${P}/tc/fake-cc" -c "${P}/src/a.c" -o "$
 journal() { local j="${P}/job/roots/${1:-private}/fake-journal.log"; if [[ -f "${j}" ]]; then wc -l < "${j}" | tr -d ' '; else echo 0; fi; }
 flag() { cat -- "${P}/job/shim/degraded-${1:-private}" 2> /dev/null; }
 same_as_direct() { [[ -f "$1" ]] && cmp -s -- "$1" <(direct); }
+explain() { # FILE...: how each differs from the direct result, so a failure is diagnosable from the log alone
+  local f d="${P}/explain-direct.o"
+  direct > "${d}"
+  for f in "$@"; do
+    if [[ ! -e "${f}" ]]; then echo "  ${f##*/}: missing"; continue; fi
+    echo "  ${f##*/}: $(wc -c < "${f}") bytes, direct $(wc -c < "${d}") bytes; $(cmp -- "${f}" "${d}" 2>&1 | head -1)"
+  done
+  echo "  journal: $(paste -sd ' ' -- "${P}/job/roots/private/fake-journal.log" 2> /dev/null)"
+  sed 's/^/  shim.log: /' -- "${P}/job/shim/shim.log" 2> /dev/null
+}
 wait_for() { local i; for ((i = 0; i < 300; i++)); do [[ -e "$1" ]] && return 0; sleep 0.1; done; return 1; }
 
 # ---- install ----
@@ -337,8 +350,11 @@ t_shim_concurrent() {
   done
   for i in "${pids[@]}"; do wait "${i}" || good=0; done
   check "shim: 8 concurrent calls on one root all exit 0" [ ${good} == 1 ]
-  for i in 1 2 3 4 5 6 7 8; do same_as_direct "${P}/conc-${i}.o" || good=0; done
-  check "shim: and all equal direct" [ ${good} == 1 ]
+  local bad=()
+  for i in 1 2 3 4 5 6 7 8; do same_as_direct "${P}/conc-${i}.o" || bad+=("${P}/conc-${i}.o"); done
+  check "shim: and all equal direct" [ ${#bad[@]} == 0 ]
+  check "shim: through zccache" [ "$(journal)" == 8 ]
+  [[ ${#bad[@]} == 0 ]] || explain "${bad[@]}"
   check "shim: whole log lines" bash -c '! grep -Evq "^[0-9T:-]+Z (zccache|direct|fallback) " "$1"' _ "${P}/job/shim/shim.log"
 }
 t_shim_daemon_down() {
@@ -374,6 +390,16 @@ t_shim_crash() {
   FAKE_ZC_VERIFY=1 compile a.c
   check "shim: a corrupted entry zccache rejects is rebuilt directly" same_as_direct "${OUT}"
   check "shim: as a wrapper failure" [ "$(flag)" == wrapper-failure ]
+  [[ ${MSYS} == 1 ]] && return 0  # Git Bash cannot make a file unreadable to its owner
+  new_pkg
+  init_pkg
+  compile a.c
+  store=$(find "${P}/job/roots/private/artifacts" -type f ! -name '*.sha' | head -n 1)
+  chmod 000 -- "${store}"
+  [[ -r "${store}" ]] && return 0  # root reads it anyway
+  compile a.c
+  check "shim: a hit zccache cannot deliver is rebuilt directly" same_as_direct "${OUT}"
+  check "shim: as a wrapper failure, not a success without output" [ "$(flag)" == wrapper-failure ]
 }
 t_shim_toolchain_changed() {
   new_pkg
