@@ -30,8 +30,8 @@ tray yet.
   fails the contract is never written.
 - A lost `allocator.json` is never recreated over the remains of a running pool.
   `Initialize-AapAllocator` returns `error`/`invalid_state` when `allocator.json` is missing but
-  `allocator.json.bak`, `allocator.log`, `unresolved.json` or an `allocator.json.tmp` of a revision
-  above 1 exists. Starting again at revision 1 would reuse lease generations while VMs still run.
+  `allocator.json.bak`, `allocator.log`, `unresolved.json`, `host.measured.json` or an
+  `allocator.json.tmp` of a revision above 1 exists. Starting again at revision 1 would reuse lease generations while VMs still run.
   The owner restores the state, usually from `allocator.json.bak`. Only the temp file of an
   initialize that was killed before its first replace is written over.
 - `<Root>\allocator.log` gets one line per state change and per ignored late event.
@@ -61,7 +61,7 @@ tray yet.
 | Function | Use |
 |---|---|
 | `Initialize-AapAllocator -HostInfo @{cpu_cores; mem_gib; volumes = @(@{volume_guid; tiers; available_gib; floor_gib; held_gib}); io_mbps; control_distro_mem_gib} -Linux -Windows [-ShareMode -LinuxShare -WindowsShare -HostReservePercent -LinuxBackend]` | Creates the folder if missing and writes revision 1 once; never overwrites an existing state |
-| `Get-AapAllocatorState` | The state plus `UsedSlots`, `FreeSlots`, `PoolCpus`, `PoolMemGib`, `UsedCpus`, `UsedMemGib`, and per profile `Count`, `Admitted`, `Live`, `EachCpus`, `EachMemGib`, `CapCpus`, `CapMemGib` |
+| `Get-AapAllocatorState` | The state plus `UsedSlots`, `FreeSlots`, `PoolCpus`, `PoolMemGib`, `UsedCpus`, `UsedMemGib`, `MeasurementClamped`, and per profile `Count`, `Admitted`, `Live`, `EachCpus`, `EachMemGib`, `CapCpus`, `CapMemGib` |
 | `Set-AapProfileCounts -Linux -Windows [-ShareMode -LinuxShare -WindowsShare -HostReservePercent -LinuxBackend -LinuxGeneration -WindowsGeneration]` | The two live controls and the shares; returns `Drained` and `Cancelled` |
 | `Set-AapHostMeasurement -HostInfo` | A new host measurement. One the live reservations no longer fit is stored clamped to them and refused (`pool_over_live`, with `Clamped` and `Host`) |
 | `Request-AapReservation -Profile linux\|windows [-Cpus -MemGib -MemOverheadMib -CloneGib -ScratchGib -IoMbps -ImageGeneration]` | Admission. Returns `Reservation`, `VmName`, `RunnerName` and `IdempotencyKey` |
@@ -81,7 +81,7 @@ tray yet.
 |---|---|---|
 | error | `untrusted_folder` | The folder, an ancestor or a state file failed the trust checks. `Detail` names it |
 | error | `lock_timeout`, `lock_failed` | The lock was busy past the wait, or could not be opened |
-| error | `not_initialized`, `invalid_state` | No state, or a state that fails the contract, is unreadable, or has a revision lower than one already applied |
+| error | `not_initialized`, `invalid_state` | No state, or a state that fails the contract, is unreadable, or has a revision lower than one already applied. Also an unreadable `unresolved.json` or `host.measured.json`, named in `Detail`: the owner removes it. Reconcile writes `unresolved.json` again, and the next host measurement replaces `host.measured.json` |
 | error | `failed` | Unexpected exception, or an `-Inventory` callback that threw. `Detail` has the message |
 | error | `invalid_inventory` | The `-Inventory` callback did not return one object with the lists `vms`, `folders` and `journaled`. Nothing changed |
 | refused | `count` | The profile already has `count` admitted runners, or its count is 0 |
@@ -97,7 +97,8 @@ tray yet.
 | refused | `generation` | A VM request not on the profile's active generation |
 | refused | `unresolved_unknown` | An unknown VM or folder has no slot yet |
 | refused | `resize_waits` | A heartbeat quarantine, or a VM still creating without a vm id, would have to leave admission. Retry next tick |
-| refused | `pool_over_live` | New settings cannot hold the live reservations, and nothing changed. Or a new host measurement cannot hold them: then the host was stored clamped to them (see P12 item 3) |
+| refused | `pool_over_live` | New settings cannot hold the live reservations, and nothing changed. Or a new host measurement cannot hold them: then the host was stored clamped to them (see P12 item 3). Or an admission that the clamped host holds but the last raw measurement does not |
+| refused | `storage_low` | A new host measurement in which a volume that holds the clone or scratch tier, with nothing live on it, is below its floor plus held space. It is stored raised to that floor, so no VM is admitted. Legacy slots go on |
 | refused | `legacy_status_stale`, `legacy_over_count`, `legacy_over_share`, `legacy_over_pool` | Adoption refused. `Target` carries the most `limits.conf` may grant |
 | refused | `illegal_edge`, `invalid_proof`, `not_found`, `bad_request` | The caller's request is wrong |
 | ignored | `stale_generation` | The lease is not the slot's live one (a late `job_done`, an old heartbeat) |
@@ -145,9 +146,14 @@ tray yet.
         A measurement that lists a volume twice or puts a tier on two volumes is refused with
         `bad_request`.
       - Disk, IO and the memory pool are then exactly full. In `even` mode each admitted runner
-        must keep its share, and the share is computed from the pool. So a clamped CPU or RAM
-        pool can still leave room on paper. Admit nothing while the last measurement was
-        refused, and show the reason in `detail`.
+        must keep its share, and the share is computed from the pool, so raised CPUs or RAM can
+        still leave room on paper.
+      - The allocator guarantees nothing more is admitted. It keeps the raw measurement in
+        `capacity\host.measured.json`, and every admission must also fit it, otherwise it is
+        refused with `pool_over_live`. That holds across restarts.
+      - A measurement that is stored as is removes the file. `Get-AapAllocatorState` reports
+        `MeasurementClamped` while the file exists.
+      - Show the reason in `detail`.
    2. `Invoke-AapReconcile` with the providers' `-Inventory` and `-BrokerStatus`. This repairs a
       reservation a crashed predecessor persisted before the supervisor asks for another one,
       so it is never counted twice.
@@ -238,8 +244,10 @@ tray yet.
      write.
    - From a `heartbeat` or `crash` quarantine the kind is rewritten to `hostile_guest` first, then
      the slot moves to `deleting`, in two writes, so rule 10 holds at each. A crash between the two
-     leaves a final hostile quarantine (heartbeats get `quarantine_final`), and the provider's
-     retry of the same call moves it on.
+     leaves a final hostile quarantine (heartbeats get `quarantine_final`). The next
+     `Invoke-AapReconcile`, at supervisor start or within 10 minutes, finishes it: `deleting`
+     and exactly one `destroy` action. A retry of the same call does the same.
+   - A hostile call for a slot already in `deleting` returns `unchanged`.
    - Destroy, then `Complete-AapTeardown`. Heartbeats for a `deleting` slot are ignored.
      `hostile_guest` applies to VM guests only.
    - Pass a fixed reason code from the hostile cases in guest-transport.md, never guest text.
@@ -258,8 +266,18 @@ tray yet.
    - `vms` lists every VM named `^aap-(w|l)-[1-5]-`.
    - `folders` lists the ids that own a `clones\` or `scratch\` folder.
    - `journaled` lists the ids with any journal record.
-   - All three keys are required, each a list, even when empty. A missing key, a non-list or
-     more than one result returns `error`/`invalid_inventory` and changes nothing.
+   - All three keys are required, each a list, even when empty.
+   - Each `vms` entry is a hashtable or object with a `name` matching `^aap-(w|l)-[1-5]-` and a
+     lower-case GUID `vm_id`. `cpus` and `mem_gib` are optional, but an unknown VM without them
+     stays unresolved.
+   - Each `folders` and `journaled` entry is a reservation id, `r-` plus 16 hex.
+   - A missing key, a non-list, a malformed entry or more than one result returns
+     `error`/`invalid_inventory` and changes nothing. A busy VM is never taken as gone because
+     its entry was mangled.
+   - An unknown VM (`unknown_vm` quarantine) goes to `deleting` only here, with one `destroy`
+     action. That happens when its VM is gone, or when `journaled` names the quarantine's
+     reservation id: the provider's journal entry for that VM. `Set-AapSlotState` refuses
+     that edge.
    - **Throw on any listing error.** Never return a partial list. Reconcile treats a returned
      inventory as complete. A VM missing from it is moved to `deleting`, and a `creating`
      reservation without a VM, folder or journal is reconciled as never registered. A throw makes

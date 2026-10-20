@@ -257,7 +257,7 @@ Describe 'a controller killed at every persisted boundary' {
         Assert-CapSound $root
     }
 
-    It 'hostile reply from a crash quarantine, killed between its two writes: final, and the retry deletes' {
+    It 'hostile reply from a crash quarantine, killed between its two writes: final, and reconcile in a new process deletes' {
         $root = New-CapAllocator -Linux 1 -Windows 2
         $w = New-CapVm $root -Busy
         [void](Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind crash -Reason 'journal_unreadable')
@@ -266,8 +266,11 @@ Describe 'a controller killed at every persisted boundary' {
         $q.state | Should -Be 'quarantined'
         $q.quarantine_kind | Should -Be 'hostile_guest'
         (Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning).Reason | Should -Be 'quarantine_final'
-        $r = Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'wrong_echo'
-        $r.Reservation.state | Should -Be 'deleting'
+        $r = Invoke-AapReconcile -Root $root
+        (Get-CapRes (Get-CapDoc $root) $w.reservation_id).state | Should -Be 'deleting'
+        @($r.Actions | Where-Object { $_.action -eq 'destroy' -and $_.reservation_id -eq $w.reservation_id }).Count | Should -Be 1
+        (Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning).Status | Should -Be 'ignored'
+        (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'wrong_echo').Status | Should -Be 'unchanged'
         Assert-CapSound $root
     }
 

@@ -23,8 +23,8 @@ $script:AdminSids = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649
 $script:LiveStates = @('creating', 'ready', 'busy', 'draining', 'collecting', 'deleting', 'quarantined')
 # ARCHITECTURE.md section 2. reconciled is reached only through Complete-AapTeardown (or the
 # legacy release), quarantined -> ready/busy only through a validated heartbeat. busy -> deleting
-# is not offered: a hostile reply goes busy -> quarantined (hostile_guest) -> deleting, and only
-# reconcile moves a busy slot whose VM is gone straight to deleting (Move-AapDown).
+# is not a plain edge: only a hostile reply (Set-AapSlotState -QuarantineKind hostile_guest, in one
+# write) and reconcile, for a busy slot whose VM is gone (Move-AapDown), take it.
 $script:Edges = @{
     creating    = @('ready', 'deleting', 'quarantined')
     ready       = @('busy', 'draining', 'quarantined')
@@ -71,7 +71,7 @@ $script:Schema = $null
 $script:DateKind = $null
 # Every file this module keeps in the capacity folder (trust-checked on every call).
 $script:StateFiles = @('allocator.json', 'allocator.json.tmp', 'allocator.json.bak', 'allocator.lock', 'allocator.log', 'allocator.log.1',
-    'unresolved.json', 'unresolved.json.tmp', 'unresolved.json.bak')
+    'unresolved.json', 'unresolved.json.tmp', 'unresolved.json.bak', 'host.measured.json', 'host.measured.json.tmp', 'host.measured.json.bak')
 
 # ---- small helpers ----------------------------------------------------------------------------
 
@@ -458,7 +458,7 @@ function Test-AapShares([string]$Mode, $Reserve, $Pairs) {
 
 # validate.py _volumes(): rule 5 for disk and rule 11. Every live reservation's clone and scratch
 # caps count on the volume that holds that tier, within available - floor - held.
-function Test-AapVolumes($Volumes, $Live) {
+function Test-AapVolumes($Volumes, $Live, [switch]$LayoutOnly) {
     $vols = @($Volumes)
     $guids = [string[]]@($vols | ForEach-Object { $_.volume_guid })
     if ((New-Object 'System.Collections.Generic.HashSet[string]' (, $guids)).Count -ne $guids.Count) { return 'a volume is listed twice' }
@@ -472,6 +472,7 @@ function Test-AapVolumes($Volumes, $Live) {
     if (@($Live | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count -and -not ($tiers.Contains('base') -and $tiers.Contains('clone') -and $tiers.Contains('scratch'))) {
         return 'a VM reservation needs the base, clone and scratch tiers in host.volumes'
     }
+    if ($LayoutOnly) { return $null }
     foreach ($v in $vols) {
         $clone = @($v.tiers) -ccontains 'clone'
         $scratch = @($v.tiers) -ccontains 'scratch'
@@ -730,7 +731,7 @@ function Write-AapCapLog([string]$Root, [string]$Text) {
             [IO.File]::Copy($log, "$log.1", $true)
             [IO.File]::Delete($log)
         }
-        $line = (Format-AapTime (Get-AapUtcNow)) + ' ' + (($Text -replace '[\x00-\x1f]', ' ').Trim()) + "`n"
+        $line = (Format-AapTime (Get-AapUtcNow)) + ' ' + (ConvertTo-AapLine $Text).Trim() + "`n"
         [IO.File]::AppendAllText($log, $line, (New-Object Text.UTF8Encoding($false)))
     } catch {
         Write-Warning "allocator log write failed: $($_.Exception.Message)"
@@ -828,12 +829,13 @@ function Invoke-AapLocked {
     try { $__lock = Enter-AapLock $Root $LockTimeoutSeconds } catch { return (New-AapResult 'error' 'lock_failed' "cannot open the allocator lock: $($_.Exception.Message)") }
     if ($null -eq $__lock) { return (New-AapResult 'error' 'lock_timeout' "allocator lock busy for $LockTimeoutSeconds s: $(Join-Path $Root 'allocator.lock'); nothing admitted") }
     try {
+        $__read = Read-AapDoc $Root
+        if (-not $__read.Ok) { return $__read }
+        # Only after allocator.json was read: a log without it would count as lost state.
         if ($RelaxedTrust -and -not $script:Warned.ContainsKey((Get-AapKey $Root))) {
             $script:Warned[(Get-AapKey $Root)] = $true
             Write-AapCapLog $Root 'WARNING folder trust checks relaxed for tests'
         }
-        $__read = Read-AapDoc $Root
-        if (-not $__read.Ok) { return $__read }
         & $Body $__read.Doc
     } catch {
         return (New-AapResult 'error' 'failed' $_.Exception.Message)
@@ -1101,8 +1103,43 @@ function Get-AapAllocatorState {
     New-AapResult 'ok' $null '' ([ordered]@{
             State = $doc; Revision = [long]$doc.revision; UsedSlots = $live.Count; FreeSlots = 5 - $live.Count
             PoolCpus = $caps.PoolCpus; PoolMemGib = $caps.PoolMemGib; UsedCpus = (Get-AapSum $live { $args[0].cpus }); UsedMemGib = (Get-AapSum $live { Get-AapMem $args[0] })
-            Profiles = [pscustomobject]$profiles
+            Profiles = [pscustomobject]$profiles; MeasurementClamped = [IO.File]::Exists((Join-Path $Root 'host.measured.json'))
         })
+}
+
+# The last measurement Set-AapHostMeasurement had to clamp (host.measured.json), without its
+# volumes: @{ Host = ... }, @{ Host = $null } when there is none, or @{ Error = result }.
+function Read-AapRawHost([string]$Root) {
+    $path = Join-Path $Root 'host.measured.json'
+    if (-not [IO.File]::Exists($path)) { return @{ Host = $null } }
+    $why = $null
+    try {
+        $text = Read-AapText $path 65536
+        if ($null -eq $text) { $why = 'over 64 KiB' }
+        else {
+            $raw = ConvertFrom-AapJson $text
+            $schema = Get-AapSchema
+            $why = Test-AapNode (Get-AapProp (Get-AapProp $schema 'properties').Value 'host').Value $raw $schema '$.host'
+        }
+    } catch { $why = 'not JSON' }
+    if ($why) { return @{ Error = (New-AapResult 'error' 'invalid_state' "$path is unreadable ($why); no admission until a new host measurement replaces it") } }
+    @{ Host = $raw }
+}
+
+# unresolved.json, written only by reconcile: @{ Items = ... } or @{ Error = result }.
+function Read-AapUnresolved([string]$Root) {
+    $path = Join-Path $Root 'unresolved.json'
+    if (-not [IO.File]::Exists($path)) { return @{ Items = @() } }
+    $items = $null
+    try {
+        $text = Read-AapText $path 65536
+        if ($null -ne $text) {
+            $p = Get-AapProp (ConvertFrom-AapJson $text) 'items'
+            if ($null -ne $p -and $p.Value -is [array]) { $items = @($p.Value) }
+        }
+    } catch { $items = $null }
+    if ($null -eq $items) { return @{ Error = (New-AapResult 'error' 'invalid_state' "$path is unreadable or not an items list; the owner removes it, and the next reconcile writes it again") } }
+    @{ Items = $items }
 }
 
 # Smallest v in Lo..Hi for which Holds is true; Holds(Hi) is true and Holds only grows with v.
@@ -1116,8 +1153,10 @@ function Find-AapLeast([long]$Lo, [long]$Hi, [scriptblock]$Holds) {
 
 # Doc.host is a measurement the live reservations no longer fit; Old is the stored host they fit.
 # Each measured value moves the least that holds them again: disk and IO up to the live sums,
-# CPUs up, the control VM's memory down (then RAM up). Every budget under pressure is then exactly
-# full, so nothing more is admitted until reservations leave. Returns the clamped field names.
+# CPUs up, the control VM's memory down (then RAM up). Disk, IO and the memory pool are then
+# exactly full. Raised CPUs or RAM can still leave room on paper (in even mode each admitted
+# runner keeps its share), so Request-AapReservation also checks every admission against the raw
+# measurement kept in host.measured.json. Returns the clamped field names.
 function Limit-AapHost($Doc, $Old) {
     $h = $Doc.host
     $clamped = New-Object System.Collections.Generic.List[string]
@@ -1167,9 +1206,10 @@ function Limit-AapHost($Doc, $Old) {
     , $clamped.ToArray()
 }
 
-# A measurement the live reservations still fit is stored as is. One they no longer fit is stored
-# clamped to them (Limit-AapHost) and refused ('pool_over_live'): admission then runs against
-# the clamped host, never against the older, larger one.
+# A measurement the live reservations still fit is stored as is (and host.measured.json goes). One
+# they no longer fit is kept raw in host.measured.json, stored clamped to them (Limit-AapHost) and
+# refused: admission then has to fit both, never the older, larger host. 'storage_low' when only a
+# volume with nothing live on it fell below its floor plus held space, else 'pool_over_live'.
 function Set-AapHostMeasurement {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)]$HostInfo, [int]$LockTimeoutSeconds = 30, [switch]$RelaxedTrustForTests)
@@ -1179,16 +1219,24 @@ function Set-AapHostMeasurement {
         $doc.host = ConvertTo-AapHost $HostInfo (Format-AapTime (Get-AapUtcNow))
         $e = Test-AapDoc (ConvertFrom-AapJson (ConvertTo-AapJson $doc))
         if ($e -and $e.StartsWith('$.host', [StringComparison]::Ordinal)) { return (New-AapResult 'refused' 'bad_request' $e) }
-        $layout = Test-AapVolumes $doc.host.volumes @()
+        $layout = Test-AapVolumes $doc.host.volumes @() -LayoutOnly
         if ($layout) { return (New-AapResult 'refused' 'bad_request' "host.volumes: $layout") }
         if (-not $e) {
             Save-AapDoc $Root $doc "host $(ConvertTo-AapJson $doc.host)"
+            foreach ($n in @('host.measured.json', 'host.measured.json.bak')) { $f = Join-Path $Root $n; if ([IO.File]::Exists($f)) { [IO.File]::Delete($f) } }
             return (New-AapResult 'ok' $null 'host measurement stored')
         }
         $measured = ConvertTo-AapJson $doc.host
+        # Kept before the clamped host is stored: a crash in between only refuses more.
+        Write-AapAtomic $Root 'host.measured.json' $measured
+        $live = @(Get-AapLive $doc)
         $clamped = Limit-AapHost $doc $old
+        $reason = 'pool_over_live'
+        if ($clamped.Count -eq 1 -and $clamped[0] -ceq 'volumes' -and -not @($doc.host.volumes | Where-Object { (Get-AapVolumeNeed $_ $live) -gt 0 }).Count) { $reason = 'storage_low' }
         Save-AapDoc $Root $doc "host measured $measured does not hold the live reservations ($e); stored clamped $(ConvertTo-AapJson $doc.host)"
-        New-AapResult 'refused' 'pool_over_live' "the new measurement does not hold the live reservations ($e); stored with $($clamped -join ', ') clamped to them, so nothing more is admitted until they leave" ([ordered]@{ Clamped = $clamped; Host = $doc.host })
+        $why = "the new measurement does not hold the live reservations ($e); stored with $($clamped -join ', ') clamped to them, and every admission must also fit the measurement, so nothing more is admitted until they leave"
+        if ($reason -ceq 'storage_low') { $why = "a volume holding the clone or scratch tier is below its floor plus held space ($e); no VM is admitted until free space returns" }
+        New-AapResult 'refused' $reason $why ([ordered]@{ Clamped = $clamped; Host = $doc.host })
     }
 }
 
@@ -1272,11 +1320,9 @@ function Request-AapReservation {
         [int]$LockTimeoutSeconds = 30, [switch]$RelaxedTrustForTests)
     Invoke-AapLocked $Root ([bool]$RelaxedTrustForTests) $LockTimeoutSeconds {
         param($doc)
-        $unresolved = Join-Path $Root 'unresolved.json'
-        if ([IO.File]::Exists($unresolved)) {
-            $u = ConvertFrom-AapJson (Read-AapText $unresolved 65536)
-            if (@($u.items).Count) { return (New-AapResult 'refused' 'unresolved_unknown' "unknown VMs or folders wait for resolution: $((@($u.items) | ForEach-Object { $_.name }) -join ', ')") }
-        }
+        $u = Read-AapUnresolved $Root
+        if ($u.ContainsKey('Error')) { return $u.Error }
+        if ($u.Items.Count) { return (New-AapResult 'refused' 'unresolved_unknown' "unknown VMs or folders wait for resolution: $((@($u.Items) | ForEach-Object { Get-AapField $_ 'name' }) -join ', ')") }
         if (-not $doc.legacy_adopted) { return (New-AapResult 'refused' 'legacy_not_adopted' 'the legacy pool is not adopted yet (Register-AapLegacySlots)') }
         $backend = $doc.profiles.$Profile.backend
         foreach ($pair in @(@('Cpus', $Cpus), @('MemGib', $MemGib), @('MemOverheadMib', $MemOverheadMib), @('CloneGib', $CloneGib), @('ScratchGib', $ScratchGib), @('IoMbps', $IoMbps))) {
@@ -1308,6 +1354,16 @@ function Request-AapReservation {
             CloneGib = [long]$(if ($null -ne $CloneGib) { $CloneGib } else { 0 }); ScratchGib = [long]$(if ($null -ne $ScratchGib) { $ScratchGib } else { 0 }); IoMbps = [long]$(if ($null -ne $IoMbps) { $IoMbps } else { 0 }) }
         $refusal = Test-AapAdmission $doc $spec
         if ($refusal) { return (New-AapResult 'refused' $refusal[0] $refusal[1]) }
+        # A clamped host can hold more than the host measured: the admission has to fit both.
+        $raw = Read-AapRawHost $Root
+        if ($raw.ContainsKey('Error')) { return $raw.Error }
+        if ($null -ne $raw.Host) {
+            $copy = ConvertFrom-AapJson (ConvertTo-AapJson $doc)
+            $raw.Host.volumes = $copy.host.volumes
+            $copy.host = $raw.Host
+            $refusal = Test-AapAdmission $copy $spec
+            if ($refusal) { return (New-AapResult 'refused' 'pool_over_live' "the last host measurement was stored clamped to the live reservations and cannot hold one more ($($refusal[0]): $($refusal[1]))") }
+        }
         if ($spec.Cpus -lt 1 -or $spec.MemGib -lt 1) { return (New-AapResult 'refused' 'share' "the $Profile per-runner share ($($c.EachCpus) CPUs, $($c.EachMemGib) GiB) is too small for one runner") }
         $r = Add-AapReservation $doc $spec (Format-AapTime (Get-AapUtcNow))
         Save-AapDoc $Root $doc "reserve $($r.reservation_id) slot $($r.slot) generation $($r.lease_generation) $Profile $backend cpus=$($r.cpus) mem=$($r.mem_gib) overhead=$($r.mem_overhead_mib) clone=$($r.clone_gib) scratch=$($r.scratch_gib) io=$($r.io_mbps)"
@@ -1534,19 +1590,23 @@ function Set-AapSlotState {
         if (-not $hostile -and $from -ceq $State -and ($State -cne 'quarantined' -or $r.quarantine_kind -ceq $QuarantineKind)) { return (New-AapResult 'unchanged' $null "already $State") }
         if ($hostile) {
             if ($r.backend -cne 'hyperv-vm') { return (New-AapResult 'refused' 'bad_request' 'hostile_guest applies to a VM guest') }
+            if ($from -ceq 'deleting') { return (New-AapResult 'unchanged' $null 'already deleting (hostile_guest is final)') }
             if ($script:GuestStates -cnotcontains $from -and -not ($from -ceq 'quarantined' -and $script:HostileOver -ccontains $r.quarantine_kind)) {
                 return (New-AapResult 'refused' 'illegal_edge' "$from -> deleting (hostile_guest) is not allowed")
             }
         } elseif ($script:Edges[$from] -cnotcontains $State) { return (New-AapResult 'refused' 'illegal_edge' "$from -> $State is not an edge of the slot state machine") }
         if ($State -ceq 'quarantined') {
             if (-not $QuarantineKind -or (-not $hostile -and $script:QuarantineFrom[$QuarantineKind] -cnotcontains $from)) { return (New-AapResult 'refused' 'illegal_edge' "$from -> quarantined ($QuarantineKind) is not allowed") }
-            if (-not $Reason -or $Reason -match '[\x00-\x1f]' -or $Reason.Length -gt 200) { return (New-AapResult 'refused' 'bad_request' 'a quarantine needs a one-line -Reason of at most 200 characters') }
+            if (-not $Reason -or $Reason -match '[\x00-\x1f\x7f\u0085\u2028\u2029]' -or $Reason.Length -gt 200) { return (New-AapResult 'refused' 'bad_request' 'a quarantine needs a one-line -Reason of at most 200 characters') }
             # A credential-shaped reason would make the whole write fail the contract; the quarantine
             # matters more than its text.
             if ($Reason -cmatch $script:SecretValue) { $Reason = 'reason withheld: it looked like a credential'; $withheld = ' (reason withheld: it looked like a credential)' }
         }
         if ($from -ceq 'quarantined' -and $State -ceq 'deleting' -and $r.quarantine_kind -ceq 'heartbeat') {
             return (New-AapResult 'refused' 'illegal_edge' 'a heartbeat quarantine goes to deleting only through Invoke-AapReconcile, on the broker status')
+        }
+        if ($from -ceq 'quarantined' -and $State -ceq 'deleting' -and $r.quarantine_kind -ceq 'unknown_vm') {
+            return (New-AapResult 'refused' 'illegal_edge' 'an unknown VM goes to deleting only through Invoke-AapReconcile, when a journal entry names its reservation')
         }
         if ($VmId) {
             if ($r.backend -cne 'hyperv-vm' -or $VmId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z' -or ($null -ne $r.vm_id -and $r.vm_id -cne $VmId)) {
@@ -1656,6 +1716,7 @@ function Complete-AapTeardown {
 # $null when Inv is one hashtable or object with the lists vms, folders and journaled.
 function Test-AapInventory($Inv) {
     if ($null -eq $Inv -or $Inv -is [array] -or $Inv -is [string] -or $Inv -is [ValueType]) { return 'the callback did not return one hashtable or object' }
+    $lists = @{}
     foreach ($k in @('vms', 'folders', 'journaled')) {
         if ($Inv -is [Collections.IDictionary]) {
             if (-not $Inv.Contains($k)) { return "no '$k' list" }
@@ -1666,6 +1727,24 @@ function Test-AapInventory($Inv) {
             $v = $p.Value
         }
         if (-not ($v -is [Collections.IList])) { return "'$k' is not a list" }
+        $lists[$k] = $v
+    }
+    # Every element, or a busy VM missing from a mangled list would count as gone.
+    $i = 0
+    foreach ($vm in $lists.vms) {
+        if (-not ($vm -is [Collections.IDictionary] -or $vm -is [Management.Automation.PSCustomObject])) { return "vms[$i] is not a hashtable or object" }
+        $n = Get-AapField $vm 'name'
+        $id = Get-AapField $vm 'vm_id'
+        if (-not ($n -is [string]) -or $n -cnotmatch '^aap-(w|l)-[1-5]-') { return "vms[$i] has no name aap-(w|l)-<slot>-..." }
+        if (-not ($id -is [string]) -or $id -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z') { return "vms[$i] has no lower-case vm_id GUID" }
+        $i++
+    }
+    foreach ($k in @('folders', 'journaled')) {
+        $i = 0
+        foreach ($x in $lists[$k]) {
+            if (-not ($x -is [string]) -or $x -cnotmatch '^r-[0-9a-f]{16}\z') { return "$k[$i] is not a reservation id" }
+            $i++
+        }
     }
     return $null
 }
@@ -1693,6 +1772,8 @@ function Invoke-AapReconcile {
             $inv = & $Inventory
             $bad = Test-AapInventory $inv
             if ($bad) { return (New-AapResult 'error' 'invalid_inventory' "inventory refused, nothing changed: $bad") }
+            $prior = Read-AapUnresolved $Root
+            if ($prior.ContainsKey('Error')) { return $prior.Error }
         }
         $tmp = Join-Path $Root 'allocator.json.tmp'
         if ([IO.File]::Exists($tmp)) { [IO.File]::Delete($tmp); $changes.Add('removed a temp file left by an interrupted write') }
@@ -1722,6 +1803,14 @@ function Invoke-AapReconcile {
                 $actions.Add([pscustomobject][ordered]@{ action = 'destroy'; reservation_id = $r.reservation_id; lease_generation = [long]$r.lease_generation; vm_name = (Get-AapVmNameOf $r); vm_id = $r.vm_id })
             }
         }
+        # 2b. A hostile quarantine is left only by a crash between Set-AapSlotState's two writes:
+        # hostile is immediate and final, so finish it, with one destroy.
+        foreach ($r in @(Get-AapLive $doc | Where-Object { $_.state -ceq 'quarantined' -and $_.quarantine_kind -ceq 'hostile_guest' -and $_.backend -ceq 'hyperv-vm' })) {
+            Move-AapDown $r $now $null
+            $r.cleanup_uncertain = $true
+            $changes.Add("$($r.reservation_id) slot $($r.slot) quarantined->deleting (hostile_guest, finished after an interrupted write)")
+            $actions.Add([pscustomobject][ordered]@{ action = 'destroy'; reservation_id = $r.reservation_id; lease_generation = [long]$r.lease_generation; vm_name = (Get-AapVmNameOf $r); vm_id = $r.vm_id })
+        }
         # 3. Inventory join (VMs named aap-(w|l)-<slot>-..., clones\ and scratch\ folders, journals).
         if ($Inventory) {
             $vms = @(Get-AapField $inv 'vms' | Where-Object { $null -ne $_ })
@@ -1740,6 +1829,10 @@ function Invoke-AapReconcile {
                     } else {
                         $actions.Add([pscustomobject][ordered]@{ action = 'replay'; reservation_id = $r.reservation_id; lease_generation = [long]$r.lease_generation; vm_name = $name; vm_id = $r.vm_id })
                     }
+                } elseif ($null -ne $vm -and $r.state -ceq 'quarantined' -and $r.quarantine_kind -ceq 'unknown_vm' -and $journaled -ccontains $r.reservation_id) {
+                    Move-AapDown $r $now $null
+                    $changes.Add("$($r.reservation_id) slot $($r.slot) quarantined->deleting (unknown VM named by a journal entry)")
+                    $actions.Add([pscustomobject][ordered]@{ action = 'destroy'; reservation_id = $r.reservation_id; lease_generation = [long]$r.lease_generation; vm_name = (Get-AapField $vm 'name'); vm_id = $r.vm_id })
                 } elseif ($null -eq $vm -and $r.state -cne 'deleting') {
                     $was = $r.state
                     Move-AapDown $r $now $null
@@ -1784,12 +1877,7 @@ function Invoke-AapReconcile {
                 if ($why) { $unresolved.Add([pscustomobject][ordered]@{ kind = 'vm'; name = $name; reason = $why }) }
             }
             $u = [pscustomobject][ordered]@{ schema = 1; written_at = $now; items = $unresolved.ToArray() }
-            $path = Join-Path $Root 'unresolved.json'
-            $old = $null
-            if ([IO.File]::Exists($path)) { $old = Read-AapText $path 65536 }
-            $oldItems = $null
-            if ($old) { $oldItems = ConvertTo-AapJson @((ConvertFrom-AapJson $old).items) }
-            if ($oldItems -cne (ConvertTo-AapJson $unresolved.ToArray())) {
+            if ((ConvertTo-AapJson @($prior.Items)) -cne (ConvertTo-AapJson $unresolved.ToArray()) -or -not [IO.File]::Exists((Join-Path $Root 'unresolved.json'))) {
                 Write-AapAtomic $Root 'unresolved.json' (ConvertTo-AapJson $u)
                 Write-AapCapLog $Root "unresolved: $(@($unresolved | ForEach-Object { "$($_.kind) $($_.name): $($_.reason)" }) -join '; ')"
             }

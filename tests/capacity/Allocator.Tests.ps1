@@ -46,6 +46,25 @@ Describe 'initialize and read' {
         $s.FreeSlots | Should -Be 5
     }
 
+    It 'a call before initialize leaves no log behind, so initialize still runs' {
+        $root = New-CapRoot
+        (Request-AapReservation -Root $root -Profile linux).Reason | Should -Be 'not_initialized'
+        Test-Path -LiteralPath (Join-Path $root 'allocator.log') | Should -BeFalse
+        (Initialize-AapAllocator -Root $root -HostInfo (New-CapHostInfo)).Ok | Should -BeTrue
+    }
+
+    It 'names a corrupt unresolved.json instead of failing on it' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        Write-CapText (Join-Path $root 'unresolved.json') '{"items": '
+        $r = Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2'
+        $r.Reason | Should -Be 'invalid_state'
+        $r.Detail | Should -BeLike '*unresolved.json*'
+        (Invoke-AapReconcile -Root $root -Inventory { @{ vms = @(); folders = @(); journaled = @() } }).Reason | Should -Be 'invalid_state'
+        Remove-Item -LiteralPath (Join-Path $root 'unresolved.json')
+        (Invoke-AapReconcile -Root $root -Inventory { @{ vms = @(); folders = @(); journaled = @() } }).Ok | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $root 'unresolved.json') | Should -BeTrue
+    }
+
     It 'refuses a missing state, and a state file that fails the contract, without writing' {
         $root = New-CapRoot
         (Request-AapReservation -Root $root -Profile linux).Reason | Should -Be 'not_initialized'
@@ -134,17 +153,31 @@ Describe 'initialize and read' {
         (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2' -Cpus 1 -MemGib 1).Reason | Should -Be 'memory'
     }
 
-    It 'a smaller CPU or RAM measurement is raised only to the least the admitted runners still fit' {
-        $root = New-CapAllocator -Linux 1 -Windows 1
+    It 'a smaller CPU or RAM measurement is raised only to the least the admitted runners fit, and admits nothing more' {
+        $root = New-CapAllocator -Linux 1 -Windows 2
         [void](New-CapVm $root)
         $r = Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Cpu 8 -Mem 16)
         $r.Reason | Should -Be 'pool_over_live'
         @($r.Clamped) | Should -Be @('cpu_cores', 'mem_gib', 'control_distro_mem_gib')
         $h = (Get-CapDoc $root).host
-        $h.cpu_cores | Should -Be 32
+        $h.cpu_cores | Should -Be 30
         $h.mem_gib | Should -Be 94
         $h.control_distro_mem_gib | Should -Be 0
         (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
+        (Get-AapAllocatorState -Root $root).MeasurementClamped | Should -BeTrue
+        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2').Reason | Should -Be 'pool_over_live'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'pool_over_live'
+        (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo)).Ok | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $root 'host.measured.json') | Should -BeFalse
+        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2').Ok | Should -BeTrue
+    }
+
+    It 'a volume below its floor with nothing on it is storage_low, not pool_over_live; legacy slots go on' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        $r = Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Volumes @(New-CapVolume 'e1' @('base', 'clone', 'scratch', 'staging') 5 10))
+        $r.Reason | Should -Be 'storage_low'
+        (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Reason | Should -Be 'disk'
+        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2').Ok | Should -BeTrue
     }
 
     It 'never starts again at revision 1 over lost state: a missing allocator.json beside its log or backup is refused' {
@@ -541,6 +574,48 @@ Describe 'heartbeats and quarantine' {
         [IO.File]::ReadAllText((Join-Path $root 'allocator.log')) | Should -BeLike '*busy->deleting hostile_guest wrong_echo*'
     }
 
+    It 'reconcile finishes a hostile quarantine an interrupted write left, with one destroy' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        $w = New-CapVm $root -Busy
+        [void](Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind crash -Reason 'journal_unreadable')
+        $doc = Get-CapDoc $root
+        $doc.revision = $doc.revision + 1
+        (Get-CapRes $doc $w.reservation_id).quarantine_kind = 'hostile_guest'
+        Write-CapJson (Join-Path $root 'allocator.json') $doc
+        $name = Get-AapVmName -Profile windows -Slot $w.slot -LeaseGeneration $w.lease_generation -ReservationId $w.reservation_id
+        $r = Invoke-AapReconcile -Root $root -Inventory { @{ vms = @(@{ name = $name; vm_id = $w.vm_id; cpus = 9; mem_gib = 28 }); folders = @($w.reservation_id); journaled = @($w.reservation_id) } }.GetNewClosure()
+        $q = Get-CapRes (Get-CapDoc $root) $w.reservation_id
+        $q.state | Should -Be 'deleting'
+        $q.quarantine_kind | Should -BeNullOrEmpty
+        $q.cleanup_uncertain | Should -BeTrue
+        @($r.Actions | Where-Object { $_.action -eq 'destroy' }).Count | Should -Be 1
+        $r.Actions[0].vm_name | Should -BeExactly $name
+        (Update-AapHeartbeat -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -JobRunning).Status | Should -Be 'ignored'
+        (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind hostile_guest -Reason 'wrong_echo').Status | Should -Be 'unchanged'
+    }
+
+    It 'an unknown VM goes to deleting only on reconcile, when a journal entry names it' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        $vmId = New-CapVmId
+        $inv = { param($j) @{ vms = @(@{ name = 'aap-w-3-7-deadbeef'; vm_id = $vmId; cpus = 4; mem_gib = 8 }); folders = @(); journaled = @($j) } }.GetNewClosure()
+        [void](Invoke-AapReconcile -Root $root -Inventory { & $inv @() }.GetNewClosure())
+        $q = @((Get-CapDoc $root).reservations | Where-Object { $_.quarantine_kind -eq 'unknown_vm' })[0]
+        (Set-AapSlotState -Root $root -ReservationId $q.reservation_id -LeaseGeneration $q.lease_generation -State deleting).Reason | Should -Be 'illegal_edge'
+        $id = $q.reservation_id
+        $r = Invoke-AapReconcile -Root $root -Inventory { & $inv @($id) }.GetNewClosure()
+        (Get-CapRes (Get-CapDoc $root) $id).state | Should -Be 'deleting'
+        @($r.Actions | Where-Object { $_.action -eq 'destroy' -and $_.reservation_id -eq $id }).Count | Should -Be 1
+    }
+
+    It 'refuses a reason with a DEL or a Unicode line separator' {
+        $root = New-CapAllocator -Linux 1 -Windows 1
+        $w = New-CapVm $root -Busy
+        foreach ($bad in @('\u007f', '\u0085', '\u2028')) {
+            $reason = 'journal' + [regex]::Unescape($bad) + 'unreadable'
+            (Set-AapSlotState -Root $root -ReservationId $w.reservation_id -LeaseGeneration $w.lease_generation -State quarantined -QuarantineKind crash -Reason $reason).Reason | Should -Be 'bad_request' -Because $bad
+        }
+    }
+
     It 'hostile_guest applies to VM guests only' {
         $root = New-CapAllocator -Linux 1 -Windows 1 -LegacySlots 1
         $l = @((Get-CapDoc $root).reservations | Where-Object { $_.backend -eq 'wsl-legacy' })[0]
@@ -823,6 +898,12 @@ Describe 'reconcile repairs' {
         @{ Name = 'folders as a hashtable'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(); folders = @{}; journaled = @() } } }
         @{ Name = 'journaled as null'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(); folders = @(); journaled = $null } } }
         @{ Name = 'two results'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(); folders = @(); journaled = @() }; @{ vms = @(); folders = @(); journaled = @() } } }
+        @{ Name = 'a VM without vm_id'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(@{ name = 'aap-w-1-1-00000000' }); folders = @(); journaled = @() } } }
+        @{ Name = 'a VM as a bare GUID'; Reason = 'invalid_inventory'; Inv = { @{ vms = @('6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4c'); folders = @(); journaled = @() } } }
+        @{ Name = 'a VM name outside the pattern'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(@{ name = 'build-agent'; vm_id = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4c' }); folders = @(); journaled = @() } } }
+        @{ Name = 'a VM id in upper case'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(@{ name = 'aap-w-1-1-00000000'; vm_id = '6F1D2C3B-4A59-4E6F-8A7B-9C0D1E2F3A4C' }); folders = @(); journaled = @() } } }
+        @{ Name = 'a folder that is no reservation id'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(); folders = @('clones'); journaled = @() } } }
+        @{ Name = 'a journaled id with a final newline'; Reason = 'invalid_inventory'; Inv = { @{ vms = @(); folders = @(); journaled = @("r-00000000000000ff`n") } } }
         @{ Name = 'a throw'; Reason = 'failed'; Inv = { throw 'Get-VM failed' } }
     ) {
         Set-CapNow '2026-10-20T10:00:00Z'
@@ -894,14 +975,14 @@ Describe 'reconcile repairs' {
         [void](New-CapVm $root)
         $vmId = New-CapVmId
         $r = Invoke-AapReconcile -Root $root -Inventory {
-            $vms = @(Get-AapAllocatorState -Root $root -RelaxedTrustForTests -WarningAction SilentlyContinue).State.reservations | Where-Object { $_.vm_id } | ForEach-Object { @{ name = 'x'; vm_id = $_.vm_id; cpus = 5; mem_gib = 16 } }
+            $vms = @(Get-AapAllocatorState -Root $root -RelaxedTrustForTests -WarningAction SilentlyContinue).State.reservations | Where-Object { $_.vm_id } | Where-Object { $_.state -ne 'reconciled' } | ForEach-Object { @{ name = (Get-AapVmName -Profile $_.profile -Slot $_.slot -LeaseGeneration $_.lease_generation -ReservationId $_.reservation_id); vm_id = $_.vm_id; cpus = 5; mem_gib = 16 } }
             @{ vms = @($vms) + @(@{ name = 'aap-l-2-3-cafecafe'; vm_id = $vmId; cpus = 2; mem_gib = 4 }); folders = @('r-00000000000000ff'); journaled = @() }
         }.GetNewClosure()
         @($r.Unresolved).Count | Should -Be 2
         [void](Set-AapProfileCounts -Root $root -Linux 4 -Windows 1)
         (Request-AapReservation -Root $root -Profile linux).Reason | Should -Be 'unresolved_unknown'
         [void](Invoke-AapReconcile -Root $root -Inventory {
-                $vms = @(Get-AapAllocatorState -Root $root -RelaxedTrustForTests -WarningAction SilentlyContinue).State.reservations | Where-Object { $_.vm_id } | ForEach-Object { @{ name = 'x'; vm_id = $_.vm_id; cpus = 5; mem_gib = 16 } }
+                $vms = @(Get-AapAllocatorState -Root $root -RelaxedTrustForTests -WarningAction SilentlyContinue).State.reservations | Where-Object { $_.vm_id } | Where-Object { $_.state -ne 'reconciled' } | ForEach-Object { @{ name = (Get-AapVmName -Profile $_.profile -Slot $_.slot -LeaseGeneration $_.lease_generation -ReservationId $_.reservation_id); vm_id = $_.vm_id; cpus = 5; mem_gib = 16 } }
                 @{ vms = @($vms); folders = @(); journaled = @() }
             }.GetNewClosure())
         (Request-AapReservation -Root $root -Profile linux).Reason | Should -Be 'ceiling'
@@ -912,5 +993,24 @@ Describe 'reconcile repairs' {
         Write-CapText (Join-Path $root 'allocator.json.tmp') '{"half":'
         (Invoke-AapReconcile -Root $root).Status | Should -Be 'ok'
         Test-Path -LiteralPath (Join-Path $root 'allocator.json.tmp') | Should -BeFalse
+    }
+}
+
+Describe 'a clamped host measurement across a restart' {
+    It 'refuses every admission the raw measurement cannot hold, also after the module is loaded again' {
+        $script:Now = [DateTime]::UtcNow
+        $root = New-CapAllocator -Linux 1 -Windows 3
+        [void](New-CapVm $root)
+        (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo -Cpu 8)).Reason | Should -Be 'pool_over_live'
+        (Get-CapDoc $root).host.cpu_cores | Should -Be 32
+        $linux = { Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2' }
+        $windows = { Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100 }
+        (& $linux).Reason | Should -Be 'pool_over_live'
+        (& $windows).Reason | Should -Be 'pool_over_live'
+        Import-Module $script:CapModule -Force
+        (& $linux).Reason | Should -Be 'pool_over_live'
+        (& $windows).Reason | Should -Be 'pool_over_live'
+        (Set-AapHostMeasurement -Root $root -HostInfo (New-CapHostInfo)).Ok | Should -BeTrue
+        (& $windows).Ok | Should -BeTrue
     }
 }
