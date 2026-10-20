@@ -25,11 +25,15 @@
     "install_user": "installer"
   },
   "variables_source": "upstream images/windows/templates/variable.windows.pkr.hcl defaults at aee0669, not stored in parity/baselines; image_version is the P01 baseline",
+  "source": {
+    "entry": "runner-images-aee0669",
+    "sha256": null
+  },
   "blockers": [
     {
       "id": "p06-upstream-source-archive",
-      "reason": "images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at aee0669 (images/windows scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive.",
-      "owner_action": "P03 owner adds a literal-pinned entry for the archive of actions/runner-images at aee0669dd04510a11756664eb77f5630debabed3, then this generator is rerun with -ScriptsDir to pin every script hash."
+      "reason": "images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at aee0669 (images/windows scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive whose SHA-256 this plan pins. No waiver clears this blocker.",
+      "owner_action": "P03 owner adds a literal-pinned entry for the archive of actions/runner-images at aee0669dd04510a11756664eb77f5630debabed3, then this generator is rerun with -ScriptsDir and -SourceSha256 to pin every script hash and the archive."
     },
     {
       "id": "p06-upstream-variables-unverified",

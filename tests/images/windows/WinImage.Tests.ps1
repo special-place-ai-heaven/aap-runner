@@ -22,7 +22,7 @@ BeforeAll {
     $script:Validator = $(if ($env:AAP_P06_VALIDATOR) { $env:AAP_P06_VALIDATOR } else { Join-Path $script:Repo 'parity\contracts\validate.py' })
     $script:Gen = 'win25-vs2026-x64/20261007.264.1-aap.1'
 
-    function Invoke-Build { Invoke-AapWinImageBuild -Config $w.Config -Provider $w.Provider }
+    function Invoke-Build { Invoke-AapWinImageBuild -Config $w.Config -Provider $w.Provider -Network $w.Network }
     function Assert-NothingStarted {
         (Get-Ops $w 'NewVm').Count | Should -Be 0
         (Get-Ops $w 'NewBuildDisk').Count | Should -Be 0
@@ -117,6 +117,28 @@ Describe 'build plan mirrors the pinned upstream template' {
         Write-TestJson $p (Join-Path $TestDrive 'one-bad.json')
         { Read-AapWinBuildPlan -Path (Join-Path $TestDrive 'one-bad.json') } | Should -Throw 'AAP_ScriptUnpinned*Install-WSL2.ps1*'
     }
+    It 'names the source archive entry, leaves its hash unpinned and keeps the unwaivable blocker until P03 stages it' {
+        $script:Plan.source.entry | Should -Be 'runner-images-aee0669'
+        $script:Plan.source.sha256 | Should -BeNullOrEmpty
+        @($script:Plan.blockers | ForEach-Object { $_.id }) | Should -Contain 'p06-upstream-source-archive'
+    }
+    It 'pins the archive and drops its blocker when the generator gets its hash' {
+        $tmp = Join-Path $TestDrive 'pinned-source.json'
+        $null = & (Join-Path $script:Repo 'images\windows\New-AapWinBuildPlan.ps1') -OutFile $tmp -SourceSha256 ('ab' * 32)
+        $p = Get-Content -Raw $tmp | ConvertFrom-Json
+        $p.source.sha256 | Should -Be ('ab' * 32)
+        @($p.blockers | ForEach-Object { $_.id }) | Should -Be @('p06-upstream-variables-unverified')
+        { & (Join-Path $script:Repo 'images\windows\New-AapWinBuildPlan.ps1') -OutFile $tmp -SourceSha256 'ABC' } | Should -Throw 'AAP_PlanSource*'
+    }
+    It 'refuses a plan whose source is <Case>' -TestCases @(
+        @{ Case = 'missing'; Edit = { param($p) $p.PSObject.Properties.Remove('source') } }
+        @{ Case = 'an entry name that could be a path'; Edit = { param($p) $p.source.entry = '..\x' } }
+        @{ Case = 'a hash that is not hex'; Edit = { param($p) $p.source.sha256 = 'ABC' } }) {
+        $p = New-PinnedPlan (Join-Path $TestDrive 'src.json')
+        & $Edit $p
+        Write-TestJson $p (Join-Path $TestDrive 'src.json')
+        { Read-AapWinBuildPlan -Path (Join-Path $TestDrive 'src.json') } | Should -Throw 'AAP_PlanInvalid*source*'
+    }
     It 'lists every P03 Windows blocker plus its own' {
         $b = @(Get-AapWinBlockers -Plan $script:Plan -ManifestPath (Join-Path $script:Repo 'images\common\artifacts.manifest.json'))
         $b | Should -Contain 'windows-server-2025-media'
@@ -209,6 +231,15 @@ Describe 'root trust and volumes' {
         [void](New-Item -ItemType Directory $mine)
         @(& $p.TestRootTrust @{ Path = $mine }).Count | Should -BeGreaterThan 0
     }
+    It 'the production provider checks images\common before it loads it, and does not load it when it is not admin-only' {
+        Get-Module -All AapArtifact | Remove-Module -Force
+        Import-Module (Join-Path $script:Repo 'images\windows\AapWinImage.HyperV.psm1') -Force
+        $p = New-AapWinHyperVProvider
+        $out = @(& $p.TestRootTrust @{ Path = $TestDrive })
+        $out.Count | Should -BeGreaterThan 0
+        foreach ($o in $out) { $o | Should -Match '^images\\common is not admin-only, so it was not loaded: ' }
+        @(Get-Module -All AapArtifact).Count | Should -Be 0
+    }
     It 'the production provider implements every op the builder calls' {
         Import-Module (Join-Path $script:Repo 'images\windows\AapWinImage.HyperV.psm1') -Force
         $p = New-AapWinHyperVProvider
@@ -257,6 +288,44 @@ Describe 'preflight refusals change nothing' {
         $r.Detail | Should -Match 'windows-updates-level was approved for another build plan'
         Assert-NothingStarted
     }
+    It 'refuses a waiver for <Id>, which only <Clearer> clears' -Tag 'unwaivable' -TestCases @(
+        @{ Id = 'windows-server-2025-media'; Clearer = 'the media check' }
+        @{ Id = 'p06-upstream-source-archive'; Clearer = 'a reviewed plan that pins the archive' }) {
+        if ($Id -eq 'p06-upstream-source-archive') {
+            Update-TestPlan $w { param($p) $p.blockers = @($p.blockers) + @([pscustomobject]@{ id = 'p06-upstream-source-archive'; reason = 'x'; owner_action = 'y' }) }
+        }
+        $w.Config.Waivers = @($w.Config.Waivers) + @(New-TestWaiver $Id $w.Config.Waivers[0].plan_sha256)
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_ConfigInvalid'
+        $r.Detail | Should -Match "$Id cannot be waived"
+        Assert-NothingStarted
+    }
+    It 'keeps the source archive blocker open while the plan carries it' -Tag 'blocked' {
+        Update-TestPlan $w { param($p) $p.blockers = @($p.blockers) + @([pscustomobject]@{ id = 'p06-upstream-source-archive'; reason = 'x'; owner_action = 'y' }) }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_Blocked'
+        $r.Detail | Should -Be 'unresolved input blockers: p06-upstream-source-archive'
+        Assert-NothingStarted
+    }
+    It 'builds with no waiver for the media: the media check against the pinned hash clears it' {
+        @($w.Config.Waivers | ForEach-Object { $_.id }) | Should -Not -Contain 'windows-server-2025-media'
+        (Invoke-Build).Status | Should -Be 'built'
+    }
+    It 'refuses an upstream archive that is not the one the plan pins: <Case>' -Tag 'source-pin' -TestCases @(
+        @{ Case = 'no pinned hash'; Edit = { param($w) Update-TestPlan $w { param($p) $p.source.sha256 = $null } } }
+        @{ Case = 'another pinned hash'; Edit = { param($w) Update-TestPlan $w { param($p) $p.source.sha256 = 'c' * 64 } } }
+        @{ Case = 'other staged bytes'; Edit = { param($w) [IO.File]::WriteAllText($w.SourceZip, 'swapped archive') } }) {
+        & $Edit $w
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_InputsUnverified'
+        $r.Detail | Should -Match 'not the one the build plan pins'
+        Assert-NothingStarted
+    }
+    It 'asks P03 for the archive the plan names, whatever the config says' {
+        $w.Config.SourceEntry = 'evil-archive'
+        (Invoke-Build).Status | Should -Be 'built'
+        @((Get-Ops $w 'VerifyInputs')[0].Args.Names) | Should -Not -Contain 'evil-archive'
+    }
     It 'refuses inputs P03 did not verify offline' -Tag 'inputs' {
         $w.InputsComplete = $false
         (Invoke-Build).Reason | Should -Be 'AAP_InputsUnverified'
@@ -293,7 +362,7 @@ Describe 'preflight refusals change nothing' {
         (Invoke-Build).Reason | Should -Be 'AAP_GenerationExists'
         (Get-Ops $w 'NewVm').Count | Should -Be 0
     }
-    It 'refuses a config without <Key>' -TestCases @(@{ Key = 'MediaSha256' }, @{ Key = 'BuilderCommit' }, @{ Key = 'StagingGibMax' }, @{ Key = 'SourceEntry' }, @{ Key = 'BaseGibMax' }, @{ Key = 'JobDiskGibMax' }, @{ Key = 'SwitchName' }) {
+    It 'refuses a config without <Key>' -TestCases @(@{ Key = 'MediaSha256' }, @{ Key = 'BuilderCommit' }, @{ Key = 'StagingGibMax' }, @{ Key = 'BaseGibMax' }, @{ Key = 'JobDiskGibMax' }, @{ Key = 'SwitchName' }) {
         $w.Config.Remove($Key)
         (Invoke-Build).Reason | Should -Be 'AAP_ConfigInvalid'
     }
@@ -383,7 +452,8 @@ Describe 'a full build with fakes' {
         $script:Ev.media.edition | Should -Match 'Evaluation'
         $script:Ev.evaluation.days | Should -Be 180
         ([DateTime]$script:Ev.evaluation.expires_at - [DateTime]$script:Ev.evaluation.installed_at).TotalDays | Should -Be 180
-        @($script:Ev.waivers | ForEach-Object { $_.id }) | Should -Contain 'windows-server-2025-media'
+        @($script:Ev.waivers | ForEach-Object { $_.id }) | Should -Contain 'windows-updates-level'
+        @($script:Ev.waivers | ForEach-Object { $_.id }) | Should -Not -Contain 'windows-server-2025-media'
         @($script:Ev.waivers | ForEach-Object { $_.approver } | Sort-Object -Unique) | Should -Be @('chair (test)')
         @($script:Ev.phases | Where-Object { $_.kind -eq 'scripts' } | ForEach-Object { $_.scripts } | ForEach-Object { $_ }).Count | Should -Be 82
         $script:Ev.verify.upstream_tests.failed | Should -Be 0
@@ -431,8 +501,14 @@ Describe 'a full build with fakes' {
         $sent | Should -Be @('hello.c', 'request.json', 'runner-images.zip', 'AapGuestVerify.ps1', 'windows.ps1' | Sort-Object)
         @((Get-Ops $w 'ApplyWindowsImage')[0].Args.CopyFiles.Keys) | Should -Be @('aap-build\AapGuestRunner.ps1')
     }
-    It 'attaches the build VM to the internal switch, the verification VM to nothing, and addresses guests by VM id' {
-        @(Get-Ops $w 'NewVm' | ForEach-Object { [string]$_.Args.SwitchName }) | Should -Be @('aap-guests-win', '')
+    It 'attaches the build VM through the network module before it boots, checks the verification VM has no adapter, and addresses guests by VM id' {
+        $build = $w.VmIds[@($w.VmIds.Keys | Where-Object { $_ -like 'aap-wbuild-*' })[0]]
+        $verify = $w.VmIds[@($w.VmIds.Keys | Where-Object { $_ -like 'aap-wverify-*' })[0]]
+        $seq = @($w.Calls | Where-Object { $_.Op -in 'NewVm', 'NetAttach', 'NetVerify', 'GetVmNetwork', 'StartVm', 'StopVm', 'NetDetach', 'RemoveVm' } | ForEach-Object { $_.Op }) -join ','
+        $seq | Should -BeLike 'NewVm,NetAttach,NetVerify,GetVmNetwork,StartVm,StopVm,NetDetach,RemoveVm,NewVm,GetVmNetwork,StartVm,RemoveVm*'
+        foreach ($c in @(Get-Ops $w 'NetAttach') + @(Get-Ops $w 'NetVerify') + @(Get-Ops $w 'NetDetach')) { $c.Args.VmId | Should -Be $build; $c.Args.Profile | Should -Be 'windows' }
+        @(Get-Ops $w 'GetVmNetwork' | ForEach-Object { $_.Args.VmId }) | Should -Be @($build, $verify)
+        foreach ($c in Get-Ops $w 'NewVm') { $c.Args.ContainsKey('SwitchName') | Should -BeFalse }
         $ids = @($w.VmIds.Values)
         foreach ($op in 'InvokeGuest', 'SendFile', 'ReceiveFile', 'WaitGuestReady', 'StartVm', 'GetGuestBootTime') {
             @(Get-Ops $w $op).Count | Should -BeGreaterThan 0 -Because $op
@@ -936,13 +1012,100 @@ Describe 'network: internal switch for the build, none for verification' {
         $r.Reason | Should -Be 'AAP_NetworkUntrusted'
         Assert-NothingStarted
     }
-    It 'the production provider disables key-value exchange and guest services and attaches only the internal switch' {
+    It 'the production provider disables key-value exchange and guest services, leaves every VM without an adapter and reads adapters back from Hyper-V' {
         $t = Get-Content -Raw (Join-Path (Split-Path -Parent (Get-TestModulePath)) 'AapWinImage.HyperV.psm1')
         $t | Should -Match "'Guest Service Interface', 'Key-Value Pair Exchange'"
-        $t | Should -Match "SwitchType -ne 'Internal'"
-        $t | Should -Match 'Remove-VMNetworkAdapter'
+        $t | Should -Match 'Hyper-V\\Get-VMNetworkAdapter -VM \$vm \| Hyper-V\\Remove-VMNetworkAdapter'
+        $t | Should -Not -Match 'Connect-VMNetworkAdapter|Add-VMNetworkAdapter|Set-VMNetworkAdapter'
+        $t | Should -Match 'Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter \$n'
+        $t | Should -Match 'MacAddressSpoofing = \(\[string\]\$n\.MacAddressSpoofing -ne ''Off''\)'
         $t | Should -Match 'Invoke-Command -VMId'
         $t | Should -Not -Match '-VMName'
+    }
+    It 'refuses to build without the P10.0 guest network module' -Tag 'network-module' {
+        $r = Invoke-AapWinImageBuild -Config $w.Config -Provider $w.Provider
+        $r.Reason | Should -Be 'AAP_NetworkUnavailable'
+        Assert-NothingStarted
+    }
+    It 'refuses a network module without <Op>' -TestCases @(@{ Op = 'Attach' }, @{ Op = 'Detach' }, @{ Op = 'Verify' }) {
+        $w.Network.Remove($Op)
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkInvalid'
+        $r.Detail | Should -Match $Op
+        Assert-NothingStarted
+    }
+    It 'refuses when the module''s own check of the attachment finds a problem' -Tag 'network-verify' {
+        $w.NetProblems = @('no deny rule for the host vEthernet address 172.20.0.1')
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match '172\.20\.0\.1'
+        (Get-Ops $w 'StartVm').Count | Should -Be 0
+        @(Get-Ops $w 'NetDetach').Count | Should -Be 1
+        Assert-CleanedUp
+    }
+    It 'refuses a build VM that Hyper-V reports with <Case>' -Tag 'nic-count' -TestCases @(
+        @{ Case = 'two adapters'; Edit = { param($l) @($l) + @(New-FakeNic) } }
+        @{ Case = 'no adapter'; Edit = { param($l) } }) {
+        $w.NicEdit = $Edit
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match 'aap-wbuild-.* network adapters, not 1'
+        (Get-Ops $w 'StartVm').Count | Should -Be 0
+        Assert-CleanedUp
+    }
+    It 'refuses a verification VM with any network adapter, before it boots' -Tag 'nic-count' {
+        $w.VerifyHasNic = $true
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match 'aap-wverify-.* 1 network adapters, not 0'
+        $verify = $w.VmIds[@($w.VmIds.Keys | Where-Object { $_ -like 'aap-wverify-*' })[0]]
+        @(Get-Ops $w 'StartVm' | Where-Object { $_.Args.VmId -eq $verify }).Count | Should -Be 0
+        Assert-CleanedUp
+    }
+    It 'refuses a build adapter on <Case>' -Tag 'nic-switch' -TestCases @(
+        @{ Case = 'the Default Switch'; Edit = { param($l) $l[0].SwitchName = 'Default Switch'; $l } }
+        @{ Case = 'no switch'; Edit = { param($l) $l[0].SwitchName = ''; $l[0].SwitchType = ''; $l } }
+        @{ Case = 'an External switch of the right name'; Edit = { param($l) $l[0].SwitchType = 'External'; $l } }) {
+        $w.NicEdit = $Edit
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match 'not on the internal switch'
+        (Get-Ops $w 'StartVm').Count | Should -Be 0
+        Assert-CleanedUp
+    }
+    It 'refuses a build adapter with <Case>' -Tag 'nic-guards' -TestCases @(
+        @{ Case = 'DHCP guard off'; Edit = { param($l) $l[0].DhcpGuard = $false; $l } }
+        @{ Case = 'router guard off'; Edit = { param($l) $l[0].RouterGuard = $false; $l } }
+        @{ Case = 'MAC spoofing on'; Edit = { param($l) $l[0].MacAddressSpoofing = $true; $l } }
+        @{ Case = 'guards reported as text'; Edit = { param($l) $l[0].DhcpGuard = 'True'; $l[0].RouterGuard = 'On'; $l } }
+        @{ Case = 'MAC spoofing unknown'; Edit = { param($l) $l[0].Remove('MacAddressSpoofing'); $l } }) {
+        $w.NicEdit = $Edit
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match 'DHCP guard or router guard'
+        (Get-Ops $w 'StartVm').Count | Should -Be 0
+        Assert-CleanedUp
+    }
+    It 'refuses a build adapter whose port ACLs <Case>' -Tag 'nic-acl' -TestCases @(
+        @{ Case = 'lack the CGNAT deny'; Edit = { param($l) $l[0].Acls = @($l[0].Acls | Where-Object { $_.RemoteAddress -ne '100.64.0.0/10' }); $l }; Want = 'does not deny 100\.64\.0\.0/10' }
+        @{ Case = 'lack the unique-local deny'; Edit = { param($l) $l[0].Acls = @($l[0].Acls | Where-Object { $_.RemoteAddress -ne 'fc00::/7' }); $l }; Want = 'does not deny fc00::/7' }
+        @{ Case = 'lack every rule'; Edit = { param($l) $l[0].Acls = @(); $l }; Want = 'does not deny 10\.0\.0\.0/8, 172\.16' }
+        @{ Case = 'narrow the RFC 1918 deny to a port'; Edit = { param($l) ($l[0].Acls | Where-Object { $_.RemoteAddress -eq '10.0.0.0/8' }).Scoped = $true; $l }; Want = 'does not deny 10\.0\.0\.0/8' }
+        @{ Case = 'deny link-local inbound only'; Edit = { param($l) ($l[0].Acls | Where-Object { $_.RemoteAddress -eq '169.254.0.0/16' }).Direction = 'Inbound'; $l }; Want = 'does not deny 169\.254' }
+        @{ Case = 'leave the scope of the multicast deny unknown'; Edit = { param($l) ($l[0].Acls | Where-Object { $_.RemoteAddress -eq '224.0.0.0/4' }).Remove('Scoped'); $l }; Want = 'does not deny 224' }
+        @{ Case = 'allow everything'; Edit = { param($l) $l[0].Acls = @($l[0].Acls) + @(@{ Action = 'Allow'; Direction = 'Outbound'; RemoteAddress = '0.0.0.0/0'; Scoped = $false }); $l }; Want = 'more than one address' }
+        @{ Case = 'allow a private range'; Edit = { param($l) $l[0].Acls = @($l[0].Acls) + @(@{ Action = 'Allow'; Direction = 'Outbound'; RemoteAddress = '192.168.0.0/16'; Scoped = $true }); $l }; Want = 'more than one address' }
+        @{ Case = 'allow any address'; Edit = { param($l) $l[0].Acls = @($l[0].Acls) + @(@{ Action = 'Allow'; Direction = 'Inbound'; RemoteAddress = 'ANY'; Scoped = $false }); $l }; Want = 'more than one address' }) {
+        $w.NicEdit = $Edit
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match $Want
+        (Get-Ops $w 'StartVm').Count | Should -Be 0
+        Assert-CleanedUp
+    }
+    It 'accepts allow rules for single gateway, DHCP and DNS addresses' {
+        $w.NicEdit = { param($l) $l[0].Acls = @($l[0].Acls) + @(@{ Action = 'Allow'; Direction = 'Outbound'; RemoteAddress = '172.20.0.1/32'; Scoped = $true }, @{ Action = 'Allow'; Direction = 'Outbound'; RemoteAddress = 'fd00:aa::1'; Scoped = $true }); $l }
+        (Invoke-Build).Status | Should -Be 'built'
     }
 }
 
@@ -1256,6 +1419,14 @@ Describe 'source rules for everything P06 authors' {
             (Get-Content -Raw $f.FullName) | Should -Not -Match '(?i)Invoke-WebRequest|Invoke-RestMethod|WebClient|HttpClient|Start-BitsTransfer|DownloadFile|Net\.Sockets|\bcurl\b|\bwget\b|bitsadmin|Install-Module|Save-Module|Install-PackageProvider' -Because $f.Name
         }
         (Get-Content -Raw (Join-Path $script:Repo 'images\windows\AapWinImage.HyperV.psm1')) | Should -Match 'Invoke-AapManifest -Manifest \$m -StagingRoot \$a\.StagingRoot -Name \$a\.Names -Offline'
+    }
+    It 'compiles nothing: no Add-Type in the elevated builder, only named framework assemblies loaded in the guest' {
+        foreach ($f in $script:Product) {
+            $lines = @(Get-Content $f.FullName | Where-Object { $_ -match '(?i)\bAdd-Type\b' })
+            if ($f.FullName -like '*\images\windows\guest\*') {
+                foreach ($l in $lines) { $l | Should -Match '^\s*Add-Type -AssemblyName System(\.[A-Za-z]+)+\s*$' -Because $f.Name }
+            } else { $lines.Count | Should -Be 0 -Because $f.Name }
+        }
     }
     It 'never builds a SecureString from plain text' {
         foreach ($f in $script:Product) { (Get-Content -Raw $f.FullName) | Should -Not -Match '(?i)AsPlainText' -Because $f.Name }

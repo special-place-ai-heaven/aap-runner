@@ -1,19 +1,25 @@
 # Generates build-plan.json, the P06 phase table, from the pinned upstream Packer template. Reads files only.
-#   pwsh -File images/windows/New-AapWinBuildPlan.ps1 [-ScriptsDir <runner-images images\windows\scripts>] [-OutFile <path>]
+#   pwsh -File images/windows/New-AapWinBuildPlan.ps1 [-ScriptsDir <runner-images images\windows\scripts>] [-SourceSha256 <hex>] [-SourceEntry <name>] [-OutFile <path>]
 # The template is the byte copy P01 stored for build commit aee0669; its SHA-256 is pinned below and checked first.
 # Every upstream provisioner becomes one phase, in template order. Script phases keep their upstream script list, environment,
 # elevation, execution policy, accepted exit codes and pause. Inline and file provisioners map to a named AAP action; an inline
 # block that matches no known action stops the generator, so a template change cannot slip through unreviewed.
 # -ScriptsDir: the upstream scripts folder extracted from the P03-staged source archive. With it, each script's SHA-256 is
 # recorded; without it the hash stays null and the builder refuses to run (AAP_ScriptUnpinned).
+# -SourceSha256: the SHA-256 of that archive as the P03 manifest entry -SourceEntry pins it. The plan pins both; without the
+# hash the plan keeps the p06-upstream-source-archive blocker, which no waiver clears.
 param(
     [string]$ScriptsDir,
+    [string]$SourceEntry = 'runner-images-aee0669',
+    [string]$SourceSha256,
     [string]$OutFile = (Join-Path $PSScriptRoot 'build-plan.json')
 )
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 formats JSON differently, so the committed plan is regenerated with PowerShell 7 only.
 if ($PSVersionTable.PSVersion.Major -lt 7 -and -not $PSBoundParameters.ContainsKey('OutFile')) { throw 'AAP_PlanHost: regenerate build-plan.json with pwsh 7, or pass -OutFile' }
+if ($SourceEntry -cnotmatch '^[a-z0-9][a-z0-9.-]{0,79}\z') { throw 'AAP_PlanSource: -SourceEntry is not a P03 entry name' }
+if ($SourceSha256 -and $SourceSha256 -cnotmatch '^[0-9a-f]{64}\z') { throw 'AAP_PlanSource: -SourceSha256 must be 64 lowercase hex digits' }
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $base = 'parity/baselines/windows-2025-vs2026-x64'
@@ -138,8 +144,9 @@ $plan = [ordered]@{
         install_user          = 'installer'
     }
     variables_source = 'upstream images/windows/templates/variable.windows.pkr.hcl defaults at aee0669, not stored in parity/baselines; image_version is the P01 baseline'
+    source           = [ordered]@{ entry = $SourceEntry; sha256 = $(if ($SourceSha256) { $SourceSha256 } else { $null }) }
     blockers         = @(
-        [ordered]@{ id = 'p06-upstream-source-archive'; reason = 'images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at aee0669 (images/windows scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive.'; owner_action = 'P03 owner adds a literal-pinned entry for the archive of actions/runner-images at aee0669dd04510a11756664eb77f5630debabed3, then this generator is rerun with -ScriptsDir to pin every script hash.' }
+        if (-not $SourceSha256) { [ordered]@{ id = 'p06-upstream-source-archive'; reason = 'images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at aee0669 (images/windows scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive whose SHA-256 this plan pins. No waiver clears this blocker.'; owner_action = 'P03 owner adds a literal-pinned entry for the archive of actions/runner-images at aee0669dd04510a11756664eb77f5630debabed3, then this generator is rerun with -ScriptsDir and -SourceSha256 to pin every script hash and the archive.' } }
         [ordered]@{ id = 'p06-upstream-variables-unverified'; reason = 'The variable defaults above come from the upstream variables file, which P01 did not store. They are not yet checked against the pinned bytes.'; owner_action = 'Compare them with variable.windows.pkr.hcl inside the P03-staged archive and drop this blocker in the same change.' }
     )
     phases           = $phases
