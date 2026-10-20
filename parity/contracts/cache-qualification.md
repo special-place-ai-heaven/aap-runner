@@ -11,6 +11,11 @@ cover every compiler version, and rule 6's trust namespace is the repository plu
 class (event, ref and head repository). Matrix documents keep `schema` 1, and every revision-1
 matrix stays valid.
 
+Rule 6 amendment (P13 security review, 2026-10-20): `workflow_dispatch` is untrusted, a tag push
+is trusted only when its `head_sha` is reachable from the default branch, the class is derived by
+the host from GitHub's job record matched by `runner_id` and `runner_group_id`, untrusted jobs get
+only a private per-job root, and the namespace key adds the zccache version. No schema change.
+
 ## Rules (DECIDED)
 
 1. zccache **1.15.6**, tag `1.15.6`, commit `15ec9537af0d219e07b72ce2b3f97d5f68d72b5e`, release
@@ -40,20 +45,40 @@ matrix stays valid.
    so it needs its own evidence.
 6. Runtime: one cache root per trust namespace. A trust namespace is the repository plus the trust
    class of the job, so a repository alone is not a namespace. A job is **trusted** only when all
-   hold: its event is `push`, `schedule` or `workflow_dispatch`; its ref is the repository's default
+   hold: its event is `push` or `schedule`; its ref is the repository's default
    branch; and its head repository is the repository itself. Every other job is **untrusted**:
-   `pull_request`, `pull_request_target`, `workflow_run`, `issue_comment`, `merge_group`, pushes to
+   `workflow_dispatch` (any untrusted job in the same repository whose `GITHUB_TOKEN` has
+   `actions: write` can dispatch a run on the default branch with inputs the attacker chooses, so
+   the event and ref do not make it trusted), `pull_request`, `pull_request_target`,
+   `workflow_run`, `issue_comment`, `merge_group`, pushes to
    any other branch (`dependabot/*`, `renovate/*`, feature branches), tag pushes, and any event this
-   rule does not name. The ref alone never decides the class: `pull_request_target`, `workflow_run`
+   rule does not name. A tag push is never trusted unless the run's `head_sha` is reachable from
+   the default branch (a tag can be named like a branch): the host computes reachability when it
+   binds the class, from the status of `compare default...head_sha` being `identical` or `behind`,
+   and an unknown result means no shared root. The ref alone never decides the class: `pull_request_target`, `workflow_run`
    and `issue_comment` run on the default branch with input an outsider controls. A root is shared
    only among jobs whose writers are at least as trusted as every reader; an untrusted job never
    writes a root that a trusted job reads. The class comes from GitHub's record of the job GitHub
    assigned to the runner (event, ref and head repository), never from anything the guest reports,
    and is bound before any shared root is attached to the guest. When that record is not available
    in time, the job gets no shared root (direct compilation, or a per-job root destroyed with the
-   VM). P13 names the source: the broker's App has only the self-hosted runners permission
-   (broker.md), which cannot read a job's event or ref. This rule replaces the ref-based trust
-   class in retention.md requirement 4; P04.1 aligns that file.
+   VM). Until the owner decision below is applied, the broker's App has only the self-hosted runners
+   permission (broker.md), which cannot read a job's event or ref. This rule replaces the ref-based
+   trust class in retention.md requirement 4; P04.1 aligns that file.
+   The class source (P13, revision 3 of this rule; security review of P13). The host derives the
+   class from GitHub's record of the job assigned to the runner, matched by `runner_id` (from the
+   broker ledger) and `runner_group_id`, and exactly one match is required: zero or several matches
+   mean no shared root. The broker mints a per-lookup installation token narrowed to the one
+   repository with `actions`, `contents` and `metadata` read only, and the App is installed on
+   selected repositories only (the runner group's repositories). This adds `actions: read` and
+   `contents: read` to the App and is an OWNER decision, recorded here as such.
+   An untrusted job gets only its private per-job root: there is no shared untrusted root, because
+   an untrusted job must never share a root with another job that could hold secrets or a write
+   token. The namespace key is the repository id, the trust class, the zccache version and the
+   toolchain digest (the zccache version is part of the key so a re-pin starts a new root). The
+   host never mounts a namespace disk after a guest has had it: it creates the disk once to write
+   the marker, a reset is delete and recreate, and the size is measured as the VHDX file length on
+   the host.
    `ZCCACHE_MODE=COPY` or a proven reflink mode; hardlink delivery and cross-trust or
    cross-job mutable sharing stay off until P04/P13 prove poisoning and concurrency safety.
    Retention is the daemon's (budget via `ZCCACHE_CACHE_SIZE_BYTES` or `_PERCENT`); index, log,
