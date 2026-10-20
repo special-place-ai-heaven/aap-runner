@@ -71,8 +71,8 @@ tell them apart.
 - `SwitchName` is `aap-guests-win`, P10.0's internal switch, and nothing else.
 - Deploy `images/windows`, `images/common` and the verification payload it sends (`tools/parity-certify/probe/windows.ps1`,
   `tools/parity-certify/workloads/fixtures/hello.c`) to an Administrators-only folder and run the builder from there. Never
-  run the elevated builder from a user-writable checkout: it refuses (`AAP_BuilderUntrusted`) unless its own folder and
-  `images/common` pass the admin-only check.
+  run the elevated builder from a user-writable checkout: it refuses (`AAP_BuilderUntrusted`) unless its own folder,
+  `guest`, `images/common` and both payload folders pass the admin-only check.
 - Copy the owner's evaluation ISO into `<base_root>\media\` (admin-only) and pin its SHA-256 in an admin-only record the
   caller passes as `MediaSha256`; the full hash is not in this repository.
 - Pass the owner-approved values: `BuildCpus` 4, `BuildMemGib` 10, `BaseGibMax` 186 and `JobDiskGibMax` 55 (GiB, from the
@@ -123,8 +123,6 @@ tell them apart.
    and loads no guest hive. Host parsing of guest NTFS on mount is an accepted risk with a host patch-level requirement.
 4. **Scratch disk**: 150 GiB like the hosted `D:`; not a gap.
 5. **runner-images archive entry**: P03.1.
-
-## Open questions for the chair
-
-1. **Verification network.** The verification VM has no adapter. If an upstream test needs the network, give it the
-   internal switch, or accept that test's failure by name?
+6. **Verification network**: the verification VM stays without network. An upstream test that needs the network fails by
+   name and is handled by a waiver (approval record bound to `plan_sha256`) or decided in the D2 lab; the verify VM never
+   gets the switch.

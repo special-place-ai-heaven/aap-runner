@@ -909,6 +909,9 @@ Describe 'hostile guest disk: offline writes never follow guest-authored links' 
         { Select-AapWindowsPartition -Partitions @((& $mk 1 $efi), (& $mk 2 $msr), (& $mk 3 $data), (& $mk 4 $data)) } | Should -Throw 'AAP_HostileGuest*'
         { Select-AapWindowsPartition -Partitions @((& $mk 1 $data), (& $mk 2 $msr), (& $mk 3 $efi)) } | Should -Throw 'AAP_HostileGuest*'
         { Select-AapWindowsPartition -Partitions @((& $mk 1 $efi), (& $mk 3 $data)) } | Should -Throw 'AAP_HostileGuest*'
+        { Select-AapWindowsPartition -Partitions @((& $mk 1 $efi), (& $mk 2 $msr), (& $mk 4 $data)) } | Should -Throw 'AAP_HostileGuest*'
+        { Select-AapWindowsPartition -Partitions @((& $mk 2 $efi), (& $mk 3 $msr), (& $mk 4 $data)) } | Should -Throw 'AAP_HostileGuest*'
+        { Select-AapWindowsPartition -Partitions @((& $mk 2 $efi), (& $mk 1 $msr), (& $mk 3 $data)) } | Should -Throw 'AAP_HostileGuest*'
         { Select-AapWindowsPartition -Partitions @() } | Should -Throw 'AAP_HostileGuest*'
     }
     It 'the production provider finds the partition by layout and writes only through Write-AapGuestFile' {
@@ -987,8 +990,13 @@ Describe 'evidence root and the builder''s own folders' {
         @(Get-ChildItem -LiteralPath $script:Out -Recurse -Force).Count | Should -Be 0
         (Get-Ops $w 'NewVm').Count | Should -Be 0
     }
-    It 'refuses to run when <Which> is not admin-only' -Tag 'builder-untrusted' -TestCases @(@{ Which = 'its own folder'; Rel = '.' }, @{ Which = 'images\common'; Rel = '..\common' }) {
-        $w.Untrusted[[IO.Path]::GetFullPath((Join-Path (Split-Path -Parent (Get-TestModulePath)) $Rel))] = @('Users may write')
+    It 'refuses to run when <Which> is not admin-only' -Tag 'builder-untrusted' -TestCases @(
+        @{ Which = 'its own folder'; Path = { Split-Path -Parent (Get-TestModulePath) } }
+        @{ Which = 'images\common'; Path = { Join-Path (Split-Path -Parent (Get-TestModulePath)) '..\common' } }
+        @{ Which = 'the guest scripts'; Path = { Join-Path (Split-Path -Parent (Get-TestModulePath)) 'guest' } }
+        @{ Which = 'the P05 probe folder'; Path = { Split-Path -Parent (Get-ModuleVar 'ProbeScript') } }
+        @{ Which = 'the hello.c folder'; Path = { Split-Path -Parent (Get-ModuleVar 'HelloC') } }) {
+        $w.Untrusted[[IO.Path]::GetFullPath((& $Path))] = @('Users may write')
         $r = Invoke-Build
         $r.Reason | Should -Be 'AAP_BuilderUntrusted'
         Assert-NothingStarted
@@ -1009,12 +1017,38 @@ Describe 'guest output is capped while it arrives' {
         Assert-CleanedUp
         Test-Path (Join-Path $w.Evidence 'P06\win25-vs2026-x64_20261007.264.1-aap.1') | Should -BeFalse
     }
-    It 'stops a job that sends more than the cap on <Stream>' -Tag 'reply-cap' -TestCases @(
-        @{ Stream = 'output'; Body = { 1..100000 | ForEach-Object { 'x' * 100 } } }
-        @{ Stream = 'the error stream'; Body = { 1..20000 | ForEach-Object { Write-Error ('e' * 100) } } }) {
-        $j = Start-Job -ScriptBlock $Body
-        { Receive-AapCappedJob -Job $j -MaxBytes 65536 -TimeoutSeconds 120 -PollSeconds 1 } | Should -Throw 'AAP_HostileGuest*'
+    It 'stops a job that sends more text than the cap' -Tag 'reply-cap' {
+        $j = Start-Job { 1..100000 | ForEach-Object { 'x' * 100 } }
+        { Receive-AapCappedJob -Job $j -MaxBytes 65536 -TimeoutSeconds 120 -PollSeconds 1 } | Should -Throw 'AAP_HostileGuest*over 65536 bytes*'
         @(Get-Job -Id $j.Id -ErrorAction SilentlyContinue).Count | Should -Be 0
+    }
+    It 'refuses an output object that is not text or bytes: <Case>' -Tag 'reply-type' -TestCases @(
+        @{ Case = 'a property bag'; Body = { 1..20 | ForEach-Object { [pscustomobject]@{ big = 'A' * 102400 } } } }
+        @{ Case = 'a string carrying an object note'; Body = { 'x' | Add-Member -NotePropertyName big -NotePropertyValue ([pscustomobject]@{ v = 'A' * 102400 }) -PassThru } }
+        @{ Case = 'a number'; Body = { 42 } }) {
+        $j = Start-Job -ScriptBlock $Body
+        { Receive-AapCappedJob -Job $j -MaxBytes 1000 -TimeoutSeconds 120 -PollSeconds 1 } | Should -Throw 'AAP_HostileGuest*only text or bytes*'
+    }
+    It 'caps the number of <Stream> records, whose size it cannot measure' -Tag 'reply-records' -TestCases @(
+        @{ Stream = 'error'; Body = { 1..20 | ForEach-Object { Write-Error -Message 'e' -TargetObject ('T' * 102400) } } }
+        @{ Stream = 'warning'; Body = { 1..20 | ForEach-Object { Write-Warning 'w' } } }) {
+        $j = Start-Job -ScriptBlock $Body
+        { Receive-AapCappedJob -Job $j -MaxBytes 100000 -TimeoutSeconds 120 -PollSeconds 1 } | Should -Throw 'AAP_HostileGuest*over 16 stream records*'
+    }
+    It 'reports a failed call as unreachable, never as an empty answer' -Tag 'job-failed' {
+        $j = Start-Job { throw 'the guest went down' }
+        { Receive-AapCappedJob -Job $j -MaxBytes 1000 -TimeoutSeconds 120 -PollSeconds 1 } | Should -Throw 'AAP_GuestUnreachable*'
+    }
+    It 'the production provider talks to a guest only through capped jobs, file copies included' {
+        $t = Get-Content -Raw (Join-Path (Split-Path -Parent (Get-TestModulePath)) 'AapWinImage.HyperV.psm1')
+        $t | Should -Not -Match '-ToSession|-FromSession|New-PSSession'
+        @([regex]::Matches($t, 'Invoke-Command')).Count | Should -Be 1
+    }
+    It 'fails the build, not silently, when receiving a guest file fails' {
+        $w.Provider.ReceiveFile = { param($a) Add-FakeCall 'ReceiveFile' $a; throw 'AAP_GuestUnreachable: the guest call failed' }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_GuestUnreachable'
+        Assert-CleanedUp
     }
     It 'returns a small job''s output, byte chunks intact' -Tag 'reply-cap' {
         $j = Start-Job { 'line'; Write-Output -NoEnumerate ([byte[]](1, 2, 3)); Write-Warning 'w' }
@@ -1105,6 +1139,22 @@ Describe 'measurement and reboots' {
         $r.Detail | Should -Match '^p09'
         Assert-CleanedUp
     }
+    It 'keeps waiting while the guest does not answer its boot time, then counts the reboot' -Tag 'reboot-proof' {
+        $w | Add-Member -NotePropertyName Blank -NotePropertyValue 2 -Force
+        $w.BootTime = { param($w) $n = @($w.Calls | Where-Object { $_.Op -eq 'RestartVm' }).Count
+            if ($n -ge 1 -and $w.Blank -gt 0) { $w.Blank--; return '' }
+            [string](630000000000000000 + $n) }
+        (Invoke-Build).Status | Should -Be 'built'
+        $w.Blank | Should -Be 0
+    }
+    It 'times out, not hostile, when the guest never answers its boot time after a reboot' -Tag 'reboot-proof' {
+        Update-TestPlan $w { param($p) ($p.phases | Where-Object { $_.id -eq 'p09' }).timeout_seconds = 2 }
+        $w.BootTime = { param($w) if (@($w.Calls | Where-Object { $_.Op -eq 'RestartVm' }).Count -ge 1) { '' } else { '630000000000000000' } }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_RebootTimeout'
+        $r.Detail | Should -Match '^p09'
+        Assert-CleanedUp
+    }
     It 'treats a boot time that is not a tick count as hostile' {
         $w.BootTime = { param($w) 'soon' }
         (Invoke-Build).Reason | Should -Be 'AAP_HostileGuest'
@@ -1133,6 +1183,13 @@ Describe 'registry check in the guest before sysprep' {
         $r = Invoke-Build
         $r.Reason | Should -Be 'AAP_ScanIncomplete'
         $r.Detail | Should -Match 'lsa-default-password'
+        Assert-CleanedUp
+    }
+    It 'refuses when the guest checked every rule but reports one unreadable' -Tag 'registry-incomplete' {
+        Set-GuestFault 'p29' { param($w, $req) $o = ConvertFrom-Json (Get-FakeGuestReply $w $req); $o.data.registry.unreadable = @('autologon-enabled'); ConvertTo-Json $o -Depth 6 -Compress }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_ScanIncomplete'
+        $r.Detail | Should -Match 'autologon-enabled'
         Assert-CleanedUp
     }
     It 'treats a sysprep reply with <Case> as hostile' -TestCases @(

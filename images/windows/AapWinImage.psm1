@@ -141,34 +141,58 @@ function Select-AapWindowsPartition {
 }
 
 function Receive-AapCappedJob {
-    <# Collects a remote job's output while it runs and stops the job once everything it sent (output, error, warning,
-       verbose, debug and information records, counted together) passes MaxBytes. Returns the output objects. The streams
-       are read in place, so nothing is replayed to the host. Ceiling: a guest can buffer one poll interval of output, or
-       one oversized object, on the host before the cap trips. #>
-    param([Parameter(Mandatory)]$Job, [Parameter(Mandatory)][long]$MaxBytes, [Parameter(Mandatory)][int]$TimeoutSeconds, [int]$PollSeconds = 5)
+    <# Collects a remote job's output while it runs and stops the job as soon as it misbehaves:
+       - an output item that is not a string or byte array, or that carries a note property other than a short value (a
+         deserialized object can hold any amount of data no length check sees);
+       - more than MaxRecords error, warning, verbose, debug, information or progress records (their size cannot be
+         measured, so their number is capped; honest calls emit none);
+       - more than MaxBytes of output and record text together.
+       The streams are read in place, so nothing is replayed to the host. Returns the output items. A call that failed
+       (guest down, rebooting, unreachable) throws AAP_GuestUnreachable, so it never reads as an empty answer.
+       Ceiling: before a poll trips a cap, the host may already hold one poll interval of output and up to MaxRecords
+       records, each up to the PowerShell remoting per-object limit. #>
+    param([Parameter(Mandatory)]$Job, [Parameter(Mandatory)][long]$MaxBytes, [Parameter(Mandatory)][int]$TimeoutSeconds, [int]$PollSeconds = 5, [int]$MaxRecords = 16)
     $out = New-Object System.Collections.Generic.List[object]
-    $seen = @{}; $total = [long]0
+    $seen = @{}; $total = [long]0; $records = 0
     $until = (Get-Date).AddSeconds($TimeoutSeconds)
     try {
         while ($true) {
             $finished = [bool](Wait-Job -Job $Job -Timeout $PollSeconds)
             $i = 0
             foreach ($c in @($Job.ChildJobs)) {
-                foreach ($s in 'Output', 'Error', 'Warning', 'Verbose', 'Debug', 'Information') {
+                foreach ($s in 'Output', 'Error', 'Warning', 'Verbose', 'Debug', 'Information', 'Progress') {
                     $col = $c.$s; $k = "$i/$s"
                     $from = $(if ($seen.ContainsKey($k)) { $seen[$k] } else { 0 }); $to = $col.Count
                     for ($n = $from; $n -lt $to; $n++) {
-                        $o = $col[$n]
-                        if ($null -ne $o) { $o = $o.PSObject.BaseObject }
-                        $total += $(if ($o -is [byte[]]) { $o.Length } else { ([string]$o).Length })
+                        $item = $col[$n]
+                        if ($s -eq 'Output') {
+                            $o = $null; $bad = $null -eq $item
+                            if (-not $bad) {
+                                $o = $item.PSObject.BaseObject
+                                $bad = -not ($o -is [string] -or $o -is [byte[]])
+                                foreach ($np in @($item.PSObject.Properties | Where-Object { $_.MemberType -eq 'NoteProperty' })) {
+                                    $v = $np.Value
+                                    if ($null -eq $v -or $v -is [string] -or $v -is [guid] -or $v -is [bool]) { $total += ([string]$v).Length } else { $bad = $true }
+                                }
+                            }
+                            if ($bad) { throw 'AAP_HostileGuest: the guest sent an object where only text or bytes are expected' }   # check:reply-type
+                            $total += $o.Length
+                            $out.Add($o)
+                        } else {
+                            $records++
+                            if ($records -gt $MaxRecords) { throw "AAP_HostileGuest: the guest sent over $MaxRecords stream records" }   # check:reply-records
+                            $total += ([string]$item).Length
+                        }
                         if ($total -gt $MaxBytes) { throw "AAP_HostileGuest: the guest sent over $MaxBytes bytes" }   # check:reply-cap
-                        if ($s -eq 'Output') { $out.Add($o) }
                     }
                     $seen[$k] = $to
                 }
                 $i++
             }
-            if ($finished) { return , $out.ToArray() }
+            if ($finished) {
+                if ($Job.State -eq 'Failed' -or @($Job.ChildJobs | Where-Object { $_.State -eq 'Failed' }).Count) { throw 'AAP_GuestUnreachable: the guest call failed' }   # check:job-failed
+                return , $out.ToArray()
+            }
             if ((Get-Date) -gt $until) { throw "AAP_GuestTimeout: no reply within $TimeoutSeconds s" }
         }
     } finally { Remove-Job -Job $Job -Force }
@@ -686,20 +710,24 @@ function Assert-AapStagingBudget($Ctx) {
     if ($bytes -gt [double]$Ctx.Config.StagingGibMax * $script:GiB) { throw ("AAP_BudgetExceeded: the build folder holds {0:N1} GiB, over StagingGibMax {1}" -f ($bytes / $script:GiB), $Ctx.Config.StagingGibMax) }   # check:budget
 }
 
+# The guest's last boot time in ticks, or $null while the guest does not answer (going down, booting); anything else is hostile.
 function Get-AapGuestBootTime($Guest) {
     $t = [string](Invoke-AapProvider $Guest.Provider 'GetGuestBootTime' @{ VmName = $Guest.Vm; VmId = $Guest.VmId; User = $Guest.User; Password = $Guest.Password })
+    if ($t -eq '') { return $null }
     if ($t -cnotmatch '^[0-9]{1,18}\z') { throw 'AAP_HostileGuest: the guest boot time is not a tick count' }
     return [long]$t
 }
 
 # A reboot counts only once the guest answers again with a later boot time than it had before Restart-VM: a guest that
-# answers before it went down, or that never reboots, is not ready.
+# answers before it went down, that is between down and up, or that never reboots, is not ready yet; the wait goes on
+# until the phase timeout.
 function Wait-AapReboot($Ctx, [long]$Before, [int]$TimeoutSeconds) {
     $until = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
         $left = [int][Math]::Max(1, [Math]::Ceiling(($until - (Get-Date)).TotalSeconds))
         if (-not (Invoke-AapProvider $Ctx.Provider 'WaitGuestReady' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; TimeoutSeconds = $left })) { return $false }
-        if ((Get-AapGuestBootTime $Ctx) -le $Before) { Start-Sleep -Seconds $script:PollSeconds; continue }   # check:reboot-proof
+        $now = Get-AapGuestBootTime $Ctx
+        if ($null -eq $now -or $now -le $Before) { Start-Sleep -Seconds $script:PollSeconds; continue }   # check:reboot-proof
         return $true
     } while ((Get-Date) -lt $until)
     return $false
@@ -738,6 +766,7 @@ function Invoke-AapPhase($Ctx, $P) {
         }
         'restart' {
             $before = Get-AapGuestBootTime $Ctx
+            if ($null -eq $before) { throw "AAP_GuestUnreachable: $($P.id) the guest did not report its boot time before the reboot" }
             $null = Invoke-AapProvider $Ctx.Provider 'RestartVm' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; TimeoutSeconds = [int]$P.timeout_seconds }
             $ok = Wait-AapReboot $Ctx $before ([int]$P.timeout_seconds)
             if (-not $ok) { throw "AAP_RebootTimeout: $($P.id) guest did not come back from a reboot within $($P.timeout_seconds) s" }   # check:reboot-timeout
@@ -895,8 +924,10 @@ function Invoke-AapWinImageBuild {
     try {
         Assert-AapProvider $Provider
         $here = $PSScriptRoot
-        # The builder runs elevated: its own code must be as protected as the roots it writes (P19 deploys it admin-only).
-        foreach ($d in $here, [IO.Path]::GetFullPath((Join-Path $here '..\common'))) {
+        # The builder runs elevated: its own code, and every folder it sends files from, must be as protected as the roots
+        # it writes (P19 deploys them admin-only). Folders are checked, not each file in them.
+        foreach ($d in $here, (Join-Path $here 'guest'), [IO.Path]::GetFullPath((Join-Path $here '..\common')),
+            [IO.Path]::GetFullPath((Split-Path -Parent $script:ProbeScript)), [IO.Path]::GetFullPath((Split-Path -Parent $script:HelloC))) {
             $problems = @(Invoke-AapProvider $Provider 'TestRootTrust' @{ Path = $d } | Where-Object { $_ })
             if ($problems.Count) { throw "AAP_BuilderUntrusted: ${d}: $(@($problems | ForEach-Object { Get-AapPrintable ([string]$_) 300 }) -join '; ')" }   # check:builder-untrusted
         }

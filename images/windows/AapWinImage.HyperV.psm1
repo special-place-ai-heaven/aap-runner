@@ -23,9 +23,11 @@ function Get-AapGuestCredential([string]$User, [string]$Password) {
     $s.MakeReadOnly()
     New-Object Management.Automation.PSCredential ".\$User", $s
 }
-# Every call into a guest runs as a job whose output is size-capped while it arrives (Receive-AapCappedJob).
+# Every call into a guest, file transfers included, runs as a job whose output is capped while it arrives
+# (Receive-AapCappedJob); there is no other channel. A call that cannot start or fails is AAP_GuestUnreachable.
 function Invoke-AapGuestJob($A, [scriptblock]$ScriptBlock, [object[]]$ArgumentList = @(), [long]$MaxBytes = 4096, [int]$TimeoutSeconds = 120) {
-    $job = Invoke-Command -VMId $A.VmId -Credential (Get-AapGuestCredential $A.User $A.Password) -AsJob -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+    try { $job = Invoke-Command -VMId $A.VmId -Credential (Get-AapGuestCredential $A.User $A.Password) -AsJob -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList }
+    catch { throw 'AAP_GuestUnreachable: the guest call did not start' }
     Receive-AapCappedJob -Job $job -MaxBytes $MaxBytes -TimeoutSeconds $TimeoutSeconds
 }
 function Get-AapVm($A) {
@@ -183,12 +185,28 @@ function New-AapWinHyperVProvider {
         return $false
     }
     $p.GetGuestBootTime = { param($a)
-        (@(Invoke-AapGuestJob $a { [string](Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().Ticks } -MaxBytes 64) | ForEach-Object { [string]$_ }) -join ''
+        # A guest that is going down or not yet up answers nothing ($null); the builder asks again until its timeout.
+        try { $o = Invoke-AapGuestJob $a { [string](Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().Ticks } -MaxBytes 64 }
+        catch { if ($_.Exception.Message -match '^AAP_(GuestUnreachable|GuestTimeout):') { return $null }; throw }
+        (@($o) | ForEach-Object { [string]$_ }) -join ''
     }
     $p.SendFile = { param($a)
-        $null = Invoke-AapGuestJob $a { param($d) [void][IO.Directory]::CreateDirectory($d) } @((Split-Path -Parent $a.GuestPath))
-        $s = New-PSSession -VMId $a.VmId -Credential (Get-AapGuestCredential $a.User $a.Password)
-        try { Copy-Item -LiteralPath $a.HostPath -Destination $a.GuestPath -ToSession $s -Force } finally { Remove-PSSession $s }
+        # 1 MiB chunks, each its own capped call (no copy session, whose replies nothing would cap); the first creates the file.
+        $s = [IO.File]::OpenRead($a.HostPath)
+        try {
+            $first = $true
+            do {
+                $buf = New-Object byte[] 1048576
+                $n = $s.Read($buf, 0, $buf.Length)
+                if ($n -lt $buf.Length) { [Array]::Resize([ref]$buf, $n) }
+                $null = Invoke-AapGuestJob $a { param($f, $b, $first)
+                    if ($first) { [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($f)) }
+                    $fs = New-Object IO.FileStream($f, $(if ($first) { [IO.FileMode]::Create } else { [IO.FileMode]::Append }), [IO.FileAccess]::Write)
+                    try { $fs.Write($b, 0, $b.Length) } finally { $fs.Dispose() }
+                } @($a.GuestPath, $buf, $first) -MaxBytes 4096 -TimeoutSeconds 600
+                $first = $false
+            } while ($n -eq 1048576)
+        } finally { $s.Dispose() }
     }
     $p.InvokeGuest = { param($a)
         $out = Invoke-AapGuestJob $a { param($script, $request)
@@ -198,6 +216,7 @@ function New-AapWinHyperVProvider {
     }
     $p.ReceiveFile = { param($a)
         # The guest streams the file as byte chunks; the cap counts them as they arrive and the host file is created new.
+        # A failed call (file missing, guest down) throws before any host file exists.
         $chunks = Invoke-AapGuestJob $a { param($f, $max)
             $s = [IO.File]::OpenRead($f)
             try {

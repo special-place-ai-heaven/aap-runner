@@ -27,10 +27,14 @@ guest-authored file system metadata (reparse points refused). In detail:
 
 - Only the runner-images archive goes through P03. The 81 build scripts it holds then download and run hundreds of
   installers from the internet, so nothing a guest says or writes is trusted, from the first phase on.
-- Every call into a guest (PowerShell Direct, addressed by VM id) runs as a job whose output, all streams together, is
-  counted while it arrives and stopped at the cap: 64 KiB for a reply, 16 MiB for a software report, 4 MiB for the
-  inventory. Received files are written to `<build folder>\recv-<name>.part` with create-new semantics, size-checked, then
-  moved into the evidence folder; a partial or oversized file is deleted.
+- Every call into a guest (PowerShell Direct, addressed by VM id), file transfers in both directions included, runs as a
+  job that is checked while it arrives and stopped at the first violation: an output item that is not text or bytes, more
+  than 16 error, warning, verbose, debug, information or progress records (their size cannot be measured; honest calls emit
+  none), or more bytes than the cap: 64 KiB for a reply, 16 MiB for a software report, 4 MiB for the inventory. Residual:
+  before a poll trips a cap, the host may hold one 5-second poll of output and up to 16 records, each up to the PowerShell
+  remoting per-object limit. A call that fails is `AAP_GuestUnreachable`, never an empty answer. Files go to the guest in
+  1 MiB chunks, one capped call each. Received files are written to `<build folder>\recv-<name>.part` with create-new
+  semantics, size-checked, then moved into the evidence folder; a partial or oversized file is deleted.
 - Offline writes into a guest disk (the verification answer file) go through `Write-AapGuestFile`: every folder from the
   partition root down must be a plain folder, an existing plain file is deleted, and the new one is created with
   `CreateNew`. The Windows partition is chosen by the layout the builder made (EFI, MSR, one basic data partition), never by
@@ -48,8 +52,9 @@ guest-authored file system metadata (reparse points refused). In detail:
 run removed everything it made (VMs, build disks, a partly published generation, the evidence files it wrote) and kept
 only `secret-scan.json` when the scan ran, as the record of why it failed.
 
-1. **Preflight** (refusals, nothing written): provider completeness; the builder's own folder and `images\common` must
-   pass the same admin-only trust check as the roots; config; the storage document; trust of the storage document's
+1. **Preflight** (refusals, nothing written): provider completeness; the builder's own folder, `guest`, `images\common`
+   and the folders of the verification payload (`tools\parity-certify\probe`, `tools\parity-certify\workloads\fixtures`)
+   must pass the same admin-only trust check as the roots (folders, not each file); config; the storage document; trust of the storage document's
    folder, `base_root`, the staging root (admin-only, on the recorded volume) and the evidence root; the internal switch
    `aap-guests-win`; the plan (every script hash pinned, `image_version` of the form `yyyymmdd.n.n`); input blockers (each
    P03 Windows blocker and each plan blocker resolved, or waived by a chair approval record for this plan); no reparse
@@ -71,7 +76,7 @@ only `secret-scan.json` when the scan ran, as the record of why it failed.
    `-File`), so exit codes match upstream. Phases upstream marks `elevated_user` (p07 bcdedit, p13 Visual Studio, p19 LLVM
    and Windows Updates) run as a scheduled task of the install user with `RunLevel Highest`, as Packer does, with logon
    type S4U so no password is stored in the task. A reboot counts only when the guest answers again with a later boot time
-   than before `Restart-VM`. After each phase the build folder is measured against `StagingGibMax`.
+   than before `Restart-VM`; a guest that does not answer meanwhile is waited for until the phase timeout. After each phase the build folder is measured against `StagingGibMax`.
 5. **Seal**: the last phase deletes every answer file, gives the install user a fresh random password that never leaves the
    guest and disables it, runs the registry check as SYSTEM (Winlogon `DefaultPassword` and `AutoAdminLogon`, the LSA
    `DefaultPassword` secret; any finding or unreadable value stops here, before sysprep), removes `C:\aap-build`, runs
@@ -168,7 +173,7 @@ context; the record holds what this build measured, and it must fit `BaseGibMax`
 `AAP_StorageUntrusted` (also a reparse point on the way to the evidence, build or generation folder),
 `AAP_StorageVolumeMismatch`, `AAP_NetworkUntrusted`, `AAP_PlanInvalid`, `AAP_ScriptUnpinned`, `AAP_Blocked`,
 `AAP_BuildBusy`, `AAP_GenerationExists`, `AAP_DiskLow`, `AAP_MediaMismatch`, `AAP_InputsUnverified`, `AAP_HostileGuest`,
-`AAP_GuestTimeout`, `AAP_PhaseFailed`, `AAP_ScriptHashMismatch`, `AAP_RebootTimeout`, `AAP_BudgetExceeded`,
+`AAP_GuestTimeout`, `AAP_GuestUnreachable`, `AAP_PhaseFailed`, `AAP_ScriptHashMismatch`, `AAP_RebootTimeout`, `AAP_BudgetExceeded`,
 `AAP_BudgetUnmeasured`, `AAP_SecretFound`, `AAP_ScanIncomplete`, `AAP_AllowlistInvalid`, `AAP_VerifyFailed`,
 `AAP_BaseChanged`, `AAP_PublishMismatch`, `AAP_UnsafeDelete`; anything else is `AAP_Unexpected`. Every guest reply is
 hostile input: capped while received, at most 64 KiB, one printable-ASCII JSON object with known fields, the expected
@@ -234,8 +239,9 @@ user in the place of Administrators).
   creates nor checks beyond name and type; upstream scripts download from the internet themselves.
 - **Elevated provisioners** run as an S4U scheduled task of the install user; Packer uses a password logon for its task.
   Whether any upstream script needs the user's network credentials or DPAPI keys under S4U is unproven.
-- **The verification guest has no network.** If an upstream test needs the network, verification fails and the chair
-  decides whether the verification VM gets the internal switch.
+- **The verification guest has no network** (chair decision). An upstream test that needs the network fails
+  verification; it is waived by name in an approval record bound to `plan_sha256`, or decided in the D2 lab. The builder
+  has no per-test waiver yet: the verify reply reports counts, not failed test names.
 - **Guest-side code that changes the machine** (scheduled tasks, the SYSTEM registry check, sysprep) runs only inside a
   build guest; the tests cover its request handling, its wrapper and the host's checks of its replies.
 - **Host crash mid-build is not resumable**: the build password lives in memory only, so the next run cleans the partial
