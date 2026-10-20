@@ -17,21 +17,28 @@ The host sends only these commands: `probe`, `deliver_registration`, `start_runn
 most 120 s ahead). There is no command that runs caller-supplied code, takes a path, or returns a
 file.
 
-Sequence rule: one counter per boot for all command classes, starting at 1 with the first `probe`,
-+1 per command, never reset within a boot, at most 2^31-1. A VM boots once per reservation (one
+Sequence rule: one counter per boot for all command classes, starting at 1 with the first `probe`.
+The host increments it for every send, including a send that times out, fails or is retried, and
+never reuses a `seq`, so gaps are normal. It is never reset within a boot, at most 2^31-1. A VM boots once per reservation (one
 job per VM), so a new counter only ever starts with a new VM and a new `lease_generation`. One-shot
 classes, accepted once per boot: `deliver_registration`, `start_runner`, `shutdown`. Repeatable:
 `probe` (until `ready`), `status`, `collect`. Heartbeats every 30 s cannot exhaust the counter.
 
 The guest agent (P14/P15, baked into the image) is a fixed program. It refuses a command whose
 `vm_id` is not its own (read from the hypervisor, not from disk), whose `lease_generation` differs
-from the first one it saw this boot, whose `seq` is not exactly previous + 1, whose `nonce` was
-seen, whose one-shot class already ran, or that has expired. It deletes its own bootstrap material
+from the first one it saw this boot, whose `seq` is not strictly greater than the last `seq` it
+accepted (a gap is allowed; a `seq` less than or equal to the last accepted one is refused as a
+replay), whose `nonce` was seen, whose one-shot class already ran, or that has expired. It echoes
+the request's `nonce` and `seq` in its reply. It deletes its own bootstrap material
 (credential, seed, unattend file) before it answers `listening`.
 
 The host accepts one `guest_reply` per command: the exact schema, `seq`, `nonce`, `vm_id`,
 `reservation_id` and `lease_generation` echoed, `diag` printable ASCII up to 512 characters.
-A timeout or disconnect is a failed guest (bounded retries, then the allocator heartbeat rule).
+A timeout or disconnect is a failed guest (bounded retries, then the allocator heartbeat rule); it
+never changes the counter rules: the next send simply uses a higher `seq`. A reply lost after the
+agent accepted the request therefore cannot cause a false `refused` on `seq`, which one failed or
+lost probe (normal during specialize and OOBE at first boot) would otherwise do for the rest of the
+boot. A reply whose echoed `nonce` or `seq` does not match the request is hostile.
 More data, extra fields, a wrong echo or a non-printable byte is a **hostile guest**: the provider
 journals `hostile_guest` and the slot goes straight to `deleting`, final. The host never
 evaluates, imports or opens anything the guest returns; job summaries come from `collect` as the
@@ -191,7 +198,10 @@ Negative tests (each must fail closed, and the provider must journal the stated 
 | Case | Expected |
 |---|---|
 | Wrong credential, credential of another clone | auth refused; `failed` |
-| Command with wrong `vm_id`, stale `lease_generation`, repeated or skipped `seq`, reused `nonce`, expired, second one-shot command | guest refuses; host records `refused` and does not proceed |
+| Command with wrong `vm_id`, stale `lease_generation`, repeated or lower `seq` (not strictly greater than the last accepted), reused `nonce`, expired, second one-shot command | guest refuses; host records `refused` and does not proceed |
+| Lose the reply after the agent accepted the request; the next probe (a higher `seq`) | the next probe is accepted; no false `refused` |
+| A failed or timed-out probe, then a probe with a `seq` that skips the lost ones (a gap) | the gapped `seq` is accepted; the counter only rises |
+| A reply that echoes the wrong `nonce` or `seq` | host records `hostile_guest`; slot goes to `deleting` |
 | Hostile guest replies: 100 MB output, 10 000-level nested object, crafted CLIXML (type-confused or oversized objects), remote host-UI calls (prompts, credential requests), floods on the error/verbose/warning/progress streams, extra fields, control bytes, wrong echo, never answers, closes mid-reply | supervisor stays responsive; the call child is capped and killed by its job object; each call ends within its timeout; wrong shape or content gives `hostile_guest` and immediate `deleting`; silence gives `timeout`; no host file written from guest data |
 | Guest Administrator replaces `agent.ps1` or the remoting endpoint configuration | replies are still bounded and validated; anything off-contract is `hostile_guest` |
 | Guest Administrator / root connects over IPv4 and IPv6 to every host vEthernet address (ports 135, 139, 445, 3389, 5985 and a full TCP sweep), the WSL distro (NAT and mirrored mode), `192.168.1.1` and the LAN, the other profile's subnet, another guest on the same switch, `fd00:aaaa::1`, or the hvsocket service of another VM | all fail while step 7 still passes |

@@ -50,7 +50,7 @@ names the error it must produce, so it cannot pass for the wrong reason.
    `ACTIONS_RUNNER_INPUT_JITCONFIG`, never argv or a file.
 7. The fixed management command set, wire framing (capped child process for PowerShell Direct,
    agent entrypoints, stdin/stdout only, vsock port 5222, hardened ssh), echo/sequence/nonce replay
-   rules, hostile-reply handling, and the guest network enforcement shape.
+   rules (host sequence rises on every send; the agent accepts any strictly greater number), hostile-reply handling, and the guest network enforcement shape.
 7a. JIT secrecy: no copy outside the runner's root and processes; destroy is the control; `reset`
    forbidden; the runner starts as `Runner.Listener` directly.
 8. Immutable catalog generations tied to the P01 baselines, one active per profile, one retained
@@ -164,7 +164,8 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 - **P02.1**: lab cases added for crafted CLIXML, remote host-UI calls, stream floods, a
   guest-replaced endpoint, IPv6 and host-port reachability, ARP/DHCP/RA spoofing, WSL mirrored
   mode, host PowerShell 4103/4104 and transcription, and a stolen runner credential; plus the
-  framed-hvsocket comparison for Windows.
+  framed-hvsocket comparison for Windows; plus the sequence cases: lose the reply after the agent
+  accepted the request and the next probe is accepted, and a gapped `seq` is accepted.
 - **P16 todo**: correct the `distro/README.md` threat-model row: any process of the operator
   account can reach the distro as root and read `app.pem` (WSL session per SID, no elevation), so
   the broker's rules are integrity controls, not access control.
@@ -236,3 +237,4 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 | 2026-10-20 | P02.2 | validate.py | - | `$` is the end of input; documents bounded to 256 KiB (a 256-row matrix is about 90 KB) |
 | 2026-10-20 | P13 security review | cache-qualification | 2 (text only) | rule 6: `workflow_dispatch` untrusted; tag push trusted only when `head_sha` is reachable from the default branch; class from the job record matched by `runner_id` and `runner_group_id` (owner decision: App gains `actions: read`, `contents: read`); untrusted jobs get a private per-job root only; namespace key adds the zccache version; host never mounts a namespace disk after a guest has had it. No schema change |
 | 2026-10-20 | coord-ci-wiring | evidence-cleanup | receipt 1 | cleanup-receipt `item` also accepts `coord-<slug>` (lowercase letters, digits, hyphens) for coordinator jobs; fixtures `coord-manual-shape` and `coord-item-uppercase`; `schema` stays 1 |
+| 2026-10-20 | P10 review | guest-transport | 1 (text only) | sequence rule: the host raises `seq` on every send and never reuses one; the agent accepts any `seq` strictly greater than the last accepted (gaps allowed), refuses less than or equal as a replay, and echoes nonce and `seq`; a timeout never changes the counter rules, so a lost reply cannot cause a false `refused`; lab cases added. Replaces exact previous + 1, which wedged the channel after one failed or lost probe |
