@@ -47,7 +47,8 @@
         "type": "powershell",
         "body_sha256": "134362332457fbe3e2931bdc1403f47807978a993b98a6115bf0c5d5df134961"
       },
-      "deviation": null
+      "deviation": null,
+      "elevated": false
     },
     {
       "id": "p02",
@@ -58,7 +59,8 @@
         "type": "file",
         "body_sha256": "c3a42a3457c6ad8753872c09bec1baa3c56f66509736ecf29bff96e8471d33ee"
       },
-      "deviation": "assets, scripts and toolsets come from the P03-staged runner-images archive at the build commit, copied into the guest over the management session"
+      "deviation": "assets, scripts and toolsets come from the P03-staged runner-images archive at the build commit, copied into the guest over the management session",
+      "elevated": false
     },
     {
       "id": "p03",
@@ -69,7 +71,8 @@
         "type": "file",
         "body_sha256": "b4e6eb4b236fe5ac43760773a23a4023bb8001a69e38142a4654af291396f9dd"
       },
-      "deviation": "from the same P03-staged archive"
+      "deviation": "from the same P03-staged archive",
+      "elevated": false
     },
     {
       "id": "p04",
@@ -80,7 +83,8 @@
         "type": "powershell",
         "body_sha256": "f635c4e45100287ab61e209a80a36c7c3c5115ffb2042b7f2e6bf674bce4d5ef"
       },
-      "deviation": null
+      "deviation": null,
+      "elevated": false
     },
     {
       "id": "p05",
@@ -91,7 +95,8 @@
         "type": "windows-shell",
         "body_sha256": "8a1e3624543486ae892af4fbd4b39bad6da927b02479e2a53f1c16adf6a7c969"
       },
-      "deviation": "the answer file creates the install user with a per-build random password held in memory only; WinRM basic auth is not enabled because the builder uses PowerShell Direct"
+      "deviation": "the answer file creates the install user with a per-build random password held in memory only; WinRM basic auth is not enabled because the builder uses PowerShell Direct",
+      "elevated": false
     },
     {
       "id": "p06",
@@ -102,7 +107,8 @@
         "type": "powershell",
         "body_sha256": "e0b9b0524c9860f2f4e4b07b57c69fefd79899dedce47d1fbbcbf191065440d4"
       },
-      "deviation": null
+      "deviation": null,
+      "elevated": false
     },
     {
       "id": "p07",
@@ -113,7 +119,8 @@
         "type": "powershell",
         "body_sha256": "0821ac3b267060e0adaef3b1426cc8314f4e3171195156ce53f87b8efd50907e"
       },
-      "deviation": null
+      "deviation": null,
+      "elevated": true
     },
     {
       "id": "p08",
@@ -215,7 +222,8 @@
         "type": "powershell",
         "body_sha256": "bfa3b77e12510c7b9b3ea34f1c0bd571312a6e5660b7005b4cbf489b04cd8cdf"
       },
-      "deviation": null
+      "deviation": null,
+      "elevated": false
     },
     {
       "id": "p11",
@@ -781,7 +789,8 @@
         "type": "powershell",
         "body_sha256": "521ff8f6a7354cd755593d799a5ee7fe7eac0739ccc6e48421c0780685d4b602"
       },
-      "deviation": null
+      "deviation": null,
+      "elevated": false
     },
     {
       "id": "p23",
@@ -792,7 +801,8 @@
         "type": "powershell",
         "body_sha256": "ae6079005bf563e2068ba630b333db5375a3c0b2cf0d5dfea890aa1498da242f"
       },
-      "deviation": null
+      "deviation": null,
+      "elevated": false
     },
     {
       "id": "p24",
@@ -803,7 +813,8 @@
         "type": "powershell",
         "body_sha256": "3769d791bd3adec35a466ea7842f9dbfe7919378e5f74cc2362237d2ec9eb7c2"
       },
-      "deviation": null
+      "deviation": null,
+      "elevated": false
     },
     {
       "id": "p25",
@@ -814,7 +825,8 @@
         "type": "file",
         "body_sha256": "2f20afcdf37ee93d547373975fe7b4dc4b10b6155545e0426d6f9d066231aecf"
       },
-      "deviation": "copied to the build evidence, size-bounded, never parsed as code"
+      "deviation": "copied to the build evidence, size-bounded, never parsed as code",
+      "elevated": false
     },
     {
       "id": "p26",
@@ -825,7 +837,8 @@
         "type": "file",
         "body_sha256": "1300b025294b249dfe2017d798adbc81a65e777b0294af449565a5720505c7c7"
       },
-      "deviation": "copied to the build evidence, size-bounded, never parsed as code"
+      "deviation": "copied to the build evidence, size-bounded, never parsed as code",
+      "elevated": false
     },
     {
       "id": "p27",
@@ -891,7 +904,8 @@
         "type": "powershell",
         "body_sha256": "07dd17bb5ed41b68143f484527a0952b8f4a8ba143ff46c81dfbd599926c3dd6"
       },
-      "deviation": "before sysprep the builder deletes every answer file and gives the install user a fresh random password that never leaves the guest"
+      "deviation": "before sysprep the builder deletes every answer file and gives the install user a fresh random password that never leaves the guest",
+      "elevated": false
     }
   ]
 }

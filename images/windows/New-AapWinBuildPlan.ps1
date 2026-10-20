@@ -12,6 +12,8 @@ param(
 )
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 formats JSON differently, so the committed plan is regenerated with PowerShell 7 only.
+if ($PSVersionTable.PSVersion.Major -lt 7 -and -not $PSBoundParameters.ContainsKey('OutFile')) { throw 'AAP_PlanHost: regenerate build-plan.json with pwsh 7, or pass -OutFile' }
 
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $base = 'parity/baselines/windows-2025-vs2026-x64'
@@ -103,6 +105,7 @@ foreach ($blk in $blocks) {
         $row.kind = 'action'
         $row.action = $hit[0].Action
         $row.deviation = $hit[0].Deviation
+        $row.elevated = ($body -match 'elevated_user')
     }
     $phases.Add($row)
 }

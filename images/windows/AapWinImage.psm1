@@ -2,6 +2,9 @@
 # Every Hyper-V, disk, guest, ACL and input-verification call goes through the provider (a hashtable of scriptblocks,
 # AapWinImage.HyperV.psm1 in production, fakes in tests). This module itself does filesystem work inside the build and
 # evidence folders only, and never touches the network: inputs come from P03 staging, verified by the provider.
+# The build and verification guests run internet-sourced installers and are treated as hostile: replies are size-capped
+# while received, files received from a guest land in the build folder first, and no host path is ever resolved through
+# guest-authored file system metadata (reparse points refused).
 # Every refusal throws 'AAP_<Reason>: <detail>'. Lines tagged '# check:<name>' are the safety checks the mutation run
 # disables one at a time (tests/images/windows/Invoke-AapWinMutations.ps1).
 
@@ -12,8 +15,23 @@ $script:Profile = 'win25-vs2026-x64'
 $script:GiB = 1073741824
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 $script:ProviderOps = @('TestRootTrust', 'GetVolume', 'MeasureBytes', 'VerifyInputs', 'NewBuildDisk', 'ApplyWindowsImage', 'NewDiffDisk',
-    'WriteOfflineFiles', 'NewVm', 'StartVm', 'StopVm', 'RestartVm', 'RemoveVm', 'WaitGuestReady', 'SendFile', 'InvokeGuest', 'ReceiveFile',
-    'OptimizeDisk', 'MountReadOnly', 'Dismount', 'ReadOfflineRegistry', 'SetReadOnlyAcl', 'GetVmMemoryOverheadMib')
+    'WriteOfflineFiles', 'GetSwitch', 'NewVm', 'StartVm', 'StopVm', 'RestartVm', 'RemoveVm', 'WaitGuestReady', 'GetGuestBootTime', 'SendFile',
+    'InvokeGuest', 'ReceiveFile', 'OptimizeDisk', 'MountReadOnly', 'Dismount', 'SetReadOnlyAcl', 'GetVmMemoryOverheadMib')
+# Repository files the builder reads. Not configurable: a caller cannot point the builder at another plan, manifest or
+# guest payload (tests replace them in module scope).
+$script:PlanPath = Join-Path $PSScriptRoot 'build-plan.json'
+$script:ManifestPath = Join-Path $PSScriptRoot '..\common\artifacts.manifest.json'
+$script:AllowlistPath = Join-Path $PSScriptRoot 'secret-allowlist.json'
+$script:ProbeScript = Join-Path $PSScriptRoot '..\..\tools\parity-certify\probe\windows.ps1'
+$script:HelloC = Join-Path $PSScriptRoot '..\..\tools\parity-certify\workloads\fixtures\hello.c'
+$script:SwitchName = 'aap-guests-win'   # the P10.0 internal switch (guest-transport.md candidate); never External or Default Switch
+$script:PollSeconds = 15
+# Folders on a Windows volume that are ACL-locked to SYSTEM and that the scan skips. Reviewed list: any OTHER unreadable
+# path makes the scan incomplete. Extend it only through review, with the reason.
+$script:ScanSkip = @('System Volume Information')
+$script:ScanListMax = 200
+$script:LargeFilesMax = 10000
+$script:RegistryRules = @('autologon-password', 'autologon-enabled', 'lsa-default-password')
 $script:Actions = @('prepare-folders', 'upload-sources', 'upload-report-base', 'layout-image-folder', 'create-install-user', 'check-install-user',
     'bcdedit-testsigning', 'wlansvc-manual', 'assert-test-results', 'software-report', 'assert-software-report',
     'download-software-report-md', 'download-software-report-json', 'sysprep-generalize')
@@ -22,7 +40,7 @@ $script:ActionSeconds = 3600
 $script:ReplyMaxBytes = 65536
 $script:ReportMaxBytes = 16MB
 $script:InventoryMaxBytes = 4MB
-$script:ScanFileMaxBytes = 32MB
+$script:ScanFileMaxBytes = 32MB          # larger files are hashed and listed in secret-scan.json, not content-scanned
 $script:CapHeadroom = 1.25              # cap = measured peak x 1.25, rounded up (backend-lifecycle: cap >= peak)
 $script:EvaluationDays = 180
 $script:RebuildLeadDays = 14
@@ -60,36 +78,172 @@ function Assert-AapProvider($Provider) {
     if ($missing.Count) { throw "AAP_ProviderInvalid: missing $($missing -join ', ')" }
 }
 
-function Test-AapLink([string]$Path) {
-    try { return (([int][IO.File]::GetAttributes($Path)) -band [int][IO.FileAttributes]::ReparsePoint) -ne 0 } catch { return $false }
+# What one path is, without following it: 'absent', 'link' (any reparse point: junction, symbolic link, mount point), 'dir'
+# or 'file'. Access denied and every other error propagate, so an unreadable entry is never taken for an absent one.
+function Get-AapPathKind([string]$Path) {
+    try { $attr = [int][IO.File]::GetAttributes($Path) } catch [IO.FileNotFoundException], [IO.DirectoryNotFoundException] { return 'absent' }
+    if (($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { return 'link' }
+    if (($attr -band [int][IO.FileAttributes]::Directory) -ne 0) { return 'dir' }
+    return 'file'
+}
+
+function Assert-AapPlainPath {
+    <# Walks $Path down from $Root one component at a time and refuses a reparse point anywhere on the way, $Root included,
+       so a junction or link planted by a guest (or by anyone who could write there) never redirects a host read or write.
+       With -Create, missing folders are created on the way. Throws '<Reason>: ...'. #>
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Reason, [switch]$Create)
+    $r = [IO.Path]::GetFullPath($Root); $full = [IO.Path]::GetFullPath($Path)
+    if ($r.Length -gt 3) { $r = $r.TrimEnd('\') }
+    if ($full.Length -gt 3) { $full = $full.TrimEnd('\') }
+    $prefix = $(if ($r.EndsWith('\')) { $r } else { $r + '\' })
+    if ($full -ne $r -and -not $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { throw "${Reason}: $full is not below $r" }
+    $segs = @($(if ($full.Length -gt $r.Length) { $full.Substring($prefix.Length).Split('\') }))
+    $walk = $r
+    $kind = Get-AapPathKind $walk
+    foreach ($seg in @('') + $segs) {
+        if ($seg) {
+            $walk = Join-Path $walk $seg
+            $kind = Get-AapPathKind $walk
+            if ($kind -eq 'absent' -and $Create) { [void][IO.Directory]::CreateDirectory($walk); $kind = Get-AapPathKind $walk }
+            if ($kind -eq 'absent') { return }
+        }
+        if ($kind -ne 'dir') { throw "${Reason}: $walk is $(@{ link = 'a link'; file = 'a file'; absent = 'missing' }[$kind]), not a plain folder" }   # check:plain-path
+    }
+}
+
+function Write-AapGuestFile {
+    <# Writes one file into a mounted guest disk. Every folder from the partition root down must be plain (missing ones are
+       created), an existing plain file is deleted first, and the new file is opened with CreateNew, so nothing a guest left
+       on its disk can redirect the write. #>
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$RelPath, [Parameter(Mandatory)][AllowEmptyCollection()][byte[]]$Bytes)
+    if ($RelPath -cnotmatch '^[A-Za-z0-9._-]+(\\[A-Za-z0-9._-]+)*\z' -or $RelPath -match '(^|\\)\.\.?(\\|$)') { throw "AAP_HostileGuest: bad guest path $RelPath" }
+    $target = Join-Path $Root $RelPath
+    Assert-AapPlainPath -Root $Root -Path (Split-Path -Parent $target) -Reason 'AAP_HostileGuest' -Create
+    $kind = Get-AapPathKind $target
+    if ($kind -eq 'link' -or $kind -eq 'dir') { throw "AAP_HostileGuest: $target is a $kind" }   # check:guest-write
+    if ($kind -eq 'file') { [IO.File]::SetAttributes($target, [IO.FileAttributes]::Normal); [IO.File]::Delete($target) }
+    $fs = New-Object IO.FileStream($target, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $fs.Write($Bytes, 0, $Bytes.Length) } finally { $fs.Dispose() }
+}
+
+function Select-AapWindowsPartition {
+    <# The Windows partition of a disk the builder laid out: exactly EFI, MSR and one basic data partition, numbers 1 to 3.
+       A guest can add, remove or retype partitions on its own disk; anything but that layout is refused, so a decoy
+       partition with its own \Windows\System32 is never taken for the real one. #>
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Partitions)
+    $p = @($Partitions | Sort-Object { [int]$_.PartitionNumber })
+    $types = (@($p | ForEach-Object { ([string]$_.GptType).ToLowerInvariant() }) -join ',')
+    $numbers = (@($p | ForEach-Object { [int]$_.PartitionNumber }) -join ',')
+    if ($types -cne '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b},{e3c9e316-0b5c-4db8-817d-f92df00215ae},{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' -or $numbers -ne '1,2,3') {   # check:disk-layout
+        throw 'AAP_HostileGuest: the disk no longer has the EFI, MSR, Windows layout the builder made'
+    }
+    return $p[2]
+}
+
+function Receive-AapCappedJob {
+    <# Collects a remote job's output while it runs and stops the job once everything it sent (output, error, warning,
+       verbose, debug and information records, counted together) passes MaxBytes. Returns the output objects. The streams
+       are read in place, so nothing is replayed to the host. Ceiling: a guest can buffer one poll interval of output, or
+       one oversized object, on the host before the cap trips. #>
+    param([Parameter(Mandatory)]$Job, [Parameter(Mandatory)][long]$MaxBytes, [Parameter(Mandatory)][int]$TimeoutSeconds, [int]$PollSeconds = 5)
+    $out = New-Object System.Collections.Generic.List[object]
+    $seen = @{}; $total = [long]0
+    $until = (Get-Date).AddSeconds($TimeoutSeconds)
+    try {
+        while ($true) {
+            $finished = [bool](Wait-Job -Job $Job -Timeout $PollSeconds)
+            $i = 0
+            foreach ($c in @($Job.ChildJobs)) {
+                foreach ($s in 'Output', 'Error', 'Warning', 'Verbose', 'Debug', 'Information') {
+                    $col = $c.$s; $k = "$i/$s"
+                    $from = $(if ($seen.ContainsKey($k)) { $seen[$k] } else { 0 }); $to = $col.Count
+                    for ($n = $from; $n -lt $to; $n++) {
+                        $o = $col[$n]
+                        if ($null -ne $o) { $o = $o.PSObject.BaseObject }
+                        $total += $(if ($o -is [byte[]]) { $o.Length } else { ([string]$o).Length })
+                        if ($total -gt $MaxBytes) { throw "AAP_HostileGuest: the guest sent over $MaxBytes bytes" }   # check:reply-cap
+                        if ($s -eq 'Output') { $out.Add($o) }
+                    }
+                    $seen[$k] = $to
+                }
+                $i++
+            }
+            if ($finished) { return , $out.ToArray() }
+            if ((Get-Date) -gt $until) { throw "AAP_GuestTimeout: no reply within $TimeoutSeconds s" }
+        }
+    } finally { Remove-Job -Job $Job -Force }
+}
+
+function Set-AapAcl([string]$Path, [bool]$IsDir, $Security) {
+    $info = $(if ($IsDir) { New-Object IO.DirectoryInfo $Path } else { New-Object IO.FileInfo $Path })
+    if ($PSVersionTable.PSVersion.Major -ge 6) { [IO.FileSystemAclExtensions]::SetAccessControl($info, $Security) } else { $info.SetAccessControl($Security) }
+}
+
+# Owner, protection and explicit entries of a security descriptor, for comparison (SDDL also carries the auto-inherited flag).
+function Get-AapAclSignature($Acl) {
+    $rules = @($Acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object {
+            '{0}|{1}|{2}|{3}|{4}|{5}' -f $_.IdentityReference.Value, [int]$_.FileSystemRights, [int]$_.InheritanceFlags, [int]$_.PropagationFlags, $_.AccessControlType, $_.IsInherited } | Sort-Object)
+    return '{0};{1};{2}' -f $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value, $Acl.AreAccessRulesProtected, ($rules -join ';')
+}
+
+function Set-AapReadOnlyAcl {
+    <# Owner $Owner; each SID in $Readers may read and execute; nobody may write; inheritance off. Idempotent: an entry that
+       already has exactly this owner and DACL is left alone, because its own DACL denies a second write of its attributes. #>
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Owner, [Parameter(Mandatory)][string[]]$Readers)
+    $kind = Get-AapPathKind $Path
+    if ($kind -ne 'dir' -and $kind -ne 'file') { throw "AAP_UnsafePath: $Path is $kind" }
+    $isDir = $kind -eq 'dir'
+    $sec = $(if ($isDir) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity })
+    $sec.SetOwner((New-Object Security.Principal.SecurityIdentifier $Owner))
+    $sec.SetAccessRuleProtection($true, $false)
+    $inherit = $(if ($isDir) { [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None })
+    foreach ($sid in $Readers) {
+        $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule (New-Object Security.Principal.SecurityIdentifier $sid), 'ReadAndExecute, Synchronize', $inherit, 'None', 'Allow'))
+    }
+    if ((Get-AapAclSignature (Get-Acl -LiteralPath $Path)) -ceq (Get-AapAclSignature $sec)) { return }   # check:acl-idempotent
+    if (-not $isDir) {
+        $attr = [IO.File]::GetAttributes($Path)
+        if (($attr -band [IO.FileAttributes]::ReadOnly) -eq 0) { [IO.File]::SetAttributes($Path, $attr -bor [IO.FileAttributes]::ReadOnly) }
+    }
+    Set-AapAcl $Path $isDir $sec
+}
+
+# Gives this process's user full control of one entry, replacing its DACL. The owner may always rewrite a DACL, so this
+# opens a published generation's read-only files for a cleanup delete; the entry is deleted right after.
+function Grant-AapOwnerAccess([string]$Path, [bool]$IsDir) {
+    $sec = $(if ($IsDir) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity })
+    $sec.SetAccessRuleProtection($true, $false)
+    $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule ([Security.Principal.WindowsIdentity]::GetCurrent().User), 'FullControl', 'Allow'))
+    Set-AapAcl $Path $IsDir $sec
 }
 
 # Deletes $Path, which must lie strictly below $Under, without following any junction or symbolic link: a link is removed
-# as an entry, never entered. Every folder from $Under down to $Path must be a plain folder.
+# as an entry, never entered. Every folder from $Under down to $Path must be a plain folder. An entry whose ACL forbids
+# the delete (a read-only published file) has its DACL reset by its owner first.
 function Remove-AapTree([string]$Path, [string]$Under) {
     $full = [IO.Path]::GetFullPath($Path).TrimEnd('\'); $root = [IO.Path]::GetFullPath($Under).TrimEnd('\')
     if (-not $full.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { throw "AAP_UnsafeDelete: $full is not below $root" }
     $walk = $root
     foreach ($seg in $full.Substring($root.Length + 1).Split('\')) {
-        if (Test-AapLink $walk) { throw "AAP_UnsafeDelete: $walk is a link" }   # check:safe-delete
+        if ((Get-AapPathKind $walk) -eq 'link') { throw "AAP_UnsafeDelete: $walk is a link" }   # check:safe-delete
         $walk = Join-Path $walk $seg
     }
-    if (-not (Test-Path -LiteralPath $full)) { return }
-    $attr = [int][IO.File]::GetAttributes($full)
-    if (($attr -band [int][IO.FileAttributes]::Directory) -eq 0) { [IO.File]::SetAttributes($full, [IO.FileAttributes]::Normal); [IO.File]::Delete($full); return }
-    if (($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { [IO.Directory]::Delete($full, $false); return }
-    Remove-AapTreeInner $full
+    $kind = Get-AapPathKind $full
+    if ($kind -eq 'absent') { return }
+    if ($kind -eq 'dir') { Remove-AapTreeInner $full } else { Remove-AapEntry $full $kind }
 }
 function Remove-AapTreeInner([string]$Dir) {
-    foreach ($e in [IO.Directory]::GetFileSystemEntries($Dir)) {
-        $attr = [int][IO.File]::GetAttributes($e)
-        $isDir = ($attr -band [int][IO.FileAttributes]::Directory) -ne 0
-        if (($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) {
-            if ($isDir) { [IO.Directory]::Delete($e, $false) } else { [IO.File]::Delete($e) }
-        } elseif ($isDir) { Remove-AapTreeInner $e }
-        else { [IO.File]::SetAttributes($e, [IO.FileAttributes]::Normal); [IO.File]::Delete($e) }
+    try { $entries = [IO.Directory]::GetFileSystemEntries($Dir) } catch [UnauthorizedAccessException] { Grant-AapOwnerAccess $Dir $true; $entries = [IO.Directory]::GetFileSystemEntries($Dir) }
+    foreach ($e in $entries) {
+        $kind = Get-AapPathKind $e
+        if ($kind -eq 'dir') { Remove-AapTreeInner $e } else { Remove-AapEntry $e $kind }
     }
-    [IO.Directory]::Delete($Dir, $false)
+    Remove-AapEntry $Dir 'dir'
+}
+function Remove-AapEntry([string]$Path, [string]$Kind) {
+    $isDir = $Kind -eq 'dir' -or ($Kind -eq 'link' -and (([int][IO.File]::GetAttributes($Path)) -band [int][IO.FileAttributes]::Directory) -ne 0)
+    $once = { if ($isDir) { [IO.Directory]::Delete($Path, $false) } else { [IO.File]::SetAttributes($Path, [IO.FileAttributes]::Normal); [IO.File]::Delete($Path) } }
+    try { & $once } catch [UnauthorizedAccessException] { Grant-AapOwnerAccess $Path $isDir; & $once }
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -142,13 +296,15 @@ function Read-AapStorageRecord {
     return [pscustomobject]@{ Path = $Path; FloorGib = [int]$floor; Base = $tiers['base_root']; Clone = $tiers['clone_root']; Scratch = $tiers['scratch_root']; Staging = $staging }
 }
 
-# The builder writes to base_root and the staging root, and trusts the storage document's folder. Each must pass the
-# ProgramData rules (owner, ACL, reparse, ancestors, fixed drive) and sit on its recorded volume.
-function Assert-AapStorageTrusted($Storage, $Provider) {
+# The builder writes to base_root, the staging root and the evidence root, and trusts the storage document's folder.
+# Each must pass the ProgramData rules (owner, admin-only protected DACL, reparse, ancestors, fixed drive); the storage
+# roots must also sit on their recorded volumes.
+function Assert-AapStorageTrusted($Storage, $Provider, [string]$EvidenceRoot) {
     $checks = @(
         [pscustomobject]@{ Name = 'storage document folder'; Path = (Split-Path -Parent $Storage.Path); Guid = $null },
         [pscustomobject]@{ Name = 'base_root'; Path = $Storage.Base.Path; Guid = $Storage.Base.VolumeGuid },
-        [pscustomobject]@{ Name = 'staging root'; Path = $Storage.Staging.Path; Guid = $Storage.Staging.VolumeGuid })
+        [pscustomobject]@{ Name = 'staging root'; Path = $Storage.Staging.Path; Guid = $Storage.Staging.VolumeGuid },
+        [pscustomobject]@{ Name = 'evidence root'; Path = $EvidenceRoot; Guid = $null })
     foreach ($c in $checks) {
         $problems = @(Invoke-AapProvider $Provider 'TestRootTrust' @{ Path = $c.Path } | Where-Object { $_ })
         if ($problems.Count) { throw "AAP_StorageUntrusted: $($c.Name) $($c.Path): $(@($problems | ForEach-Object { Get-AapPrintable ([string]$_) 300 }) -join '; ')" }   # check:root-untrusted
@@ -182,6 +338,8 @@ function Read-AapWinBuildPlan {
     $plan = Read-AapJson $Path
     if ($plan.schema -ne 1 -or $plan.profile -cne $script:Profile) { throw 'AAP_PlanInvalid: not a schema 1 plan for win25-vs2026-x64' }
     if ([int]$plan.os_disk_gib -lt 1) { throw 'AAP_PlanInvalid: os_disk_gib' }
+    # The version names folders, VMs and the generation id.
+    if ([string]$plan.baseline.image_version -cnotmatch '^[0-9]{8}\.[0-9]+\.[0-9]+\z') { throw 'AAP_PlanInvalid: baseline.image_version' }   # check:plan-version
     $i = 0
     foreach ($p in @($plan.phases)) {
         $i++
@@ -321,7 +479,7 @@ function Assert-AapScriptReply($Reply, $PhasePlan) {
     if ($Reply.status -cne 'ok') { throw "AAP_PhaseFailed: $($PhasePlan.id) $(Get-AapPrintable (Get-AapProp $Reply 'message'))" }   # check:phase-failed
     if ($got.Count -ne $want.Count) { throw "AAP_PhaseFailed: $($PhasePlan.id) ran $($got.Count) of $($want.Count) scripts" }
     for ($i = 0; $i -lt $want.Count; $i++) {
-        if ($got[$i].name -cne $want[$i].name) { throw "AAP_PhaseFailed: $($PhasePlan.id) script $i is $($got[$i].name), planned $($want[$i].name)" }
+        if ($got[$i].name -cne $want[$i].name) { throw "AAP_PhaseFailed: $($PhasePlan.id) script $i is $($got[$i].name), planned $($want[$i].name)" }   # check:script-order
         if ($got[$i].sha256 -cne $want[$i].sha256) { throw "AAP_ScriptHashMismatch: $($PhasePlan.id) $($want[$i].name)" }   # check:script-hash
         if (@($PhasePlan.valid_exit_codes) -notcontains [int]$got[$i].exit_code) { throw "AAP_PhaseFailed: $($PhasePlan.id) $($want[$i].name) exited $($got[$i].exit_code)" }   # check:exit-code
     }
@@ -330,12 +488,38 @@ function Assert-AapScriptReply($Reply, $PhasePlan) {
 # ---------------------------------------------------------------------------------------------------------------------
 # Secret scan of the sealed disk (image-catalog.md, secret_scan). Reports rule and path, never the matched value.
 
+function Read-AapSecretAllowlist {
+    <# secret-allowlist.json: reviewed exceptions, each an exact relative path and SHA-256 with its justification. No wildcard:
+       an entry suppresses a finding only for that path with those bytes. #>
+    param([Parameter(Mandatory)][string]$Path)
+    if ((Get-AapPathKind $Path) -ne 'file' -or (New-Object IO.FileInfo $Path).Length -gt 65536) { throw "AAP_AllowlistInvalid: $Path is missing or over 64 KiB" }
+    try { $doc = Read-AapJson $Path } catch { throw "AAP_AllowlistInvalid: $Path is not JSON" }
+    if (-not ($doc -is [Management.Automation.PSCustomObject]) -or (Get-AapProp $doc 'schema') -ne 1 -or (@($doc.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') -cne 'schema,entries') { throw 'AAP_AllowlistInvalid: not a schema 1 allowlist' }
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($e in @($doc.entries | Where-Object { $null -ne $_ })) {
+        $names = $(if ($e -is [Management.Automation.PSCustomObject]) { (@($e.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object) -join ',') } else { '' })
+        $p = [string](Get-AapProp $e 'path')
+        if ($names -cne 'justification,path,sha256' -or $p -cnotmatch '^[A-Za-z0-9._()$ -]+(\\[A-Za-z0-9._()$ -]+)*\z' -or $p -match '(^|\\)\.\.?(\\|$)' -or   # check:allowlist
+            [string](Get-AapProp $e 'sha256') -cnotmatch '^[0-9a-f]{64}\z' -or [string](Get-AapProp $e 'justification') -cnotmatch '^[\x20-\x7e]{10,1000}\z') {
+            throw 'AAP_AllowlistInvalid: every entry needs exactly a relative path, its sha256 and a justification'
+        }
+        $out.Add([pscustomobject]@{ path = $p; sha256 = [string]$e.sha256 })
+    }
+    return $out.ToArray()
+}
+
 function Invoke-AapWinSecretScan {
-    param([Parameter(Mandatory)][string]$MountRoot, [Parameter(Mandatory)]$Provider, [string[]]$KnownSecret = @())
+    <# Files-only scan of the mounted sealed disk. The registry checks run inside the guest as SYSTEM just before sysprep;
+       their result comes in as -Registry and is recorded here. Result 'found': a finding the allowlist does not cover, or
+       an allowlist entry that matches no finding with exactly its path and bytes. 'incomplete': an unreadable path outside
+       the reviewed skip list, or more large files than the record lists. Else 'clean'. Files over 32 MiB are not
+       content-scanned; each is listed with its size and SHA-256. #>
+    param([Parameter(Mandatory)][string]$MountRoot, [string[]]$KnownSecret = @(), [string]$AllowlistPath = $script:AllowlistPath, $Registry = $null)
+    $allow = @(Read-AapSecretAllowlist -Path $AllowlistPath)
     $nameRules = @(
         @{ Id = 'runner-credentials'; Re = '^\.credentials' }, @{ Id = 'runner-config'; Re = '^\.runner$' },
         @{ Id = 'answer-file'; Re = '^(auto)?unattend.*\.xml$' }, @{ Id = 'ssh-host-key'; Re = '^ssh_host_.*_key$' },
-        @{ Id = 'ssh-authorized-keys'; Re = '^(administrators_)?authorized_keys$' }, @{ Id = 'shell-history'; Re = '^(ConsoleHost_history\.txt|\.bash_history|\.zsh_history|\.python_history)$' },
+        @{ Id = 'ssh-authorized-keys'; Re = '^(administrators_)?authorized_keys$' }, @{ Id = 'shell-history'; Re = '(_history\.txt|^\.bash_history|^\.zsh_history|^\.python_history)$' },
         @{ Id = 'app-key'; Re = '^app\.pem$' }, @{ Id = 'cloud-init-seed'; Re = '^(user-data|meta-data|network-config)$' })
     $contentRules = @(
         @{ Id = 'pem-private-key'; Re = '-----BEGIN [A-Z ]*PRIVATE KEY-----' },
@@ -343,47 +527,69 @@ function Invoke-AapWinSecretScan {
         @{ Id = 'github-pat'; Re = 'github_pat_[A-Za-z0-9_]{22,}' },
         @{ Id = 'jit-config'; Re = 'ACTIONS_RUNNER_INPUT_JITCONFIG=' },
         @{ Id = 'synthetic-marker'; Re = 'AAP-SYNTHETIC-SECRET-MARKER|SYNTHETIC-JIT-MARKER' })
-    $findings = New-Object System.Collections.Generic.List[object]
-    $scanned = 0; $large = 0; $unreadable = 0
+    $raw = New-Object System.Collections.Generic.List[object]
+    $unreadable = New-Object System.Collections.Generic.List[string]
+    $large = New-Object System.Collections.Generic.List[object]
+    $skipped = New-Object System.Collections.Generic.List[string]
+    $scanned = 0; $unreadableCount = 0; $largeCount = 0
     $latin1 = [Text.Encoding]::GetEncoding(28591)
-    $root = $MountRoot.TrimEnd('\')
+    $base = [IO.Path]::GetFullPath($MountRoot)
+    if (-not $base.EndsWith('\')) { $base += '\' }
     $stack = New-Object System.Collections.Generic.Stack[string]
-    $stack.Push($root)
+    $stack.Push($base)
     while ($stack.Count) {
         $dir = $stack.Pop()
-        try { $entries = [IO.Directory]::GetFileSystemEntries($dir) } catch { $unreadable++; continue }
+        try { $entries = [IO.Directory]::GetFileSystemEntries($dir) } catch {
+            $unreadableCount++; if ($unreadable.Count -lt $script:ScanListMax) { $unreadable.Add((Get-AapPrintable $(if ($dir -eq $base) { '.' } else { $dir.Substring($base.Length) }) 400)) }; continue
+        }
         foreach ($e in $entries) {
-            $rel = $e.Substring($root.Length + 1)
-            $attr = [int][IO.File]::GetAttributes($e)
-            if (($attr -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
-            if (($attr -band [int][IO.FileAttributes]::Directory) -ne 0) { $stack.Push($e); continue }
+            $rel = $e.Substring($base.Length)
+            try { $kind = Get-AapPathKind $e } catch { $unreadableCount++; if ($unreadable.Count -lt $script:ScanListMax) { $unreadable.Add((Get-AapPrintable $rel 400)) }; continue }
+            if ($kind -eq 'link' -or $kind -eq 'absent') { continue }
+            if ($kind -eq 'dir') { if ($script:ScanSkip -contains $rel) { $skipped.Add($rel) } else { $stack.Push($e) }; continue }
             $leaf = [IO.Path]::GetFileName($e)
-            foreach ($r in $nameRules) { if ($leaf -match $r.Re) { $findings.Add([pscustomobject]@{ rule = $r.Id; path = (Get-AapPrintable $rel) }) } }
-            if ((New-Object IO.FileInfo $e).Length -gt $script:ScanFileMaxBytes) { $large++; continue }
-            try { $bytes = [IO.File]::ReadAllBytes($e) } catch { $unreadable++; continue }
+            foreach ($r in $nameRules) { if ($leaf -match $r.Re) { $raw.Add([pscustomobject]@{ rule = $r.Id; rel = $rel; full = $e }) } }
+            try {
+                $len = (New-Object IO.FileInfo $e).Length
+                if ($len -gt $script:ScanFileMaxBytes) {
+                    $largeCount++
+                    if ($large.Count -lt $script:LargeFilesMax) { $large.Add([pscustomobject]@{ path = (Get-AapPrintable $rel 400); bytes = $len; sha256 = (Get-AapSha256File $e) }) }
+                    continue
+                }
+                $bytes = [IO.File]::ReadAllBytes($e)
+            } catch { $unreadableCount++; if ($unreadable.Count -lt $script:ScanListMax) { $unreadable.Add((Get-AapPrintable $rel 400)) }; continue }
             $scanned++
             $text = $latin1.GetString($bytes)
-            foreach ($r in $contentRules) { if ($text -cmatch $r.Re) { $findings.Add([pscustomobject]@{ rule = $r.Id; path = (Get-AapPrintable $rel) }) } }
+            foreach ($r in $contentRules) { if ($text -cmatch $r.Re) { $raw.Add([pscustomobject]@{ rule = $r.Id; rel = $rel; full = $e }) } }
             $wide = $null
             foreach ($k in $KnownSecret) {
                 if (-not $k) { continue }
                 if ($null -eq $wide) { $wide = [Text.Encoding]::Unicode.GetString($bytes, 0, $bytes.Length - ($bytes.Length % 2)) }
-                if ($text.Contains($k) -or $wide.Contains($k)) { $findings.Add([pscustomobject]@{ rule = 'build-credential'; path = (Get-AapPrintable $rel) }) }   # check:secret-known
+                if ($text.Contains($k) -or $wide.Contains($k)) { $raw.Add([pscustomobject]@{ rule = 'build-credential'; rel = $rel; full = $e }) }   # check:secret-known
             }
         }
     }
-    $reg = @(
-        @{ Id = 'autologon-password'; Hive = 'SOFTWARE'; Key = 'Microsoft\Windows NT\CurrentVersion\Winlogon'; Name = 'DefaultPassword' },
-        @{ Id = 'autologon-enabled'; Hive = 'SOFTWARE'; Key = 'Microsoft\Windows NT\CurrentVersion\Winlogon'; Name = 'AutoAdminLogon' },
-        @{ Id = 'lsa-default-password'; Hive = 'SECURITY'; Key = 'Policy\Secrets\DefaultPassword'; Name = $null })
-    foreach ($r in $reg) {
-        $v = Invoke-AapProvider $Provider 'ReadOfflineRegistry' @{ MountRoot = $MountRoot; Hive = $r.Hive; Key = $r.Key; Name = $r.Name }
-        $hit = $(if ($r.Id -eq 'autologon-enabled') { [string]$v -eq '1' } else { $null -ne $v -and [string]$v -ne '' })
-        if ($hit) { $findings.Add([pscustomobject]@{ rule = $r.Id; path = "registry:$($r.Hive)\$($r.Key)" }) }
+    # Allowlist: exact path and bytes only, never for the build credential; an entry that matches nothing is itself a finding.
+    $findings = New-Object System.Collections.Generic.List[object]
+    $allowed = New-Object System.Collections.Generic.List[object]
+    $used = @{}
+    foreach ($f in $raw) {
+        $hit = $null
+        foreach ($a in $allow) { if ($a.path -ceq $f.rel) { $hit = $a } }
+        if ($f.rule -ceq 'build-credential' -or $null -eq $hit -or (Get-AapSha256File $f.full) -cne $hit.sha256) {   # check:allowlist-exact
+            $findings.Add([pscustomobject]@{ rule = $f.rule; path = (Get-AapPrintable $f.rel 400) })
+        } else {
+            $allowed.Add([pscustomobject]@{ rule = $f.rule; path = $hit.path; sha256 = $hit.sha256 }); $used[$hit.path] = $true
+        }
     }
-    $result = $(if ($findings.Count) { 'found' } elseif ($unreadable) { 'incomplete' } else { 'clean' })
-    return [pscustomobject]@{ schema = 1; result = $result; files_scanned = $scanned; content_skipped_over_32mib = $large; unreadable = $unreadable
-        findings = @($findings | Select-Object -First 200); rules = @(@($nameRules + $contentRules) | ForEach-Object { $_.Id }) + @('build-credential') + @($reg | ForEach-Object { $_.Id }) }
+    foreach ($a in $allow) { if (-not $used.ContainsKey($a.path)) { $findings.Add([pscustomobject]@{ rule = 'allowlist-mismatch'; path = (Get-AapPrintable $a.path 400) }) } }   # check:allowlist-stale
+    $result = 'clean'
+    if ($unreadableCount -gt 0 -or $largeCount -gt $script:LargeFilesMax) { $result = 'incomplete' }   # check:scan-incomplete
+    if ($findings.Count) { $result = 'found' }
+    return [pscustomobject]@{ schema = 2; result = $result; files_scanned = $scanned; unreadable_count = $unreadableCount; unreadable = $unreadable.ToArray()
+        skipped = $skipped.ToArray(); large_files_count = $largeCount; large_files = $large.ToArray(); allowlisted = $allowed.ToArray()
+        findings = @($findings | Select-Object -First $script:ScanListMax); registry = $Registry
+        rules = @(@($nameRules + $contentRules) | ForEach-Object { $_.Id }) + @('build-credential', 'allowlist-mismatch') + $script:RegistryRules }
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -397,13 +603,37 @@ function Get-AapWinNames($Plan, [int]$AapBuild) {
 }
 
 function Assert-AapWinConfig($Config) {
-    foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'MediaFile', 'MediaSha256', 'Edition', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit', 'SourceEntry') {
+    foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'MediaFile', 'MediaSha256', 'Edition', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit', 'SourceEntry', 'SwitchName') {
         if ($null -eq (Get-AapProp $Config $k) -or [string](Get-AapProp $Config $k) -eq '') { throw "AAP_ConfigInvalid: $k is required" }
     }
     if ([int]$Config.AapBuild -lt 1) { throw 'AAP_ConfigInvalid: AapBuild' }
     if ([string]$Config.MediaSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'AAP_ConfigInvalid: MediaSha256' }
     if ([string]$Config.BuilderCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'AAP_ConfigInvalid: BuilderCommit' }
     if ([string]$Config.MediaFile -cnotmatch '^[A-Za-z0-9._()\- ]{1,120}\.iso$') { throw 'AAP_ConfigInvalid: MediaFile must be a file name under <base_root>\media' }
+    if ([string]$Config.SwitchName -cne $script:SwitchName) { throw "AAP_NetworkUntrusted: SwitchName must be the internal switch $($script:SwitchName), never an External switch or the Default Switch" }   # check:network
+}
+
+function Get-AapWinWaivers($Config, [string[]]$Known, [string]$PlanSha) {
+    <# Chair-approved waivers of input blockers. Each is an approval record with exactly id, rationale, plan_sha256 and
+       approver, valid only for the build plan it names; a bare id is refused. #>
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($wv in @(Get-AapProp $Config 'Waivers' | Where-Object { $null -ne $_ })) {
+        $names = $(if ($wv -is [Collections.IDictionary]) { @($wv.Keys | ForEach-Object { [string]$_ }) } elseif ($wv -is [Management.Automation.PSCustomObject]) { @($wv.PSObject.Properties | ForEach-Object { $_.Name }) } else { @() })
+        if ((@($names | Sort-Object) -join ',') -cne 'approver,id,plan_sha256,rationale' -or [string](Get-AapProp $wv 'rationale') -cnotmatch '^[\x20-\x7e]{10,1000}\z' -or [string](Get-AapProp $wv 'approver') -cnotmatch '^[\x20-\x7e]{1,100}\z') {
+            throw 'AAP_ConfigInvalid: a waiver is an approval record with exactly id, rationale, plan_sha256 and approver'
+        }
+        $id = [string](Get-AapProp $wv 'id')
+        if ($Known -cnotcontains $id) { throw "AAP_ConfigInvalid: waiver for an unknown blocker: $(Get-AapPrintable $id 80)" }
+        if ([string](Get-AapProp $wv 'plan_sha256') -cne $PlanSha) { throw "AAP_ConfigInvalid: the waiver for $id was approved for another build plan" }   # check:waiver
+        $out.Add([ordered]@{ id = $id; rationale = [string]$wv.rationale; plan_sha256 = $PlanSha; approver = [string]$wv.approver })
+    }
+    return $out.ToArray()
+}
+
+function Get-AapVmId($Vm) {
+    $id = [string](Get-AapProp $Vm 'Id')
+    if ($id -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z') { throw 'AAP_Unexpected: NewVm returned no VM id' }
+    return $id.ToLowerInvariant()
 }
 
 function Save-AapState($Ctx) { Write-AapJson $Ctx.State $Ctx.StatePath }
@@ -411,15 +641,43 @@ function Set-AapStep($Ctx, [string]$Step, [string]$Value) {
     $Ctx.State.steps[$Step] = $Value
     Save-AapState $Ctx
 }
+# Every evidence file this run writes is listed in state.json, so a failure cleanup removes exactly those and nothing else.
+function Add-AapWritten($Ctx, [string]$Path) {
+    $Ctx.State.written.Add((Split-Path -Leaf $Path))
+    Save-AapState $Ctx
+}
+function Write-AapEvidence($Ctx, $Object, [string]$Name) {
+    $path = Join-Path $Ctx.EvidenceDir $Name
+    Write-AapJson $Object $path
+    Add-AapWritten $Ctx $path
+    return $path
+}
 
 function Invoke-AapGuest($Ctx, [hashtable]$Request, [int]$TimeoutSeconds) {
     $Request['schema'] = 1
+    $Request['timeout_seconds'] = $TimeoutSeconds
     $local = Join-Path $Ctx.BuildDir 'request.json'
     [IO.File]::WriteAllText($local, (ConvertTo-Json -InputObject $Request -Depth 8), $script:Utf8)
-    $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $Ctx.Vm; User = $Ctx.User; Password = $Ctx.Password; HostPath = $local; GuestPath = 'C:\aap-build\request.json' }
-    $text = Invoke-AapProvider $Ctx.Provider 'InvokeGuest' @{ VmName = $Ctx.Vm; User = $Ctx.User; Password = $Ctx.Password; Script = $Ctx.GuestScript
+    $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; HostPath = $local; GuestPath = 'C:\aap-build\request.json' }
+    $text = Invoke-AapProvider $Ctx.Provider 'InvokeGuest' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; Script = $Ctx.GuestScript
         RequestPath = 'C:\aap-build\request.json'; TimeoutSeconds = $TimeoutSeconds; MaxBytes = $script:ReplyMaxBytes }
     return ConvertFrom-AapGuestReply -Text $text -Phase ([string]$Request.phase)
+}
+
+# A guest-authored file lands in the build folder first (admin-only, inside the staging budget), is size-checked there and
+# only then moved into the evidence folder; a partial or oversized file is deleted.
+function Receive-AapGuestFile($Ctx, $Guest, [string]$GuestPath, [string]$Name, [long]$MaxBytes) {
+    $part = Join-Path $Ctx.BuildDir "recv-$Name.part"
+    $dest = Join-Path $Ctx.EvidenceDir $Name
+    try {
+        $null = Invoke-AapProvider $Ctx.Provider 'ReceiveFile' @{ VmName = $Guest.Vm; VmId = $Guest.VmId; User = $Guest.User; Password = $Guest.Password; GuestPath = $GuestPath; HostPath = $part; MaxBytes = $MaxBytes }
+        if ((Get-AapPathKind $part) -ne 'file' -or (New-Object IO.FileInfo $part).Length -gt $MaxBytes) { throw "AAP_HostileGuest: $Name is missing or over $MaxBytes bytes" }   # check:receive-size
+        [IO.File]::Move($part, $dest)
+        Add-AapWritten $Ctx $dest
+    } finally {
+        if ((Get-AapPathKind $part) -eq 'file') { [IO.File]::Delete($part) }
+    }
+    return $dest
 }
 
 function Assert-AapStagingBudget($Ctx) {
@@ -428,30 +686,63 @@ function Assert-AapStagingBudget($Ctx) {
     if ($bytes -gt [double]$Ctx.Config.StagingGibMax * $script:GiB) { throw ("AAP_BudgetExceeded: the build folder holds {0:N1} GiB, over StagingGibMax {1}" -f ($bytes / $script:GiB), $Ctx.Config.StagingGibMax) }   # check:budget
 }
 
+function Get-AapGuestBootTime($Guest) {
+    $t = [string](Invoke-AapProvider $Guest.Provider 'GetGuestBootTime' @{ VmName = $Guest.Vm; VmId = $Guest.VmId; User = $Guest.User; Password = $Guest.Password })
+    if ($t -cnotmatch '^[0-9]{1,18}\z') { throw 'AAP_HostileGuest: the guest boot time is not a tick count' }
+    return [long]$t
+}
+
+# A reboot counts only once the guest answers again with a later boot time than it had before Restart-VM: a guest that
+# answers before it went down, or that never reboots, is not ready.
+function Wait-AapReboot($Ctx, [long]$Before, [int]$TimeoutSeconds) {
+    $until = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $left = [int][Math]::Max(1, [Math]::Ceiling(($until - (Get-Date)).TotalSeconds))
+        if (-not (Invoke-AapProvider $Ctx.Provider 'WaitGuestReady' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; TimeoutSeconds = $left })) { return $false }
+        if ((Get-AapGuestBootTime $Ctx) -le $Before) { Start-Sleep -Seconds $script:PollSeconds; continue }   # check:reboot-proof
+        return $true
+    } while ((Get-Date) -lt $until)
+    return $false
+}
+
+# The sysprep reply carries the guest's registry check (autologon values, LSA DefaultPassword secret), run as SYSTEM.
+function Assert-AapRegistryReply($Reply) {
+    $reg = Get-AapProp (Get-AapProp $Reply 'data') 'registry'
+    $ok = $reg -is [Management.Automation.PSCustomObject] -and (@($reg.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object) -join ',') -ceq 'checked,findings,unreadable'
+    if ($ok) { foreach ($k in 'checked', 'findings', 'unreadable') { foreach ($x in @(Get-AapProp $reg $k)) { if (-not ($x -is [string]) -or $script:RegistryRules -cnotcontains $x) { $ok = $false } } } }
+    if (-not $ok) { throw 'AAP_HostileGuest: the sysprep reply lacks a well-formed registry check' }
+    if (@($reg.findings).Count) { throw "AAP_SecretFound: the guest registry holds $(@($reg.findings) -join ', ')" }   # check:registry-secret
+    $missing = @($script:RegistryRules | Where-Object { @($reg.checked) -cnotcontains $_ -or @($reg.unreadable) -ccontains $_ })
+    if ($missing.Count) { throw "AAP_ScanIncomplete: the guest could not check $($missing -join ', ')" }   # check:registry-incomplete
+    return [ordered]@{ checked = $script:RegistryRules; findings = @(); unreadable = @(); checked_by = 'guest, as SYSTEM, before sysprep' }
+}
+
 function Invoke-AapPhase($Ctx, $P) {
     $vars = $Ctx.Plan.variables
+    $elevated = (Get-AapProp $P 'elevated') -eq $true
     switch ($P.kind) {
         'scripts' {
             $envMap = [ordered]@{}
             foreach ($prop in $P.env.PSObject.Properties) {
                 $v = [string]$prop.Value
                 foreach ($vp in $vars.PSObject.Properties) { $v = $v.Replace('${var.' + $vp.Name + '}', [string]$vp.Value) }
-                if ($v -match '\$\{') { throw "AAP_PlanInvalid: $($P.id) $($prop.Name) has an unresolved variable" }
+                if ($v -match '\$\{') { throw "AAP_PlanInvalid: $($P.id) $($prop.Name) has an unresolved variable" }   # check:plan-variable
                 $envMap[$prop.Name] = $v
             }
-            $req = @{ phase = $P.id; kind = 'scripts'; scripts = @($P.scripts | ForEach-Object { @{ name = $_.name; dir = $_.dir; sha256 = $_.sha256 } })
+            $req = @{ phase = $P.id; kind = 'scripts'; elevated = $elevated; scripts = @($P.scripts | ForEach-Object { @{ name = $_.name; dir = $_.dir; sha256 = $_.sha256 } })
                 env = $envMap; execution_policy = $P.execution_policy; valid_exit_codes = @($P.valid_exit_codes); pause_before_seconds = [int]$P.pause_before_seconds
                 vars = $vars }
             $r = Invoke-AapGuest $Ctx $req $script:ScriptPhaseSeconds
             Assert-AapScriptReply $r $P
-            $Ctx.Evidence.phases.Add([ordered]@{ id = $P.id; kind = 'scripts'; scripts = @($r.scripts) })
+            $Ctx.Evidence.phases.Add([ordered]@{ id = $P.id; kind = 'scripts'; elevated = $elevated; scripts = @($r.scripts) })
         }
         'restart' {
-            $null = Invoke-AapProvider $Ctx.Provider 'RestartVm' @{ VmName = $Ctx.Vm; TimeoutSeconds = [int]$P.timeout_seconds }
-            $ok = Invoke-AapProvider $Ctx.Provider 'WaitGuestReady' @{ VmName = $Ctx.Vm; User = $Ctx.User; Password = $Ctx.Password; TimeoutSeconds = [int]$P.timeout_seconds }
-            if (-not $ok) { throw "AAP_RebootTimeout: $($P.id) guest not ready within $($P.timeout_seconds) s" }   # check:reboot-timeout
+            $before = Get-AapGuestBootTime $Ctx
+            $null = Invoke-AapProvider $Ctx.Provider 'RestartVm' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; TimeoutSeconds = [int]$P.timeout_seconds }
+            $ok = Wait-AapReboot $Ctx $before ([int]$P.timeout_seconds)
+            if (-not $ok) { throw "AAP_RebootTimeout: $($P.id) guest did not come back from a reboot within $($P.timeout_seconds) s" }   # check:reboot-timeout
             foreach ($check in @($(if ($P.check_registry) { 'wait-no-pending-reboot' }), $P.check) | Where-Object { $_ }) {
-                $r = Invoke-AapGuest $Ctx @{ phase = $P.id; kind = 'action'; action = $check; vars = $vars; timeout_seconds = [int]$P.timeout_seconds } ([int]$P.timeout_seconds)
+                $r = Invoke-AapGuest $Ctx @{ phase = $P.id; kind = 'action'; action = $check; elevated = $false; vars = $vars } ([int]$P.timeout_seconds)
                 if ($r.status -cne 'ok') { throw "AAP_PhaseFailed: $($P.id) $check $(Get-AapPrintable (Get-AapProp $r 'message'))" }
             }
             $Ctx.Evidence.phases.Add([ordered]@{ id = $P.id; kind = 'restart' })
@@ -460,49 +751,49 @@ function Invoke-AapPhase($Ctx, $P) {
             switch ($P.action) {
                 { $_ -like 'download-software-report-*' } {
                     $ext = $P.action.Substring($P.action.LastIndexOf('-') + 1)
-                    $dest = Join-Path $Ctx.EvidenceDir "software-report.$ext"
-                    $null = Invoke-AapProvider $Ctx.Provider 'ReceiveFile' @{ VmName = $Ctx.Vm; User = $Ctx.User; Password = $Ctx.Password; GuestPath = "C:\software-report.$ext"; HostPath = $dest; MaxBytes = $script:ReportMaxBytes }
-                    if (-not (Test-Path -LiteralPath $dest) -or (New-Object IO.FileInfo $dest).Length -gt $script:ReportMaxBytes) { throw "AAP_HostileGuest: software-report.$ext missing or over $($script:ReportMaxBytes) bytes" }
+                    $dest = Receive-AapGuestFile $Ctx $Ctx "C:\software-report.$ext" "software-report.$ext" $script:ReportMaxBytes
                     $Ctx.Evidence.reports["software-report.$ext"] = Get-AapSha256File $dest
                 }
                 default {
-                    if ($P.action -eq 'upload-sources') { $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $Ctx.Vm; User = $Ctx.User; Password = $Ctx.Password; HostPath = $Ctx.SourceArchive; GuestPath = 'C:\aap-build\runner-images.zip' } }
-                    $req = @{ phase = $P.id; kind = 'action'; action = $P.action; vars = $vars }
+                    if ($P.action -eq 'upload-sources') { $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; HostPath = $Ctx.SourceArchive; GuestPath = 'C:\aap-build\runner-images.zip' } }
+                    $req = @{ phase = $P.id; kind = 'action'; action = $P.action; elevated = $elevated; vars = $vars }
                     $r = Invoke-AapGuest $Ctx $req $script:ActionSeconds
+                    if ($P.action -ceq 'sysprep-generalize') { $Ctx.Registry = Assert-AapRegistryReply $r }
                     if ($r.status -cne 'ok') { throw "AAP_PhaseFailed: $($P.id) $($P.action) $(Get-AapPrintable (Get-AapProp $r 'message'))" }   # check:action-failed
                 }
             }
-            $Ctx.Evidence.phases.Add([ordered]@{ id = $P.id; kind = 'action'; action = $P.action })
+            $Ctx.Evidence.phases.Add([ordered]@{ id = $P.id; kind = 'action'; action = $P.action; elevated = $elevated })
         }
     }
 }
 
 # Fresh guest from the sealed disk: a differencing child in the build folder, the job user from a new answer file, then
-# upstream tests, the P05 inventory probe and native toolchain discovery as that user (guest/AapGuestVerify.ps1).
+# upstream tests, the P05 inventory probe and native toolchain discovery as that user (guest/AapGuestVerify.ps1). It gets
+# no network adapter: its checks are local, and nothing that ran internet installers gets a route out of it.
 function Invoke-AapVerify($Ctx) {
     $dir = Join-Path $Ctx.BuildDir 'verify'
-    [void][IO.Directory]::CreateDirectory($dir)
+    [void](New-Item -ItemType Directory -Path $dir)
     $child = Join-Path $dir 'os.avhdx'; $temp = Join-Path $dir 'temp.vhdx'
     $user = 'runneradmin'; $pw = New-AapWinPassword
     $null = Invoke-AapProvider $Ctx.Provider 'NewDiffDisk' @{ Parent = $Ctx.OsDisk; Path = $child }
     $null = Invoke-AapProvider $Ctx.Provider 'NewBuildDisk' @{ Path = $temp; SizeGib = [int]$Ctx.Plan.temp_disk_gib; Format = $true }
     $null = Invoke-AapProvider $Ctx.Provider 'WriteOfflineFiles' @{ Vhdx = $child; Files = @{ 'Windows\Panther\unattend.xml' = (New-AapWinUnattend -UserName $user -Password $pw) } }
-    $null = Invoke-AapProvider $Ctx.Provider 'NewVm' @{ Name = $Ctx.Names.VerifyVm; Path = $dir; OsDisk = $child; TempDisk = $temp; Cpus = [int]$Ctx.Config.BuildCpus; MemGib = [int]$Ctx.Config.BuildMemGib; SwitchName = (Get-AapProp $Ctx.Config 'SwitchName') }
-    $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $Ctx.Names.VerifyVm }
-    if (-not (Invoke-AapProvider $Ctx.Provider 'WaitGuestReady' @{ VmName = $Ctx.Names.VerifyVm; User = $user; Password = $pw; TimeoutSeconds = 1800 })) { throw 'AAP_VerifyFailed: fresh guest not ready' }
-    $vctx = [pscustomobject]@{ Provider = $Ctx.Provider; BuildDir = $Ctx.BuildDir; Vm = $Ctx.Names.VerifyVm; User = $user; Password = $pw; GuestScript = 'C:\aap-build\AapGuestVerify.ps1' }
+    $vm = Invoke-AapProvider $Ctx.Provider 'NewVm' @{ Name = $Ctx.Names.VerifyVm; Path = $dir; OsDisk = $child; TempDisk = $temp; Cpus = [int]$Ctx.Config.BuildCpus; MemGib = [int]$Ctx.Config.BuildMemGib; SwitchName = $null }
+    $g = [pscustomobject]@{ Provider = $Ctx.Provider; BuildDir = $Ctx.BuildDir; Vm = $Ctx.Names.VerifyVm; VmId = (Get-AapVmId $vm); User = $user; Password = $pw; GuestScript = 'C:\aap-build\AapGuestVerify.ps1' }
+    $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $g.Vm; VmId = $g.VmId }
+    if (-not (Invoke-AapProvider $Ctx.Provider 'WaitGuestReady' @{ VmName = $g.Vm; VmId = $g.VmId; User = $user; Password = $pw; TimeoutSeconds = 1800 })) { throw 'AAP_VerifyFailed: fresh guest not ready' }
     foreach ($f in @(@{ H = $Ctx.VerifyScript; G = 'C:\aap-build\AapGuestVerify.ps1' }, @{ H = $Ctx.ProbeScript; G = 'C:\aap-build\probe-windows.ps1' }, @{ H = $Ctx.HelloC; G = 'C:\aap-build\hello.c' }, @{ H = $Ctx.SourceArchive; G = 'C:\aap-build\runner-images.zip' })) {
-        $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $vctx.Vm; User = $user; Password = $pw; HostPath = $f.H; GuestPath = $f.G }
+        $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $g.Vm; VmId = $g.VmId; User = $user; Password = $pw; HostPath = $f.H; GuestPath = $f.G }
     }
-    $r = Invoke-AapGuest $vctx @{ phase = 'verify'; kind = 'verify'; vars = $Ctx.Plan.variables } $script:ScriptPhaseSeconds
-    $inv = Join-Path $Ctx.EvidenceDir 'job-inventory.json'
-    $null = Invoke-AapProvider $Ctx.Provider 'ReceiveFile' @{ VmName = $vctx.Vm; User = $user; Password = $pw; GuestPath = 'D:\aap-verify\job-inventory.json'; HostPath = $inv; MaxBytes = $script:InventoryMaxBytes }
+    $r = Invoke-AapGuest $g @{ phase = 'verify'; kind = 'verify'; vars = $Ctx.Plan.variables } $script:ScriptPhaseSeconds
+    $inv = Receive-AapGuestFile $Ctx $g 'D:\aap-verify\job-inventory.json' 'job-inventory.json' $script:InventoryMaxBytes
     $v = Assert-AapVerifyReply $r $inv
     $Ctx.Evidence.verify = $v
     $Ctx.State.clone_peak_bytes = [double](Invoke-AapProvider $Ctx.Provider 'MeasureBytes' @{ Path = $child })
     $Ctx.State.scratch_peak_bytes = [double](Invoke-AapProvider $Ctx.Provider 'MeasureBytes' @{ Path = $temp })
-    $Ctx.State.mem_overhead_mib = [int](Invoke-AapProvider $Ctx.Provider 'GetVmMemoryOverheadMib' @{ VmName = $vctx.Vm })
-    $null = Invoke-AapProvider $Ctx.Provider 'RemoveVm' @{ Name = $Ctx.Names.VerifyVm }
+    $Ctx.State.mem_overhead_mib = [int](Invoke-AapProvider $Ctx.Provider 'GetVmMemoryOverheadMib' @{ VmName = $g.Vm; VmId = $g.VmId })
+    Assert-AapStagingBudget $Ctx   # the verification disks are part of the build folder's peak
+    $null = Invoke-AapProvider $Ctx.Provider 'RemoveVm' @{ Name = $g.Vm }
     Remove-AapTree $dir $Ctx.BuildDir
 }
 
@@ -566,21 +857,30 @@ function New-AapWinBudgetRecord {
 
 function Remove-AapWinBuild {
     <# Removes a build's VMs, mounts, build folder and, if this build began publishing and did not finish, its generation
-       folder. Idempotent: everything absent counts as done. Never touches another generation or anything outside its folders. #>
-    param([Parameter(Mandatory)]$Storage, [Parameter(Mandatory)]$Provider, [Parameter(Mandatory)]$Names)
+       folder. An unfinished build's evidence files go too, exactly those its state.json lists, except secret-scan.json,
+       which stays as the record of why it failed; its evidence folder goes if it made it and it is then empty. Idempotent:
+       everything absent counts as done. Never touches another generation or anything outside these folders. #>
+    param([Parameter(Mandatory)]$Storage, [Parameter(Mandatory)]$Provider, [Parameter(Mandatory)]$Names, [string]$EvidenceRoot)
     $buildDir = Join-Path (Join-Path $Storage.Staging.Path 'build') $Names.BuildId
     $state = $null
     $statePath = Join-Path $buildDir 'state.json'
-    if (Test-Path -LiteralPath $statePath) { try { $state = Read-AapJson $statePath } catch { $state = $null } }
+    if ((Get-AapPathKind $statePath) -eq 'file') { try { $state = Read-AapJson $statePath } catch { $state = $null } }
     foreach ($vm in $Names.BuildVm, $Names.VerifyVm) { $null = Invoke-AapProvider $Provider 'RemoveVm' @{ Name = $vm } }
     foreach ($d in 'os.vhdx', 'temp.vhdx', 'verify\os.avhdx', 'verify\temp.vhdx') {
         $f = Join-Path $buildDir $d
-        if (Test-Path -LiteralPath $f) { $null = Invoke-AapProvider $Provider 'Dismount' @{ Vhdx = $f } }
+        if ((Get-AapPathKind $f) -eq 'file') { $null = Invoke-AapProvider $Provider 'Dismount' @{ Vhdx = $f } }
     }
     $done = $null -ne $state -and (Get-AapProp $state 'status') -eq 'done'
     $publishing = $null -ne $state -and (Get-AapProp (Get-AapProp $state 'steps') 'publish') -eq 'intent'
     if ($publishing -and -not $done) {
         Remove-AapTree (Join-Path (Join-Path $Storage.Base.Path $script:Profile) $Names.Folder) $Storage.Base.Path
+    }
+    if ($null -ne $state -and -not $done -and $EvidenceRoot) {
+        $ev = Join-Path (Join-Path $EvidenceRoot 'P06') $Names.BuildId
+        foreach ($leaf in @(Get-AapProp $state 'written')) {
+            if ([string]$leaf -cmatch '^[A-Za-z0-9._-]{1,80}\z' -and [string]$leaf -cne 'secret-scan.json') { Remove-AapTree (Join-Path $ev $leaf) $EvidenceRoot }
+        }
+        if ((Get-AapProp $state 'evidence_created') -eq $true -and (Get-AapPathKind $ev) -eq 'dir' -and @([IO.Directory]::GetFileSystemEntries($ev)).Count -eq 0) { Remove-AapTree $ev $EvidenceRoot }
     }
     Remove-AapTree $buildDir $Storage.Staging.Path
 }
@@ -588,82 +888,93 @@ function Remove-AapWinBuild {
 function Invoke-AapWinImageBuild {
     <# Builds, scans, verifies, publishes and records one generation. Returns Ok, Status (built, unchanged, refused, failed),
        Reason, Detail, GenerationId and the record paths. A refusal before the build folder exists changes nothing; a failure
-       after it removes the VMs, build disks and any partly published generation. #>
+       after it removes the VMs, build disks, any partly published generation and the evidence files it wrote. #>
     param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Provider)
     $result = [ordered]@{ Ok = $false; Status = 'refused'; Reason = $null; Detail = $null; GenerationId = $null; RecordPath = $null; BudgetPath = $null; EvidencePath = $null; PartialCleaned = $false }
-    $lock = $null; $started = $false; $published = $false; $ctx = $null; $storage = $null; $names = $null
+    $lock = $null; $started = $false; $published = $false; $ctx = $null; $storage = $null; $names = $null; $evidenceRoot = $null
     try {
         Assert-AapProvider $Provider
-        Assert-AapWinConfig $Config
         $here = $PSScriptRoot
-        $planPath = $(if (Get-AapProp $Config 'PlanPath') { $Config.PlanPath } else { Join-Path $here 'build-plan.json' })
-        $manifestPath = $(if (Get-AapProp $Config 'ManifestPath') { $Config.ManifestPath } else { Join-Path $here '..\common\artifacts.manifest.json' })
+        # The builder runs elevated: its own code must be as protected as the roots it writes (P19 deploys it admin-only).
+        foreach ($d in $here, [IO.Path]::GetFullPath((Join-Path $here '..\common'))) {
+            $problems = @(Invoke-AapProvider $Provider 'TestRootTrust' @{ Path = $d } | Where-Object { $_ })
+            if ($problems.Count) { throw "AAP_BuilderUntrusted: ${d}: $(@($problems | ForEach-Object { Get-AapPrintable ([string]$_) 300 }) -join '; ')" }   # check:builder-untrusted
+        }
+        Assert-AapWinConfig $Config
         $storage = Read-AapStorageRecord -Path $Config.StoragePath
-        Assert-AapStorageTrusted $storage $Provider
-        $plan = Read-AapWinBuildPlan -Path $planPath
+        $evidenceRoot = [IO.Path]::GetFullPath([string]$Config.EvidenceRoot)
+        Assert-AapStorageTrusted $storage $Provider $evidenceRoot
+        $sw = Invoke-AapProvider $Provider 'GetSwitch' @{ Name = $script:SwitchName }
+        if ($null -eq $sw -or [string](Get-AapProp $sw 'Name') -cne $script:SwitchName -or [string](Get-AapProp $sw 'SwitchType') -cne 'Internal') { throw "AAP_NetworkUntrusted: $($script:SwitchName) is not an existing internal switch" }   # check:network
+        $plan = Read-AapWinBuildPlan -Path $script:PlanPath
+        $planSha = Get-AapSha256File $script:PlanPath
         $names = Get-AapWinNames $plan ([int]$Config.AapBuild)
         $result.GenerationId = $names.GenerationId
-        $known = @(Get-AapWinBlockers -Plan $plan -ManifestPath $manifestPath)
-        $waived = @(Get-AapProp $Config 'Waivers' | Where-Object { $_ })
-        $unknownWaiver = @($waived | Where-Object { $known -cnotcontains $_ })
-        if ($unknownWaiver.Count) { throw "AAP_ConfigInvalid: waiver for an unknown blocker: $($unknownWaiver -join ', ')" }
+        $known = @(Get-AapWinBlockers -Plan $plan -ManifestPath $script:ManifestPath)
+        $waivers = @(Get-AapWinWaivers $Config $known $planSha)
+        $waived = @($waivers | ForEach-Object { $_.id })
         $open = @($known | Where-Object { $waived -cnotcontains $_ })
         if ($open.Count) { throw "AAP_Blocked: unresolved input blockers: $($open -join ', ')" }   # check:blocked
 
-        $evidenceDir = [IO.Path]::GetFullPath((Join-Path (Join-Path $Config.EvidenceRoot 'P06') $names.BuildId))
+        $evidenceDir = Join-Path (Join-Path $evidenceRoot 'P06') $names.BuildId
+        Assert-AapPlainPath -Root $evidenceRoot -Path $evidenceDir -Reason 'AAP_StorageUntrusted'
         $genParent = Join-Path $storage.Base.Path $script:Profile
         $genDir = Join-Path $genParent $names.Folder
+        Assert-AapPlainPath -Root $storage.Base.Path -Path $genDir -Reason 'AAP_StorageUntrusted'
         $recordPath = Join-Path $evidenceDir 'generation.json'
         $result.RecordPath = $recordPath; $result.BudgetPath = Join-Path $evidenceDir 'budget.json'; $result.EvidencePath = Join-Path $evidenceDir 'build.json'
 
         $buildRoot = Join-Path $storage.Staging.Path 'build'
-        [void][IO.Directory]::CreateDirectory($buildRoot)
-        if (Test-AapLink $buildRoot) { throw "AAP_UnsafeDelete: $buildRoot is a link" }
+        Assert-AapPlainPath -Root $storage.Staging.Path -Path $buildRoot -Reason 'AAP_StorageUntrusted' -Create
         try { $lock = [IO.File]::Open((Join-Path $buildRoot "$($names.BuildId).lock"), 'OpenOrCreate', 'ReadWrite', 'None') } catch { throw "AAP_BuildBusy: another builder holds $($names.BuildId)" }
 
         $buildDir = Join-Path $buildRoot $names.BuildId
-        if (Test-Path -LiteralPath $buildDir) {
-            Remove-AapWinBuild -Storage $storage -Provider $Provider -Names $names
+        if ((Get-AapPathKind $buildDir) -ne 'absent') {
+            Remove-AapWinBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot
             $result.PartialCleaned = $true
         }
-        if (Test-Path -LiteralPath $genDir) {
+        if ((Get-AapPathKind $genDir) -ne 'absent') {
             # Idempotent only for the very bytes this item recorded; anything else keeps its id and is never overwritten.
             $file = Join-Path $genDir 'base.vhdx'
-            $same = (Test-Path -LiteralPath $recordPath) -and (Test-Path -LiteralPath $file) -and
-                (Get-AapSha256File $file) -ceq [string]@((Read-AapJson $recordPath).artifacts)[0].sha256
+            $same = (Get-AapPathKind $recordPath) -eq 'file' -and (Get-AapPathKind $file) -eq 'file'
+            if ($same) { $same = (Get-AapSha256File $file) -ceq [string]@((Read-AapJson $recordPath).artifacts)[0].sha256 }
             if (-not $same) { throw "AAP_GenerationExists: $($names.GenerationId) already exists with other bytes or no record; a rebuild takes a new aap.<n>" }   # check:generation-exists
             $null = Invoke-AapProvider $Provider 'SetReadOnlyAcl' @{ Path = $file }
             $null = Invoke-AapProvider $Provider 'SetReadOnlyAcl' @{ Path = $genDir }
             $result.Ok = $true; $result.Status = 'unchanged'
             return [pscustomobject]$result
         }
+        if ((Get-AapPathKind $evidenceDir) -ne 'absent') { throw "AAP_GenerationExists: evidence for $($names.GenerationId) already exists; a rebuild takes a new aap.<n>" }   # check:evidence-exists
 
         Assert-AapBuildSpace $storage $Provider $plan ([int]$Config.StagingGibMax)
         $media = Join-Path (Join-Path $storage.Base.Path 'media') $Config.MediaFile
-        if (-not (Test-Path -LiteralPath $media) -or (Get-AapSha256File $media) -cne $Config.MediaSha256) { throw "AAP_MediaMismatch: $($Config.MediaFile) is missing or its SHA-256 differs from the pinned value" }   # check:media
+        if ((Get-AapPathKind $media) -ne 'file' -or (Get-AapSha256File $media) -cne $Config.MediaSha256) { throw "AAP_MediaMismatch: $($Config.MediaFile) is missing or its SHA-256 differs from the pinned value" }   # check:media
         $inputs = Invoke-AapProvider $Provider 'VerifyInputs' @{ StagingRoot = $storage.Staging.Path; Names = @($Config.SourceEntry) + @(Get-AapProp $Config 'Inputs' | Where-Object { $_ }) }
         if (-not $inputs.Complete) { throw "AAP_InputsUnverified: P03 offline verification did not accept every input: $(Get-AapPrintable ([string]$inputs.Detail) 300)" }   # check:inputs
         $source = [string]$inputs.Paths[[string]$Config.SourceEntry]
-        if (-not $source -or -not (Test-Path -LiteralPath $source)) { throw 'AAP_InputsUnverified: the upstream source archive is not staged' }
+        if (-not $source -or (Get-AapPathKind $source) -ne 'file') { throw 'AAP_InputsUnverified: the upstream source archive is not staged' }
 
         # From here on a failure cleans up what it made.
-        [void][IO.Directory]::CreateDirectory($buildDir)
-        [void][IO.Directory]::CreateDirectory($evidenceDir)
+        [void](New-Item -ItemType Directory -Path $buildDir)
         $started = $true
         $pw = New-AapWinPassword
         $ctx = [pscustomobject]@{
             Config = $Config; Provider = $Provider; Plan = $plan; Names = $names; BuildDir = $buildDir; EvidenceDir = $evidenceDir
             StatePath = (Join-Path $buildDir 'state.json'); OsDisk = (Join-Path $buildDir 'os.vhdx'); TempDisk = (Join-Path $buildDir 'temp.vhdx')
-            Vm = $names.BuildVm; User = [string]$plan.variables.install_user; Password = $pw; GuestScript = 'C:\aap-build\AapGuestRunner.ps1'
-            SourceArchive = $source; VerifyScript = (Join-Path $here 'guest\AapGuestVerify.ps1')
-            ProbeScript = $(if (Get-AapProp $Config 'ProbeScript') { $Config.ProbeScript } else { Join-Path $here '..\..\tools\parity-certify\probe\windows.ps1' })
-            HelloC = $(if (Get-AapProp $Config 'HelloC') { $Config.HelloC } else { Join-Path $here '..\..\tools\parity-certify\workloads\fixtures\hello.c' })
+            Vm = $names.BuildVm; VmId = $null; User = [string]$plan.variables.install_user; Password = $pw; GuestScript = 'C:\aap-build\AapGuestRunner.ps1'
+            SourceArchive = $source; VerifyScript = (Join-Path $here 'guest\AapGuestVerify.ps1'); ProbeScript = $script:ProbeScript; HelloC = $script:HelloC; Registry = $null
             State = [ordered]@{ schema = 1; build_id = $names.BuildId; generation_id = $names.GenerationId; status = 'running'; started_at = (Get-AapUtc); steps = [ordered]@{}
+                evidence_created = $false; written = (New-Object System.Collections.Generic.List[string])
                 staging_peak_bytes = [double]0; clone_peak_bytes = [double]0; scratch_peak_bytes = [double]0; mem_overhead_mib = 0 }
-            Evidence = [ordered]@{ schema = 1; item = 'P06'; build_id = $names.BuildId; generation_id = $names.GenerationId; builder_commit = $Config.BuilderCommit
-                plan_sha256 = (Get-AapSha256File $planPath); template_sha256 = $plan.baseline.template_sha256; media = [ordered]@{ file = $Config.MediaFile; sha256 = $Config.MediaSha256; edition = $Config.Edition }
-                waived_blockers = $waived; phases = (New-Object System.Collections.Generic.List[object]); reports = [ordered]@{}; verify = $null }
+            Evidence = [ordered]@{ schema = 2; item = 'P06'; build_id = $names.BuildId; generation_id = $names.GenerationId; builder_commit = $Config.BuilderCommit
+                plan_sha256 = $planSha; inputs_manifest_sha256 = (Get-AapSha256File $script:ManifestPath); template_sha256 = $plan.baseline.template_sha256
+                media = [ordered]@{ file = $Config.MediaFile; sha256 = $Config.MediaSha256; edition = $Config.Edition }; switch = $script:SwitchName
+                waivers = $waivers; phases = (New-Object System.Collections.Generic.List[object]); reports = [ordered]@{}; verify = $null; registry_check = $null }
         }
+        Save-AapState $ctx
+        Assert-AapPlainPath -Root $evidenceRoot -Path (Split-Path -Parent $evidenceDir) -Reason 'AAP_StorageUntrusted' -Create
+        [void](New-Item -ItemType Directory -Path $evidenceDir)
+        $ctx.State.evidence_created = $true
         Save-AapState $ctx
 
         Set-AapStep $ctx 'disks' 'intent'
@@ -677,9 +988,10 @@ function Invoke-AapWinImageBuild {
         Set-AapStep $ctx 'disks' 'done'
 
         Set-AapStep $ctx 'vm' 'intent'
-        $null = Invoke-AapProvider $Provider 'NewVm' @{ Name = $ctx.Vm; Path = $buildDir; OsDisk = $ctx.OsDisk; TempDisk = $ctx.TempDisk; Cpus = [int]$Config.BuildCpus; MemGib = [int]$Config.BuildMemGib; SwitchName = (Get-AapProp $Config 'SwitchName') }
-        $null = Invoke-AapProvider $Provider 'StartVm' @{ VmName = $ctx.Vm }
-        if (-not (Invoke-AapProvider $Provider 'WaitGuestReady' @{ VmName = $ctx.Vm; User = $ctx.User; Password = $pw; TimeoutSeconds = 1800 })) { throw 'AAP_RebootTimeout: build guest not ready after first boot' }
+        $vm = Invoke-AapProvider $Provider 'NewVm' @{ Name = $ctx.Vm; Path = $buildDir; OsDisk = $ctx.OsDisk; TempDisk = $ctx.TempDisk; Cpus = [int]$Config.BuildCpus; MemGib = [int]$Config.BuildMemGib; SwitchName = $script:SwitchName }
+        $ctx.VmId = Get-AapVmId $vm
+        $null = Invoke-AapProvider $Provider 'StartVm' @{ VmName = $ctx.Vm; VmId = $ctx.VmId }
+        if (-not (Invoke-AapProvider $Provider 'WaitGuestReady' @{ VmName = $ctx.Vm; VmId = $ctx.VmId; User = $ctx.User; Password = $pw; TimeoutSeconds = 1800 })) { throw 'AAP_RebootTimeout: build guest not ready after first boot' }
         $ctx.State.installed_at = Get-AapUtc
         Set-AapStep $ctx 'vm' 'done'
 
@@ -689,9 +1001,10 @@ function Invoke-AapWinImageBuild {
             Assert-AapStagingBudget $ctx
             Set-AapStep $ctx $p.id 'done'
         }
+        $ctx.Evidence.registry_check = $ctx.Registry
 
         Set-AapStep $ctx 'seal' 'intent'
-        $null = Invoke-AapProvider $Provider 'StopVm' @{ VmName = $ctx.Vm; TimeoutSeconds = 1800 }
+        $null = Invoke-AapProvider $Provider 'StopVm' @{ VmName = $ctx.Vm; VmId = $ctx.VmId; TimeoutSeconds = 1800 }
         $null = Invoke-AapProvider $Provider 'RemoveVm' @{ Name = $ctx.Vm }
         $null = Invoke-AapProvider $Provider 'Dismount' @{ Vhdx = $ctx.TempDisk }
         Remove-AapTree $ctx.TempDisk $buildDir
@@ -703,9 +1016,12 @@ function Invoke-AapWinImageBuild {
 
         Set-AapStep $ctx 'scan' 'intent'
         $mount = Invoke-AapProvider $Provider 'MountReadOnly' @{ Vhdx = $ctx.OsDisk }
-        try { $scan = Invoke-AapWinSecretScan -MountRoot $mount -Provider $Provider -KnownSecret @($pw) } finally { $null = Invoke-AapProvider $Provider 'Dismount' @{ Vhdx = $ctx.OsDisk } }
-        Write-AapJson $scan (Join-Path $evidenceDir 'secret-scan.json')
-        if ($scan.result -cne 'clean') { throw "AAP_SecretFound: secret scan result $($scan.result): $(@($scan.findings | ForEach-Object { "$($_.rule) $($_.path)" } | Select-Object -First 5) -join '; ')" }   # check:secret-found
+        try { $scan = Invoke-AapWinSecretScan -MountRoot $mount -KnownSecret @($pw) -AllowlistPath $script:AllowlistPath -Registry $ctx.Registry } finally { $null = Invoke-AapProvider $Provider 'Dismount' @{ Vhdx = $ctx.OsDisk } }
+        $null = Write-AapEvidence $ctx $scan 'secret-scan.json'
+        if ($scan.result -cne 'clean') {   # check:secret-found
+            $what = @(@($scan.findings | ForEach-Object { "$($_.rule) $($_.path)" }) + @($scan.unreadable | ForEach-Object { "unreadable $_" }) | Select-Object -First 5) -join '; '
+            throw "$(if ($scan.result -ceq 'found') { 'AAP_SecretFound' } else { 'AAP_ScanIncomplete' }): secret scan result $($scan.result): $what"
+        }
         Set-AapStep $ctx 'scan' 'done'
 
         Set-AapStep $ctx 'verify' 'intent'
@@ -715,9 +1031,8 @@ function Invoke-AapWinImageBuild {
 
         $builtAt = Get-AapUtc
         $ref = "evidence/P06/$($names.BuildId)"
-        $manifestSha = Get-AapSha256File $manifestPath
         $record = New-AapWinGenerationRecord -Plan $plan -GenerationId $names.GenerationId -Bytes $sealedBytes -Sha256 $sealedSha -BuilderCommit $Config.BuilderCommit `
-            -InputsManifestSha256 $manifestSha -BuiltAt $builtAt -SecretScanResult 'clean' -SecretScanRef "$ref/secret-scan.json"
+            -InputsManifestSha256 $ctx.Evidence.inputs_manifest_sha256 -BuiltAt $builtAt -SecretScanResult 'clean' -SecretScanRef "$ref/secret-scan.json"
         $budget = New-AapWinBudgetRecord -GenerationId $names.GenerationId -BaseBytes $sealedBytes -ClonePeakBytes $ctx.State.clone_peak_bytes -ScratchPeakBytes $ctx.State.scratch_peak_bytes `
             -StagingPeakBytes $ctx.State.staging_peak_bytes -MemOverheadMib $ctx.State.mem_overhead_mib -EvidenceRef "$ref/build.json" -MeasuredAt $builtAt
         # The measured budget must fit the owner-approved one (contracts README, Resolved 2026-10-20, item 4).
@@ -730,18 +1045,17 @@ function Invoke-AapWinImageBuild {
         $ctx.Evidence.measured = [ordered]@{ base_bytes = $sealedBytes; staging_peak_bytes = $ctx.State.staging_peak_bytes; clone_peak_bytes = $ctx.State.clone_peak_bytes; scratch_peak_bytes = $ctx.State.scratch_peak_bytes; mem_overhead_mib = $ctx.State.mem_overhead_mib }
         $ctx.Evidence.base_sha256 = $sealedSha
 
-        Set-AapStep $ctx 'publish' 'intent'
-        if (-not (Test-Path -LiteralPath $genParent)) { [void][IO.Directory]::CreateDirectory($genParent) }
-        if (Test-AapLink $genParent) { throw "AAP_UnsafeDelete: $genParent is a link" }
-        if (Test-Path -LiteralPath $genDir) { throw "AAP_GenerationExists: $genDir appeared during the build" }
-        [void][IO.Directory]::CreateDirectory($genDir)
+        Assert-AapPlainPath -Root $storage.Base.Path -Path $genParent -Reason 'AAP_StorageUntrusted' -Create
+        if ((Get-AapPathKind $genDir) -ne 'absent') { throw "AAP_GenerationExists: $genDir appeared during the build" }   # check:gen-race
+        [void](New-Item -ItemType Directory -Path $genDir)
+        Set-AapStep $ctx 'publish' 'intent'   # only now does a cleanup own $genDir
         $partial = Join-Path $genDir 'base.vhdx.partial'
         [IO.File]::Copy($ctx.OsDisk, $partial, $false)
         if ((Get-AapSha256File $partial) -cne $sealedSha) { throw 'AAP_PublishMismatch: the published copy differs from the sealed disk' }   # check:publish-hash
         [IO.File]::Move($partial, (Join-Path $genDir 'base.vhdx'))
-        Write-AapJson $ctx.Evidence $result.EvidencePath
-        Write-AapJson $budget $result.BudgetPath
-        Write-AapJson $record $recordPath
+        $null = Write-AapEvidence $ctx $ctx.Evidence 'build.json'
+        $null = Write-AapEvidence $ctx $budget 'budget.json'
+        $null = Write-AapEvidence $ctx $record 'generation.json'
         $null = Invoke-AapProvider $Provider 'SetReadOnlyAcl' @{ Path = (Join-Path $genDir 'base.vhdx') }
         $null = Invoke-AapProvider $Provider 'SetReadOnlyAcl' @{ Path = $genDir }
         $ctx.State.status = 'done'
@@ -755,8 +1069,7 @@ function Invoke-AapWinImageBuild {
         if ($started -and -not $published) {
             $result.Status = 'failed'
             if ($ctx) { try { $ctx.State.status = 'failed'; Save-AapState $ctx } catch { $null = $_ } }
-            try { Remove-AapWinBuild -Storage $storage -Provider $Provider -Names $names } catch { $result.Detail = Get-AapPrintable "$($result.Detail); cleanup failed: $($_.Exception.Message)" 500 }
-            foreach ($f in $result.RecordPath, $result.BudgetPath, $result.EvidencePath) { if ($f -and (Test-Path -LiteralPath $f)) { [IO.File]::Delete($f) } }
+            try { Remove-AapWinBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot } catch { $result.Detail = Get-AapPrintable "$($result.Detail); cleanup failed: $($_.Exception.Message)" 500 }
         }
     } finally {
         if ($lock) { $lock.Dispose() }
@@ -765,4 +1078,5 @@ function Invoke-AapWinImageBuild {
 }
 
 Export-ModuleMember -Function Read-AapStorageRecord, Read-AapWinBuildPlan, Get-AapWinBlockers, New-AapWinPassword, New-AapWinUnattend, ConvertFrom-AapGuestReply,
-    Invoke-AapWinSecretScan, New-AapWinGenerationRecord, New-AapWinBudgetRecord, Remove-AapWinBuild, Invoke-AapWinImageBuild, Remove-AapTree, Get-AapWinNames
+    Read-AapSecretAllowlist, Invoke-AapWinSecretScan, New-AapWinGenerationRecord, New-AapWinBudgetRecord, Remove-AapWinBuild, Invoke-AapWinImageBuild, Remove-AapTree,
+    Get-AapWinNames, Get-AapPathKind, Assert-AapPlainPath, Write-AapGuestFile, Select-AapWindowsPartition, Receive-AapCappedJob, Set-AapReadOnlyAcl

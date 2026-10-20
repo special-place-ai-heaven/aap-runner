@@ -1,6 +1,7 @@
 # guest/AapGuestRunner.ps1 run locally as a child process (Windows PowerShell 5.1, no window) against fake upstream
-# scripts in a temp work root. Only the 'scripts' request kind and request validation run here: the actions change the
-# machine (bcdedit, services, sysprep) and run only inside a build guest. Pester 5 on Windows PowerShell 5.1 and PowerShell 7.
+# scripts in a temp work root. Only the 'scripts' request kind, the inner half of an elevated request and request
+# validation run here: the actions change the machine (bcdedit, services, sysprep) and the scheduled-task half of an
+# elevated request registers a task, so those run only inside a build guest. Pester 5 on Windows PowerShell 5.1 and 7.
 
 BeforeAll {
     . (Join-Path $PSScriptRoot 'WinImageTestHelpers.ps1')
@@ -19,12 +20,12 @@ BeforeAll {
         [IO.File]::WriteAllText($p, $Body)
         return [ordered]@{ name = $Name; dir = 'build'; sha256 = (Get-FileSha $p) }
     }
-    function Invoke-Runner($Work, $Request) {
+    function Invoke-Runner($Work, $Request, [string]$Extra = '') {
         $req = Join-Path $Work.Root 'request.json'
         [IO.File]::WriteAllText($req, (ConvertTo-Json -InputObject $Request -Depth 6))
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName = $script:Ps
-        $psi.Arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$script:Runner`" -RequestPath `"$req`" -WorkRoot `"$($Work.Root)`""
+        $psi.Arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$script:Runner`" -RequestPath `"$req`" -WorkRoot `"$($Work.Root)`" $Extra"
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
         # A guest's Windows PowerShell sees the machine module path, not the one PowerShell 7 hands its children.
@@ -86,6 +87,45 @@ Describe 'guest provisioning runner' {
         $r = ConvertFrom-AapGuestReply -Text (Invoke-Runner $wk (New-Request 'p08' @([ordered]@{ name = '..\..\evil.ps1'; dir = 'build'; sha256 = ('a' * 64) }))) -Phase 'p08'
         $r.status | Should -Be 'failed'
         $r.message | Should -Match 'script name'
+    }
+    It 'runs each script through the Packer wrapper: <Case>' -TestCases @(
+        @{ Case = 'a script that ends without a native command exits 0'; Body = "Write-Output 'done'"; Code = 0 }
+        @{ Case = 'the last native exit code is the script exit code'; Body = "& (Join-Path `$env:SystemRoot 'System32\cmd.exe') /c exit 5"; Code = 5 }
+        @{ Case = 'a script that throws exits 1'; Body = "throw 'upstream failure'"; Code = 1 }) {
+        $wk = New-Work
+        $a = Add-Script $wk 'Install-A.ps1' $Body
+        $r = ConvertFrom-AapGuestReply -Text (Invoke-Runner $wk (New-Request 'p08' @($a) @(0, 1, 5))) -Phase 'p08'
+        $r.scripts[0].exit_code | Should -Be $Code
+        Test-Path (Join-Path $wk.Root 'logs\p08-Install-A.ps1.log.wrapper.ps1') | Should -BeTrue
+    }
+    It 'passes environment values literally, quotes and dollar signs included' {
+        $wk = New-Work
+        $a = Add-Script $wk 'Install-A.ps1' "Set-Content -LiteralPath '$($wk.Out)' -Value `$env:AAP_Q"
+        $req = New-Request 'p08' @($a)
+        $req.env = [ordered]@{ AAP_Q = 'O''Brien $HOME `n' }
+        (ConvertFrom-AapGuestReply -Text (Invoke-Runner $wk $req) -Phase 'p08').status | Should -Be 'ok'
+        Get-Content $wk.Out | Should -BeExactly 'O''Brien $HOME `n'
+    }
+    It 'refuses an environment value that is not printable ASCII' {
+        $wk = New-Work
+        $a = Add-Script $wk 'Install-A.ps1' "Set-Content -LiteralPath '$($wk.Out)' -Value 'ran'"
+        $req = New-Request 'p08' @($a)
+        $req.env = [ordered]@{ AAP_Q = [regex]::Unescape('caf\u00e9') }
+        $r = ConvertFrom-AapGuestReply -Text (Invoke-Runner $wk $req) -Phase 'p08'
+        $r.status | Should -Be 'failed'
+        $r.message | Should -Match 'environment entry AAP_Q'
+        Test-Path $wk.Out | Should -BeFalse
+    }
+    It 'as the inner half of an elevated request, writes its reply to the reply file' {
+        $wk = New-Work
+        $a = Add-Script $wk 'Install-A.ps1' "Set-Content -LiteralPath '$($wk.Out)' -Value 'ran'"
+        $req = New-Request 'p13' @($a)
+        $req.elevated = $true
+        $reply = Join-Path $wk.Root 'reply-p13.json'
+        Invoke-Runner $wk $req "-Inner -ReplyPath `"$reply`"" | Should -BeNullOrEmpty
+        $r = ConvertFrom-AapGuestReply -Text ([IO.File]::ReadAllText($reply)) -Phase 'p13'
+        $r.status | Should -Be 'ok'
+        Get-Content $wk.Out | Should -Be 'ran'
     }
     It 'refuses an unknown action and a malformed request with a failed reply' {
         $wk = New-Work

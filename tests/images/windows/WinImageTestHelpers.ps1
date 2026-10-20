@@ -42,9 +42,10 @@ function New-FakeWorld {
         Guids = [ordered]@{ vol1 = '00000000-0000-4000-8000-0000000000a1'; vol2 = '00000000-0000-4000-8000-0000000000b2'; vol3 = '00000000-0000-4000-8000-0000000000c3' }
         Free = @{}; Untrusted = @{}; Sizes = @{}; BuildDirBytes = { param($n) 40 * 1073741824 }; MeasureCount = 0
         Calls = (New-Object System.Collections.Generic.List[object]); Requests = (New-Object System.Collections.Generic.List[object])
-        Guest = $null; ReadyAfterRestart = $true; InputsComplete = $true; Registry = @{}; Unattend = (New-Object System.Collections.Generic.List[string])
-        InventoryText = '{"schema":1,"probe":"fake"}'; ReportText = '# software report'; Vms = @{}; ReadOnly = (New-Object System.Collections.Generic.List[string])
-        LastRequest = $null; SourceZip = $null; MediaSha = $null; Provider = $null
+        Guest = $null; ReadyAfterRestart = $true; InputsComplete = $true; Unattend = (New-Object System.Collections.Generic.List[string])
+        InventoryText = '{"schema":1,"probe":"fake"}'; ReportText = '# software report'; Vms = @{}; VmIds = @{}; ReadOnly = (New-Object System.Collections.Generic.List[string])
+        LastRequest = $null; SourceZip = $null; MediaSha = $null; Provider = $null; BootTime = $null
+        Switch = @{ Name = 'aap-guests-win'; SwitchType = 'Internal' }
     }
     $w.Staging = $(if ($SeparateStaging) { Join-Path $root 'vol3\staging' } else { Join-Path $w.Base 'staging' })
     foreach ($d in $w.Base, $w.Clone, $w.Scratch, $w.Staging, $w.Capacity, $w.Evidence, $w.Disk, (Join-Path $w.Base 'media')) { [void][IO.Directory]::CreateDirectory($d) }
@@ -65,13 +66,20 @@ function New-FakeWorld {
     [IO.File]::WriteAllText($w.SourceZip, 'fake archive')
     $w.Plan = New-PinnedPlan $w.PlanPath
     $repo = Get-TestRepo
+    $manifest = Join-Path $repo 'images\common\artifacts.manifest.json'
+    # The builder's repository files are fixed in module scope, never in Config; the fake world swaps them there.
+    Set-ModuleVar 'PlanPath' $w.PlanPath
+    Set-ModuleVar 'ManifestPath' $manifest
+    Set-ModuleVar 'ProbeScript' (Join-Path $repo 'tools\parity-certify\probe\windows.ps1')
+    Set-ModuleVar 'HelloC' (Join-Path $repo 'tools\parity-certify\workloads\fixtures\hello.c')
+    Set-ModuleVar 'AllowlistPath' (Join-Path (Split-Path -Parent (Get-TestModulePath)) 'secret-allowlist.json')
+    Set-ModuleVar 'PollSeconds' 0
+    $planSha = Get-FileSha $w.PlanPath
     $w.Config = @{
         StoragePath = $w.StoragePath; EvidenceRoot = $w.Evidence; AapBuild = 1; MediaFile = 'SERVER_EVAL_x64FRE_en-us.iso'; MediaSha256 = $w.MediaSha
         Edition = 'Windows Server 2025 Datacenter Evaluation (Desktop Experience)'; BuildCpus = 4; BuildMemGib = 10; StagingGibMax = 400; BaseGibMax = 186; JobDiskGibMax = 55
-        BuilderCommit = '0123456789abcdef0123456789abcdef01234567'; SourceEntry = 'runner-images-aee0669'; Inputs = @()
-        PlanPath = $w.PlanPath; ManifestPath = (Join-Path $repo 'images\common\artifacts.manifest.json')
-        Waivers = @(Get-AapWinBlockers -Plan $w.Plan -ManifestPath (Join-Path $repo 'images\common\artifacts.manifest.json'))
-        ProbeScript = (Join-Path $repo 'tools\parity-certify\probe\windows.ps1'); HelloC = (Join-Path $repo 'tools\parity-certify\workloads\fixtures\hello.c')
+        BuilderCommit = '0123456789abcdef0123456789abcdef01234567'; SourceEntry = 'runner-images-aee0669'; Inputs = @(); SwitchName = 'aap-guests-win'
+        Waivers = @(Get-AapWinBlockers -Plan $w.Plan -ManifestPath $manifest | ForEach-Object { New-TestWaiver $_ $planSha })
     }
     $w.Sizes['os.vhdx'] = [double]128 * $script:GiB
     $w.Sizes['os.avhdx'] = [double]18 * $script:GiB
@@ -80,6 +88,43 @@ function New-FakeWorld {
     $w.Provider = New-FakeProvider $w
     return $w
 }
+
+function New-TestWaiver([string]$Id, [string]$PlanSha) { [ordered]@{ id = $Id; rationale = 'fake world: every blocker waived for the test'; plan_sha256 = $PlanSha; approver = 'chair (test)' } }
+
+# Edits the world's plan and re-approves its waivers for the new plan bytes.
+function Update-TestPlan($w, [scriptblock]$Edit) {
+    & $Edit $w.Plan
+    Write-TestJson $w.Plan $w.PlanPath
+    $sha = Get-FileSha $w.PlanPath
+    foreach ($x in $w.Config.Waivers) { $x.plan_sha256 = $sha }
+}
+
+# Writes only the DACL (Set-Acl in PowerShell 7 also asks for the SACL, which needs a privilege this user lacks).
+function Set-TestAcl([string]$Path, $Security) {
+    $info = $(if ($Security -is [Security.AccessControl.DirectorySecurity]) { New-Object IO.DirectoryInfo $Path } else { New-Object IO.FileInfo $Path })
+    if ($PSVersionTable.PSVersion.Major -ge 6) { [IO.FileSystemAclExtensions]::SetAccessControl($info, $Security) } else { $info.SetAccessControl($Security) }
+}
+
+# Gives this user full control of a path the fake provider made read-only, so a test can tamper with it.
+function Unlock-TestPath([string]$Path) {
+    $sec = $(if (Test-Path -LiteralPath $Path -PathType Container) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity })
+    $sec.SetAccessRuleProtection($true, $false)
+    $sec.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule ([Security.Principal.WindowsIdentity]::GetCurrent().User), 'FullControl', 'Allow'))
+    Set-TestAcl $Path $sec
+}
+
+# A folder this user cannot list (protected DACL with no entry); the user still owns it, so cleanup can reopen it.
+function New-LockedDir([string]$Path) {
+    [void][IO.Directory]::CreateDirectory($Path)
+    $sec = New-Object Security.AccessControl.DirectorySecurity
+    $sec.SetAccessRuleProtection($true, $false)
+    Set-TestAcl $Path $sec
+}
+
+function Get-FakeRegistryData { [ordered]@{ registry = [ordered]@{ checked = @('autologon-password', 'autologon-enabled', 'lsa-default-password'); findings = @(); unreadable = @() } } }
+
+function Set-ModuleVar([string]$Name, $Value) { & (Get-Module AapWinImage) { param($n, $v) Set-Variable -Scope Script -Name $n -Value $v } $Name $Value }
+function Get-ModuleVar([string]$Name) { & (Get-Module AapWinImage) { param($n) Get-Variable -Scope Script -Name $n -ValueOnly } $Name }
 
 function Get-VolumeOf($w, [string]$Path) {
     if ($Path.StartsWith((Join-Path $w.Root 'vol2'), 'OrdinalIgnoreCase')) { return $w.Guids.vol2 }
@@ -94,6 +139,7 @@ function Get-FakeGuestReply($w, $req) {
     if ($req.kind -eq 'action' -and $req.action -eq 'sysprep-generalize') {
         foreach ($f in @(Get-ChildItem -LiteralPath $w.Disk -Recurse -File -Filter 'unattend.xml')) { Remove-Item -LiteralPath $f.FullName -Force }
         $ab = Join-Path $w.Disk 'aap-build'; if (Test-Path $ab) { Remove-Item -LiteralPath $ab -Recurse -Force }
+        $o.data = Get-FakeRegistryData
     }
     if ($req.kind -eq 'verify') {
         $disc = [ordered]@{}
@@ -116,13 +162,19 @@ function New-FakeProvider($w) {
     $p.VerifyInputs = { param($a) Add-FakeCall 'VerifyInputs' $a; @{ Complete = $w.InputsComplete; Paths = @{ 'runner-images-aee0669' = $w.SourceZip }; Detail = 'fake' } }
     $p.NewBuildDisk = { param($a) Add-FakeCall 'NewBuildDisk' $a; [IO.File]::WriteAllText($a.Path, "disk $(Split-Path -Leaf $a.Path)") }
     $p.ApplyWindowsImage = { param($a) Add-FakeCall 'ApplyWindowsImage' $a
-        foreach ($k in @($a.Files.Keys)) { $t = Join-Path $w.Disk $k; [void][IO.Directory]::CreateDirectory((Split-Path -Parent $t)); [IO.File]::WriteAllText($t, $a.Files[$k]); $w.Unattend.Add($a.Files[$k]) }
-        foreach ($k in @($a.CopyFiles.Keys)) { $t = Join-Path $w.Disk $k; [void][IO.Directory]::CreateDirectory((Split-Path -Parent $t)); Copy-Item -LiteralPath $a.CopyFiles[$k] -Destination $t }
+        foreach ($k in @($a.Files.Keys)) { Write-AapGuestFile -Root $w.Disk -RelPath $k -Bytes ([Text.Encoding]::UTF8.GetBytes($a.Files[$k])); $w.Unattend.Add($a.Files[$k]) }
+        foreach ($k in @($a.CopyFiles.Keys)) { Write-AapGuestFile -Root $w.Disk -RelPath $k -Bytes ([IO.File]::ReadAllBytes($a.CopyFiles[$k])) }
         [IO.File]::AppendAllText($a.Vhdx, ' windows applied')
         @{ ImageIndex = 4; Build = '10.0.26100.1742' } }
     $p.NewDiffDisk = { param($a) Add-FakeCall 'NewDiffDisk' $a; [IO.File]::WriteAllText($a.Path, 'diff') }
-    $p.WriteOfflineFiles = { param($a) Add-FakeCall 'WriteOfflineFiles' $a; foreach ($k in @($a.Files.Keys)) { $w.Unattend.Add($a.Files[$k]) } }
-    $p.NewVm = { param($a) Add-FakeCall 'NewVm' $a; $w.Vms[$a.Name] = 'Off' }
+    # The fake guest disk is a real folder: offline writes go through the production path walk.
+    $p.WriteOfflineFiles = { param($a) Add-FakeCall 'WriteOfflineFiles' $a
+        foreach ($k in @($a.Files.Keys)) { Write-AapGuestFile -Root $w.Disk -RelPath $k -Bytes ([Text.Encoding]::UTF8.GetBytes($a.Files[$k])); $w.Unattend.Add($a.Files[$k]) } }
+    $p.GetSwitch = { param($a) Add-FakeCall 'GetSwitch' $a; $w.Switch }
+    $p.NewVm = { param($a) Add-FakeCall 'NewVm' $a; $w.Vms[$a.Name] = 'Off'; $w.VmIds[$a.Name] = [guid]::NewGuid().ToString(); @{ Id = $w.VmIds[$a.Name] } }
+    $p.GetGuestBootTime = { param($a) Add-FakeCall 'GetGuestBootTime' $a
+        if ($w.BootTime) { return (& $w.BootTime $w) }
+        [string](630000000000000000 + @($w.Calls | Where-Object { $_.Op -eq 'RestartVm' }).Count) }
     $p.StartVm = { param($a) Add-FakeCall 'StartVm' $a; $w.Vms[$a.VmName] = 'Running' }
     $p.StopVm = { param($a) Add-FakeCall 'StopVm' $a; $w.Vms[$a.VmName] = 'Off' }
     $p.RestartVm = { param($a) Add-FakeCall 'RestartVm' $a }
@@ -142,8 +194,10 @@ function New-FakeProvider($w) {
     $p.OptimizeDisk = { param($a) Add-FakeCall 'OptimizeDisk' $a }
     $p.MountReadOnly = { param($a) Add-FakeCall 'MountReadOnly' $a; $w.Disk }
     $p.Dismount = { param($a) Add-FakeCall 'Dismount' $a }
-    $p.ReadOfflineRegistry = { param($a) Add-FakeCall 'ReadOfflineRegistry' $a; $k = "$($a.Hive)\$($a.Key)\$($a.Name)"; if ($w.Registry.ContainsKey($k)) { $w.Registry[$k] } else { $null } }
-    $p.SetReadOnlyAcl = { param($a) Add-FakeCall 'SetReadOnlyAcl' $a; $w.ReadOnly.Add($a.Path); if (Test-Path -LiteralPath $a.Path -PathType Leaf) { [IO.File]::SetAttributes($a.Path, 'ReadOnly') } }
+    # A real read-only ACL, with this user in the place of Administrators: reruns and cleanup must cope with it.
+    $p.SetReadOnlyAcl = { param($a) Add-FakeCall 'SetReadOnlyAcl' $a; $w.ReadOnly.Add($a.Path)
+        $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        Set-AapReadOnlyAcl -Path $a.Path -Owner $me -Readers @($me) }
     $p.GetVmMemoryOverheadMib = { param($a) Add-FakeCall 'GetVmMemoryOverheadMib' $a; 310 }
     return $p
 }

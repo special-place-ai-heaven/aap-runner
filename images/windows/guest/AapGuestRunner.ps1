@@ -1,16 +1,25 @@
 # Runs one P06 build phase inside the build guest and prints one JSON reply line. Windows PowerShell 5.1.
 # The host sends the request file over PowerShell Direct and starts this script with -File. It never downloads anything
 # itself: the upstream scripts it runs come from the P03-verified runner-images archive, each checked against the SHA-256
-# pinned in the build plan before it runs. Upstream script output goes to log files under C:\aap-build\logs, never to the
-# reply. The reply holds fixed fields and printable ASCII only; the host treats it as hostile anyway.
+# pinned in the build plan before it runs. Those scripts then download and run installers from the internet, so the host
+# treats this guest and its replies as hostile. Upstream script output goes to log files under C:\aap-build\logs, never
+# to the reply. The reply holds fixed fields and printable ASCII only.
 #   powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File AapGuestRunner.ps1 -RequestPath <request.json>
+# A request marked elevated runs this script again as a scheduled task of the install user with highest privileges
+# (-Inner -ReplyPath), as Packer runs elevated provisioners; before sysprep, -RegistryCheck runs the same way as SYSTEM.
 param(
-    [Parameter(Mandatory)][string]$RequestPath,
-    [string]$WorkRoot = 'C:\aap-build'
+    [string]$RequestPath,
+    [string]$WorkRoot = 'C:\aap-build',
+    [switch]$Inner,
+    [string]$ReplyPath,
+    [string]$RegistryCheck
 )
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$TaskNotRun = 267011      # SCHED_S_TASK_HAS_NOT_RUN
+$TaskRunning = 267009     # SCHED_S_TASK_RUNNING
+$RegistryRules = @('autologon-password', 'autologon-enabled', 'lsa-default-password')
 
 function Get-Printable([string]$Text) {
     if ($null -eq $Text) { return '' }
@@ -27,10 +36,12 @@ function Get-Prop($Object, [string]$Name) {
     $p = $Object.PSObject.Properties[$Name]
     if ($p) { return $p.Value } else { return $null }
 }
-function Send-Reply([string]$Phase, [string]$Status, [string]$Message, $Scripts) {
+function Send-Reply([string]$Phase, [string]$Status, [string]$Message, $Scripts, $Data) {
     $o = [ordered]@{ schema = 1; phase = $Phase; status = $Status; message = (Get-Printable $Message) }
     if ($null -ne $Scripts) { $o["scripts"] = [object[]]@($Scripts | ForEach-Object { $_ }) }
-    [Console]::Out.WriteLine((ConvertTo-Json -InputObject $o -Depth 5 -Compress))
+    if ($null -ne $Data) { $o["data"] = $Data }
+    $line = ConvertTo-Json -InputObject $o -Depth 5 -Compress
+    if ($ReplyPath) { [IO.File]::WriteAllText($ReplyPath, $line, [Text.Encoding]::ASCII) } else { [Console]::Out.WriteLine($line) }
 }
 
 # One child process, no window, its own environment additions, output to a log file. Returns the exit code.
@@ -45,14 +56,24 @@ function Invoke-Child([string]$File, [string[]]$Arguments, $Environment, [string
     }
 }
 
+# Packer's powershell provisioner runs each script as  & { $ProgressPreference='SilentlyContinue'; <env>; &'<script>'; exit $LastExitCode }.
+# The same wrapper goes into a file beside the logs and runs with -File, so the exit codes match upstream: a script that
+# throws exits 1, one that ends after a native command exits with that command's code, any other ends with 0.
+function New-Wrapper([string]$Script, $Environment, [string]$Path) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($k in @($Environment.Keys)) { $lines.Add("`$env:$k = '$(([string]$Environment[$k]).Replace("'", "''"))'") }
+    $lines.Add("& { `$ProgressPreference = 'SilentlyContinue'; & '$($Script.Replace("'", "''"))'; exit `$LastExitCode }")
+    [IO.File]::WriteAllLines($Path, $lines.ToArray())
+}
+
 function Invoke-Scripts($Req, [string]$ScriptsRoot, [string]$Logs) {
     $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $policy = [string]$Req.execution_policy
     if (@('bypass', 'unrestricted', 'remotesigned') -notcontains $policy) { return @{ Status = 'failed'; Message = "execution policy $policy"; Scripts = @() } }
     $codes = @($Req.valid_exit_codes | ForEach-Object { [int]$_ })
-    $envMap = @{}
+    $envMap = [ordered]@{}
     foreach ($e in $Req.env.PSObject.Properties) {
-        if ($e.Name -cnotmatch '^[A-Z0-9_]{1,40}$') { return @{ Status = 'failed'; Message = "environment name $($e.Name)"; Scripts = @() } }
+        if ($e.Name -cnotmatch '^[A-Z0-9_]{1,40}$' -or [string]$e.Value -cnotmatch '^[\x20-\x7e]*$') { return @{ Status = 'failed'; Message = "environment entry $($e.Name)"; Scripts = @() } }
         $envMap[$e.Name] = [string]$e.Value
     }
     if ([int]$Req.pause_before_seconds -gt 0) { Start-Sleep -Seconds ([int]$Req.pause_before_seconds) }
@@ -64,8 +85,11 @@ function Invoke-Scripts($Req, [string]$ScriptsRoot, [string]$Logs) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return @{ Status = 'failed'; Message = "$name is not in the staged sources"; Scripts = $done } }
         $sha = Get-Sha256 $path
         if ([string]$s.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $sha -cne [string]$s.sha256) { return @{ Status = 'failed'; Message = "$name SHA-256 differs from the plan; not run"; Scripts = $done } }
+        $log = Join-Path $Logs "$($Req.phase)-$name.log"
+        $wrapper = "$log.wrapper.ps1"
+        New-Wrapper $path $envMap $wrapper
         $start = Get-Date
-        $code = Invoke-Child $ps @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', $policy, '-File', "`"$path`"") $envMap (Join-Path $Logs "$($Req.phase)-$name.log")
+        $code = Invoke-Child $ps @('-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', $policy, '-File', "`"$wrapper`"") @{} $log
         $done.Add([ordered]@{ name = $name; sha256 = $sha; exit_code = $code; seconds = [int]((Get-Date) - $start).TotalSeconds })
         if ($codes -notcontains $code) { return @{ Status = 'failed'; Message = "$name exited $code"; Scripts = $done } }
     }
@@ -76,6 +100,44 @@ function Wait-Until([scriptblock]$Condition, [int]$TimeoutSeconds, [int]$Every =
     $until = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $until) { if (& $Condition) { return $true }; Start-Sleep -Seconds $Every }
     return [bool](& $Condition)
+}
+
+# Runs this script again as a scheduled task, waits for it to finish and returns its exit code. Elevated phases run as the
+# install user with highest privileges (S4U: no password is stored in the task); the registry check runs as SYSTEM. Tasks
+# of these logon types run in session 0, so no window opens.
+function Invoke-AsTask([string]$UserId, [string]$LogonType, [string]$Arguments, [int]$TimeoutSeconds) {
+    $name = 'aap-build-' + [guid]::NewGuid().ToString('n').Substring(0, 12)
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $action = New-ScheduledTaskAction -Execute $ps -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$PSCommandPath`" $Arguments"
+    $principal = New-ScheduledTaskPrincipal -UserId $UserId -LogonType $LogonType -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds $TimeoutSeconds) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    [void](Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings)
+    try {
+        Start-ScheduledTask -TaskName $name
+        [void](Wait-Until { $r = (Get-ScheduledTaskInfo -TaskName $name).LastTaskResult; (Get-ScheduledTask -TaskName $name).State -ne 'Running' -and $r -ne $TaskNotRun -and $r -ne $TaskRunning } ($TimeoutSeconds + 60) 5)
+        return [int](Get-ScheduledTaskInfo -TaskName $name).LastTaskResult
+    } finally { Unregister-ScheduledTask -TaskName $name -Confirm:$false }
+}
+
+# As SYSTEM: the autologon values and the LSA DefaultPassword secret, which only SYSTEM can read. Writes which rules were
+# checked, which found something and which could not be read; never a value.
+function Write-RegistryCheck([string]$Out) {
+    $checked = New-Object System.Collections.Generic.List[string]
+    $found = New-Object System.Collections.Generic.List[string]
+    $unreadable = New-Object System.Collections.Generic.List[string]
+    try {
+        $v = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction Stop
+        $checked.Add('autologon-password'); $checked.Add('autologon-enabled')
+        if ([string](Get-Prop $v 'DefaultPassword') -ne '') { $found.Add('autologon-password') }
+        if ([string](Get-Prop $v 'AutoAdminLogon') -eq '1') { $found.Add('autologon-enabled') }
+    } catch { $unreadable.Add('autologon-password'); $unreadable.Add('autologon-enabled') }
+    try {
+        $null = Get-ChildItem -LiteralPath 'HKLM:\SECURITY\Policy\Secrets' -ErrorAction Stop
+        $checked.Add('lsa-default-password')
+        if (Test-Path -LiteralPath 'HKLM:\SECURITY\Policy\Secrets\DefaultPassword') { $found.Add('lsa-default-password') }
+    } catch { $unreadable.Add('lsa-default-password') }
+    $o = [ordered]@{ checked = [object[]]$checked.ToArray(); findings = [object[]]$found.ToArray(); unreadable = [object[]]$unreadable.ToArray() }
+    [IO.File]::WriteAllText($Out, (ConvertTo-Json -InputObject $o -Compress), [Text.Encoding]::ASCII)
 }
 
 function Expand-Sources([string]$Zip, [string]$Dest) {
@@ -98,37 +160,52 @@ function Remove-AnswerFiles {
     }
 }
 
-# A random password that never leaves this process. Replaces the build password before sysprep, so the sealed image
-# carries no credential anyone knows.
+# A random password that never leaves this process, built into a SecureString one character at a time. Replaces the build
+# password before sysprep, so the sealed image carries no credential anyone knows.
 function Reset-InstallUser([string]$User) {
     $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_=+.,:!@#%'
     $bytes = New-Object byte[] 48
-    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-    $sb = New-Object Text.StringBuilder
-    foreach ($b in $bytes) { [void]$sb.Append($alphabet[$b % 68]) }
-    [void]$sb.Append('Aa1!')
-    Set-LocalUser -Name $User -Password (ConvertTo-SecureString -String $sb.ToString() -AsPlainText -Force)
-    [void]$sb.Clear()
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    $s = New-Object Security.SecureString
+    foreach ($b in $bytes) { $s.AppendChar($alphabet[$b % 68]) }
+    foreach ($c in 'Aa1!'.ToCharArray()) { $s.AppendChar($c) }
+    $s.MakeReadOnly()
+    try { Set-LocalUser -Name $User -Password $s } finally { $s.Dispose() }
 }
+
+if ($RegistryCheck) { Write-RegistryCheck $RegistryCheck; exit 0 }
 
 $phase = 'unknown'
 try {
+    if (-not $RequestPath) { throw 'no request' }
     $req = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($RequestPath))
     $phase = [string]$req.phase
     if ($phase -cnotmatch '^(p[0-9]{2}|verify)$') { $phase = 'unknown'; throw 'bad phase id' }
     $vars = Get-Prop $req 'vars'
+    $timeout = [int](Get-Prop $req 'timeout_seconds')
+    if ($timeout -lt 1) { $timeout = 21600 }
     $logs = Join-Path $WorkRoot 'logs'
     [void][IO.Directory]::CreateDirectory($logs)
+    if ((Get-Prop $req 'elevated') -eq $true -and -not $Inner) {
+        $reply = Join-Path $WorkRoot "reply-$phase.json"
+        if (Test-Path -LiteralPath $reply) { Remove-Item -LiteralPath $reply -Force }
+        $code = Invoke-AsTask ([string]$vars.install_user) 'S4U' "-RequestPath `"$RequestPath`" -WorkRoot `"$WorkRoot`" -Inner -ReplyPath `"$reply`"" $timeout
+        if (-not (Test-Path -LiteralPath $reply -PathType Leaf) -or (Get-Item -LiteralPath $reply).Length -gt 65536) { throw "the elevated task ended without a reply (task result $code)" }
+        [Console]::Out.WriteLine(([IO.File]::ReadAllText($reply)).Trim())
+        Remove-Item -LiteralPath $reply -Force
+        exit 0
+    }
     $src = Join-Path $WorkRoot 'src'
     $scriptsRoot = Join-Path $src 'images\windows\scripts'
     if ($req.kind -ceq 'scripts') {
         $r = Invoke-Scripts $req $scriptsRoot $logs
-        Send-Reply $phase $r.Status $r.Message $r.Scripts
+        Send-Reply $phase $r.Status $r.Message $r.Scripts $null
         exit 0
     }
     if ($req.kind -cne 'action') { throw "unknown request kind" }
     $imageFolder = [string]$vars.image_folder
-    $ok = $true; $msg = ''
+    $ok = $true; $msg = ''; $data = $null
     switch -CaseSensitive ([string]$req.action) {
         'prepare-folders' {
             if (-not (Test-Path -LiteralPath 'D:\')) { throw 'the temp disk is not D:' }
@@ -171,16 +248,16 @@ try {
             if ((Get-Service -Name wlansvc).Status -eq 'Running') { Stop-Service -Name wlansvc }
         }
         'wait-containers-feature' {
-            $ok = Wait-Until { (Get-WindowsOptionalFeature -Online -FeatureName Containers -ErrorAction SilentlyContinue).State -eq 'Enabled' } ([int]$req.timeout_seconds) 30
+            $ok = Wait-Until { (Get-WindowsOptionalFeature -Online -FeatureName Containers -ErrorAction SilentlyContinue).State -eq 'Enabled' } $timeout 30
             if (-not $ok) { $msg = 'Containers feature not enabled' }
         }
         'wait-tiworker-idle' {
-            $ok = Wait-Until { -not (Get-Process TiWorker -ErrorAction SilentlyContinue) } ([int]$req.timeout_seconds)
+            $ok = Wait-Until { -not (Get-Process TiWorker -ErrorAction SilentlyContinue) } $timeout
             if (-not $ok) { $msg = 'TiWorker still running' }
         }
         'wait-no-pending-reboot' {
             $keys = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
-            $ok = Wait-Until { -not @($keys | Where-Object { Test-Path $_ }).Count } ([int]$req.timeout_seconds)
+            $ok = Wait-Until { -not @($keys | Where-Object { Test-Path $_ }).Count } $timeout
             if (-not $ok) { $msg = 'a reboot is still pending' }
         }
         'assert-test-results' {
@@ -195,19 +272,33 @@ try {
             foreach ($f in 'C:\software-report.md', 'C:\software-report.json') { if (-not (Test-Path $f)) { $ok = $false; $msg = "$f not found" } }
         }
         'sysprep-generalize' {
+            # Upstream's Configure-User ran earlier; the install user now gets a password nobody knows and is disabled.
             Remove-AnswerFiles
-            Reset-InstallUser ([string]$vars.install_user)
-            foreach ($d in 'src', 'runner-images.zip', 'logs', 'request.json') { $x = Join-Path $WorkRoot $d; if (Test-Path -LiteralPath $x) { Remove-Item -LiteralPath $x -Recurse -Force } }
-            & (Join-Path $env:SystemRoot 'System32\Sysprep\Sysprep.exe') /oobe /generalize /mode:vm /quiet /quit
-            $ok = Wait-Until { (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State').ImageState -eq 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' } 3600 10
-            if (-not $ok) { $msg = 'sysprep did not reach IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' }
-            Remove-Item -LiteralPath $WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
+            $u = [string]$vars.install_user
+            Reset-InstallUser $u
+            Disable-LocalUser -Name $u
+            $out = Join-Path $WorkRoot 'registry-check.json'
+            if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
+            [void](Invoke-AsTask 'SYSTEM' 'ServiceAccount' "-RegistryCheck `"$out`"" 600)
+            $reg = $null
+            if ((Test-Path -LiteralPath $out -PathType Leaf) -and (Get-Item -LiteralPath $out).Length -le 4096) { $reg = ConvertFrom-Json ([IO.File]::ReadAllText($out)) }
+            if ($null -eq $reg) { $reg = [ordered]@{ checked = [object[]]@(); findings = [object[]]@(); unreadable = [object[]]$RegistryRules } }
+            $data = [ordered]@{ registry = $reg }
+            if (@($reg.findings).Count -or @($reg.unreadable).Count) {
+                $ok = $false; $msg = 'the registry check before sysprep did not pass; sysprep not run'
+            } else {
+                foreach ($d in 'src', 'runner-images.zip', 'logs', 'request.json', 'registry-check.json') { $x = Join-Path $WorkRoot $d; if (Test-Path -LiteralPath $x) { Remove-Item -LiteralPath $x -Recurse -Force } }
+                & (Join-Path $env:SystemRoot 'System32\Sysprep\Sysprep.exe') /oobe /generalize /mode:vm /quiet /quit
+                $ok = Wait-Until { (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State').ImageState -eq 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' } 3600 10
+                if (-not $ok) { $msg = 'sysprep did not reach IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' }
+                Remove-Item -LiteralPath $WorkRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
         }
         default { throw "unknown action" }
     }
-    Send-Reply $phase $(if ($ok) { 'ok' } else { 'failed' }) $msg $null
+    Send-Reply $phase $(if ($ok) { 'ok' } else { 'failed' }) $msg $null $data
     exit 0
 } catch {
-    Send-Reply $phase 'failed' $_.Exception.Message $null
+    Send-Reply $phase 'failed' $_.Exception.Message $null $null
     exit 0
 }

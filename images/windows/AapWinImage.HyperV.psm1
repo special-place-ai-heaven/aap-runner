@@ -2,8 +2,11 @@
 # Windows PowerShell 5.1 (the supervisor's host) and PowerShell 7 on a Hyper-V host, elevated. NOT RUN by P06: authored
 # against the documented cmdlets and exercised only through fakes; the first real run is the D2 lab (README, What is not done).
 # Every op takes one hashtable. Nothing here downloads: input verification is P03's Invoke-AapManifest -Offline.
-# The build guest is trusted until sysprep (no job has run in it), so PowerShell Direct is used directly here; replies are
-# still size-bounded, and the module validates their content.
+# The build and verification guests run internet-sourced installers and are treated as hostile: replies are size-capped
+# while received, files received from the guest land in the build folder first, and no host path is ever resolved through
+# guest-authored file system metadata (reparse points refused).
+# Load AapWinImage.psm1 first: the ops call its exported helpers (Assert-AapPlainPath, Write-AapGuestFile,
+# Select-AapWindowsPartition, Receive-AapCappedJob, Set-AapReadOnlyAcl).
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -11,17 +14,36 @@ $script:Common = Join-Path $PSScriptRoot '..\common\AapArtifact.psm1'
 $script:Manifest = Join-Path $PSScriptRoot '..\common\artifacts.manifest.json'
 $script:TrustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 $script:VmSid = 'S-1-5-83-0'   # NT VIRTUAL MACHINE\Virtual Machines: VM worker processes read the parent of a differencing disk
+$script:SwitchName = 'aap-guests-win'
+$script:Utf8 = New-Object Text.UTF8Encoding($false)
 
 function Get-AapGuestCredential([string]$User, [string]$Password) {
-    New-Object Management.Automation.PSCredential ".\$User", (ConvertTo-SecureString -String $Password -AsPlainText -Force)
+    $s = New-Object Security.SecureString
+    foreach ($c in $Password.ToCharArray()) { $s.AppendChar($c) }
+    $s.MakeReadOnly()
+    New-Object Management.Automation.PSCredential ".\$User", $s
 }
+# Every call into a guest runs as a job whose output is size-capped while it arrives (Receive-AapCappedJob).
+function Invoke-AapGuestJob($A, [scriptblock]$ScriptBlock, [object[]]$ArgumentList = @(), [long]$MaxBytes = 4096, [int]$TimeoutSeconds = 120) {
+    $job = Invoke-Command -VMId $A.VmId -Credential (Get-AapGuestCredential $A.User $A.Password) -AsJob -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+    Receive-AapCappedJob -Job $job -MaxBytes $MaxBytes -TimeoutSeconds $TimeoutSeconds
+}
+function Get-AapVm($A) {
+    $vm = @(Hyper-V\Get-VM -Id $A.VmId)
+    if ($vm.Count -ne 1) { throw "AAP_Unexpected: VM $($A.VmId) not found" }
+    $vm[0]
+}
+# The Windows partition of a mounted build disk, by the layout the builder made (never by searching for \Windows), with a
+# drive letter; the path to \Windows\System32 must hold no reparse point.
 function Get-AapWindowsPartitionRoot([int]$DiskNumber) {
-    foreach ($p in @(Get-Partition -DiskNumber $DiskNumber | Where-Object { $_.Type -eq 'Basic' -or $_.GptType -eq '{ebd0a0a2-b9e5-4433-87c0-68b6b72699c7}' })) {
-        if (-not $p.DriveLetter) { $p | Add-PartitionAccessPath -AssignDriveLetter; $p = Get-Partition -DiskNumber $DiskNumber -PartitionNumber $p.PartitionNumber }
-        $root = "$($p.DriveLetter):\"
-        if (Test-Path -LiteralPath (Join-Path $root 'Windows\System32')) { return $root }
-    }
-    throw 'AAP_DiskLayout: no Windows partition on the disk'
+    $os = Select-AapWindowsPartition -Partitions @(Get-Partition -DiskNumber $DiskNumber)
+    if (-not $os.DriveLetter) { $os | Add-PartitionAccessPath -AssignDriveLetter; $os = Get-Partition -DiskNumber $DiskNumber -PartitionNumber $os.PartitionNumber }
+    if (-not $os.DriveLetter) { throw 'AAP_DiskLayout: no drive letter is free for the Windows partition' }
+    $root = "$($os.DriveLetter):\"
+    $sys = Join-Path $root 'Windows\System32'
+    Assert-AapPlainPath -Root $root -Path $sys -Reason 'AAP_HostileGuest'
+    if ((Get-AapPathKind $sys) -ne 'dir') { throw 'AAP_HostileGuest: the Windows partition has no \Windows\System32' }
+    return $root
 }
 function Get-AapTreeBytes([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force
@@ -37,6 +59,7 @@ function Get-AapTreeBytes([string]$Path) {
 
 function New-AapWinHyperVProvider {
     <# The provider hashtable Invoke-AapWinImageBuild expects. #>
+    if (-not (Get-Command Write-AapGuestFile -ErrorAction SilentlyContinue)) { throw 'AAP_ProviderInvalid: import AapWinImage.psm1 before creating the Hyper-V provider' }
     $p = @{}
     $p.TestRootTrust = { param($a)
         # P03's rules (owner, ACL masks, reparse, ancestors, fixed drive) plus the admin-only rule of backend-lifecycle.md
@@ -79,7 +102,9 @@ function New-AapWinHyperVProvider {
     $p.ApplyWindowsImage = { param($a)
         $iso = Mount-DiskImage -ImagePath $a.IsoPath -Access ReadOnly -StorageType ISO -PassThru
         try {
-            $wim = "$(($iso | Get-Volume).DriveLetter):\sources\install.wim"
+            $letter = ($iso | Get-Volume).DriveLetter
+            if (-not $letter) { throw 'AAP_MediaMismatch: the mounted media got no drive letter' }
+            $wim = "${letter}:\sources\install.wim"
             $img = @(Get-WindowsImage -ImagePath $wim | Where-Object { $_.ImageName -ceq $a.Edition })
             if ($img.Count -ne 1) { throw "AAP_MediaMismatch: edition '$($a.Edition)' is not in the media" }
             $info = Get-WindowsImage -ImagePath $wim -Index $img[0].ImageIndex
@@ -92,24 +117,32 @@ function New-AapWinHyperVProvider {
                 $os = New-Partition -DiskNumber $disk.Number -UseMaximumSize -AssignDriveLetter
                 [void](Format-Volume -Partition $os -FileSystem NTFS -NewFileSystemLabel 'Windows' -Confirm:$false)
                 $efi | Add-PartitionAccessPath -AssignDriveLetter
-                $efiRoot = "$((Get-Partition -DiskNumber $disk.Number -PartitionNumber $efi.PartitionNumber).DriveLetter):\"
-                $osRoot = "$((Get-Partition -DiskNumber $disk.Number -PartitionNumber $os.PartitionNumber).DriveLetter):\"
+                $efiLetter = (Get-Partition -DiskNumber $disk.Number -PartitionNumber $efi.PartitionNumber).DriveLetter
+                $osLetter = (Get-Partition -DiskNumber $disk.Number -PartitionNumber $os.PartitionNumber).DriveLetter
+                if (-not $efiLetter -or -not $osLetter) { throw 'AAP_DiskLayout: no drive letter is free for the new partitions' }
+                $osRoot = "${osLetter}:\"
                 [void](Expand-WindowsImage -ImagePath $wim -Index $img[0].ImageIndex -ApplyPath $osRoot)
-                & (Join-Path $env:SystemRoot 'System32\bcdboot.exe') (Join-Path $osRoot 'Windows') /s $efiRoot.TrimEnd('\') /f UEFI | Out-Null
+                & (Join-Path $env:SystemRoot 'System32\bcdboot.exe') (Join-Path $osRoot 'Windows') /s "${efiLetter}:" /f UEFI | Out-Null
                 if ($LASTEXITCODE -ne 0) { throw "AAP_DiskLayout: bcdboot exited $LASTEXITCODE" }
-                foreach ($k in @($a.Files.Keys)) { $t = Join-Path $osRoot $k; [void][IO.Directory]::CreateDirectory((Split-Path -Parent $t)); [IO.File]::WriteAllText($t, [string]$a.Files[$k], (New-Object Text.UTF8Encoding($false))) }
-                foreach ($k in @($a.CopyFiles.Keys)) { $t = Join-Path $osRoot $k; [void][IO.Directory]::CreateDirectory((Split-Path -Parent $t)); Copy-Item -LiteralPath $a.CopyFiles[$k] -Destination $t }
+                foreach ($k in @($a.Files.Keys)) { Write-AapGuestFile -Root $osRoot -RelPath $k -Bytes $script:Utf8.GetBytes([string]$a.Files[$k]) }
+                foreach ($k in @($a.CopyFiles.Keys)) { Write-AapGuestFile -Root $osRoot -RelPath $k -Bytes ([IO.File]::ReadAllBytes($a.CopyFiles[$k])) }
             } finally { Hyper-V\Dismount-VHD -Path $a.Vhdx }
             @{ ImageIndex = $img[0].ImageIndex; Build = [string]$info.Version }
         } finally { Dismount-DiskImage -ImagePath $a.IsoPath | Out-Null }
     }
     $p.NewDiffDisk = { param($a) [void](Hyper-V\New-VHD -Path $a.Path -ParentPath $a.Parent -Differencing) }
     $p.WriteOfflineFiles = { param($a)
+        # Only before a disk's first boot (the verification child of the sealed disk), through Write-AapGuestFile.
         $disk = Hyper-V\Mount-VHD -Path $a.Vhdx -Passthru | Get-Disk
         try {
             $root = Get-AapWindowsPartitionRoot $disk.Number
-            foreach ($k in @($a.Files.Keys)) { $t = Join-Path $root $k; [void][IO.Directory]::CreateDirectory((Split-Path -Parent $t)); [IO.File]::WriteAllText($t, [string]$a.Files[$k], (New-Object Text.UTF8Encoding($false))) }
+            foreach ($k in @($a.Files.Keys)) { Write-AapGuestFile -Root $root -RelPath $k -Bytes $script:Utf8.GetBytes([string]$a.Files[$k]) }
         } finally { Hyper-V\Dismount-VHD -Path $a.Vhdx }
+    }
+    $p.GetSwitch = { param($a)
+        $s = @(Hyper-V\Get-VMSwitch -Name $a.Name -ErrorAction SilentlyContinue)
+        if ($s.Count -ne 1) { return $null }
+        @{ Name = [string]$s[0].Name; SwitchType = [string]$s[0].SwitchType }
     }
     $p.NewVm = { param($a)
         $vm = Hyper-V\New-VM -Name $a.Name -Path $a.Path -Generation 2 -MemoryStartupBytes ([int64]$a.MemGib * 1GB) -VHDPath $a.OsDisk
@@ -117,55 +150,75 @@ function New-AapWinHyperVProvider {
         Hyper-V\Set-VMProcessor -VM $vm -ExposeVirtualizationExtensions $true      # upstream enables Hyper-V, Containers and WSL2 inside the guest
         Hyper-V\Set-VMFirmware -VM $vm -EnableSecureBoot Off                         # upstream sets bcdedit TESTSIGNING ON
         Hyper-V\Add-VMHardDiskDrive -VM $vm -Path $a.TempDisk
-        Hyper-V\Disable-VMIntegrationService -VM $vm -Name 'Guest Service Interface'
-        if ($a.SwitchName) { Hyper-V\Connect-VMNetworkAdapter -VMName $a.Name -SwitchName $a.SwitchName }
+        # No file copy and no key-value exchange between host and guest; PowerShell Direct is the only channel.
+        foreach ($svc in 'Guest Service Interface', 'Key-Value Pair Exchange') { Hyper-V\Disable-VMIntegrationService -VM $vm -Name $svc }
+        $nic = @(Hyper-V\Get-VMNetworkAdapter -VM $vm)
+        if ($a.SwitchName) {
+            $s = @(Hyper-V\Get-VMSwitch -Name $a.SwitchName -ErrorAction SilentlyContinue)
+            if ([string]$a.SwitchName -cne $script:SwitchName -or $s.Count -ne 1 -or [string]$s[0].SwitchType -ne 'Internal') { throw "AAP_NetworkUntrusted: guests attach only to the internal switch $($script:SwitchName)" }
+            $nic | Hyper-V\Connect-VMNetworkAdapter -SwitchName $a.SwitchName
+        } else {
+            $nic | Hyper-V\Remove-VMNetworkAdapter
+        }
+        @{ Id = [string]$vm.Id }
     }
-    $p.StartVm = { param($a) if ((Hyper-V\Get-VM -Name $a.VmName).State -ne 'Running') { Hyper-V\Start-VM -Name $a.VmName } }
+    $p.StartVm = { param($a) $vm = Get-AapVm $a; if ($vm.State -ne 'Running') { Hyper-V\Start-VM -VM $vm } }
     $p.StopVm = { param($a)
-        Hyper-V\Stop-VM -Name $a.VmName -Force
+        Hyper-V\Stop-VM -VM (Get-AapVm $a) -Force
         $until = (Get-Date).AddSeconds($a.TimeoutSeconds)
-        while ((Hyper-V\Get-VM -Name $a.VmName).State -ne 'Off') { if ((Get-Date) -gt $until) { throw 'AAP_RebootTimeout: guest did not shut down' }; Start-Sleep -Seconds 5 }
+        while ((Get-AapVm $a).State -ne 'Off') { if ((Get-Date) -gt $until) { throw 'AAP_RebootTimeout: guest did not shut down' }; Start-Sleep -Seconds 5 }
     }
-    $p.RestartVm = { param($a) Hyper-V\Restart-VM -Name $a.VmName -Type Reboot -Force }
+    $p.RestartVm = { param($a) Hyper-V\Restart-VM -VM (Get-AapVm $a) -Type Reboot -Force }
     $p.RemoveVm = { param($a)
-        $vm = Hyper-V\Get-VM -Name $a.Name -ErrorAction SilentlyContinue
-        if ($vm) { if ($vm.State -ne 'Off') { Hyper-V\Stop-VM -VM $vm -TurnOff -Force }; Hyper-V\Remove-VM -VM $vm -Force }
+        $vm = @(Hyper-V\Get-VM -Name $a.Name -ErrorAction SilentlyContinue)
+        if ($vm.Count -gt 1) { throw "AAP_Unexpected: more than one VM is named $($a.Name)" }
+        if ($vm.Count) { if ($vm[0].State -ne 'Off') { Hyper-V\Stop-VM -VM $vm[0] -TurnOff -Force }; Hyper-V\Remove-VM -VM $vm[0] -Force }
     }
     $p.WaitGuestReady = { param($a)
-        $cred = Get-AapGuestCredential $a.User $a.Password
         $until = (Get-Date).AddSeconds($a.TimeoutSeconds)
         while ((Get-Date) -lt $until) {
-            try { if ((Invoke-Command -VMName $a.VmName -Credential $cred -ScriptBlock { 'ready' } -ErrorAction Stop) -eq 'ready') { return $true } } catch { Start-Sleep -Seconds 15 }
+            try { if ((@(Invoke-AapGuestJob $a { 'ready' } -MaxBytes 64 -TimeoutSeconds 60) -join '') -ceq 'ready') { return $true } } catch { $null = $_ }
+            Start-Sleep -Seconds 15
         }
         return $false
     }
+    $p.GetGuestBootTime = { param($a)
+        (@(Invoke-AapGuestJob $a { [string](Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().Ticks } -MaxBytes 64) | ForEach-Object { [string]$_ }) -join ''
+    }
     $p.SendFile = { param($a)
-        $s = New-PSSession -VMName $a.VmName -Credential (Get-AapGuestCredential $a.User $a.Password)
-        try {
-            Invoke-Command -Session $s -ScriptBlock { param($d) [void][IO.Directory]::CreateDirectory($d) } -ArgumentList (Split-Path -Parent $a.GuestPath)
-            Copy-Item -LiteralPath $a.HostPath -Destination $a.GuestPath -ToSession $s -Force
-        } finally { Remove-PSSession $s }
+        $null = Invoke-AapGuestJob $a { param($d) [void][IO.Directory]::CreateDirectory($d) } @((Split-Path -Parent $a.GuestPath))
+        $s = New-PSSession -VMId $a.VmId -Credential (Get-AapGuestCredential $a.User $a.Password)
+        try { Copy-Item -LiteralPath $a.HostPath -Destination $a.GuestPath -ToSession $s -Force } finally { Remove-PSSession $s }
     }
     $p.InvokeGuest = { param($a)
-        $job = Invoke-Command -VMName $a.VmName -Credential (Get-AapGuestCredential $a.User $a.Password) -AsJob -ArgumentList $a.Script, $a.RequestPath -ScriptBlock {
-            param($script, $request)
+        $out = Invoke-AapGuestJob $a { param($script, $request)
             & (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script -RequestPath $request
-        }
-        try {
-            if (-not (Wait-Job -Job $job -Timeout $a.TimeoutSeconds)) { throw "AAP_GuestTimeout: no reply within $($a.TimeoutSeconds) s" }
-            $out = (@(Receive-Job -Job $job -ErrorAction SilentlyContinue | ForEach-Object { [string]$_ }) -join "`n")
-            if ($out.Length -gt $a.MaxBytes) { return $out.Substring(0, $a.MaxBytes + 1) }
-            return $out.Trim()
-        } finally { Remove-Job -Job $job -Force }
+        } @($a.Script, $a.RequestPath) -MaxBytes $a.MaxBytes -TimeoutSeconds $a.TimeoutSeconds
+        ((@($out) | ForEach-Object { [string]$_ }) -join "`n").Trim()
     }
     $p.ReceiveFile = { param($a)
-        $s = New-PSSession -VMName $a.VmName -Credential (Get-AapGuestCredential $a.User $a.Password)
+        # The guest streams the file as byte chunks; the cap counts them as they arrive and the host file is created new.
+        $chunks = Invoke-AapGuestJob $a { param($f, $max)
+            $s = [IO.File]::OpenRead($f)
+            try {
+                $left = [long]$max + 1
+                while ($left -gt 0) {
+                    $buf = New-Object byte[] ([int][Math]::Min(1048576, $left))
+                    $n = $s.Read($buf, 0, $buf.Length)
+                    if ($n -le 0) { break }
+                    if ($n -lt $buf.Length) { [Array]::Resize([ref]$buf, $n) }
+                    Write-Output -NoEnumerate $buf
+                    $left -= $n
+                }
+            } finally { $s.Dispose() }
+        } @($a.GuestPath, $a.MaxBytes) -MaxBytes $a.MaxBytes -TimeoutSeconds 1800
+        $fs = New-Object IO.FileStream($a.HostPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try {
-            $len = Invoke-Command -Session $s -ScriptBlock { param($f) if (Test-Path -LiteralPath $f -PathType Leaf) { (Get-Item -LiteralPath $f).Length } else { -1 } } -ArgumentList $a.GuestPath
-            if ($len -lt 0) { throw "AAP_HostileGuest: $($a.GuestPath) is missing" }
-            if ($len -gt $a.MaxBytes) { throw "AAP_HostileGuest: $($a.GuestPath) is over $($a.MaxBytes) bytes" }
-            Copy-Item -LiteralPath $a.GuestPath -Destination $a.HostPath -FromSession $s -Force
-        } finally { Remove-PSSession $s }
+            foreach ($c in @($chunks)) {
+                if (-not ($c -is [byte[]])) { throw 'AAP_HostileGuest: the guest sent something other than file bytes' }
+                $fs.Write($c, 0, $c.Length)
+            }
+        } finally { $fs.Dispose() }
     }
     $p.OptimizeDisk = { param($a)
         Hyper-V\Mount-VHD -Path $a.Vhdx -ReadOnly
@@ -176,40 +229,12 @@ function New-AapWinHyperVProvider {
         Get-AapWindowsPartitionRoot $disk.Number
     }
     $p.Dismount = { param($a) if ((Hyper-V\Get-VHD -Path $a.Vhdx -ErrorAction SilentlyContinue).Attached) { Hyper-V\Dismount-VHD -Path $a.Vhdx } }
-    $p.ReadOfflineRegistry = { param($a)
-        # The hive file is copied out of the read-only volume and loaded under a unique name, read, then unloaded.
-        $copy = Join-Path ([IO.Path]::GetTempPath()) ("aap-hive-" + [guid]::NewGuid().ToString('n'))
-        $mountName = 'AAPSCAN_' + [guid]::NewGuid().ToString('n').Substring(0, 8)
-        $reg = Join-Path $env:SystemRoot 'System32\reg.exe'
-        Copy-Item -LiteralPath (Join-Path $a.MountRoot "Windows\System32\config\$($a.Hive)") -Destination $copy
-        try {
-            & $reg load "HKLM\$mountName" $copy | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "AAP_ScanIncomplete: cannot load the $($a.Hive) hive" }
-            try {
-                $key = "Registry::HKEY_LOCAL_MACHINE\$mountName\$($a.Key)"
-                try { $exists = Test-Path -LiteralPath $key } catch { throw "AAP_ScanIncomplete: cannot read $($a.Hive)\$($a.Key)" }
-                if (-not $exists) { return $null }
-                if ($null -eq $a.Name) { return 'present' }
-                $v = Get-ItemProperty -LiteralPath $key -Name $a.Name -ErrorAction SilentlyContinue
-                if ($v) { return [string]$v.($a.Name) } else { return $null }
-            } finally { [GC]::Collect(); & $reg unload "HKLM\$mountName" | Out-Null }
-        } finally { Remove-Item -LiteralPath $copy -Force -ErrorAction SilentlyContinue }
-    }
     $p.SetReadOnlyAcl = { param($a)
         # Owner Administrators; SYSTEM, Administrators and the VM worker group may read; nobody may write. Inheritance off.
-        $isDir = Test-Path -LiteralPath $a.Path -PathType Container
-        $acl = $(if ($isDir) { New-Object Security.AccessControl.DirectorySecurity } else { New-Object Security.AccessControl.FileSecurity })
-        $acl.SetOwner((New-Object Security.Principal.SecurityIdentifier 'S-1-5-32-544'))
-        $acl.SetAccessRuleProtection($true, $false)
-        $inherit = $(if ($isDir) { [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit' } else { [Security.AccessControl.InheritanceFlags]::None })
-        foreach ($sid in 'S-1-5-18', 'S-1-5-32-544', $script:VmSid) {
-            $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule (New-Object Security.Principal.SecurityIdentifier $sid), 'ReadAndExecute, Synchronize', $inherit, 'None', 'Allow'))
-        }
-        if (-not $isDir) { [IO.File]::SetAttributes($a.Path, [IO.FileAttributes]::ReadOnly) }
-        Set-Acl -LiteralPath $a.Path -AclObject $acl
+        Set-AapReadOnlyAcl -Path $a.Path -Owner 'S-1-5-32-544' -Readers @('S-1-5-18', 'S-1-5-32-544', $script:VmSid)
     }
     $p.GetVmMemoryOverheadMib = { param($a)
-        $id = [string](Hyper-V\Get-VM -Name $a.VmName).Id
+        $id = [string](Get-AapVm $a).Id
         $w = @(Get-CimInstance Win32_Process -Filter "Name='vmwp.exe'" | Where-Object { $_.CommandLine -match $id })
         if ($w.Count -ne 1) { throw 'AAP_Unmeasured: VM worker process not found' }
         [int][Math]::Ceiling($w[0].WorkingSetSize / 1MB)
