@@ -1,0 +1,290 @@
+{
+  "schema": 1,
+  "kind": "job-inventory",
+  "source": {
+    "type": "hosted-log",
+    "ref": "hosted-capture-39305649952.log",
+    "run_id": "39305649952"
+  },
+  "coverage": [
+    "image",
+    "infra",
+    "run_identity",
+    "user",
+    "env",
+    "credential_env",
+    "path",
+    "shells",
+    "tools",
+    "tool_cache",
+    "services",
+    "docker",
+    "hardware",
+    "limits",
+    "action_archive_cache"
+  ],
+  "image": {
+    "runner_version": "2.337.0",
+    "label": "ubuntu-24.04",
+    "image_version": "20261012.334.1",
+    "image_os": "ubuntu24",
+    "runner_os": "Linux",
+    "runner_arch": "X64",
+    "runner_environment": "github-hosted",
+    "os_name": "Ubuntu 24.04.5 LTS",
+    "kernel": "6.17.0-1022-azure"
+  },
+  "infra": {
+    "provisioner_version": "20261012.601",
+    "provisioner_commit": "f3dc54e1fb89da6852db922499a0233137369e1d",
+    "region": "canadacentral",
+    "cloud": "Azure",
+    "worker_id": "{21265258-474e-4ed0-b14d-b6dc67b3d102}"
+  },
+  "run_identity": {
+    "source_sha": null,
+    "workflow_sha": null,
+    "action_shas": []
+  },
+  "user": {
+    "name": "runner",
+    "uid": 1001,
+    "gid": 1001,
+    "groups": [
+      "adm",
+      "docker",
+      "runner",
+      "systemd-journal",
+      "users"
+    ],
+    "passwordless_sudo": true
+  },
+  "env": {
+    "ImageOS": "ubuntu24",
+    "ImageVersion": "20261012.334.1",
+    "AGENT_TOOLSDIRECTORY": "/opt/hostedtoolcache",
+    "RUNNER_TOOL_CACHE": "/opt/hostedtoolcache",
+    "ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE": "/opt/actionarchivecache",
+    "JAVA_HOME": "/usr/lib/jvm/temurin-17-jdk-amd64",
+    "JAVA_HOME_17_X64": "/usr/lib/jvm/temurin-17-jdk-amd64",
+    "GOROOT_1_24_X64": "/opt/hostedtoolcache/go/1.24.13/x64",
+    "VCPKG_INSTALLATION_ROOT": "/usr/local/share/vcpkg",
+    "CONDA": "/usr/share/miniconda",
+    "ANDROID_HOME": "/usr/local/lib/android/sdk",
+    "ANDROID_NDK_HOME": "/usr/local/lib/android/sdk/ndk/27.3.13750724",
+    "CHROMEWEBDRIVER": "/usr/local/share/chromedriver-linux64",
+    "EDGEWEBDRIVER": "/usr/local/share/edge_driver",
+    "GECKOWEBDRIVER": "/usr/local/share/gecko_driver",
+    "SELENIUM_JAR_PATH": "/usr/share/java/selenium-server.jar",
+    "DOTNET_NOLOGO": "1",
+    "DOTNET_MULTILEVEL_LOOKUP": "0",
+    "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
+    "DEBIAN_FRONTEND": "noninteractive",
+    "ACCEPT_EULA": "Y",
+    "XDG_CONFIG_HOME": "/home/runner/.config",
+    "PIPX_BIN_DIR": "/opt/pipx_bin",
+    "PIPX_HOME": "/opt/pipx",
+    "NVM_DIR": "/home/runner/.nvm",
+    "GRADLE_HOME": "/usr/share/gradle-9.8.1",
+    "ANT_HOME": "/usr/share/ant",
+    "BAZEL_VERSION": "<unset>",
+    "USE_BAZEL_FALLBACK_VERSION": "silent:",
+    "HOMEBREW_NO_AUTO_UPDATE": "1",
+    "CHROME_BIN": "/usr/bin/google-chrome",
+    "SWIFT_PATH": "/usr/share/swift/usr/bin",
+    "VCPKG_FORCE_SYSTEM_BINARIES": "<unset>"
+  },
+  "credential_env": {},
+  "path": {
+    "process": [
+      "/snap/bin",
+      "/home/runner/.local/bin",
+      "/opt/pipx_bin",
+      "/home/runner/.cargo/bin",
+      "/home/runner/.config/composer/vendor/bin",
+      "/usr/local/.ghcup/bin",
+      "/home/runner/.dotnet/tools",
+      "/usr/local/sbin",
+      "/usr/local/bin",
+      "/usr/sbin",
+      "/usr/bin",
+      "/sbin",
+      "/bin",
+      "/usr/games",
+      "/usr/local/games",
+      "/snap/bin"
+    ],
+    "machine": [
+      "/snap/bin",
+      "/home/runner/.local/bin",
+      "/opt/pipx_bin",
+      "/home/runner/.cargo/bin",
+      "/home/runner/.config/composer/vendor/bin",
+      "/usr/local/.ghcup/bin",
+      "/home/runner/.dotnet/tools",
+      "/usr/local/sbin",
+      "/usr/local/bin",
+      "/usr/sbin",
+      "/usr/bin",
+      "/sbin",
+      "/bin",
+      "/usr/games",
+      "/usr/local/games",
+      "/snap/bin"
+    ]
+  },
+  "shells": {
+    "pwsh": "7.6.6",
+    "bash": "5.2.21(1)-release"
+  },
+  "tools": {
+    "systemd": "255.4-1ubuntu8.17",
+    "python3": "3.12.3",
+    "node": "22.23.3",
+    "docker": "28.0.4",
+    "gcc": "13.3.0",
+    "clang": "18.1.3"
+  },
+  "command_paths": {},
+  "tool_cache": {
+    "root": "/opt/hostedtoolcache",
+    "versions": {
+      "CodeQL": [
+        "2.27.2"
+      ],
+      "Java_Temurin-Hotspot_jdk": [
+        "11.0.32-1",
+        "17.0.20-1",
+        "21.0.12-1",
+        "25.0.4-1",
+        "8.0.504-1"
+      ],
+      "PyPy": [
+        "3.10.16",
+        "3.11.16",
+        "3.9.19"
+      ],
+      "Python": [
+        "3.10.22",
+        "3.11.17",
+        "3.12.15",
+        "3.13.16",
+        "3.14.8"
+      ],
+      "Ruby": [
+        "3.2.11",
+        "3.3.12",
+        "3.4.11",
+        "4.0.7"
+      ],
+      "agentic-workflow-firewall-js": [
+        "0.28.51",
+        "0.28.52",
+        "0.28.53"
+      ],
+      "copilot-cli": [
+        "1.0.95"
+      ],
+      "go": [
+        "1.24.13",
+        "1.25.14",
+        "1.26.9"
+      ],
+      "node": [
+        "22.23.3",
+        "24.21.0"
+      ]
+    },
+    "defaults": {}
+  },
+  "action_archive_cache": [
+    "actions_cache",
+    "actions_checkout",
+    "actions_setup-node",
+    "actions_setup-python",
+    "actions_upload-artifact",
+    "github_codeql-action",
+    "github_gh-aw-actions"
+  ],
+  "services": {
+    "docker": {
+      "enabled": "enabled",
+      "active": "active"
+    },
+    "snapd": {
+      "enabled": "enabled",
+      "active": "inactive"
+    },
+    "haveged": {
+      "enabled": "enabled",
+      "active": "active"
+    },
+    "postgresql": {
+      "enabled": "disabled",
+      "active": "inactive"
+    },
+    "mysql": {
+      "enabled": "disabled",
+      "active": "inactive"
+    },
+    "apache2": {
+      "enabled": "disabled",
+      "active": "inactive"
+    },
+    "nginx": {
+      "enabled": "disabled",
+      "active": "inactive"
+    },
+    "apt-daily.timer": {
+      "enabled": "disabled",
+      "active": "inactive"
+    },
+    "apt-daily-upgrade.timer": {
+      "enabled": "disabled",
+      "active": "inactive"
+    },
+    "unattended-upgrades": {
+      "enabled": "not-found",
+      "active": "inactive"
+    }
+  },
+  "docker": {
+    "images": [
+      "ghcr.io/dependabot/dependabot-updater-core:latest",
+      "ghcr.io/github/gh-aw-firewall/agent:latest",
+      "ghcr.io/github/gh-aw-firewall/api-proxy:latest",
+      "ghcr.io/github/gh-aw-firewall/squid:latest",
+      "ghcr.io/github/gh-aw-mcpg:latest",
+      "ghcr.io/github/github-mcp-server:latest"
+    ],
+    "client": "28.0.4",
+    "server": "28.0.4",
+    "socket": {
+      "mode": "srw-rw----",
+      "owner": "root",
+      "group": "docker"
+    }
+  },
+  "hardware": {
+    "logical_processors": 4,
+    "memory_bytes": 16766414848,
+    "swap_bytes": 3221221376,
+    "root_disk_free_bytes": 92341796864
+  },
+  "limits": {
+    "mount_options": "rw,relatime,discard,journal_async_commit,nobarrier,errors=remount-ro,commit=30,data=writeback",
+    "nofile": 65536,
+    "stack": 16384,
+    "sysctl": {
+      "vm.max_map_count": "262144",
+      "fs.inotify.max_user_watches": "655360",
+      "fs.inotify.max_user_instances": "1280",
+      "vm.mmap_rnd_bits": "<denied>"
+    },
+    "read_ahead_kb": [
+      "128",
+      "2560"
+    ]
+  },
+  "profile": "ubuntu-24.04"
+}

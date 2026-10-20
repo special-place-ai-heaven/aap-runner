@@ -1,0 +1,935 @@
+{
+  "schema": 1,
+  "profile": "ubuntu-24.04-x64",
+  "generated_by": "images/ubuntu-24.04/New-AapUbuntuBuildPlan.ps1",
+  "baseline": {
+    "runner_images_commit": "7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe",
+    "image_version": "20261012.334.1",
+    "inventory_path": "parity/baselines/ubuntu-24.04-x64/inventory.json",
+    "inventory_sha256": "48608655281529b27f298ea92cc8ad63e52f847fa2fb8b03d1e0ddd5e2a192ed",
+    "template_path": "parity/baselines/ubuntu-24.04-x64/sources/build-commit-7e7dc1b/build.ubuntu-24_04.pkr.hcl",
+    "template_sha256": "5b8a5f29c33d9c98a0368c0e3109eba9dc566ce8091aa412de56fc93518d1adf",
+    "locals_path": "parity/baselines/ubuntu-24.04-x64/sources/pin/locals.ubuntu.pkr.hcl",
+    "locals_sha256": "9de904fe6c77708d0c22506ae61411f61bd97e036f405569f32c7616d15958cf",
+    "toolset_path": "parity/baselines/ubuntu-24.04-x64/sources/build-commit-7e7dc1b/toolset-2404.json",
+    "toolset_sha256": "6ebf0669d768e4cc222d2ae25f9382c86c694e42dc1694db5f5cf50eca611264",
+    "capture_path": "parity/baselines/ubuntu-24.04-x64/sources/hosted-capture-39305649952.log",
+    "capture_sha256": "a03a47b43be146c12c629db937481ffd5eb3b9ec89f2db16fe794b5929edebee",
+    "upstream_source_sku": "canonical:ubuntu-24_04-lts:server",
+    "upstream_os_disk_gb": 75
+  },
+  "os_disk_gib": 150,
+  "variables": {
+    "image_version": "20261012.334.1",
+    "image_os": "ubuntu24",
+    "image_folder": "/imagegeneration",
+    "helper_script_folder": "/imagegeneration/helpers",
+    "installer_script_folder": "/imagegeneration/installers",
+    "imagedata_file": "/imagegeneration/imagedata.json",
+    "install_user": "installer"
+  },
+  "variables_source": "upstream images/ubuntu/templates/variable.ubuntu.pkr.hcl defaults at 7e7dc1b, not stored in parity/baselines; image_folder is the P01 baseline (/imagegeneration), image_os the hosted ImageOS, image_version the P01 baseline",
+  "base": {
+    "boot_command": [
+      "<wait5>",
+      "c",
+      "<wait2>",
+      "linux /casper/vmlinuz --- autoinstall ds=nocloud<enter>",
+      "<wait2>",
+      "initrd /casper/initrd<enter>",
+      "<wait2>",
+      "boot<enter>"
+    ],
+    "kernel_package": "linux-azure",
+    "packages": [
+      "walinuxagent"
+    ],
+    "masked_services": [
+      "walinuxagent.service"
+    ],
+    "install_timeout_seconds": 5400,
+    "deviation": "the hosted base is the Azure Marketplace image canonical:ubuntu-24_04-lts:server; this build installs the 24.04 live-server ISO with linux-azure and walinuxagent (masked: there is no Azure fabric), an ext4 root on GPT (EFI + root) and no swap file"
+  },
+  "channel": {
+    "vsock_port": 5223,
+    "service_guid": "00001467-facb-11e6-bd58-64006a7986d3"
+  },
+  "job_user": {
+    "name": "runner",
+    "uid": 1001,
+    "groups": [
+      "adm",
+      "users",
+      "docker",
+      "systemd-journal"
+    ]
+  },
+  "post_generation": "/imagegeneration/post-generation",
+  "verify": {
+    "reference_path": "images/ubuntu-24.04/reference-inventory.json",
+    "reference_sha256": "f86294dd6a44d536e66f60c5984d10e553e0e454ff231c2aa9068b2b977adf17",
+    "allowlist_path": "tools/parity-certify/allowlist.json",
+    "gate_sections": [
+      "coverage",
+      "tool_cache",
+      "tool_cache.defaults",
+      "services",
+      "path.process",
+      "path.machine",
+      "action_archive_cache",
+      "user"
+    ]
+  },
+  "blockers": [
+    {
+      "id": "p07-upstream-source-archive",
+      "reason": "images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at 7e7dc1b (images/ubuntu scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive.",
+      "owner_action": "P03 owner adds a literal-pinned entry for the archive of actions/runner-images at 7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe, then this generator is rerun with -ScriptsDir to pin every script hash."
+    },
+    {
+      "id": "p07-upstream-variables-unverified",
+      "reason": "The variable defaults above come from the upstream variables file, which P01 did not store. They are not yet checked against the pinned bytes.",
+      "owner_action": "Compare them with variable.ubuntu.pkr.hcl inside the P03-staged archive and drop this blocker in the same change."
+    },
+    {
+      "id": "p07-ubuntu-server-media",
+      "reason": "The Ubuntu 24.04 live-server ISO is not a P03 manifest entry; the caller pins its SHA-256 in MediaSha256, but nothing here ties that value to the signed Canonical SHA256SUMS.",
+      "owner_action": "P03 adds the ISO with Canonical's signed SHA256SUMS as its hash source and records the point release (the hosted image reports 24.04.5)."
+    }
+  ],
+  "phases": [
+    {
+      "id": "p01",
+      "kind": "action",
+      "action": "make-image-folder",
+      "upstream": {
+        "block": 1,
+        "type": "shell",
+        "body_sha256": "90f960282f01253654015f89d8c07a170e1df53338d1985edfaa05778317b706"
+      },
+      "deviation": null,
+      "exec": "root",
+      "env": {}
+    },
+    {
+      "id": "p02",
+      "kind": "action",
+      "action": "upload-helpers",
+      "upstream": {
+        "block": 2,
+        "type": "file",
+        "body_sha256": "24286d388fac3f21a05e16469b0fab884ab10c76279cd67c44e6135e44d76ef7"
+      },
+      "deviation": "images/ubuntu/scripts/helpers from the P03-staged runner-images archive becomes ${var.helper_script_folder}",
+      "exec": "root",
+      "env": {}
+    },
+    {
+      "id": "p03",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 3,
+        "type": "shell",
+        "body_sha256": "5f0cc0202a3bc80b290560b89bb2776796f8f39ac44b42478b48b773c9e05f83"
+      },
+      "scripts": [
+        {
+          "name": "configure-apt-mock.sh",
+          "sha256": null
+        }
+      ],
+      "env": {},
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p04",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 4,
+        "type": "shell",
+        "body_sha256": "3cb456a9ecd870d014e5fb8d21766c51c5e0be054eff069f33e8b05aabf20516"
+      },
+      "scripts": [
+        {
+          "name": "install-ms-repos.sh",
+          "sha256": null
+        },
+        {
+          "name": "configure-apt-sources.sh",
+          "sha256": null
+        },
+        {
+          "name": "configure-apt.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}",
+        "DEBIAN_FRONTEND": "noninteractive"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p05",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 5,
+        "type": "shell",
+        "body_sha256": "ecfe7853ed2158e59d501e97cc5b022c517f1be2ef67e0425787034c25549bba"
+      },
+      "scripts": [
+        {
+          "name": "configure-limits.sh",
+          "sha256": null
+        }
+      ],
+      "env": {},
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p06",
+      "kind": "action",
+      "action": "upload-build-scripts",
+      "upstream": {
+        "block": 6,
+        "type": "file",
+        "body_sha256": "ca2f365514d132c8d8751c2054422d988114adb3609b2d21758af715cf475e8d"
+      },
+      "deviation": "images/ubuntu/scripts/build from the same archive becomes ${var.installer_script_folder}",
+      "exec": "root",
+      "env": {}
+    },
+    {
+      "id": "p07",
+      "kind": "action",
+      "action": "upload-image-folder",
+      "upstream": {
+        "block": 7,
+        "type": "file",
+        "body_sha256": "2b1bd6b34815f3a68d42887514fc4c94f24f8be6a3f59db86ca2f957f3dec83e"
+      },
+      "deviation": "assets/post-gen, scripts/tests and scripts/docs-gen from the same archive land inside ${var.image_folder}",
+      "exec": "root",
+      "env": {}
+    },
+    {
+      "id": "p08",
+      "kind": "action",
+      "action": "upload-report-base",
+      "upstream": {
+        "block": 8,
+        "type": "file",
+        "body_sha256": "297d55ff5f531d04bbbdea6d679d5c341a7783f05b8634acf956770e77278c9e"
+      },
+      "deviation": "helpers/software-report-base from the same archive lands inside ${var.image_folder}/docs-gen",
+      "exec": "root",
+      "env": {}
+    },
+    {
+      "id": "p09",
+      "kind": "action",
+      "action": "upload-toolset",
+      "upstream": {
+        "block": 9,
+        "type": "file",
+        "body_sha256": "fe6a7cff66a35fccf4f39f4ad0fc95642b4eb64151c1857a4b7e928f9f31d190"
+      },
+      "deviation": "from the same archive",
+      "exec": "root",
+      "env": {}
+    },
+    {
+      "id": "p10",
+      "kind": "action",
+      "action": "layout-image-folder",
+      "upstream": {
+        "block": 10,
+        "type": "shell",
+        "body_sha256": "cfb28d97b574657b84541b6b0f4419346654ec53b0b0d3faa515d28fe2ef08fd"
+      },
+      "deviation": null,
+      "exec": "root",
+      "env": {}
+    },
+    {
+      "id": "p11",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 11,
+        "type": "shell",
+        "body_sha256": "930c8b0b1da612d0a609da69f1aea19c5239c9e4930032e1eab1547980ddd9d7"
+      },
+      "scripts": [
+        {
+          "name": "configure-image-data.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}",
+        "IMAGE_VERSION": "${var.image_version}",
+        "IMAGEDATA_FILE": "${var.imagedata_file}"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p12",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 12,
+        "type": "shell",
+        "body_sha256": "39b44ff3b335dfecde4be80b02aae78506c043b5a4b1f19482b86897514d95a9"
+      },
+      "scripts": [
+        {
+          "name": "configure-environment.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "IMAGE_VERSION": "${var.image_version}",
+        "IMAGE_OS": "${var.image_os}",
+        "HELPER_SCRIPTS": "${var.helper_script_folder}"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p13",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 13,
+        "type": "shell",
+        "body_sha256": "1632fdbf7d9b5f660ce5f805e8b92ac707d1a7558b113719f11d1ccf123926c5"
+      },
+      "scripts": [
+        {
+          "name": "install-apt-vital.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "DEBIAN_FRONTEND": "noninteractive",
+        "HELPER_SCRIPTS": "${var.helper_script_folder}",
+        "INSTALLER_SCRIPT_FOLDER": "${var.installer_script_folder}"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p14",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 14,
+        "type": "shell",
+        "body_sha256": "6dede503b63db7b7bff542688f3862fe2a9a716f09dfc05e7d540693819dbd34"
+      },
+      "scripts": [
+        {
+          "name": "install-powershell.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}",
+        "INSTALLER_SCRIPT_FOLDER": "${var.installer_script_folder}"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p15",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 15,
+        "type": "shell",
+        "body_sha256": "4c434271f1ef2cbfea77041f7b815b55e4ea0e5e2e79f83a42479c0e1d911b24"
+      },
+      "scripts": [
+        {
+          "name": "Install-PowerShellModules.ps1",
+          "sha256": null
+        },
+        {
+          "name": "Install-PowerShellAzModules.ps1",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}",
+        "INSTALLER_SCRIPT_FOLDER": "${var.installer_script_folder}"
+      },
+      "exec": "root-pwsh",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p16",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 16,
+        "type": "shell",
+        "body_sha256": "e152172f86df94aef0052ccaa4674343058d37173f0c90bf4d2bd4244329b39e"
+      },
+      "scripts": [
+        {
+          "name": "install-actions-cache.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-apt-common.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-azcopy.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-azure-cli.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-azure-devops-cli.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-bicep.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-apache.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-aws-tools.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-clang.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-swift.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-cmake.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-codeql-bundle.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-awf.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-container-tools.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-dotnetcore-sdk.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-microsoft-edge.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-gcc-compilers.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-firefox.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-gfortran.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-git.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-git-lfs.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-github-cli.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-google-chrome.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-google-cloud-cli.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-haskell.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-java-tools.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-kubernetes-tools.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-miniconda.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-kotlin.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-mysql.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-nginx.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-nvm.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-nodejs.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-copilot-cli.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-bazel.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-php.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-postgresql.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-pulumi.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-ruby.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-rust.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-julia.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-selenium.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-packer.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-vcpkg.sh",
+          "sha256": null
+        },
+        {
+          "name": "configure-dpkg.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-yq.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-android-sdk.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-pypy.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-python.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-zstd.sh",
+          "sha256": null
+        },
+        {
+          "name": "install-ninja.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}",
+        "INSTALLER_SCRIPT_FOLDER": "${var.installer_script_folder}",
+        "DEBIAN_FRONTEND": "noninteractive"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p17",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 17,
+        "type": "shell",
+        "body_sha256": "b0b96efee230be306a64e9d4027b456337df66c4704a6ae4ab4a78a6ab4e9e79"
+      },
+      "scripts": [
+        {
+          "name": "install-docker.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}",
+        "INSTALLER_SCRIPT_FOLDER": "${var.installer_script_folder}"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p18",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 18,
+        "type": "shell",
+        "body_sha256": "0476eb1545a55cf001f8c70ec9b24461de3535d2637a6059a0586d0d24d92ebe"
+      },
+      "scripts": [
+        {
+          "name": "Install-Toolset.ps1",
+          "sha256": null
+        },
+        {
+          "name": "Configure-Toolset.ps1",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}",
+        "INSTALLER_SCRIPT_FOLDER": "${var.installer_script_folder}"
+      },
+      "exec": "root-pwsh",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p19",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 19,
+        "type": "shell",
+        "body_sha256": "131b70a91b9fedc7fddda5d704f856bb525e181cd8a120c678684ced4e2bf43a"
+      },
+      "scripts": [
+        {
+          "name": "install-pipx-packages.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}",
+        "INSTALLER_SCRIPT_FOLDER": "${var.installer_script_folder}"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p20",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 20,
+        "type": "shell",
+        "body_sha256": "ed62c1108a50ced9c6611cbefddbdd2871e506fcabcbcf2eb268e4e72b3f9b72"
+      },
+      "scripts": [
+        {
+          "name": "install-homebrew.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}",
+        "DEBIAN_FRONTEND": "noninteractive",
+        "INSTALLER_SCRIPT_FOLDER": "${var.installer_script_folder}"
+      },
+      "exec": "user",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p21",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 21,
+        "type": "shell",
+        "body_sha256": "a0e03c0b9bad4bff1467e8888d8b05e31a5a1132bbd04e3cc67951dde06f29ad"
+      },
+      "scripts": [
+        {
+          "name": "configure-snap.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p22",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 22,
+        "type": "shell",
+        "body_sha256": "f797b2c88d0af20f950ef89df4271e0828481b06956cd010d3caf5afd0d963e6"
+      },
+      "scripts": [
+        {
+          "name": "list-dpkg.sh",
+          "sha256": null
+        }
+      ],
+      "env": {},
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p23",
+      "kind": "restart",
+      "action": null,
+      "upstream": {
+        "block": 23,
+        "type": "shell",
+        "body_sha256": "f4921472bc2b269ceb1b3bf73e7921f01b8b588af0e912a3fb366a773b345dc2"
+      },
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "p24",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 24,
+        "type": "shell",
+        "body_sha256": "ffbb068b3fba94f8e516fdb73e2d7296c195353835e68d977bb874530a018602"
+      },
+      "scripts": [
+        {
+          "name": "cleanup.sh",
+          "sha256": null
+        }
+      ],
+      "env": {},
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 300,
+      "start_retry_seconds": 600
+    },
+    {
+      "id": "p25",
+      "kind": "action",
+      "action": "software-report-and-tests",
+      "upstream": {
+        "block": 25,
+        "type": "shell",
+        "body_sha256": "2e7eca9ee989b4d85216a8105f6dcf32e975709c0f3248280d0b127baa9a3a6f"
+      },
+      "deviation": null,
+      "exec": "user",
+      "env": {
+        "IMAGE_VERSION": "${var.image_version}",
+        "INSTALLER_SCRIPT_FOLDER": "${var.installer_script_folder}"
+      }
+    },
+    {
+      "id": "p26",
+      "kind": "action",
+      "action": "download-software-report-md",
+      "upstream": {
+        "block": 26,
+        "type": "file",
+        "body_sha256": "bb6534b71d3de6b6fd85244b489e19c5af8ac1eacfaefaf5a3705ce7dcc2f57c"
+      },
+      "deviation": "copied to the build evidence, size-bounded, never parsed as code",
+      "exec": "root",
+      "env": {}
+    },
+    {
+      "id": "p27",
+      "kind": "action",
+      "action": "download-software-report-json",
+      "upstream": {
+        "block": 27,
+        "type": "file",
+        "body_sha256": "e34fba657019f8d1d51b3307f6aa24dea0fb5787b55fe4f791db51f6ae50bfcf"
+      },
+      "deviation": "copied to the build evidence, size-bounded, never parsed as code",
+      "exec": "root",
+      "env": {}
+    },
+    {
+      "id": "p28",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 28,
+        "type": "shell",
+        "body_sha256": "1c1d60d66b18004687520f002c9763cc7385775e11f7cd19099719d0e359c8f9"
+      },
+      "scripts": [
+        {
+          "name": "configure-system.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPT_FOLDER": "${var.helper_script_folder}",
+        "INSTALLER_SCRIPT_FOLDER": "${var.installer_script_folder}",
+        "IMAGE_FOLDER": "${var.image_folder}"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p29",
+      "kind": "scripts",
+      "action": null,
+      "upstream": {
+        "block": 29,
+        "type": "shell",
+        "body_sha256": "cb5973938751b7ae1c03d147a501a73bd3369acd7a15fe78927776ff92ca7202"
+      },
+      "scripts": [
+        {
+          "name": "post-build-validation.sh",
+          "sha256": null
+        }
+      ],
+      "env": {
+        "HELPER_SCRIPTS": "${var.helper_script_folder}"
+      },
+      "exec": "root",
+      "valid_exit_codes": [
+        0
+      ],
+      "pause_before_seconds": 0,
+      "start_retry_seconds": 300
+    },
+    {
+      "id": "p30",
+      "kind": "action",
+      "action": "deprovision",
+      "upstream": {
+        "block": 30,
+        "type": "shell",
+        "body_sha256": "48530d6c1f72bc7d300f20c543e262457b515e4a900fa7e1452fdb597763d7ee"
+      },
+      "deviation": "waagent -force -deprovision (waagent provisioned no user here), then the install user, the build agent, cloud-init state and installer logs are removed, cloud-init is pointed at the NoCloud seed, the free space is trimmed, and a seal check runs as root",
+      "exec": "root",
+      "env": {}
+    }
+  ]
+}
