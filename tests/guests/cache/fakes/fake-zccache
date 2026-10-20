@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Fake zccache for the P13 tests; the same model as fake-zccache.ps1 (the key leaves out the -o name). The fake
+# daemon is zccache-daemon beside this file (the tests copy `sleep` there), so the real discovery finds it by its path
+# and its environment. FAKE_ZC_HANG=SECONDS turns a compile call into a hung client: it records its pid in
+# fake-client.pid and becomes zccache-daemon (a process from the bin folder, like a real client) for that long. With
+# FAKE_ZC_LATE=SECONDS it first leaves a child behind that writes LATE to the -o file after that long (a straggler).
+root=${ZCCACHE_CACHE_DIR:?}
+mkdir -p "${root}/artifacts"
+names=$(env -0 | while IFS= read -r -d '' kv; do printf '%s\n' "${kv%%=*}"; done | sort | tr '\n' ' ')
+printf '%s MODE=%s SIZE=%s\n' "${names}" "${ZCCACHE_MODE:-}" "${ZCCACHE_CACHE_SIZE_BYTES:-}" >> "${root}/fake-env.log"
+[[ "${FAKE_ZC_CRASH:-}" == 1 ]] && exit 139
+case "$1" in
+  session-start)
+    pidf="${root}/fake-daemon.pid"
+    if ! { [[ -f "${pidf}" ]] && kill -0 "$(cat "${pidf}")" 2> /dev/null; }; then
+      "$(dirname "$0")/zccache-daemon" 600 < /dev/null > /dev/null 2>&1 &
+      echo $! > "${pidf}"
+    fi
+    echo '{"session_id":"fake-session"}'
+    exit 0 ;;
+  session-end) exit 0 ;;
+esac
+cc=$1; shift
+out="" in="" args=("$@") keyargs=()
+for ((i = 0; i < ${#args[@]}; i++)); do
+  if [[ "${args[i]}" == -o ]]; then out=${args[i + 1]}; i=$((i + 1)); continue; fi
+  [[ -f "${args[i]}" ]] && in=${args[i]}
+  keyargs+=("${args[i]}")
+done
+if [[ -n "${FAKE_ZC_HANG:-}" ]]; then
+  echo $$ > "${root}/fake-client.pid"
+  [[ -n "${FAKE_ZC_LATE:-}" && -n "${out}" ]] && { sleep "${FAKE_ZC_LATE}"; echo LATE > "${out}"; } < /dev/null > /dev/null 2>&1 &
+  exec "$(dirname "$0")/zccache-daemon" "${FAKE_ZC_HANG}"
+fi
+key=$({ printf '%s\n' "${cc}" "${keyargs[@]}"; [[ -n "${in}" ]] && cat -- "${in}"; } | sha256sum | cut -d' ' -f1)
+store="${root}/artifacts/${key}"
+if [[ -n "${out}" && -f "${store}" ]]; then
+  if [[ "${FAKE_ZC_VERIFY:-}" == 1 && "$(sha256sum < "${store}" | cut -d' ' -f1)" != "$(cat "${store}.sha")" ]]; then
+    echo "fake-zccache: corrupt entry" >&2
+    exit 5
+  fi
+  echo hit >> "${root}/fake-journal.log"
+  rm -f -- "${out}"
+  if [[ "${ZCCACHE_MODE:-}" == COPY ]]; then cp -- "${store}" "${out}"; else ln -- "${store}" "${out}"; fi
+  exit 0
+fi
+echo miss >> "${root}/fake-journal.log"
+"${cc}" "$@" || exit $?
+if [[ -n "${out}" && -f "${out}" ]]; then
+  cp -- "${out}" "${store}.$$.tmp" && mv -f -- "${store}.$$.tmp" "${store}"
+  sha256sum < "${store}" | cut -d' ' -f1 > "${store}.sha"
+fi
+exit 0
