@@ -238,6 +238,63 @@ Describe 'the per-clone key and seed' {
         Assert-LinRefused (Invoke-LinCreate -Knobs @{ SeedFails = $true }) '*IMAPI2 failed*'
     }
 
+    It 'a seed image whose bytes on disk are not the ones written (<How>) is refused before any VM exists' -Tag 'seed-written' -ForEach @(
+        @{ How = 'short'; Hashed = 0 }, @{ How = 'stale'; Hashed = 1 }   # the size is checked first, then the re-read hash
+    ) {
+        $x = Invoke-LinCreate -Knobs @{ SeedLost = $How }
+        Assert-LinRefused $x '*AAP_SeedInvalid: the seed image on disk is not the image that was written*'
+        @(Get-LinCalls $x.W 'NewVm *').Count | Should -Be 0
+        @(Get-LinCalls $x.W 'HashFile *seed.iso').Count | Should -Be $Hashed
+    }
+
+    It 'the ISO writer takes only full blocks from the image stream and returns the SHA-256 of what it wrote' {
+        # A managed stand-in for IMAPI2's result stream (IStream::Read writes its count where pcbRead points): its read
+        # number ShortAt hands out half a block before the end of the data.
+        $src = @'
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+public class AapLinTestImageStream : IStream {
+    byte[] data; int pos; int reads; int shortAt;
+    public AapLinTestImageStream(byte[] data, int shortAt) { this.data = data; this.shortAt = shortAt; }
+    public void Read(byte[] pv, int cb, IntPtr pcbRead) {
+        reads++;
+        int n = Math.Min(cb, data.Length - pos);
+        if (reads == shortAt) n = Math.Min(n, cb / 2);
+        Array.Copy(data, pos, pv, 0, n);
+        pos += n;
+        if (pcbRead != IntPtr.Zero) Marshal.WriteInt32(pcbRead, n);
+    }
+    public void Write(byte[] pv, int cb, IntPtr pcbWritten) { throw new NotSupportedException(); }
+    public void Seek(long dlibMove, int dwOrigin, IntPtr plibNewPosition) { throw new NotSupportedException(); }
+    public void SetSize(long libNewSize) { throw new NotSupportedException(); }
+    public void CopyTo(IStream pstm, long cb, IntPtr pcbRead, IntPtr pcbWritten) { throw new NotSupportedException(); }
+    public void Commit(int grfCommitFlags) { throw new NotSupportedException(); }
+    public void Revert() { throw new NotSupportedException(); }
+    public void LockRegion(long libOffset, long cb, int dwLockType) { throw new NotSupportedException(); }
+    public void UnlockRegion(long libOffset, long cb, int dwLockType) { throw new NotSupportedException(); }
+    // Qualified: .NET Framework also has an obsolete System.Runtime.InteropServices.STATSTG.
+    public void Stat(out System.Runtime.InteropServices.ComTypes.STATSTG pstatstg, int grfStatFlag) { throw new NotSupportedException(); }
+    public void Clone(out IStream ppstm) { throw new NotSupportedException(); }
+}
+'@
+        $null = New-LinBackend (New-LinWorld)   # compiles AapLinIsoWriter, as the supervisor does at start
+        if (-not ('AapLinTestImageStream' -as [type])) {
+            $saved = $env:TMP, $env:TEMP
+            $tmp = Join-Path $TestDrive 'compile'
+            [void][IO.Directory]::CreateDirectory($tmp)
+            try { $env:TMP = $tmp; $env:TEMP = $tmp; Add-Type -TypeDefinition $src } finally { $env:TMP, $env:TEMP = $saved }
+        }
+        $data = New-Object byte[] (3 * 2048)
+        (New-Object Random 7).NextBytes($data)
+        $iso = Join-Path $TestDrive 'full.iso'
+        [AapLinIsoWriter]::Save((New-Object AapLinTestImageStream($data, 0)), $iso, 2048, 3) | Should -BeExactly (Get-LinSha $data)
+        Get-LinSha ([IO.File]::ReadAllBytes($iso)) | Should -BeExactly (Get-LinSha $data)
+        # A short read, in the middle or at an early end of the stream, fails the image instead of leaving stale bytes in it.
+        { [AapLinIsoWriter]::Save((New-Object AapLinTestImageStream($data, 2)), (Join-Path $TestDrive 'middle.iso'), 2048, 3) } | Should -Throw '*AAP_SeedInvalid: a short read from the image stream*'
+        { [AapLinIsoWriter]::Save((New-Object AapLinTestImageStream($data, 0)), (Join-Path $TestDrive 'end.iso'), 2048, 4) } | Should -Throw '*AAP_SeedInvalid: a short read from the image stream*'
+    }
+
     It 'a re-run create (the clone never booted) makes a fresh key and seed, and reuses only its journaled VM' -Tag 'vm-journaled' {
         $w = New-LinWorld
         $B = New-LinBackend $w

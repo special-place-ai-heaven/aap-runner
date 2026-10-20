@@ -108,13 +108,18 @@ clones need DHCP and DNS on the switch (cloud-init's default network config on `
   SYSTEM/Administrators ACL passes ssh.exe's permission check; `-F` keeps the operator's `~\.ssh` out.
 - **Relay**: the PowerShell `AapHvEndPoint` class connects an AF_HYPERV socket on Windows PowerShell 5.1 (the class's
   virtual `AddressFamily` and `Serialize` are what `Socket.Connect` calls); the pump ends when the guest closes and
-  half-closes when ssh.exe closes stdin; the job object kills the relay with ssh.exe.
+  half-closes when ssh.exe closes stdin; the job object kills the relay with ssh.exe. Win32-OpenSSH starts the
+  ProxyCommand with its own environment, so `AAP_RELAY_JOB` reaches the relay (otherwise every relay exits 4 and no clone
+  passes its first probe), and the relay's in-memory P/Invoke type (Reflection.Emit, no compiler) runs under the host's
+  antivirus; count how often a relay is started before ssh.exe's job assignment (each is one failed command).
 - **Host key**: the KVP guest-to-host item appears in `Msvm_KvpExchangeComponent.GuestExchangeItems` as the provider reads
   it; a changed host key is refused by ssh.exe (exit 255, a failed guest); the key published before any job ran is the
   one sshd presents.
-- **Seed**: the IMAPI2 ISO 9660 + Joliet image labelled `CIDATA` is read by cloud-init NoCloud on the P07 image; `users`
-  with only `runner` creates no uid 1000; root's `authorized_keys` from `write_files` survives `cc_ssh` with
-  `disable_root: false`; `Set-VMDvdDrive -Path $null` ejects it from a running generation 2 VM.
+- **Seed**: IMAPI2's result stream fills every block `AapLinIsoWriter` asks for (it reports each read's count, and the
+  writer fails the image on a short one), and `BlockSize * TotalBlocks` is the file's size; the image labelled `CIDATA`
+  is read by cloud-init NoCloud on the P07 image; `users` with only `runner` creates no uid 1000; root's
+  `authorized_keys` from `write_files` survives `cc_ssh` with `disable_root: false`; `Set-VMDvdDrive -Path $null` ejects
+  it from a running generation 2 VM.
 - **Secret oracle (lab step 5)**: add the clone's private key (its marker) to the search: host PowerShell 4103/4104,
   transcripts, the supervisor's logs and status, the journal, every folder after teardown (the key must be gone with the
   clone folder), and the guest.

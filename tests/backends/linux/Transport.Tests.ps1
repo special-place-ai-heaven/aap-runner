@@ -353,13 +353,15 @@ Start-Sleep -Seconds 600
 "@)
         $script:SavedExe = Get-LinModuleVar 'ChildExe'
         $script:SavedArgs = Get-LinModuleVar 'ChildArgs'
+        $script:PayloadStreams = New-Object Collections.Generic.List[object]   # each stream the transport gave the payload writer
         function Invoke-LinChild([string]$Kid, [int]$Timeout = 5, $Jit = $null) {
             Set-LinModuleVar 'ChildExe' 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
             Set-LinModuleVar 'ChildArgs' ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $script:Kids $Kid) + '" "{0}"')
             if (Test-Path $script:Side) { Remove-Item $script:Side }
             $env1 = '{"schema":1,"kind":"host_cmd","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","reservation_id":"r-1a2b3c4d000000b1","lease_generation":3,"seq":2,"nonce":"99999999999999999999999999999999","cmd":"deliver_registration","payload_bytes":' + $(if ($Jit) { $Jit.Length } else { 0 }) + ',"expires_at":"2026-10-19T18:02:00Z"}'
+            $streams = $script:PayloadStreams
             $call = @{ VmId = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'; Config = 'C:\clones\r-1a2b3c4d000000b1\ssh\ssh_config'; Envelope = $env1; PayloadLength = $(if ($Jit) { $Jit.Length } else { 0 }); TimeoutSeconds = $Timeout
-                WritePayload = { param($s) $s.Write($Jit, 0, $Jit.Length) }.GetNewClosure()
+                WritePayload = { param($s) $streams.Add($s); $s.Write($Jit, 0, $Jit.Length) }.GetNewClosure()
             }
             $sw = [Diagnostics.Stopwatch]::StartNew()
             try { $raw = Invoke-LinInModule { param($c) Invoke-AapLinGuestChild $c } @($call) }
@@ -385,6 +387,26 @@ Start-Sleep -Seconds 600
         $side | Should -Not -Match 'SYNTHETIC|host_cmd|6f1d2c3b'
         $machine = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
         [regex]::Match($side, 'modpath=(.*)$').Groups[1].Value.EndsWith($machine) | Should -BeTrue
+    }
+
+    It 'the payload goes to the pipe unbuffered: no copy of it stays in a stream buffer that nothing can zero' {
+        $jit = [Text.Encoding]::ASCII.GetBytes('SYNTHETIC-JIT-MARKER-' + [guid]::NewGuid().ToString('n'))
+        $script:PayloadStreams.Clear()
+        $c = Invoke-LinChild 'echo.ps1' 5 $jit
+        $c.Raw.ExitCode | Should -Be 0
+        [IO.File]::ReadAllText($script:Side) | Should -Match "payload=$(Get-LinSha $jit) extra=-1 "
+        $script:PayloadStreams.Count | Should -Be 1
+        # Every byte array inside the stream the payload was written to, down through its System.IO helper objects (a
+        # redirected stdin's own stream keeps the last 4 KiB written in one: FileStream._buffer, or its strategy's).
+        function Find-LinMarker($o, [int]$Depth) {
+            if ($null -eq $o -or $Depth -gt 3) { return }
+            foreach ($f in $o.GetType().GetFields([Reflection.BindingFlags]'Instance, NonPublic, Public')) {
+                $v = $f.GetValue($o)
+                if ($v -is [byte[]]) { if ([Text.Encoding]::ASCII.GetString($v).Contains('SYNTHETIC-JIT-MARKER')) { "$($o.GetType().Name).$($f.Name)" } }
+                elseif ($null -ne $v -and -not $v.GetType().IsValueType -and [string]$v.GetType().Namespace -like 'System.IO*') { Find-LinMarker $v ($Depth + 1) }
+            }
+        }
+        @(Find-LinMarker $script:PayloadStreams[0] 0) | Should -BeNullOrEmpty
     }
 
     It 'stdin arrives byte-exact under the <Name> console input encoding (no preamble)' -Tag 'stdin-bom' -ForEach @(
@@ -459,10 +481,95 @@ Start-Sleep -Seconds 600
         (Get-LinRes $w $r.reservation_id).state | Should -Be 'creating'
         @(Get-LinJournal $w $r.reservation_id | Where-Object { $_.result -and $_.result.code -eq 'hostile_guest' }).Count | Should -Be 0
     }
+
+    It 'the call child''s job is named in AAP_RELAY_JOB: the relay inside it gets to its socket; named <Mode>, it refuses: exit <Exit>' -Tag 'relay-contained', 'relay-job-open', 'relay-job-name' -ForEach @(
+        @{ Mode = 'as given'; Set = ''; Exit = 3 }
+        @{ Mode = 'another job'; Set = "'aap-lin-call-' + ('0' * 32)"; Exit = 4 }   # IsProcessInJob without a handle would say "in a job"
+        @{ Mode = 'with a Local\ prefix'; Set = "'Local\' + `$n"; Exit = 4 }         # the same job by another name
+    ) {
+        # The kid runs the relay's code in the call child itself, which the transport has put in the job before it writes
+        # the envelope; Connect-AapRelay is a stand-in, so no AF_HYPERV socket is ever made here.
+        $relay = Join-Path (Split-Path -Parent $script:BackendModule) 'hvsock-relay.ps1'
+        [IO.File]::WriteAllText((Join-Path $script:Kids 'guard.ps1'), @"
+`$null = [Console]::In.ReadLine()
+. '$relay'
+function Connect-AapRelay([guid]`$VmId) { [IO.File]::AppendAllText('$($script:Side)', 'connect '); throw 'no socket in tests' }
+`$n = [Environment]::GetEnvironmentVariable('AAP_RELAY_JOB')
+$(if ($Set) { "[Environment]::SetEnvironmentVariable('AAP_RELAY_JOB', $Set)" })
+`$rc = Invoke-AapRelay @('6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b')
+[IO.File]::AppendAllText('$($script:Side)', "job=`$n exit=`$rc")
+"@)
+        $c = Invoke-LinChild 'guard.ps1' 20
+        $c.Raw.ExitCode | Should -Be 0
+        $side = [IO.File]::ReadAllText($script:Side)
+        $side | Should -Match '^(connect )?job=aap-lin-call-[0-9a-f]{32} exit=\d\z'
+        $side | Should -Match "exit=$Exit\z"
+        $side.StartsWith('connect ') | Should -Be ($Exit -eq 3)
+    }
+
 }
 
 Describe 'the hvsocket relay' {
-    BeforeAll { $script:Relay = Join-Path (Split-Path -Parent $script:BackendModule) 'hvsock-relay.ps1' }
+    BeforeAll {
+        $script:Relay = Join-Path (Split-Path -Parent $script:BackendModule) 'hvsock-relay.ps1'
+        $null = New-LinBackend (New-LinWorld)   # compiles the job object type
+        function New-LinJobName { 'aap-lin-call-' + [guid]::NewGuid().ToString('n') }
+    }
+
+    It 'outside its job (<Case>) the relay refuses before any socket exists: exit 4' -Tag 'relay-contained', 'relay-job-member' -ForEach @(
+        @{ Case = 'no AAP_RELAY_JOB' }, @{ Case = 'a name of another shape' }, @{ Case = 'no such job' }, @{ Case = 'a job this process is not in' }
+    ) {
+        . $script:Relay
+        $script:Connects = 0
+        function Connect-AapRelay([guid]$VmId) { $script:Connects++; throw 'no socket in tests' }
+        $saved = [Environment]::GetEnvironmentVariable('AAP_RELAY_JOB')
+        $job = [IntPtr]::Zero
+        try {
+            $name = $(switch ($Case) {
+                    'no AAP_RELAY_JOB' { $null }
+                    'a name of another shape' { (New-LinJobName).ToUpperInvariant() }
+                    'no such job' { New-LinJobName }
+                    'a job this process is not in' { $n = New-LinJobName; $job = [AapLinJobObject]::Create($n, 64MB, 10); $n }
+                })
+            [Environment]::SetEnvironmentVariable('AAP_RELAY_JOB', $name)
+            Invoke-AapRelay @('6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b') | Should -Be 4
+            $script:Connects | Should -Be 0
+        } finally {
+            [Environment]::SetEnvironmentVariable('AAP_RELAY_JOB', $saved)
+            if ($job -ne [IntPtr]::Zero) { [AapLinJobObject]::Close($job) }
+        }
+    }
+
+    It 'inside its job the check holds no handle on it: closing the job still kills a relay left behind (kill on close)' {
+        # A Windows PowerShell child put in a named job, as ssh.exe's relay is; told to go only once it is in.
+        $mark = Join-Path $TestDrive 'inside.txt'
+        $kid = Join-Path $TestDrive 'inside.ps1'
+        [IO.File]::WriteAllText($kid, @"
+`$null = [Console]::In.ReadLine()
+. '$($script:Relay)'
+[IO.File]::WriteAllText('$mark.tmp', [string](Test-AapRelayContained ([Environment]::GetEnvironmentVariable('AAP_RELAY_JOB')))); [IO.File]::Move('$mark.tmp', '$mark')
+Start-Sleep -Seconds 300
+"@)
+        $name = New-LinJobName
+        $job = [AapLinJobObject]::Create($name, 256MB, 60)
+        $psi = New-Object Diagnostics.ProcessStartInfo 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe', "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$kid`""
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardInput = $true
+        $psi.EnvironmentVariables['AAP_RELAY_JOB'] = $name
+        $p = [Diagnostics.Process]::Start($psi)
+        try {
+            [AapLinJobObject]::Assign($job, $p.Handle)
+            $p.StandardInput.WriteLine('go'); $p.StandardInput.Close()
+            $until = [DateTime]::UtcNow.AddSeconds(60)
+            while (-not [IO.File]::Exists($mark) -and -not $p.HasExited -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 100 }
+            [IO.File]::ReadAllText($mark) | Should -BeExactly 'True'
+            [AapLinJobObject]::Close($job); $job = [IntPtr]::Zero
+            $p.WaitForExit(10000) | Should -BeTrue
+        } finally {
+            if ($job -ne [IntPtr]::Zero) { [AapLinJobObject]::Close($job) }
+            if (-not $p.HasExited) { $p.Kill() }
+            $p.Dispose()
+        }
+    }
 
     It 'refuses anything but one VM id, before any socket exists: exit 2' -Tag 'relay-args' {
         foreach ($argv in @(@(), @('not-a-guid'), @('6F1D2C3B-4A59-4E6F-8A7B-9C0D1E2F3A4B'), @('x', 'y'), @('6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b;calc'))) {
@@ -491,9 +598,11 @@ Describe 'the hvsocket relay' {
         $script:ServiceId | Should -BeExactly '00001466-facb-11e6-bd58-64006a7986d3'
     }
 
-    It 'opens no listening socket, reads and writes no file, and takes no data but the VM id' {
+    It 'opens no listening socket, reads and writes no file, and takes no data but the VM id and its job''s name' {
         $t = [IO.File]::ReadAllText($script:Relay)
-        $t | Should -Not -Match '\.(Bind|Listen|Accept)\(|TcpListener|\[IO\.File\]|Out-File|Set-Content|Add-Content'
+        $t | Should -Not -Match '\.(Bind|Listen|Accept)\(|TcpListener|\[IO\.File\]|Out-File|Set-Content|Add-Content|Add-Type'
         $t | Should -Match 'exit \(Invoke-AapRelay \$args\)'
+        # The variable the backend sets is the one the relay reads.
+        $t | Should -Match ([regex]::Escape("`$script:JobVar = '$(Get-LinModuleVar 'RelayJobVar')'"))
     }
 }
