@@ -34,7 +34,7 @@
     "yarn": {"v": "1.22.22", "src": "inventory:Package Management|Yarn"},
     "python": {"v": "3.12.3", "src": "inventory:Language and Runtime|Python"},
     "pip": {"v": "24.0", "src": "inventory:Package Management|Pip"},
-    "java": {"v": "17.0.20+1", "src": "inventory:Java|Java"},
+    "java": {"v": "17.0.20.1+1", "src": "hosted:39450814977/linux__toolchain-versions.log:OpenJDK Runtime Environment Temurin-17.0.20.1+1 (build 17.0.20.1+1)"},
     "maven": {"v": "3.10.0", "src": "inventory:Project Management|Maven"},
     "gradle": {"v": "9.8.1", "src": "inventory:Project Management|Gradle"},
     "ant": {"v": "1.10.14", "src": "inventory:Project Management|Ant"},
@@ -131,10 +131,10 @@
   },
   "shell_paths": {
     "bash": {"v": "/usr/bin/bash", "src": "capture:shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}"},
-    "sh": {"v": "/usr/bin/sh", "src": "provisional:first entry of PATH order holding sh"},
-    "sh_target": {"v": "/usr/bin/dash", "src": "provisional:Ubuntu's /bin/sh is dash (Dash 0.5.12-6ubuntu5 in the inventory)"},
-    "pwsh": {"v": "/usr/bin/pwsh", "src": "provisional:powershell package link"},
-    "python": {"v": "/usr/bin/python", "src": "provisional:python-is-python3 is in the inventory's apt packages"}
+    "sh": {"v": "/usr/bin/sh", "src": "hosted:39450814977/actions__linux__shell-semantics.log:ok   resolve.sh = /usr/bin/sh"},
+    "sh_target": {"v": "/usr/bin/dash", "src": "hosted:39450814977/actions__linux__shell-semantics.log:ok   resolve.sh_target = /usr/bin/dash"},
+    "pwsh": {"v": "/usr/bin/pwsh", "src": "hosted:39450814977/actions__linux__shell-semantics.log:ok   resolve.pwsh = /usr/bin/pwsh"},
+    "python": {"v": "/usr/bin/python", "src": "hosted:39450814977/actions__linux__shell-semantics.log:ok   resolve.python = /usr/bin/python"}
   },
   "shell_templates": {
     "bash": {"v": "bash --noprofile --norc -e -o pipefail {0}", "src": "capture:shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}"},
@@ -154,10 +154,10 @@
     "sh.errexit": {"v": "1", "src": "derived:-e stops at false (exit 1)"},
     "sh.pipefail": {"v": "0", "src": "derived:sh -e {0} has no pipefail"},
     "sh.exit": {"v": "4", "src": "derived:exit 4"},
-    "pwsh.native_last": {"v": "3", "src": "provisional:the appended exit $LASTEXITCODE returns the native exit code"},
-    "pwsh.native_then_ok": {"v": "0", "src": "provisional:only the last native exit code counts"},
-    "pwsh.cmdlet_error": {"v": "1", "src": "provisional:$ErrorActionPreference = 'stop' turns Write-Error into a terminating error"},
-    "pwsh.exit": {"v": "7", "src": "provisional:exit 7 in the dot-sourced script"},
+    "pwsh.native_last": {"v": "1", "src": "hosted:39450814977/actions__linux__shell-semantics.log:report pwsh.native_last=1"},
+    "pwsh.native_then_ok": {"v": "0", "src": "hosted:39450814977/actions__linux__shell-semantics.log:report pwsh.native_then_ok=0"},
+    "pwsh.cmdlet_error": {"v": "1", "src": "hosted:39450814977/actions__linux__shell-semantics.log:report pwsh.cmdlet_error=1"},
+    "pwsh.exit": {"v": "1", "src": "hosted:39450814977/actions__linux__shell-semantics.log:report pwsh.exit=1"},
     "python.exit": {"v": "6", "src": "derived:sys.exit(6)"}
   },
   "services": {
@@ -193,7 +193,7 @@
   "apt_mirrors": {"v": ["azure.archive.ubuntu.com", "archive.ubuntu.com", "security.ubuntu.com"], "src": "readme:Apt mirror list `azure.archive.ubuntu.com` then `archive.ubuntu.com` then `security.ubuntu.com`"},
   "registries": {
     "npm": {"v": "https://registry.npmjs.org/", "src": "docs:https://docs.npmjs.com/cli/v10/using-npm/config#registry"},
-    "pip_config": {"v": "", "src": "provisional:no pip configuration file on the image"},
-    "nuget": {"v": "E https://api.nuget.org/v3/index.json", "src": "provisional:nuget.org is the only default source"}
+    "pip_config": {"v": "global.break-system-packages='true'", "src": "hosted:39450814977/linux__registry-tls.log:global.break-system-packages='true'"},
+    "nuget": {"v": "E https://api.nuget.org/v3/index.json", "src": "hosted:39450814977/linux__registry-tls.log:ok   nuget.sources = E https://api.nuget.org/v3/index.json"}
   }
 }

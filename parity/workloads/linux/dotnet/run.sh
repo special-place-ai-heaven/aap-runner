@@ -12,6 +12,10 @@ export DOTNET_CLI_HOME="${WORK}/dotnet-home" NUGET_PACKAGES="${WORK}/nuget-packa
 if [ "${SABOTAGE}" = missing-targeting-pack ]; then
   tfm=net7.0
   line "sabotage missing-targeting-pack applied (net7.0)"
+  # the sabotage holds: the profile has net8.0's targeting pack and not net7.0's
+  packs="$(dirname "$(readlink -f "$(command -v dotnet)")")/packs/Microsoft.NETCore.App.Ref"
+  fact sabotage.net8_ref_pack "$(compgen -G "${packs}/8.0.*" > /dev/null && echo yes)" yes
+  fact sabotage.net7_ref_pack "$(compgen -G "${packs}/7.0.*" > /dev/null && echo yes)" ''
 elif [ -n "${SABOTAGE}" ]; then
   die "unknown sabotage ${SABOTAGE}"
 fi

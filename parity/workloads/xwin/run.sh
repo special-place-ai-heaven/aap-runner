@@ -6,7 +6,7 @@
 #   --kind freestanding  no C runtime and no SDK: kernel32 imports from an import library made with llvm-lib /def
 #   --kind sdk           the Microsoft CRT and Windows SDK as xwin lays them out under $XWIN_SYSROOT
 #                        (crt/include, crt/lib/x86_64, sdk/include/{ucrt,um,shared}, sdk/lib/{ucrt,um}/x86_64)
-# Sabotage no-import-lib links the freestanding program without its import library; sabotage no-sysroot unsets
+# Sabotage no-import-lib skips making the import library the link names; sabotage no-sysroot unsets
 # XWIN_SYSROOT.
 # shellcheck source-path=SCRIPTDIR source=../linux/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../linux/lib.sh"

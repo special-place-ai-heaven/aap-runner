@@ -16,9 +16,11 @@ that the program was *built*. Its hand-off record (`<name>.handoff.json`, writte
 
 | Workload | On ubuntu-24.04 |
 |---|---|
-| `xwin/clang-lld-pe` | qualified if the image's clang has lld-link and llvm-lib beside it: a CRT-free x64 console program (`src/freestanding.c`, kernel32 imports from `src/kernel32.def`), exit code 42, prints `hello from xwin freestanding`. Negative: no import library. |
+| `xwin/clang-lld-pe` | qualified if the image's clang has lld-link and llvm-lib beside it: a CRT-free x64 console program (`src/freestanding.c`, kernel32 imports from `src/kernel32.def`), exit code 42, prints `hello from xwin freestanding`. Negative: the import library the link names is missing (`lld-link: error: could not open 'kernel32.lib'`). |
 | `xwin/sdk-cross` | **unqualified**: needs `XWIN_SYSROOT`, an xwin splat of the MSVC CRT and Windows SDK (`crt/include`, `crt/lib/x86_64`, `sdk/include/{ucrt,um,shared}`, `sdk/lib/{ucrt,um}/x86_64`). The inventory has none and P18 downloads nothing. `src/hello.c`, exit 43. Negative: XWIN_SYSROOT unset. |
 
-The freestanding source was built with LLVM 22 on Windows and run through `Invoke-HandoffExecution.ps1` under pwsh 7
-and Windows PowerShell 5.1 on the owner's host (exit 42, expected output, verdict `executed-on-windows`): that checks
-the program and the scripts, not the Linux-to-Windows chain, which needs the hosted Linux artifact on Windows.
+Evidence so far: the artifact of hosted run 39450814977 (sha256
+`e713b3b44aa4d73ce5586feb6755f2f9f4ed6310f12740702ebb03106e41b6c7`) ran on a native Windows 11 host (the owner's,
+build 26300) through `Invoke-HandoffExecution.ps1` under Windows PowerShell 5.1 (and the same bytes, rebuilt with
+LLVM 22 on Windows, under pwsh 7): exit 42, expected output, verdict `executed-on-windows`. Records:
+`../linux/oracle/hosted-runs/39450814977/xwin/`. Running it on the hosted Windows twin is P22/P24.

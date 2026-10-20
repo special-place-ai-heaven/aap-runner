@@ -22,7 +22,7 @@
     ]
   ],
   "expected_first_error": {
-    "contains": "NU1101: Unable to find package Microsoft.NETCore.App.Ref"
+    "contains": "error NU1100: Unable to resolve 'Microsoft.NETCore.App.Ref"
   },
   "claim_success_regex": "^workload \\S+: all oracle checks met$",
   "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"

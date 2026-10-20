@@ -19,5 +19,8 @@
   "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
   "artifact_globs": [
     "report.txt"
-  ]
+  ],
+  "expected_hashes": {
+    "report.txt": "826abc092f58de1782a9612058bf16e478e479c8c969a0540b83e40fb80b1303"
+  }
 }

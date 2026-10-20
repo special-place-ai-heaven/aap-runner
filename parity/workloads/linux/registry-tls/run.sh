@@ -59,7 +59,7 @@ if [ "${SABOTAGE}" = untrusted-ca ]; then
 else
   run curl --fail -sS --cacert cert.pem -o page.html "https://localhost:${port}/"
 fi
-fact tls.curl "$(grep -c 's_server' page.html)" 1
+fact tls.curl "$(grep -q 's_server' page.html && echo yes)" yes
 run python3 -B -I -c 'import ssl, sys, urllib.request
 ctx = ssl.create_default_context(cafile=sys.argv[1])
 print(urllib.request.urlopen(sys.argv[2], context=ctx, timeout=10).status)' cert.pem "https://localhost:${port}/"

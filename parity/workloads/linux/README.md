@@ -79,7 +79,7 @@ Every definition runs `bash {fixtures}/../../../../parity/workloads/<path>/run.s
 | `linux/cmake-ninja`, `linux/cmake-make` | CMake 3.31 configure, build, ctest, cpack TGZ read back | PATH without ninja (`CMake Error: CMake was unable to find a build program corresponding to "Ninja"`) |
 | `linux/rust` | cargo test/build/run offline, build.rs compiling C with cc/ar | PATH without cc (`error: linker `cc` not found`) |
 | `linux/go` | default Go, cgo module, test/build/run offline | PATH without gcc (`cgo: C compiler "gcc" not found`) |
-| `linux/dotnet-net8`, `-net10` | SDK band via global.json; build, run, publish apphost, pack nupkg, no package source | net7.0 (`NU1101 ... Microsoft.NETCore.App.Ref`) |
+| `linux/dotnet-net8`, `-net10` | SDK band via global.json; build, run, publish apphost, pack nupkg, no package source | net7.0, whose targeting pack is not installed (`error NU1100: Unable to resolve 'Microsoft.NETCore.App.Ref`; hosted Windows says NU1101) |
 | `linux/node-addon` | Node-API addon against the installed Node headers, loaded by node | empty Node include folder (`fatal error: node_api.h`) |
 | `linux/python-wheel` | CPython extension, wheel requiring a second wheel, pip `--no-index` install, import | required wheel missing from the local package folder (`ERROR: Could not find a version that satisfies the requirement aap-parity-dep`) |
 | `linux/java`, `linux/java-gradle` | default JDK via JAVA_HOME (javac/jar/java), every `JAVA_HOME_<n>_X64`; Gradle `--offline` jar | JAVA_HOME unset (`JAVA_HOME is not set`); JAVA_HOME at an empty folder (Gradle's `ERROR: JAVA_HOME is set to an invalid directory`) |
@@ -92,7 +92,7 @@ Every definition runs `bash {fixtures}/../../../../parity/workloads/<path>/run.s
 | `actions/linux/shell-semantics` | runner templates for bash, sh, pwsh, python and the default shell: errexit, pipefail, exit codes; resolution of each shell; the runner's own step command line | a `bash` that is really dash first on PATH (`bash on PATH is not GNU bash`) |
 | `actions/linux/runner-env` | default and image variables, file-command files, PATH order, tool cache layout, action archive cache, user and groups, passwordless sudo, limits, sysctls, Docker socket | tool cache looked up in an empty folder (`oracle tool_cache.CodeQL/2.27.2 expected 'yes' observed ''`) |
 | `actions/linux/file-commands` | marker from the composite action: GITHUB_ENV (incl. multiline) from bash, sh and pwsh, GITHUB_PATH, GITHUB_OUTPUT from python, step summary, working-directory | a marker that was never written (`file-commands marker not found`) |
-| `xwin/clang-lld-pe` | Linux-to-Windows: clang + lld-link build a CRT-free x64 PE with an llvm-lib import library; PE-inspected; hand-off record | no import library (`lld-link: error: undefined symbol: __declspec(dllimport) ...`) |
+| `xwin/clang-lld-pe` | Linux-to-Windows: clang + lld-link build a CRT-free x64 PE with an llvm-lib import library; PE-inspected; hand-off record | the import library the link names is missing (`lld-link: error: could not open 'kernel32.lib'`) |
 | `xwin/sdk-cross` | Linux-to-Windows with the MSVC CRT and Windows SDK from an xwin sysroot: **unqualified on this profile** | XWIN_SYSROOT unset (`XWIN_SYSROOT is not set`) |
 
 Every negative first proves its sabotage held (a `sabotage.*` fact: the header absent from the sysroot, nothing at
@@ -109,9 +109,22 @@ hosted reference and a correct candidate and `compare_artifacts` stays `sha256`.
 
 ## Validation status and gaps
 
-- Hosted validation: pending (first run not yet dispatched). Values marked `provisional:` in the oracle (where
-  `sh`, `pwsh` and `python` resolve, the pwsh exit codes through the runner template, pip and NuGet registry
-  configuration) are replaced from that run's evidence; the tests refuse `provisional:` once `hosted_validation` is set.
+- Hosted iteration 1 (run 39450814977, image 20261012.334.1, head 0af2bc2): 39/44. Classified and fixed after it:
+  oracle values the baseline could not show (the default JDK reports 17.0.20.1+1 where the inventory lists
+  17.0.20+1; pip's global configuration sets `break-system-packages`; through the runner's pwsh template `exit N`
+  and a failing last native command end pwsh with 1, as P17 saw on Windows); one workload bug (`tls.curl` counted
+  matching lines, and the s_server page names itself twice); two negative texts that are genuine hosted differences
+  (.NET on Linux reports `NU1100` where hosted Windows reports `NU1101`, having no library-packs source; lld-link
+  first reports the missing `kernel32.lib` the link names). Every `provisional:` value now cites that run's logs
+  under `oracle/hosted-runs/39450814977/`, and every report hash is pinned from it. Negatives that lacked a proof
+  fact got one (.NET: the net8.0 targeting pack present, net7.0's absent; Java: the JDK still installed with
+  JAVA_HOME unset; file-commands: the real marker present). Hosted validation of the full suite (`hosted_validation`
+  and `check_hosted_run.py`) waits for iteration 2.
+- The hosted Linux-built `parity-freestanding.exe` (sha256 e713b3b4..., byte-identical to an LLVM 22 Windows build
+  of the same source thanks to `/brepro`) was run on a native Windows 11 host (the owner's, build 26300) with
+  `Invoke-HandoffExecution.ps1` under Windows PowerShell 5.1: exit 42, expected output, `handoff.py verdict`
+  `executed-on-windows`. The records are in `oracle/hosted-runs/39450814977/xwin/`. That host is not a hosted
+  Windows runner; executing on the Windows twin in CI stays with P22/P24.
 - Not covered here: Actions-managed `container:` jobs, `services:` and Docker container actions (all pull images
   from a registry; `linux/containers` covers the same Docker features without a pull), `actions/cache` and
   `upload-artifact` round trips (they need the job's runtime token and GitHub's services; `runner-env` checks the

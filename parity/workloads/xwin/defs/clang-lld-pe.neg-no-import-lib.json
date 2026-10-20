@@ -1,6 +1,6 @@
 {
   "id": "xwin/clang-lld-pe.neg-no-import-lib",
-  "description": "Negative control: Linking without the kernel32 import library must fail.",
+  "description": "Negative control: Linking when the kernel32 import library was never made must fail.",
   "expected_exit_codes": [
     1
   ],
@@ -20,7 +20,7 @@
     ]
   ],
   "expected_first_error": {
-    "contains": "lld-link: error: undefined symbol: __declspec(dllimport) "
+    "contains": "lld-link: error: could not open 'kernel32.lib': No such file or directory"
   },
   "claim_success_regex": "^workload \\S+: all oracle checks met$",
   "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"

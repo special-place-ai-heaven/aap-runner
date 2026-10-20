@@ -13,7 +13,12 @@ if [ -z "${SABOTAGE}" ]; then
 fi
 export JAVA_TOOL_OPTIONS=-XX:-UsePerfData  # no hsperfdata files in the shared temp folder
 case ${SABOTAGE} in
-  no-java-home) unset JAVA_HOME; line "sabotage no-java-home applied" ;;
+  no-java-home)
+    unset JAVA_HOME
+    line "sabotage no-java-home applied"
+    # the sabotage holds: the JDK is still installed, only the variable is gone
+    fact sabotage.jdk_17_installed "$([ -x "${JAVA_HOME_17_X64:-}/bin/javac" ] && echo yes)" yes
+    ;;
   empty-java-home) export JAVA_HOME="${WORK}/no-jdk"; mkdir -p "${JAVA_HOME}"; line "sabotage empty-java-home applied" ;;
   '') ;;
   *) die "unknown sabotage ${SABOTAGE}" ;;

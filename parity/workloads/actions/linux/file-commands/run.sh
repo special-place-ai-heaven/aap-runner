@@ -11,6 +11,8 @@ name=aap-parity-file-commands.json
 if [ "${SABOTAGE}" = missing-marker ]; then
   name=aap-parity-file-commands.missing.json
   line "sabotage missing-marker applied"
+  # the sabotage holds: the composite action did write the real marker; only the name looked up is wrong
+  fact sabotage.real_marker_exists "$([ -f "${RUNNER_TEMP:-}/aap-parity-file-commands.json" ] && echo yes)" yes
 elif [ -n "${SABOTAGE}" ]; then
   die "unknown sabotage ${SABOTAGE}"
 fi
