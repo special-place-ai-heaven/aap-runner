@@ -19,10 +19,7 @@ jobs:
       - run: bash tests/run.sh
       - run: python3 -B -I -m unittest discover -s tests/parity/cache/qualification -p "test_*.py"
       - run: python3 -B -I parity/contracts/validate.py
-      # TODO(chair): make blocking after the first green run. Local shellcheck 0.11.0 -S warning is
-      # clean except SC2115 at tests/worker_auth_test.sh:578; the hosted image's version may differ.
-      - run: shellcheck -S warning distro/*.sh tests/*.sh
-        continue-on-error: true
+      - run: shellcheck -S warning distro/*.sh tests/*.sh tests/parity/cache/qualification/*.sh parity/cache/qualification/harness/*.sh tools/parity-certify/probe/linux.sh
 
   pester:
     runs-on: windows-latest

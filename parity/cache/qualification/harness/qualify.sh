@@ -243,10 +243,9 @@ zq_own_pids() { # BIN -> pids of processes running an executable from BIN
 zq_stop_daemons() { # BIN -> prints true when nothing runs from BIN any more
   zq_bin_ok "$1" || { echo false; return 1; }
   local -a pids
-  local i
   mapfile -t pids < <(zq_own_pids "$1")
   ((${#pids[@]})) && kill -TERM "${pids[@]}" 2> /dev/null
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ -z "$(zq_own_pids "$1")" ]] && { echo true; return; }
     sleep 0.5
   done
