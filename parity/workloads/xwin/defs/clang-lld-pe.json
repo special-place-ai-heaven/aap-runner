@@ -1,0 +1,27 @@
+{
+  "id": "xwin/clang-lld-pe",
+  "description": "Linux-to-Windows: clang + lld-link build a CRT-free x64 console PE (/Brepro) with an llvm-lib import library; PE-inspected; hand-off record says windows_execution not-claimed.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/xwin/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "xwin/clang-lld-pe",
+      "--kind",
+      "freestanding"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt",
+    "parity-freestanding.exe",
+    "parity-freestanding.handoff.json"
+  ]
+}

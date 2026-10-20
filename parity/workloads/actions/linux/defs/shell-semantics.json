@@ -1,0 +1,23 @@
+{
+  "id": "actions/linux/shell-semantics",
+  "description": "Runner command templates for bash, sh, pwsh, python and the default shell: errexit, pipefail and exit codes; shell resolution; the runner's own step command line.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/actions/linux/shell-semantics/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "actions/linux/shell-semantics"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ]
+}

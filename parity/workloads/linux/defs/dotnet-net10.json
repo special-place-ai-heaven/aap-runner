@@ -1,0 +1,27 @@
+{
+  "id": "linux/dotnet-net10",
+  "description": ".NET 10 SDK band: build, run, publish apphost, pack nupkg with no package source.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/dotnet/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/dotnet-net10",
+      "--tfm",
+      "net10.0",
+      "--sdk-band",
+      "10.0.100"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ]
+}

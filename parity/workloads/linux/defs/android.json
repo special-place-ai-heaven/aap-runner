@@ -1,0 +1,23 @@
+{
+  "id": "linux/android",
+  "description": "Android SDK/NDK as installed (variables, NDK and build-tools folders, tool revisions); NDK clang arm64 build, ELF-inspected.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/android/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/android"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ]
+}

@@ -1,0 +1,199 @@
+{
+  "schema": 1,
+  "profile": "ubuntu-24.04",
+  "note": "Oracle for the P18 workloads. Every value cites its source: 'inventory:<category>|<name>' is parity/baselines/ubuntu-24.04-x64/inventory.json, 'capture:<text>' is a line of sources/hosted-capture-39305649952.log, 'capture-list:<what>' means every element is a line of that log, 'readme:<text>' is that profile's README.md, 'docs:<url>' is GitHub's or the tool's published behaviour, 'derived:<why>' a value worked out from cited facts. 'hosted:<run>/<file>:<text>' is a line of oracle/hosted-runs/<run>/<file>, stored evidence from a parity-workloads.yml run on the hosted image. 'provisional:<why>' marks a value no source shows yet; the first hosted run replaces it, and tests/parity/workloads/linux refuse it once hosted_validation is set.",
+  "image": {
+    "ImageOS": {"v": "ubuntu24", "src": "capture:ImageOS=ubuntu24"},
+    "ImageVersion": {"v": "20261012.334.1", "src": "inventory:identity|Image Version"}
+  },
+  "unqualified": {
+    "xwin/sdk-cross": {
+      "v": "no xwin Windows CRT/SDK sysroot on the hosted image (the inventory lists neither xwin nor a Windows SDK) and P18 downloads nothing; runs only where XWIN_SYSROOT is provisioned",
+      "src": "derived:inventory.json has no xwin, Windows SDK or MSVC CRT entry in any category"
+    },
+    "xwin/sdk-cross.neg-no-sysroot": {
+      "v": "negative of xwin/sdk-cross: meaningful only where the positive can pass",
+      "src": "derived:inventory.json has no xwin, Windows SDK or MSVC CRT entry in any category"
+    }
+  },
+  "versions": {
+    "gcc": {"v": "13.3.0", "src": "capture:gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0"},
+    "gcc_12": {"v": "12.4.0", "src": "inventory:Language and Runtime|GNU C++"},
+    "gcc_14": {"v": "14.2.0", "src": "inventory:Language and Runtime|GNU C++"},
+    "clang": {"v": "18.1.3", "src": "capture:Ubuntu clang version 18.1.3 (1ubuntu1)"},
+    "clang_16": {"v": "16.0.6", "src": "inventory:Language and Runtime|Clang"},
+    "clang_17": {"v": "17.0.6", "src": "inventory:Language and Runtime|Clang"},
+    "cmake": {"v": "3.31.6", "src": "inventory:Tools|CMake"},
+    "ninja": {"v": "1.13.2", "src": "inventory:Tools|Ninja"},
+    "rustc": {"v": "1.99.0", "src": "inventory:Rust Tools|Rust"},
+    "cargo": {"v": "1.99.0", "src": "inventory:Rust Tools|Cargo"},
+    "rustup": {"v": "1.29.1", "src": "inventory:Rust Tools|Rustup"},
+    "go": {"v": "1.24.13", "src": "inventory:Cached Tools/Go|Go"},
+    "node": {"v": "22.23.3", "src": "inventory:Language and Runtime|Node.js"},
+    "npm": {"v": "10.9.9", "src": "inventory:Package Management|Npm"},
+    "yarn": {"v": "1.22.22", "src": "inventory:Package Management|Yarn"},
+    "python": {"v": "3.12.3", "src": "inventory:Language and Runtime|Python"},
+    "pip": {"v": "24.0", "src": "inventory:Package Management|Pip"},
+    "java": {"v": "17.0.20+1", "src": "inventory:Java|Java"},
+    "maven": {"v": "3.10.0", "src": "inventory:Project Management|Maven"},
+    "gradle": {"v": "9.8.1", "src": "inventory:Project Management|Gradle"},
+    "ant": {"v": "1.10.14", "src": "inventory:Project Management|Ant"},
+    "dotnet_sdks": {"v": ["8.0.131", "8.0.206", "8.0.319", "8.0.425", "9.0.121", "9.0.205", "9.0.318", "10.0.112", "10.0.204", "10.0.303", "10.0.401"], "src": "inventory:.NET Tools|.NET Core SDK"},
+    "pwsh": {"v": "7.6.6", "src": "inventory:PowerShell Tools|PowerShell"},
+    "bash": {"v": "5.2.21(1)-release", "src": "inventory:Language and Runtime|Bash"},
+    "git": {"v": "2.55.0", "src": "inventory:Tools|Git"},
+    "git_lfs": {"v": "3.8.0", "src": "inventory:Tools|Git LFS"},
+    "perl": {"v": "5.38.2", "src": "inventory:Language and Runtime|Perl"},
+    "ruby": {"v": "3.2.3", "src": "inventory:Language and Runtime|Ruby"},
+    "yq": {"v": "4.54.1", "src": "inventory:Tools|yq"},
+    "openssl": {"v": "3.0.13-0ubuntu3.16", "src": "inventory:Tools|OpenSSL"},
+    "docker_client": {"v": "28.0.4", "src": "inventory:Tools|Docker Client"},
+    "docker_server": {"v": "28.0.4", "src": "inventory:Tools|Docker Server"},
+    "buildx": {"v": "0.38.0", "src": "inventory:Tools|Docker-Buildx"},
+    "compose": {"v": "2.38.2", "src": "inventory:Tools|Docker Compose"},
+    "podman": {"v": "4.9.3", "src": "inventory:Tools|Podman"},
+    "postgresql": {"v": "16.15", "src": "inventory:Databases/PostgreSQL|PostgreSQL"},
+    "mysql": {"v": "8.0.46-0ubuntu0.24.04.4", "src": "inventory:Databases/MySQL|MySQL"},
+    "chrome": {"v": "155.0.8059.39", "src": "inventory:Browsers and Drivers|Google Chrome"},
+    "chromedriver": {"v": "155.0.8059.39", "src": "inventory:Browsers and Drivers|ChromeDriver"},
+    "chromium": {"v": "155.0.8059.0", "src": "inventory:Browsers and Drivers|Chromium"},
+    "edge": {"v": "155.0.4283.45", "src": "inventory:Browsers and Drivers|Microsoft Edge"},
+    "edgedriver": {"v": "155.0.4283.45", "src": "inventory:Browsers and Drivers|Microsoft Edge WebDriver"},
+    "firefox": {"v": "157.0", "src": "inventory:Browsers and Drivers|Mozilla Firefox"},
+    "geckodriver": {"v": "0.37.1", "src": "inventory:Browsers and Drivers|Geckodriver"}
+  },
+  "runner_env": {
+    "CI": {"v": "true", "src": "docs:https://docs.github.com/en/actions/reference/workflows-and-actions/variables#default-environment-variables"},
+    "GITHUB_ACTIONS": {"v": "true", "src": "docs:https://docs.github.com/en/actions/reference/workflows-and-actions/variables#default-environment-variables"},
+    "RUNNER_OS": {"v": "Linux", "src": "capture:RUNNER_OS=Linux RUNNER_ARCH=X64 RUNNER_ENVIRONMENT=github-hosted"},
+    "RUNNER_ARCH": {"v": "X64", "src": "capture:RUNNER_OS=Linux RUNNER_ARCH=X64 RUNNER_ENVIRONMENT=github-hosted"},
+    "RUNNER_ENVIRONMENT": {"v": "github-hosted", "src": "capture:RUNNER_OS=Linux RUNNER_ARCH=X64 RUNNER_ENVIRONMENT=github-hosted"}
+  },
+  "env": {
+    "ImageOS": {"v": "ubuntu24", "src": "capture:ImageOS=ubuntu24"},
+    "ImageVersion": {"v": "20261012.334.1", "src": "capture:ImageVersion=20261012.334.1"},
+    "ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE": {"v": "/opt/actionarchivecache", "src": "capture:ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=/opt/actionarchivecache"},
+    "JAVA_HOME": {"v": "/usr/lib/jvm/temurin-17-jdk-amd64", "src": "capture:JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-amd64"},
+    "JAVA_HOME_17_X64": {"v": "/usr/lib/jvm/temurin-17-jdk-amd64", "src": "capture:JAVA_HOME_17_X64=/usr/lib/jvm/temurin-17-jdk-amd64"},
+    "GOROOT_1_24_X64": {"v": "/opt/hostedtoolcache/go/1.24.13/x64", "src": "capture:GOROOT_1_24_X64=/opt/hostedtoolcache/go/1.24.13/x64"},
+    "VCPKG_INSTALLATION_ROOT": {"v": "/usr/local/share/vcpkg", "src": "capture:VCPKG_INSTALLATION_ROOT=/usr/local/share/vcpkg"},
+    "CONDA": {"v": "/usr/share/miniconda", "src": "capture:CONDA=/usr/share/miniconda"},
+    "ANDROID_HOME": {"v": "/usr/local/lib/android/sdk", "src": "capture:ANDROID_HOME=/usr/local/lib/android/sdk"},
+    "ANDROID_NDK_HOME": {"v": "/usr/local/lib/android/sdk/ndk/27.3.13750724", "src": "capture:ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/27.3.13750724"},
+    "CHROMEWEBDRIVER": {"v": "/usr/local/share/chromedriver-linux64", "src": "capture:CHROMEWEBDRIVER=/usr/local/share/chromedriver-linux64"},
+    "EDGEWEBDRIVER": {"v": "/usr/local/share/edge_driver", "src": "capture:EDGEWEBDRIVER=/usr/local/share/edge_driver"},
+    "GECKOWEBDRIVER": {"v": "/usr/local/share/gecko_driver", "src": "capture:GECKOWEBDRIVER=/usr/local/share/gecko_driver"},
+    "SELENIUM_JAR_PATH": {"v": "/usr/share/java/selenium-server.jar", "src": "capture:SELENIUM_JAR_PATH=/usr/share/java/selenium-server.jar"},
+    "DOTNET_NOLOGO": {"v": "1", "src": "capture:DOTNET_NOLOGO=1"},
+    "DOTNET_MULTILEVEL_LOOKUP": {"v": "0", "src": "capture:DOTNET_MULTILEVEL_LOOKUP=0"},
+    "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": {"v": "1", "src": "capture:DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1"},
+    "DEBIAN_FRONTEND": {"v": "noninteractive", "src": "capture:DEBIAN_FRONTEND=noninteractive"},
+    "ACCEPT_EULA": {"v": "Y", "src": "capture:ACCEPT_EULA=Y"},
+    "XDG_CONFIG_HOME": {"v": "/home/runner/.config", "src": "capture:XDG_CONFIG_HOME=/home/runner/.config"},
+    "PIPX_BIN_DIR": {"v": "/opt/pipx_bin", "src": "capture:PIPX_BIN_DIR=/opt/pipx_bin"},
+    "PIPX_HOME": {"v": "/opt/pipx", "src": "capture:PIPX_HOME=/opt/pipx"},
+    "NVM_DIR": {"v": "/home/runner/.nvm", "src": "capture:NVM_DIR=/home/runner/.nvm"},
+    "GRADLE_HOME": {"v": "/usr/share/gradle-9.8.1", "src": "capture:GRADLE_HOME=/usr/share/gradle-9.8.1"},
+    "ANT_HOME": {"v": "/usr/share/ant", "src": "capture:ANT_HOME=/usr/share/ant"},
+    "BAZEL_VERSION": {"v": null, "src": "capture:BAZEL_VERSION=<unset>"},
+    "USE_BAZEL_FALLBACK_VERSION": {"v": "silent:", "src": "capture:USE_BAZEL_FALLBACK_VERSION=silent:"},
+    "HOMEBREW_NO_AUTO_UPDATE": {"v": "1", "src": "capture:HOMEBREW_NO_AUTO_UPDATE=1"},
+    "CHROME_BIN": {"v": "/usr/bin/google-chrome", "src": "capture:CHROME_BIN=/usr/bin/google-chrome"},
+    "SWIFT_PATH": {"v": "/usr/share/swift/usr/bin", "src": "capture:SWIFT_PATH=/usr/share/swift/usr/bin"},
+    "VCPKG_FORCE_SYSTEM_BINARIES": {"v": null, "src": "capture:VCPKG_FORCE_SYSTEM_BINARIES=<unset>"}
+  },
+  "env_tool_cache": {
+    "RUNNER_TOOL_CACHE": {"v": "/opt/hostedtoolcache", "src": "capture:RUNNER_TOOL_CACHE=/opt/hostedtoolcache"},
+    "AGENT_TOOLSDIRECTORY": {"v": "/opt/hostedtoolcache", "src": "capture:AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache"}
+  },
+  "java_home_vars": {"v": ["JAVA_HOME_8_X64", "JAVA_HOME_11_X64", "JAVA_HOME_17_X64", "JAVA_HOME_21_X64", "JAVA_HOME_25_X64"], "src": "inventory:Java|Java"},
+  "android_env": {
+    "ANDROID_HOME": {"v": "/usr/local/lib/android/sdk", "src": "inventory:Android/Environment variables|ANDROID_HOME"},
+    "ANDROID_SDK_ROOT": {"v": "/usr/local/lib/android/sdk", "src": "inventory:Android/Environment variables|ANDROID_SDK_ROOT"},
+    "ANDROID_NDK": {"v": "/usr/local/lib/android/sdk/ndk/27.3.13750724", "src": "inventory:Android/Environment variables|ANDROID_NDK"},
+    "ANDROID_NDK_HOME": {"v": "/usr/local/lib/android/sdk/ndk/27.3.13750724", "src": "inventory:Android/Environment variables|ANDROID_NDK_HOME"},
+    "ANDROID_NDK_ROOT": {"v": "/usr/local/lib/android/sdk/ndk/27.3.13750724", "src": "inventory:Android/Environment variables|ANDROID_NDK_ROOT"},
+    "ANDROID_NDK_LATEST_HOME": {"v": "/usr/local/lib/android/sdk/ndk/30.0.16248370", "src": "inventory:Android/Environment variables|ANDROID_NDK_LATEST_HOME"}
+  },
+  "android": {
+    "ndk": {"v": ["27.3.13750724", "29.0.14206865", "30.0.16248370"], "src": "inventory:Android|NDK"},
+    "ndk_default": {"v": "27.3.13750724", "src": "inventory:Android|NDK"},
+    "build_tools": {"v": ["37.0.0", "36.0.0", "36.1.0", "35.0.0", "35.0.1", "34.0.0"], "src": "inventory:Android|Android SDK Build-tools"},
+    "platform_tools": {"v": "37.0.1", "src": "inventory:Android|Android SDK Platform-Tools"},
+    "cmdline_tools": {"v": "12.0", "src": "inventory:Android|Android Command Line Tools"}
+  },
+  "browser_env": {
+    "CHROMEWEBDRIVER": {"v": "/usr/local/share/chromedriver-linux64", "src": "inventory:Browsers and Drivers/Environment variables|CHROMEWEBDRIVER"},
+    "EDGEWEBDRIVER": {"v": "/usr/local/share/edge_driver", "src": "inventory:Browsers and Drivers/Environment variables|EDGEWEBDRIVER"},
+    "GECKOWEBDRIVER": {"v": "/usr/local/share/gecko_driver", "src": "inventory:Browsers and Drivers/Environment variables|GECKOWEBDRIVER"},
+    "SELENIUM_JAR_PATH": {"v": "/usr/share/java/selenium-server.jar", "src": "inventory:Browsers and Drivers/Environment variables|SELENIUM_JAR_PATH"},
+    "CHROME_BIN": {"v": "/usr/bin/google-chrome", "src": "capture:CHROME_BIN=/usr/bin/google-chrome"}
+  },
+  "shell_paths": {
+    "bash": {"v": "/usr/bin/bash", "src": "capture:shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}"},
+    "sh": {"v": "/usr/bin/sh", "src": "provisional:first entry of PATH order holding sh"},
+    "sh_target": {"v": "/usr/bin/dash", "src": "provisional:Ubuntu's /bin/sh is dash (Dash 0.5.12-6ubuntu5 in the inventory)"},
+    "pwsh": {"v": "/usr/bin/pwsh", "src": "provisional:powershell package link"},
+    "python": {"v": "/usr/bin/python", "src": "provisional:python-is-python3 is in the inventory's apt packages"}
+  },
+  "shell_templates": {
+    "bash": {"v": "bash --noprofile --norc -e -o pipefail {0}", "src": "capture:shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}"},
+    "bash_resolved": {"v": "/usr/bin/bash --noprofile --norc -e -o pipefail {0}", "src": "capture:shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}"},
+    "default": {"v": "bash -e {0}", "src": "docs:https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#defaultsrunshell"},
+    "sh": {"v": "sh -e {0}", "src": "docs:https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#defaultsrunshell"},
+    "pwsh": {"v": "pwsh -command \". '{0}'\"", "src": "docs:https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#defaultsrunshell"},
+    "python": {"v": "python {0}", "src": "docs:https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#defaultsrunshell"}
+  },
+  "shell_semantics": {
+    "bash.ok": {"v": "0", "src": "derived:true exits 0"},
+    "bash.errexit": {"v": "1", "src": "derived:-e stops at false (exit 1)"},
+    "bash.pipefail": {"v": "1", "src": "derived:-o pipefail makes false | true fail"},
+    "bash.exit": {"v": "5", "src": "derived:exit 5"},
+    "default.errexit": {"v": "1", "src": "derived:-e stops at false (exit 1)"},
+    "default.pipefail": {"v": "0", "src": "derived:bash -e {0} has no pipefail, so false | true succeeds"},
+    "sh.errexit": {"v": "1", "src": "derived:-e stops at false (exit 1)"},
+    "sh.pipefail": {"v": "0", "src": "derived:sh -e {0} has no pipefail"},
+    "sh.exit": {"v": "4", "src": "derived:exit 4"},
+    "pwsh.native_last": {"v": "3", "src": "provisional:the appended exit $LASTEXITCODE returns the native exit code"},
+    "pwsh.native_then_ok": {"v": "0", "src": "provisional:only the last native exit code counts"},
+    "pwsh.cmdlet_error": {"v": "1", "src": "provisional:$ErrorActionPreference = 'stop' turns Write-Error into a terminating error"},
+    "pwsh.exit": {"v": "7", "src": "provisional:exit 7 in the dot-sourced script"},
+    "python.exit": {"v": "6", "src": "derived:sys.exit(6)"}
+  },
+  "services": {
+    "docker": {"v": "enabled=enabled active=active", "src": "capture:docker enabled=enabled active=active"},
+    "snapd": {"v": "enabled=enabled active=inactive", "src": "capture:snapd enabled=enabled active=inactive"},
+    "haveged": {"v": "enabled=enabled active=active", "src": "capture:haveged enabled=enabled active=active"},
+    "postgresql": {"v": "enabled=disabled active=inactive", "src": "capture:postgresql enabled=disabled active=inactive"},
+    "mysql": {"v": "enabled=disabled active=inactive", "src": "capture:mysql enabled=disabled active=inactive"},
+    "apache2": {"v": "enabled=disabled active=inactive", "src": "capture:apache2 enabled=disabled active=inactive"},
+    "nginx": {"v": "enabled=disabled active=inactive", "src": "capture:nginx enabled=disabled active=inactive"},
+    "apt-daily.timer": {"v": "enabled=disabled active=inactive", "src": "capture:apt-daily.timer enabled=disabled active=inactive"},
+    "apt-daily-upgrade.timer": {"v": "enabled=disabled active=inactive", "src": "capture:apt-daily-upgrade.timer enabled=disabled active=inactive"},
+    "unattended-upgrades": {"v": "enabled=not-found active=inactive", "src": "capture:unattended-upgrades enabled=not-found active=inactive"}
+  },
+  "docker_images": {"v": ["ghcr.io/github/gh-aw-firewall/agent:latest", "ghcr.io/dependabot/dependabot-updater-core:latest", "ghcr.io/github/gh-aw-firewall/api-proxy:latest", "ghcr.io/github/github-mcp-server:latest", "ghcr.io/github/gh-aw-mcpg:latest", "ghcr.io/github/gh-aw-firewall/squid:latest"], "src": "capture-list:docker images"},
+  "docker_socket": {"v": "srw-rw---- root docker", "src": "derived:capture line 'srw-rw---- 1 root docker 0 Oct 19 18:47 /run/docker.sock' (mode, owner, group)"},
+  "tool_cache": {"v": ["CodeQL/2.27.2", "Java_Temurin-Hotspot_jdk/11.0.32-1", "Java_Temurin-Hotspot_jdk/17.0.20-1", "Java_Temurin-Hotspot_jdk/21.0.12-1", "Java_Temurin-Hotspot_jdk/25.0.4-1", "Java_Temurin-Hotspot_jdk/8.0.504-1", "PyPy/3.10.16", "PyPy/3.11.16", "PyPy/3.9.19", "Python/3.10.22", "Python/3.11.17", "Python/3.12.15", "Python/3.13.16", "Python/3.14.8", "Ruby/3.2.11", "Ruby/3.3.12", "Ruby/3.4.11", "Ruby/4.0.7", "agentic-workflow-firewall-js/0.28.51", "agentic-workflow-firewall-js/0.28.52", "agentic-workflow-firewall-js/0.28.53", "copilot-cli/1.0.95", "go/1.24.13", "go/1.25.14", "go/1.26.9", "node/22.23.3", "node/24.21.0"], "src": "capture-list:tool cache folders"},
+  "action_archive_cache": {"v": ["actions_cache", "actions_checkout", "actions_setup-node", "actions_setup-python", "actions_upload-artifact", "github_codeql-action", "github_gh-aw-actions"], "src": "capture-list:ls -la /opt/actionarchivecache"},
+  "path_order": {"v": ["/snap/bin", "/home/runner/.local/bin", "/opt/pipx_bin", "/home/runner/.cargo/bin", "/home/runner/.config/composer/vendor/bin", "/usr/local/.ghcup/bin", "/home/runner/.dotnet/tools", "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin", "/usr/games", "/usr/local/games", "/snap/bin"], "src": "capture-list:process PATH, numbered from 0"},
+  "user": {
+    "id": {"v": "uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),118(docker),999(systemd-journal)", "src": "capture:uid=1001(runner) gid=1001(runner) groups=1001(runner),4(adm),100(users),118(docker),999(systemd-journal)"},
+    "passwordless_sudo": {"v": "yes", "src": "capture:passwordless_sudo=yes"}
+  },
+  "limits": {
+    "nofile": {"v": "65536", "src": "capture:65536"},
+    "stack_kb": {"v": "16384", "src": "capture:16384"}
+  },
+  "sysctl": {
+    "vm.max_map_count": {"v": "262144", "src": "capture:vm.max_map_count = 262144"},
+    "fs.inotify.max_user_watches": {"v": "655360", "src": "capture:fs.inotify.max_user_watches = 655360"},
+    "fs.inotify.max_user_instances": {"v": "1280", "src": "capture:fs.inotify.max_user_instances = 1280"}
+  },
+  "apt_mirrors": {"v": ["azure.archive.ubuntu.com", "archive.ubuntu.com", "security.ubuntu.com"], "src": "readme:Apt mirror list `azure.archive.ubuntu.com` then `archive.ubuntu.com` then `security.ubuntu.com`"},
+  "registries": {
+    "npm": {"v": "https://registry.npmjs.org/", "src": "docs:https://docs.npmjs.com/cli/v10/using-npm/config#registry"},
+    "pip_config": {"v": "", "src": "provisional:no pip configuration file on the image"},
+    "nuget": {"v": "E https://api.nuget.org/v3/index.json", "src": "provisional:nuget.org is the only default source"}
+  }
+}

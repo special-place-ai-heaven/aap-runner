@@ -1,0 +1,27 @@
+{
+  "id": "linux/cmake-ninja.neg-no-ninja",
+  "description": "Negative control: CMake asked for Ninja on a PATH without ninja must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/cmake/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/cmake-ninja.neg-no-ninja",
+      "--generator",
+      "ninja",
+      "--sabotage",
+      "no-ninja"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "CMake Error: CMake was unable to find a build program corresponding to \"Ninja\""
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

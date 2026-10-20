@@ -1,0 +1,25 @@
+{
+  "id": "actions/linux/shell-semantics.neg-dash-as-bash",
+  "description": "Negative control: A 'bash' on PATH that is really dash must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/actions/linux/shell-semantics/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "actions/linux/shell-semantics.neg-dash-as-bash",
+      "--sabotage",
+      "dash-as-bash"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "bash on PATH is not GNU bash: <work>/fakebin/bash"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

@@ -1,0 +1,23 @@
+{
+  "id": "linux/gxx14-cxx23",
+  "description": "g++-14 (beside the default g++) builds and runs C++23 <print> with -std=c++23.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/gcc/cxx23.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/gxx14-cxx23"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ]
+}

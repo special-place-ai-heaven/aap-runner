@@ -1,0 +1,25 @@
+{
+  "id": "linux/java-gradle",
+  "description": "The image's Gradle builds the program offline with core plugins only; the jar runs.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/java/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/java-gradle",
+      "--tool",
+      "gradle"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ]
+}

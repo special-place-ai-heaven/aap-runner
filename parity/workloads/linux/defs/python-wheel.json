@@ -1,0 +1,23 @@
+{
+  "id": "linux/python-wheel",
+  "description": "CPython extension built with gcc, packed as a wheel requiring a second wheel, pip-installed offline, imported.",
+  "expected_exit_codes": [
+    0
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/python-wheel/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/python-wheel"
+    ]
+  ],
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$",
+  "artifact_globs": [
+    "report.txt"
+  ]
+}

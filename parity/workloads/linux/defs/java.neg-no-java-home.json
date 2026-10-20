@@ -1,0 +1,27 @@
+{
+  "id": "linux/java.neg-no-java-home",
+  "description": "Negative control: JAVA_HOME unset must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/java/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/java.neg-no-java-home",
+      "--tool",
+      "jdk",
+      "--sabotage",
+      "no-java-home"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "error: JAVA_HOME is not set"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

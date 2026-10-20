@@ -1,0 +1,25 @@
+{
+  "id": "linux/node-addon.neg-no-node-headers",
+  "description": "Negative control: An empty Node include folder must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/node-addon/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/node-addon.neg-no-node-headers",
+      "--sabotage",
+      "no-node-headers"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "fatal error: node_api.h: No such file or directory"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

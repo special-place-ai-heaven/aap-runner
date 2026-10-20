@@ -1,0 +1,16 @@
+// Core plugins only and no dependencies: the build must work with --offline.
+plugins {
+    id 'application'
+}
+
+application {
+    mainClass = 'parity.Main'
+}
+
+tasks.named('jar') {
+    manifest {
+        attributes('Main-Class': 'parity.Main')
+    }
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}

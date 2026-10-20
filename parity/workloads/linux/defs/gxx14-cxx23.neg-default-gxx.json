@@ -1,0 +1,25 @@
+{
+  "id": "linux/gxx14-cxx23.neg-default-gxx",
+  "description": "Negative control: The default g++ (13) has no C++23 <print> and must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/gcc/cxx23.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/gxx14-cxx23.neg-default-gxx",
+      "--sabotage",
+      "default-gxx"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "fatal error: print: No such file or directory"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}

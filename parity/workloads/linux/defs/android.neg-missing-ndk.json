@@ -1,0 +1,25 @@
+{
+  "id": "linux/android.neg-missing-ndk",
+  "description": "Negative control: ANDROID_NDK_HOME at an NDK version that is not installed must fail.",
+  "expected_exit_codes": [
+    1
+  ],
+  "timeout_s": 300,
+  "commands": [
+    [
+      "bash",
+      "{fixtures}/../../../../parity/workloads/linux/android/run.sh",
+      "--work",
+      "{work}",
+      "--id",
+      "linux/android.neg-missing-ndk",
+      "--sabotage",
+      "missing-ndk"
+    ]
+  ],
+  "expected_first_error": {
+    "contains": "NDK clang not found under ANDROID_NDK_HOME"
+  },
+  "claim_success_regex": "^workload \\S+: all oracle checks met$",
+  "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"
+}
