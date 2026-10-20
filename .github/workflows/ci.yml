@@ -17,6 +17,21 @@ jobs:
       - run: bash distro/bootstrap.sh --self-check
       - run: bash distro/manager.sh --self-check
       - run: bash tests/run.sh
+      - run: python3 -B -I -m unittest discover -s tests/parity/cache/qualification -p "test_*.py"
+      - run: python3 -B -I parity/contracts/validate.py
+      # Pinned: the hosted image's shellcheck is a different version from the 0.11.0 the repo rule names
+      # (it flags SC2218 in tests/manager_reap_test.sh). The sha256 is the GitHub release asset digest
+      # and equals the sha256 of the tarball checked locally.
+      - name: install shellcheck 0.11.0
+        run: |
+          set -euo pipefail
+          url=https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          sha=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          curl --fail --location --proto =https --tlsv1.2 --silent --show-error --output "$RUNNER_TEMP/shellcheck.tar.xz" "$url"
+          echo "$sha  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum --check -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" --version
+      - run: $RUNNER_TEMP/shellcheck-v0.11.0/shellcheck -S warning distro/*.sh tests/*.sh tests/parity/cache/qualification/*.sh parity/cache/qualification/harness/*.sh tools/parity-certify/probe/linux.sh
 
   pester:
     runs-on: windows-latest
@@ -29,7 +44,8 @@ jobs:
           Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
           Import-Module Pester -RequiredVersion 5.7.1
           $c = New-PesterConfiguration
-          $c.Run.Path = @('supervisor', 'tests/parity-work')
+          $c.Run.Path = @('supervisor', 'tests/parity-work', 'tests/capacity', 'tests/broker', 'tests/images/common', 'tests/images/windows', 'tests/parity-certify')
+          $c.Filter.ExcludeTag = @('Network')
           $c.Run.Exit = $true
           Invoke-Pester -Configuration $c
 

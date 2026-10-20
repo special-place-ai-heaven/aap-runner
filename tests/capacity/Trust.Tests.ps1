@@ -143,10 +143,12 @@ Describe 'capacity folder trust' {
         }
     }
 
-    It 'refuses a folder that inherits Authenticated Users modify, as any folder under this scratch tree does' {
+    It 'refuses a folder that grants Authenticated Users modify, whether or not the scratch tree does' {
         $root = Join-Path $TestDrive ('inherit-' + [guid]::NewGuid().ToString('n').Substring(0, 8))
         [void](New-Item -ItemType Directory -Path $root)
-        $r = Initialize-AapAllocator -Root $root -HostInfo (New-CapHostInfo)
+        # Not every scratch tree grants Authenticated Users modify (the hosted runner's does not): grant it here, by SID.
+        Invoke-CapIcacls @($root, '/grant', '*S-1-5-11:(OI)(CI)M')
+        $r =Initialize-AapAllocator -Root $root -HostInfo (New-CapHostInfo)
         $r.Reason | Should -Be 'untrusted_folder'
         Test-Path -LiteralPath (Join-Path $root 'allocator.json') | Should -BeFalse
     }

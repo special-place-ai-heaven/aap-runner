@@ -575,7 +575,7 @@ printf 'def broken: ;;;\n' > "${T}/home/.jq"
 hl=$(new_lease)
 run_broker "$(lease_req "${hl}" 5 1 "$(new_res)")" HOME="${T}/home"
 expect "lease with a hostile HOME" issued ok
-rm -rf "${T}/home"
+rm -rf "${T:?}/home"
 run_broker "$(small_req release_request "${hl}")"
 expect "release of the hostile-HOME lease" deregistered ok
 [[ "$(calls 'WITHOUT -q')" -eq 0 ]] || fail "a curl call did not start with -q"

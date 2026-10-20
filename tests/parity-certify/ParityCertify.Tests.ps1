@@ -907,7 +907,8 @@ Describe 'Windows probe: this host, safe mode, writes only under tmp' {
         $after = @(Get-ChildItem $T -Recurse -File | ForEach-Object { $_.FullName })
         $new = @($after | Where-Object { $Before -notcontains $_ })
         @($new).Count | Should -Be 1
-        $new[0] | Should -Be $POut
+        # Get-ChildItem reports long names where $env:TEMP may be 8.3 (C:\Users\RUNNER~1), so expand the expected side too
+        $new[0] | Should -Be (Get-Item -LiteralPath $POut).FullName
     }
     It 'never executes a bash that resolves to the WSL launcher or WindowsApps' -Skip:(-not (($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows)) {
         $fake = Join-Path $T 'fakeapps\WindowsApps'
