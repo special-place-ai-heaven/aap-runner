@@ -13,6 +13,8 @@ several values or one comma-separated string. OutDir defaults to $env:PARITY_OUT
 Build trees under <OutDir>\work are pruned to their report.txt after the run unless -KeepWork.
 Runs under pwsh or Windows PowerShell 5.1; the workloads themselves always run in powershell.exe (5.1).
 
+summary.json also records the content manifest of the workloads, oracle and harness (tree_manifest.py).
+
 .EXAMPLE
 pwsh -NoProfile -File parity\workloads\windows\Invoke-Workloads.ps1 -Name windows/msvc,windows/rust-plain -OutDir C:\t\out
 #>
@@ -51,6 +53,7 @@ if ($Name.Count) {
     foreach ($p in $pats) { if (-not ($all | Where-Object { & $match $_.Id $p })) { throw "no workload matches '$p' (use -List)" } }
     $sel = @($all | Where-Object { $id = $_.Id; [bool]($pats | Where-Object { & $match $id $_ }) })
 }
+if (-not $sel.Count) { throw 'no workload selected (use -List)' }
 
 if (-not $OutDir) {
     $OutDir = if ($env:PARITY_OUT) { $env:PARITY_OUT } elseif ($env:RUNNER_TEMP) { Join-Path $env:RUNNER_TEMP 'parity-out' } else { Join-Path $env:TEMP 'parity-out' }
@@ -65,6 +68,9 @@ foreach ($w in $sel) { Copy-Item -LiteralPath $w.File -Destination (Join-Path $O
 
 $py = Get-Command python.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $py) { throw 'python.exe is required on PATH to run tools/parity-certify' }
+# content hash of the workloads, oracle and harness this run used (check_hosted_run.py compares stored evidence to it)
+$tree = (& $py.Source -B -I (Join-Path $PSScriptRoot 'tree_manifest.py') $repo) -join "`n" | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) { throw 'tree_manifest.py failed' }
 $env:PARITY_PROFILE = $ProfileName
 $env:PARITY_OBS_DIR = Join-Path $OutDir 'observed'
 $results = Join-Path $OutDir 'results.json'
@@ -98,16 +104,16 @@ foreach ($r in (Get-Content -Raw -LiteralPath $results | ConvertFrom-Json).resul
     }
     Write-Json $doc (Join-Path $OutDir ('workloads\' + ($r.id -replace '/', '__') + '.json'))
     # keep the hashed artifacts (report.txt) next to the record; the build tree itself is not evidence
-    if ($r.command -match ' -Work (.+?) -Id ' -and @($r.artifacts).Count) {
+    if ($obs -and $obs.PSObject.Properties['work'] -and @($r.artifacts).Count) {
         $dst = Join-Path $OutDir ('artifacts\' + ($r.id -replace '/', '__'))
         New-Item -ItemType Directory -Force -Path $dst | Out-Null
-        foreach ($a in $r.artifacts) { Copy-Item -LiteralPath (Join-Path $Matches[1] $a.name) -Destination $dst }
+        foreach ($a in $r.artifacts) { Copy-Item -LiteralPath (Join-Path $obs.work $a.name) -Destination $dst }
     }
     $rows +=[pscustomobject]@{ id = $r.id; status = $r.status; exit_code = $r.exit_code; duration_s = $r.duration_s }
 }
 if (-not $KeepWork) { Remove-Item -LiteralPath (Join-Path $OutDir 'work') -Recurse -Force }  # created by this run in an empty OutDir
 $pass = @($rows | Where-Object { $_.status -eq 'pass' }).Count
-Write-Json ([ordered]@{ schema = 1; kind = 'p17-workload-summary'; profile = $ProfileName; image = $image; source = $source; pass = $pass; total = $rows.Count; workloads = $rows }) (Join-Path $OutDir 'summary.json')
+Write-Json ([ordered]@{ schema = 1; kind = 'p17-workload-summary'; profile = $ProfileName; image = $image; source = $source; tree = $tree; pass = $pass; total = $rows.Count; workloads = $rows }) (Join-Path $OutDir 'summary.json')
 $rows | Format-Table -AutoSize | Out-String -Width 200 | Write-Host
 Write-Host ("{0}/{1} workloads pass; results in {2}" -f $pass, $rows.Count, $OutDir)
 if ($code -ne 0 -or $pass -ne $rows.Count -or $rows.Count -ne $sel.Count) { exit 1 }

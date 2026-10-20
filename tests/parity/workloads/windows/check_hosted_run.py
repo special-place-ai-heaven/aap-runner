@@ -1,7 +1,9 @@
-"""Checks that every P17 definition is the one a stored hosted run validated.
+"""Checks that the P17 workloads are the ones a stored hosted run validated.
 
 usage: python -B -I check_hosted_run.py <repo>
-The run is the oracle's hosted_validation.run; its results.json is under oracle/hosted-runs/<run>/.
+The run is the oracle's hosted_validation.run; its summary.json and results.json are under oracle/hosted-runs/<run>/.
+Compares every definition (hash, report hashes, first error) and the content manifest of the workloads, oracle and
+harness (parity/workloads/windows/tree_manifest.py) with what that run recorded.
 """
 import json
 import pathlib
@@ -9,7 +11,9 @@ import sys
 
 repo = pathlib.Path(sys.argv[1])
 sys.path.insert(0, str(repo / "tools" / "parity-certify"))
+sys.path.insert(0, str(repo / "parity" / "workloads" / "windows"))
 import certify  # noqa: E402
+import tree_manifest  # noqa: E402
 
 win = repo / "parity" / "workloads" / "windows"
 run = json.loads((win / "oracle" / "windows-2025-vs2026.json").read_text(encoding="utf-8"))["hosted_validation"]["run"]
@@ -19,6 +23,18 @@ defs = certify.load_defs(str(win / "defs")) + certify.load_defs(str(repo / "pari
 bad = []
 if summary["source"]["GITHUB_RUN_ID"] != run or summary["pass"] != summary["total"] or summary["total"] != len(defs):
     bad.append(f"summary.json: run {summary['source']['GITHUB_RUN_ID']} pass {summary['pass']}/{summary['total']}, {len(defs)} definitions")
+tree = summary.get("tree")
+if not tree:
+    bad.append(f"summary.json of run {run} records no tree manifest")
+else:
+    now = tree_manifest.manifest(repo)["files"]
+    for path in sorted(set(now) | set(tree["files"])):
+        if path not in tree["files"]:
+            bad.append(f"added since run {run}: {path}")
+        elif path not in now:
+            bad.append(f"removed since run {run}: {path}")
+        elif now[path] != tree["files"][path]:
+            bad.append(f"changed since run {run}: {path}")
 if {d["id"] for d in defs} != set(results):
     bad.append(f"definition ids differ from the run: {sorted({d['id'] for d in defs} ^ set(results))}")
 for d in defs:

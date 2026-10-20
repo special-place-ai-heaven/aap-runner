@@ -3,7 +3,7 @@
 #   -Tool wix: WiX 3 candle/light from %WIX%\bin build an x64 MSI (ICE validation on); the MSI tables are read back.
 #   -Tool innosetup: ISCC from the Inno Setup install location builds a setup.exe; its version resource is read back.
 #   -Tool 7zip: 7z.exe from the 7-Zip install location creates and lists an archive.
-# Sabotage hide-tool removes the locator (WIX unset, install location not found): a missing tool must fail.
+# Sabotage hide-tool makes the locator miss (WIX unset, an install record name nothing matches): a missing tool must fail.
 param(
     [Parameter(Mandatory)][string]$Work, [Parameter(Mandatory)][string]$Id, [string]$Sabotage = '',
     [Parameter(Mandatory)][ValidateSet('wix', 'innosetup', '7zip')][string]$Tool
@@ -42,7 +42,7 @@ Invoke-Workload -Id $Id -Work $Work -Sabotage $Sabotage -Body {
             Add-Fact 'msi.ProductName' (Get-MsiProperty $msi 'ProductName') 'AAP Parity Fixture'
         }
         'innosetup' {
-            $u = if ($hide) { $null } else { Find-Uninstall 'Inno Setup*' }
+            $u = Find-Uninstall $(if ($hide) { 'Inno Setup-absent*' } else { 'Inno Setup*' })
             if (-not $u) { throw 'Inno Setup install location not found' }
             Add-Observation 'innosetup.DisplayVersion' $u.DisplayVersion
             Invoke-Tool (Join-Path $u.InstallLocation 'ISCC.exe') @('/Q', 'setup.iss') | Out-Null
@@ -51,7 +51,7 @@ Invoke-Workload -Id $Id -Work $Work -Sabotage $Sabotage -Body {
             $report += "setup.ProductName=$("$($vi.ProductName)".Trim())", "setup.ProductVersion=$("$($vi.ProductVersion)".Trim())"
         }
         '7zip' {
-            $u = if ($hide) { $null } else { Find-Uninstall '7-Zip*' }
+            $u = Find-Uninstall $(if ($hide) { '7-Zip-absent*' } else { '7-Zip*' })
             if (-not $u) { throw '7-Zip install location not found' }
             Add-Observation '7zip.DisplayVersion' $u.DisplayVersion
             $7z = Join-Path $u.InstallLocation '7z.exe'

@@ -23,7 +23,7 @@
     ]
   ],
   "expected_first_error": {
-    "contains": "oracle version.llvm expected"
+    "contains": "oracle version.llvm expected '20.1.8' observed ''"
   },
   "claim_success_regex": "^workload \\S+: all oracle checks met$",
   "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"

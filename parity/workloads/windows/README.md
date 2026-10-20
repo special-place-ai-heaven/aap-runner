@@ -37,11 +37,11 @@ Output folder:
 | `workloads/<id>.json` | per workload: definition oracle, observed facts, exit code, first error, artifacts with sha256, duration, image identity, source sha |
 | `observed/` | the facts each workload checked (expected, observed, ok) |
 | `artifacts/<id>/` | the hashed artifacts (`report.txt`) |
-| `summary.json` | pass count and one row per workload |
+| `summary.json` | pass count, one row per workload, and `tree`: the content manifest of the workloads, oracle and harness that ran (`tree_manifest.py`) |
 | `work/` | build trees; removed after the run unless `-KeepWork` |
 
-Workloads write only inside the output folder: TEMP/TMP, `CARGO_HOME`, `NUGET_PACKAGES`, `DOTNET_CLI_HOME` and pip
-targets point into each workload's work folder. Nothing is downloaded: cargo runs `--offline`, NuGet has no package
+Workloads redirect the caches they control (TEMP/TMP, `CARGO_HOME`, `NUGET_PACKAGES`, `DOTNET_CLI_HOME`, pip target)
+into each workload's work folder. Nothing is downloaded: cargo runs `--offline`, NuGet has no package
 source, pip runs `--no-index`, node-gyp and Maven/Gradle are not used. WSL is never started (a `bash` that resolves
 to `System32\bash.exe` is refused, not run) and Docker is queried only inside an Actions job.
 
@@ -53,6 +53,7 @@ to `System32\bash.exe` is refused, not run) and Docker is queried only inside an
 | `Workload.psm1` | shared helpers: developer environment (vswhere + VsDevCmd), tool runner with path-normalized logs, PE/zip/MSI inspection, oracle facts, sabotage |
 | `oracle/windows-2025-vs2026.json` | what a correct environment shows; every value cites its source (`inventory:`, `capture:`, `hosted:<run>/<file>:`, `readme:`, `docs:`, `derived:`) and the tests check the citations |
 | `defs/*.json`, `../actions/windows/defs/*.json` | P05 workload definitions (`fixture_id` in evidence is `workload/<id>`) |
+| `tree_manifest.py` | sha256 of every file that decides a result (this tree, `../actions/windows`, `certify.py`; not `oracle/hosted-runs/`, READMEs, or the oracle's `hosted_validation` key) |
 | `<workload>/run.ps1` + sources | one folder per workload |
 | `../actions/windows/` | Actions behaviour: shell semantics, runner environment, file-command composite action |
 
@@ -68,17 +69,17 @@ harness only offers `{fixtures}` (its own fixture folder), so the path climbs to
 | `windows/msvc-toolset-14.44`, `-14.29` | side-by-side toolsets from the inventory via `-vcvars_ver` | `-vcvars_ver=14.99` (`Toolset directory ... not found`) |
 | `windows/clang-cl` | LLVM clang-cl + lld-link from PATH without a developer environment | INCLUDE = empty folder (`'windows.h' file not found`) |
 | `windows/cmake-ninja`, `windows/cmake-vs` | configure/build/ctest/cpack ZIP with Ninja+cl and with the VS 18 2026 generator | LIB without SDK (`LNK1104 kernel32.lib`); WindowsTargetPlatformVersion 10.0.99999.0 (`MSB8036`) |
-| `windows/rust-plain`, `windows/rust-native` | cargo test/build/run offline; plain env must not use Git's `link.exe`; build.rs C via cl/lib | fake dev env leaving Git's link.exe (`linking with link.exe failed`); LIB without SDK |
+| `windows/rust-plain`, `windows/rust-native` | cargo test/build/run offline; plain env must not use Git's `link.exe`; build.rs C via cl/lib | fake dev env leaving Git's link.exe, checked first on PATH (`linking with link.exe failed: exit code: 1`); LIB without SDK |
 | `windows/dotnet-net8`, `-net10` | SDK band via global.json; build, run, publish apphost, pack nupkg, no package source | net7.0 targeting pack (`NU1101 ... Microsoft.NETCore.App.Ref`) |
 | `windows/msbuild-netfx` | VS MSBuild (vswhere) builds .NET Framework 4.7.2 | v4.0 (`MSB3644`) |
 | `windows/node-addon` | Node-API addon with MSVC, loaded by node.exe | LIB without SDK |
 | `windows/python-wheel` | CPython extension with MSVC, wheel, offline pip install, import | no Python libs (`LNK1104 python312.lib`) |
 | `windows/java` | javac/jar/java through `JAVA_HOME` | JAVA_HOME = empty folder |
-| `windows/package-wix`, `-innosetup`, `-7zip` | MSI (WiX 3, ICE validation), Inno setup.exe, 7z archive, read back | locator hidden (tool missing) |
-| `windows/toolchain-versions` | resolved versions equal the inventory (LLVM, CMake, Ninja, Rust, Node/npm, Python/pip, Java, Go, pwsh, Windows PowerShell, Git, bash, WiX, Inno, 7-Zip, vswhere, .NET SDK set) | LLVM removed from PATH |
+| `windows/package-wix`, `-innosetup`, `-7zip` | MSI (WiX 3, ICE validation), Inno setup.exe, 7z archive, read back | WIX unset, or an install-record lookup that matches nothing (tool missing) |
+| `windows/toolchain-versions` | resolved versions equal the inventory (LLVM, CMake, Ninja, Rust, Node/npm, Python/pip, Java, Go, pwsh, Windows PowerShell, Git, bash, WiX, Inno, 7-Zip, vswhere, .NET SDK set) | LLVM removed from PATH (`oracle version.llvm expected '20.1.8' observed ''`) |
 | `actions/windows/shell-semantics` | runner command templates for pwsh/powershell/cmd/bash/python, exit codes, shell resolution, `C:\shells` | Git removed from PATH: bash is the WSL launcher (`not a build shell`) |
-| `actions/windows/runner-env` | CI/GITHUB_*/RUNNER_* and image variables, file-command files, tool cache `<tool>\<ver>\<arch>` + `.complete`, services, Windows-only Docker, admin, registry | empty tool cache |
-| `actions/windows/file-commands` | marker from the composite action: GITHUB_ENV (incl. multiline), GITHUB_PATH, GITHUB_OUTPUT, step summary, working-directory | marker never written |
+| `actions/windows/runner-env` | CI/GITHUB_*/RUNNER_* and image variables, file-command files, tool cache `<tool>\<ver>\<arch>` + `.complete`, services, Windows-only Docker, admin, registry | tool cache layout looked up in an empty folder (`oracle tool_cache.CodeQL/2.27.1 expected 'True' observed 'False'`) |
+| `actions/windows/file-commands` | marker from the composite action: GITHUB_ENV (incl. multiline), GITHUB_PATH, GITHUB_OUTPUT, step summary, working-directory | harness check, not an Actions behaviour: a marker that was never written must fail the workload |
 
 Linux containers are not assumed on hosted Windows: `runner-env` requires Docker's server OS to be `windows`.
 
@@ -96,18 +97,18 @@ The log claim is each workload's own verdict line (`workload <id>: all oracle ch
 
 ## Validation status and gaps
 
-- Hosted-validated: all 47 definitions (24 positives, 23 negative controls) pass on `windows-2025-vs2026`
-  20261007.264.1 in run 39352919500 (head 6829bb4). `oracle/hosted-runs/39352919500/results.json` pins each
-  definition's hash, report hash and first error, and the tests fail when a definition drifts from it (rerun
-  `parity-workloads.yml` and replace that evidence, plus `hosted_validation.run` in the oracle, after changing one).
-  `actions/windows/runner-env` and `actions/windows/file-commands` first ran in full there; the oracle values that only
-  docs or the README backed (CI, GITHUB_ACTIONS, LongPathsEnabled, AllowDevelopmentWithoutDevLicense, Docker's server
-  OS) now cite that run.
-- Every negative fails on its sabotage, not incidentally: its expected text is the first error line of its log, its
-  positive twin passed in the same run, and its observed facts show no other failed check (or only the ones the
-  sabotage implies: the bogus SDK's or toolset's developer-environment values, the redirected tool cache). `rust-plain.neg-git-link`
-  has the least specific first error (`linking with link.exe failed`); its log names the cause next to it
-  (`link.exe on PATH is C:\Program Files\Git\usr\bin\link.exe`, `/usr/bin/link: extra operand`).
+- Hosted run 39352919500 (image 20261007.264.1, head 6829bb4): 47/47. `actions/windows/runner-env` and
+  `actions/windows/file-commands` first ran in full there; the oracle values that only docs or the README backed (CI,
+  GITHUB_ACTIONS, LongPathsEnabled, AllowDevelopmentWithoutDevLicense, Docker's server OS) cite that run. The
+  independent review then tightened four negatives so each can fail only on its own sabotage: `rust-plain.neg-git-link`
+  checks that Git's link.exe is first on PATH before cargo runs; `runner-env.neg-no-tool-cache` leaves the variables
+  alone and looks for the layout in an empty folder; the Inno Setup and 7-Zip negatives run the real install-record
+  lookup with a name nothing matches; `toolchain-versions.neg-no-llvm-on-path` expects the full oracle line. Those
+  definitions changed, so run 39352919500 no longer validates this tree.
+- `tests/parity/workloads/windows/check_hosted_run.py` compares the tree with the run named in the oracle's
+  `hosted_validation.run`: every definition hash, report hash and first error in its `results.json`, and the content
+  manifest in its `summary.json` (added, removed or changed files are listed). After changing anything the manifest
+  covers, rerun `parity-workloads.yml` and replace that evidence.
 - Hosted iteration 1 (run 39351642738, image 20261007.264.1, head c2ba84e): 39/47. Fixed after it: two oracle values
   copied wrongly from the capture (ImageOS, ImageVersion), the default JDK's version string (the inventory lists the
   tool-cache folder 17.0.20+101, the JDK reports 17.0.20.1+1), CTest 4.x's summary line, the .NET negatives' first
@@ -120,4 +121,6 @@ The log claim is each workload's own verdict line (`workload <id>: all oracle ch
   say. Observed on the hosted image and the owner's host; the oracle records 1.
 - Not covered here: node-gyp (downloads Node headers), Maven/Gradle builds (download plugins), setup-* actions
   installing uncached versions, cache/artifact actions and network acquisition (P03/P18/P22), the default `shell:`
-  when a step names none, Windows service workloads beyond state checks, and candidate execution (P22/P24).
+  when a step names none, Windows service workloads beyond state checks, and candidate execution (P22/P24). On a
+  candidate without Git's bash first on PATH, the composite action's `shell: bash` step could resolve
+  `System32\bash.exe` (the WSL launcher); P22/P24 must check that before running it.

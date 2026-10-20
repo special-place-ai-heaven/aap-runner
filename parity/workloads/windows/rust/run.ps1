@@ -26,7 +26,9 @@ Invoke-Workload -Id $Id -Work $Work -Sabotage $Sabotage -Body {
         $env:VCINSTALLDIR = Join-Path $Work 'no-vs\VC\'
         $env:VSINSTALLDIR = Join-Path $Work 'no-vs\'
         $env:VSCMD_ARG_TGT_ARCH = 'x64'
-        Write-Line ('sabotage git-link applied; link.exe on PATH is ' + (Resolve-Exe 'link.exe'))
+        Write-Line 'sabotage git-link applied'
+        # the sabotage only bites when Git's link.exe comes first on PATH; otherwise this check is the first error
+        Add-Fact 'bare_path.link.exe' (Resolve-Exe 'link.exe') (Get-Oracle 'bare_path/link.exe')
     }
     $name = "parity_$Crate"
     Copy-Source (Join-Path $PSScriptRoot $Crate) 'crate'

@@ -1,18 +1,17 @@
 # actions/windows/runner-env: what an Actions job process on this profile sees: default variables (CI, GITHUB_*,
 # RUNNER_*), the image's machine variables, file-command files, the tool cache layout the setup-* actions rely on
 # (<tool>\<version>\<arch> plus <arch>.complete), service states, Windows-only Docker, privileges and system settings.
-# Runs only inside an Actions job. Sabotage no-tool-cache points RUNNER_TOOL_CACHE and AGENT_TOOLSDIRECTORY at an empty
-# folder.
+# Runs only inside an Actions job. Sabotage no-tool-cache looks for the tool cache layout in an empty folder instead of
+# RUNNER_TOOL_CACHE (the variables themselves are left alone).
 param([Parameter(Mandatory)][string]$Work, [Parameter(Mandatory)][string]$Id, [string]$Sabotage = '')
 Import-Module (Join-Path $PSScriptRoot '..\..\..\windows\Workload.psm1') -Force
 
 Invoke-Workload -Id $Id -Work $Work -Sabotage $Sabotage -Body {
     if ($env:GITHUB_ACTIONS -ne 'true') { throw 'not inside a GitHub Actions job (GITHUB_ACTIONS is not true)' }
+    $root = $env:RUNNER_TOOL_CACHE
     if ($Sabotage -eq 'no-tool-cache') {
-        $empty = Join-Path $Work 'empty-tool-cache'
-        New-Item -ItemType Directory -Force -Path $empty | Out-Null
-        $env:RUNNER_TOOL_CACHE = $empty
-        $env:AGENT_TOOLSDIRECTORY = $empty
+        $root = Join-Path $Work 'empty-tool-cache'
+        New-Item -ItemType Directory -Force -Path $root | Out-Null
         Write-Line 'sabotage no-tool-cache applied'
     }
     else {
@@ -55,7 +54,7 @@ Invoke-Workload -Id $Id -Work $Work -Sabotage $Sabotage -Body {
     foreach ($e in (Get-Oracle 'tool_cache')) {
         $tool, $ver = $e.Split('/')
         $a = if ($arch.PSObject.Properties[$tool]) { $arch.$tool } else { 'x64' }
-        $dir = "$env:RUNNER_TOOL_CACHE\$tool\$ver"
+        $dir = "$root\$tool\$ver"
         Add-Fact "tool_cache.$e" ((Test-Path -LiteralPath (Join-Path $dir $a) -PathType Container) -and (Test-Path -LiteralPath (Join-Path $dir "$a.complete"))) $true
     }
 }

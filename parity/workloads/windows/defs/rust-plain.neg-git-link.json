@@ -4,7 +4,7 @@
   "expected_exit_codes": [
     1
   ],
-  "timeout_s": 900,
+  "timeout_s": 300,
   "commands": [
     [
       "powershell.exe",
@@ -25,7 +25,7 @@
     ]
   ],
   "expected_first_error": {
-    "contains": "linking with `link.exe` failed"
+    "contains": "linking with `link.exe` failed: exit code: 1"
   },
   "claim_success_regex": "^workload \\S+: all oracle checks met$",
   "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"

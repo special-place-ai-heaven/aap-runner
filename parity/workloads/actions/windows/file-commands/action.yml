@@ -40,9 +40,10 @@ runs:
       env:
         PARITY_STEP_OUTPUT: ${{ steps.out.outputs.value }}
       run: |
-        # each step has its own GITHUB_STEP_SUMMARY file; the earlier step's append failing would have failed that step
+        # each step has its own GITHUB_STEP_SUMMARY file: this step's append must read back (the earlier step's append
+        # failing would have failed that step)
         "aap parity file commands verified" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
-        $summaryOk = $?
+        $summaryOk = (Get-Content -Raw -LiteralPath $env:GITHUB_STEP_SUMMARY) -match 'aap parity file commands verified'
         $checks = [ordered]@{
           env_pwsh      = $env:PARITY_FROM_PWSH -eq 'pwsh-ok'
           env_cmd       = $env:PARITY_FROM_CMD -eq 'cmd-ok'
@@ -55,5 +56,5 @@ runs:
         }
         $doc = [ordered]@{ run_id = $env:GITHUB_RUN_ID; run_attempt = $env:GITHUB_RUN_ATTEMPT; checks = $checks }
         $doc | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'aap-parity-file-commands.json')
+        # no failing exit here: the workload actions/windows/file-commands judges the marker
         $checks.GetEnumerator() | ForEach-Object { '{0,-14} {1}' -f $_.Key, $_.Value }
-        if ($checks.Values -contains $false) { Write-Error 'aap parity file commands: a check failed' }

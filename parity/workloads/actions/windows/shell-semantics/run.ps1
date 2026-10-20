@@ -19,7 +19,7 @@ function Invoke-Template([string]$File, [string]$Arguments) {
     $err = $p.StandardError.ReadToEndAsync()
     $out = $p.StandardOutput.ReadToEnd()
     $p.WaitForExit()
-    foreach ($l in (($out + $err.Result) -split "`r?`n" | Where-Object { $_ })) { Write-Line ('  | ' + (Format-Norm $l)) }
+    foreach ($l in (($out + $err.Result) -split "`r?`n" | Where-Object { $_ })) { Write-Line ('  | ' + (Format-Norm $l)) }  # Format-Norm drops ANSI colours
     $p.ExitCode
 }
 

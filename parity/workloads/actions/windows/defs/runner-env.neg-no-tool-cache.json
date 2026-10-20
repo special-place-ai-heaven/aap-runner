@@ -23,7 +23,7 @@
     ]
   ],
   "expected_first_error": {
-    "contains": "oracle env.RUNNER_TOOL_CACHE expected"
+    "contains": "oracle tool_cache.CodeQL/2.27.1 expected 'True' observed 'False'"
   },
   "claim_success_regex": "^workload \\S+: all oracle checks met$",
   "claim_failure_regex": "^workload \\S+: \\d+ oracle check\\(s\\) not met$"

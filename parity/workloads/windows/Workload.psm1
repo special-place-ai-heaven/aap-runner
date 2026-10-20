@@ -11,6 +11,7 @@ $script:S = $null
 function Write-Line([string]$Text) { [Console]::Out.WriteLine($Text) }
 
 function Format-Norm([string]$Text) {
+    $Text = [regex]::Replace($Text, '\x1b\[[0-9;]*m', '')  # ANSI colours (pwsh error records)
     if ($null -eq $script:S) { return $Text }
     foreach ($p in @(@($script:S.Work, '<work>'), @($script:S.Repo, '<repo>'))) {
         foreach ($form in @($p[0], $p[0].Replace('\', '/'))) {
@@ -211,7 +212,7 @@ function Invoke-Workload {
     finally {
         $dir = if ($env:PARITY_OBS_DIR) { $env:PARITY_OBS_DIR } else { $work }
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
-        $doc = [ordered]@{ id = $Id; profile = $profileName; sabotage = $Sabotage; failures = @($script:S.Failures); facts = $script:S.Obs }
+        $doc = [ordered]@{ id = $Id; profile = $profileName; sabotage = $Sabotage; work = $work; failures = @($script:S.Failures); facts = $script:S.Obs }
         Write-Utf8 (Join-Path $dir (($Id -replace '/', '__') + '.observed.json')) ($doc | ConvertTo-Json -Depth 8)
     }
     exit $code

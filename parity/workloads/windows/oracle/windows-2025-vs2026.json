@@ -178,10 +178,6 @@
       "v": "3.1.7",
       "src": "inventory:Tools|VSWhere"
     },
-    "docker": {
-      "v": "29.7.2",
-      "src": "inventory:Tools|Docker"
-    },
     "dotnet_sdks": {
       "v": [
         "8.0.131",

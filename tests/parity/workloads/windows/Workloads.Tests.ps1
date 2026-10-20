@@ -81,7 +81,7 @@ Describe 'workload definitions' {
         }
     }
 
-    It 'are the definitions the stored hosted run validated (def hash, report hashes, first errors)' {
+    It 'are the definitions the stored hosted run validated (def hash, report hashes, first errors, tree manifest)' {
         $r = Run $Py @('-B', '-I', (Join-Path $PSScriptRoot 'check_hosted_run.py'), $Repo)
         $r.Code | Should -Be 0 -Because $r.Out
     }
@@ -134,7 +134,9 @@ Describe 'oracle citations' {
             $es.Count | Should -BeGreaterThan 0 -Because $l.Src
             $texts = @($es | ForEach-Object { Texts $_ })
             foreach ($v in @($l.V)) {
-                $hit = @($texts | Where-Object { "$_" -eq $v -or "$_".Contains("$v".TrimStart('v')) })
+                # exact, except the .NET Framework targeting pack: MSBuild's v4.7.2 is the 4.7.2 in the component name
+                $hit = if ($l.Key -eq 'netfx_targeting_pack') { @($texts | Where-Object { "$_".Contains("$v".TrimStart('v')) }) }
+                       else { @($texts | Where-Object { "$_" -eq "$v" }) }
                 $hit.Count | Should -BeGreaterThan 0 -Because "$($l.Key)=$v must appear under $($l.Src)"
             }
         }
@@ -232,6 +234,12 @@ Describe 'Invoke-Workloads entrypoint' {
         $r.Out | Should -Match "no workload matches 'windows/no-such-workload'"
     }
 
+    It 'refuses an empty selection' {
+        $r = RunEntry @('-Name', ',', '-OutDir', (Join-Path $T 'empty-sel'))
+        $r.Code | Should -Not -Be 0
+        $r.Out | Should -Match 'no workload selected'
+    }
+
     It 'refuses a non-empty output folder' {
         $d = Join-Path $T 'busy'
         New-Item -ItemType Directory -Force -Path $d | Out-Null
@@ -255,6 +263,10 @@ Describe 'Invoke-Workloads entrypoint' {
         $rec.oracle.expected_exit_codes | Should -Be @(1)
         (Get-Content -Raw -LiteralPath (Join-Path $out 'summary.json') | ConvertFrom-Json).pass | Should -Be 1
         Test-Path -LiteralPath (Join-Path $out 'results.json') | Should -BeTrue
+        $tree = (Get-Content -Raw -LiteralPath (Join-Path $out 'summary.json') | ConvertFrom-Json).tree
+        $now = (Run $Py @('-B', '-I', (Join-Path $Win 'tree_manifest.py'), $Repo)).Out | ConvertFrom-Json
+        $tree.sha256 | Should -Be $now.sha256
+        @($tree.files.PSObject.Properties).Count | Should -BeGreaterThan 40
     }
 }
 
@@ -264,7 +276,7 @@ Describe 'script hygiene' {
         $files.Count | Should -BeGreaterThan 10
         foreach ($f in $files) {
             $s = Get-Content -Raw -LiteralPath $f.FullName
-            $s | Should -Not -Match '(?i)invoke-expression|\biex\b|-encodedcommand|frombase64string|securestring|tostringbstr|\[char\]\s*\d|start-process|wsl\.exe|\bwsl\s+-' -Because $f.FullName
+            $s | Should -Not -Match '(?i)invoke-expression|\biex\b|-encodedcommand|frombase64string|securestring|tostringbstr|\[char\]\s*\d|start-process|wsl\.exe|\bwsl\s+-|\x1b' -Because $f.FullName
             [Text.Encoding]::UTF8.GetByteCount($s) | Should -Be $s.Length -Because "$($f.FullName) must be ASCII for Windows PowerShell 5.1"
         }
     }
