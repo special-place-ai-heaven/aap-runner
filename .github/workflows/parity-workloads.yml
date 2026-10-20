@@ -1,0 +1,164 @@
+name: parity-workloads
+# Run a parity probe or workload entrypoint from any branch/SHA of this repo on GitHub-HOSTED images, so workload
+# authors can validate their oracles against the real hosted environment. Manual dispatch only; hosted runners only.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or SHA of this repository to check out
+        type: string
+        required: true
+      profile:
+        description: Hosted image(s) to run on
+        type: choice
+        options: [windows-2025-vs2026, ubuntu-24.04, both]
+        default: both
+      entry:
+        description: >-
+          Entrypoint relative to the repo root (forward slashes; PowerShell .ps1 on windows, bash script on ubuntu).
+          Empty runs the P05 job probe if the ref has it, plus the image identity.
+        type: string
+        default: ''
+      args:
+        description: Arguments passed to the entrypoint (space separated; only A-Za-z0-9._,:=/ - and at most 200 chars)
+        type: string
+        default: ''
+permissions: {}
+jobs:
+  windows:
+    if: inputs.profile == 'windows-2025-vs2026' || inputs.profile == 'both'
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      ENTRY: ${{ inputs.entry }}
+      ARGS: ${{ inputs.args }}
+    steps:
+      - name: Validate inputs (values arrive through env only)
+        run: |
+          if ($env:ENTRY -ne '' -and ($env:ENTRY -notmatch '^[A-Za-z0-9._/-]+\z' -or $env:ENTRY -match '\.\.' -or $env:ENTRY.StartsWith('/'))) {
+            throw 'entry rejected: must be a relative path of [A-Za-z0-9._/-] with no .. segment'
+          }
+          if ($env:ARGS -notmatch '^[A-Za-z0-9._,:=/ -]{0,200}\z') { throw 'args rejected: must match ^[A-Za-z0-9._,:=/ -]{0,200}$' }
+
+      - name: Image identity (same data the Set up job > Runner Image group prints)
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\parity-logs", "$env:RUNNER_TEMP\parity-out" | Out-Null
+          & {
+            Get-Content -Raw C:\imagedata.json
+            "ImageOS=$env:ImageOS"
+            "ImageVersion=$env:ImageVersion"
+            "RUNNER_OS=$env:RUNNER_OS RUNNER_ARCH=$env:RUNNER_ARCH RUNNER_ENVIRONMENT=$env:RUNNER_ENVIRONMENT"
+            [System.Environment]::OSVersion.VersionString
+            (Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber | Format-List | Out-String)
+          } 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\parity-logs\identity.log"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Run entry
+        timeout-minutes: 60
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'parity-out'
+          $env:PARITY_OUT = $out
+          if ($env:ENTRY -ne '') {
+            $script = Join-Path $env:GITHUB_WORKSPACE $env:ENTRY
+            $argv = @($env:ARGS -split ' +' | Where-Object { $_ -ne '' })
+          } else {
+            $script = Join-Path $env:GITHUB_WORKSPACE 'tools/parity-certify/probe/windows.ps1'
+            $argv = @('-OutFile', (Join-Path $out 'job-inventory.json'))
+          }
+          if (-not (Test-Path -LiteralPath $script -PathType Leaf)) {
+            if ($env:ENTRY -ne '') { throw "entry not found: $env:ENTRY" }
+            'no P05 probe in this ref; nothing to run beyond the image identity'
+            exit 0
+          }
+          & pwsh -NoProfile -File $script @argv 2>&1 | Tee-Object -FilePath (Join-Path $env:RUNNER_TEMP 'parity-logs\entry.log')
+          exit $LASTEXITCODE
+
+      - name: Upload logs and parity-out
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parity-workloads-windows-2025-vs2026-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/parity-logs
+            ${{ runner.temp }}/parity-out
+          retention-days: 14
+          if-no-files-found: warn
+
+  ubuntu:
+    if: inputs.profile == 'ubuntu-24.04' || inputs.profile == 'both'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      ENTRY: ${{ inputs.entry }}
+      ARGS: ${{ inputs.args }}
+    steps:
+      - name: Validate inputs (values arrive through env only)
+        run: |
+          entry_re='^[A-Za-z0-9._/-]+$'
+          args_re='^[A-Za-z0-9._,:=/ -]{0,200}$'
+          if [ -n "$ENTRY" ]; then
+            [[ $ENTRY =~ $entry_re ]] && [[ $ENTRY != *..* ]] && [[ $ENTRY != /* ]] \
+              || { echo 'entry rejected: must be a relative path of [A-Za-z0-9._/-] with no .. segment' >&2; exit 1; }
+          fi
+          [[ $ARGS =~ $args_re ]] || { echo 'args rejected: must match ^[A-Za-z0-9._,:=/ -]{0,200}$' >&2; exit 1; }
+
+      - name: Image identity (same data the Set up job > Runner Image group prints)
+        run: |
+          mkdir -p "$RUNNER_TEMP/parity-logs" "$RUNNER_TEMP/parity-out"
+          {
+            cat /imagegeneration/imagedata.json
+            echo "ImageOS=$ImageOS"
+            echo "ImageVersion=$ImageVersion"
+            echo "RUNNER_OS=$RUNNER_OS RUNNER_ARCH=$RUNNER_ARCH RUNNER_ENVIRONMENT=$RUNNER_ENVIRONMENT"
+            . /etc/os-release && echo "os=$PRETTY_NAME"
+            uname -r
+          } 2>&1 | tee "$RUNNER_TEMP/parity-logs/identity.log"
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Run entry
+        timeout-minutes: 60
+        run: |
+          set -o pipefail
+          export PARITY_OUT="$RUNNER_TEMP/parity-out"
+          if [ -n "$ENTRY" ]; then
+            script="$GITHUB_WORKSPACE/$ENTRY"
+            read -ra argv <<< "$ARGS"
+          else
+            script="$GITHUB_WORKSPACE/tools/parity-certify/probe/linux.sh"
+            argv=(--out "$PARITY_OUT/job-inventory.json")
+          fi
+          if [ ! -f "$script" ]; then
+            [ -z "$ENTRY" ] || { echo "entry not found: $ENTRY" >&2; exit 1; }
+            echo 'no P05 probe in this ref; nothing to run beyond the image identity'
+            exit 0
+          fi
+          bash "$script" "${argv[@]}" 2>&1 | tee "$RUNNER_TEMP/parity-logs/entry.log"
+
+      - name: Upload logs and parity-out
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: parity-workloads-ubuntu-24.04-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/parity-logs
+            ${{ runner.temp }}/parity-out
+          retention-days: 14
+          if-no-files-found: warn
