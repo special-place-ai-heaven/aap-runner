@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/host-network-module.schema.json",
-  "title": "Host network module (P10.0): Attach's declaration, Verify's problem list, the module's journal record and a consumer's Hyper-V read-back",
+  "title": "Host network module (P10.0): Attach's declaration, Verify's problem list and the module's journal record",
   "x-contract-version": 1,
-  "x-owner": "P10.0 (module); consumers P06, P07, P10, P11; P12 builds it; P19 the journal folder, switches and host rules",
+  "x-owner": "P10.0 (module); consumers P06, P07, P10, P11 (their read-back through supervisor/network/AapHostNetworkCheck.psm1); P12 builds it; P19 the journal folder, switches and host rules",
   "oneOf": [
     {
       "$ref": "#/$defs/attach"
@@ -13,9 +13,6 @@
     },
     {
       "$ref": "#/$defs/record"
-    },
-    {
-      "$ref": "#/$defs/readback"
     }
   ],
   "$defs": {
@@ -52,6 +49,11 @@
         },
         "address": {
           "$ref": "#/$defs/ipv4"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
         }
       }
     },
@@ -163,105 +165,6 @@
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/created"
-          }
-        }
-      }
-    },
-    "rule": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "Action",
-        "Direction",
-        "RemoteAddress",
-        "Scoped",
-        "Weight"
-      ],
-      "properties": {
-        "Action": {
-          "type": "string",
-          "maxLength": 16
-        },
-        "Direction": {
-          "type": "string",
-          "maxLength": 16
-        },
-        "RemoteAddress": {
-          "type": "string",
-          "maxLength": 64
-        },
-        "Scoped": {
-          "type": "boolean"
-        },
-        "Weight": {
-          "type": "integer",
-          "minimum": -2147483648,
-          "maximum": 2147483647
-        }
-      }
-    },
-    "adapter": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "SwitchName",
-        "SwitchType",
-        "DhcpGuard",
-        "RouterGuard",
-        "MacAddressSpoofing",
-        "Acls"
-      ],
-      "properties": {
-        "SwitchName": {
-          "type": "string",
-          "maxLength": 100
-        },
-        "SwitchType": {
-          "type": "string",
-          "maxLength": 16
-        },
-        "DhcpGuard": {
-          "type": "boolean"
-        },
-        "RouterGuard": {
-          "type": "boolean"
-        },
-        "MacAddressSpoofing": {
-          "type": "boolean"
-        },
-        "Acls": {
-          "type": "array",
-          "maxItems": 256,
-          "items": {
-            "$ref": "#/$defs/rule"
-          }
-        }
-      }
-    },
-    "readback": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "schema",
-        "kind",
-        "declaration",
-        "adapters"
-      ],
-      "properties": {
-        "schema": {
-          "const": 1
-        },
-        "kind": {
-          "const": "host_network_readback"
-        },
-        "declaration": {
-          "$ref": "#/$defs/attach"
-        },
-        "adapters": {
-          "type": "array",
-          "maxItems": 8,
-          "items": {
-            "$ref": "#/$defs/adapter"
           }
         }
       }

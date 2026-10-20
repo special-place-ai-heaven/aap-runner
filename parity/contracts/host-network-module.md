@@ -5,14 +5,18 @@ network attachment). Consumers: P06 and P07 (image builders, build VM only), P10
 backends); P12 builds the module once and hands it to the backends; P19 creates the switches, NAT,
 host firewall rules and the module's journal folder. Schema:
 [`host-network-module.schema.json`](host-network-module.schema.json) (`host_network_attach`, the
-Verify problem list, `host_network_record`, `host_network_readback`). Fixtures:
-`fixtures/host-network-module/`. Shared strict fake for the consumers' tests:
+Verify problem list, `host_network_record`). Fixtures: `fixtures/host-network-module/`. Shared
+check, the one implementation of the declaration check and the read-back for every consumer and
+the module's own Verify:
+[`supervisor/network/AapHostNetworkCheck.psm1`](../../supervisor/network/AapHostNetworkCheck.psm1).
+Shared strict fake for the consumers' tests:
 [`tests/common/AapHostNetworkFake.psm1`](../../tests/common/AapHostNetworkFake.psm1).
 
-**Status:** interface, order, declaration, read-back and failure codes DECIDED (coordinator,
-2026-10-21). The enforcement shape is guest-transport.md's (DECIDED). The mechanism (one internal
-switch per profile with NAT, or one internal switch per guest) and every point marked **D2** stay
-CANDIDATE until P02.1. No module exists yet, and the merged consumers do not conform yet
+**Status:** interface, order, declaration, read-back, switches and failure codes DECIDED
+(coordinator, 2026-10-21). The enforcement shape is guest-transport.md's (DECIDED), tightened here
+(both directions; [Rules and weights](#rules-and-weights)). The mechanism (one internal switch per
+profile with NAT, or one internal switch per guest) and every point marked **D2** stay CANDIDATE
+until P02.1. No module exists yet, and the merged consumers do not conform yet
 ([Conformance](#conformance-of-the-consumers)).
 
 ## Interface (DECIDED)
@@ -34,14 +38,19 @@ code in a thrown message (Consumer obligations).
 
 - Precondition: the VM exists, is Off, and has no network adapter (consumers create VMs without
   one) or only the one an unfinished Attach of the same VM made.
+- It refuses (throws, changes nothing) when the VM's switch carries a VM the
+  [Switches](#switches-decided) rule forbids beside it.
 - Intent before act: before it changes anything, Attach writes the VM's journal record (state
   `attaching`) naming the declaration and everything it is about to create. Then it adds one adapter
-  on the profile's switch, sets DHCP guard On, router guard On and MAC address spoofing Off, writes
-  the port ACLs ([Rules and weights](#rules-and-weights)) and sets the record to `attached`.
-- Returns the **declaration** (`host_network_attach`): `vm_id`, `vm_name`, `profile`, the clone
-  `subnet` and the `endpoints` it allowed, each `{ role, address }`: exactly one `gateway`, at most
-  one `dhcp`, at most two `dns`, each address one IPv4 host address of the subnet (one address may
-  serve several roles). Its keys are the schema's; serialized, it validates.
+  on the VM's switch ([Switches](#switches-decided)), sets DHCP guard On, router guard On, MAC
+  address spoofing Off, port mirroring None and the VLAN mode Untagged, writes the port ACLs
+  ([Rules and weights](#rules-and-weights)) and sets the record to `attached`.
+- Returns the **declaration** (`host_network_attach`): `vm_id`, `vm_name`, `profile`, the VM's
+  `subnet` (its switch's) and the `endpoints` it allowed, each `{ role, address }` or
+  `{ role, address, port }`: exactly one `gateway`, at most one `dhcp`, at most two `dns`, each
+  address one IPv4 host address of the subnet (one address may serve several roles), a port 1 to
+  65535 narrowing that endpoint to that port over TCP or UDP. Its keys are the schema's; serialized,
+  it validates.
 - Idempotent: a repeated Attach for the same VM (a retry after a crash) completes what the record
   names and returns the record's declaration unchanged. It never declares anything else for a VM it
   has a record for.
@@ -56,17 +65,23 @@ code in a thrown message (Consumer obligations).
 - Checks, against the record and what Hyper-V and the host report now:
   1. The VM exists, and its record is `attached` and names the same `VmName` and `Profile` (a
      record it cannot read is a throw: it cannot look).
-  2. Exactly one adapter, on the profile's switch (`aap-guests-win`, `aap-guests-linux`; D2),
-     which exists with type `Internal`; DHCP guard On, router guard On, MAC spoofing Off.
-  3. An unscoped outbound Deny for each fixed range, in exactly the text below.
-  4. Host-specific denies, recomputed now: every unicast address on every Hyper-V vEthernet adapter
+  2. Exactly one adapter, on the VM's switch, which exists with type `Internal`; DHCP guard On,
+     router guard On, MAC address spoofing Off, port mirroring None, VLAN mode Untagged or Access.
+  3. The switch's other VMs: none beside a build VM; beside a runner clone, runner clones of its
+     profile only ([Switches](#switches-decided)).
+  4. For each fixed range, an unscoped Deny in each direction, Inbound and Outbound.
+  5. Host-specific targets, recomputed now: every unicast address on every Hyper-V vEthernet adapter
      of the host (IPv4 and IPv6; link-local excluded, a fixed range covers it) that is not a
      declared endpoint, every LAN IPv6 prefix (the on-link prefix of each global unicast IPv6
-     address on a host interface that is not a vEthernet adapter) and the clone subnet each lie
-     inside an unscoped outbound Deny.
-  5. Every Allow is outbound and names one address, and the set of allowed addresses is exactly the
-     set of declared endpoint addresses.
-  6. Every Allow's weight is greater than every Deny's weight.
+     address on a host interface that is not a vEthernet adapter) and the VM's subnet each lie
+     inside an unscoped Deny, in each direction.
+  6. Every Allow names exactly one declared endpoint, and every endpoint has an Allow in each
+     direction.
+  7. Every Allow's weight is greater than the weight of every Deny of its direction whose range
+     contains its address.
+
+  Checks 2 to 7 are the shared check's `Get-AapHostNetworkAdapterProblems` with `-HostDeny` set to
+  check 5's targets: the module and its consumers run the same code.
 
 ### Detach
 
@@ -79,6 +94,41 @@ code in a thrown message (Consumer obligations).
 - Idempotent: no record means nothing to do, and success (never attached, already detached).
 - A record it cannot read, or one naming another `VmName` or `Profile`, makes it throw; the record
   stays.
+
+## Switches (DECIDED)
+
+| VM | Switch (per-profile candidate) |
+|---|---|
+| runner clone `aap-w-*` | `aap-guests-win` |
+| runner clone `aap-l-*` | `aap-guests-linux` |
+| build VM `aap-wbuild-*` | `aap-build-win` |
+| build VM `aap-lbuild-*` | `aap-build-linux` |
+| verification and scanner VMs | none: no adapter, read back as zero adapters |
+
+- All four are Internal switches, each with its own subnet, the host's vEthernet address on it as
+  gateway, NAT for internet egress and the host firewall rules of guest-transport.md. **P19 creates
+  them** (and DHCP and DNS on them where the design uses them); the module never creates or removes
+  them, and its Verify (check 2) and every read-back fail while a switch is missing or not Internal.
+  Under the per-guest candidate (D2) every VM gets its own switch instead, which Attach creates and
+  Detach removes, and the rule below holds by construction. The names are D2 with the mechanism.
+- **Hard rule: a build VM never shares a switch.** While a build VM has an adapter, no other VM has
+  one on its switch; no runner clone is ever on a build switch or admitted beside a build VM, and a
+  build VM is never on a guest switch. Until P19 has created the build switches, no build VM is
+  attached at all (Attach and Verify fail on the missing switch): builds never fall back to a guest
+  switch. Enforced three times, each fail closed: Attach refuses, Verify check 3 reports it, and
+  every consumer's read-back reports it (`Peers`, Consumer obligations), so a clone does not start
+  beside a build VM even if a builder bypassed the module.
+- Why: DHCP guard drops DHCP server messages from the VM, router guard drops its router
+  advertisements and redirects, MAC spoofing Off pins its source MAC; **none of them filters ARP**.
+  On a shared switch a VM can poison its neighbours' and the host's ARP caches. The denies stop
+  only what carries a private address: a neighbour's own packets redirected to the poisoner
+  (private source, dropped by the poisoner's inbound denies) and whatever the poisoner addresses to
+  a neighbour (private destination, dropped by its outbound denies). What the internet sends a
+  neighbour through the host's NAT has a public source: once the host's ARP entry for the
+  neighbour points at the poisoner, the poisoner receives it and can send with the neighbour's
+  address. A hostile job beside a build could read or alter what the build downloads, which ends
+  up in every clone's base image, and a build VM runs internet-sourced installers as root; so a
+  build VM gets a segment of its own.
 
 ## Journal and reconcile (DECIDED)
 
@@ -99,43 +149,88 @@ code in a thrown message (Consumer obligations).
 
 ## Rules and weights
 
-Enforcement shape: guest-transport.md, Guest network attachment (DECIDED). Weight semantics: the
-Microsoft documentation cited below; every point marked D2 is confirmed only by the lab.
+Enforcement shape: guest-transport.md, Guest network attachment (DECIDED), applied here in both
+directions. Hyper-V semantics: the Microsoft documentation cited below, and this host's Hyper-V
+module read by reflection; every point marked D2 is confirmed only by the lab.
 
-Hyper-V extended port ACLs: "Larger weight values apply first, and once an ACL entry applies to a
-packet, other entries are no longer relevant for that packet" (`Add-VMNetworkAdapterExtendedAcl`,
-`-Weight`). `Direction` is seen from the VM: Outbound is what the guest sends, and its remote
-address is the destination. A packet no rule matches passes; the documentation implies it (its
-examples add an explicit low-weight Deny to block everything else) and internet egress depends on
-it (D2, lab step 7).
+- "Larger weight values apply first, and once an ACL entry applies to a packet, other entries are
+  no longer relevant for that packet" (`Add-VMNetworkAdapterExtendedAcl`, `-Weight`). A packet no
+  rule matches passes; the documentation implies it and internet egress depends on it (D2).
+- `Direction` is `Inbound` or `Outbound`, seen from the VM; an extended port ACL has no `Both`. For
+  an inbound packet the remote address and port are its source, for an outbound one its
+  destination; the local address is the VM's side.
+- An address field takes one address, a prefix, `0.0.0.0/0` (all IPv4), `::/0` (all IPv6) or `ANY`;
+  a port field one port or a range; `Protocol` `TCP`, `UDP` or an IP protocol number.
 
 The module writes only these rules, all stateless:
 
-- **Fixed denies**, unscoped (no local address, port or protocol), outbound, each in exactly this
-  text: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`,
-  `224.0.0.0/4`, `ff00::/8`, `fe80::/10`, `fc00::/7`.
-- **Host-specific denies**, unscoped, outbound: enough to satisfy Verify check 4; an address as
-  `/32` or `/128`, a prefix as the host reports it.
-- **Allows**: outbound Allows for the declared endpoint addresses and nothing else, each naming one
-  address (alone or with `/32`). A rule may be narrowed to the endpoint's protocol and port, which
-  only lets less through; one address may then have several rules.
-- **Weights**: every Allow above every Deny. The module uses 10 for denies and 100 for allows; any
-  values with that order conform. Equal weights are never relied on (how Hyper-V orders a tie is
-  undocumented, D2).
+- **Fixed denies**, unscoped (local address, protocol, local port and remote port all unrestricted),
+  each range Inbound and Outbound: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
+  `169.254.0.0/16`, `100.64.0.0/10`, `224.0.0.0/4`, `ff00::/8`, `fe80::/10`, `fc00::/7`. The one
+  copy in code is the shared check's (`Get-AapHostNetworkFixedDeny`); the module writes from it.
+- **Host-specific denies**, the same shape, both directions: enough to satisfy Verify check 5; an
+  address as `/32` or `/128`, a prefix as the host reports it.
+- **Allows**, in each direction, for the declared endpoints and nothing else: each names one
+  endpoint's address (alone, `/32` or `/128`); for an endpoint with a port it is narrowed to TCP or
+  UDP (one rule each where both are used) to that remote port and nothing else, for an endpoint
+  without a port it is narrowed by nothing.
+- **Weights**: every Allow above every Deny of its direction whose range contains its address. The
+  module uses 10 for denies and 100 for allows; any values in that order conform. Equal weights are
+  never relied on (how Hyper-V orders a tie, and whether it accepts two rules of one weight and
+  direction, is undocumented, D2).
 
-Why: a gateway, DHCP or DNS endpoint lies in the clone subnet (and is usually the host's vEthernet
-address there), so the subnet's Deny, a fixed range and the host-address Deny match it, and only an
-Allow that outranks them makes it reachable.
-An Allow for a range, or for an address nobody declared, would open a hole that no check of the
-fixed denies can see; hence "exactly the declared endpoints, each one address, each above every
-Deny".
+Why both directions: inbound, the remote address is the source. A VM that poisons its neighbours'
+ARP caches receives their packets, whose sources are private addresses, and its own inbound denies
+drop them; the same denies stop packets from neighbours and from the host's other addresses
+reaching it. Outbound denies stop it addressing them. Neither stops what the internet sends a
+neighbour (a public source) once the host's ARP cache points at the poisoner: hence a build VM's
+own switch ([Switches](#switches-decided)) and Open points, 4.
+Why unscoped: a Deny narrowed to TCP, to port 1 or to one local address does not deny the range.
+Why exactly the endpoints: a gateway, DHCP or DNS endpoint lies in the VM's subnet (and is usually
+the host's vEthernet address there), so the subnet's Deny, a fixed range and the host-address Deny
+match it, and only an Allow that outranks them makes it reachable. An Allow for a range, for an
+address nobody declared, or wider than its endpoint's port would open a hole that no check of the
+denies can see.
 
 Not the module's: the Guest Service Interface and Key-Value Pair Exchange are turned off by the
 consumers' `NewVm` and read back there; Enhanced Session Mode is a host setting (P19 sets it, the
 backends check it); the host firewall rules that block the host's listening ports on the guest
-vEthernet adapters are P19's (guest-transport.md). Because the gateway is an allowed endpoint, those
-firewall rules are the only barrier between a guest and the host's ports on the gateway address
-(Open points, 1).
+vEthernet adapters are P19's (guest-transport.md). Because the gateway is an allowed endpoint
+without a port, those firewall rules are the only barrier between a guest and the host's ports on
+the gateway address (Open points, 1).
+
+## Shared check (DECIDED)
+
+`supervisor/network/AapHostNetworkCheck.psm1`: pure (no Hyper-V, file, registry or network call;
+a test enforces it), Windows PowerShell 5.1 and PowerShell 7, every result a list of problem lines
+(printable, at most 200 characters, at most 64), none meaning the check holds.
+
+| Function | Use |
+|---|---|
+| `Get-AapHostNetworkDeclarationProblems -Request <the request> -Declaration <Attach's value>` | the declaration check; any line is `AAP_NetworkInvalid` |
+| `Get-AapHostNetworkAdapterProblems -Declaration <declaration> -Adapters <read-back> [-HostDeny <targets>]` | the read-back; any line is `AAP_NetworkUntrusted`. It re-checks the declaration first. `-HostDeny` is for the module's Verify (check 5); consumers do not pass it |
+| `Get-AapHostNetworkSwitchName -VmName <name>` | the VM's switch (table above), `''` for a VM that gets none |
+| `Get-AapHostNetworkFixedDeny` | the fixed ranges, for the module to write |
+
+Location: beside where the P10.0 module will live. Not `images/common`: that is P03's verified
+artifact acquisition, the supervisor does not deploy it, and the builders already depend on the
+supervisor side (the module they take as `-Network` is P10.0's). The backends import it as they
+import `capacity` and `broker` (`..\..\network\AapHostNetworkCheck.psm1`); the builders import
+`..\..\supervisor\network\AapHostNetworkCheck.psm1` only after their admin-only folder check has
+passed for `supervisor\network`, as they treat `images\common` today. P19 deploys the folder with
+the supervisor, admin-only.
+
+Fail closed: a read-back field that is missing is never read as unset; values compare exactly
+(`'On'`, not `$true` or `'on'`); a rule without all eight fields, with another action or
+direction, a weight that is not an Int32 or a remote address that is not one address or prefix in
+canonical text (no host bits under the prefix) is a problem and counts for nothing. A field is
+unrestricted only when it reads `''`, `*` or `ANY` (any case), or, for a local address, the
+wildcard of the remote address's family (D2: which one Hyper-V shows for an unset field; the check
+narrows to that form once the lab has seen it).
+
+Tests: `tests/network/AapHostNetworkCheck.Tests.ps1`, a failing case for every rule and every
+field; `tests/common/Invoke-AapHostNetworkMutations.ps1` disables each of the check's `# check:`
+conditions in turn (38) and requires a test to fail for each.
 
 ## Consumer obligations (DECIDED)
 
@@ -143,7 +238,8 @@ Order:
 
 1. `NewVm` with no adapter, then `Attach`, the declaration check, `Verify`, the read-back.
 2. Before every host-initiated power-on of a VM that has an adapter (`StartVm`, `RestartVm`):
-   `Verify` and the read-back again. A failure stops the start.
+   `Verify` and the read-back again, with the declaration kept from Attach. A failure stops the
+   start.
 3. Teardown: stop, `RemoveVm`, then `Detach`, on every teardown attempt, also when Attach never ran
    or failed (Detach is then a no-op, or removes the record). A Detach that throws means the network
    is not proven detached: the backends count the teardown as not done (retry, then
@@ -152,32 +248,48 @@ Order:
 4. Verification and scanner VMs get no adapter and never reach the module; the builders read back
    zero adapters before they boot.
 
-**Declaration check** (`AAP_NetworkInvalid` when it fails): Attach's value has the schema's keys,
-echoes `VmId`, `VmName` and `Profile`, and has 1 to 4 endpoints with roles `gateway`, `dhcp`, `dns`,
-exactly one `gateway`, each one IPv4 host address of the declared `subnet`. The read-back then
-allows nothing outside that subnet; which subnet the profile's switch has is the module's Verify.
+**Declaration check** (`AAP_NetworkInvalid` when it fails):
+`Get-AapHostNetworkDeclarationProblems -Request $req -Declaration $decl`. It requires the schema's
+keys, `VmId`, `VmName` and `Profile` echoed, a runner clone or build VM of that profile, a subnet
+`/16` to `/30` and the endpoints above.
 
 **Read-back** (`AAP_NetworkUntrusted` when it fails), from Hyper-V through the consumer's own
-provider, never through the module. The provider reports each adapter as
-`@{ SwitchName; SwitchType; DhcpGuard; RouterGuard; MacAddressSpoofing; Acls }` and each rule as
-`@{ Action; Direction; RemoteAddress; Scoped; Weight }`: `DhcpGuard` and `RouterGuard` are
-`[string]$n.DhcpGuard -eq 'On'`, `MacAddressSpoofing` is `[string]$n.MacAddressSpoofing -ne 'Off'`
-(an unknown value reads as on), `Scoped` is true unless the local address, local port, remote port
-and protocol all read as unrestricted (`''`, `*`, `ANY`; D2), `Weight` is `[int]$_.Weight`. The
-read-back passes only with:
+provider, never through the module:
+`Get-AapHostNetworkAdapterProblems -Declaration $decl -Adapters @(<provider read-back>)`. The
+provider reports each adapter of the VM as Hyper-V shows it, under `Set-StrictMode -Version 2` so a
+misspelt property throws instead of reading as unset:
 
-- exactly one adapter, on the profile's switch, type `Internal`;
-- `DhcpGuard` and `RouterGuard` the boolean true, `MacAddressSpoofing` the boolean false;
-- for each fixed range an unscoped outbound Deny with exactly that `RemoteAddress` (compared
-  lowercase);
-- every rule's `Action` `Allow` or `Deny`;
-- every Allow outbound and naming one address (IPv4 or IPv6, optionally `/32` or `/128`), and the set
-  of allowed addresses equal to the set of declared endpoint addresses;
-- an integer `Weight` on every rule, every Allow's above every Deny's.
+```powershell
+foreach ($n in @(Hyper-V\Get-VMNetworkAdapter -VM $vm)) {
+    $name = ''; $type = ''
+    if ($n.SwitchId) { $sw = Hyper-V\Get-VMSwitch -Id $n.SwitchId -ErrorAction Stop; $name = [string]$sw.Name; $type = [string]$sw.SwitchType }
+    @{  SwitchName = $name; SwitchType = $type
+        DhcpGuard = [string]$n.DhcpGuard; RouterGuard = [string]$n.RouterGuard; MacAddressSpoofing = [string]$n.MacAddressSpoofing
+        PortMirroringMode = [string]$n.PortMirroringMode; VlanMode = [string]$n.VlanSetting.OperationMode
+        # the other VMs with an adapter on the same switch; the host's own adapters are not VMs
+        Peers = @(Hyper-V\Get-VMNetworkAdapter -All | Where-Object { $name -and -not $_.IsManagementOs -and $_.SwitchName -ceq $name -and $_.VMId -ne $vm.Id } |
+            ForEach-Object { [string]$_.VMName })
+        Acls = @(Hyper-V\Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter $n | ForEach-Object {
+            @{ Action = [string]$_.Action; Direction = [string]$_.Direction; RemoteAddress = [string]$_.RemoteIPAddress
+               LocalAddress = [string]$_.LocalIPAddress; Protocol = [string]$_.Protocol; RemotePort = [string]$_.RemotePort
+               LocalPort = [string]$_.LocalPort; Weight = $_.Weight } }) }
+}
+```
 
-The host-specific denies are Verify's alone: only the module knows the host. `validate.py`'s rule
-for `host_network_readback` is the reference implementation of this list, and its fixtures are the
-shared cases every consumer's implementation must agree with.
+The check then requires (rules i to iv of the security review of P07):
+
+- exactly one adapter, on the VM's switch, type `Internal`; `DhcpGuard` and `RouterGuard` `On`,
+  `MacAddressSpoofing` `Off`; `PortMirroringMode` `None`; `VlanMode` `Untagged` or `Access` (a trunk
+  port reaches other VLANs, a private-VLAN promiscuous port every isolated one);
+- `Peers` as Switches says;
+- (i) for each fixed range an unscoped Deny in each direction, with exactly that range;
+- (ii) every Allow exactly one declared endpoint (its one address; its port, over TCP or UDP, when
+  it has one; nothing else narrowed or widened), every endpoint allowed in each direction, and each
+  Allow's weight above every Deny of its direction whose range contains its address. An extra Deny
+  is tolerated (it only blocks more) unless it outweighs an endpoint's Allow;
+- (iii) and (iv) above: mirroring, VLAN, and the fixed ranges kept in the check alone.
+
+The host-specific denies are Verify's alone: only the module knows the host.
 
 **Verify output**: every object Verify writes is a problem; consumers do not drop empty or `$null`
 items (a module that writes anything on success fails closed). A throw is a problem.
@@ -185,8 +297,8 @@ items (a module that writes anything on success fails closed). A throw is a prob
 | Code | When |
 |---|---|
 | `AAP_NetworkUnavailable` | no module given (`-Network` absent): nothing is attached, built or created |
-| `AAP_NetworkInvalid` | the module lacks `Attach`, `Detach` or `Verify` as a scriptblock, or the declaration check fails |
-| `AAP_NetworkUntrusted` | Attach throws; Verify reports a problem or throws; the read-back fails; the profile's switch is missing or not Internal |
+| `AAP_NetworkInvalid` | the module lacks `Attach`, `Detach` or `Verify` as a scriptblock, or the declaration check reports a line |
+| `AAP_NetworkUntrusted` | Attach throws; Verify reports a problem or throws; the read-back reports a line |
 
 Fail closed everywhere: no VM with an adapter starts after any of these, and the create or build
 that met one is torn down (`RemoveVm`, then `Detach`).
@@ -195,79 +307,113 @@ that met one is torn down (`RemoveVm`, then `Detach`).
 
 [`tests/common/AapHostNetworkFake.psm1`](../../tests/common/AapHostNetworkFake.psm1) stands in for
 the module in the P06, P07, P10 and P11 suites (Pester 5, Windows PowerShell 5.1 and PowerShell 7).
-Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetworkFakeMutations.ps1`
-disables each of its checks in turn.
+Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetworkMutations.ps1
+-Target fake` disables each of its checks in turn.
 
 - `New-AapFakeHostNetwork -Root <folder> -VmExists <scriptblock>` returns `Attach`, `Detach` and
   `Verify` with the semantics above, strictly: the request shape, intent before act, the same
-  declaration on a repeated Attach, Detach refused while `VmExists` says the VM is there, the record
-  removed by Detach, and Verify computed from the record and the simulated adapter (no knob sets its
-  answer, unlike the per-suite fakes it replaces).
+  declaration on a repeated Attach, a second VM refused on a build switch, Detach refused while
+  `VmExists` says the VM is there, the record removed by Detach, and Verify computed from the record
+  and the simulated adapter through the shared check (no knob sets its answer).
   State lives only under `-Root` (`records\<vm id>.json`, `knobs.json`), so a child process killed
   mid-step leaves the world its parent recovers from.
 - `Get-AapFakeHostNetworkAdapter -Root -VmId` returns what Hyper-V would report for the VM, in the
-  provider shape above, for the consumer's provider fake (`GetVmNetwork`, `GetVmConfig.Adapters`).
+  provider shape above (`Peers`: the other attached records on the same switch), for the
+  consumer's provider fake (`GetVmNetwork`, `GetVmConfig.Adapters`).
 - `Set-AapFakeHostNetworkKnob -Root -Tamper <names> -Fail <names>`. Tampers change the simulated
   host, so Verify and the read-back both see them: `no-adapter`, `second-adapter`,
   `external-switch`, `other-switch`, `dhcp-guard-off`, `router-guard-off`, `mac-spoofing-on`,
-  `drop-fixed-deny`, `drop-host-deny` (only Verify can see it), `extra-allow`, `allow-weight` (allow
-  weight equal to the deny weight). Faults: `Attach`, `Detach`, `Verify` (the op throws) and
-  `AttachAfterIntent` (Attach stops after its intent record, as a crash would).
+  `port-mirroring`, `vlan-trunk`, `foreign-peer` (a build VM beside the VM), `drop-fixed-deny`
+  (outbound `10.0.0.0/8`), `drop-inbound-deny` (inbound `10.0.0.0/8`), `scoped-deny` (inbound
+  `192.168.0.0/16` narrowed to TCP port 1), `drop-host-deny` (only Verify can see it),
+  `extra-allow`, `allow-weight` (an allow weight equal to the deny weight). Faults: `Attach`,
+  `Detach`, `Verify` (the op throws) and `AttachAfterIntent` (Attach stops after its intent record,
+  as a crash would).
 - `Get-AapFakeHostNetworkRecord -Root [-VmId]` returns the journal records.
-- Fake host: `aap-guests-win` with `172.31.250.0/24` and `aap-guests-linux` with `172.31.251.0/24`,
-  gateway, DHCP and DNS at `.1`; vEthernet addresses `172.31.250.1`, `172.31.251.1`, `172.29.16.1`,
-  `2001:db8:5::1`; LAN IPv6 prefix `2001:db8:1::/64`. Not modelled: the VM's power state, the
-  journal folder's ACL and the reconcile.
+- Fake host: the four switches with `172.31.250.0/24` (`aap-guests-win`), `172.31.251.0/24`
+  (`aap-guests-linux`), `172.31.252.0/24` (`aap-build-win`) and `172.31.253.0/24`
+  (`aap-build-linux`); gateway, DHCP (port 67) and DNS (port 53) at `.1`; vEthernet addresses the
+  four gateways, `172.29.16.1` and `2001:db8:5::1`; LAN IPv6 prefix `2001:db8:1::/64`. Not
+  modelled: the VM's power state, the journal folder's ACL and the reconcile.
 
 ## Lab points (D2)
 
-- Weights: the order of equal weights; the accepted range (the cmdlet's Int32 `-Weight` has no range
-  validation, read on this host's Hyper-V module 2.0.0.0); that a packet no rule matches passes.
-- Read-back: how `Get-VMNetworkAdapterExtendedAcl` reports an unset address, port or protocol
-  (`''`, `*`, `ANY`); whether a `/32` comes back as written; the text form of IPv6 ranges; and the
-  `Direction` of a rule ("If an ACL applies to both inbound and outbound packets, it appears in both
-  inbound and outbound lists").
+- Weights: the order of equal weights and whether two rules of one weight and direction are
+  accepted; the accepted range (the cmdlet's Int32 `-Weight` has no range validation, read on this
+  host's Hyper-V module 2.0.0.0); that a packet no rule matches passes.
+- Read-back: the text `Get-VMNetworkAdapterExtendedAcl` shows for an unset address, port or protocol
+  (the check accepts `''`, `*`, `ANY` and the family wildcard until then); whether a `/32` and an
+  IPv6 range come back as written; `UDP` or `17`; and how a rule's direction is listed (the
+  documentation says an entry "appears in both the inbound ACL and the outbound ACL"; the enum has
+  only `Inbound` and `Outbound`). `VlanSetting.OperationMode` on `Get-VMNetworkAdapter`'s objects and
+  `Get-VMNetworkAdapter -All` listing other VMs' adapters, stopped VMs included.
+- Inbound semantics: that an inbound Deny matches on the source address, so a VM poisoning a
+  neighbour's ARP cache receives none of the neighbour's own packets (negative case below).
 - ARP and the DHCP broadcast to `255.255.255.255` pass the IP rules; the multicast denies break
   nothing an IPv4 guest needs; egress needs no IP-level Allow to the gateway (Open points, 1).
 - Host vEthernet and LAN prefix discovery, with WSL in NAT and in mirrored mode.
-- DHCP and DNS on the internal switch: Windows NAT provides neither. P07's build guest uses DHCP
+- DHCP and DNS on the internal switches: Windows NAT provides neither. P07's build guest uses DHCP
   (autoinstall `dhcp4: true`); the module declares `dhcp` and `dns` endpoints only where a server
   answers, or the guests get static addressing.
-- Per-profile switch or per-guest switch (P02.1); adapters and their ACLs vanish with `Remove-VM`.
+- The four switches' subnets and NAT (one `NetNat` whose prefix covers all four subnets, or one per
+  switch, within what WinNAT supports); per-profile switch or per-guest switch (P02.1); adapters and
+  their ACLs vanish with `Remove-VM`.
+- Negative case to add to guest-transport.md's list: a guest poisons ARP for its switch's gateway,
+  for a neighbour, and the host's entry for that neighbour. Expected: none of the neighbour's own
+  packets reach the poisoner and nothing the poisoner addresses to it arrives; what the internet
+  sends the neighbour can reach the poisoner while they share a switch, which is why a build VM
+  never shares one (Open points, 4 for clones).
 
 ## Open points
 
-1. **Gateway allow** (objection to the coordinator's decision, recorded, not applied): an unscoped
-   Allow for the gateway lets a guest reach every port of the host's vEthernet address on its
+1. **Gateway allow** (objection to the coordinator's decision, recorded, not applied): an Allow for
+   the gateway without a port lets a guest reach every port of the host's vEthernet address on its
    switch, so only P19's firewall rules protect the host's listening services there.
    guest-transport.md excepts only "the explicit DHCP and DNS endpoints" from the host vEthernet
    deny. Routing needs no IP-level Allow to the gateway (the guest reaches it at layer 2, and port
-   ACLs filter IP). Recommendation: drop `gateway` from the allowed set, or narrow every Allow to its
-   protocol and port (DHCP UDP 67; DNS UDP and TCP 53), which this contract already permits.
+   ACLs filter IP). Recommendation: drop `gateway` from the allowed set and declare `dhcp` and `dns`
+   with their ports (UDP 67; UDP and TCP 53), which this contract already permits.
 2. A LAN that uses public IPv4 addresses is not covered by the fixed ranges, and the enforcement
-   shape names only the LAN's IPv6 prefix. Whether Verify check 4 adds the LAN's IPv4 prefixes is an
+   shape names only the LAN's IPv6 prefix. Whether Verify check 5 adds the LAN's IPv4 prefixes is an
    owner decision.
 3. The ledger's P10.0 text says "per-guest private switch"; guest-transport.md and ARCHITECTURE.md
    say a private switch is not viable and the alternative is an internal switch per guest.
+4. **Runner clones share their profile's switch** under the per-profile candidate. The guards do not
+   stop ARP poisoning between them either: a clone that poisons the host's ARP entry for a
+   neighbour receives what the internet sends that neighbour and can send with its address (the
+   denies stop only what carries private addresses). The per-guest candidate separates them at
+   layer 2; on a shared switch, static host neighbour entries for every guest plus an outbound deny
+   of every source address but the guest's own would narrow it (not designed here; either needs the
+   lab). An owner decision for P02.1; the build VM's own switch is decided above.
+5. guest-transport.md says "deny traffic to" (outbound) and expects ARP spoofing to be "blocked by
+   DHCP guard, router guard and MAC spoofing off"; this contract denies both directions and says the
+   guards do not filter ARP. guest-transport.md needs that wording and the negative case above; it
+   also names no build switch.
 
 ## Conformance of the consumers
 
-As of origin/main `01d159f` and P07's draft at `354d216` (2026-10-21):
+As of origin/main `01d159f` and P07's draft at `e468e15` (2026-10-21). Every consumer drops its own
+switch constant and deny list and calls the shared check.
 
 | Consumer | Changes needed |
 |---|---|
-| P06 `images/windows` | Detach after `RemoveVm` (seal) and after `Remove-AapWinBuild` (failure path), not before; keep and check Attach's declaration; a thrown Verify is `AAP_NetworkUntrusted` and Verify output is not filtered; the read-back requires the allow set to equal the declared endpoints, outbound allows, and allows above denies (`GetVmNetwork` adds `Weight`); Verify and the read-back before every `RestartVm`; INTEGRATION.md and README.md follow this contract; tests use the shared fake |
-| P10 `supervisor/backends/windows` | keep and check Attach's declaration; a thrown Verify is `AAP_NetworkUntrusted`, output not filtered; `GetVmConfig` adapters carry `Acls` with `Weight` and read MAC spoofing as on unless `Off`; the read-back of this contract, exactly one adapter; Verify and the read-back before boot's `StartVm`; INTEGRATION.md follows; tests use the shared fake |
-| P11 `supervisor/backends/linux` | as P10 (its Verify throw is already `AAP_NetworkUntrusted`); INTEGRATION.md stops relying on Verify alone for the port ACLs |
-| P07 `images/ubuntu-24.04` (draft PR #49) | take the module as `-Network` like P06; `NewVm` makes no adapter and never connects a switch itself; Attach, the declaration check, Verify and the read-back (`GetVmNetwork`) before each `StartVm` (the install boots twice); `RemoveVm` then `Detach`; scanner and verification VMs read back zero adapters |
+| P06.1 `images/windows` | Import the check after `TestRootTrust` passes for `supervisor\network` (add it to the preflight's folders, README.md:145-152); drop `$script:SwitchName` (`AapWinImage.psm1:27`, `:652`, `:989-990`, `:1054`: the build VM is on `aap-build-win`) and `$script:DenyRanges` (`:35`). `Connect-AapBuildNetwork` (`:816-822`): keep `$decl = & $Ctx.Network.Attach $net`, `Get-AapHostNetworkDeclarationProblems -Request $net -Declaration $decl` (`AAP_NetworkInvalid`), Verify unfiltered and a throw `AAP_NetworkUntrusted`. `Assert-AapVmAdapters` (`:824-843`): for the build VM `Get-AapHostNetworkAdapterProblems -Declaration $decl -Adapters @(GetVmNetwork)`; the verification VM keeps its zero-adapter read-back (`:858`). `GetVmNetwork` (`AapWinImage.HyperV.psm1:260-273`): the provider read-back above. Verify and the read-back before `RestartVm` (`:786`). `RemoveVm` then `Detach` (`:1092-1093` swapped; `:1157` after `Remove-AapWinBuild`). INTEGRATION.md and README.md follow; tests use the shared fake |
+| P07 `images/ubuntu-24.04` (PR #49) | A fourth variant today: `New-AapUbuntuHyperVProvider -GuestNetwork` (`AapUbuntuImage.HyperV.psm1:159-170`), a step called with `@{ VmId; SwitchName }` (`:244`) after `NewVm` connects `aap-guests-linux` itself and sets the guards (`:239-243`); its own read-back `Get-AapAdapterProblems` (`:99-114`, outbound only, no scope, allow, weight, mirroring or VLAN check; its `'Both'` never occurs) on its own list (`:25-28`). Instead: take the module as `-Network` on `Invoke-AapUbuntuImageBuild` like P06; `NewVm` removes the default adapter for every VM (`:245-246` today does it only without a switch) and connects nothing; after `NewVm` of the build VM (`AapUbuntuImage.psm1:701`): Attach, the declaration check, Verify and `Get-AapHostNetworkAdapterProblems` on a `GetVmNetwork` op with the provider read-back (replacing `:249-253`), again before each `StartVm` of the build VM (`:703`, `:710`); the scanner and verification VMs keep the zero-adapter read-back (`:101-103`). Drop `$script:SwitchName` (`HyperV.psm1:21`; `AapUbuntuImage.psm1:34`, `:237`, `:884-885`, `:952`: the build VM is on `aap-build-linux`). `RemoveVm` then `Detach` for the build VM (`:976`; `:844` in `Remove-AapUbuntuBuild`). INTEGRATION.md:76-83 (the shared-switch hazard, resolved by `aap-build-linux`) and :104-120 (the adapter step, replaced by `-Network`) follow; tests use the shared fake |
+| P10 `supervisor/backends/windows` | Import `..\..\network\AapHostNetworkCheck.psm1` beside capacity and broker (`AapWinBackend.psm1:32-33`); drop `$script:SwitchName` (`:37`). Create (`:975-978`): keep the declaration, `Get-AapHostNetworkDeclarationProblems` (`AAP_NetworkInvalid`), Verify unfiltered and a throw `AAP_NetworkUntrusted`, the declaration kept in the reservation's journal for later starts. `Assert-AapWinVmConfig -Adapters` (`:880-888`): `Get-AapHostNetworkAdapterProblems -Declaration $decl -Adapters $nics`. `GetVmConfig` adapters (`AapWinBackend.HyperV.psm1:105-109`): the provider read-back above (today MAC spoofing reads `-eq 'On'`, so an unknown value passes). Verify and the read-back before boot's `StartVm` (`:1192`). Destroy order (`:1083`, `:1087`) conforms. INTEGRATION.md follows; tests use the shared fake |
+| P11 `supervisor/backends/linux` | As P10: import beside capacity and broker (`AapLinBackend.psm1:37-38`); drop `$script:SwitchName` (`:41`); create (`:1048-1050`) keeps and checks the declaration; `Assert-AapLinNetwork` (`:950-962`): Verify unfiltered (`:951`; its throw is already `AAP_NetworkUntrusted`), then the shared check instead of `:953-961`; `GetVmConfig` adapters (`AapLinBackend.HyperV.psm1:149-153`) the provider read-back; Verify and the read-back before boot's `StartVm` (`:1302`); destroy order (`:1157`, `:1161`) conforms. INTEGRATION.md stops relying on Verify alone for the port ACLs |
 
 ## References
 
 - `Add-VMNetworkAdapterExtendedAcl`: <https://learn.microsoft.com/en-us/powershell/module/hyper-v/add-vmnetworkadapterextendedacl>
+  (`-Direction` Inbound and Outbound from the VM's perspective; remote address and port the source
+  inbound, the destination outbound; address wildcards `0.0.0.0/0`, `::/0`, `ANY`; port ranges;
+  `-Protocol` TCP, UDP or a number; `-Weight`; `-Stateful`, not used here)
 - `Get-VMNetworkAdapterExtendedAcl`: <https://learn.microsoft.com/en-us/powershell/module/hyper-v/get-vmnetworkadapterextendedacl>
 - Extended port ACLs (weights, stateful rules always allow): <https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/create-security-policies-extended-port-access-control-lists>
 - Read on this host, 2026-10-21, by reflection only (no VM, no change): Hyper-V module 2.0.0.0,
   `VMNetworkAdapterExtendedAclSetting` has `Action` (`Allow`, `Deny`), `Direction` (`Inbound`,
-  `Outbound`), `LocalIPAddress`, `RemoteIPAddress`, `LocalPort`, `RemotePort`, `Protocol`
+  `Outbound`; no `Both`), `LocalIPAddress`, `RemoteIPAddress`, `LocalPort`, `RemotePort`, `Protocol`
   (strings), `Weight` (Int32), `Stateful`, `IdleSessionTimeout`, `IsolationID`; the adapter's
-  `DhcpGuard`, `RouterGuard` and `MacAddressSpoofing` are `OnOffState` (`On`, `Off`).
+  `DhcpGuard`, `RouterGuard` and `MacAddressSpoofing` are `OnOffState` (`On`, `Off`),
+  `PortMirroringMode` is `None`, `Destination` or `Source`, and `VlanSetting.OperationMode` is
+  `Untagged`, `Access`, `Trunk` or `Private`.

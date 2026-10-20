@@ -1,15 +1,17 @@
 # The shared strict fake of the P10.0 host network module (AapHostNetworkFake.psm1) against
 # parity/contracts/host-network-module.md. Pester 5 on Windows PowerShell 5.1 and PowerShell 7; python 3 on PATH (the
 # fake's documents must pass parity/contracts/validate.py). Tags name the fake's check each test guards;
-# Invoke-AapHostNetworkFakeMutations.ps1 disables each check in turn and requires its tagged tests to fail.
+# Invoke-AapHostNetworkMutations.ps1 disables each check in turn and requires its tagged tests to fail.
 
 BeforeAll {
     $script:Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
     $script:Module = $(if ($env:AAP_NETFAKE_MODULE) { $env:AAP_NETFAKE_MODULE } else { Join-Path $PSScriptRoot 'AapHostNetworkFake.psm1' })
     Import-Module $script:Module -Force
+    Import-Module (Join-Path $script:Repo 'supervisor\network\AapHostNetworkCheck.psm1') -Force
     $script:Validator = Join-Path $script:Repo 'parity\contracts\validate.py'
     $script:WinId = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'
     $script:LinId = '0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b'
+    $script:WinId2 = '5e0c1b2a-3948-4d5e-9f6a-7b8c9d0e1f2a'
 
     # A fresh fake host under TEMP. Vms is what Hyper-V has; the hook reads the same hashtable the test changes.
     function New-TestNet {
@@ -18,15 +20,16 @@ BeforeAll {
         $net = New-AapFakeHostNetwork -Root $root -VmExists { param($id) $vms.ContainsKey($id) }.GetNewClosure()
         [pscustomobject]@{ Root = $root; Vms = $vms; Net = $net }
     }
-    function Win([string]$Name = 'aap-w-1-3-1a2b3c4d') { @{ VmId = $script:WinId; VmName = $Name; Profile = 'windows' } }
-    function Lin { @{ VmId = $script:LinId; VmName = 'aap-lbuild-9f8e7d6c'; Profile = 'linux' } }
+    function Win([string]$Name = 'aap-w-1-3-1a2b3c4d', [string]$Id = $script:WinId) { @{ VmId = $Id; VmName = $Name; Profile = 'windows' } }
+    function Lin([string]$Name = 'aap-lbuild-9f8e7d6c', [string]$Id = $script:LinId) { @{ VmId = $Id; VmName = $Name; Profile = 'linux' } }
     function Get-TestJson($o) { ConvertTo-Json -InputObject $o -Depth 8 -Compress }
     # The journal as it is on disk: each record file with its hash.
     function Get-TestState($t) {
         @(Get-ChildItem -LiteralPath (Join-Path $t.Root 'records') -File | Sort-Object Name | ForEach-Object { "$($_.Name)=$((Get-FileHash -LiteralPath $_.FullName).Hash)" }) -join ';'
     }
+    # A consumer's read-back of the simulated adapter: the shared check without the host-specific targets.
     function Get-TestReadback($t, $Declaration, [string]$VmId) {
-        @{ schema = 1; kind = 'host_network_readback'; declaration = $Declaration; adapters = @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $VmId) }
+        @(Get-AapHostNetworkAdapterProblems -Declaration $Declaration -Adapters @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $VmId))
     }
     # parity/contracts/validate.py in file mode, one document per file; returns 'ok' or 'FAIL' per document, in order.
     function Test-Contract($t, [object[]]$Docs) {
@@ -54,24 +57,56 @@ Describe 'the shared host network fake' {
             $d.vm_name | Should -Be 'aap-w-1-3-1a2b3c4d'
             $d.profile | Should -Be 'windows'
             $d.subnet | Should -Be '172.31.250.0/24'
-            @($d.endpoints | ForEach-Object { "$($_.role)=$($_.address)" }) | Should -Be @('gateway=172.31.250.1', 'dhcp=172.31.250.1', 'dns=172.31.250.1')
+            @($d.endpoints | ForEach-Object { "$($_.role)=$($_.address)$(if ($_.PSObject.Properties['port']) { ':' + $_.port })" }) | Should -Be @('gateway=172.31.250.1', 'dhcp=172.31.250.1:67', 'dns=172.31.250.1:53')
             $nics = @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:WinId)
             $nics.Count | Should -Be 1
-            $nics[0].SwitchName | Should -Be 'aap-guests-win'
-            $nics[0].SwitchType | Should -Be 'Internal'
-            @($nics[0].DhcpGuard, $nics[0].RouterGuard, $nics[0].MacAddressSpoofing) | Should -Be @($true, $true, $false)
-            @($nics[0].Acls | Where-Object { $_.Action -eq 'Allow' } | ForEach-Object { "$($_.RemoteAddress)@$($_.Weight)" }) | Should -Be @('172.31.250.1@100')
-            @($nics[0].Acls | Where-Object { $_.Action -eq 'Deny' -and ($_.Weight -ne 10 -or $_.Scoped -or $_.Direction -ne 'Outbound') }).Count | Should -Be 0
+            $n = $nics[0]
+            @($n.SwitchName, $n.SwitchType, $n.DhcpGuard, $n.RouterGuard, $n.MacAddressSpoofing, $n.PortMirroringMode, $n.VlanMode) | Should -Be @('aap-guests-win', 'Internal', 'On', 'On', 'Off', 'None', 'Untagged')
+            @($n.Peers).Count | Should -Be 0
+            @($n.Acls | Where-Object { $_.Action -eq 'Allow' } | ForEach-Object { "$($_.Direction) $($_.RemoteAddress) $($_.Protocol) $($_.RemotePort) $($_.Weight)" }) | Should -Be @(
+                'Inbound 172.31.250.1 ANY ANY 100', 'Inbound 172.31.250.1 UDP 67 100', 'Inbound 172.31.250.1 UDP 53 100', 'Inbound 172.31.250.1 TCP 53 100'
+                'Outbound 172.31.250.1 ANY ANY 100', 'Outbound 172.31.250.1 UDP 67 100', 'Outbound 172.31.250.1 UDP 53 100', 'Outbound 172.31.250.1 TCP 53 100')
+            $deny = @($n.Acls | Where-Object { $_.Action -eq 'Deny' })
+            $deny.Count | Should -Be 32
+            @($deny | Where-Object { $_.Weight -ne 10 -or "$($_.LocalAddress)$($_.Protocol)$($_.LocalPort)$($_.RemotePort)" -ne 'ANYANYANYANY' }).Count | Should -Be 0
+            @($deny | Where-Object { $_.Direction -eq 'Inbound' }).Count | Should -Be 16
+            Get-TestReadback $t $d $script:WinId | Should -BeNullOrEmpty
             @(& $t.Net.Verify (Win)).Count | Should -Be 0
             @(Get-AapFakeHostNetworkRecord -Root $t.Root | ForEach-Object { $_.state }) | Should -Be @('attached')
         }
 
-        It 'gives the contract validator a declaration, a record and a read-back it accepts, for both profiles' -Tag contract {
+        It 'gives validate.py a declaration and a record, and the shared check a read-back, that they accept, for both profiles' -Tag contract {
             $t.Vms[$script:WinId] = $true; $t.Vms[$script:LinId] = $true
             $w = & $t.Net.Attach (Win)
             $l = & $t.Net.Attach (Lin)
-            $docs = @($w, $l, (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId), (Get-TestReadback $t $w $script:WinId), (Get-TestReadback $t $l $script:LinId))
-            Test-Contract $t $docs | Should -Be @('ok', 'ok', 'ok', 'ok', 'ok')
+            Test-Contract $t @($w, $l, (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId), (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:LinId)) | Should -Be @('ok', 'ok', 'ok', 'ok')
+            @(Get-TestReadback $t $w $script:WinId) + @(Get-TestReadback $t $l $script:LinId) | Should -BeNullOrEmpty
+        }
+
+        It 'puts a build VM alone on its profile''s build switch' {
+            $t.Vms[$script:LinId] = $true
+            $d = & $t.Net.Attach (Lin)
+            $d.subnet | Should -Be '172.31.253.0/24'
+            $n = @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:LinId)[0]
+            $n.SwitchName | Should -Be 'aap-build-linux'
+            @(& $t.Net.Verify (Lin)).Count | Should -Be 0
+        }
+
+        It 'refuses a second VM on a build switch and records nothing for it' -Tag attach-peers {
+            $t.Vms[$script:LinId] = $true; $t.Vms[$script:WinId2] = $true
+            $null = & $t.Net.Attach (Lin)
+            $before = Get-TestState $t
+            { & $t.Net.Attach (Lin 'aap-lbuild-0badc0de' $script:WinId2) } | Should -Throw 'AAP_NetworkUntrusted: aap-build-linux already carries aap-lbuild-9f8e7d6c'
+            Get-TestState $t | Should -Be $before
+        }
+
+        It 'shows runner clones of a profile to each other as peers, which the shared check accepts' {
+            $t.Vms[$script:WinId] = $true; $t.Vms[$script:WinId2] = $true
+            $a = & $t.Net.Attach (Win)
+            $null = & $t.Net.Attach (Win 'aap-w-2-4-0f0e0d0c' $script:WinId2)
+            @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:WinId)[0].Peers | Should -Be @('aap-w-2-4-0f0e0d0c')
+            Get-TestReadback $t $a $script:WinId | Should -BeNullOrEmpty
+            @(& $t.Net.Verify (Win)).Count | Should -Be 0
         }
 
         It 'returns the same declaration on a repeated Attach and keeps one record and one adapter' {
@@ -182,46 +217,33 @@ Describe 'the shared host network fake' {
             $decl = & $t.Net.Attach (Win)
         }
 
-        It 'reports <Tamper>' -Tag verify-adapter -TestCases @(
-            @{ Tamper = 'no-adapter'; Want = 'has 0 network adapters, not 1' }, @{ Tamper = 'second-adapter'; Want = 'has 2 network adapters, not 1' }) {
+        It 'reports the tamper <Tamper>' -TestCases @(
+            @{ Tamper = 'no-adapter'; Want = @('the VM has 0 network adapters, not 1') }
+            @{ Tamper = 'second-adapter'; Want = @('the VM has 2 network adapters, not 1') }
+            @{ Tamper = 'external-switch'; Want = @("the adapter is on 'aap-guests-win' (External), not on the internal switch aap-guests-win") }
+            @{ Tamper = 'other-switch'; Want = @("the adapter is on 'aap-guests-linux' (Internal), not on the internal switch aap-guests-win") }
+            @{ Tamper = 'dhcp-guard-off'; Want = @("DHCP guard is 'Off', not On") }
+            @{ Tamper = 'router-guard-off'; Want = @("router guard is 'Off', not On") }
+            @{ Tamper = 'mac-spoofing-on'; Want = @("MAC address spoofing is 'On', not Off") }
+            @{ Tamper = 'port-mirroring'; Want = @("port mirroring is 'Destination', not None") }
+            @{ Tamper = 'vlan-trunk'; Want = @("the VLAN mode is 'Trunk', not Untagged or Access") }
+            @{ Tamper = 'foreign-peer'; Want = @('the runner clone shares aap-guests-win with aap-wbuild-0badc0de, not only runner clones of its profile') }
+            @{ Tamper = 'drop-fixed-deny'; Want = @('no unscoped Outbound deny for 10.0.0.0/8') }
+            @{ Tamper = 'drop-inbound-deny'; Want = @('no unscoped Inbound deny for 10.0.0.0/8') }
+            @{ Tamper = 'scoped-deny'; Want = @('no unscoped Inbound deny for 192.168.0.0/16') }
+            @{ Tamper = 'drop-host-deny'; Want = @("no unscoped Inbound deny covers the host's 2001:db8:1::/64", "no unscoped Outbound deny covers the host's 2001:db8:1::/64") }
+            @{ Tamper = 'extra-allow'; Want = @('rule 41: the Outbound allow 192.168.1.1/32 is not exactly a declared endpoint') }
+            @{ Tamper = 'allow-weight'; Want = @('rule 17: the Inbound allow 172.31.250.1/32 (weight 10) does not outweigh the deny 172.16.0.0/12 (weight 10)'
+                    'rule 17: the Inbound allow 172.31.250.1/32 (weight 10) does not outweigh the deny 172.31.250.0/24 (weight 10)')
+            }) {
             Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $Tamper
-            @(& $t.Net.Verify (Win)) | Should -Be @("VM $($script:WinId) $Want")
-        }
-
-        It 'reports <Tamper>' -Tag verify-switch -TestCases @(@{ Tamper = 'external-switch' }, @{ Tamper = 'other-switch' }) {
-            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $Tamper
-            @(& $t.Net.Verify (Win)) | Should -Be @('the adapter is not on the internal switch aap-guests-win')
-        }
-
-        It 'reports <Tamper>' -Tag verify-guards -TestCases @(@{ Tamper = 'dhcp-guard-off' }, @{ Tamper = 'router-guard-off' }, @{ Tamper = 'mac-spoofing-on' }) {
-            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $Tamper
-            @(& $t.Net.Verify (Win)) | Should -Be @('DHCP guard or router guard is off, or MAC address spoofing is on')
-        }
-
-        It 'reports a missing fixed deny' -Tag verify-fixed {
-            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper drop-fixed-deny
-            @(& $t.Net.Verify (Win)) | Should -Be @('no unscoped outbound deny for 10.0.0.0/8')
-        }
-
-        It 'reports a missing host-specific deny, which only Verify can see' -Tag verify-host {
-            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper drop-host-deny
-            @(& $t.Net.Verify (Win)) | Should -Be @("no deny covers the host's 2001:db8:1::/64")
-        }
-
-        It 'reports an allow for an address nobody declared' -Tag verify-allow {
-            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper extra-allow
-            @(& $t.Net.Verify (Win)) | Should -Be @('allowed 172.31.250.1, 192.168.1.1; declared 172.31.250.1')
-        }
-
-        It 'reports an allow that does not outrank every deny' -Tag verify-weight {
-            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper allow-weight
-            @(& $t.Net.Verify (Win)) | Should -Be @('an allow rule does not outrank every deny rule')
+            @(& $t.Net.Verify (Win)) | Should -Be $Want
         }
 
         It 'reports nothing again once a tamper is gone, and never changes the journal' {
             $before = Get-TestState $t
             Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper extra-allow, dhcp-guard-off, drop-host-deny
-            @(& $t.Net.Verify (Win)).Count | Should -Be 3
+            @(& $t.Net.Verify (Win)).Count | Should -Be 4
             Set-AapFakeHostNetworkKnob -Root $t.Root
             @(& $t.Net.Verify (Win)).Count | Should -Be 0
             Get-TestState $t | Should -Be $before
@@ -248,15 +270,16 @@ Describe 'the shared host network fake' {
             @(& $t.Net.Verify (Win)) | Should -Be @("VM $($script:WinId) does not exist")
         }
 
-        It 'gives the contract''s read-back every tamper but the host-specific deny to reject; Verify reports all of them' -Tag contract {
-            $tampers = @('no-adapter', 'second-adapter', 'external-switch', 'other-switch', 'dhcp-guard-off', 'router-guard-off', 'mac-spoofing-on',
-                'drop-fixed-deny', 'extra-allow', 'allow-weight', 'drop-host-deny')
-            $docs = foreach ($x in $tampers) {
+        It 'gives a consumer''s read-back every tamper but the host-specific deny to reject; Verify reports all of them' -Tag contract {
+            foreach ($x in @('no-adapter', 'second-adapter', 'external-switch', 'other-switch', 'dhcp-guard-off', 'router-guard-off',
+                    'mac-spoofing-on', 'port-mirroring', 'vlan-trunk', 'foreign-peer', 'drop-fixed-deny', 'drop-inbound-deny', 'scoped-deny', 'extra-allow', 'allow-weight')) {
                 Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $x
                 @(& $t.Net.Verify (Win)).Count | Should -BeGreaterThan 0 -Because $x
-                Get-TestReadback $t $decl $script:WinId
+                @(Get-TestReadback $t $decl $script:WinId).Count | Should -BeGreaterThan 0 -Because $x
             }
-            Test-Contract $t @($docs) | Should -Be @(@('FAIL') * 10 + @('ok'))
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper drop-host-deny
+            @(& $t.Net.Verify (Win)).Count | Should -Be 2
+            Get-TestReadback $t $decl $script:WinId | Should -BeNullOrEmpty
         }
     }
 

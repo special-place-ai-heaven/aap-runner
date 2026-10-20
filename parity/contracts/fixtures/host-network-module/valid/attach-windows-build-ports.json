@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "kind": "host_network_attach",
+  "vm_id": "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8",
+  "vm_name": "aap-wbuild-1a2b3c4d",
+  "profile": "windows",
+  "subnet": "172.31.252.0/24",
+  "endpoints": [
+    {
+      "role": "gateway",
+      "address": "172.31.252.1"
+    },
+    {
+      "role": "dhcp",
+      "address": "172.31.252.1",
+      "port": 67
+    },
+    {
+      "role": "dns",
+      "address": "172.31.252.1",
+      "port": 53
+    }
+  ]
+}
