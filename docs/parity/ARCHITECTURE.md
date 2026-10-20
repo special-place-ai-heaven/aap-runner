@@ -433,7 +433,7 @@ fallback, binary, variable or format reuse. Native `cl.exe`/`link.exe` start `di
 feature matrix marks them partial). Isolated cache roots per trust namespace (the repository plus
 the job's trust class: only push or schedule on the default branch with the
 repository as head repository is trusted, every other event or ref is untrusted, including
-workflow_dispatch and a tag push whose head_sha is not reachable from the default branch; a root is
+workflow_dispatch and every tag push, even one named like the default branch; a root is
 shared only among jobs whose writers are at least as trusted as every reader, and an untrusted job
 gets only its private per-job root; no shared root when the class is not known from GitHub before
 the root is attached) and copy or reflink delivery by default;
@@ -530,7 +530,7 @@ flowchart LR
   `schedule` on the default branch with the repository as head repository; `workflow_dispatch`
   (an untrusted same-repository job with `actions: write` can dispatch with attacker-chosen
   inputs), `pull_request`, `pull_request_target`, `workflow_run`, `issue_comment`, `merge_group`,
-  other branches, tags whose `head_sha` is not reachable from the default branch, and unknown
+  other branches, every tag push (a tag named like the default branch included), and unknown
   events are untrusted. The class is bound from GitHub's record of the assigned job (matched by
   `runner_id` and `runner_group_id`, exactly one match) before any shared root attaches, never from
   the guest; when that record is unavailable or ambiguous the job gets no shared root, and an

@@ -55,19 +55,28 @@ their own separate token with the self-hosted-runners permission. The App key st
 3. `Select-AapCacheJob -Jobs <all those jobs> -RunnerId <the runner id the broker registered for this VM, from its
    ledger> -RunnerGroupId <the pool's group>`: exactly one job or `$null`. Never match by runner name.
 4. `GET /repos/{o}/{r}/actions/runs/{job.run_id}` (the run: `event`, `head_branch`, `head_sha`, `repository.id`,
-   `head_repository.id`), `GET /repos/{o}/{r}` (`id`, `full_name`, `default_branch`) and
+   `head_repository.id`), `GET /repos/{o}/{r}` (`id`, `full_name`, `default_branch`),
    `GET /repos/{o}/{r}/compare/{default_branch}...{head_sha}`: `-HeadOnDefaultBranch` is `$true` when its `status` is
-   `identical` or `behind`, `$false` for `ahead` or `diverged`, `$null` when the call failed.
-5. `Get-AapCacheTrustClass -Run <run> -Repository <repository> -HeadOnDefaultBranch <bool or $null>` returns
-   `trust_class`, `repository_id` and `repository`, or `$null`.
+   `identical` or `behind`, `$false` for `ahead` or `diverged`, `$null` when the call failed, and
+   `GET /repos/{o}/{r}/git/matching-refs/tags/{default_branch}` (each `/`-separated part of the name percent-encoded):
+   `-DefaultBranchTags` is the array it returned with status 200, as `Invoke-RestMethod` returns it (an empty array
+   when no tag starts with that name; `ConvertFrom-Json` on PowerShell 7 needs `-NoEnumerate` to keep `[]` an array),
+   `$null` for any other status.
+5. `Get-AapCacheTrustClass -Run <run> -Repository <repository> -HeadOnDefaultBranch <bool or $null>
+   -DefaultBranchTags <array or $null>` returns `trust_class`, `repository_id` and `repository`, or `$null`.
 
-Zero or several matching jobs, any failed call, a run of another repository or an unchecked head mean `$null`: no
-class, private root only.
+Zero or several matching jobs, any failed call, a run of another repository, an unchecked head or a missing or
+malformed tag lookup mean `$null`: no class, private root only.
 
-**Tag hazard.** For a tag push, the run's `head_branch` is the tag's name, so a tag named like the default branch looks
-like the branch, even after the tag was deleted. The check is **reachability** of `head_sha` from the default branch
-(the compare call above), not whether such a tag exists. If any tag lookup is ever added, it uses the exact
-`GET /repos/{o}/{r}/git/ref/tags/<name>`, never `git/matching-refs` (a prefix match).
+**Tag hazard.** For a tag push, the run's `head_branch` is the tag's name and nothing in the run or job record says
+the ref was a tag, so a tag named like the default branch makes its run look like a push to that branch. Two checks
+close it as far as the API allows: the head must be **reachable** from the default branch (the compare call), and **no
+tag may have exactly the default branch's name** when the class is bound (the matching-refs call; while such a tag
+exists, no run of that repository is trusted). The lookup is `git/matching-refs`, not `git/ref/tags/<name>`: a 200
+with a list is positive evidence that no such tag exists, while `git/ref` reports a missing tag as a 404 that a missing
+permission or repository can also produce. The prefix match is harmless because `Get-AapCacheTrustClass` compares
+every returned `ref` exactly with `refs/tags/<default_branch>` and refuses an answer whose entries do not all start
+with it. What remains (a tag deleted before the lookup, and re-runs) is the residual stated in the contract, rule 6.
 
 **Deadline.** If the class is not established within a bounded time after the runner turns busy (start with 60 s),
 the job keeps its private root for its whole life. No retry later in the job.

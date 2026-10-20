@@ -16,6 +16,11 @@ is trusted only when its `head_sha` is reachable from the default branch, the cl
 the host from GitHub's job record matched by `runner_id` and `runner_group_id`, untrusted jobs get
 only a private per-job root, and the namespace key adds the zccache version. No schema change.
 
+Rule 6 amendment (P13.2, 2026-10-21): GitHub's run record does not say whether `head_branch` names a
+branch or a tag, so a trusted class also needs the host to find, when it binds the class, that no
+tag has exactly the default branch's name; a failed lookup means no shared root. The residual is
+stated in rule 6. No schema change.
+
 ## Rules (DECIDED)
 
 1. zccache **1.15.6**, tag `1.15.6`, commit `15ec9537af0d219e07b72ce2b3f97d5f68d72b5e`, release
@@ -52,10 +57,27 @@ only a private per-job root, and the namespace key adds the zccache version. No 
    the event and ref do not make it trusted), `pull_request`, `pull_request_target`,
    `workflow_run`, `issue_comment`, `merge_group`, pushes to
    any other branch (`dependabot/*`, `renovate/*`, feature branches), tag pushes, and any event this
-   rule does not name. A tag push is never trusted unless the run's `head_sha` is reachable from
-   the default branch (a tag can be named like a branch): the host computes reachability when it
-   binds the class, from the status of `compare default...head_sha` being `identical` or `behind`,
-   and an unknown result means no shared root. The ref alone never decides the class: `pull_request_target`, `workflow_run`
+   rule does not name. A tag push is never trusted. GitHub's run record names the ref without its
+   kind (for a tag push `head_branch` is the tag's name), so when the host binds the class it
+   establishes two things, and an unknown answer to either means no shared root: the run's
+   `head_sha` is reachable from the default branch (`compare default...head_sha` is `identical` or
+   `behind`), and no tag has exactly the default branch's name (`git/matching-refs/tags/<default>`,
+   each returned `ref` compared exactly with `refs/tags/<default>`). While such a tag exists, no run
+   of the repository is trusted.
+   **Residual (P13.2).** Two kinds of run can still classify trusted while running a commit other
+   than the default branch's current head, at a time a writer chose: the run of a tag named like the
+   default branch and deleted before the lookup (any commit reachable from the default branch), and
+   a re-run of an earlier default-branch run (that run's head). Old heads were reviewed states, but
+   a flaw since fixed in their workflow becomes usable again. Reachable commits that never were a
+   head are worse: with merge commits or rebase merges a pull request's intermediate commits are
+   reachable without having been reviewed on their own, so a writer who added a step and removed it
+   later in the same pull request can run it with a trusted root. The residual is acceptable only
+   where the default branch's history holds no such intermediate commits (it only ever took squash
+   merges) or no writer can create a tag with the default branch's name (a tag ruleset), and only if
+   replaying old heads is accepted. Closing it needs a stricter rule (the run's `head_sha` equals
+   the default branch's head when the class is bound), which costs the shared root of every run
+   superseded before binding and of every re-run: an OWNER decision.
+   The ref alone never decides the class: `pull_request_target`, `workflow_run`
    and `issue_comment` run on the default branch with input an outsider controls. A root is shared
    only among jobs whose writers are at least as trusted as every reader; an untrusted job never
    writes a root that a trusted job reads. The class comes from GitHub's record of the job GitHub

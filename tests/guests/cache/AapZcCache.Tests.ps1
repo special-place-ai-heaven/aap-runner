@@ -797,7 +797,7 @@ Describe 'Get-AapCacheTrustClass (contract rule 6, amended)' {
         @{ Case = 'a tag named like the default branch, already deleted, head not on the default branch'; Run = @('push', 'main', 1, 1); Reach = $false; Want = 'untrusted' }
         @{ Case = 'a push whose head was not checked against the default branch'; Run = @('push', 'main', 1, 1); Reach = $null; Want = $null }
     ) {
-        $got = Get-AapCacheTrustClass -Run (New-Run @Run) -Repository $script:Repository -HeadOnDefaultBranch $Reach
+        $got = Get-AapCacheTrustClass -Run (New-Run @Run) -Repository $script:Repository -HeadOnDefaultBranch $Reach -DefaultBranchTags @()
         if ($null -eq $Want) { $got | Should -BeNullOrEmpty }
         else {
             $got.trust_class | Should -BeExactly $Want
@@ -805,8 +805,29 @@ Describe 'Get-AapCacheTrustClass (contract rule 6, amended)' {
             $got.repository | Should -BeExactly 'org/repo'
         }
     }
+    # GitHub's run record of a tag push is the record of a branch push with the tag's name as head_branch: the same
+    # fields, no ref and no ref kind. Only the host's tag lookup (matching-refs/tags/<default branch>) tells them apart.
+    It 'a push to the default branch with <Case> is <Want>' -Tag 'TRUST-TAG', 'TRUST-TAG-UNKNOWN' -TestCases @(
+        @{ Case = 'a tag named like the default branch on a commit of that branch'; Tags = @(@{ ref = 'refs/tags/main' }); Want = 'untrusted' }
+        @{ Case = 'that tag among tags that only start with its name'; Tags = @(@{ ref = 'refs/tags/main-v2' }, @{ ref = 'refs/tags/main' }); Want = 'untrusted' }
+        @{ Case = 'no tag starting with the default branch''s name'; Tags = @(); Want = 'trusted' }
+        @{ Case = 'only tags that start with the default branch''s name'; Tags = @(@{ ref = 'refs/tags/main-v2' }, @{ ref = 'refs/tags/mainline' }, @{ ref = 'refs/tags/main/x' }); Want = 'trusted' }
+        @{ Case = 'a tag named like the default branch in another case (a push of it fails the branch check)'; Tags = @(@{ ref = 'refs/tags/Main' }); Want = 'trusted' }
+        @{ Case = 'no tag lookup (the call failed)'; Tags = $null; Want = $null }
+        @{ Case = 'a lookup entry without a ref'; Tags = @(@{ object = @{ sha = ('a' * 40) } }); Want = $null }
+        @{ Case = 'a null lookup entry'; Tags = @($null); Want = $null }
+        @{ Case = 'a lookup answering another name'; Tags = @(@{ ref = 'refs/tags/v1' }); Want = $null }
+        @{ Case = 'a lookup answering branches'; Tags = @(@{ ref = 'refs/heads/main' }); Want = $null }
+    ) {
+        $got = Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -HeadOnDefaultBranch $true -DefaultBranchTags $Tags
+        if ($null -eq $Want) { $got | Should -BeNullOrEmpty }
+        else {
+            $got.trust_class | Should -BeExactly $Want
+            $got.repository_id | Should -Be 1
+        }
+    }
     It 'a run of another repository yields no class' -Tag 'TRUST-SAME-REPO' {
-        Get-AapCacheTrustClass -Run (New-Run 'push' 'main' 2 2) -Repository $script:Repository -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run (New-Run 'push' 'main' 2 2) -Repository $script:Repository -HeadOnDefaultBranch $true -DefaultBranchTags @() | Should -BeNullOrEmpty
     }
     It 'an incomplete record yields no class, without throwing under strict mode' {
         Set-StrictMode -Version Latest

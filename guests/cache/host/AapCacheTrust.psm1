@@ -1,4 +1,5 @@
-# Cache trust class of a job (cache-qualification.md rule 6 as amended: workflow_dispatch is not trusted), for the host
+# Cache trust class of a job (cache-qualification.md rule 6 as amended: workflow_dispatch is not trusted, and no run is
+# trusted while a tag carries the default branch's name), for the host
 # (P12/P16). Windows PowerShell 5.1 and 7. Input is GitHub's record of the job GitHub assigned to the runner, never
 # anything the guest reports; INTEGRATION.md names the API calls and the token that produce it. Anything incomplete,
 # inconsistent or ambiguous yields $null, and a job with no class gets no shared cache root. Only 'trusted' ever gets one.
@@ -29,10 +30,13 @@ function Get-AapCacheTrustClass {
        head_branch, head_sha, repository.id, head_repository.id. Repository: GET /repos/{owner}/{repo} (id, full_name,
        default_branch). HeadOnDefaultBranch: whether the run's head_sha is reachable from the default branch,
        computed at bind time from GET /repos/{owner}/{repo}/compare/{default_branch}...{head_sha} (status identical or
-       behind: $true; ahead or diverged: $false; not checked: $null). It closes the tag hazard: a tag push reports the
-       tag's name as head_branch, and a tag named like the default branch, even one deleted since, would otherwise pass.
+       behind: $true; ahead or diverged: $false; not checked: $null). DefaultBranchTags: the array returned at bind
+       time by GET /repos/{owner}/{repo}/git/matching-refs/tags/{default_branch} (every tag whose name starts with the
+       default branch's name, empty when none), $null when that call failed. A tag push reports the tag's name as
+       head_branch and nothing in the run says it was a tag, so while a tag has exactly the default branch's name no run
+       is trusted; one deleted before the lookup is left to the reachability check (rule 6, residual).
        Returns @{ trust_class; repository_id; repository } or $null. #>
-    param($Run, $Repository, [Nullable[bool]]$HeadOnDefaultBranch)
+    param($Run, $Repository, [Nullable[bool]]$HeadOnDefaultBranch, [object[]]$DefaultBranchTags)
     $repoId = [string](Get-AapCacheProp $Repository 'id')
     $name = [string](Get-AapCacheProp $Repository 'full_name')
     $default = [string](Get-AapCacheProp $Repository 'default_branch')
@@ -41,6 +45,14 @@ function Get-AapCacheTrustClass {
     $runRepo = [string](Get-AapCacheProp (Get-AapCacheProp $Run 'repository') 'id')
     $headRepo = [string](Get-AapCacheProp (Get-AapCacheProp $Run 'head_repository') 'id')
     if (-not $repoId -or -not $name -or -not $default -or -not $ev -or -not $runRepo) { return $null }
+    # Whether a tag has exactly the default branch's name; $null when the lookup is missing or not the answer to it.
+    $tag = $null
+    if ($null -ne $DefaultBranchTags) {
+        $refs = @($DefaultBranchTags | ForEach-Object { [string](Get-AapCacheProp $_ 'ref') })
+        if (-not @($refs | Where-Object { -not $_.StartsWith("refs/tags/$default", [StringComparison]::OrdinalIgnoreCase) }).Count) {
+            $tag = $refs -ccontains "refs/tags/$default"
+        }
+    }
     if ($runRepo -ne $repoId) { return $null }  # SAFETY:TRUST-SAME-REPO (the run belongs to another repository)
     $class = 'trusted'
     if (@('push', 'schedule') -cnotcontains $ev) { $class = 'untrusted' }  # SAFETY:TRUST-EVENT
@@ -49,6 +61,8 @@ function Get-AapCacheTrustClass {
     elseif ($headRepo -ne $repoId) { $class = 'untrusted' }  # SAFETY:TRUST-HEAD-REPO
     elseif ($null -eq $HeadOnDefaultBranch) { return $null }  # SAFETY:TRUST-REACH-UNKNOWN
     elseif (-not $HeadOnDefaultBranch) { $class = 'untrusted' }  # SAFETY:TRUST-REACHABLE
+    elseif ($null -eq $tag) { return $null }  # SAFETY:TRUST-TAG-UNKNOWN
+    elseif ($tag) { $class = 'untrusted' }  # SAFETY:TRUST-TAG (a tag push would look exactly like this run)
     [pscustomobject]@{ trust_class = $class; repository_id = [long]$repoId; repository = $name }
 }
 
