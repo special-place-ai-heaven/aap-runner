@@ -1,0 +1,16 @@
+# P15: the clone's first boot, once, after cloud-init made the job user and the host key (agent.sh, firstboot). The
+# agent answers probe with ready only after it finished; it never runs a second time in a clone.
+[Unit]
+Description=aap-guest first boot
+After=cloud-final.service hv-kvp-daemon.service docker.service
+Wants=hv-kvp-daemon.service
+ConditionPathExists=!/var/lib/aap-guest/firstboot.done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/aap-guest/agent firstboot
+TimeoutStartSec=14min
+
+[Install]
+WantedBy=multi-user.target

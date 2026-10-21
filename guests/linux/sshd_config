@@ -1,0 +1,30 @@
+# P15: the management sshd on vsock 5222 (aap-guest-ssh@.service runs sshd -i -f with this file). Root logs in with the
+# seed's key and runs the agent, nothing else: no shell, no forwarding, no tty, no subsystem, no client environment.
+# Nothing may reach stdout before the agent's reply (a banner or MOTD is a hostile reply to the host).
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKeyAlgorithms ssh-ed25519
+PubkeyAcceptedAlgorithms ssh-ed25519
+AllowUsers root
+PermitRootLogin forced-commands-only
+ForceCommand /usr/local/libexec/aap-guest/agent
+AuthenticationMethods publickey
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+HostbasedAuthentication no
+PermitEmptyPasswords no
+PermitUserEnvironment no
+AllowTcpForwarding no
+AllowStreamLocalForwarding no
+AllowAgentForwarding no
+GatewayPorts no
+PermitTunnel no
+X11Forwarding no
+PermitTTY no
+PrintMotd no
+PrintLastLog no
+Banner none
+MaxSessions 1
+MaxAuthTries 2
+LoginGraceTime 30
+StrictModes yes

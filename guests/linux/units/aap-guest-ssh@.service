@@ -1,0 +1,12 @@
+# P15: one management connection. Its own configuration only (no Include of the image's sshd_config.d); root's key from
+# the seed can start the agent and nothing else.
+[Unit]
+Description=aap-guest management sshd connection
+
+[Service]
+ExecStart=-/usr/sbin/sshd -i -f /etc/ssh/aap-guest/sshd_config
+StandardInput=socket
+StandardError=journal
+RuntimeDirectory=sshd
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
