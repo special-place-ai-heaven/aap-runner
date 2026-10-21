@@ -856,8 +856,27 @@ Describe 'Get-AapCacheTrustClass (contract rule 6, amended)' {
         @{ Case = 'no list'; Enabled = $null }
         @{ Case = 'an empty list'; Enabled = @() }
         @{ Case = 'other repositories only'; Enabled = @(2, 3) }
+        @{ Case = '$true (PowerShell would call it equal to 1)'; Enabled = $true }
+        @{ Case = 'a list holding $true'; Enabled = @($true) }
+        @{ Case = 'the string True'; Enabled = 'True' }
+        @{ Case = '1.0 (a double)'; Enabled = 1.0 }
+        @{ Case = 'the string 01'; Enabled = '01' }
+        @{ Case = 'the string " 1"'; Enabled = ' 1' }
+        @{ Case = 'the string "1 "'; Enabled = '1 ' }
     ) {
         Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -BranchRef (New-Ref) -EnabledRepositoryIds $Enabled | Should -BeNullOrEmpty
+    }
+    It 'an enabled repository given as <Case> is trusted' -Tag 'TRUST-ACTIVATION' -TestCases @(
+        @{ Case = 'an int'; Enabled = 1 }
+        @{ Case = 'a long'; Enabled = [long]1 }
+        @{ Case = 'the string 1'; Enabled = '1' }
+        @{ Case = 'a list of strings'; Enabled = @('3', '1') }
+    ) {
+        (Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -BranchRef (New-Ref) -EnabledRepositoryIds $Enabled).trust_class | Should -BeExactly 'trusted'
+    }
+    It 'a repository id given as a string matches an int in the list' -Tag 'TRUST-ACTIVATION' {
+        $repo = [pscustomobject]@{ id = '1'; full_name = 'org/repo'; default_branch = 'main' }
+        (Get-AapCacheTrustClass -Run (New-Run) -Repository $repo -BranchRef (New-Ref) -EnabledRepositoryIds 1).trust_class | Should -BeExactly 'trusted'
     }
     It 'an enabled repository read from a JSON list is trusted' -Tag 'TRUST-ACTIVATION' {
         $enabled = '{"repository_ids":[3,1]}' | ConvertFrom-Json

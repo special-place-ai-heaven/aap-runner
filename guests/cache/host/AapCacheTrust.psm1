@@ -30,7 +30,8 @@ function Get-AapCacheTrustClass {
        head_branch, head_sha, repository.id, head_repository.id. Repository: GET /repos/{owner}/{repo} (id, full_name,
        default_branch). BranchRef: the body of GET /repos/{owner}/{repo}/git/ref/heads/{default_branch} (the branch-only,
        exact-match endpoint) made at bind time when it answered 200 (ref, url, object.type, object.sha), $null when it
-       failed or was not made. EnabledRepositoryIds: the repositories the owner enabled for a shared root, recorded
+       failed or was not made. EnabledRepositoryIds: the ids (integers or their decimal strings; anything else is
+       ignored) of the repositories the owner enabled for a shared root, recorded
        host-side (INTEGRATION.md decision 4); any other repository gets no class.
        Nothing in a run says whether head_branch names a branch or a tag (a tag push reports the tag's name), so a run is
        trusted only when its head_sha IS the default branch's head when the class is bound: the answer is that branch's
@@ -54,7 +55,9 @@ function Get-AapCacheTrustClass {
     $refSha = [string](Get-AapCacheProp (Get-AapCacheProp $BranchRef 'object') 'sha')
     if (-not $name -or -not $default -or -not $ev -or -not $runRepo) { return $null }
     if ($runRepo -ne $repoId) { return $null }  # SAFETY:TRUST-SAME-REPO (the run belongs to another repository)
-    if (@($EnabledRepositoryIds) -notcontains $id) { return $null }  # SAFETY:TRUST-ACTIVATION (not enabled by the owner)
+    # Ordinal string membership: PowerShell's -contains would coerce $true -eq 1 and 1.0 -eq 1.
+    $enabled = @(@($EnabledRepositoryIds) | Where-Object { $_ -is [string] -or $_ -is [int] -or $_ -is [long] } | ForEach-Object { [string]$_ })
+    if ($enabled -cnotcontains $repoId) { return $null }  # SAFETY:TRUST-ACTIVATION (not enabled by the owner)
     $class = 'trusted'
     if (@('push', 'schedule') -cnotcontains $ev) { $class = 'untrusted' }  # SAFETY:TRUST-EVENT
     elseif ($branch -cne $default) { $class = 'untrusted' }  # SAFETY:TRUST-BRANCH

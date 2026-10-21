@@ -76,8 +76,13 @@ change.
    chose (a tag at the current head, a re-run while its commit is still the head): it runs exactly
    the reviewed head, as a push to the branch would. The cost: a run whose push was superseded
    before binding, and a re-run of an older run, get a private root (a lower hit rate, accepted). A
-   tag ruleset that stops writers from creating a tag with the default branch's name is optional
-   hardening, not a condition.
+   tag ruleset that stops writers from creating a tag with the default branch's name is not a
+   condition of the class but is RECOMMENDED for every enabled repository, because of what remains
+   without it: while a tag named like the default branch exists, the bare name (`main`) is
+   ambiguous in a job's scripts (git prefers `refs/tags/main` to `refs/heads/main`), and a
+   tag-triggered run of the current head runs the reviewed head's workflow files with tag values in
+   `github.ref`, `github.ref_type` and `github.ref_name`; steps that branch on those values are
+   reviewed code of that head.
    The ref alone never decides the class: `pull_request_target`, `workflow_run`
    and `issue_comment` run on the default branch with input an outsider controls. A root is shared
    only among jobs whose writers are at least as trusted as every reader; an untrusted job never

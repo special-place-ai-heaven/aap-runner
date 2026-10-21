@@ -23,7 +23,8 @@ is the wiring for after that proof.
 4. **Activation.** Shared roots stay OFF until the lab proof exists (top of this page). After it, a repository gets a
    shared root only once the owner's decision to enable that repository is recorded host-side; until then its jobs use
    private roots. The host passes the enabled repository ids to `Get-AapCacheTrustClass -EnabledRepositoryIds`, which
-   returns no class for any other repository (a missing or empty list enables none). Rule 6 leaves no other
+   returns no class for any other repository (a missing or empty list enables none; entries are compared as exact
+   decimal strings, and anything that is not an integer or a string, such as `$true` or `1.0`, is ignored). Rule 6 leaves no other
    per-repository condition to check before that decision (no merge-method or tag-rule precondition): it trusts only a
    run of the default branch's current head.
 
@@ -73,7 +74,9 @@ Zero or several matching jobs, any failed call, a run of another repository, a r
 integer, a repository the owner did not enable, or a ref answer that is missing, has no `object.sha`, or names another
 ref (`refs/tags/<default>`, a longer branch name, another case), another object type or another repository (its
 `url`, compared exactly with `https://api.github.com/repos/<full_name>/git/refs/heads/<default>`) mean `$null`: no
-class, private root only.
+class, private root only. The module hard-codes `api.github.com` and the branch name as it stands in that URL, so a
+GitHub Enterprise Server host, or a default branch whose name GitHub would percent-encode there, fails closed: no
+shared root (availability only, never a wrong class).
 
 **Tag pushes and re-runs.** GitHub's run record has no ref field, and for a tag push `head_branch` is the tag's name,
 so a tag named like the default branch produces a record that looks exactly like a push to that branch. The rule does
@@ -92,6 +95,10 @@ step must show:
   naming `refs/tags/<default>`, a longer branch name or the branch in another case, `object.type` `tag`, the `url`
   of another repository or a fork, a list body, no `object.sha`; 404, any other error status, a rate-limit answer
   (403/429), a timeout and a truncated or unparseable body: `$null`;
+- the ref is fetched fresh for each bind, never cached or reused from another job or bind;
+- the body is rejected when it is a JSON array, checked on the raw text before it is converted (its first
+  non-blank character is not `{`): pwsh 7's `ConvertFrom-Json` and `Invoke-RestMethod` unroll a one-item list to
+  the item, and 5.1 has no `-NoEnumerate`; a test sends a one-item list holding the right ref and expects `$null`;
 - the enabled list it passes is the owner's recorded list (a repository missing from it: `$null`), and a repository
   record whose `id` is not a positive integer gives `$null` without throwing.
 
