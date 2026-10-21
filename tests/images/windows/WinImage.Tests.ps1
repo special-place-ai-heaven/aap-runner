@@ -362,7 +362,7 @@ Describe 'preflight refusals change nothing' {
         (Invoke-Build).Reason | Should -Be 'AAP_GenerationExists'
         (Get-Ops $w 'NewVm').Count | Should -Be 0
     }
-    It 'refuses a config without <Key>' -TestCases @(@{ Key = 'MediaSha256' }, @{ Key = 'BuilderCommit' }, @{ Key = 'StagingGibMax' }, @{ Key = 'BaseGibMax' }, @{ Key = 'JobDiskGibMax' }, @{ Key = 'SwitchName' }) {
+    It 'refuses a config without <Key>' -TestCases @(@{ Key = 'MediaSha256' }, @{ Key = 'BuilderCommit' }, @{ Key = 'StagingGibMax' }, @{ Key = 'BaseGibMax' }, @{ Key = 'JobDiskGibMax' }) {
         $w.Config.Remove($Key)
         (Invoke-Build).Reason | Should -Be 'AAP_ConfigInvalid'
     }
@@ -399,8 +399,8 @@ Describe 'a full build with fakes' {
         $order = @($w.Requests | Where-Object { $_.phase -ne 'verify' } | ForEach-Object { $_.phase } | Select-Object -Unique)
         $expected = @($w.Plan.phases | Where-Object { $_.kind -ne 'restart' -or $_.check_registry -or $_.check } | Where-Object { $_.kind -ne 'action' -or $_.action -notlike 'download-*' } | ForEach-Object { $_.id })
         $order | Should -Be $expected
-        (Get-Ops $w 'RestartVm').Count | Should -Be 6
-        $seq = @($w.Calls | Where-Object { $_.Op -in 'RestartVm', 'InvokeGuest' } | ForEach-Object { if ($_.Op -eq 'RestartVm') { 'R' } else { 'G' } }) -join ''
+        @(Get-Ops $w 'StopVm').Count | Should -Be 7   # six reboots and the seal
+        $seq = @($w.Calls | Where-Object { $_.Op -in 'StopVm', 'InvokeGuest' } | ForEach-Object { if ($_.Op -eq 'StopVm') { 'R' } else { 'G' } }) -join ''
         $seq | Should -Match '^G{8}RG'
         @($w.Requests | Where-Object { $_.phase -eq 'p09' } | ForEach-Object { $_.action }) | Should -Be @('wait-no-pending-reboot', 'wait-containers-feature')
     }
@@ -478,6 +478,18 @@ Describe 'a full build with fakes' {
         Test-Path (Join-Path $w.Staging 'build\win25-vs2026-x64_20261007.264.1-aap.1') | Should -BeFalse
         @(Get-ChildItem -LiteralPath (Split-Path -Parent $script:Pub) -Force).Name | Should -Be @('base.vhdx')
     }
+    It 'gives the build guest the declaration''s static addressing in its answer file, and the verification guest none' {
+        $address = @(Get-Content -Raw (Join-Path $w.NetRoot 'released.json') | ConvertFrom-Json)[0]
+        $address | Should -Match '^172\.31\.252\.\d+$'
+        $u = $w.Unattend[0]
+        $u | Should -Match ('<IpAddress wcm:action="add" wcm:keyValue="1">' + [regex]::Escape($address) + '/24</IpAddress>')
+        $u | Should -Match '<NextHopAddress>172\.31\.252\.1</NextHopAddress>'
+        $u | Should -Match '<IpAddress wcm:action="add" wcm:keyValue="1">192\.0\.2\.53</IpAddress>\s+<IpAddress wcm:action="add" wcm:keyValue="2">198\.51\.100\.53</IpAddress>'
+        $u | Should -Match '<DhcpEnabled>false</DhcpEnabled>'
+        $u | Should -Not -Match '<DhcpEnabled>true'
+        $w.Unattend[1] | Should -Not -Match 'Microsoft-Windows-TCPIP|Microsoft-Windows-DNS-Client'
+        @((Get-Ops $w 'ApplyWindowsImage')[0].Args.Files.Keys).Count | Should -Be 0
+    }
     It 'creates both answer files with a random password and never autologon' {
         $w.Unattend.Count | Should -Be 2
         foreach ($u in $w.Unattend) {
@@ -501,14 +513,19 @@ Describe 'a full build with fakes' {
         $sent | Should -Be @('hello.c', 'request.json', 'runner-images.zip', 'AapGuestVerify.ps1', 'windows.ps1' | Sort-Object)
         @((Get-Ops $w 'ApplyWindowsImage')[0].Args.CopyFiles.Keys) | Should -Be @('aap-build\AapGuestRunner.ps1')
     }
-    It 'attaches the build VM through the network module before it boots, checks the verification VM has no adapter, and addresses guests by VM id' {
+    It 'attaches the build VM before every power-on with the VM off, detaches it after removal, never attaches the verification VM, and addresses guests by VM id' {
         $build = $w.VmIds[@($w.VmIds.Keys | Where-Object { $_ -like 'aap-wbuild-*' })[0]]
         $verify = $w.VmIds[@($w.VmIds.Keys | Where-Object { $_ -like 'aap-wverify-*' })[0]]
-        $seq = @($w.Calls | Where-Object { $_.Op -in 'NewVm', 'NetAttach', 'NetVerify', 'GetVmNetwork', 'StartVm', 'StopVm', 'NetDetach', 'RemoveVm' } | ForEach-Object { $_.Op }) -join ','
-        $seq | Should -BeLike 'NewVm,NetAttach,NetVerify,GetVmNetwork,StartVm,StopVm,NetDetach,RemoveVm,NewVm,GetVmNetwork,StartVm,RemoveVm*'
-        foreach ($c in @(Get-Ops $w 'NetAttach') + @(Get-Ops $w 'NetVerify') + @(Get-Ops $w 'NetDetach')) { $c.Args.VmId | Should -Be $build; $c.Args.Profile | Should -Be 'windows' }
-        @(Get-Ops $w 'GetVmNetwork' | ForEach-Object { $_.Args.VmId }) | Should -Be @($build, $verify)
-        foreach ($c in Get-Ops $w 'NewVm') { $c.Args.ContainsKey('SwitchName') | Should -BeFalse }
+        $ops = 'NewVm', 'GetVmConfig', 'NetAttach', 'WriteOfflineFiles', 'NetVerify', 'GetVmNetwork', 'StartVm', 'StopVm', 'RemoveVm', 'NetDetach'
+        $seq = @($w.Calls | Where-Object { $_.Op -in $ops } | ForEach-Object { $_.Op }) -join ','
+        $want = @(@('NewVm,GetVmConfig,NetAttach,WriteOfflineFiles,NetVerify,GetVmNetwork,StartVm') + @(1..6 | ForEach-Object { 'StopVm,NetAttach,NetVerify,GetVmNetwork,StartVm' }) +
+            @('StopVm,RemoveVm,NetDetach', 'WriteOfflineFiles,NewVm,GetVmConfig,GetVmNetwork,StartVm,RemoveVm')) -join ','
+        $seq | Should -Be $want
+        foreach ($c in @(Get-Ops $w 'NetAttach') + @(Get-Ops $w 'NetVerify') + @(Get-Ops $w 'NetDetach')) {
+            $c.Args.VmId | Should -Be $build; $c.Args.VmName | Should -BeLike 'aap-wbuild-*'; $c.Args.Profile | Should -Be 'windows'; $c.Args.Count | Should -Be 3
+        }
+        @(Get-Ops $w 'GetVmNetwork' | ForEach-Object { $_.Args.VmId } | Select-Object -Unique) | Should -Be @($build, $verify)
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 0
         $ids = @($w.VmIds.Values)
         foreach ($op in 'InvokeGuest', 'SendFile', 'ReceiveFile', 'WaitGuestReady', 'StartVm', 'GetGuestBootTime') {
             @(Get-Ops $w $op).Count | Should -BeGreaterThan 0 -Because $op
@@ -522,7 +539,7 @@ Describe 'a full build with fakes' {
         $script:Ev.plan_sha256 | Should -Be (Get-FileSha $w.PlanPath)
         $script:Ev.inputs_manifest_sha256 | Should -Be $script:Rec.provenance.inputs_manifest_sha256
         $script:Ev.builder_commit | Should -Be $w.Config.BuilderCommit
-        $script:Ev.switch | Should -Be 'aap-guests-win'
+        $script:Ev.switch | Should -Be 'aap-build-win'
         @($script:Ev.registry_check.checked) | Should -Be @('autologon-password', 'autologon-enabled', 'lsa-default-password')
         $scan = Get-Content -Raw (Join-Path (Split-Path -Parent $script:R.RecordPath) 'secret-scan.json') | ConvertFrom-Json
         @($scan.registry.checked).Count | Should -Be 3
@@ -998,31 +1015,61 @@ Describe 'hostile guest disk: offline writes never follow guest-authored links' 
     }
 }
 
-Describe 'network: internal switch for the build, none for verification' {
+Describe 'network: the host network module, the build VM on its own switch, none for verification' {
+    BeforeDiscovery {
+        $script:ReadBackTampers = @('no-adapter', 'second-adapter', 'external-switch', 'other-switch', 'dhcp-guard-off', 'router-guard-off', 'mac-spoofing-on',
+            'port-mirroring', 'vlan-trunk', 'storm-limit-off', 'legacy-acl', 'foreign-peer', 'drop-fixed-deny', 'drop-inbound-deny', 'scoped-deny', 'stateful-rule',
+            'isolated-rule', 'no-source-pin', 'pin-above-deny', 'extra-allow' | ForEach-Object { @{ Tamper = $_ } })
+        $script:HostTampers = @('public-host', 'host-empty', 'host-no-gateway', 'host-no-lan' | ForEach-Object { @{ Tamper = $_ } })
+    }
+    BeforeAll {
+        function Assert-NotStarted {
+            @(Get-Ops $w 'StartVm').Count | Should -Be 0
+            Assert-CleanedUp
+        }
+        # Remove-BuildNetwork from the guest runner (the copy under test), defined here next to stand-ins for the cmdlets it
+        # calls: functions win over cmdlets, so nothing touches this host's network. Returns what it did, in order.
+        function Invoke-GuestRemoveBuildNetwork($Nics, [string]$Address, [switch]$Stuck) {
+            $runner = Join-Path (Split-Path -Parent (Get-TestModulePath)) 'guest\AapGuestRunner.ps1'
+            $ast = [Management.Automation.Language.Parser]::ParseFile($runner, [ref]$null, [ref]$null)
+            $fn = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Remove-BuildNetwork' }, $true)
+            $log = New-Object System.Collections.Generic.List[string]
+            function Get-NetIPAddress { [CmdletBinding()] param($AddressFamily)
+                @($Nics | Where-Object { $_.IPv4 } | ForEach-Object { [pscustomobject]@{ IPAddress = $_.IPv4; InterfaceIndex = $_.Index } }) }
+            function Remove-NetRoute { [CmdletBinding(SupportsShouldProcess)] param($InterfaceIndex) $log.Add("route $InterfaceIndex") }
+            function Remove-NetIPAddress { [CmdletBinding(SupportsShouldProcess)] param($InterfaceIndex, $AddressFamily)
+                $log.Add("ip $InterfaceIndex"); if (-not $Stuck) { foreach ($n in $Nics) { if ($n.Index -eq $InterfaceIndex) { $n.IPv4 = $null } } } }
+            function Set-NetIPInterface { [CmdletBinding()] param($InterfaceIndex, $Dhcp) $log.Add("dhcp $InterfaceIndex") }
+            function Set-DnsClientServerAddress { [CmdletBinding()] param($InterfaceIndex, [switch]$ResetServerAddresses) $log.Add("dns $InterfaceIndex") }
+            . ([scriptblock]::Create($fn.Extent.Text))
+            Remove-BuildNetwork $Address
+            , $log.ToArray()
+        }
+    }
     BeforeEach { $w = New-FakeWorld }
     AfterEach { Remove-World $w }
-    It 'refuses <Case>' -Tag 'network' -TestCases @(
-        @{ Case = 'the Default Switch'; Edit = { param($w) $w.Config.SwitchName = 'Default Switch' } }
-        @{ Case = 'another switch name'; Edit = { param($w) $w.Config.SwitchName = 'lab-ext' } }
-        @{ Case = 'an External switch of the right name'; Edit = { param($w) $w.Switch = @{ Name = 'aap-guests-win'; SwitchType = 'External' } } }
-        @{ Case = 'a Private switch of the right name'; Edit = { param($w) $w.Switch = @{ Name = 'aap-guests-win'; SwitchType = 'Private' } } }
-        @{ Case = 'a missing switch'; Edit = { param($w) $w.Switch = $null } }) {
-        & $Edit $w
-        $r = Invoke-Build
-        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
-        Assert-NothingStarted
-    }
-    It 'the production provider disables key-value exchange and guest services, leaves every VM without an adapter and reads adapters back from Hyper-V' {
+    It 'the production provider creates every VM without an adapter, never restarts one in place, and reads adapters back in the contract''s shape' {
         $t = Get-Content -Raw (Join-Path (Split-Path -Parent (Get-TestModulePath)) 'AapWinImage.HyperV.psm1')
         $t | Should -Match "'Guest Service Interface', 'Key-Value Pair Exchange'"
         $t | Should -Match 'Hyper-V\\Get-VMNetworkAdapter -VM \$vm \| Hyper-V\\Remove-VMNetworkAdapter'
-        $t | Should -Not -Match 'Connect-VMNetworkAdapter|Add-VMNetworkAdapter|Set-VMNetworkAdapter'
-        $t | Should -Match 'Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter \$n'
-        $t | Should -Match 'MacAddressSpoofing = \(\[string\]\$n\.MacAddressSpoofing -ne ''Off''\)'
+        $t | Should -Not -Match 'Connect-VMNetworkAdapter|Add-VMNetworkAdapter|Set-VMNetworkAdapter|Restart-VM'
+        $t | Should -Match 'MacAddressSpoofing = \[string\]\$n\.MacAddressSpoofing'
+        $t | Should -Match 'VlanMode = \[string\]\$n\.VlanSetting\.OperationMode'
+        $t | Should -Match 'LegacyAcls = @\(Hyper-V\\Get-VMNetworkAdapterAcl -VMNetworkAdapter \$n\)\.Count'
+        $t | Should -Match 'Get-VMNetworkAdapter -All \| Where-Object \{ \$name -and -not \$_\.IsManagementOs'
+        $t | Should -Match 'Weight = \$_\.Weight; Stateful = \[string\]\$_\.Stateful; IsolationId = \[string\]\$_\.IsolationID'
+        $t | Should -Match 'AutomaticStartAction = \[string\]\$vm\.AutomaticStartAction; CheckpointType = \[string\]\$vm\.CheckpointType'
         $t | Should -Match 'Invoke-Command -VMId'
         $t | Should -Not -Match '-VMName'
     }
-    It 'refuses to build without the P10.0 guest network module' -Tag 'network-module' {
+    It 'keeps no switch name or deny list of its own and imports the shared check only after supervisor\network passed the admin-only check' {
+        $t = Get-Content -Raw (Get-TestModulePath)
+        $t | Should -Not -Match 'aap-guests-win|DenyRanges|10\.0\.0\.0/8|GetSwitch|RestartVm'
+        $imports = [regex]::Matches($t, 'Import-Module \$script:NetworkCheck')
+        $imports.Count | Should -Be 1
+        $imports[0].Index | Should -BeGreaterThan $t.IndexOf('# check:builder-untrusted')
+    }
+    It 'refuses to build without the P10.0 host network module' -Tag 'network-module' {
         $r = Invoke-AapWinImageBuild -Config $w.Config -Provider $w.Provider
         $r.Reason | Should -Be 'AAP_NetworkUnavailable'
         Assert-NothingStarted
@@ -1034,26 +1081,166 @@ Describe 'network: internal switch for the build, none for verification' {
         $r.Detail | Should -Match $Op
         Assert-NothingStarted
     }
-    It 'refuses when the module''s own check of the attachment finds a problem' -Tag 'network-verify' {
-        $w.NetProblems = @('no deny rule for the host vEthernet address 172.20.0.1')
+    It 'refuses a VM that reads back <Case>, before anything is attached' -Tag 'vm-config' -TestCases @(
+        @{ Case = 'an automatic start action'; Edit = { param($w) $w.StartAction = 'StartIfRunning' } }
+        @{ Case = 'checkpoints'; Edit = { param($w) $w.Checkpoints = 'Standard' } }) {
+        & $Edit $w
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_VmUntrusted'
+        @(Get-Ops $w 'NetAttach').Count | Should -Be 0
+        Assert-NotStarted
+    }
+    It 'refuses a declaration the shared check rejects: <Case>' -Tag 'net-declaration' -TestCases @(
+        @{ Case = 'an address outside the subnet'; Edit = { param($d) $d.address = '172.31.250.9' } }
+        @{ Case = 'the gateway as address'; Edit = { param($d) $d.address = $d.gateway } }
+        @{ Case = 'a private resolver nobody declared'; Edit = { param($d) $d.resolvers = @('192.168.1.1') } }
+        @{ Case = 'another VM''s name'; Edit = { param($d) $d.vm_name = 'aap-wbuild-0badc0de' } }) {
+        $w | Add-Member -NotePropertyName DeclEdit -NotePropertyValue $Edit -Force
+        $w.Network.Attach = { param($a) Add-FakeCall 'NetAttach' $a; $d = & $w.NetFake.Attach $a; & $w.DeclEdit $d; $d }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkInvalid'
+        @(Get-Ops $w 'WriteOfflineFiles').Count | Should -Be 0
+        Assert-NotStarted
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 0
+    }
+    It 'refuses when the module''s Verify reports the tamper <Tamper>, and tears down: VM removed, then detached' -Tag 'network-verify' -TestCases ($script:ReadBackTampers + $script:HostTampers) {
+        Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Tamper $Tamper
         $r = Invoke-Build
         $r.Reason | Should -Be 'AAP_NetworkUntrusted'
-        $r.Detail | Should -Match '172\.20\.0\.1'
-        (Get-Ops $w 'StartVm').Count | Should -Be 0
-        @(Get-Ops $w 'NetDetach').Count | Should -Be 1
-        Assert-CleanedUp
+        $r.Detail | Should -Match '^Verify'
+        Assert-NotStarted
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 0
+        $seq = @($w.Calls | Where-Object { $_.Op -in 'RemoveVm', 'NetDetach' } | ForEach-Object { $_.Op }) -join ','
+        $seq | Should -BeLike '*RemoveVm,NetDetach'
     }
-    It 'refuses a build VM that Hyper-V reports with <Case>' -Tag 'nic-count' -TestCases @(
-        @{ Case = 'two adapters'; Edit = { param($l) @($l) + @(New-FakeNic) } }
-        @{ Case = 'no adapter'; Edit = { param($l) } }) {
-        $w.NicEdit = $Edit
+    It 'counts anything Verify writes as a problem: <Case>' -Tag 'network-verify' -TestCases @(
+        @{ Case = 'a null'; Out = { $null } }, @{ Case = 'an empty line'; Out = { '' } }) {
+        $w | Add-Member -NotePropertyName VerifyOut -NotePropertyValue $Out -Force
+        $w.Network.Verify = { param($a) Add-FakeCall 'NetVerify' $a; & $w.VerifyOut }
+        (Invoke-Build).Reason | Should -Be 'AAP_NetworkUntrusted'
+        Assert-NotStarted
+    }
+    It 'reads the adapter back from Hyper-V even when Verify passes it: <Tamper>' -Tag 'net-readback' -TestCases $script:ReadBackTampers {
+        Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Tamper $Tamper
+        $w.Network.Verify = { param($a) Add-FakeCall 'NetVerify' $a }   # a module that says nothing is wrong
         $r = Invoke-Build
         $r.Reason | Should -Be 'AAP_NetworkUntrusted'
-        $r.Detail | Should -Match 'aap-wbuild-.* network adapters, not 1'
-        (Get-Ops $w 'StartVm').Count | Should -Be 0
+        $r.Detail | Should -Match '^read-back'
+        Assert-NotStarted
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 0
+    }
+    It 'refuses when the module fails: <Fault>' -TestCases @(
+        @{ Fault = 'Attach' }, @{ Fault = 'AttachAfterIntent' }, @{ Fault = 'AttachAfterAct' }, @{ Fault = 'Verify' }) {
+        Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Fail $Fault
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match "^$(if ($Fault -eq 'Verify') { 'Verify' } else { 'Attach' }) threw"
+        Assert-NotStarted
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 0
+    }
+    It 'reports a Detach that fails (<Fault>) as a cleanup that did not prove the network detached, and the next run of the build id detaches' -Tag 'rerun-detach' -TestCases @(@{ Fault = 'Detach' }, @{ Fault = 'DetachAfterReleased' }) {
+        Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Fail $Fault
+        $r = Invoke-Build
+        $r.Status | Should -Be 'failed'
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match '^Detach threw.*cleanup failed: AAP_NetworkUntrusted: the network is not proven detached: Detach threw'
+        $w.Vms.Count | Should -Be 0
+        $state = Get-Content -Raw (Join-Path $w.Staging 'build\win25-vs2026-x64_20261007.264.1-aap.1\state.json') | ConvertFrom-Json
+        $state.vm_id | Should -Be $w.VmIds[@($w.VmIds.Keys | Where-Object { $_ -like 'aap-wbuild-*' })[0]]
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 1
+        Set-AapFakeHostNetworkKnob -Root $w.NetRoot
+        $r = Invoke-Build
+        $r.Status | Should -Be 'built'
+        $r.PartialCleaned | Should -BeTrue
+        @(Get-Ops $w 'NetDetach' | Where-Object { $_.Args.VmId -eq $state.vm_id }).Count | Should -BeGreaterThan 2
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 0
+    }
+    It 'detaches a crashed run''s build VM by the id state.json took at NewVm, before anything was cleaned up' -Tag 'rerun-detach' {
+        Set-GuestFault 'p05' { param($w, $req) throw 'the host died here' }
+        $w.Provider.RemoveVm = { param($a) Add-FakeCall 'RemoveVm' $a; throw 'AAP_Unexpected: crashed' }   # no cleanup at all
+        (Invoke-Build).Status | Should -Be 'failed'
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 1
+        $w.Provider.RemoveVm = { param($a) Add-FakeCall 'RemoveVm' $a; $w.Vms.Remove($a.Name) }
+        $w.Guest = { param($w, $req) Get-FakeGuestReply $w $req }
+        $old = $w.VmIds[@($w.VmIds.Keys | Where-Object { $_ -like 'aap-wbuild-*' })[0]]
+        $w.Calls.Clear()
+        $r = Invoke-Build
+        $r.Status | Should -Be 'built'
+        $seq = @($w.Calls | Where-Object { ($_.Op -eq 'NetDetach' -and $_.Args.VmId -eq $old) -or $_.Op -eq 'RemoveVm' } | ForEach-Object { $_.Op })
+        ($seq[0..2] -join ',') | Should -Be 'RemoveVm,RemoveVm,NetDetach'
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 0
+    }
+    It 'refuses to clean up an attached build VM without the network module' {
+        Set-GuestFault 'p05' { param($w, $req) throw 'the host died here' }
+        $w.Provider.RemoveVm = { param($a) Add-FakeCall 'RemoveVm' $a; throw 'AAP_Unexpected: crashed' }
+        $null = Invoke-Build
+        $w.Provider.RemoveVm = { param($a) Add-FakeCall 'RemoveVm' $a; $w.Vms.Remove($a.Name) }
+        $names = Get-AapWinNames $w.Plan 1
+        $storage = Read-AapStorageRecord -Path $w.StoragePath
+        { Remove-AapWinBuild -Storage $storage -Provider $w.Provider -Names $names -EvidenceRoot $w.Evidence } | Should -Throw 'AAP_NetworkUnavailable*'
+        Test-Path (Join-Path $w.Staging 'build\win25-vs2026-x64_20261007.264.1-aap.1\state.json') | Should -BeTrue
+    }
+    It 'refuses a re-Attach that declares other addressing than the answer file carries' -Tag 'net-unchanged' {
+        $w | Add-Member -NotePropertyName AttachN -NotePropertyValue 0 -Force
+        $w.Network.Attach = { param($a) Add-FakeCall 'NetAttach' $a; $d = & $w.NetFake.Attach $a; $w.AttachN++; if ($w.AttachN -eq 2) { $d.address = '172.31.252.200' }; $d }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkInvalid'
+        $r.Detail | Should -Match '^declaration changed: Attach now declares 172\.31\.252\.200 in '
+        @(Get-Ops $w 'StartVm').Count | Should -Be 1
+        Assert-CleanedUp
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 0
+    }
+    It 're-checks the network while a stop waits for the build VM to go Off' {
+        $null = Invoke-Build
+        $build = $w.VmIds[@($w.VmIds.Keys | Where-Object { $_ -like 'aap-wbuild-*' })[0]]
+        $stops = @(Get-Ops $w 'StopVm' | Where-Object { $_.Args.VmId -eq $build })
+        $stops.Count | Should -Be 7
+        foreach ($s in $stops) { $s.Args.Tick | Should -BeOfType [scriptblock] }
+        $t = Get-Content -Raw (Join-Path (Split-Path -Parent (Get-TestModulePath)) 'AapWinImage.HyperV.psm1')
+        $t | Should -Match 'Hyper-V\\Stop-VM -VM \(Get-AapVm \$a\) -Force -AsJob'
+        $t | Should -Match 'Wait-AapVmOff -GetState \{ \(Get-AapVm \$a\)\.State \} -TimeoutSeconds \$a\.TimeoutSeconds -Tick \$a\.Tick'
+    }
+    It 'runs the re-check on every poll of a stop, outside any catch' -Tag 'stop-tick' {
+        $script:polls = 0; $script:ticks = 0
+        Wait-AapVmOff -GetState { $script:polls++; if ($script:polls -lt 4) { 'Running' } else { 'Off' } } -TimeoutSeconds 60 -PollSeconds 0 -Tick { $script:ticks++ } | Should -BeTrue
+        $script:ticks | Should -Be 3
+        { Wait-AapVmOff -GetState { 'Stopping' } -TimeoutSeconds 60 -PollSeconds 0 -Tick { throw 'AAP_NetworkUntrusted: re-check failed' } } | Should -Throw 'AAP_NetworkUntrusted: re-check failed'
+    }
+    It 'gives up on a VM that does not go Off' {
+        Wait-AapVmOff -GetState { 'Running' } -TimeoutSeconds 1 -PollSeconds 0 | Should -BeFalse
+    }
+    It 'hands the re-check to every ready probe and asks a guest that does not answer yet again' {
+        $script:seen = New-Object System.Collections.Generic.List[object]
+        $tick = { $null = 1 }
+        Wait-AapGuestReady -TimeoutSeconds 60 -PollSeconds 0 -Tick $tick -Probe { param($t) $script:seen.Add($t); if ($script:seen.Count -lt 3) { throw 'AAP_GuestUnreachable: not yet' }; 'ready' } | Should -BeTrue
+        $script:seen.Count | Should -Be 3
+        foreach ($s in $script:seen) { [object]::ReferenceEquals($s, $tick) | Should -BeTrue }
+        $t = Get-Content -Raw (Join-Path (Split-Path -Parent (Get-TestModulePath)) 'AapWinImage.HyperV.psm1')
+        $t | Should -Match 'Wait-AapGuestReady -TimeoutSeconds \$a\.TimeoutSeconds -Tick \$a\.Tick -Probe \{ param\(\$t\)'
+        $t | Should -Match 'Invoke-AapGuestJob @\{ VmId = \$a\.VmId; User = \$a\.User; Password = \$a\.Password; Tick = \$t \}'
+    }
+    It 'ends the ready wait when the re-check inside a probe fails, instead of asking again' -Tag 'ready-network' {
+        { Wait-AapGuestReady -TimeoutSeconds 2 -PollSeconds 0 -Probe { param($t) throw 'AAP_NetworkUntrusted: Verify: dhcp guard off' } } | Should -Throw 'AAP_NetworkUntrusted: Verify*'
+    }
+    It 'attaches and checks again with the VM off before a reboot, and refuses to start it on a problem' {
+        Set-GuestFault 'p08' { param($w, $req) Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Tamper 'dhcp-guard-off'; Get-FakeGuestReply $w $req }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        @(Get-Ops $w 'NetAttach').Count | Should -Be 2
+        @(Get-Ops $w 'StartVm').Count | Should -Be 1
+        @($w.Calls | Where-Object { $_.Op -in 'StopVm', 'NetAttach' } | Select-Object -Last 2 | ForEach-Object { $_.Op }) | Should -Be @('StopVm', 'NetAttach')
         Assert-CleanedUp
     }
-    It 'refuses a verification VM with any network adapter, before it boots' -Tag 'nic-count' {
+    It 'verifies again while the build VM runs and stops the build on a problem' -Tag 'net-poll' {
+        Set-ModuleVar 'NetPollSeconds' 0
+        Set-GuestFault 'p22' { param($w, $req) Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Tamper 'public-host'; Get-FakeGuestReply $w $req }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match '^Verify'
+        @($w.Requests | ForEach-Object { $_.phase }) | Should -Not -Contain 'p24'
+        Assert-CleanedUp
+    }
+    It 'refuses a verification VM with any network adapter, before it boots' -Tag 'verify-no-nic' {
         $w.VerifyHasNic = $true
         $r = Invoke-Build
         $r.Reason | Should -Be 'AAP_NetworkUntrusted'
@@ -1062,50 +1249,40 @@ Describe 'network: internal switch for the build, none for verification' {
         @(Get-Ops $w 'StartVm' | Where-Object { $_.Args.VmId -eq $verify }).Count | Should -Be 0
         Assert-CleanedUp
     }
-    It 'refuses a build adapter on <Case>' -Tag 'nic-switch' -TestCases @(
-        @{ Case = 'the Default Switch'; Edit = { param($l) $l[0].SwitchName = 'Default Switch'; $l } }
-        @{ Case = 'no switch'; Edit = { param($l) $l[0].SwitchName = ''; $l[0].SwitchType = ''; $l } }
-        @{ Case = 'an External switch of the right name'; Edit = { param($l) $l[0].SwitchType = 'External'; $l } }) {
-        $w.NicEdit = $Edit
-        $r = Invoke-Build
-        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
-        $r.Detail | Should -Match 'not on the internal switch'
-        (Get-Ops $w 'StartVm').Count | Should -Be 0
-        Assert-CleanedUp
+    It 'refuses an answer-file network that is not a well-formed declaration: <Case>' -TestCases @(
+        @{ Case = 'an address that is not IPv4'; Net = @{ address = 'fe80::1'; gateway = '172.31.252.1'; subnet = '172.31.252.0/24'; resolvers = @('192.0.2.53') } }
+        @{ Case = 'markup in the gateway'; Net = @{ address = '172.31.252.2'; gateway = '172.31.252.1<x/>'; subnet = '172.31.252.0/24'; resolvers = @('192.0.2.53') } }
+        @{ Case = 'no prefix length'; Net = @{ address = '172.31.252.2'; gateway = '172.31.252.1'; subnet = '172.31.252.0'; resolvers = @('192.0.2.53') } }
+        @{ Case = 'three resolvers'; Net = @{ address = '172.31.252.2'; gateway = '172.31.252.1'; subnet = '172.31.252.0/24'; resolvers = @('192.0.2.53', '192.0.2.54', '192.0.2.55') } }) {
+        { New-AapWinUnattend -UserName 'installer' -Password 'Aa1!aaaaaaaaaaaaaaaaaaaaaaaaaaaa' -Network $Net } | Should -Throw 'AAP_UnattendInvalid*network*'
     }
-    It 'refuses a build adapter with <Case>' -Tag 'nic-guards' -TestCases @(
-        @{ Case = 'DHCP guard off'; Edit = { param($l) $l[0].DhcpGuard = $false; $l } }
-        @{ Case = 'router guard off'; Edit = { param($l) $l[0].RouterGuard = $false; $l } }
-        @{ Case = 'MAC spoofing on'; Edit = { param($l) $l[0].MacAddressSpoofing = $true; $l } }
-        @{ Case = 'guards reported as text'; Edit = { param($l) $l[0].DhcpGuard = 'True'; $l[0].RouterGuard = 'On'; $l } }
-        @{ Case = 'MAC spoofing unknown'; Edit = { param($l) $l[0].Remove('MacAddressSpoofing'); $l } }) {
-        $w.NicEdit = $Edit
-        $r = Invoke-Build
-        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
-        $r.Detail | Should -Match 'DHCP guard or router guard'
-        (Get-Ops $w 'StartVm').Count | Should -Be 0
-        Assert-CleanedUp
+    It 'the build guest drops its static network before sysprep, given the declared build address' {
+        $null = Invoke-Build
+        $seal = @($w.Requests | Where-Object { $_.kind -eq 'action' -and $_.action -eq 'sysprep-generalize' })
+        $seal.Count | Should -Be 1
+        $seal[0].build_address | Should -Match '^172\.31\.252\.[0-9]{1,3}$'
+        $w.Unattend[0].Contains("$($seal[0].build_address)/24") | Should -BeTrue
+        $t = Get-Content -Raw (Join-Path (Split-Path -Parent (Get-TestModulePath)) 'guest\AapGuestRunner.ps1')
+        $t.IndexOf("                Remove-BuildNetwork ([string](Get-Prop `$req 'build_address'))") | Should -BeGreaterThan 0
+        $t.IndexOf('                Remove-BuildNetwork') | Should -BeLessThan $t.IndexOf("'System32\Sysprep\Sysprep.exe') /oobe")
     }
-    It 'refuses a build adapter whose port ACLs <Case>' -Tag 'nic-acl' -TestCases @(
-        @{ Case = 'lack the CGNAT deny'; Edit = { param($l) $l[0].Acls = @($l[0].Acls | Where-Object { $_.RemoteAddress -ne '100.64.0.0/10' }); $l }; Want = 'does not deny 100\.64\.0\.0/10' }
-        @{ Case = 'lack the unique-local deny'; Edit = { param($l) $l[0].Acls = @($l[0].Acls | Where-Object { $_.RemoteAddress -ne 'fc00::/7' }); $l }; Want = 'does not deny fc00::/7' }
-        @{ Case = 'lack every rule'; Edit = { param($l) $l[0].Acls = @(); $l }; Want = 'does not deny 10\.0\.0\.0/8, 172\.16' }
-        @{ Case = 'narrow the RFC 1918 deny to a port'; Edit = { param($l) ($l[0].Acls | Where-Object { $_.RemoteAddress -eq '10.0.0.0/8' }).Scoped = $true; $l }; Want = 'does not deny 10\.0\.0\.0/8' }
-        @{ Case = 'deny link-local inbound only'; Edit = { param($l) ($l[0].Acls | Where-Object { $_.RemoteAddress -eq '169.254.0.0/16' }).Direction = 'Inbound'; $l }; Want = 'does not deny 169\.254' }
-        @{ Case = 'leave the scope of the multicast deny unknown'; Edit = { param($l) ($l[0].Acls | Where-Object { $_.RemoteAddress -eq '224.0.0.0/4' }).Remove('Scoped'); $l }; Want = 'does not deny 224' }
-        @{ Case = 'allow everything'; Edit = { param($l) $l[0].Acls = @($l[0].Acls) + @(@{ Action = 'Allow'; Direction = 'Outbound'; RemoteAddress = '0.0.0.0/0'; Scoped = $false }); $l }; Want = 'more than one address' }
-        @{ Case = 'allow a private range'; Edit = { param($l) $l[0].Acls = @($l[0].Acls) + @(@{ Action = 'Allow'; Direction = 'Outbound'; RemoteAddress = '192.168.0.0/16'; Scoped = $true }); $l }; Want = 'more than one address' }
-        @{ Case = 'allow any address'; Edit = { param($l) $l[0].Acls = @($l[0].Acls) + @(@{ Action = 'Allow'; Direction = 'Inbound'; RemoteAddress = 'ANY'; Scoped = $false }); $l }; Want = 'more than one address' }) {
-        $w.NicEdit = $Edit
-        $r = Invoke-Build
-        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
-        $r.Detail | Should -Match $Want
-        (Get-Ops $w 'StartVm').Count | Should -Be 0
-        Assert-CleanedUp
+    It 'the build guest resets only the adapter that holds the build address; another adapter stays as it is' -Tag 'seal-build-nic' {
+        $nics = @([pscustomobject]@{ Index = 4; IPv4 = '172.31.252.2' }, [pscustomobject]@{ Index = 7; IPv4 = '10.9.8.7' })
+        $log = Invoke-GuestRemoveBuildNetwork $nics '172.31.252.2'
+        @($log) | Should -Be @('route 4', 'ip 4', 'dhcp 4', 'dns 4')
+        $nics[0].IPv4 | Should -BeNullOrEmpty
+        $nics[1].IPv4 | Should -Be '10.9.8.7'
     }
-    It 'accepts allow rules for single gateway, DHCP and DNS addresses' {
-        $w.NicEdit = { param($l) $l[0].Acls = @($l[0].Acls) + @(@{ Action = 'Allow'; Direction = 'Outbound'; RemoteAddress = '172.20.0.1/32'; Scoped = $true }, @{ Action = 'Allow'; Direction = 'Outbound'; RemoteAddress = 'fd00:aa::1'; Scoped = $true }); $l }
-        (Invoke-Build).Status | Should -Be 'built'
+    It 'the build guest refuses to seal while the build address is still configured' -Tag 'seal-no-address' {
+        $nics = @([pscustomobject]@{ Index = 4; IPv4 = '172.31.252.2' })
+        { Invoke-GuestRemoveBuildNetwork $nics '172.31.252.2' -Stuck } | Should -Throw '*build address 172.31.252.2 is still configured*'
+    }
+    It 'the build guest needs a build address, and touches nothing when no adapter holds it' {
+        $nics = @([pscustomobject]@{ Index = 7; IPv4 = '10.9.8.7' })
+        { Invoke-GuestRemoveBuildNetwork $nics '' } | Should -Throw '*no build address*'
+        $log = Invoke-GuestRemoveBuildNetwork $nics '172.31.252.2'
+        $log.Count | Should -Be 0
+        $nics[0].IPv4 | Should -Be '10.9.8.7'
     }
 }
 
@@ -1158,7 +1335,8 @@ Describe 'evidence root and the builder''s own folders' {
         @{ Which = 'images\common'; Path = { Join-Path (Split-Path -Parent (Get-TestModulePath)) '..\common' } }
         @{ Which = 'the guest scripts'; Path = { Join-Path (Split-Path -Parent (Get-TestModulePath)) 'guest' } }
         @{ Which = 'the P05 probe folder'; Path = { Split-Path -Parent (Get-ModuleVar 'ProbeScript') } }
-        @{ Which = 'the hello.c folder'; Path = { Split-Path -Parent (Get-ModuleVar 'HelloC') } }) {
+        @{ Which = 'the hello.c folder'; Path = { Split-Path -Parent (Get-ModuleVar 'HelloC') } }
+        @{ Which = 'supervisor\network'; Path = { Join-Path (Split-Path -Parent (Get-TestModulePath)) '..\..\supervisor\network' } }) {
         $w.Untrusted[[IO.Path]::GetFullPath((& $Path))] = @('Users may write')
         $r = Invoke-Build
         $r.Reason | Should -Be 'AAP_BuilderUntrusted'
@@ -1220,6 +1398,10 @@ Describe 'guest output is capped while it arrives' {
         $o[0] | Should -Be 'line'
         ($o[1] -is [byte[]]) | Should -BeTrue
         $o[1].Length | Should -Be 3
+    }
+    It 'stops waiting on the guest when the network re-check of its tick fails' -Tag 'receive-tick' {
+        $j = Start-Job { Start-Sleep -Seconds 60 }
+        { Receive-AapCappedJob -Job $j -MaxBytes 1000 -TimeoutSeconds 5 -PollSeconds 1 -Tick { throw 'AAP_NetworkUntrusted: re-check failed' } } | Should -Throw 'AAP_NetworkUntrusted: re-check failed'
     }
     It 'gives up on a job that never answers' {
         $j = Start-Job { Start-Sleep -Seconds 60 }
@@ -1304,7 +1486,7 @@ Describe 'measurement and reboots' {
     }
     It 'keeps waiting while the guest does not answer its boot time, then counts the reboot' -Tag 'reboot-proof' {
         $w | Add-Member -NotePropertyName Blank -NotePropertyValue 2 -Force
-        $w.BootTime = { param($w) $n = @($w.Calls | Where-Object { $_.Op -eq 'RestartVm' }).Count
+        $w.BootTime = { param($w) $n = @($w.Calls | Where-Object { $_.Op -eq 'StopVm' }).Count
             if ($n -ge 1 -and $w.Blank -gt 0) { $w.Blank--; return '' }
             [string](630000000000000000 + $n) }
         (Invoke-Build).Status | Should -Be 'built'
@@ -1312,7 +1494,7 @@ Describe 'measurement and reboots' {
     }
     It 'times out, not hostile, when the guest never answers its boot time after a reboot' -Tag 'reboot-proof' {
         Update-TestPlan $w { param($p) ($p.phases | Where-Object { $_.id -eq 'p09' }).timeout_seconds = 2 }
-        $w.BootTime = { param($w) if (@($w.Calls | Where-Object { $_.Op -eq 'RestartVm' }).Count -ge 1) { '' } else { '630000000000000000' } }
+        $w.BootTime = { param($w) if (@($w.Calls | Where-Object { $_.Op -eq 'StopVm' }).Count -ge 1) { '' } else { '630000000000000000' } }
         $r = Invoke-Build
         $r.Reason | Should -Be 'AAP_RebootTimeout'
         $r.Detail | Should -Match '^p09'
@@ -1325,7 +1507,8 @@ Describe 'measurement and reboots' {
     }
     It 'the production provider waits between polls and checks the VM by id' {
         $t = Get-Content -Raw (Join-Path (Split-Path -Parent (Get-TestModulePath)) 'AapWinImage.HyperV.psm1')
-        $t | Should -Match "catch \{ \`$null = \`$_ \}\s+Start-Sleep -Seconds 15"
+        $t | Should -Match 'Wait-AapGuestReady -TimeoutSeconds \$a\.TimeoutSeconds'
+        (Get-Content -Raw (Get-TestModulePath)) | Should -Match '\[int\]\$PollSeconds = 15\)'
         $t | Should -Match 'LastBootUpTime'
     }
 }

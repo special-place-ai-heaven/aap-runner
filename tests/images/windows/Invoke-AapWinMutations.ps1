@@ -1,7 +1,8 @@
-# Mutation check for the P06 builder: every safety check in AapWinImage.psm1 carries '# check:<name>'. For each name this
-# copies images\windows to a temp folder, replaces the condition of every if-statement tagged with that name by $false
-# (found with the PowerShell parser, not by text search), and runs the tests tagged <name> against the copy in a child
-# process. A check is covered only if at least one of its tests then fails. Exit 0 when every check is covered.
+# Mutation check for the P06 builder: every safety check in AapWinImage.psm1 and
+# guest\AapGuestRunner.ps1 carries '# check:<name>' (a name lives in one file). For each name this copies images\windows
+# and supervisor\network (the shared host network check it imports) to a temp folder, replaces the condition of every
+# if-statement tagged with that name by $false (found with the PowerShell parser, not by text search), and runs the tests
+# tagged <name> against the copy in a child process. A check is covered only if at least one of its tests then fails. Exit 0 when every check is covered.
 #   pwsh -File tests/images/windows/Invoke-AapWinMutations.ps1 [-Name <check>...]
 param([string[]]$Name, [string]$One, [string]$ModulePath)
 Set-StrictMode -Version 2.0
@@ -23,17 +24,21 @@ if ($One) {
     exit 0
 }
 
-$source = Join-Path $repo 'images\windows\AapWinImage.psm1'
-$text = [IO.File]::ReadAllText($source)
-$tagged = @([regex]::Matches($text, '# check:([a-z-]+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+$files = @(foreach ($rel in 'AapWinImage.psm1', 'guest\AapGuestRunner.ps1') {
+        $t = [IO.File]::ReadAllText((Join-Path $repo "images\windows\$rel"))
+        [pscustomobject]@{ Rel = $rel; Text = $t; Lines = ($t -split "`n"); Ast = [Management.Automation.Language.Parser]::ParseInput($t, [ref]$null, [ref]$null)
+            Tags = @([regex]::Matches($t, '# check:([a-z-]+)') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique) }
+    })
+$tagged = @($files | ForEach-Object { $_.Tags } | Sort-Object -Unique)
 if ($Name) { $Name = @($Name | ForEach-Object { $_ -split ',' }); $tagged = @($tagged | Where-Object { $Name -contains $_ }) }
-$ast = [Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$null)
-$lines = $text -split "`n"
 $work = Join-Path ([IO.Path]::GetTempPath()) ('p06-mut-' + [guid]::NewGuid().ToString('n').Substring(0, 8))
 $exe = (Get-Process -Id $PID).Path
 $rows = New-Object System.Collections.Generic.List[object]
 try {
     foreach ($tag in $tagged) {
+        $f = @($files | Where-Object { $_.Tags -ccontains $tag })
+        if ($f.Count -ne 1) { throw "check:$tag is tagged in $($f.Count) files" }
+        $text = $f[0].Text; $lines = $f[0].Lines; $ast = $f[0].Ast
         $lineNos = @(for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match "# check:$tag(\s|$)") { $i + 1 } })
         $ifs = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.IfStatementAst] -and $lineNos -contains $n.Extent.StartLineNumber }, $true))
         if ($ifs.Count -ne $lineNos.Count) { throw "check:$tag is tagged on $($lineNos.Count) lines but $($ifs.Count) if-statements start there" }
@@ -44,8 +49,11 @@ try {
         $dir = Join-Path $work "$tag\images\windows"
         [void][IO.Directory]::CreateDirectory((Split-Path -Parent $dir))
         Copy-Item -LiteralPath (Join-Path $repo 'images\windows') -Destination $dir -Recurse
+        $net = Join-Path $work "$tag\supervisor\network"   # the builder imports the shared check from ..\..\supervisor\network
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $net))
+        Copy-Item -LiteralPath (Join-Path $repo 'supervisor\network') -Destination $net -Recurse
         $module = Join-Path $dir 'AapWinImage.psm1'
-        [IO.File]::WriteAllText($module, $mutated, (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::WriteAllText((Join-Path $dir $f[0].Rel), $mutated, (New-Object Text.UTF8Encoding($false)))
         $out = & $exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath -One $tag -ModulePath $module 2>&1
         $m = [regex]::Match(($out -join "`n"), 'MUTANT \S+ tests=(\d+) failed=(\d+)')
         $count = $(if ($m.Success) { [int]$m.Groups[1].Value } else { 0 }); $failed = $(if ($m.Success) { [int]$m.Groups[2].Value } else { 0 })

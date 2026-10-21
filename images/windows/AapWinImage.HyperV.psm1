@@ -6,7 +6,7 @@
 # while received, files received from the guest land in the build folder first, and no host path is ever resolved through
 # guest-authored file system metadata (reparse points refused).
 # Load AapWinImage.psm1 first: the ops call its exported helpers (Assert-AapPlainPath, Write-AapGuestFile,
-# Select-AapWindowsPartition, Receive-AapCappedJob, Set-AapReadOnlyAcl).
+# Select-AapWindowsPartition, Receive-AapCappedJob, Set-AapReadOnlyAcl, Wait-AapVmOff, Wait-AapGuestReady).
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -24,11 +24,12 @@ function Get-AapGuestCredential([string]$User, [string]$Password) {
     New-Object Management.Automation.PSCredential ".\$User", $s
 }
 # Every call into a guest, file transfers included, runs as a job whose output is capped while it arrives
-# (Receive-AapCappedJob); there is no other channel. A call that cannot start or fails is AAP_GuestUnreachable.
+# (Receive-AapCappedJob); there is no other channel. A call that cannot start or fails is AAP_GuestUnreachable. $A.Tick,
+# when the builder gives one, runs once per poll: its network re-check of the running build VM.
 function Invoke-AapGuestJob($A, [scriptblock]$ScriptBlock, [object[]]$ArgumentList = @(), [long]$MaxBytes = 4096, [int]$TimeoutSeconds = 120) {
     try { $job = Invoke-Command -VMId $A.VmId -Credential (Get-AapGuestCredential $A.User $A.Password) -AsJob -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList }
     catch { throw 'AAP_GuestUnreachable: the guest call did not start' }
-    Receive-AapCappedJob -Job $job -MaxBytes $MaxBytes -TimeoutSeconds $TimeoutSeconds
+    Receive-AapCappedJob -Job $job -MaxBytes $MaxBytes -TimeoutSeconds $TimeoutSeconds -Tick $A.Tick
 }
 function Get-AapVm($A) {
     $vm = @(Hyper-V\Get-VM -Id $A.VmId)
@@ -151,11 +152,6 @@ function New-AapWinHyperVProvider {
             foreach ($k in @($a.Files.Keys)) { Write-AapGuestFile -Root $root -RelPath $k -Bytes $script:Utf8.GetBytes([string]$a.Files[$k]) }
         } finally { Hyper-V\Dismount-VHD -Path $a.Vhdx }
     }
-    $p.GetSwitch = { param($a)
-        $s = @(Hyper-V\Get-VMSwitch -Name $a.Name -ErrorAction SilentlyContinue)
-        if ($s.Count -ne 1) { return $null }
-        @{ Name = [string]$s[0].Name; SwitchType = [string]$s[0].SwitchType }
-    }
     $p.NewVm = { param($a)
         $vm = Hyper-V\New-VM -Name $a.Name -Path $a.Path -Generation 2 -MemoryStartupBytes ([int64]$a.MemGib * 1GB) -VHDPath $a.OsDisk
         Hyper-V\Set-VM -VM $vm -ProcessorCount $a.Cpus -StaticMemory -CheckpointType Disabled -AutomaticStopAction TurnOff -AutomaticStartAction Nothing -SmartPagingFilePath $a.Path -SnapshotFileLocation $a.Path
@@ -169,25 +165,25 @@ function New-AapWinHyperVProvider {
         Hyper-V\Get-VMNetworkAdapter -VM $vm | Hyper-V\Remove-VMNetworkAdapter
         @{ Id = [string]$vm.Id }
     }
+    $p.GetVmConfig = { param($a)
+        $vm = Get-AapVm $a
+        @{ AutomaticStartAction = [string]$vm.AutomaticStartAction; CheckpointType = [string]$vm.CheckpointType }
+    }
     $p.StartVm = { param($a) $vm = Get-AapVm $a; if ($vm.State -ne 'Running') { Hyper-V\Start-VM -VM $vm } }
     $p.StopVm = { param($a)
-        Hyper-V\Stop-VM -VM (Get-AapVm $a) -Force
-        $until = (Get-Date).AddSeconds($a.TimeoutSeconds)
-        while ((Get-AapVm $a).State -ne 'Off') { if ((Get-Date) -gt $until) { throw 'AAP_RebootTimeout: guest did not shut down' }; Start-Sleep -Seconds 5 }
+        # As a job: Stop-VM itself waits for the guest to shut down, and the network re-check ($a.Tick) runs while it does.
+        $job = Hyper-V\Stop-VM -VM (Get-AapVm $a) -Force -AsJob
+        try { if (-not (Wait-AapVmOff -GetState { (Get-AapVm $a).State } -TimeoutSeconds $a.TimeoutSeconds -Tick $a.Tick)) { throw 'AAP_RebootTimeout: guest did not shut down' } }
+        finally { Remove-Job -Job $job -Force }
     }
-    $p.RestartVm = { param($a) Hyper-V\Restart-VM -VM (Get-AapVm $a) -Type Reboot -Force }
     $p.RemoveVm = { param($a)
         $vm = @(Hyper-V\Get-VM -Name $a.Name -ErrorAction SilentlyContinue)
         if ($vm.Count -gt 1) { throw "AAP_Unexpected: more than one VM is named $($a.Name)" }
         if ($vm.Count) { if ($vm[0].State -ne 'Off') { Hyper-V\Stop-VM -VM $vm[0] -TurnOff -Force }; Hyper-V\Remove-VM -VM $vm[0] -Force }
     }
     $p.WaitGuestReady = { param($a)
-        $until = (Get-Date).AddSeconds($a.TimeoutSeconds)
-        while ((Get-Date) -lt $until) {
-            try { if ((@(Invoke-AapGuestJob $a { 'ready' } -MaxBytes 64 -TimeoutSeconds 60) -join '') -ceq 'ready') { return $true } } catch { $null = $_ }
-            Start-Sleep -Seconds 15
-        }
-        return $false
+        Wait-AapGuestReady -TimeoutSeconds $a.TimeoutSeconds -Tick $a.Tick -Probe { param($t)
+            Invoke-AapGuestJob @{ VmId = $a.VmId; User = $a.User; Password = $a.Password; Tick = $t } { 'ready' } -MaxBytes 64 -TimeoutSeconds 60 }
     }
     $p.GetGuestBootTime = { param($a)
         # A guest that is going down or not yet up answers nothing ($null); the builder asks again until its timeout.
@@ -258,17 +254,23 @@ function New-AapWinHyperVProvider {
         Set-AapReadOnlyAcl -Path $a.Path -Owner 'S-1-5-32-544' -Readers @('S-1-5-18', 'S-1-5-32-544', $script:VmSid)
     }
     $p.GetVmNetwork = { param($a)
-        # What Hyper-V reports, never what the network module says. A rule is Scoped when a local address, a port or a
-        # protocol narrows it; '', '*' and 'ANY' read as unrestricted (the D2 lab confirms how Hyper-V shows an unset field).
-        $any = { param($v) @('', '*', 'any') -contains ([string]$v).Trim() }
-        foreach ($n in @(Hyper-V\Get-VMNetworkAdapter -VM (Get-AapVm $a))) {
+        # The read-back of host-network-module.md (Consumer obligations), as Hyper-V shows each adapter, never as the network
+        # module says; the shared check judges it. Under StrictMode a misspelt property throws instead of reading as unset.
+        $vm = Get-AapVm $a
+        foreach ($n in @(Hyper-V\Get-VMNetworkAdapter -VM $vm)) {
             $name = ''; $type = ''
             if ($n.SwitchId) { $sw = Hyper-V\Get-VMSwitch -Id $n.SwitchId -ErrorAction Stop; $name = [string]$sw.Name; $type = [string]$sw.SwitchType }
-            $acls = @(Hyper-V\Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter $n | ForEach-Object {
+            @{  SwitchName = $name; SwitchType = $type
+                DhcpGuard = [string]$n.DhcpGuard; RouterGuard = [string]$n.RouterGuard; MacAddressSpoofing = [string]$n.MacAddressSpoofing
+                PortMirroringMode = [string]$n.PortMirroringMode; VlanMode = [string]$n.VlanSetting.OperationMode; StormLimit = [string]$n.StormLimit
+                LegacyAcls = @(Hyper-V\Get-VMNetworkAdapterAcl -VMNetworkAdapter $n).Count
+                # the other VMs with an adapter on the same switch; the host's own adapters are not VMs
+                Peers = @(Hyper-V\Get-VMNetworkAdapter -All | Where-Object { $name -and -not $_.IsManagementOs -and $_.SwitchName -ceq $name -and $_.VMId -ne $vm.Id } |
+                    ForEach-Object { [string]$_.VMName })
+                Acls = @(Hyper-V\Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter $n | ForEach-Object {
                     @{ Action = [string]$_.Action; Direction = [string]$_.Direction; RemoteAddress = [string]$_.RemoteIPAddress
-                        Scoped = -not ((& $any $_.LocalIPAddress) -and (& $any $_.LocalPort) -and (& $any $_.RemotePort) -and (& $any $_.Protocol)) } })
-            @{ SwitchName = $name; SwitchType = $type; DhcpGuard = ([string]$n.DhcpGuard -eq 'On'); RouterGuard = ([string]$n.RouterGuard -eq 'On')
-                MacAddressSpoofing = ([string]$n.MacAddressSpoofing -ne 'Off'); Acls = $acls }
+                       LocalAddress = [string]$_.LocalIPAddress; Protocol = [string]$_.Protocol; RemotePort = [string]$_.RemotePort
+                       LocalPort = [string]$_.LocalPort; Weight = $_.Weight; Stateful = [string]$_.Stateful; IsolationId = [string]$_.IsolationID } }) }
         }
     }
     $p.GetVmMemoryOverheadMib = { param($a)
