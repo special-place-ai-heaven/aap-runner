@@ -99,7 +99,20 @@ function New-AapLinHyperVProvider {
         $psi.FileName = $script:KeyGenExe
         $psi.Arguments = '-q -t ed25519 -N "" -C aap-management -f "{0}"' -f (Join-Path $a.Dir 'id_ed25519')
         $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.RedirectStandardInput = $true
+        # Windows PowerShell 5.1 (.NET Framework) flushes this console's input-encoding preamble into the redirected
+        # stdin pipe at Start: with a UTF-8 console ssh-keygen would read EF BB BF instead of the empty stdin (closed
+        # right after Start) it is meant to get. Swap in a BOM-less encoding for the Start only (the idiom of
+        # aap-broker.psm1), then put the caller's back. PowerShell 7, no console, or no preamble: nothing to do.
+        $savedInputEncoding = $null
+        try {
+            $current = [Console]::InputEncoding
+            if ($current.GetPreamble().Length -gt 0) {
+                [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+                $savedInputEncoding = $current
+            }
+        } catch { $null = $_ }
         $proc = [Diagnostics.Process]::Start($psi)
+        if ($null -ne $savedInputEncoding) { try { [Console]::InputEncoding = $savedInputEncoding } catch { $null = $_ } }
         try {
             $proc.StandardInput.Close()
             $o = $proc.StandardOutput.ReadToEndAsync(); $e = $proc.StandardError.ReadToEndAsync()

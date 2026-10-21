@@ -418,18 +418,29 @@ Describe 'zcshim: the zccache client never gets the caller''s open stdin (P04.1)
         Mock Get-AapZcProcessList -ModuleName AapZcCache { Get-FakeProcessList }
         $script:Pkg = New-Package
         # Every fake zccache call this Describe makes (the daemon-starting session-start of Initialize-AapZcJob
-        # included) records eof and carries on only when its stdin drains to EOF: the fake reads synchronously,
-        # so the kernel answers at once for a pipe the module closed (RedirectStandardInput, closed right after
-        # Start), while an open stdin never EOFs, blocks the fake until the shim's timeout stops it, as a client
-        # handed the caller's stdin would hang (the log then stays empty and the count assertion fails). Whatever
-        # a .NET Framework redirect writer put in the pipe first (a UTF-8 console's three-byte preamble) is
-        # drained and ignored: a byte-strict empty check fails on every CI host that runs one. fake-stdin-facts.log
-        # records what each probe saw, in failure messages.
+        # included) records eof and carries on only when its stdin delivers exactly zero bytes and then EOF: the
+        # fake reads synchronously, so the kernel answers at once for a pipe the module closed (RedirectStandardInput,
+        # closed right after Start), while an open stdin never EOFs, blocks the fake until the shim's timeout stops
+        # it, as a client handed the caller's stdin would hang (the log then stays empty and the count assertion
+        # fails). Any byte before EOF fails the call with exit 7 (P13.5b). fake-stdin-facts.log records what each
+        # probe saw, with byte counts and hex, in failure messages.
+        # P13.5b regression: run this Describe on a UTF-8 console, where .NET Framework's redirected stdin writer
+        # emits its encoding's EF BB BF preamble into the pipe at Start unless the module prevents it. The daemon
+        # prime below and every wrapped call then see the console the CI host runs one on; a missing fix makes both
+        # tests fail (the fake logs 'open' with the bytes).
+        $script:SavedInputEncoding = $null
+        try {
+            $script:SavedInputEncoding = [Console]::InputEncoding
+            [Console]::InputEncoding = [System.Text.Encoding]::GetEncoding(65001)
+        } catch { $script:SavedInputEncoding = $null }
         $env:FAKE_ZC_STDIN = '1'
         $null = Initialize-Package $script:Pkg
         $script:Expected = Get-Direct $script:Pkg (Join-Path $script:Pkg.Src 'a.c')
     }
-    AfterAll { Remove-Item Env:\FAKE_ZC_STDIN -ErrorAction SilentlyContinue }
+    AfterAll {
+        if ($null -ne $script:SavedInputEncoding) { try { [Console]::InputEncoding = $script:SavedInputEncoding } catch { $null = $_ } }
+        Remove-Item Env:\FAKE_ZC_STDIN -ErrorAction SilentlyContinue
+    }
 
     It 'a wrapped call starts its client with an empty stdin while the caller holds its own open' {
         $out = Join-Path $script:Pkg.Tree 'stdin.o'
