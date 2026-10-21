@@ -60,10 +60,14 @@ function Get-FakeScanReport {
             'azure-provisioning-data', 'shadow-password-hash', 'pem-private-key', 'github-token', 'github-pat', 'jit-config', 'synthetic-marker', 'build-credential',
             'build-agent', 'build-sudoers') }
 }
-# What certify.py compare writes when the image matches the hosted reference except for the exact Azure kernel build.
+# What certify.py compare writes when the image matches the hosted reference except for the exact Azure kernel build, for a
+# verification guest: it has no runner, so the runner fields are missing (recorded, not gated: the image does not own them).
 function Get-FakeCompareReport {
-    [ordered]@{ schema = 1; kind = 'inventory-report'; inventory = [ordered]@{ status = 'fail'; counts = [ordered]@{ 'version-mismatch' = 1; extra = 2 }
+    [ordered]@{ schema = 1; kind = 'inventory-report'; inventory = [ordered]@{ status = 'fail'; counts = [ordered]@{ 'version-mismatch' = 1; 'missing-required' = 3; extra = 2 }
             differences = @([ordered]@{ class = 'version-mismatch'; section = 'image'; key = 'kernel'; reference = '6.17.0-1022-azure'; candidate = '6.17.0-1030-azure' },
+                [ordered]@{ class = 'missing-required'; section = 'image'; key = 'runner_version'; reference = '2.337.0'; candidate = $null },
+                [ordered]@{ class = 'missing-required'; section = 'image'; key = 'runner_os'; reference = 'Linux'; candidate = $null },
+                [ordered]@{ class = 'missing-required'; section = 'image'; key = 'runner_arch'; reference = 'X64'; candidate = $null },
                 [ordered]@{ class = 'extra'; section = 'tool_cache'; key = 'node/24.22.0'; reference = $null; candidate = '24.22.0' },
                 [ordered]@{ class = 'extra'; section = 'env'; key = 'AAP'; reference = $null; candidate = 'x' })
             identity = [ordered]@{ status = 'pass'; checks = @() } } }

@@ -11,7 +11,7 @@ helper, the providers or the catalog yet. Contracts: `parity/contracts/image-cat
 | The sealed base disk | `<base_root>\ubuntu-24.04-x64\<image_version>-aap.<n>\base.vhdx` | Read-only file and folder: owner Administrators; SYSTEM, Administrators and `S-1-5-83-0` (Virtual Machines) read and execute; protected DACL; ReadOnly attribute |
 | Generation entry | `<EvidenceRoot>\P07\<build id>\generation.json` | One image-catalog schema 2 `generations[]` item, `state` `candidate`, `built_by_item` `P07`, no overlays, no certificate |
 | Budget | `...\budget.json` | backend-lifecycle schema 2 `budget` record, `profile` `linux`, `measured: true`, scratch 0 |
-| Evidence | `...\build.json`, `secret-scan.json` | `plan_sha256`, `inputs_manifest_sha256`, `builder_commit`, waivers, media hash, the base deviation, phases with exec mode, script hashes and exit codes, the seal check, verification counts and facts, the inventory comparison (gate sections and recorded differences), measured bytes; the scan's findings, unreadable paths, large files with hashes |
+| Evidence | `...\build.json`, `secret-scan.json` | `plan_sha256`, `inputs_manifest_sha256`, `builder_commit`, waivers, media hash, the base deviation, phases with exec mode, script hashes and exit codes, the seal check, verification counts and facts, the inventory comparison (gate and required sections, recorded differences), measured bytes; the scan's findings, unreadable paths, large files with hashes |
 | Guest-authored files | `...\software-report.md/.json`, `job-inventory.json` | Written by the build or verification guest; size-capped while received and hashed; `job-inventory.json` was also compared by P05's `certify.py` on the host |
 
 `<build id>` is the generation id with `/` replaced by `_`. Build VMs are named `aap-lbuild-<8 hex>`, `aap-lscan-<8 hex>` and
@@ -32,7 +32,13 @@ them apart.
   and its token; the seal check (`no-agent`) and the scan (`build-agent`, never allowlistable) both refuse any remnant, so a
   clone never carries a build agent.
 - No per-machine secrets: the snakeoil TLS key and certificate and `/var/lib/systemd/random-seed` are deleted at seal (P15
-  regenerates the key; systemd makes a new seed), and the journal is rotated and vacuumed.
+  regenerates the key; systemd makes a new seed), and the journal is rotated and vacuumed. The verification guest's seed
+  runs P15's first-boot step before anything is checked, so the build verifies the image as a clone first boots it.
+- **Invariant: no reusable secret may ever enter the build guest** (a token, a key, a registry or feed credential), not even
+  briefly. A deleted file's data can survive in `base.vhdx` (trim and `Optimize-VHD` reclaim only whole 32 MiB VHDX blocks),
+  and every clone's job is root and can read the raw disk. The secret scan reads files, not freed blocks; it detects leaks
+  and is not an integrity or backdoor control. A later change that would hand the build a credential (a P03 mirror, an
+  authenticated feed) needs a design that keeps the credential out of the guest.
 
 ## Dependency on P06 (`images/windows`)
 
@@ -42,6 +48,12 @@ not copied, so a fix in one place reaches both builders. A test pins each signat
 the module path; a P06 change that breaks P07 fails `tests/images/ubuntu-24.04` first. The builder's self-check refuses to
 run unless `images/windows` passes the admin-only check like its own folder. P19 deploys `images/windows` and
 `images/ubuntu-24.04` together, from the same commit, into the same admin-only tree.
+
+Everything else is copied. These 19 functions are verbatim copies of P06's (same name, same body): in `AapUbuntuImage.psm1`
+`Get-AapUtc`, `Get-AapProp`, `Get-AapSha256File`, `Get-AapSha256Text`, `Get-AapPrintable`, `Write-AapJson`, `Read-AapJson`,
+`Invoke-AapProvider`, `Assert-AapProvider`, `Assert-AapStorageTrusted`, `Assert-AapBuildSpace`, `Assert-AapStagingBudget`,
+`Save-AapState`, `Set-AapStep`, `Add-AapWritten`, `Write-AapEvidence` and `Get-AapVmId`; in `AapUbuntuImage.HyperV.psm1`
+`Get-AapVm` and `Get-AapTreeBytes`. A fix to one of them is made in both builders.
 
 ## P11: Linux VM backend
 
@@ -77,10 +89,11 @@ run unless `images/windows` passes the admin-only check like its own folder. P19
    the install and the phases; the scanner and verification VMs have no adapter (read back after create). **Shared-switch
    hazard**: guest-transport.md names no build-only switch, so the build VM, which runs internet-sourced installers as root,
    shares `aap-guests-linux` (one L2 segment) with runner clones. The per-adapter ACLs deny the guest subnet except its
-   gateway and the guards stop DHCP, router and MAC spoofing, but a build and running clones are still neighbours. P07
+   gateway and the guards stop DHCP, router and MAC spoofing, but they do not stop ARP poisoning (a guest can still claim a
+   neighbour's or the gateway's address on the segment), so a build and running clones are still neighbours. P07
    recommends a build-only internal switch in the contract (for example `aap-build-linux`, its own subnet and NAT, the same
-   controls); until the contract names one, P07 builds only on `aap-guests-linux`, and P12 should not admit Linux clones
-   while a build runs if the owner wants them apart.
+   controls); until the contract names one, P07 builds only on `aap-guests-linux`, and keeping a build and Linux clones apart
+   is a **hard P12 rule** (P12 below).
 
 ## P15: Linux guest bootstrap
 
@@ -98,8 +111,10 @@ run unless `images/windows` passes the admin-only check like its own folder. P19
 - **Order matters**: run the post-generation scripts as root before the runner or any job starts, and never again in that
   clone. `/imagegeneration` is mode 777 (upstream's own `chmod 777`), so after a job has run anyone could have planted a
   script there.
-- Regenerate the per-clone TLS test key at first boot (`make-ssl-cert generate-default-snakeoil --force-overwrite`, which the
-  `ssl-cert` package uses); the image has none. `/var/lib/systemd/random-seed` is recreated by systemd.
+- Regenerate the per-clone TLS test key at first boot, before the runner starts (`make-ssl-cert generate-default-snakeoil
+  --force-overwrite`, which the `ssl-cert` package uses); the image has none, and PostgreSQL (`ssl = on` with that pair) does
+  not start without it. P07's verification seed runs exactly this step before anything is checked: keep the two in step.
+  `/var/lib/systemd/random-seed` is recreated by systemd.
 
 ## P10.0: guest network module
 
@@ -117,6 +132,9 @@ run unless `images/windows` passes the admin-only check like its own folder. P19
   and every fixed range has an outbound Deny entry. **Open item for P10.0**: the host-specific entries (vEthernet addresses,
   LAN prefix, subnet) depend on the module's design; P07 cannot verify them and P10.0 must prove them in the lab (negative
   cases of guest-transport.md). Until the module exists there is no `-GuestNetwork` to pass and no build.
+- **Known open item (P07.1)**: the read-back proves only that the Deny entries exist (a higher-weight Allow overrides a Deny,
+  a port- or protocol-scoped Deny passes as if it covered the whole range, and outbound entries miss inbound traffic and ARP
+  poisoning); a shared validator delivered with the host-network-module contract fixes this once, and P07 then conforms.
 - The shared-switch hazard above (P11 item 7) is a request for a build-only switch.
 
 ## P19: installer, helper, storage
@@ -133,9 +151,10 @@ run unless `images/windows` passes the admin-only check like its own folder. P19
   check. The check runs after the modules loaded (README, Trust in the builder's own files): the admin-only deployment is
   the protection, the check proves it is in place.
 - Deploy a python 3 for the comparison into an Administrators-only folder (or have the installer vendor a pinned embeddable
-  python there) and pass its absolute path to `New-AapUbuntuHyperVProvider -PythonPath`. `-I` keeps user site-packages and
-  environment variables out but not a writable standard library, so the install folder itself must pass the admin-only
-  check, which the builder runs on it (`ExecFolders`). The Store alias in `%LOCALAPPDATA%\Microsoft\WindowsApps` is refused.
+  python there) and pass its absolute path to `New-AapUbuntuHyperVProvider -PythonPath`. The provider runs it as
+  `python -B -I -S`: `-I` keeps user site-packages and environment variables out and `-S` skips `site` (and every `.pth`
+  file), but neither protects a writable standard library, so the install folder itself must pass the admin-only check,
+  which the builder runs on it (`ExecFolders`). The Store alias in `%LOCALAPPDATA%\Microsoft\WindowsApps` is refused.
   The comparison is stdlib-only and runs hidden.
 - The ISO is no longer copied by P19: it is the P03 entry the plan pins (`inputs.media`), staged and verified by P03.
 - Pass the owner-approved values: `BuildCpus` 4, `BuildMemGib` 10, `BaseGibMax` 186 and `JobDiskGibMax` 55 (the builder
@@ -149,6 +168,8 @@ run unless `images/windows` passes the admin-only check like its own folder. P19
   unfiltered.
 - Never render `software-report.md` (guest-authored Markdown); show its hash at most.
 - Admission refuses the Ubuntu profile until a generation has a measured `budget.json`.
+- **Hard rule until guest-transport.md names a build-only switch**: a Linux image build and Linux runner clones never share
+  `aap-guests-linux`. Admit no Linux clone while a build runs, and start a build only when no Linux clone runs (P11 item 7).
 - Admission counts a running build VM: 4 vCPU and 10 GiB static memory (plus its worker overhead), the build folder up to
   `StagingGibMax` on the staging volume, and one `os_disk_gib` copy on the base volume while it publishes. One image build at
   a time (the builder's `aap-image-build.lock`).
@@ -199,10 +220,10 @@ it, its registration window (P19) and the rule that no clone image may contain i
 ## CI (the coordinator adds)
 
 - shellcheck 0.11.0 at `-S warning` over `images/ubuntu-24.04/guest/*.sh`, `tests/images/ubuntu-24.04/guest_test.sh` and
-  `tests/images/ubuntu-24.04/guest_mutations.sh`. Neither this host nor WSL Ubuntu-24.04 has shellcheck, and downloads are
-  forbidden here, so P07 has not run it.
+  `tests/images/ubuntu-24.04/guest_mutations.sh` (clean with 0.11.0 in WSL Ubuntu-24.04).
 - Pester `Run.Path` += `tests/images/ubuntu-24.04` (Windows PowerShell 5.1 and pwsh 7).
-- A bash step on hosted ubuntu: `bash tests/images/ubuntu-24.04/guest_test.sh` (python3, coreutils, gzip only).
+- A bash step on hosted ubuntu: `bash tests/images/ubuntu-24.04/guest_test.sh` (python3, coreutils, gzip only; one scan
+  runs under `ulimit -v` against a 2 MiB gzip bomb of 512 MiB, a few seconds).
 
 ## Decisions taken here (for review)
 
@@ -213,8 +234,10 @@ it, its registration window (P19) and the rule that no clone image may contain i
    the Azure-base blocker still needs a chair waiver.
 3. **OS disk 150 GiB** from the hosted capture, not the 75 GB build disk, so a job sees the hosted free space.
 4. **Inventory gate**: the build fails on differences in cached tool versions, services, PATH order, the action archive
-   cache, the job user and probe coverage, and on anything the reference requires that the image lacks in any section; it
-   records the rest, extras included, for P24.
+   cache, the job user and probe coverage, and on anything the reference requires that the image lacks in a section the
+   image owns (the plan's explicit `verify.required_sections`; never `image`, `infra`, `run_identity` or `credential_env`,
+   which describe the runner, the job and the Azure fabric a verification guest does not have); it records the rest,
+   extras included, for P24. P05's shared allowlist is unchanged.
 5. **Verification network**: none, as in P06.
 6. **Inputs are pinned in the plan, not passed in config**: the source archive and the ISO by P03 entry and SHA-256.
 7. **Scanner boots without a disk**; the sealed disk is hot-added after the live system answers.

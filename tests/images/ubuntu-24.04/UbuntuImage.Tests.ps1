@@ -104,6 +104,40 @@ Describe 'build plan mirrors the pinned upstream template' {
         @($ref.tool_cache.defaults.PSObject.Properties).Count | Should -Be 0
         $script:Plan.verify.gate_sections | Should -Not -Contain 'tool_cache.defaults'
     }
+    It 'fails on missing-required only in the sections the image owns, never in the runner, job identity or Azure fabric ones' {
+        @($script:Plan.verify.required_sections) | Should -Be @('tools', 'shells', 'docker', 'docker.images', 'env', 'limits', 'limits.sysctl', 'hardware', 'tool_cache',
+            'action_archive_cache', 'services', 'path.process', 'path.machine')
+        foreach ($s in 'image', 'infra', 'run_identity', 'credential_env') { @($script:Plan.verify.required_sections) + @($script:Plan.verify.gate_sections) | Should -Not -Contain $s }
+    }
+    It 'refuses a plan whose required sections are <Case>' -Tag 'plan-required' -TestCases @(
+        @{ Case = 'absent'; Edit = { param($p) $p.verify.PSObject.Properties.Remove('required_sections') } },
+        @{ Case = 'empty'; Edit = { param($p) $p.verify.required_sections = @() } },
+        @{ Case = 'naming the runner a verification guest does not have'; Edit = { param($p) $p.verify.required_sections = @('tools', 'image') } },
+        @{ Case = 'naming the Azure fabric'; Edit = { param($p) $p.verify.required_sections = @('infra') } }) {
+        $p = New-PinnedPlan (Join-Path $TestDrive 'required.json')
+        & $Edit $p
+        Write-TestJson $p (Join-Path $TestDrive 'required.json')
+        { Read-AapUbuntuBuildPlan -Path (Join-Path $TestDrive 'required.json') } | Should -Throw 'AAP_PlanInvalid*required_sections*'
+    }
+    It 'passes P05''s real comparison of a guest without a runner, and fails one that lacks a tool' -Tag 'inventory-required' -Skip:(-not $script:Py) {
+        # certify.py fails both (missing-required image.runner_version, runner_os, runner_arch); the plan's sections decide.
+        $ref = Join-Path $script:Repo 'images\ubuntu-24.04\reference-inventory.json'
+        $cand = Join-Path $TestDrive 'guest.json'; $out = Join-Path $TestDrive 'report.json'
+        $g = Get-Content -Raw $ref | ConvertFrom-Json
+        foreach ($k in 'runner_version', 'runner_os', 'runner_arch', 'runner_environment') { $g.image.$k = $null }
+        $g.infra = [pscustomobject]@{ hostname = 'aap-verify' }
+        $compare = {
+            Write-TestJson $g $cand
+            $null = & $script:Py -B -I -S (Join-Path $script:Repo 'tools\parity-certify\certify.py') compare --reference $ref --candidate $cand `
+                --allowlist (Join-Path $script:Repo 'tools\parity-certify\allowlist.json') --out $out
+            $LASTEXITCODE | Should -Be 1
+            Read-AapInventoryReport -Path $out -GateSections @($script:Plan.verify.gate_sections) -RequiredSections @($script:Plan.verify.required_sections)
+        }
+        $r = & $compare
+        @($r.recorded | Where-Object { $_.class -eq 'missing-required' } | ForEach-Object { "$($_.section).$($_.key)" }) | Should -Be @('image.runner_version', 'image.runner_os', 'image.runner_arch')
+        $g.tools.gcc = $null
+        { & $compare } | Should -Throw 'AAP_VerifyFailed*missing-required tools.gcc*'
+    }
     It 'pins the source archive and the media nowhere yet, so both stay unwaivable blockers' {
         $script:Plan.inputs.source.entry | Should -BeNullOrEmpty
         $script:Plan.inputs.media.sha256 | Should -BeNullOrEmpty
@@ -323,11 +357,20 @@ Describe 'preflight refusals change nothing' {
         Assert-NothingStarted
     }
     It 'refuses <Key> = <Value>, outside the owner-approved lab ceiling' -Tag 'owner-limits' -TestCases @(
-        @{ Key = 'BuildCpus'; Value = 5 }, @{ Key = 'BuildMemGib'; Value = 11 }, @{ Key = 'BaseGibMax'; Value = 187 }, @{ Key = 'JobDiskGibMax'; Value = 56 }, @{ Key = 'BuildCpus'; Value = 0 }) {
+        @{ Key = 'BuildCpus'; Value = 5 }, @{ Key = 'BuildMemGib'; Value = 11 }, @{ Key = 'BaseGibMax'; Value = 187 }, @{ Key = 'JobDiskGibMax'; Value = 56 }, @{ Key = 'BuildCpus'; Value = 0 },
+        @{ Key = 'BuildMemGib'; Value = 'ten' }, @{ Key = 'BuildCpus'; Value = 2.5 }) {
         $w.Config[$Key] = $Value
         $r = Invoke-Build
         $r.Reason | Should -Be 'AAP_ConfigInvalid'
         $r.Detail | Should -Match "^$Key must be 1 to"
+        Assert-NothingStarted
+    }
+    It 'refuses <Key> = <Value>, not a whole number of at least 1' -Tag 'config-number' -TestCases @(
+        @{ Key = 'AapBuild'; Value = 'x' }, @{ Key = 'AapBuild'; Value = 0 }, @{ Key = 'StagingGibMax'; Value = '400 GiB' }) {
+        $w.Config[$Key] = $Value
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_ConfigInvalid'
+        $r.Detail | Should -Match "^$Key must be a whole number"
         Assert-NothingStarted
     }
     It 'refuses while another image build is running' {
@@ -464,6 +507,10 @@ Describe 'a full build with fakes' {
         $script:Ev.verify.upstream_tests.failed | Should -Be 0
         $script:Ev.verify.facts.kernel | Should -Be '6.17.0-1030-azure'
         $script:Ev.verify.inventory_compare.recorded[0].key | Should -Be 'kernel'
+        # A verification guest has no runner: recorded, not gated.
+        @($script:Ev.verify.inventory_compare.recorded | Where-Object { $_.class -eq 'missing-required' } | ForEach-Object { "$($_.section).$($_.key)" }) |
+            Should -Be @('image.runner_version', 'image.runner_os', 'image.runner_arch')
+        @($script:Ev.verify.inventory_compare.required_sections) | Should -Be @($w.Plan.verify.required_sections)
         $script:Ev.verify.inventory_compare.counts.'version-mismatch' | Should -Be 1
         $script:Ev.reports.'software-report.md' | Should -Be (Get-TextSha $w.ReportText)
     }
@@ -521,6 +568,9 @@ Describe 'a full build with fakes' {
         $s | Should -Not -Match 'autoinstall|users:'
         $v | Should -Not -Match 'autoinstall'
         $v | Should -Match '(?m)^  - name: runner\n    uid: 1001\n    groups: \[adm, users, docker, systemd-journal\]'
+        # The verification guest boots like a clone (P15): a new snakeoil TLS pair before the agent answers.
+        $v | Should -Match '(?m)^runcmd:\n  - \[make-ssl-cert, generate-default-snakeoil, --force-overwrite\]\n  - \[systemctl, daemon-reload\]\n  - \[systemctl, enable, --now, aap-agent\.socket\]$'
+        foreach ($x in $b, $s) { $x | Should -Not -Match 'make-ssl-cert' }
         foreach ($x in $b, $s, $v) {
             $x | Should -Match 'ListenStream=vsock::5223'
             $x | Should -Not -Match '(?m)^\s*-?\s*(passwd|plain_text_passwd|hashed_passwd|ssh_authorized_keys|password):'
@@ -738,9 +788,8 @@ Describe 'failures roll back' {
         Set-GuestFault 'verify' { param($w, $req) $o = Get-Reply $w $req; $o.data.facts.kernel = @(1, 2); ConvertTo-Json $o -Depth 6 -Compress }
         (Invoke-Build).Reason | Should -Be 'AAP_HostileGuest'
     }
-    It 'fails when the inventory differs from the hosted reference in <Section>' -Tag 'inventory-gate' -TestCases @(
-        @{ Section = 'tool_cache'; Class = 'missing-required'; Key = 'Python/3.10.22' }, @{ Section = 'tools'; Class = 'missing-required'; Key = 'gradle' },
-        @{ Section = 'shells'; Class = 'missing-required'; Key = 'zsh' }, @{ Section = 'docker.images'; Class = 'missing-required'; Key = 'alpine:3.22' },
+    It 'fails when the inventory differs from the hosted reference in gate section <Section>' -Tag 'inventory-gate' -TestCases @(
+        @{ Section = 'tool_cache'; Class = 'missing-required'; Key = 'Python/3.10.22' },
         @{ Section = 'services'; Class = 'service-mismatch'; Key = 'docker' }, @{ Section = 'path.process'; Class = 'path-order'; Key = 'index 3' },
         @{ Section = 'user'; Class = 'env-mismatch'; Key = 'groups' }, @{ Section = 'action_archive_cache'; Class = 'missing-required'; Key = 'actions_checkout' },
         @{ Section = 'coverage'; Class = 'missing-required'; Key = 'docker' }) {
@@ -750,12 +799,30 @@ Describe 'failures roll back' {
         $r.Detail | Should -Match ([regex]::Escape("$Class $Section.$Key"))
         Assert-CleanedUp
     }
+    It 'fails when the image lacks what the hosted reference requires in <Section>, a section the image owns' -Tag 'inventory-required' -TestCases @(
+        @{ Section = 'tools'; Key = 'gradle' }, @{ Section = 'shells'; Key = 'zsh' }, @{ Section = 'docker'; Key = 'server' }, @{ Section = 'docker.images'; Key = 'alpine:3.22' },
+        @{ Section = 'env'; Key = 'JAVA_HOME' }, @{ Section = 'limits'; Key = 'nofile' }, @{ Section = 'limits.sysctl'; Key = 'vm.max_map_count' },
+        @{ Section = 'hardware'; Key = 'logical_processors' }) {
+        $w.CompareReport.inventory.differences += [ordered]@{ class = 'missing-required'; section = $Section; key = $Key; reference = 'r'; candidate = $null }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_VerifyFailed'
+        $r.Detail | Should -Match ([regex]::Escape("missing-required $Section.$Key"))
+        Assert-CleanedUp
+    }
+    It 'records, and does not fail on, missing-required in <Section>, which the image does not own' -TestCases @(
+        @{ Section = 'image'; Key = 'label' }, @{ Section = 'infra'; Key = 'provisioner_version' }, @{ Section = 'run_identity'; Key = 'source_sha' },
+        @{ Section = 'credential_env'; Key = 'GITHUB_TOKEN' }) {
+        $w.CompareReport.inventory.differences += [ordered]@{ class = 'missing-required'; section = $Section; key = $Key; reference = 'r'; candidate = $null }
+        (Invoke-Build).Status | Should -Be 'built'
+        $ev = Get-Content -Raw (Join-Path (Get-EvidenceDir) 'build.json') | ConvertFrom-Json
+        @($ev.verify.inventory_compare.recorded | ForEach-Object { "$($_.section).$($_.key)" }) | Should -Contain "$Section.$Key"
+    }
     It 'records, and does not fail on, differences outside the gate (kernel build, tools, hardware, rig differences)' {
         $w.CompareReport.inventory.differences += [ordered]@{ class = 'version-mismatch'; section = 'tools'; key = 'gradle'; reference = '9.8.1'; candidate = '9.9.0' }
         $w.CompareReport.inventory.differences += [ordered]@{ class = 'documented-rig-difference'; section = 'tool_cache'; key = 'x'; reference = 1; candidate = 2 }
         (Invoke-Build).Status | Should -Be 'built'
         $ev = Get-Content -Raw (Join-Path (Get-EvidenceDir) 'build.json') | ConvertFrom-Json
-        @($ev.verify.inventory_compare.recorded | ForEach-Object { "$($_.section).$($_.key)" }) | Should -Be @('image.kernel', 'tools.gradle')
+        @($ev.verify.inventory_compare.recorded | ForEach-Object { "$($_.section).$($_.key)" }) | Should -Be @('image.kernel', 'image.runner_version', 'image.runner_os', 'image.runner_arch', 'tools.gradle')
     }
     It 'refuses a VM worker memory overhead of <Mib> MiB instead of recording it' -Tag 'mem-overhead' -TestCases @(@{ Mib = 5000 }, @{ Mib = 0 }) {
         $w.MemOverheadMib = $Mib
@@ -1110,7 +1177,8 @@ Describe 'the production provider (static: it is never run here)' {
         { & $script:Prov.ReceiveFile @{ VmId = [guid]::NewGuid().ToString(); Port = 5223; Token = ('a' * 64); Name = 'scan.json'; HostPath = $f; MaxBytes = 10; TimeoutSeconds = 1 } } | Should -Throw 'AAP_GuestUnreachable*'
         { & $script:Prov.ReceiveFile @{ VmId = [guid]::NewGuid().ToString(); Port = 5223; Token = ('a' * 64); Name = 'scan.json'; HostPath = $f; MaxBytes = 10; TimeoutSeconds = 1 } } | Should -Throw   # created new: an existing file is never written through
     }
-    It 'starts its one child process without a window, and its timeout is the only wait' {
+    It 'starts its one child process without a window, as isolated python (-B -I -S), and its timeout is the only wait' {
+        $script:ProvText | Should -Match ([regex]::Escape("`$psi.Arguments = ('-B -I -S `"{0}`" compare"))
         $script:ProvText | Should -Match 'CreateNoWindow = \$true'
         $script:ProvText | Should -Match 'UseShellExecute = \$false'
         $script:ProvText | Should -Match '\$out = \$proc\.StandardOutput\.ReadToEndAsync\(\); \$err = \$proc\.StandardError\.ReadToEndAsync\(\)'

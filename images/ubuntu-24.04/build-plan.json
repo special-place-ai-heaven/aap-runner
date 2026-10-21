@@ -77,6 +77,21 @@
       "path.machine",
       "action_archive_cache",
       "user"
+    ],
+    "required_sections": [
+      "tools",
+      "shells",
+      "docker",
+      "docker.images",
+      "env",
+      "limits",
+      "limits.sysctl",
+      "hardware",
+      "tool_cache",
+      "action_archive_cache",
+      "services",
+      "path.process",
+      "path.machine"
     ]
   },
   "inputs": {

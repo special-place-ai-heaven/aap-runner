@@ -245,7 +245,8 @@ rm -f "${tmp}/sys/imagegeneration/post-generation/zz-fails.sh"
 
 # --- secret scan over a planted tree -----------------------------------------------------------------------------------
 t="${tmp}/target"
-mkdir -p "${t}/home/u" "${t}/etc/ssh" "${t}/var/lib/cloud/seed/nocloud" "${t}/opt/app" "${tmp}/outside"
+e="${tmp}/esp"
+mkdir -p "${t}/home/u" "${t}/etc/ssh" "${t}/var/lib/cloud/seed/nocloud" "${t}/opt/app" "${tmp}/outside" "${e}/EFI/ubuntu"
 echo 'ls' > "${t}/home/u/.bash_history"
 echo 'not a key' > "${t}/etc/ssh/ssh_host_rsa_key"
 echo 'x' > "${t}/var/lib/cloud/seed/nocloud/user-data"
@@ -257,23 +258,30 @@ printf 'root:$6$salt$hash:20000:0:99999:7:::\n' > "${t}/etc/shadow"
 truncate -s 33M "${t}/opt/app/big.bin"
 # Over 32 MiB is no excuse: the token after 34 MiB of zeros is found, and so is one inside a .gz.
 truncate -s 34M "${t}/opt/app/big-known.bin"; printf 'x %s y\n' "${TOKEN}" >> "${t}/opt/app/big-known.bin"
-mkdir -p "${t}/var/log" "${t}/usr/share/doc/x" "${t}/home/u/.local/share/powershell/PSReadLine" "${t}/var/lib/aap-build" "${t}/etc/systemd/system/sockets.target.wants" "${t}/etc/sudoers.d" "${t}/boot/efi/EFI"
+mkdir -p "${t}/var/log" "${t}/usr/share/doc/x" "${t}/home/u/.local/share/powershell/PSReadLine" "${t}/var/lib/aap-build" "${t}/etc/systemd/system/sockets.target.wants" "${t}/etc/sudoers.d" "${t}/boot/efi"
 printf 'log %s\n' "${TOKEN}" | gzip -c > "${t}/var/log/old.log.gz"
 printf 'token=ghp_%s\n' "$(printf '%036d' 0 | tr 0 Y)" | gzip -c > "${t}/usr/share/doc/x/changelog.gz"
 printf 'nothing here\n' | gzip -c > "${t}/usr/share/doc/x/clean.gz"
 python3 -B -I -c 'import sys; sys.stdout.buffer.write(("w" + sys.argv[1]).encode("utf-16-le"))' "${TOKEN}" | gzip -c > "${t}/var/log/wide.log.gz"
+# A match early in a long .gz: grep stops reading and zcat writes into a closed pipe, which is not an unreadable file.
+python3 -B -I -c 'import gzip, sys; gzip.open(sys.argv[1], "wb").write(("token=ghp_" + "X" * 36 + "\n" + "clean filler line\n" * 200000).encode())' "${t}/var/log/long.log.gz"
 echo 'Get-ChildItem' > "${t}/home/u/.local/share/powershell/PSReadLine/ConsoleHost_history.txt"
 echo 'left over' > "${t}/var/lib/aap-build/token-was-here"
 ln -s /etc/systemd/system/aap-agent.socket "${t}/etc/systemd/system/sockets.target.wants/aap-agent.socket"
 printf 'installer ALL=(ALL) NOPASSWD:ALL\n' > "${t}/etc/sudoers.d/90-cloud-init-users"
 printf '# a comment that mentions NOPASSWD\n' > "${t}/etc/sudoers.d/README"
-printf -- '-----BEGIN EC PRIVATE KEY-----\n' > "${t}/boot/efi/EFI/esp.key"
+# The EFI partition is scanned from a mount point of its own (--esp-target here) and reported under boot/efi/; what the root
+# file system itself holds in /boot/efi, which a mount over it would hide, is scanned with the root.
+printf -- '-----BEGIN EC PRIVATE KEY-----\nesp\n' > "${e}/EFI/esp.key"
+echo 'set timeout=0' > "${e}/EFI/ubuntu/grub.cfg"
+printf -- '-----BEGIN EC PRIVATE KEY-----\nroot\n' > "${t}/boot/efi/under-the-mount.key"
 printf -- '-----BEGIN RSA PRIVATE KEY-----\n' > "${tmp}/outside/secret.pem"
 ln -s "${tmp}/outside/secret.pem" "${t}/opt/app/link.pem"
 ln -s "${tmp}/outside" "${t}/opt/linkdir"
 echo 'clean' > "${t}/opt/app/readme"
 printf '%s\n' "${TOKEN}" > "${tmp}/known"
-RC=0; bash "${guest}/aap-scan.sh" --known-file "${tmp}/known" --out "${tmp}/scan.json" --target "${t}" > "${tmp}/scan.log" 2>&1 || RC=$?
+# SIGPIPE ignored, as under systemd (IgnoreSIGPIPE=yes): a writer to a closed pipe gets EPIPE and complains instead of dying.
+RC=0; ( trap '' PIPE; exec bash "${guest}/aap-scan.sh" --known-file "${tmp}/known" --out "${tmp}/scan.json" --target "${t}" --esp-target "${e}" ) > "${tmp}/scan.log" 2>&1 || RC=$?
 [ "${RC}" = 0 ] || fail "scan: $(cat "${tmp}/scan.log")"
 cp "${tmp}/scan.json" "${tmp}/out"
 [ "$(reply 'sorted((f["rule"], f["path"]) for f in r["findings"])')" = "$(python3 -B -I -c 'print(sorted([
@@ -281,16 +289,28 @@ cp "${tmp}/scan.json" "${tmp}/out"
  ("github-token", "opt/app/tok.txt"), ("pem-private-key", "opt/app/key.txt"), ("shadow-password-hash", "etc/shadow"),
  ("shell-history", "home/u/.bash_history"), ("ssh-host-key", "etc/ssh/ssh_host_rsa_key"),
  ("build-credential", "opt/app/big-known.bin"), ("build-credential", "var/log/old.log.gz"), ("github-token", "usr/share/doc/x/changelog.gz"),
- ("build-credential", "var/log/wide.log.gz"),
+ ("build-credential", "var/log/wide.log.gz"), ("github-token", "var/log/long.log.gz"),
  ("shell-history", "home/u/.local/share/powershell/PSReadLine/ConsoleHost_history.txt"), ("build-agent", "var/lib/aap-build/token-was-here"),
  ("build-agent", "etc/systemd/system/sockets.target.wants/aap-agent.socket"), ("build-sudoers", "etc/sudoers.d/90-cloud-init-users"),
- ("pem-private-key", "boot/efi/EFI/esp.key")]))')" ] || fail "scan findings: $(out)"
+ ("pem-private-key", "boot/efi/EFI/esp.key"), ("pem-private-key", "boot/efi/under-the-mount.key")]))')" ] || fail "scan findings: $(out)"
 [ "$(reply 'r["layout"], r["findings_count"], r["unreadable_count"], r["large_files_count"], sorted((f["path"], f["bytes"]) for f in r["large_files"])')" = \
-  "('ok', 17, 0, 2, [('opt/app/big-known.bin', $(stat -c %s "${t}/opt/app/big-known.bin")), ('opt/app/big.bin', 34603008)])" ] || fail "scan counts: $(out)"
+  "('ok', 19, 0, 2, [('opt/app/big-known.bin', $(stat -c %s "${t}/opt/app/big-known.bin")), ('opt/app/big.bin', 34603008)])" ] || fail "scan counts: $(out)"
 [ "$(reply '[f["sha256"] for f in r["findings"] if f["path"] == "opt/app/key.txt"][0]')" = "$(sha "${t}/opt/app/key.txt")" ] || fail 'a finding lacks its file hash'
+[ "$(reply '[f["sha256"] for f in r["findings"] if f["path"] == "boot/efi/EFI/esp.key"][0]')" = "$(sha "${e}/EFI/esp.key")" ] || fail 'an EFI finding is not hashed from the EFI partition'
 [ "$(reply '[f["sha256"] for f in r["findings"] if f["path"].endswith("aap-agent.socket")][0]')" = "$(printf '%s\n' /etc/systemd/system/aap-agent.socket | sha256sum | cut -d' ' -f1)" ] || fail 'a link finding must hash its target text, not follow it'
 [ "$(reply '[f["sha256"] for f in r["large_files"] if f["path"] == "opt/app/big.bin"][0]')" = "$(sha "${t}/opt/app/big.bin")" ] || fail 'a large file lacks its hash'
 ! grep -q 'BEGIN\|ghp_\|'"${TOKEN}" "${tmp}/scan.json" || fail 'the scan report carries a matched value'
+# A .gz that cannot be read to its end is unreadable, never clean: a truncated stream, and a gzip bomb whose one line is too
+# long for grep's memory (grep exits 2; here a ulimit, in the scanner guest its RAM).
+u="${tmp}/unread"
+mkdir -p "${u}/var/log"
+python3 -B -I -c 'import gzip, sys; d = gzip.compress(b"clean filler line\n" * 50000); open(sys.argv[1], "wb").write(d[:len(d) // 2])' "${u}/var/log/trunc.log.gz"
+head -c 536870912 /dev/zero | gzip -1 > "${u}/var/log/bomb.log.gz"
+for sigpipe in default ignored; do
+  RC=0; ( if [ "${sigpipe}" = ignored ]; then trap '' PIPE; fi; ulimit -v 131072; exec bash "${guest}/aap-scan.sh" --known-file "${tmp}/known" --out "${tmp}/out" --target "${u}" ) > "${tmp}/scan.log" 2>&1 || RC=$?
+  [ "${RC}" = 0 ] && [ "$(reply 'r["findings_count"], r["unreadable_count"], sorted(x.split(":")[0] for x in r["unreadable"])')" = "(0, 2, ['var/log/bomb.log.gz', 'var/log/trunc.log.gz'])" ] ||
+    fail "a .gz not read to its end passed (SIGPIPE ${sigpipe}): $(out) $(cat "${tmp}/scan.log")"
+done
 printf 'nothex\n' > "${tmp}/badknown"
 RC=0; bash "${guest}/aap-scan.sh" --known-file "${tmp}/badknown" --out "${tmp}/scan2.json" --target "${t}" > /dev/null 2>&1 || RC=$?
 [ "${RC}" = 2 ] && [ ! -e "${tmp}/scan2.json" ] || fail 'a malformed known token was accepted'

@@ -9,8 +9,9 @@ downloaded. The first real run is the D2 lab (see [What is not done](#what-is-no
 not runnable yet: its upstream script hashes are not pinned (`AAP_ScriptUnpinned`), and neither are the upstream source
 archive and the ISO, whose blockers cannot be waived (`AAP_Blocked`).
 
-The Windows twin is `images/windows` (P06). This builder shares its path walk, safe deletion, read-only ACL and storage-record
-helpers (it imports `images/windows/AapWinImage.psm1`) and follows its rules; what differs is everything a Linux guest needs.
+The Windows twin is `images/windows` (P06). This builder imports five of its helpers (the path walk, safe deletion, read-only
+ACL and storage record, from `images/windows/AapWinImage.psm1`) and carries verbatim copies of 19 smaller ones (listed in
+INTEGRATION.md, Dependency on P06), and it follows P06's rules; what differs is everything a Linux guest needs.
 
 | File | Role |
 |---|---|
@@ -54,8 +55,10 @@ The build guest runs internet-sourced installers, so nothing a guest says or wri
   adapter and **no disk**, so firmware can only boot the media; the sealed disk, as a differencing child, is hot-added on SCSI
   once the live system answers. The scanner's own (trusted, pinned) kernel checks the partition layout the build made (GPT:
   FAT EFI, then an ext4 root, numbers 1 and 2; a decoy partition is refused), refuses a root whose journal still needs
-  recovery (every clone would replay it, `ro,noload` would not), mounts the root read-only without journal replay and the
-  EFI partition read-only over the image's own `/boot/efi` (which must be a plain folder: mount follows links).
+  recovery (every clone would replay it, `ro,noload` would not; a `dumpe2fs` that reports no features is not taken as a
+  clean journal, the scan is then incomplete), mounts the root read-only without journal replay and the EFI partition
+  read-only at a mount point of its own, never over the root's `/boot/efi`, so the root's own files there are scanned too
+  (that folder must still be a plain folder: each clone mounts the EFI partition on it, and mount follows links).
   **Accepted residual**: a crafted ext4 or FAT image could attack the scanner's file system drivers; that is contained in a
   guest with no network and no host channel but the capped reply, and the sealed disk's hash is checked again afterwards.
 - No guest gets a password, an SSH key, a host share, Guest Service Interface or Key-Value Pair Exchange. Only the build VM
@@ -139,11 +142,18 @@ everything it made (VMs, build disks, a partly published generation, the evidenc
    with at least one upstream test, no failed test, every discovery item and an inventory whose hash matches what the guest
    reported. Then P05's `certify.py compare` runs on the host against `reference-inventory.json` with P05's
    `allowlist.json`: **any difference in a gate section** (`coverage`, `tool_cache`, `services`, `path.process`,
-   `path.machine`, `action_archive_cache`, `user`) and **anything the reference requires that the image lacks**
-   (`missing-required`, in every section: tools, shells, Docker images included) fail the build; every other difference
-   (kernel build, read-ahead, mount options, tool versions from floating feeds, hardware) is recorded in `build.json` for
-   P24, and so are the count and the first 200 of what the image has beyond the reference (`extra`). `tool_cache.defaults` is
-   not gated: the hosted capture records no defaults. The clone peak and the VM memory overhead are measured here (an
+   `path.machine`, `action_archive_cache`, `user`) and **anything the reference requires that the image lacks in a section
+   the image owns** (`missing-required` in the plan's explicit `verify.required_sections`: `tools`, `shells`, `docker`,
+   `docker.images`, `env`, `limits`, `limits.sysctl`, `hardware`, `tool_cache`, `action_archive_cache`, `services`,
+   `path.process`, `path.machine`) fail the build. `image`, `infra`, `run_identity` and `credential_env` are not the
+   image's: they describe the runner (a verification guest has none, so `image.runner_version`, `runner_os` and
+   `runner_arch` are null), the job's identity and the Azure fabric, and the plan is refused if it names them. Their
+   differences and every other one (kernel build, read-ahead, mount options, tool versions from floating feeds, hardware)
+   are recorded in `build.json` for P24, and so are the count and the first 200 of what the image has beyond the reference
+   (`extra`). `tool_cache.defaults` is not gated: the hosted capture records no defaults. Before the agent answers, the
+   verification seed runs the first-boot step every clone gets (P15): `make-ssl-cert generate-default-snakeoil
+   --force-overwrite`, because the seal deleted the image's snakeoil TLS pair and PostgreSQL (`ssl = on` with that pair) does
+   not start without it; the upstream tests start PostgreSQL. The clone peak and the VM memory overhead are measured here (an
    overhead outside 1 to 1024 MiB is refused, not recorded: the worker grows with what the guest does); the sealed disk is
    hashed again and must be unchanged.
 7. **Publish**: as P06. The generation folder is created new, `base.vhdx` copied in, re-hashed, made read-only (owner
@@ -234,7 +244,8 @@ nowhere; a test fails if it does. The measured budget must fit `BaseGibMax` and 
 ## Secret scan
 
 Run by `guest/aap-scan.sh` in the scanner guest over every regular file and link of the sealed root file system and its EFI
-partition, without following any link. Name rules: runner `.credentials*` and `.runner`, `ssh_host_*_key`, `authorized_keys`,
+partition (each from a mount point of its own; EFI paths are reported under `boot/efi/`), without following any link. Name
+rules: runner `.credentials*` and `.runner`, `ssh_host_*_key`, `authorized_keys`,
 shell histories (PSReadLine's `ConsoleHost_history.txt` included), `app.pem`, cloud-init seed and instance data names
 (`user-data`, `meta-data`, `network-config`, `vendor-data`), the installer's saved answers (`autoinstall-user-data`),
 `ovf-env.xml`, and any password hash in `etc/shadow`. Path rules: anything left of the build agent
@@ -250,7 +261,20 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
   P24 audit (up to 10,000; more makes the result `incomplete`). Journal files are the usual large ones; the seal rotates and
   vacuums the journal so few remain.
 - **Unreadable**: any path the scanner could not read is listed and makes the result `incomplete` (`AAP_ScanIncomplete`).
-  As root on a read-only mount there should be none.
+  As root on a read-only mount there should be none. A `.gz` counts as read only when `grep` read its whole decompressed
+  stream and `zcat` ended cleanly: a truncated or corrupt stream, or a `grep` that fails (a single line too long for its
+  memory: a gzip bomb), is unreadable, never clean. A match stands whatever `zcat` reports after `grep` stopped reading: a
+  broken pipe, which under systemd's default `IgnoreSIGPIPE=yes` (the agent's unit keeps it) is an error message, not a
+  signal.
+- **What the scan does not read**: only `.gz` is decompressed. `.xz`, `.zst`, `.bz2`, `zip`, `jar`, `whl`, squashfs images
+  (snaps) and journald's zstd-compressed fields are scanned as stored bytes, so a secret inside them is not found; the
+  freed blocks of either file system are not read at all.
+- **Invariant: no reusable secret may ever enter the build guest.** Not a token, a key, a registry or feed credential,
+  not even for a moment: a deleted file's data can survive in `base.vhdx` (the guest's trim and `Optimize-VHD` reclaim
+  only whole 32 MiB VHDX blocks), and any job that is root in a clone, as every hosted-parity job is, can read the raw disk.
+  The only secret the build guest ever holds is its own per-build channel token, which dies with the build and which the
+  scan looks for. The scan detects leaks; it is not an integrity or backdoor control: a hostile installer that wants to
+  leave something behind is not stopped by it.
 - **Allowlist**: `secret-allowlist.json` (`schema` 1, `entries` of exactly `path` (relative, `/`-separated, no wildcard),
   `sha256` and `justification`), each path at most once. An entry suppresses a finding only for that exact path with those
   exact bytes, never a `build-credential` or `build-agent` finding; an entry that matches no finding exactly is itself a
@@ -276,11 +300,17 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
   the same tests against an unmutated copy must pass first.
 - `guest_test.sh` (bash, WSL Ubuntu or CI; python3 and coreutils only): the agent's wire format, token, header, put, get and
   request checks, pinned-hash script runs, the upload rule, deprovision and the seal check, verification as the job user, and
-  the scan over a planted tree. Every system command is a stub and every system path sits under a temporary root.
+  the scan over a planted tree and a separate EFI tree with SIGPIPE ignored as under systemd, plus a truncated `.gz` and a
+  gzip bomb under a memory limit. Every system command is a stub and every system path sits under a temporary root.
 - `guest_mutations.sh`: each `# check:` guard in the guest scripts disabled in turn must fail `guest_test.sh`.
 
 ## What is not done
 
+- **Disk-only scan paths are unproven.** `guest_test.sh` scans folders (`--target`, `--esp-target`); what only a real
+  disk exercises waits for the D2 lab: the hot-added disk appears as `/dev/sda` within 120 s, the live system's
+  `multipathd`, `probert` and `os-prober` neither claim nor mount it, `dumpe2fs` and `grep -P` are present on the pinned
+  ISO, the partition checks and both read-only mounts, and the `.gz` handling under the agent's systemd unit
+  (`IgnoreSIGPIPE=yes`; the test reproduces it with `trap '' PIPE`).
 - **No real build.** The provider is written against documented cmdlets and APIs and has never run. The D2 lab proves it:
   the boot command typed through `Msvm_Keyboard`, the autoinstall from a `CIDATA` ISO written with IMAPI2, Secure Boot with
   `linux-azure`, the systemd `vsock::5223` socket, the host's `AF_HYPERV` client and the service GUID registration (P19),
@@ -320,6 +350,5 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
   the clone cap here is the measured peak x 1.25 inside the owner's 60 GB per-runner lab budget, so a job that writes more is
   destroyed. If jobs need the hosted free space, that is an owner budget decision.
 - **Host crash mid-build is not resumable**: the guest tokens live in memory only, so the next run cleans the partial build.
-- **shellcheck 0.11 was not run locally** (no binary on this host or in WSL Ubuntu-24.04, downloads forbidden); the guest
-  scripts were written for `-S warning` and need the CI run.
+- **shellcheck** 0.11.0 at `-S warning` is clean on all five scripts (run in WSL Ubuntu-24.04); CI runs it once wired.
 - **Not in CI**: `tests/images/ubuntu-24.04` is not in `.github/workflows/ci.yml` yet (the coordinator wires it).

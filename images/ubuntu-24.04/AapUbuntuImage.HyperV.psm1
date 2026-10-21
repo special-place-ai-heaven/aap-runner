@@ -330,10 +330,12 @@ function New-AapUbuntuHyperVProvider {
         [int][Math]::Ceiling($w[0].WorkingSetSize / 1MB)
     }
     # P05's comparison in a hidden child: the committed reference against the capped guest inventory. Exit 0 pass, 1 differences, 2 error.
+    # -B writes no bytecode, -I ignores PYTHON* variables and the user's site-packages, -S skips site (and every .pth file in
+    # the install's site-packages): certify.py needs the standard library only.
     $p.CompareInventory = { param($a)
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName = $script:Python
-        $psi.Arguments = ('-B -I "{0}" compare --reference "{1}" --candidate "{2}" --allowlist "{3}" --out "{4}"' -f $script:Certify, $a.Reference, $a.Candidate, $a.Allowlist, $a.Out)
+        $psi.Arguments = ('-B -I -S "{0}" compare --reference "{1}" --candidate "{2}" --allowlist "{3}" --out "{4}"' -f $script:Certify, $a.Reference, $a.Candidate, $a.Allowlist, $a.Out)
         $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
         $proc = [Diagnostics.Process]::Start($psi)
         try {

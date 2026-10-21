@@ -12,8 +12,10 @@
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-# The path walk, safe deletion, read-only ACL and storage-record helpers are P06's, shared rather than copied:
-# Read-AapStorageRecord, Get-AapPathKind, Assert-AapPlainPath, Remove-AapTree, Set-AapReadOnlyAcl.
+# The path walk, safe deletion, read-only ACL and storage-record helpers are P06's, imported rather than copied:
+# Read-AapStorageRecord, Get-AapPathKind, Assert-AapPlainPath, Remove-AapTree, Set-AapReadOnlyAcl. Smaller helpers below
+# (JSON, hashing, printable text, provider calls, storage trust and space, state and evidence) are verbatim copies of P06's;
+# INTEGRATION.md (Dependency on P06) lists them.
 Import-Module (Join-Path $PSScriptRoot '..\windows\AapWinImage.psm1')
 
 $script:Profile = 'ubuntu-24.04-x64'
@@ -166,6 +168,11 @@ function Read-AapUbuntuBuildPlan {
     foreach ($v in $plan.variables.PSObject.Properties) { if ([string]$v.Value -cnotmatch $script:Safe) { throw "AAP_PlanInvalid: variable $($v.Name)" } }   # check:request-value
     $ref = Join-Path $script:RepoRoot ([string]$plan.verify.reference_path -replace '/', '\')
     if ((Get-AapPathKind $ref) -ne 'file' -or (Get-AapSha256File $ref) -cne [string]$plan.verify.reference_sha256) { throw 'AAP_PlanInvalid: the comparison reference does not match its pinned SHA-256' }   # check:plan-reference
+    # Missing-required fails the build only in the sections the image owns. The runner (image.runner_version, runner_os,
+    # runner_arch), the job's identity and the Azure fabric are no part of it, and a verification guest has none of them.
+    $foreign = @('image', 'infra', 'run_identity', 'credential_env')
+    $owned = @(Get-AapProp (Get-AapProp $plan 'verify') 'required_sections' | Where-Object { $_ })
+    if ($owned.Count -eq 0 -or @($owned | Where-Object { $foreign -ccontains [string]$_ }).Count) { throw "AAP_PlanInvalid: verify.required_sections must name the sections the image owns and none of $($foreign -join ', ')" }   # check:plan-required
     # The upstream source archive and the installation media are P03 entries pinned here by name and SHA-256, so plan_sha256
     # covers them. Until one is pinned, its blocker must be in the plan and must not be waivable.
     foreach ($k in @(@{ Key = 'source'; Blocker = 'p07-upstream-source-archive' }, @{ Key = 'media'; Blocker = 'p07-ubuntu-server-media' })) {
@@ -229,10 +236,14 @@ function Assert-AapUbuntuConfig($Config) {
     foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit', 'SwitchName') {
         if ($null -eq (Get-AapProp $Config $k) -or [string](Get-AapProp $Config $k) -eq '') { throw "AAP_ConfigInvalid: $k is required" }
     }
-    if ([int]$Config.AapBuild -lt 1) { throw 'AAP_ConfigInvalid: AapBuild' }
+    # Numbers are parsed, never cast: casting 'four' would throw outside the builder's refusals.
+    $n = 0
+    foreach ($k in 'AapBuild', 'StagingGibMax') {
+        if (-not [int]::TryParse([string](Get-AapProp $Config $k), [ref]$n) -or $n -lt 1) { throw "AAP_ConfigInvalid: $k must be a whole number of at least 1" }   # check:config-number
+    }
     if ([string]$Config.BuilderCommit -cnotmatch '^[0-9a-f]{40}\z') { throw 'AAP_ConfigInvalid: BuilderCommit' }
     foreach ($k in @($script:OwnerLimits.Keys)) {
-        if ([int](Get-AapProp $Config $k) -lt 1 -or [int](Get-AapProp $Config $k) -gt $script:OwnerLimits[$k]) { throw "AAP_ConfigInvalid: $k must be 1 to $($script:OwnerLimits[$k]), the owner-approved lab ceiling" }   # check:owner-limits
+        if (-not [int]::TryParse([string](Get-AapProp $Config $k), [ref]$n) -or $n -lt 1 -or $n -gt $script:OwnerLimits[$k]) { throw "AAP_ConfigInvalid: $k must be 1 to $($script:OwnerLimits[$k]), the owner-approved lab ceiling" }   # check:owner-limits
     }
     if ([string]$Config.SwitchName -cne $script:SwitchName) { throw "AAP_NetworkUntrusted: SwitchName must be the internal switch $($script:SwitchName), never an External switch or the Default Switch" }   # check:network
 }
@@ -258,9 +269,10 @@ function New-AapUbuntuSeed {
     <# The cloud-init NoCloud seed (files user-data and meta-data) for one guest, and the new guest's channel token (an
        AapToken, made here so it is never a parameter). build: the unattended install (autoinstall) of the live-server ISO,
        whose installed system gets the install user (no password, key or login) and the agent. verify: the job user and the
-       agent for a fresh guest of the sealed image. scan: the agent for the live system that scans the sealed disk, and in
-       /var/lib/aap-build/known the build guest's token (-Known) to look for. The agent listens on hvsocket only; no guest gets
-       a password, an SSH key or a host share. Returns Files (user-data, meta-data) and Token. #>
+       agent for a fresh guest of the sealed image, after the first-boot step every clone gets (P15). scan: the agent for the
+       live system that scans the sealed disk, and in /var/lib/aap-build/known the build guest's token (-Known) to look for.
+       The agent listens on hvsocket only; no guest gets a password, an SSH key or a host share. Returns Files (user-data,
+       meta-data) and Token. #>
     param([Parameter(Mandatory)][ValidateSet('build', 'verify', 'scan')][string]$Mode, [Parameter(Mandatory)]$Plan, [Parameter(Mandatory)][string]$InstanceId, $Known)
     if ($InstanceId -cnotmatch '^[a-z0-9-]{1,64}\z' -or (($Mode -eq 'scan') -ne ($Known -is [AapToken]))) { throw 'AAP_SeedInvalid: instance id, or a known token for anything but the scanner' }   # check:seed-values
     $token = [AapToken]::new()
@@ -276,6 +288,9 @@ function New-AapUbuntuSeed {
         $users = "users:`n  - name: $($j.name)`n    uid: $([int]$j.uid)`n    groups: [$(@($j.groups) -join ', ')]`n    shell: /bin/bash`n    lock_passwd: true`n    sudo: 'ALL=(ALL) NOPASSWD:ALL'`n"
     }
     $knownFile = $(if ($Mode -eq 'scan') { "  - path: /var/lib/aap-build/known`n    owner: root:root`n    permissions: '0600'`n    content: '@@AAP_KNOWN@@'`n" } else { '' })
+    # A clone's first boot, before the agent answers: a new snakeoil TLS pair (the seal deleted the image's), which
+    # PostgreSQL's ssl = on needs to start. The verification checks the image as a clone first boots it.
+    $firstBoot = $(if ($Mode -eq 'verify') { "  - [make-ssl-cert, generate-default-snakeoil, --force-overwrite]`n" } else { '' })
     $config = @"
 hostname: $hostName
 $($users)write_files:
@@ -309,7 +324,7 @@ $(ConvertTo-AapYamlIndent $agent 6)
       StandardOutput=socket
       StandardError=journal
 runcmd:
-  - [systemctl, daemon-reload]
+$($firstBoot)  - [systemctl, daemon-reload]
   - [systemctl, enable, --now, aap-agent.socket]
 "@
     if ($Mode -ne 'build') { $userData = "#cloud-config`n" + $config.Replace("`r`n", "`n") + "`n" }
@@ -529,10 +544,11 @@ function Get-AapUbuntuScanResult {
 function Read-AapInventoryReport {
     <# The comparison report (written by P05's certify.py from the reference and the capped guest inventory). Fails the build
        on any difference in a gate section (cached tool versions, services, PATH order, action archive cache, the job user,
-       probe coverage) and on anything the reference requires that the image lacks (missing-required, in every section);
-       every other difference, and the count and first entries of what the image has beyond the reference (extra), is
-       recorded for P24, which certifies. #>
-    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$GateSections)
+       probe coverage) and on anything the reference requires that the image lacks in a section the image owns
+       (missing-required in RequiredSections). Missing-required elsewhere (the runner, which a verification guest does not
+       have, the job's identity, the Azure fabric), every other difference, and the count and first entries of what the
+       image has beyond the reference (extra), are recorded for P24, which certifies. #>
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$GateSections, [Parameter(Mandatory)][string[]]$RequiredSections)
     if ((Get-AapPathKind $Path) -ne 'file' -or (New-Object IO.FileInfo $Path).Length -gt $script:CompareMaxBytes) { throw 'AAP_VerifyFailed: the inventory comparison wrote no report' }
     $r = Read-AapJson $Path
     $inv = Get-AapProp $r 'inventory'
@@ -540,14 +556,18 @@ function Read-AapInventoryReport {
     $all = @(Get-AapProp $inv 'differences' | Where-Object { $null -ne $_ })
     $extra = @($all | Where-Object { [string]$_.class -ceq 'extra' })
     $diffs = @($all | Where-Object { @('extra', 'documented-rig-difference') -cnotcontains [string]$_.class })
-    $gate = @($diffs | Where-Object { $GateSections -ccontains [string]$_.section -or [string]$_.class -ceq 'missing-required' })
+    $gate = @($diffs | Where-Object { $GateSections -ccontains [string]$_.section })
     if ($gate.Count) {   # check:inventory-gate
         throw "AAP_VerifyFailed: the job inventory differs from the hosted reference: $(@($gate | Select-Object -First 5 | ForEach-Object { Get-AapPrintable "$($_.class) $($_.section).$($_.key)" 120 }) -join '; ')"
+    }
+    $missing = @($diffs | Where-Object { [string]$_.class -ceq 'missing-required' -and $RequiredSections -ccontains [string]$_.section })
+    if ($missing.Count) {   # check:inventory-required
+        throw "AAP_VerifyFailed: the image lacks what the hosted reference requires: $(@($missing | Select-Object -First 5 | ForEach-Object { Get-AapPrintable "$($_.class) $($_.section).$($_.key)" 120 }) -join '; ')"
     }
     $counts = [ordered]@{}
     $c = Get-AapProp $inv 'counts'
     if ($null -ne $c) { foreach ($p in @($c.PSObject.Properties)) { $counts[(Get-AapPrintable $p.Name 40)] = [int]$p.Value } }
-    return [ordered]@{ status = Get-AapPrintable ([string](Get-AapProp $inv 'status')) 10; counts = $counts; gate_sections = $GateSections
+    return [ordered]@{ status = Get-AapPrintable ([string](Get-AapProp $inv 'status')) 10; counts = $counts; gate_sections = $GateSections; required_sections = $RequiredSections
         recorded = @($diffs | Select-Object -First $script:ListMax | ForEach-Object { [ordered]@{ class = Get-AapPrintable ([string]$_.class) 40; section = Get-AapPrintable ([string]$_.section) 80; key = Get-AapPrintable ([string]$_.key) 200 } })
         extra_count = $extra.Count; extra = @($extra | Select-Object -First $script:ListMax | ForEach-Object { [ordered]@{ section = Get-AapPrintable ([string]$_.section) 80; key = Get-AapPrintable ([string]$_.key) 200 } }) }
 }
@@ -760,7 +780,7 @@ function Invoke-AapVerify($Ctx) {
     $code = Invoke-AapProvider $Ctx.Provider 'CompareInventory' @{ Reference = (Join-Path $script:RepoRoot ([string]$Ctx.Plan.verify.reference_path -replace '/', '\')); Candidate = $inv
         Allowlist = (Join-Path $script:RepoRoot ([string]$Ctx.Plan.verify.allowlist_path -replace '/', '\')); Out = $report }
     if (@(0, 1) -notcontains [int]$code) { throw "AAP_VerifyFailed: the inventory comparison could not run (exit $code)" }
-    $v.inventory_compare = Read-AapInventoryReport -Path $report -GateSections @($Ctx.Plan.verify.gate_sections)
+    $v.inventory_compare = Read-AapInventoryReport -Path $report -GateSections @($Ctx.Plan.verify.gate_sections) -RequiredSections @($Ctx.Plan.verify.required_sections)
     $Ctx.Evidence.verify = $v
     $Ctx.State.clone_peak_bytes = [double](Invoke-AapProvider $Ctx.Provider 'MeasureBytes' @{ Path = $child })
     $Ctx.State.mem_overhead_mib = [int](Invoke-AapProvider $Ctx.Provider 'GetVmMemoryOverheadMib' @{ VmName = $g.Vm; VmId = $g.VmId })
