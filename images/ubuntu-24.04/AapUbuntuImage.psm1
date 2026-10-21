@@ -53,7 +53,7 @@ $script:ScanRules = @('runner-credentials', 'runner-config', 'ssh-host-key', 'ss
 # Findings no allowlist entry can cover: the build's own credential and agent.
 $script:NeverAllowed = @('build-credential', 'build-agent')
 $script:Discovery = @('gcc', 'gxx', 'clang', 'cmake', 'ninja', 'make', 'pkg_config', 'hello_gcc', 'hello_clang', 'pwsh', 'python3', 'docker_daemon',
-    'sudo_nopasswd', 'systemd_pid1', 'kernel_azure', 'job_user', 'post_generation')
+    'sudo_nopasswd', 'systemd_pid1', 'kernel_azure', 'job_user', 'post_generation', 'tls_snakeoil')
 $script:ScriptPhaseSeconds = 6 * 3600
 $script:ActionSeconds = 3 * 3600
 $script:ReadySeconds = 1800

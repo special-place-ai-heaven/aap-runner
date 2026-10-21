@@ -631,7 +631,7 @@ Describe 'a full build with fakes' {
         $v | Should -Match '(?m)^  - name: runner\n    uid: 1001\n    groups: \[adm, users, docker, systemd-journal\]'
         # The verification guest boots like a clone (P15): a new snakeoil TLS pair before the agent answers.
         $v | Should -Match '(?m)^runcmd:\n  - \[make-ssl-cert, generate-default-snakeoil, --force-overwrite\]\n  - \[systemctl, daemon-reload\]\n  - \[systemctl, enable, --now, aap-agent\.socket\]$'
-        foreach ($x in $b, $s) { $x | Should -Not -Match 'make-ssl-cert' }
+        foreach ($x in $b, $s) { $x | Should -Not -Match '- \[make-ssl-cert' }   # the embedded agent only mentions it
         # The build guest's network is the declaration, static (contract: no DHCP); the others have no network at all.
         $d = $script:Ev.network
         $b | Should -Match ("(?m)^        dhcp4: false\n        dhcp6: false\n        accept-ra: false\n        addresses: \[" + [regex]::Escape("$($d.address)/24") + "\]\n        routes:\n          - to: default\n            via: " + [regex]::Escape($d.gateway) + "\n        nameservers:\n          addresses: \[192\.0\.2\.53, 198\.51\.100\.53\]$")
@@ -955,6 +955,7 @@ Describe 'failures roll back' {
         @{ Case = 'the Docker daemon is down'; Edit = { param($o) $o.data.discovery.docker_daemon = $false } },
         @{ Case = 'the kernel is not the Azure flavour'; Edit = { param($o) $o.data.discovery.kernel_azure = $false } },
         @{ Case = 'the post-generation scripts failed'; Edit = { param($o) $o.data.discovery.post_generation = $false } },
+        @{ Case = 'the first boot made no snakeoil TLS pair'; Edit = { param($o) $o.data.discovery.tls_snakeoil = $false } },
         @{ Case = 'a discovery item is missing'; Edit = { param($o) $o.data.discovery.PSObject.Properties.Remove('hello_clang') } }) {
         $w | Add-Member -NotePropertyName Edit -NotePropertyValue $Edit -Force
         Set-GuestFault 'verify' { param($w, $req) $o = Get-Reply $w $req; & $w.Edit $o; ConvertTo-Json $o -Depth 6 -Compress }

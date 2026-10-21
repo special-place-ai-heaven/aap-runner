@@ -276,9 +276,11 @@ run_action() {
 
 # A fresh guest of the sealed image: post-generation scripts as root, each the way hosted provisioning runs them (find
 # -exec bash, in find's order), then the checks as the job user, whose result and inventory the host fetches. find -exec
-# ignores a script's exit code; here any script that fails, or a missing folder, fails post_generation.
+# ignores a script's exit code; here any script that fails, or a missing folder, fails post_generation. The first-boot step
+# every clone gets (the seed's make-ssl-cert, which cloud-init runs without stopping on a failure) is checked here, as root:
+# without the snakeoil pair PostgreSQL does not start, so a failed step fails tls_snakeoil by name.
 run_verify() {
-  local user work pg f rc=0
+  local user work pg f rc=0 snake=1
   user=$(var job_user) || { reply verify failed 'no job_user'; return; }
   mkdir -p "${ROOT}/logs" "${ROOT}/out"
   unpack_sources || { reply verify failed 'sources not staged'; return; }
@@ -287,11 +289,12 @@ run_verify() {
     [ -d "${pg}" ] || rc=1
     while IFS= read -r -d '' f; do bash "${f}" || rc=1; done < <(find "${pg}" -mindepth 1 -maxdepth 1 -type f -name '*.sh' -print0 2> /dev/null)   # check:agent-postgen
   } > "${ROOT}/logs/verify-post-generation.log" 2>&1
+  [ -s "${S}/etc/ssl/private/ssl-cert-snakeoil.key" ] && [ -s "${S}/etc/ssl/certs/ssl-cert-snakeoil.pem" ] || snake=0   # check:agent-snakeoil
   work=$(sudo -u "${user}" mktemp -d) || { reply verify failed 'no work folder'; return; }
   cp "${ROOT}/in/aap-verify.sh" "${ROOT}/in/linux.sh" "${ROOT}/in/hello.c" "${work}/" && chown -R "${user}:" "${work}"
   ln -s "${ROOT}/src" "${work}/src"
   # shellcheck disable=SC2024 # the agent runs as root and keeps the job user's output in its own root-only log
-  sudo -u "${user}" -H /bin/bash --noprofile --norc "${work}/aap-verify.sh" "${work}" "${rc}" > "${ROOT}/logs/verify.log" 2>&1 || true
+  sudo -u "${user}" -H /bin/bash --noprofile --norc "${work}/aap-verify.sh" "${work}" "${rc}" "${snake}" > "${ROOT}/logs/verify.log" 2>&1 || true
   rm -f "${ROOT}/out/job-inventory.json"
   cp "${work}/job-inventory.json" "${ROOT}/out/job-inventory.json" 2>/dev/null || true
   if [ ! -s "${work}/verify.json" ] || [ "$(wc -c < "${work}/verify.json")" -gt 16384 ]; then reply verify failed 'the verification wrote no result'; return; fi

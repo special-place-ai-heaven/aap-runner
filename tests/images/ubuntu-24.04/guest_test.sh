@@ -230,7 +230,10 @@ printf '#!/bin/bash\n[ "$1" = -r ] && echo 6.17.0-1022-azure\n' > "${vstub}/unam
 printf '#!/bin/bash\ncase "$2" in SOURCE) echo /dev/sda2 ;; OPTIONS) echo rw,relatime,discard,commit=30,data=writeback ;; esac\n' > "${vstub}/findmnt"
 printf '#!/bin/bash\necho sda\n' > "${vstub}/lsblk"
 chmod +x "${vstub}"/*
-mkdir -p "${tmp}/root/in" "${tmp}/sys/imagegeneration/post-generation" "${tmp}/vsrc/runner-images-x/images/ubuntu/toolsets" "${tmp}/vsrc/runner-images-x/images/ubuntu/scripts/tests"
+mkdir -p "${tmp}/root/in" "${tmp}/sys/imagegeneration/post-generation" "${tmp}/vsrc/runner-images-x/images/ubuntu/toolsets" "${tmp}/vsrc/runner-images-x/images/ubuntu/scripts/tests" \
+  "${tmp}/sys/etc/ssl/private" "${tmp}/sys/etc/ssl/certs"
+# what the verification seed's first-boot step (make-ssl-cert) leaves
+echo key > "${tmp}/sys/etc/ssl/private/ssl-cert-snakeoil.key"; echo cert > "${tmp}/sys/etc/ssl/certs/ssl-cert-snakeoil.pem"
 echo '{}' > "${tmp}/vsrc/runner-images-x/images/ubuntu/toolsets/toolset-2404.json"
 echo '# tests' > "${tmp}/vsrc/runner-images-x/images/ubuntu/scripts/tests/RunAll-Tests.ps1"
 tar -czf "${tmp}/root/in/runner-images.tar.gz" -C "${tmp}/vsrc" runner-images-x
@@ -257,6 +260,13 @@ rm -f "${tmp}/post-generation-ran"
 verify_run
 [ -e "${tmp}/post-generation-ran" ] && [ "$(reply 'r["data"]["discovery"]["post_generation"]')" = False ] || fail "a failing post-generation script passed: $(out)"
 rm -f "${tmp}/sys/imagegeneration/post-generation/zz-fails.sh"
+# cloud-init does not stop on a failed runcmd: a first boot that made no snakeoil pair fails tls_snakeoil by name.
+for gone in etc/ssl/private/ssl-cert-snakeoil.key etc/ssl/certs/ssl-cert-snakeoil.pem; do
+  mv "${tmp}/sys/${gone}" "${tmp}/kept"
+  verify_run
+  [ "$(reply 'sorted(k for k, v in r["data"]["discovery"].items() if v is not True)')" = "['tls_snakeoil']" ] || fail "a missing ${gone} passed: $(out)"
+  mv "${tmp}/kept" "${tmp}/sys/${gone}"
+done
 
 # --- secret scan over a planted tree -----------------------------------------------------------------------------------
 t="${tmp}/target"

@@ -178,7 +178,7 @@ function Get-FakeGuestReply($w, $req) {
     if ($req.kind -eq 'action' -and $req.action -eq 'software-report-and-tests') { $o.data = [ordered]@{ report_exit = 0; tests_exit = 0 } }
     if ($req.kind -eq 'verify') {
         $disc = [ordered]@{}
-        foreach ($k in 'gcc', 'gxx', 'clang', 'cmake', 'ninja', 'make', 'pkg_config', 'hello_gcc', 'hello_clang', 'pwsh', 'python3', 'docker_daemon', 'sudo_nopasswd', 'systemd_pid1', 'kernel_azure', 'job_user', 'post_generation') { $disc[$k] = $true }
+        foreach ($k in 'gcc', 'gxx', 'clang', 'cmake', 'ninja', 'make', 'pkg_config', 'hello_gcc', 'hello_clang', 'pwsh', 'python3', 'docker_daemon', 'sudo_nopasswd', 'systemd_pid1', 'kernel_azure', 'job_user', 'post_generation', 'tls_snakeoil') { $disc[$k] = $true }
         $o.data = [ordered]@{ upstream_tests = [ordered]@{ total = 1650; passed = 1640; failed = 0; skipped = 10 }; discovery = $disc
             facts = [ordered]@{ kernel = '6.17.0-1030-azure'; systemd_state = 'running'; root_mount_options = 'rw,relatime,discard,commit=30,data=writeback'; read_ahead_kb_root = '128' }
             inventory_sha256 = (Get-TextSha $w.InventoryText) }

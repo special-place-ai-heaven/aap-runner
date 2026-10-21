@@ -155,9 +155,9 @@ everything it made (VMs, build disks, a partly published generation, the evidenc
    `runner` with `/etc/environment` loaded as the Actions runner loads it: the pinned upstream Pester tests
    (`RunAll-Tests.ps1`), the full P05 inventory probe (`job-inventory.json`, Docker and sudo included) and discovery (gcc, g++,
    clang, cmake, ninja, make, pkg-config, a C program built and run with gcc and clang, pwsh, python3, the Docker daemon,
-   passwordless sudo, systemd as PID 1, the Azure kernel flavour, the job user, the post-generation scripts). It passes only
-   with at least one upstream test, no failed test, every discovery item and an inventory whose hash matches what the guest
-   reported. Then P05's `certify.py compare` runs on the host against `reference-inventory.json` with P05's
+   passwordless sudo, systemd as PID 1, the Azure kernel flavour, the job user, the post-generation scripts, the first
+   boot's snakeoil TLS pair). It passes only with at least one upstream test, no failed test, every discovery item and an
+   inventory whose hash matches what the guest reported. Then P05's `certify.py compare` runs on the host against `reference-inventory.json` with P05's
    `allowlist.json`: **any difference in a gate section** (`coverage`, `tool_cache`, `services`, `path.process`,
    `path.machine`, `action_archive_cache`, `user`) and **anything the reference requires that the image lacks in a section
    the image owns** (`missing-required` in the plan's explicit `verify.required_sections`: `tools`, `shells`, `docker`,
@@ -173,9 +173,10 @@ everything it made (VMs, build disks, a partly published generation, the evidenc
    (`extra`). `tool_cache.defaults` is not gated: the hosted capture records no defaults. Before the agent answers, the
    verification seed runs the first-boot step every clone gets (P15): `make-ssl-cert generate-default-snakeoil
    --force-overwrite`, because the seal deleted the image's snakeoil TLS pair and PostgreSQL (`ssl = on` with that pair) does
-   not start without it; the upstream tests start PostgreSQL. The clone peak and the VM memory overhead are measured here (an
-   overhead outside 1 to 1024 MiB is refused, not recorded: the worker grows with what the guest does); the sealed disk is
-   hashed again and must be unchanged.
+   not start without it; the upstream tests start PostgreSQL. cloud-init does not stop on a failed `runcmd`, so the agent
+   checks the pair as root and a missing one fails the discovery item `tls_snakeoil` by name. The clone peak and the VM
+   memory overhead are measured here (an overhead outside 1 to 1024 MiB is refused, not recorded: the worker grows with
+   what the guest does); the sealed disk is hashed again and must be unchanged.
 7. **Publish**: as P06. The generation folder is created new, `base.vhdx` copied in, re-hashed, made read-only (owner
    Administrators; SYSTEM, Administrators and `NT VIRTUAL MACHINE\Virtual Machines` read; protected DACL; ReadOnly
    attribute). An id is never reused: other bytes or no record is `AAP_GenerationExists`; a rebuild takes `aap.<n+1>`.
