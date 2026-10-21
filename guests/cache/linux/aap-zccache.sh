@@ -152,7 +152,7 @@ zc_find_daemons() { # BIN ROOT_DIR VERSION [PID...]
     p=${p##*/}
     [[ " $* " == *" ${p} "* ]] && continue
     exe=$(readlink -f -- "/proc/${p}/exe" 2> /dev/null) || continue
-    [[ "${exe}" == "${deployed}" || "${exe}" == "${bin}/"* ]] || continue
+    [[ "${exe}" == "${deployed}" || "${exe}" == "${bin}/"* ]] || continue  # SAFETY:LNX-DAEMON-BIN (zccache's fallback)
     tr '\0' '\n' < "/proc/${p}/environ" 2> /dev/null | grep -qxF -- "ZCCACHE_CACHE_DIR=${dir}" && echo "${p}"  # SAFETY:LNX-DAEMON-ID
   done
 }
@@ -386,8 +386,9 @@ zc_classify() { # COMPILER ARGS...
 
 # The files a call must have written when zccache exits 0, one per line: its -o file and, with -MD or -MMD, its
 # depfile (-MF, or the -o name with its last suffix replaced by .d, as gcc and clang name it). Fails when they cannot be
-# named (not exactly one -o, -o to - or /dev, more than one -MF, a name whose depfile is not derived that way): that
-# call builds directly. rustc prints nothing: its outputs follow --out-dir, --emit, the crate name and
+# named (not exactly one -o, -o to - or /dev, more than one -MF, a name whose depfile is not derived that way, or a
+# depfile asked for in another spelling: -Wp,-MD,FILE, -Xpreprocessor, --write-dependencies and the other long
+# --*dependencies forms): that call builds directly. rustc prints nothing: its outputs follow --out-dir, --emit, the crate name and
 # -C extra-filename, and stay with zccache's own delivery (README, residual). Other sidecars (.dwo, .gcno, -save-temps
 # files) are not named either.
 zc_outputs() { # COMPILER ARGS...
@@ -398,6 +399,7 @@ zc_outputs() { # COMPILER ARGS...
   for ((i = 0; i < ${#ZC_T[@]}; i++)); do
     a=${ZC_T[i]}
     case "${a}" in
+      -Wp,*-M* | -Xpreprocessor | --*dependencies) return 1 ;;  # SAFETY:LNX-OUT-DEPFLAG
       -o) o=${ZC_T[i + 1]:-}; n=$((n + 1)); i=$((i + 1)) ;;
       -MF) mf=${ZC_T[i + 1]:-}; nmf=$((nmf + 1)); i=$((i + 1)) ;;
       -MF?*) mf=${a:3}; nmf=$((nmf + 1)) ;;
@@ -405,16 +407,16 @@ zc_outputs() { # COMPILER ARGS...
     esac
   done
   [[ ${n} == 1 && -n "${o}" && "${o}" != - && "${o}" != /dev/* && ${nmf} -le 1 ]] || return 1
-  echo "${o}"
+  printf '%s\n' "${o}"
   [[ ${md} == 1 ]] || return 0
   if [[ ${nmf} == 1 ]]; then
     [[ -n "${mf}" && "${mf}" != - && "${mf}" != /dev/* ]] || return 1
-    echo "${mf}"
+    printf '%s\n' "${mf}"
     return 0
   fi
   base=${o##*/}
-  if [[ "${base}" != *.* ]]; then echo "${o}.d"
-  elif [[ -n "${base%.*}" && -n "${base##*.}" ]]; then echo "${o%.*}.d"
+  if [[ "${base}" != *.* ]]; then printf '%s\n' "${o}.d"
+  elif [[ -n "${base%.*}" && -n "${base##*.}" ]]; then printf '%s\n' "${o%.*}.d"
   else return 1
   fi
 }
@@ -507,10 +509,12 @@ zc_shim() { # COMPILER ARGS...
   zc_child_env "${dir}" "${abudget}" timeout -k 5 "${tmo}" "${self}/bin/${zcname}" "${path}" "$@" > "${out}" 2> "${err}"  # SAFETY:LNX-SHIM-TIMEOUT
   rc=$?
   if [[ ${rc} == 0 ]]; then
-    # Exit 0 is not taken on trust: every declared output must now be a non-empty regular file, not a link. That proves
-    # delivery, not that the bytes are right (the trust rule bounds who writes a root).
+    # Exit 0 is not taken on trust: every declared output must now be a non-empty regular file, not a link and not a
+    # hard link into the root (COPY mode never makes one). That proves delivery, not that the bytes are right (the trust
+    # rule bounds who writes a root).
     while IFS= read -r o; do
       [[ -z "${o}" ]] || [[ -f "${o}" && ! -L "${o}" && -s "${o}" ]] || { bad=${o}; break; }  # SAFETY:LNX-OUT-CHECK
+      [[ -z "${o}" ]] || [[ "$(stat -c %h -- "${o}")" == 1 ]] || { bad=${o}; break; }  # SAFETY:LNX-OUT-NLINK
     done <<< "${outs}"
     if [[ -z "${bad}" ]]; then
       cat -- "${out}"; zc_unprogress "${err}" >&2; rm -f -- "${out}" "${err}"
@@ -521,13 +525,15 @@ zc_shim() { # COMPILER ARGS...
   # Any zccache failure, a compile error or an exit 0 without its outputs included, is answered by the direct compiler:
   # its exit code and output are the build's (contract rule 7). The wrapped call's output is dropped so errors are not
   # reported twice, and a compile error costs two compiler runs. A call that ran past the bound (timeout: 124, or 137
-  # after the kill; timeout killed the client's whole process group) marks the root degraded either way, and the root's
-  # daemon is stopped first: it may still be compiling this call's output, which the direct compile is about to write.
+  # after the kill; timeout killed the client's whole process group) or exited 0 without its outputs marks the root
+  # degraded either way, and the root's daemon is stopped first: it may still be compiling or copying this call's
+  # output, which the direct compile is about to write.
   # Other wrapped calls on that root then fail and compile directly too. Whatever zccache left at a declared output
   # goes before the compiler writes it: a link into the root would be written through.
   rm -f -- "${out}" "${err}"
   if [[ -n "${bad}" ]]; then
     zc_degrade "${job}" "${root}" delivery
+    zc_daemon_alive "${pid}" "${start}" && zc_kill_tree "${pid}"  # SAFETY:LNX-OUT-DAEMON
   elif [[ ${rc} == 124 || ${rc} == 137 ]]; then
     zc_degrade "${job}" "${root}" wrapper-timeout
     zc_daemon_alive "${pid}" "${start}" && zc_kill_tree "${pid}"  # SAFETY:LNX-TIMEOUT-DAEMON

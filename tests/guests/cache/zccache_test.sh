@@ -253,6 +253,8 @@ t_init_daemon_in_bin() {
   bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 > /dev/null
   check "init: a daemon zccache runs in place from bin is found too" [ "$(jq -r .state "${CFG}")" == qualified ]
   check "init: and it is that one" [ "$(jq -r .roots.private.daemon.pid "${CFG}")" == "$(cat "${P}/job/roots/private/fake-daemon.pid")" ]
+  check "init: running from bin, not from a copy in the root" \
+    [ "$(tr '\0' ' ' < "/proc/$(jq -r .roots.private.daemon.pid "${CFG}")/cmdline")" == "${P}/install/bin/zccache-daemon 600 " ]
 }
 t_init_rustc() {
   new_pkg '[{"compiler":"rustc","compiler_version":"1.99.0","invocation":"rustc-wrapper","evidence_ref":"parity/cache/qualification/evidence/r.json"}]'
@@ -362,6 +364,7 @@ t_shim_hardlink() {
   printf 'APPENDED BY A BUILD STEP\n' >> "${OUT}"
   compile a.c
   check "shim: writing into a delivered output does not poison the next hit" same_as_direct "${OUT}"
+  check "shim: and the hits stayed on zccache" [ -z "$(flag)" ]
 }
 t_shim_concurrent() {
   new_pkg
@@ -434,6 +437,8 @@ delivery_failed() { # NAME: the call was answered by the direct compiler after a
   check "${1}: exits 0" [ "${RC}" == 0 ]
   check "${1}: marks the root degraded (delivery)" [ "$(flag)" == delivery ]
   check "${1}: and logs it" grep -q " fallback fake-cc zccache-exit 0 delivery direct-exit 0$" "${P}/job/shim/shim.log"
+  check "${1}: and stops the root's daemon, which may still be copying that output" \
+    bash -c '! kill -0 "$1" 2> /dev/null' _ "$(jq -r .roots.private.daemon.pid "${CFG}")"
 }
 t_shim_delivery_object() {
   local s
@@ -479,6 +484,12 @@ t_shim_delivery_shape() {
   check "delivery: a symbolic link at the output path is rebuilt directly" same_as_direct "${OUT}"
   check "delivery: as a regular file" [ ! -L "${OUT}" ]
   delivery_failed "delivery: link"
+  new_pkg; init_pkg
+  compile a.c
+  FAKE_ZC_HARDLINK=1 compile a.c
+  check "delivery: a hard link to the entry is rebuilt directly" same_as_direct "${OUT}"
+  check "delivery: as a file of its own" [ "$(stat -c %h -- "${OUT}")" == 1 ]
+  delivery_failed "delivery: hard link"
 }
 t_shim_delivery_ok() {
   new_pkg; init_pkg
@@ -764,7 +775,7 @@ run t_install_tar_members LNX-TAR-MEMBER LNX-TAR-TYPE
 run t_install_dir_link LNX-DIR-LINK
 run t_init_direct
 run t_init_qualified LNX-COPY-MODE LNX-BUDGET-SET
-run t_init_daemon_in_bin
+run t_init_daemon_in_bin LNX-DAEMON-BIN
 run t_init_rustc
 run t_init_env LNX-ENV-SECRET LNX-ENV-ZCCACHE
 run t_init_daemon_env LNX-DAEMON-ENV
@@ -779,13 +790,13 @@ run t_shim_hardlink LNX-COPY-MODE
 run t_shim_concurrent
 run t_shim_daemon_down LNX-SHIM-DAEMON LNX-DAEMON-ALIVE
 run t_shim_crash LNX-SHIM-FALLBACK
-run t_shim_delivery_object LNX-OUT-CHECK LNX-OUT-STALE
+run t_shim_delivery_object LNX-OUT-CHECK LNX-OUT-STALE LNX-OUT-DAEMON
 run t_shim_delivery_depfile LNX-OUT-CHECK LNX-OUT-STALE
-run t_shim_delivery_shape LNX-OUT-CHECK LNX-OUT-CLEAR
+run t_shim_delivery_shape LNX-OUT-CHECK LNX-OUT-CLEAR LNX-OUT-NLINK LNX-OUT-DAEMON
 run t_shim_delivery_ok
 run t_shim_outputs_unknown LNX-OUT-UNKNOWN
 run t_shim_progress
-run t_outputs
+run t_outputs LNX-OUT-DEPFLAG
 run t_shim_toolchain_changed LNX-SHIM-TOOLCHAIN
 run t_shim_over_budget LNX-OVER-BUDGET
 run t_shim_over_budget_total LNX-OVER-BUDGET

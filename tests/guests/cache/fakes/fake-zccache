@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Fake zccache for the P13 tests; the same model as fake-zccache.ps1 (the key leaves out the -o name). Like zccache
 # 1.15.6 it runs its daemon from a copy it deploys into the root, ROOT/v1.15.6/zccache-daemon, made from the
-# zccache-daemon beside this file (the tests copy `sleep` there); FAKE_ZC_DAEMON_IN_BIN=1 runs that one in place, as
-# zccache does when the copy fails. A hit delivers the object and, with -MD/-MMD, the depfile.
+# zccache-daemon beside this file (the tests copy `sleep` there); a file named daemon-in-bin beside this file makes it
+# run that one in place, as zccache does when the copy fails (a file, because init starts daemons under env -i). A hit
+# delivers the object and, with -MD/-MMD, the depfile.
 # FAKE_ZC_HANG=SECONDS turns a compile call into a hung client: it records its pid in fake-client.pid and becomes
 # zccache-daemon (a process from the bin folder, like a real client) for that long. With FAKE_ZC_LATE=SECONDS it first
 # leaves a child behind that writes LATE to the -o file after that long (a straggler).
 # Delivery faults on a hit, all exiting 0: FAKE_ZC_NODELIVER=1 writes nothing, FAKE_ZC_EMPTY=1 an empty object,
-# FAKE_ZC_LINK=1 a symbolic link to the entry. FAKE_ZC_PROGRESS=N first prints N of zccache's progress lines to stderr.
+# FAKE_ZC_LINK=1 a symbolic link to the entry, FAKE_ZC_HARDLINK=1 a hard link to it. FAKE_ZC_PROGRESS=N first prints N
+# of zccache's progress lines to stderr.
 root=${ZCCACHE_CACHE_DIR:?}
 mkdir -p "${root}/artifacts"
 names=$(env -0 | while IFS= read -r -d '' kv; do printf '%s\n' "${kv%%=*}"; done | sort | tr '\n' ' ')
@@ -18,7 +20,7 @@ case "$1" in
     pidf="${root}/fake-daemon.pid"
     if ! { [[ -f "${pidf}" ]] && kill -0 "$(cat "${pidf}")" 2> /dev/null; }; then
       daemon="$(dirname "$0")/zccache-daemon"
-      if [[ "${FAKE_ZC_DAEMON_IN_BIN:-}" != 1 ]]; then
+      if [[ ! -e "$(dirname "$0")/daemon-in-bin" ]]; then
         mkdir -p "${root}/v1.15.6" && cp -- "${daemon}" "${root}/v1.15.6/zccache-daemon" && daemon="${root}/v1.15.6/zccache-daemon"
       fi
       "${daemon}" 600 < /dev/null > /dev/null 2>&1 &
@@ -63,6 +65,7 @@ if [[ -n "${out}" && -f "${store}" && ( -z "${dep}" || -f "${store}.dep" ) ]]; t
   [[ "${FAKE_ZC_NODELIVER:-}" == 1 ]] && exit 0
   [[ "${FAKE_ZC_EMPTY:-}" == 1 ]] && { : > "${out}"; exit 0; }
   [[ "${FAKE_ZC_LINK:-}" == 1 ]] && { ln -sf -- "${store}" "${out}"; exit 0; }
+  [[ "${FAKE_ZC_HARDLINK:-}" == 1 ]] && { ln -f -- "${store}" "${out}"; exit 0; }
   # Like a real cache: a delivery that fails is a failed call, and an output appears whole or not at all.
   deliver "${store}" "${out}" && { [[ -z "${dep}" ]] || deliver "${store}.dep" "${dep}"; } ||
     { echo "fake-zccache: cannot deliver ${out}" >&2; exit 6; }

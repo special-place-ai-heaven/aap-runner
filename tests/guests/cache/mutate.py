@@ -16,10 +16,9 @@ the folder removed after the run.
 
 Bash runs through Git Bash on Windows (never System32\\bash.exe, which is WSL); cases that need symbolic links are
 skipped there, so LNX-DIR-LINK, LNX-BIND-LINK, LNX-OUT-CHECK#2 and LNX-OUT-CLEAR are proven only on real Linux.
-WIN-OUT-CLEAR needs a symbolic link from PowerShell 7 (developer mode or elevation); without one its test is skipped
-and it reports NO-TEST. WIN-OUT-CHECK has no mutation that drops only the reparse-point test: on Windows a symbolic
-link's FileInfo.Length is 0 on both editions, so the length test refuses it as well, and no unprivileged test can make
-a reparse point with a non-zero length. The reparse-point test stays as defense in depth; the link test still runs.
+WIN-OUT-CLEAR needs a symbolic link from PowerShell 7: an elevated session (GitHub's hosted Windows runners run
+elevated) or developer mode; without one its test is skipped and it reports NO-TEST. A symbolic link reports length 0
+on both editions, so the mutation that drops only WIN-OUT-CHECK's reparse-point test is killed by a stand-in FileInfo.
 """
 
 import argparse
@@ -77,13 +76,16 @@ MUTATIONS = {
     "WIN-SHIM-DAEMON": (W, "if (-not (Test-AapZcDaemonAlive $d.Root.daemon)) {", "if ($false) {"),
     "WIN-SHIM-TIMEOUT": (W, "-Capture -TimeoutSeconds $timeout  # SAFETY:WIN-SHIM-TIMEOUT", "-Capture"),
     "WIN-KILL-TREE": (W, "Stop-AapZcTree $p.Id  # SAFETY:WIN-KILL-TREE", "try { $p.Kill() } catch { $null = $_ }  #"),
-    "WIN-TIMEOUT-DAEMON": (W, "if (Test-AapZcDaemonAlive $d.Root.daemon) { Stop-AapZcTree", "if ($false) { Stop-AapZcTree"),
+    "WIN-TIMEOUT-DAEMON": (W, "{ Stop-AapZcTree ([int]$d.Root.daemon.pid) }  # SAFETY:WIN-TIMEOUT-DAEMON", "{ }"),
+    "WIN-OUT-DAEMON": (W, "{ Stop-AapZcTree ([int]$d.Root.daemon.pid) }  # SAFETY:WIN-OUT-DAEMON", "{ }"),
+    "WIN-OUT-DEPFLAG": (W, "}).Count) { return $null }  # SAFETY:WIN-OUT-DEPFLAG", "}).Count -and $false) { return $null }"),
     "WIN-TIMEOUT-CLASS": (W, "if ($Classes -contains 'compile-object') {", "if ($true) {"),
     "WIN-SHIM-FALLBACK": (W, "$code = (Invoke-AapZcProcess -FilePath $exe -Arguments $rest).ExitCode  # SAFETY:WIN-SHIM-FALLBACK", "$code = $(if ($r) { $r.ExitCode } else { 1 })"),
     "WIN-OUT-UNKNOWN": (W, "if ($null -eq $outs) { $d.Reason = 'outputs-unknown'; return $d }", "if ($null -eq $outs) { $outs = @() }"),
     "WIN-OUT-STALE": (W, "try { [IO.File]::Delete($f) }  # SAFETY:WIN-OUT-STALE", "try { }  #"),
-    "WIN-OUT-CHECK": [(W, "return ($fi.Exists -and -not ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $fi.Length -gt 0)", "return $true"),
-                      (W, "return ($fi.Exists -and -not ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $fi.Length -gt 0)", "return ($fi.Exists -and -not ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint))")],
+    "WIN-OUT-CHECK": [(W, "return ($File.Exists -and -not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $File.Length -gt 0)", "return $true"),
+                      (W, "return ($File.Exists -and -not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $File.Length -gt 0)", "return ($File.Exists -and -not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint))"),
+                      (W, "return ($File.Exists -and -not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $File.Length -gt 0)", "return ($File.Exists -and $File.Length -gt 0)")],
     "WIN-OUT-CLEAR": (W, "foreach ($f in $d.Outputs) { try { [IO.File]::Delete($f) } catch { $null = $_ } }  # SAFETY:WIN-OUT-CLEAR", "#"),
     "TRUST-JOB-MATCH": (T, "if ($m.Count -ne 1) { return $null }", "if ($false) { return $null }"),
     "TRUST-SAME-REPO": (T, "if ($runRepo -ne $repoId) { return $null }", "if ($false) { return $null }"),
@@ -127,7 +129,11 @@ MUTATIONS = {
     "LNX-SHIM-DAEMON": (L, '! zc_daemon_alive "${pid}" "${start}"; then', "false; then"),
     "LNX-SHIM-TIMEOUT": [(L, 'timeout -k 5 "${tmo}" "${self}/bin/${zcname}"', '"${self}/bin/${zcname}"'),
                          (L, 'timeout -k 5 "${tmo}" "${self}/bin/${zcname}"', 'timeout --foreground -k 5 "${tmo}" "${self}/bin/${zcname}"')],
-    "LNX-TIMEOUT-DAEMON": (L, 'zc_daemon_alive "${pid}" "${start}" && zc_kill_tree "${pid}"', 'true'),
+    "LNX-TIMEOUT-DAEMON": (L, '&& zc_kill_tree "${pid}"  # SAFETY:LNX-TIMEOUT-DAEMON', '&& true'),
+    "LNX-OUT-DAEMON": (L, '&& zc_kill_tree "${pid}"  # SAFETY:LNX-OUT-DAEMON', '&& true'),
+    "LNX-OUT-DEPFLAG": (L, '-Wp,*-M* | -Xpreprocessor | --*dependencies) return 1 ;;', '-Wp,NONE) return 1 ;;'),
+    "LNX-OUT-NLINK": (L, '[[ "$(stat -c %h -- "${o}")" == 1 ]] ||', 'true ||'),
+    "LNX-DAEMON-BIN": (L, '[[ "${exe}" == "${deployed}" || "${exe}" == "${bin}/"* ]] || continue', '[[ "${exe}" == "${deployed}" ]] || continue'),
     "LNX-TIMEOUT-CLASS": (L, 'if [[ " $1 " == *" compile-object "* ]]; then', 'if true; then'),
     "LNX-SHIM-FALLBACK": (L, '"${path}" "$@"  # SAFETY:LNX-SHIM-FALLBACK', "false"),
     "LNX-OUT-UNKNOWN": (L, 'then reason="outputs-unknown"; fi', 'then reason=""; fi'),

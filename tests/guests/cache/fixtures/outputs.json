@@ -16,6 +16,15 @@
     {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["-c", "a.c", "-o", "-"], "outputs": null},
     {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["-c", "a.c", "-o", "/dev/null"], "outputs": null},
     {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["-c", "a.c", "-oa.o"], "outputs": null},
+    {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["-c", "a.c", "-o", "-n"], "outputs": ["-n"]},
+    {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["-c", "a.c", "-o", "-E", "-MD"], "outputs": ["-E", "-E.d"]},
+    {"platforms": ["linux", "windows"], "compiler": "gcc", "args": ["-c", "a.c", "-o", "a.o", "-Wp,-MD,deps/a.d"], "outputs": null},
+    {"platforms": ["linux", "windows"], "compiler": "gcc", "args": ["-c", "a.c", "-o", "a.o", "-Wp,-MMD,deps/a.d"], "outputs": null},
+    {"platforms": ["linux", "windows"], "compiler": "gcc", "args": ["-c", "a.c", "-o", "a.o", "-Xpreprocessor", "-MD"], "outputs": null},
+    {"platforms": ["linux", "windows"], "compiler": "gcc", "args": ["-c", "a.c", "-o", "a.o", "--write-dependencies"], "outputs": null},
+    {"platforms": ["linux", "windows"], "compiler": "gcc", "args": ["-c", "a.c", "-o", "a.o", "--write-user-dependencies"], "outputs": null},
+    {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["-c", "a.c", "-o", "a.o", "-Wp,-DX"], "outputs": ["a.o"]},
+    {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["@RSP"], "rsp": "-c a.c -o a.o -Wp,-MD,a.d", "outputs": null},
     {"platforms": ["linux", "windows"], "compiler": "clang", "args": ["@RSP"], "rsp": "-c a.c -o \"obj dir/a.o\" -MD", "outputs": ["obj dir/a.o", "obj dir/a.d"]},
     {"platforms": ["linux"], "compiler": "gcc", "args": ["-c", "a.c", "-o", "a.o", "-MMD"], "outputs": ["a.o", "a.d"]},
     {"platforms": ["linux", "windows"], "compiler": "rustc", "args": ["--crate-type", "lib", "--out-dir", "target", "src/lib.rs"], "outputs": []},
@@ -25,6 +34,12 @@
     {"platforms": ["windows"], "compiler": "clang-cl", "args": ["-c", "a.c", "-Foa.obj"], "outputs": ["a.obj"]},
     {"platforms": ["windows"], "compiler": "clang-cl", "args": ["/c", "a.c", "/Foobj\\"], "outputs": null},
     {"platforms": ["windows"], "compiler": "clang-cl", "args": ["/c", "a.c"], "outputs": null},
-    {"platforms": ["windows"], "compiler": "clang-cl", "args": ["/c", "a.c", "/Foa.obj", "/Fob.obj"], "outputs": null}
+    {"platforms": ["windows"], "compiler": "clang-cl", "args": ["/c", "a.c", "/Foa.obj", "/Fob.obj"], "outputs": null},
+    {"platforms": ["windows"], "compiler": "clang-cl", "args": ["/c", "a.c", "/Foa"], "outputs": ["a.obj"]},
+    {"platforms": ["windows"], "compiler": "clang-cl", "args": ["/c", "a.c", "/Foobj\\a"], "outputs": ["obj\\a.obj"]},
+    {"platforms": ["windows"], "compiler": "clang-cl", "args": ["/c", "a.c", "/Fo:", "obj\\a.obj"], "outputs": ["obj\\a.obj"]},
+    {"platforms": ["windows"], "compiler": "clang-cl", "args": ["/c", "a.c", "/Fo:"], "outputs": null},
+    {"platforms": ["windows"], "compiler": "clang-cl", "args": ["/c", "a.c", "/Fo"], "outputs": null},
+    {"platforms": ["windows"], "compiler": "clang-cl", "args": ["/c", "a.c", "/Foa.obj", "/clang:-MD"], "outputs": null}
   ]
 }

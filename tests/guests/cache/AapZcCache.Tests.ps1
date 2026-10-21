@@ -568,6 +568,8 @@ Describe 'zcshim: delivery (zccache''s exit 0 counts only with every declared ou
             $Result.Code | Should -Be 0
             Get-Flag $Pkg | Should -Be 'delivery'
             @(Get-Content -LiteralPath (Join-Path $Pkg.Job 'shim\shim.log'))[-1] | Should -Match ' fallback fake-cc\.cmd zccache-exit 0 delivery direct-exit 0$'
+            $cfg = Get-Content -Raw -LiteralPath $Pkg.Config | ConvertFrom-Json
+            Get-Process -Id $cfg.roots.private.daemon.pid -ErrorAction SilentlyContinue | Should -BeNullOrEmpty -Because 'the daemon may still be copying that output'
         }
         # Whether zccache's fake (run by PowerShell 7 for this) can make a symbolic link here: developer mode or elevation.
         $probe = Join-Path $script:RunRoot ('symprobe-' + [guid]::NewGuid().ToString('N'))
@@ -614,7 +616,13 @@ Describe 'zcshim: delivery (zccache''s exit 0 counts only with every declared ou
         [IO.File]::ReadAllText($dep).Trim() | Should -Be 'DEP a.c'
         Assert-DeliveryFallback $script:Pkg $r
     }
-    It 'an empty object is rebuilt directly' -Tag 'WIN-OUT-CHECK' {
+    It 'a reparse point is not a delivery, whatever length it reports' -Tag 'WIN-OUT-CHECK' {
+        # A symbolic link reports length 0 on both editions, so this stand-in is the only way a test reaches the
+        # reparse-point test alone.
+        InModuleScope AapZcCache { Test-AapZcDelivered ([pscustomobject]@{ Exists = $true; Attributes = [IO.FileAttributes]'Archive, ReparsePoint'; Length = 6 }) } | Should -BeFalse
+        InModuleScope AapZcCache { Test-AapZcDelivered ([pscustomobject]@{ Exists = $true; Attributes = [IO.FileAttributes]'Archive'; Length = 6 }) } | Should -BeTrue
+    }
+    It 'an empty object is rebuilt directly' -Tag 'WIN-OUT-CHECK', 'WIN-OUT-DAEMON' {
         $null = Compile $script:Pkg
         $r = Compile $script:Pkg 'a.c' @{ FAKE_ZC_EMPTY = '1' }
         [IO.File]::ReadAllBytes($r.Output) | Should -Be $script:Expected
@@ -658,7 +666,7 @@ Describe 'zcshim: delivery (zccache''s exit 0 counts only with every declared ou
 }
 
 Describe 'Get-AapZcOutputs (shared vectors)' {
-    It '<Name>' -TestCases @(
+    It '<Name>' -Tag 'WIN-OUT-DEPFLAG' -TestCases @(
         $fx = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'fixtures\outputs.json') | ConvertFrom-Json
         foreach ($v in $fx.vectors) { if ($v.platforms -contains 'windows') { @{ Name = ($v.compiler + ' ' + ($v.args -join ' ')); V = $v } } }
     ) {

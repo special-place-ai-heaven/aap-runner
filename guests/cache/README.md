@@ -75,12 +75,15 @@ use. P13 does not make that decision. P21 carries the constraint into the image 
    again in this VM.
    **Delivery check.** zccache's exit 0 is not taken on trust. The shim names the outputs of each call (the `-o` file;
    the depfile of `-MD`/`-MMD`: its `-MF`, or the `-o` name with its last suffix replaced by `.d`, as gcc and clang name
-   it; clang-cl's `/Fo` file) and removes them before the call, so a stale file from an earlier build cannot pass for
-   this one. After a zero exit each must be a non-empty regular file, not a link or other reparse point; otherwise the
-   call counts as failed: the root is marked `delivery`, whatever zccache left at those paths is removed (a link into
-   the root would be written through) and the compiler runs directly. A call whose outputs cannot be named (no single
-   `-o` or `/Fo` file, `-o -`, `/Fo` naming a folder, several `-MF`) builds directly (`outputs-unknown`) without marking
-   the root. This proves delivery, not that the bytes are right: that stays with the trust rule and P04's evidence.
+   it; clang-cl's `/Fo` file, `/FoNAME`, `/Fo:NAME` or `/Fo: NAME`, with `.obj` added to a name without an extension)
+   and removes them before the call, so a stale file from an earlier build cannot pass for this one. After a zero exit
+   each must be a non-empty regular file, not a link or other reparse point, and on Linux not a hard link (link count
+   1; COPY mode never makes one); otherwise the call counts as failed: the root is marked `delivery`, its daemon is
+   stopped (it may still be copying that output), whatever zccache left at those paths is removed (a link into the
+   root would be written through) and the compiler runs directly. A call whose outputs cannot be named (no single
+   `-o` or `/Fo` file, `-o -`, `/Fo` naming a folder or nothing, several `-MF`, or a depfile asked for in another
+   spelling: `-Wp,-MD,FILE`, `-Xpreprocessor`, `--write-dependencies` and the other long `--*dependencies` forms,
+   clang-cl's `/clang:-M...`) builds directly (`outputs-unknown`) without marking the root. This proves delivery, not that the bytes are right: that stays with the trust rule and P04's evidence.
    **Residual:** rustc calls, whose outputs follow `--out-dir`, `--emit`, the crate name and `-C extra-filename`, and
    sidecars other than the depfile (`/Fd` PDBs, `.dwo`, `.gcno`, `-save-temps` files) are not named, so they rely on
    zccache's own delivery. At the pin that is the same COPY materialization as for objects (entries published by
@@ -114,6 +117,11 @@ candidates: every candidate is stopped and the root is not used. The deployed co
 lives in the root and counts against the root's non-artifact quarter of its budget like everything else there; a
 budget below about 128 MiB leaves no room for it, and the root is over budget from the first call. The lab records the daemon's own command line (P22), which then allows
 an exact match on Windows.
+**The deployed copy is not hash-checked.** The installer and every boot check the installed `bin` members against the
+pin, but the copy zccache deploys into the root is zccache's own and nothing here hashes it: a root a job can write
+could hold a substituted `zccache-daemon` that zccache then runs. A private root is the job's own; before any shared
+root (MEDIUM), P22 adds the check: hash `<root>/v1.15.6/zccache-daemon[.exe]` against the pinned member before priming
+and delete it or refuse the root otherwise.
 
 Invocation classes come from the arguments (response files are expanded one level; a nested one is not classified):
 `-c`/`/c` is required; `-E`, `-S`, `-M`, `-MM`, `-fsyntax-only`, `-###`, `--print*`, `/E`, `/P`, `/EP`, `/Yu`, a stdin
@@ -192,6 +200,7 @@ same repository gets the private root.
 | A well-formed malicious entry in a root | out of reach of any integrity check (README 1123); bounded by the trust rule: only equally trusted writers share a root |
 | A corrupted entry, a crashing or hung daemon | any zccache failure is answered by the direct compiler; a call past its bound is killed; the root is marked degraded |
 | zccache exits 0 without its outputs (a bug, a full disk, an interrupted copy, a hostile entry), or a stale output from an earlier build | the shim removes the outputs it can name before the call and requires each to be a non-empty regular file after it; otherwise the root is marked `delivery` and the compiler runs directly; rustc and unnamed sidecars rely on zccache (residual above) |
+| A substituted daemon copy in a root (`<root>/v1.15.6/zccache-daemon`, deployed by zccache and run from there) | not checked yet: a private root is the job's own; before any shared root P22 hashes the copy against the pinned member before priming and deletes it or refuses the root (MEDIUM) |
 | A compile client recorded as the shared root's daemon | daemon discovery takes only the root's own process (Linux: its environment names the root; Windows: compile clients excluded) and refuses ambiguity |
 | Credentials reaching the daemon or its crash dumps | daemons start from the guest agent before Actions (Linux: `env -i` with an allowlist); every zccache call drops credential-shaped names, URL-credential values and inherited `ZCCACHE_*` variables |
 | Daemon PID reuse | liveness compares PID and process start time |
@@ -205,8 +214,8 @@ same repository gets the private root.
 
 | Suite | Command | Covers |
 |---|---|---|
-| Pester 5 (Windows PowerShell 5.1 and 7) | `Invoke-Pester tests/guests/cache/AapZcCache.Tests.ps1` | install refusals, init, shim with real processes through the real launcher (cold, warm, error, unsupported, concurrent, daemon down, PID reuse, crash, hang past the bound, corrupted entry, hardlink poisoning, over budget, log bound, exact arguments), attach (trusted, shared roots off, untrusted never, missing class, every refusal, a compile running during the attach, an ambiguous daemon), delivery (exit 0 without an object or depfile, with and without a stale file, on a miss and a hit; an empty object; a link at the output; unnamed outputs), zccache's progress lines, the daemon at its deployed path, state, classes, declared outputs, argument quoting, job selection and trust class |
-| bash (hosted `ubuntu-latest`; Git Bash runs it too, without the symlink cases) | `bash tests/guests/cache/zccache_test.sh` | the same cases for Linux, plus the daemon's `env -i` start, names no shell variable can hold, the rustc `RUSTC_WRAPPER` wiring and a response-file call |
+| Pester 5 (Windows PowerShell 5.1 and 7) | `Invoke-Pester tests/guests/cache/AapZcCache.Tests.ps1` | install refusals, init, shim with real processes through the real launcher (cold, warm, error, unsupported, concurrent, daemon down, PID reuse, crash, hang past the bound, corrupted entry, hardlink poisoning, over budget, log bound, exact arguments), attach (trusted, shared roots off, untrusted never, missing class, every refusal, a compile running during the attach, an ambiguous daemon), delivery (exit 0 without an object or depfile, with and without a stale file, on a miss and a hit; an empty object; a link at the output, a reparse point by a stand-in; the daemon stopped; unnamed outputs, other depfile spellings), zccache's progress lines, the daemon at its deployed path, state, classes, declared outputs, argument quoting, job selection and trust class |
+| bash (hosted `ubuntu-latest`; Git Bash runs it too, without the symlink cases) | `bash tests/guests/cache/zccache_test.sh` | the same cases for Linux (and a hard link at the output), plus the daemon's `env -i` start, names no shell variable can hold, the rustc `RUSTC_WRAPPER` wiring and a response-file call |
 | Python | `python -B -I -m unittest discover -s tests/guests/cache -p "test_*.py"` | generator: current, nothing qualified, pins, qualified rows, every refusal |
 | Mutation proof | `python -B -I tests/guests/cache/mutate.py [--suite pester\|bash\|python]` | disables each `SAFETY:<id>` check in a copy (some in more than one way) and requires the tests tagged with that id to fail |
 | Lab (P22, real zccache, not a suite) | `bash tests/guests/cache/lab/real_zccache_stress.sh ARCHIVE ITERATIONS [CALLS] [STAGGER_MS] [LOAD] [TEAR]` | the real pinned archive, install, init and shim with the distro's gcc: concurrent calls on one root, each over a stale object and depfile, compared with a direct compile; any fallback fails the run |
@@ -227,6 +236,8 @@ hosted Ubuntu job is a coordinator change (INTEGRATION.md).
   P04's evidence for each rustc pair must show its outputs delivered.
 - The deployed daemon copy in each root (27 MB on Linux, 24 MB on Windows) against the root budgets the host picks:
   it counts against the non-artifact quarter.
+- Before any shared root: hash the deployed daemon copy against the pinned member before priming, and delete it or
+  refuse the root when it differs (it is not checked today).
 - Whether a byte budget below upstream's 40 GiB clamp is honoured, and the real non-artifact growth per root (the 3/4
   split is a starting value).
 - Journal and log growth on a long-lived shared root, and `zccache clear`'s effect on them.

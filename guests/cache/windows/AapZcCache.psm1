@@ -546,9 +546,21 @@ function Get-AapZcOutputs {
     $x = Expand-AapZcArgs $Arguments
     if ($null -eq $x) { return $null }
     $t = @($x.Tokens)
+    # A depfile asked for in another spelling cannot be named: -Wp,-MD,FILE, -Xpreprocessor, the long --*dependencies
+    # forms, clang-cl's /clang:-M...
+    if (@($t | Where-Object { $_ -cmatch '^(-Wp,.*-M|-Xpreprocessor$|--.*dependencies$|[/-]clang:-M)' }).Count) { return $null }  # SAFETY:WIN-OUT-DEPFLAG
     if ($Compiler -in @('clang-cl', 'cl')) {
-        $fo = @($t | Where-Object { $_ -cmatch '^[/-]Fo:?.' } | ForEach-Object { $_ -creplace '^[/-]Fo:?', '' })
-        if ($fo.Count -ne 1 -or $fo[0] -match '[\\/]$') { return $null }
+        # /FoNAME, /Fo:NAME or /Fo: NAME; a name without an extension gets .obj, as clang-cl writes it.
+        $fo = @()
+        for ($i = 0; $i -lt $t.Count; $i++) {
+            if ($t[$i] -cmatch '^[/-]Fo(:?)(.*)$') {
+                $v = $Matches[2]
+                if ($Matches[1] -and -not $v -and $i + 1 -lt $t.Count) { $i++; $v = $t[$i] }
+                $fo += , $v
+            }
+        }
+        if ($fo.Count -ne 1 -or -not $fo[0] -or $fo[0] -match '[\\/]$') { return $null }
+        if (($fo[0] -split '[\\/]')[-1] -notmatch '\.') { return , [string[]]@($fo[0] + '.obj') }
         return , [string[]]@($fo[0])
     }
     $o = $null; $n = 0; $mf = $null; $nmf = 0; $md = $false
@@ -586,10 +598,9 @@ function Remove-AapZcProgress([byte[]]$Bytes) {
     return , $rest
 }
 
-# Whether a declared output is a non-empty regular file (not a link or other reparse point).
-function Test-AapZcDelivered([string]$Path) {
-    $fi = New-Object IO.FileInfo($Path)
-    return ($fi.Exists -and -not ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $fi.Length -gt 0)  # SAFETY:WIN-OUT-CHECK
+# Whether a declared output (its IO.FileInfo) is a non-empty regular file, not a link or other reparse point.
+function Test-AapZcDelivered($File) {
+    return ($File.Exists -and -not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $File.Length -gt 0)  # SAFETY:WIN-OUT-CHECK
 }
 
 # ---- the shim ----
@@ -693,7 +704,7 @@ function Invoke-AapZcShim {
         } catch { $r = $null }
         # Exit 0 is not taken on trust: every declared output must now be a non-empty regular file, not a link. That
         # proves delivery, not that the bytes are right (the trust rule bounds who writes a root).
-        $bad = @($d.Outputs | Where-Object { -not (Test-AapZcDelivered $_) })
+        $bad = @($d.Outputs | Where-Object { -not (Test-AapZcDelivered (New-Object IO.FileInfo($_))) })
         if ($null -ne $r -and -not $r.TimedOut -and $r.ExitCode -eq 0 -and -not $bad.Count) {
             $o = [Console]::OpenStandardOutput(); $o.Write($r.Stdout, 0, $r.Stdout.Length); $o.Flush()
             $err = Remove-AapZcProgress $r.Stderr
@@ -704,14 +715,16 @@ function Invoke-AapZcShim {
         # Any zccache failure, a compile error or an exit 0 without its outputs included, is answered by the direct
         # compiler: its exit code and output are the build's (contract rule 7). The wrapped call's output is dropped so
         # errors are not reported twice, and a compile error costs two compiler runs. A call that ran past the bound marks
-        # the root degraded either way, and the root's daemon is stopped first: it may still be compiling this call's
-        # output, which the direct compile is about to write. Other wrapped calls on that root then fail and compile
+        # the root degraded either way, and so does an exit 0 without its outputs; the root's daemon is stopped first: it
+        # may still be compiling or copying this call's output, which the direct compile is about to write. Other wrapped calls on that root then fail and compile
         # directly too. Whatever zccache left at a declared output goes before the compiler writes it: a link into the
         # root would be written through.
         $timedOut = ($null -ne $r -and $r.TimedOut)
         $undelivered = ($null -ne $r -and -not $timedOut -and $r.ExitCode -eq 0)
-        if ($undelivered) { Set-AapZcDegraded $d.Config $d.RootId 'delivery' }
-        elseif ($timedOut) {
+        if ($undelivered) {
+            Set-AapZcDegraded $d.Config $d.RootId 'delivery'
+            if (Test-AapZcDaemonAlive $d.Root.daemon) { Stop-AapZcTree ([int]$d.Root.daemon.pid) }  # SAFETY:WIN-OUT-DAEMON
+        } elseif ($timedOut) {
             Set-AapZcDegraded $d.Config $d.RootId 'wrapper-timeout'
             if (Test-AapZcDaemonAlive $d.Root.daemon) { Stop-AapZcTree ([int]$d.Root.daemon.pid) }  # SAFETY:WIN-TIMEOUT-DAEMON
         }
