@@ -44,7 +44,8 @@ How the agent works: [README.md](README.md).
   `VirtualMachineId` (pool 3, written by Hyper-V, not by the host's code): a contract wording change in guest-transport.md
   and the backend's INTEGRATION.md, and a one-line change in `own_vm_id`.
 - **Host key.** The pool-1 record the agent writes appears in `Msvm_KvpExchangeComponent.GuestExchangeItems` as
-  `aap-ssh-host-key-ed25519` with exactly `ssh-ed25519 <key>`; `hv_kvp_daemon` picks up a pool file rewritten in place.
+  `aap-ssh-host-key-ed25519` with exactly `ssh-ed25519 <key>`; `hv_kvp_daemon` picks up a pool file
+  replaced by a rename (a new inode: the daemon must reopen it by name; its `fcntl` lock was on the old one).
 - **Channel.** `aap-guest-ssh.socket` accepts on vsock 5222 under Hyper-V's vsock transport; `sshd -i` with this
   configuration authenticates the seed's key for root and runs the agent with nothing on stdout before the reply (PAM's
   session modules included).
@@ -52,7 +53,8 @@ How the agent works: [README.md](README.md).
   runner survives the connection's end; `setpriv --init-groups` gives the job user its groups; the runner removes
   `ACTIONS_RUNNER_INPUT_JITCONFIG` from the environment its job processes inherit (lab step 5: the marker absent from
   every job step's environment, journald and files); the runner's console output goes nowhere (its `_diag` has the logs).
-- **Crash dumps.** `RLIMIT_CORE` 0 for the runner; with Ubuntu's `apport` (a pipe in `core_pattern`) confirm no crash
+- **Crash dumps.** `RLIMIT_CORE` 0 for the agent, the launcher and the runner, set before any input is read
+  (`PR_SET_DUMPABLE` cannot be set from bash); with Ubuntu's `apport` (a pipe in `core_pattern`) confirm no crash
   file with the runner's memory is written, or disable apport in the image (P21).
 - **First boot on the P07 image**: every step passes, Docker answers, PostgreSQL starts with the new snakeoil pair, and
   `probe` answers `ready` within the backend's 15-minute boot deadline.
@@ -61,4 +63,4 @@ How the agent works: [README.md](README.md).
 
 - On hosted `ubuntu-latest`: `bash tests/guests/linux/agent_test.sh` (about 10 s; python3, jq, flock, setsid, coreutils).
 - shellcheck 0.11.0 at `-S warning` over `guests/linux/*.sh` and `tests/guests/linux/*.sh` (clean in WSL Ubuntu-24.04).
-- `bash tests/guests/linux/agent_mutations.sh` is the mutation run (30 checks, about 4 minutes); not needed on every push.
+- `bash tests/guests/linux/agent_mutations.sh` is the mutation run (32 checks, about 5 minutes); not needed on every push.

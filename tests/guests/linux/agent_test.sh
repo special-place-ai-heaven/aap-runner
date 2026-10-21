@@ -23,7 +23,8 @@ stop_runners() {
 }
 cleanup() { stop_runners 2> /dev/null || true; pkill -f "${tmp}/" 2> /dev/null || true; rm -rf "${tmp}"; }
 trap cleanup EXIT
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() { echo "FAIL: $*" >&2; exit 10; }   # 10: a check failed (agent_mutations.sh tells it from a harness error)
+[ "$(id -u)" != 0 ] || fail 'run the suite unprivileged (an unwritable file must stay unwritable to the agent)'
 VM=6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b
 RID=r-1a2b3c4d000000b1
 HK="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5$(printf 'Ab%.0s' {1..24})"
@@ -42,7 +43,7 @@ stubs() { # NAME BODY...
   chmod +x "${stub}/${n}"
 }
 stubs systemctl 'case "$1" in is-active) [ ! -e "${K}/inactive-$3" ] ;; start) [ ! -e "${K}/fail-start-$2" ] ;; esac'
-stubs systemd-run 'case " $* " in *" --scope "*) ;; *) exit 0 ;; esac' 'while [ "$1" != -- ]; do shift; done; shift; exec "$@"'
+stubs systemd-run 'ulimit -c > "${K}/core"' 'case " $* " in *" --scope "*) ;; *) exit 0 ;; esac' 'while [ "$1" != -- ]; do shift; done; shift; exec "$@"'
 stubs setpriv 'while [ "$1" != -- ]; do shift; done; shift; exec "$@"'
 stubs runuser 'while [ "$1" != -- ]; do shift; done; shift; exec "$@"'
 stubs setsid 'exec "$@"'
@@ -134,12 +135,14 @@ EOF
   chmod +x "${z}/aap-zccache.sh"
 }
 
-# agent IN [MODE]: the agent as sshd's forced command (or a mode) with IN as stdin; stdout in out, exit code in RC.
+# agent IN [MODE]: the agent as sshd's forced command (or a mode) with IN as stdin; stdout in out, exit code in RC. It starts
+# with core dumps allowed (1024 blocks), so only its own limit keeps the JIT config out of a core file.
+(ulimit -c 1024) 2> /dev/null || fail 'this host does not allow a core limit of 1024 blocks; the core-dump check needs it'
 agent() {
   local in=$1; shift
   RC=0
-  env AAP_SYSROOT="${S}" AAP_START_WAIT=5 SSH_CONNECTION='192.0.2.1 50000 192.0.2.2 5222' PATH="${stub}:${PATH}" \
-    bash "${guest}/agent.sh" "$@" < "${in}" > "${tmp}/out" 2> "${tmp}/err" || RC=$?
+  (ulimit -c 1024 && exec env AAP_SYSROOT="${S}" AAP_START_WAIT=5 SSH_CONNECTION='192.0.2.1 50000 192.0.2.2 5222' PATH="${stub}:${PATH}" \
+    bash "${guest}/agent.sh" "$@") < "${in}" > "${tmp}/out" 2> "${tmp}/err" || RC=$?
 }
 firstboot() { agent /dev/null firstboot; }
 # send CMD SEQ [PAYLOAD]: one connection; VMX GENX NONCE EXPX LENX BOM override the envelope's fields
@@ -234,6 +237,7 @@ raw = open(sys.argv[1], 'rb').read()
 recs = [(raw[i:i + 512].rstrip(b'\0').decode(), raw[i + 512:i + 2560].rstrip(b'\0').decode()) for i in range(0, len(raw), 2560)]
 assert len(raw) % 2560 == 0 and recs == [('other', 'value'), ('aap-ssh-host-key-ed25519', sys.argv[2])], recs
 EOF
+[ "$(find "${S}/var/lib/hyperv" -mindepth 1 | wc -l)" = 1 ] && [ "$(stat -c %a "${S}/var/lib/hyperv/.kvp_pool_1")" = 644 ] || fail 'the KVP pool was not swapped in whole'
 [ -z "$(find "${S}/var/lib/cloud" -name 'user-data*' -o -name cloud-config.txt -o -name seed)" ] || fail "the seed's copies survived first boot"
 [ "$(sort "${tmp}/postgen" | tr '\n' ' ')" = 'a b ' ] || fail "post-generation: $(cat "${tmp}/postgen")"
 for c in 'make-ssl-cert generate-default-snakeoil --force-overwrite' 'loginctl enable-linger runner' 'systemctl start docker.service' \
@@ -248,9 +252,23 @@ send probe 1
 expect ok ready null 'probe after first boot'
 
 # --- registration, runner, status, collect ----------------------------------------------------------------------------
-send start_runner 2
+# a mark that cannot be written stops the command before it runs, and the same command is not fresh afterwards
+: > "${ST}/shots"; chmod 0444 "${ST}/shots"   # unwritable (the suite runs unprivileged); /dev/full would also break reads
+send deliver_registration 2 "${JIT}"
+noreply 'deliver_registration with a full state file system'
+! grep -q '^systemd-run' "${tmp}/calls" && [ ! -e "${ST}/runner.pid" ] || fail 'deliver_registration ran without its one-shot mark'
+chmod 0644 "${ST}/shots"
+agent "${tmp}/conn"
+expect refused ready null 'the same deliver_registration after the state file system recovered'
+mkdir "${ST}/seq.tmp"
+send probe 3
+noreply 'a seq that cannot be saved'
+rmdir "${ST}/seq.tmp"
+agent "${tmp}/conn"
+expect refused ready null 'the same probe after the seq could be saved again'
+send start_runner 4
 expect error ready null 'start_runner before any registration'
-send deliver_registration 3 'not base64!'
+send deliver_registration 5 'not base64!'
 expect error ready null 'a payload that is not an encoded JIT config'
 reset; firstboot; send probe 1
 mkdir -p "${S}/var/lib/cloud/instances/i-1/user-data.txt.d"
@@ -265,6 +283,7 @@ start=${SECONDS}
 send start_runner 3
 expect ok listening null 'start_runner'
 [ $((SECONDS - start)) -lt 8 ] || fail 'the launcher kept the agent lock'
+[ "$(cat "${K}/core")" = 0 ] || fail "the agent held the JIT config with a core limit of $(cat "${K}/core")"
 wait_for "${tmp}/listener.env" 'the runner'
 [ "$(env_of ACTIONS_RUNNER_INPUT_JITCONFIG)" = "${JIT}" ] || fail 'the runner did not get the JIT config in its environment'
 python3 -B -I -c '

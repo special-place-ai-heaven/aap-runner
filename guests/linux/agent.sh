@@ -16,6 +16,9 @@
 set -u
 export LC_ALL=C
 umask 022
+# No core dump of the agent or the launcher (both hold the JIT config): before any input is read. A line of its own so the
+# mutation run can remove it; PR_SET_DUMPABLE cannot be set from bash (INTEGRATION.md, P02.1).
+ulimit -c 0   # check:core-off
 S=${AAP_SYSROOT:-}                    # tests only: a fake system root; empty in a guest
 ST="${S}/var/lib/aap-guest"           # agent state, root 0700
 RR="${S}/opt/actions-runner"          # runner root: the actions-runner overlay (P21); its registration files are written here
@@ -124,15 +127,15 @@ runner_env() {
 }
 
 # Runs inside aap-runner.scope, outside the ssh connection's cgroup, with the JIT config as the one line on stdin.
-# Limits are the hosted runner's (65536 open files, 16 MiB stack) with no core dumps; the runner runs as the job user in
-# its own root, and its exit code is recorded for status and collect.
+# Limits are the hosted runner's (65536 open files, 16 MiB stack) with no core dumps (set at the top); the runner runs as
+# the job user in its own root, and its exit code is recorded for status and collect.
 launch() {
   local jit='' pid rc=97 setpriv
   IFS= read -r -n 16385 jit || [ -n "${jit}" ] || jit=''
   setpriv=$(command -v setpriv) || setpriv=/usr/bin/setpriv   # resolved before the job's PATH replaces this one
   save "${ST}/runner.pid" "$$ $(proc_start "$$")"
   [[ ${jit} =~ ${JIT_RE} && ${#jit} -le 16384 && -x "${RR}/bin/Runner.Listener" ]] || { save "${ST}/runner.exit" "${rc}"; return 1; }   # check:launch-input
-  { ulimit -n 65536 && ulimit -s 16384 && ulimit -c 0 && cd "${RR}"; } || { save "${ST}/runner.exit" "${rc}"; return 1; }
+  { ulimit -n 65536 && ulimit -s 16384 && cd "${RR}"; } || { save "${ST}/runner.exit" "${rc}"; return 1; }
   (
     runner_env
     printf -v ACTIONS_RUNNER_INPUT_JITCONFIG '%s' "${jit}"
@@ -212,7 +215,7 @@ cmd_shutdown() {
 }
 
 serve() {
-  local line own last exp now good payload=''
+  local line own last exp now good marks payload=''
   IFS= read -r -n 1028 line || [ -n "${line}" ] || exit 0
   line=${line#$'\xef\xbb\xbf'}
   [ "${#line}" -le 1024 ] || exit 0   # check:cmd-line-length
@@ -236,11 +239,16 @@ serve() {
   [ "${exp}" -ge "${now}" ] || { reply refused "$(current_state)" null 'refused: expired'; exit 0; }   # check:cmd-expired
   if [ "${E_CMD}" = deliver_registration ]; then good=$((E_LEN > 0)); else good=$((E_LEN == 0)); fi
   [ "${good}" = 1 ] || { reply refused "$(current_state)" null 'refused: payload_bytes does not fit the command'; exit 0; }   # check:cmd-payload
-  # Accepted: the marks move before the work, so a reply lost after this point leaves a gap, never a false refusal.
-  [ -s "${ST}/generation" ] || save "${ST}/generation" "${E_GEN}"
-  save "${ST}/seq" "${E_SEQ}"
-  printf '%s\n' "${E_NONCE}" >> "${ST}/nonces"
-  [[ ${ONE_SHOT} != *" ${E_CMD} "* ]] || printf '%s\n' "${E_CMD}" >> "${ST}/shots"
+  # Accepted: the marks move before the work, so a reply lost after this point leaves a gap, never a false refusal. A mark
+  # that cannot be written and flushed (a full or broken state file system) stops here: the command does not run and gets
+  # no reply (a failed guest), so it can never run again later under an old seq or without its one-shot mark.
+  marks=1
+  [ -s "${ST}/generation" ] || save "${ST}/generation" "${E_GEN}" || marks=0
+  save "${ST}/seq" "${E_SEQ}" || marks=0
+  printf '%s\n' "${E_NONCE}" >> "${ST}/nonces" || marks=0
+  [[ ${ONE_SHOT} != *" ${E_CMD} "* ]] || printf '%s\n' "${E_CMD}" >> "${ST}/shots" || marks=0
+  sync -f "${ST}/seq" || marks=0
+  [ "${marks}" = 1 ] || exit 0   # check:cmd-marks
   case "${E_CMD}" in
     probe) cmd_probe ;;
     deliver_registration) cmd_deliver "${payload}"; payload='' ;;
@@ -253,18 +261,18 @@ serve() {
 
 # --- first boot ------------------------------------------------------------------------------------------------------
 # The guest-to-host KVP item hv_kvp_daemon serves from pool 1: records of a 512-byte key and a 2048-byte value, NUL
-# padded. An earlier record with the same key is replaced; other records are kept.
+# padded. An earlier record with the same key is replaced; other records are kept. The new pool is swapped in whole.
 kvp_publish() { # KEY VALUE
   local tmp n=0 i k
   mkdir -p "${KVP_POOL%/*}" || return 1
-  tmp=$(mktemp "${ST}/kvp.XXXXXX") || return 1
+  tmp=$(mktemp "${KVP_POOL}.XXXXXX") || return 1
   [ ! -f "${KVP_POOL}" ] || n=$(( $(stat -c %s "${KVP_POOL}") / 2560 ))
   for ((i = 0; i < n; i++)); do
     k=$(dd if="${KVP_POOL}" bs=2560 skip="${i}" count=1 2> /dev/null | head -c 512 | tr -d '\0')
     [ "${k}" = "$1" ] || dd if="${KVP_POOL}" bs=2560 skip="${i}" count=1 2> /dev/null >> "${tmp}"
   done
-  { printf '%s' "$1"; head -c $((512 - ${#1})) /dev/zero; printf '%s' "$2"; head -c $((2048 - ${#2})) /dev/zero; } >> "${tmp}"
-  cat "${tmp}" > "${KVP_POOL}" && rm -f "${tmp}"
+  { printf '%s' "$1"; head -c $((512 - ${#1})) /dev/zero; printf '%s' "$2"; head -c $((2048 - ${#2})) /dev/zero; } >> "${tmp}" || { rm -f "${tmp}"; return 1; }
+  { chmod 0644 "${tmp}" && mv -f "${tmp}" "${KVP_POOL}"; } || { rm -f "${tmp}"; return 1; }
 }
 
 # The host pins this key before its first command: exactly 'ssh-ed25519 <key>', nothing else ever goes into that item.

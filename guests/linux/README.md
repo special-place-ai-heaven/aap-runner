@@ -36,8 +36,11 @@ is not exactly the ten `host_cmd` fields with their schema types and patterns, o
 a lease generation other than the first it accepted, a `seq` not above the last accepted one (gaps are normal), a nonce
 it saw, a one-shot class (`deliver_registration`, `start_runner`, `shutdown`) that already ran, an expired command, and
 `payload_bytes` other than non-zero for `deliver_registration` and zero for the rest. An accepted command moves the
-marks (`generation`, `seq`, `nonces`, `shots` in `/var/lib/aap-guest`, root 0700) before any work, so a reply lost after
-that leaves a gap, never a false refusal.
+marks (`generation`, `seq`, `nonces`, `shots` in `/var/lib/aap-guest`, root 0700) and flushes them (`sync -f`) before any
+work, so a reply lost after that leaves a gap, never a false refusal. If any mark cannot be written or flushed (a full or
+broken state file system), the command does not run and gets no reply (a failed guest): it can never run later under an
+old `seq` or without its one-shot mark. Core dumps are off (`RLIMIT_CORE` 0) from the agent's first statement, before
+it reads any input, in every mode.
 
 | Command | Answer |
 |---|---|
@@ -47,7 +50,14 @@ that leaves a gap, never a false refusal.
 | `status`, `collect` | from the launcher's records: `listening`, `busy` (a `Runner.Worker` process exists), `job_done` (exit 0) or `failed` (another exit, or the launcher gone without a record), with `runner_exit_code`; `collect` adds the cache state to `diag` (`runner exited 0; cache direct`) |
 | `shutdown` | powers off in 2 s, `shutting_down` (the backend never sends it) |
 
-Whether a job runs is the broker's answer to the host, never the guest's; `busy` is informational.
+**The guest is trusted only until the first job starts.** From then on the job user has passwordless sudo, so a job can
+replace the agent, its state or sshd and forge any reply (`busy`, `job_done`, an exit code); the host's authority over a
+job comes only from the broker's status of the runner, never from these replies, which the backend checks as hostile
+input and uses for display and the summary only.
+
+Accepted residual (security review, low 1): root inside the guest can tamper with the agent's state and replay a command
+it once saw over the local vsock socket. That gains nothing outside this VM: the VM is destroyed after its one job, and
+the reservation id and nonces are not guessable from outside it.
 
 ## The registration path
 
@@ -55,8 +65,8 @@ The JIT config exists in four places only, all memory: the agent process (read f
 (written by `printf`, a builtin, so no command line), the launcher process, and `Runner.Listener`'s environment. The agent
 starts the launcher detached in a transient scope, `setsid systemd-run --scope --unit=aap-runner -- /bin/bash <agent>
 launch`, so the runner leaves the ssh connection's cgroup; neither side keeps the connection's stdout or the agent's
-lock. The launcher records its pid and start time, sets the hosted limits (65536 open files, 16 MiB stack) and no core
-dumps, replaces its environment with the job's, and runs `setpriv --reuid=runner --regid=runner --init-groups --
+lock. The launcher records its pid and start time, sets the hosted limits (65536 open files, 16 MiB stack; no core
+dumps, as for the agent), replaces its environment with the job's, and runs `setpriv --reuid=runner --regid=runner --init-groups --
 /opt/actions-runner/bin/Runner.Listener run` in the runner root with `ACTIONS_RUNNER_INPUT_JITCONFIG` exported to that
 child only (guest-transport.md, Runner start: no `run.sh`, no shell, no file). When the runner exits it records the exit
 code (`runner.exit`). The runner removes the variable from its own environment block before it starts a job (runner
@@ -76,7 +86,7 @@ never resumed: after any job, `/imagegeneration` (mode 777 upstream) may hold pl
 
 | Step | What it does and checks |
 |---|---|
-| `host_key` | `/etc/ssh/ssh_host_ed25519_key.pub` must be `ssh-ed25519` with a 68-character key; `hv-kvp-daemon.service` must be active; publishes exactly `ssh-ed25519 <key>` as the guest-to-host KVP item `aap-ssh-host-key-ed25519` (pool 1 record: 512-byte key, 2048-byte value, NUL padded; an earlier record of that key replaced, others kept) |
+| `host_key` | `/etc/ssh/ssh_host_ed25519_key.pub` must be `ssh-ed25519` with a 68-character key; `hv-kvp-daemon.service` must be active; publishes exactly `ssh-ed25519 <key>` as the guest-to-host KVP item `aap-ssh-host-key-ed25519` (pool 1 record: 512-byte key, 2048-byte value, NUL padded; an earlier record of that key replaced, others kept; the new pool file is written beside it and renamed over it) |
 | `identity` | `runner` has uid 1001 and home `/home/runner`, is in `adm`, `users`, `docker` and `systemd-journal`, and runs `sudo -n true`; no account has uid 1000 |
 | `scrub` | removes cloud-init's seed copies: `/var/lib/cloud/seed` and every instance's `user-data.txt*` and `cloud-config.txt` |
 | `tls` | `make-ssl-cert generate-default-snakeoil --force-overwrite`; both snakeoil files must exist (P07's verification runs the same) |
@@ -112,15 +122,16 @@ backend's per-command state table.
 
 | File | Covers |
 |---|---|
-| `agent_test.sh` | malformed envelopes and the 1024-byte line (no reply), BOM, every refusal, gaps; each first-boot step failing closed and reported by probe, an interrupted first boot, a good one (the KVP pool records, the seed copies, post-generation, linger, Docker, the runner root), no second run; delivery before first boot, a non-JIT payload, undeletable seed copies; the JIT config only in the runner's environment (never in a file under the root, a stub's arguments or any `/proc/*/cmdline`), the runner as `runner` in its scope, its limits and exact environment; listening, busy, job_done, failed and a reused pid; the cache's init, environment and variable filter; the sshd, unit and install files; the overlay against P07's image secret-scan rules |
-| `agent_mutations.sh` | disables each `# check:` in `guests/linux/*.sh` in turn; every one must make `agent_test.sh` fail |
+| `agent_test.sh` | malformed envelopes and the 1024-byte line (no reply), BOM, every refusal, gaps; an unwritable mark (no reply, nothing run, the same command refused afterwards); core dumps off while the agent holds the JIT config; each first-boot step failing closed and reported by probe, an interrupted first boot, a good one (the KVP pool records, the seed copies, post-generation, linger, Docker, the runner root), no second run; delivery before first boot, a non-JIT payload, undeletable seed copies; the JIT config only in the runner's environment (never in a file under the root, a stub's arguments or any `/proc/*/cmdline`), the runner as `runner` in its scope, its limits and exact environment; listening, busy, job_done, failed and a reused pid; the cache's init, environment and variable filter; the sshd, unit and install files; the overlay against P07's image secret-scan rules |
+| `agent_mutations.sh` | disables each `# check:` in `guests/linux/*.sh` in turn; every one must make a check of `agent_test.sh` fail (its exit 10); a timeout or any other exit is an ERROR and fails the run |
 
 ```bash
 bash tests/guests/linux/agent_test.sh
 bash tests/guests/linux/agent_mutations.sh
 ```
 
-The suite checks file modes, so its temp folder must be on a Linux file system (not WSL's `/mnt/c`).
+The suite checks file modes, so its temp folder must be on a Linux file system (not WSL's `/mnt/c`), and it must run
+unprivileged (it makes a state file unwritable to the agent) on a host that allows a core limit of 1024 blocks.
 
 ## What is not done
 
