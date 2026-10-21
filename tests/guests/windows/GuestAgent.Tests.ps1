@@ -177,7 +177,7 @@ Describe 'one job end to end' {
         Wait-AapGuestRunner -Ctx $w.Ctx -Started $w.Started
         $done = Send-Guest $w 'status'
         $done.Reply.guest_state | Should -Be 'job_done'
-        $done.Reply.runner_exit_code | Should -Be 0
+        $done.Reply.runner_exit_code | Should -BeNullOrEmpty
         $c = Send-Guest $w 'collect'
         $c.Kind | Should -Be 'ok'
         $c.Reply.guest_state | Should -Be 'job_done'
@@ -311,7 +311,19 @@ Describe 'one job end to end' {
         $w.Alive = $false
         $done = Send-Guest $w 'status'
         $done.Reply.guest_state | Should -Be 'job_done'
-        $done.Reply.runner_exit_code | Should -Be 0
+        $done.Reply.runner_exit_code | Should -BeNullOrEmpty
+    }
+    It 'never reports the exit code of an exit record, which anyone can forge with a pid that is gone' {
+        $w = New-RunningGuest
+        $w.Alive = $false
+        [IO.File]::WriteAllText((Join-Path $w.Ctx.StateDir 'launch.json'), '{"phase":"exited","runner_pid":999999,"runner_start":1,"exit_code":0}')
+        foreach ($cmd in 'status', 'collect') {
+            $x = Send-Guest $w $cmd
+            $x.Kind | Should -Be 'ok'
+            $x.Reply.guest_state | Should -Be 'job_done'
+            $x.Reply.runner_exit_code | Should -BeNullOrEmpty
+        }
+        $x.Reply.diag | Should -Match 'exit code unverified; exit unknown'
     }
     It 'reports a runner that is not the recorded process as done, never as listening' -Tag 'runner-identity' {
         $w = New-RunningGuest
@@ -449,13 +461,52 @@ Describe 'bootstrap' {
         $w = New-Guest
         $part = Join-Path $w.Ctx.Scratch 'actions-runner.partial'
         [void][IO.Directory]::CreateDirectory((Join-Path $part 'bin'))
-        [IO.File]::WriteAllText((Join-Path $part 'config.cmd'), 'copied before')
+        [IO.File]::WriteAllText((Join-Path $part 'config.cmd'), 'config')
+        $before = [datetime]'2001-02-03'
+        [IO.File]::SetLastWriteTimeUtc((Join-Path $part 'config.cmd'), $before)
         [IO.File]::WriteAllText((Join-Path $part 'bin\Runner.Listener.exe.part'), 'cut short')
         (Send-Guest $w 'probe').Reply.guest_state | Should -Be 'ready'
-        [IO.File]::ReadAllText((Join-Path (Get-Root $w) 'config.cmd')) | Should -BeExactly 'copied before'
+        [IO.File]::GetLastWriteTimeUtc((Join-Path (Get-Root $w) 'config.cmd')) | Should -Be $before
         [IO.File]::ReadAllText((Join-Path (Get-Root $w) 'bin\Runner.Listener.exe')) | Should -BeExactly 'listener'
         @(Get-ChildItem -LiteralPath (Get-Root $w) -Recurse -Filter '*.part') | Should -HaveCount 0
         Test-Path $part | Should -BeFalse
+    }
+    It 'refuses to resume a runner copy through a link, writing nothing through it' -Tag 'copy-link' {
+        $w = New-Guest
+        $victim = Join-Path $w.Root 'victim'
+        [void][IO.Directory]::CreateDirectory($victim)
+        $part = Join-Path $w.Ctx.Scratch 'actions-runner.partial'
+        [void][IO.Directory]::CreateDirectory($part)
+        $null = cmd /c mklink /J "$(Join-Path $part 'bin')" "$victim"
+        $p = Send-Guest $w 'probe'
+        $p.Kind | Should -Be 'error'
+        $p.Reply.guest_state | Should -Be 'failed'
+        $p.Reply.diag | Should -Match 'bin is a link'
+        @(Get-ChildItem -LiteralPath $victim -Force) | Should -HaveCount 0
+        Test-Path -LiteralPath (Join-Path $part 'bin') | Should -BeTrue
+        (Send-Guest $w 'probe').Reply.guest_state | Should -Be 'failed'
+    }
+    It 'refuses to resume a runner copy holding a file that is not the image''s' -Tag 'copy-match' {
+        $w = New-Guest
+        $part = Join-Path $w.Ctx.Scratch 'actions-runner.partial'
+        [void][IO.Directory]::CreateDirectory($part)
+        [IO.File]::WriteAllText((Join-Path $part 'config.cmd'), 'substituted')
+        $p = Send-Guest $w 'probe'
+        $p.Kind | Should -Be 'error'
+        $p.Reply.diag | Should -Match 'config.cmd is not the image'
+        Test-Path -LiteralPath (Get-Root $w) | Should -BeFalse
+        [IO.File]::ReadAllText((Join-Path $part 'config.cmd')) | Should -BeExactly 'substituted'
+    }
+    It 'refuses a runner root it did not make, removing nothing' -Tag 'root-left' {
+        $w = New-Guest
+        $victim = Join-Path $w.Root 'victim'
+        [void][IO.Directory]::CreateDirectory($victim)
+        [IO.File]::WriteAllText((Join-Path $victim 'keep.txt'), 'keep')
+        $null = cmd /c mklink /J "$(Get-Root $w)" "$victim"
+        $p = Send-Guest $w 'probe'
+        $p.Kind | Should -Be 'error'
+        $p.Reply.diag | Should -Match 'runner root exists without its listener'
+        @(Get-ChildItem -LiteralPath $victim -Force).Name | Should -Be 'keep.txt'
     }
     It 'answers booting while an earlier probe still runs the bootstrap' -Tag 'bootstrap-lock' {
         $w = New-Guest
@@ -807,5 +858,23 @@ Describe 'agent.ps1 as the remote script starts it' {
         $v.Kind | Should -Be 'refused'
         ($r.Out -split "`n" | Where-Object { $_ }).Count | Should -Be 1
         if (-not $existed) { Test-Path -LiteralPath $state | Should -BeFalse }
+    }
+}
+
+Describe 'mutation accounting (Invoke-AapGuestMutations.ps1)' {
+    It 'counts a test as a kill only when every error is exactly a failed Should' -Tag 'kill-exact' {
+        $runner = Join-Path $PSScriptRoot 'Invoke-AapGuestMutations.ps1'
+        $fn = [Management.Automation.Language.Parser]::ParseFile($runner, [ref]$null, [ref]$null).Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-AapKill' }, $true).Extent.Text
+        $judge = {
+            param([string]$Text)
+            . ([scriptblock]::Create($Text))
+            $cases = 'PesterAssertionFailed', 'PesterAssertionFailed|PesterAssertionFailed', 'PesterAssertionFailedX', 'PesterAssertionFailed,Foo', 'RuntimeException', 'PesterAssertionFailed|RuntimeException', ''
+            @($cases | ForEach-Object { Test-AapKill @($_ -split '\|' | Where-Object { $_ }) }) -join ','
+        }
+        & $judge $fn | Should -BeExactly 'True,True,False,False,False,False,False'
+        # The prefix match this replaced counted an id that only starts like an assertion as a kill.
+        $prefix = $fn.Replace("-cne 'PesterAssertionFailed'", "-notlike 'PesterAssertionFailed*'")
+        $prefix | Should -Not -BeExactly $fn
+        & $judge $prefix | Should -Not -BeExactly 'True,True,False,False,False,False,False'
     }
 }

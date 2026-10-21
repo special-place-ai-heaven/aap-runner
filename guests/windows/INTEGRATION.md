@@ -3,6 +3,27 @@
 P14 owns only `guests/windows/**` and `tests/guests/windows/**`. Nothing below is wired into the image, the backend, the
 broker or CI yet. How the agent works: [README.md](README.md).
 
+## Required before first real use: host-seeded identity record
+
+The guest has no identity the host gave it, and three things rest on that. The chair fixes it with a coordinated
+contract revision, not in P14: a per-clone identity record that P10 writes offline into the clone's answer file, which
+the agent reads once at the first `probe` (before the bootstrap deletes the answer files) and then binds. Its fields:
+
+- `vm_id`
+- `reservation_id`
+- `lease_generation`
+- the expected scratch disk: its size and an identity the guest can see (which identity is a lab item)
+
+Until that lands, and unchanged in this item's code:
+
+1. The agent refuses every command, because it has no `vm_id`: it reads the KVP item P10 switches off and answers
+   `refused` (`own vm id unavailable from the hypervisor`), so no clone becomes `ready` (contract defect 1).
+2. Disk selection is a heuristic: `D:` as found, else the one disk besides the boot and system disk with at most one
+   data partition (README, Bootstrap 4). Nothing ties it to the disk P10 attached, and its size is not checked.
+3. The `reservation_id` and `lease_generation` binding is first writer: the agent binds the first ones it accepts into
+   its state file, and whoever can delete that file (the job after `start_runner`, anyone holding the transport
+   credential) can make the next command bind anew.
+
 ## Contract defects
 
 1. **The VM id "from the hypervisor" is switched off (guest-transport.md, Envelope; P10).** The agent reads the Data
@@ -15,6 +36,7 @@ broker or CI yet. How the agent works: [README.md](README.md).
    (`Win32_ComputerSystemProduct.UUID`, the VM's `BIOSGUID`, which the host reads from `Msvm_VirtualSystemSettingData`;
    the lab confirms the byte order), with the envelope carrying that id. PowerShell Direct's `-VMId` addressing already
    rules out a command reaching another VM, so the check is a guard against host bugs. Until then the agent fails closed.
+   The chair's direction: the host-seeded identity record above.
 2. **`work_folder` is `_work` (broker.md).** Hosted Windows jobs work in `D:\a\<repo>\<repo>` (`RUNNER_TEMP` `D:\a\_temp`);
    with `_work` relative to the runner root `D:\actions-runner` they work in `D:\actions-runner\_work\...`. Same disk,
    different path. For path parity the broker's profile table would send `work_folder` `D:\a` for the Windows profile
@@ -57,8 +79,7 @@ broker or CI yet. How the agent works: [README.md](README.md).
 - The scratch disk P10 formats offline (`AapWinBackend.HyperV.psm1`, `NewDisk`: GPT, one NTFS partition, no drive letter)
   is the live path: Windows mounts it as `D:` and the agent uses it as found. That is safe only because the disk is new
   for every reservation; never attach a disk a job ran on. Keep `D:` free (no DVD drive). The agent cannot check the
-  disk's size against the reservation's `scratch_gib` because no seed carries it; if wanted, the seed (defect 1, b)
-  could carry the expected size (lab/P21 item).
+  disk's size against the reservation's `scratch_gib` because no seed carries it yet (the identity record above).
 
 ## P02.1: what the lab must show for this agent
 
@@ -81,6 +102,6 @@ broker or CI yet. How the agent works: [README.md](README.md).
 ## Coordinator (CI)
 
 Add `tests/guests/windows` to the Pester `Run.Path` of the Windows job in `.github/workflows/ci.yml` (both editions; the
-suite imports `supervisor\backends\windows\AapWinBackend.psm1` for the host's reply check and creates one junction with
+suite imports `supervisor\backends\windows\AapWinBackend.psm1` for the host's reply check and creates junctions with
 `mklink /J`, no elevation). `Invoke-AapGuestMutations.ps1` takes about 2 minutes per edition and fails on a surviving
 mutant or on a tagged test that dies of anything but an assertion.

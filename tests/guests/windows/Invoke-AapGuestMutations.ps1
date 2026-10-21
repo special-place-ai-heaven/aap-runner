@@ -11,6 +11,9 @@ $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $tests = Join-Path $PSScriptRoot 'GuestAgent.Tests.ps1'
 
+# A kill is a failed Should and nothing else: every error id of the test is exactly PesterAssertionFailed.
+function Test-AapKill([string[]]$Ids) { @($Ids).Count -gt 0 -and @($Ids | Where-Object { $_ -cne 'PesterAssertionFailed' }).Count -eq 0 }
+
 if ($One) {
     # Child: run the tests tagged $One against the mutated copy and print one line.
     $env:AAP_GUEST_SRC = $Src
@@ -24,8 +27,7 @@ if ($One) {
     # A kill is a failed Should; any other failure (an exception, a failed BeforeAll) is a harness error, never a kill.
     $assert = 0; $errors = $r.FailedContainersCount + $r.FailedBlocksCount
     foreach ($t in $r.Failed) {
-        $ids = @($t.ErrorRecord | ForEach-Object { [string]$_.FullyQualifiedErrorId })
-        if ($ids.Count -and @($ids | Where-Object { $_ -notlike 'PesterAssertionFailed*' }).Count -eq 0) { $assert++ } else { $errors++ }
+        if (Test-AapKill @($t.ErrorRecord | ForEach-Object { [string]$_.FullyQualifiedErrorId })) { $assert++ } else { $errors++ }
     }
     "MUTANT $One tests=$($r.TotalCount - $r.NotRunCount - $r.SkippedCount) asserted=$assert errors=$errors"
     exit 0

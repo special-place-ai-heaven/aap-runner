@@ -353,16 +353,29 @@ function Initialize-AapGuestScratch($Ctx) {
 }
 
 # Copies the overlay file by file; a file appears under its own name only once complete, so a copy cut short by a
-# killed probe resumes with the next file instead of starting over.
+# killed probe resumes with the next file instead of starting over. What an earlier probe left is used only if no
+# destination folder, file or .part is a link (a junction or symlink would carry the copy elsewhere) and every finished
+# file has its source's SHA-256. Returns $null, or why it refused (having removed nothing).
 function Copy-AapGuestTree([string]$From, [string]$To) {
+    $files = @([IO.Directory]::GetFiles($From))
+    foreach ($p in @($To) + @($files | ForEach-Object { $t = Join-Path $To (Split-Path -Leaf $_); $t; $t + '.part' })) {
+        if (([IO.File]::Exists($p) -or [IO.Directory]::Exists($p)) -and (Test-AapGuestLink $p)) { return "runner copy refused: $(Split-Path -Leaf $p) is a link" }   # check:copy-link
+    }
     [void][IO.Directory]::CreateDirectory($To)
-    foreach ($d in [IO.Directory]::GetDirectories($From)) { Copy-AapGuestTree $d (Join-Path $To (Split-Path -Leaf $d)) }
-    foreach ($f in [IO.Directory]::GetFiles($From)) {
+    foreach ($d in [IO.Directory]::GetDirectories($From)) {
+        $r = Copy-AapGuestTree $d (Join-Path $To (Split-Path -Leaf $d))
+        if ($r) { return $r }
+    }
+    foreach ($f in $files) {
         $t = Join-Path $To (Split-Path -Leaf $f)
-        if ([IO.File]::Exists($t)) { continue }
+        if ([IO.File]::Exists($t)) {
+            if ((Get-FileHash -LiteralPath $t -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash) { return "runner copy refused: $(Split-Path -Leaf $t) is not the image's" }   # check:copy-match
+            continue
+        }
         [IO.File]::Copy($f, $t + '.part', $true)
         [IO.File]::Move($t + '.part', $t)
     }
+    $null
 }
 
 # Returns @{ State = booting|ready|failed; Detail }. Runs outside the state lock, under its own (bootstrap.lock): a probe
@@ -387,8 +400,9 @@ function Invoke-AapGuestBootstrap($Ctx) {
             if (-not [IO.File]::Exists((Join-Path $src 'bin\Runner.Listener.exe'))) { return @{ State = 'failed'; Detail = 'actions-runner overlay missing' } }   # check:runner-overlay
             $part = $root + '.partial'
             if (-not [IO.Directory]::Exists($part)) { [void][IO.Directory]::CreateDirectory($part); Set-AapGuestAcl $part -WithSelf }
-            Copy-AapGuestTree $src $part
-            if ([IO.Directory]::Exists($root)) { [IO.Directory]::Delete($root, $true) }
+            $r = Copy-AapGuestTree $src $part
+            if ($r) { return @{ State = 'failed'; Detail = $r } }
+            if ([IO.Directory]::Exists($root) -or [IO.File]::Exists($root)) { return @{ State = 'failed'; Detail = 'runner root exists without its listener' } }   # check:root-left
             [IO.Directory]::Move($part, $root)
         }
         # The cache job root: SYSTEM, Administrators and the job user only (guests/cache/INTEGRATION.md, P14 2).
@@ -477,10 +491,11 @@ function Start-AapGuestRunner {
 }
 
 function Wait-AapGuestRunner {
-    <# launch.ps1, second half: waits for Runner.Listener (one job) and records its exit code. #>
+    <# launch.ps1, second half: waits for Runner.Listener (one job) and records that it exited. Its exit code is not
+       recorded: launch.json is job-writable, so no reply could tell a recorded code from a forged one. #>
     param($Ctx, $Started)
-    $code = & $Ctx.Ops.WaitRunner $Started
-    Write-AapGuestRecord (Get-AapGuestLaunchPath $Ctx) ([ordered]@{ phase = 'exited'; launcher_pid = $PID; runner_pid = [int]$Started.Pid; runner_start = [long]$Started.StartTicks; exit_code = [int]$code })
+    [void](& $Ctx.Ops.WaitRunner $Started)
+    Write-AapGuestRecord (Get-AapGuestLaunchPath $Ctx) ([ordered]@{ phase = 'exited'; launcher_pid = $PID; runner_pid = [int]$Started.Pid; runner_start = [long]$Started.StartTicks })
 }
 
 # Whether the runner a launch record names (pid, start time, path) is running now.
@@ -504,11 +519,10 @@ function Get-AapGuestRunnerState($Ctx) {
             return (& $live)
         }
         'exited' {
-            # An exit record for a runner that still runs is not believed.
+            # An exit record for a runner that still runs is not believed; one for a runner that does not is a hint
+            # (anyone can name a pid that is gone), so it never carries an exit code.
             if (Test-AapGuestRunnerAlive $Ctx $l) { return (& $live) }   # check:exited-alive
-            $code = Get-AapGuestProp $l 'exit_code'
-            if (-not ($code -is [int] -or $code -is [long]) -or $code -lt [int]::MinValue -or $code -gt [int]::MaxValue) { $code = $null }
-            return @{ Phase = $phase; State = 'job_done'; Exit = $code; Detail = 'runner exited' }
+            return @{ Phase = $phase; State = 'job_done'; Exit = $null; Detail = 'runner exited; exit code unverified' }
         }
         'failed' { return @{ Phase = $phase; State = 'failed'; Exit = $null; Detail = 'launcher failed: ' + [string](Get-AapGuestProp $l 'detail') } }
     }

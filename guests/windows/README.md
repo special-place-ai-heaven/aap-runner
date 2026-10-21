@@ -71,7 +71,10 @@ It runs with the state file released, under its own lock (`bootstrap.lock`), so 
    is not checked (no seed carries it; INTEGRATION.md).
 5. The actions-runner overlay (`C:\Program Files\aap-guest\runner`) is copied to `D:\actions-runner` through
    `D:\actions-runner.partial`, file by file, each file landing under its own name only once complete, so a copy a killed
-   probe cut short resumes; its `_work` and `_diag` grow on the scratch disk, not on the clone disk the host caps.
+   probe cut short resumes; its `_work` and `_diag` grow on the scratch disk, not on the clone disk the host caps. What
+   an earlier probe left is used only if no folder, file or `.part` in it is a link (junction or symlink) and every
+   finished file has the image's SHA-256; otherwise `failed`, with nothing removed. A `D:\actions-runner` the agent did
+   not make (one without its listener) is refused the same way, never deleted.
 6. The cache job root `D:\aap-cache` is created. Both roots: SYSTEM, Administrators and the job user, inheritance off.
 
 ### The runner
@@ -93,7 +96,7 @@ Direct session, which ends after every command. `launch.ps1` then:
    (printable values; no other name), plus `ACTIONS_RUNNER_INPUT_JITCONFIG`. So job steps see the execution policy and
    module path a hosted job sees;
 5. records `running` (pid and start time) in `%ProgramData%\aap-guest\launch.json`, waits for the runner's one job and
-   records `exited` with its exit code.
+   records `exited`, without its exit code (Trust after the start).
 
 ### Trust after the start
 
@@ -101,8 +104,10 @@ The job user is an elevated administrator, as on hosted runners. Once `start_run
 agent's state, its module and entrypoint, `launch.json` and the task, so every later reply (`status`, `collect`,
 `shutdown`) is job-authored however well its envelope echoes. The agent still bounds and filters what it reads (64 KiB
 records, fixed phases, the runner matched by pid, start time and path, no unfiltered text), but its post-start replies
-are hints. The host's authority on the job is the broker's status of the runner; it never bases VM reuse, cache
-promotion (`collect`) or VM lifetime on a guest reply (there is no reuse: destroy is the only way a VM leaves).
+are hints. An `exited` record whose runner is gone gives `job_done` with `runner_exit_code` null: a job can write that
+record naming any pid that is gone, so no exit code from it would be verified, and none is reported. The host's
+authority on the job is the broker's status of the runner; it never bases VM reuse, cache promotion (`collect`) or VM
+lifetime on a guest reply (there is no reuse: destroy is the only way a VM leaves).
 
 ### Secrets
 
