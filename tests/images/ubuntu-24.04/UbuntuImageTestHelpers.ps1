@@ -59,7 +59,7 @@ function Get-FakeScanReport {
         large_files = @([ordered]@{ path = 'usr/lib/big.so'; bytes = 40000000; sha256 = (Get-TextSha 'big') })
         rules = @('runner-credentials', 'runner-config', 'ssh-host-key', 'ssh-authorized-keys', 'shell-history', 'app-key', 'cloud-init-seed', 'installer-answers',
             'azure-provisioning-data', 'shadow-password-hash', 'pem-private-key', 'github-token', 'github-pat', 'jit-config', 'synthetic-marker', 'build-credential',
-            'build-agent', 'build-sudoers') }
+            'build-agent', 'build-sudoers', 'unreadable-stream') }
 }
 # What certify.py compare writes when the image matches the hosted reference except for the exact Azure kernel build, for a
 # verification guest: it has no runner, so the runner fields are missing (recorded, not gated: the image does not own them).

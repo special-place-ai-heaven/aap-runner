@@ -323,8 +323,11 @@ python3 -B -I -c 'import gzip, sys; d = gzip.compress(b"clean filler line\n" * 5
 head -c 536870912 /dev/zero | gzip -1 > "${u}/var/log/bomb.log.gz"
 for sigpipe in default ignored; do
   RC=0; ( if [ "${sigpipe}" = ignored ]; then trap '' PIPE; fi; ulimit -v 131072; exec bash "${guest}/aap-scan.sh" --known-file "${tmp}/known" --out "${tmp}/out" --target "${u}" ) > "${tmp}/scan.log" 2>&1 || RC=$?
-  [ "${RC}" = 0 ] && [ "$(reply 'r["findings_count"], r["unreadable_count"], sorted(x.split(":")[0] for x in r["unreadable"])')" = "(0, 2, ['var/log/bomb.log.gz', 'var/log/trunc.log.gz'])" ] ||
+  [ "${RC}" = 0 ] && [ "$(reply 'r["unreadable_count"], sorted((f["rule"], f["path"]) for f in r["findings"])')" = \
+    "(0, [('unreadable-stream', 'var/log/bomb.log.gz'), ('unreadable-stream', 'var/log/trunc.log.gz')])" ] ||
     fail "a .gz not read to its end passed (SIGPIPE ${sigpipe}): $(out) $(cat "${tmp}/scan.log")"
+  # with the file's hash, for an exact allowlist entry
+  [ "$(reply '[f["sha256"] for f in r["findings"] if f["path"].endswith("trunc.log.gz")][0]')" = "$(sha "${u}/var/log/trunc.log.gz")" ] || fail "an unreadable stream lacks its hash: $(out)"
 done
 printf 'nothex\n' > "${tmp}/badknown"
 RC=0; bash "${guest}/aap-scan.sh" --known-file "${tmp}/badknown" --out "${tmp}/scan2.json" --target "${t}" > /dev/null 2>&1 || RC=$?

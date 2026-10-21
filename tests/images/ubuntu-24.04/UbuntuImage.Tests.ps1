@@ -1030,6 +1030,7 @@ Describe 'secret scan of the sealed disk' {
     }
     It 'turns incomplete when <Case>' -Tag 'scan-incomplete' -TestCases @(
         @{ Case = 'a path was unreadable'; Edit = { param($s) $s.unreadable_count = 1; $s.unreadable = @('find: x: Input/output error') } },
+        @{ Case = 'a .gz was not read to its end'; Edit = { param($s) $s.findings = @([ordered]@{ rule = 'unreadable-stream'; path = 'var/log/x.gz'; sha256 = ('a' * 64) }); $s.findings_count = 1 } },
         @{ Case = 'the scanner cut its finding list'; Edit = { param($s) $s.findings_count = 3 } },
         @{ Case = 'there are more large files than listed'; Edit = { param($s) $s.large_files_count = 20000 } }) {
         & $Edit $w.ScanReport
@@ -1098,6 +1099,20 @@ Describe 'secret scan allowlist' {
     It 'refuses an allowlist that lists a path twice' -Tag 'allowlist-duplicate' {
         Set-Allow @([ordered]@{ path = 'etc/x'; sha256 = ('a' * 64); justification = 'the first, reviewed entry' }, [ordered]@{ path = 'etc/x'; sha256 = ('b' * 64); justification = 'a second entry for other bytes' })
         { Read-AapUbuntuAllowlist -Path $script:Al } | Should -Throw 'AAP_AllowlistInvalid*listed twice*'
+    }
+    It 'counts a .gz the scanner could not read to its end as incomplete, not found, unless an exact entry covers it' -Tag 'allowlist-stream' {
+        $sha = Get-TextSha 'damaged fixture'
+        $f = [ordered]@{ rule = 'unreadable-stream'; path = 'opt/hostedtoolcache/x/test/corrupt.gz'; sha256 = $sha }
+        Set-Allow @()
+        $r = Get-AapUbuntuScanResult -Report (Get-Report @($f)) -AllowlistPath $script:Al
+        $r.result | Should -Be 'incomplete'
+        $r.unreadable_count | Should -Be 1
+        @($r.unreadable) | Should -Contain 'unreadable-stream opt/hostedtoolcache/x/test/corrupt.gz'
+        @($r.findings).Count | Should -Be 0
+        Set-Allow @([ordered]@{ path = $f.path; sha256 = $sha; justification = 'reviewed in the D2 lab: an upstream test fixture shipped damaged' })
+        (Get-AapUbuntuScanResult -Report (Get-Report @($f)) -AllowlistPath $script:Al).result | Should -Be 'clean'
+        Set-Allow @([ordered]@{ path = $f.path; sha256 = (Get-TextSha 'other bytes'); justification = 'reviewed for other bytes than the image has' })
+        (Get-AapUbuntuScanResult -Report (Get-Report @($f)) -AllowlistPath $script:Al).result | Should -Be 'found'   # the stale entry is itself a finding
     }
     It 'fails on an allowlist entry that matches nothing' -Tag 'allowlist-stale' {
         Set-Allow @([ordered]@{ path = 'etc/gone'; sha256 = (Get-TextSha 'g'); justification = 'a file the image no longer has' })

@@ -280,9 +280,11 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
 - **Unreadable**: any path the scanner could not read is listed and makes the result `incomplete` (`AAP_ScanIncomplete`).
   As root on a read-only mount there should be none. A `.gz` counts as read only when `grep` read its whole decompressed
   stream and `zcat` ended cleanly: a truncated or corrupt stream, or a `grep` that fails (a single line too long for its
-  memory: a gzip bomb), is unreadable, never clean. A match stands whatever `zcat` reports after `grep` stopped reading: a
-  broken pipe, which under systemd's default `IgnoreSIGPIPE=yes` (the agent's unit keeps it) is an error message, not a
-  signal.
+  memory: a gzip bomb), is never clean: it is reported as an `unreadable-stream` finding with the file's SHA-256, and
+  makes the result `incomplete` unless an allowlist entry covers exactly that path and those bytes (the route for a file
+  the image legitimately ships damaged, a test fixture for example, after review). A match stands whatever `zcat` reports
+  after `grep` stopped reading: a broken pipe, which under systemd's default `IgnoreSIGPIPE=yes` (the agent's unit keeps
+  it) is an error message, not a signal.
 - **What the scan does not read**: only `.gz` is decompressed. `.xz`, `.zst`, `.bz2`, `zip`, `jar`, `whl`, squashfs images
   (snaps) and journald's zstd-compressed fields are scanned as stored bytes, so a secret inside them is not found; the
   freed blocks of either file system are not read at all.
@@ -293,8 +295,8 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
   scan looks for. The scan detects leaks; it is not an integrity or backdoor control: a hostile installer that wants to
   leave something behind is not stopped by it.
 - **Allowlist**: `secret-allowlist.json` (`schema` 1, `entries` of exactly `path` (relative, `/`-separated, no wildcard),
-  `sha256` and `justification`), each path at most once. An entry suppresses a finding only for that exact path with those
-  exact bytes, never a `build-credential` or `build-agent` finding; an entry that matches no finding exactly is itself a
+  `sha256` and `justification`), each path at most once. An entry suppresses a finding (an `unreadable-stream`
+  included) only for that exact path with those exact bytes, never a `build-credential` or `build-agent` finding; an entry that matches no finding exactly is itself a
   finding (`allowlist-mismatch`). It is empty. Per-machine material is deleted at seal rather than allowlisted (the snakeoil
   TLS key, the random seed; each clone makes its own, P15). Expect the first real build to name other files the upstream
   image legitimately carries; each needs a reviewed decision, not a rule change.

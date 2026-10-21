@@ -49,7 +49,7 @@ $script:Actions = @('make-image-folder', 'upload-helpers', 'upload-build-scripts
 $script:SealRules = @('install-user-absent', 'no-password-hash', 'no-authorized-keys', 'no-ssh-host-keys', 'no-agent', 'no-cloud-state', 'no-build-sudoers', 'no-build-network')
 $script:ScanRules = @('runner-credentials', 'runner-config', 'ssh-host-key', 'ssh-authorized-keys', 'shell-history', 'app-key', 'cloud-init-seed',
     'installer-answers', 'azure-provisioning-data', 'shadow-password-hash', 'pem-private-key', 'github-token', 'github-pat', 'jit-config',
-    'synthetic-marker', 'build-credential', 'build-agent', 'build-sudoers')
+    'synthetic-marker', 'build-credential', 'build-agent', 'build-sudoers', 'unreadable-stream')
 # Findings no allowlist entry can cover: the build's own credential and agent.
 $script:NeverAllowed = @('build-credential', 'build-agent')
 $script:Discovery = @('gcc', 'gxx', 'clang', 'cmake', 'ninja', 'make', 'pkg_config', 'hello_gcc', 'hello_clang', 'pwsh', 'python3', 'docker_daemon',
@@ -535,27 +535,32 @@ function ConvertFrom-AapScanReport {
 function Get-AapUbuntuScanResult {
     <# Applies the allowlist to a validated scan report. 'found': a finding the allowlist does not cover (a build-credential
        finding is never covered), or an allowlist entry that matches no finding with exactly its path and bytes.
-       'incomplete': an unreadable path, a finding list the scanner had to cut, or more large files than it lists. #>
+       'incomplete': an unreadable path, a finding list the scanner had to cut, or more large files than it lists, or an
+       unreadable-stream (a .gz the scanner could not decompress to its end) that no entry covers with exactly its path and
+       bytes: a reviewed entry is how a file the image legitimately ships damaged, such as a test fixture, passes. #>
     param([Parameter(Mandatory)]$Report, [Parameter(Mandatory)][string]$AllowlistPath, $Seal = $null)
     $allow = @(Read-AapUbuntuAllowlist -Path $AllowlistPath)
     $findings = New-Object System.Collections.Generic.List[object]
     $allowed = New-Object System.Collections.Generic.List[object]
+    $streams = New-Object System.Collections.Generic.List[string]
     $used = @{}
     foreach ($f in @($Report.findings)) {
         $hit = $null
         foreach ($a in $allow) { if ($a.path -ceq [string]$f.path) { $hit = $a } }
         if ($script:NeverAllowed -ccontains [string]$f.rule -or $null -eq $hit -or [string]$f.sha256 -cne $hit.sha256) {   # check:allowlist-exact
-            $findings.Add([pscustomobject]@{ rule = [string]$f.rule; path = [string]$f.path })
+            # An uncovered stream the scanner could not read is not a secret found, but the scan is not complete without it.
+            if ([string]$f.rule -ceq 'unreadable-stream') { $streams.Add("unreadable-stream $([string]$f.path)") }   # check:allowlist-stream
+            else { $findings.Add([pscustomobject]@{ rule = [string]$f.rule; path = [string]$f.path }) }
         } else {
             $allowed.Add([pscustomobject]@{ rule = [string]$f.rule; path = $hit.path; sha256 = $hit.sha256 }); $used[$hit.path] = $true
         }
     }
     foreach ($a in $allow) { if (-not $used.ContainsKey($a.path)) { $findings.Add([pscustomobject]@{ rule = 'allowlist-mismatch'; path = $a.path }) } }   # check:allowlist-stale
     $result = 'clean'
-    if ($Report.unreadable_count -gt 0 -or $Report.findings_count -gt @($Report.findings).Count -or $Report.large_files_count -gt @($Report.large_files).Count) { $result = 'incomplete' }   # check:scan-incomplete
+    if ($Report.unreadable_count -gt 0 -or $streams.Count -or $Report.findings_count -gt @($Report.findings).Count -or $Report.large_files_count -gt @($Report.large_files).Count) { $result = 'incomplete' }   # check:scan-incomplete
     if ($findings.Count) { $result = 'found' }
     return [pscustomobject]@{ schema = 1; result = $result; scanned_by = 'scanner guest from the pinned installation media, no network'; files_scanned = $Report.files_scanned
-        unreadable_count = $Report.unreadable_count; unreadable = @($Report.unreadable); large_files_count = $Report.large_files_count; large_files = @($Report.large_files)
+        unreadable_count = $Report.unreadable_count + $streams.Count; unreadable = @(@($Report.unreadable) + $streams.ToArray() | Select-Object -First $script:ListMax); large_files_count = $Report.large_files_count; large_files = @($Report.large_files)
         allowlisted = $allowed.ToArray(); findings = @($findings | Select-Object -First $script:ListMax); seal = $Seal
         rules = @($script:ScanRules) + @('allowlist-mismatch') + $script:SealRules }
 }
