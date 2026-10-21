@@ -19,7 +19,8 @@
 # Hyper-V, disk, volume and hash calls go through $Backend.Provider (AapWinBackend.HyperV.psm1 in production, fakes in
 # tests), the guest network through $Backend.Network (the P10.0 interface: Attach, Detach, Verify), the guest channel
 # through $Backend.Transport (the capped psdirect-call.ps1 child by default) and the clock through $Backend.Now.
-# Allocator and broker calls go to AapCapacity.psm1 and aap-broker.psm1 beside this folder.
+# Allocator and broker calls go to AapCapacity.psm1 and aap-broker.psm1 beside this folder; the declaration check and the
+# adapter read-back to the shared network check, network\AapHostNetworkCheck.psm1 (host-network-module.md).
 # Lines tagged '# check:<name>' are the safety checks tests/backends/windows/Invoke-AapWinMutations.ps1 disables one at a
 # time; each must make at least one test fail.
 # One backend context ($B) belongs to one runspace: its hashtables, its scriptblocks and the process-wide console input
@@ -31,10 +32,10 @@ $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot '..\..\capacity\AapCapacity.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\..\broker\aap-broker.psm1')
+Import-Module (Join-Path $PSScriptRoot '..\..\network\AapHostNetworkCheck.psm1')
 
 $script:ImageProfile = 'win25-vs2026-x64'
 $script:User = 'runneradmin'            # the job user P06 verified with; created per clone by the answer file
-$script:SwitchName = 'aap-guests-win'   # P10.0's internal switch; never External, never Default Switch
 $script:ChildExe = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
 $script:ChildScript = Join-Path $PSScriptRoot 'psdirect-call.ps1'
 $script:ChildMemoryBytes = 536870912    # job object cap on the call child, all its processes together
@@ -74,6 +75,7 @@ $script:VmGroupSid = 'S-1-5-83-0'      # NT VIRTUAL MACHINE\Virtual Machines: ma
 $script:LeaseAnswers = @('lease issued by the broker', 'lease answer unreadable')
 $script:DrainOnline = 'runner online and idle; released at destroy'
 $script:StatusSeconds = 30             # guest and broker status at most this often per reservation (allocator: 30 s heartbeat)
+$script:NetSeconds = 60                # a running guest's network is verified again at least this often (host-network-module.md)
 $script:DrainKeepHours = 6              # a drained VM kept for its pending release is flagged after this (allocator's wall clock)
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 $script:NetworkOps = @('Attach', 'Detach', 'Verify')
@@ -276,9 +278,23 @@ function Write-AapWinUnattend {
        .NET calls only, never bound to a command (event 4103). $Root itself is the provider's volume mount point (a
        reparse point by design, inside the admin-only reservation folder); every folder below it must be plain, a missing
        one is created, and the file created new, with a protected SYSTEM/Administrators DACL, so nothing on the disk
-       redirects the write and no other account reads it. The guest agent deletes the file at first boot (guest-transport.md). #>
-    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$UserName, [Parameter(Mandatory)]$Password)
+       redirects the write and no other account reads it. The guest agent deletes the file at first boot (guest-transport.md).
+       -Network is the network module's declaration (host-network-module.md, Consumer obligations 1): the guest's only
+       addressing, static, DHCP off, written into the specialize pass (Microsoft-Windows-TCPIP, -DNS-Client) on the
+       interface named Ethernet (D2: the name Windows gives a generation 2 VM's one adapter). Its fields are checked here
+       again as IPv4 text, so nothing but addresses reaches the XML. #>
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$UserName, [Parameter(Mandatory)]$Password, [Parameter(Mandatory)]$Network)
     if ($UserName -cnotmatch '^[A-Za-z][A-Za-z0-9_-]{0,19}$') { throw 'AAP_UnattendInvalid: user name' }
+    $ip = '^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}\z'
+    $address = [string](Get-AapWinField $Network 'address'); $gateway = [string](Get-AapWinField $Network 'gateway')
+    $subnet = [string](Get-AapWinField $Network 'subnet')
+    $dns = @(Get-AapWinField $Network 'resolvers' | ForEach-Object { $_ })
+    $len = 0
+    if ($subnet -cmatch '^([0-9.]+)/([0-9]{2})\z') { $net = $Matches[1]; $len = [int]$Matches[2]; if ($net -cnotmatch $ip) { $len = 0 } }
+    if ($address -cnotmatch $ip -or $gateway -cnotmatch $ip -or $len -lt 16 -or $len -gt 30 -or $dns.Count -lt 1 -or $dns.Count -gt 2 -or @($dns | Where-Object { [string]$_ -cnotmatch $ip }).Count) {   # check:unattend-network
+        throw 'AAP_UnattendInvalid: the network declaration'
+    }
+    $dnsXml = (@(for ($i = 0; $i -lt $dns.Count; $i++) { "            <IpAddress wcm:action=`"add`" wcm:keyValue=`"$($i + 1)`">$($dns[$i])</IpAddress>" }) -join "`n")
     $dir = $Root
     foreach ($seg in @('', 'Windows', 'Panther')) {
         if ($seg) { $dir = Join-Path $dir $seg }
@@ -307,6 +323,36 @@ function Write-AapWinUnattend {
     <component name="Microsoft-Windows-Shell-Setup" $c>
       <ComputerName>*</ComputerName>
       <TimeZone>UTC</TimeZone>
+    </component>
+    <component name="Microsoft-Windows-TCPIP" $c>
+      <Interfaces>
+        <Interface wcm:action="add">
+          <Identifier>Ethernet</Identifier>
+          <Ipv4Settings>
+            <DhcpEnabled>false</DhcpEnabled>
+          </Ipv4Settings>
+          <UnicastIpAddresses>
+            <IpAddress wcm:action="add" wcm:keyValue="1">$address/$len</IpAddress>
+          </UnicastIpAddresses>
+          <Routes>
+            <Route wcm:action="add">
+              <Identifier>0</Identifier>
+              <Prefix>0.0.0.0/0</Prefix>
+              <NextHopAddress>$gateway</NextHopAddress>
+            </Route>
+          </Routes>
+        </Interface>
+      </Interfaces>
+    </component>
+    <component name="Microsoft-Windows-DNS-Client" $c>
+      <Interfaces>
+        <Interface wcm:action="add">
+          <Identifier>Ethernet</Identifier>
+          <DNSServerSearchOrder>
+$dnsXml
+          </DNSServerSearchOrder>
+        </Interface>
+      </Interfaces>
     </component>
   </settings>
   <settings pass="oobeSystem">
@@ -854,10 +900,8 @@ function Get-AapWinVms($B) {
 # The VM's settings against backend-lifecycle.md (create): checkpoints off, TurnOff/Nothing, Guest Service Interface and
 # Key-Value Pair Exchange off, the reserved CPU and memory, every file under the reservation's folders, exactly the disks
 # create made, no COM port, DVD drive, GPU partition or assigned device (a VM the journal names is inventoried the same
-# way before it is reused); with -Adapters
-# also the guest network: at least one adapter, each on the internal switch with DHCP guard and router guard on and MAC
-# spoofing off.
-function Assert-AapWinVmConfig($B, $r, [string]$VmId, [string]$Clone, [string]$Scratch, [string[]]$Expected, [switch]$Adapters) {
+# way before it is reused). The adapters are the shared check's (Assert-AapWinNetwork).
+function Assert-AapWinVmConfig($B, $r, [string]$VmId, [string]$Clone, [string]$Scratch, [string[]]$Expected) {
     $c = & $B.Provider.GetVmConfig @{ VmId = $VmId }
     $bad = New-Object Collections.Generic.List[string]
     $under = { param($p, $dir) $p = [string]$p; $p -and ($p.TrimEnd('\') -ieq $dir -or $p.StartsWith($dir + '\', [StringComparison]::OrdinalIgnoreCase)) }
@@ -880,16 +924,31 @@ function Assert-AapWinVmConfig($B, $r, [string]$VmId, [string]$Clone, [string]$S
         $v = Get-AapWinField $c $k
         if ($null -eq $v -or [int]$v -ne 0) { $bad.Add("$k attached or unknown") }   # check:vm-devices
     }
-    if ($Adapters) {
-        $nics = Get-AapWinField $c 'Adapters'
-        $nics = @($nics | Where-Object { $null -ne $_ })
-        if (-not $nics.Count) { $bad.Add('no network adapter after attach') }
-        foreach ($a in $nics) {
-            if ([string](Get-AapWinField $a 'SwitchName') -cne $script:SwitchName -or [string](Get-AapWinField $a 'SwitchType') -cne 'Internal') { $bad.Add("an adapter is not on the internal switch $($script:SwitchName)") }   # check:switch
-            if ((Get-AapWinField $a 'DhcpGuard') -ne $true -or (Get-AapWinField $a 'RouterGuard') -ne $true -or (Get-AapWinField $a 'MacAddressSpoofing') -ne $false) { $bad.Add('an adapter lacks DHCP guard, router guard or has MAC spoofing on') }   # check:switch
-        }
-    }
     if ($bad.Count) { throw "AAP_VmUntrusted: $($bad -join '; ')" }
+}
+
+# The guest network (host-network-module.md, Consumer obligations). Attach, with the VM Off, returns the declaration from
+# the module's own journal (the same one on every call for this VM); the backend keeps no copy of it between starts and
+# journals none. Any line of the shared declaration check is AAP_NetworkInvalid.
+function Get-AapWinDeclaration($B, [hashtable]$Net) {
+    try { $decl = & $B.Network.Attach $Net } catch { throw "AAP_NetworkUntrusted: attach failed: $(Get-AapWinError $_)" }
+    $p = @(Get-AapHostNetworkDeclarationProblems -Request $Net -Declaration $decl)
+    if ($p.Count) { throw "AAP_NetworkInvalid: $(@($p | Select-Object -First 3 | ForEach-Object { Get-AapWinLine ([string]$_) 100 }) -join '; ')" }   # check:net-declaration
+    $decl
+}
+# Verify's problem list, unfiltered: every object it writes is a problem (an empty or null one too), and a throw is one.
+function Get-AapWinNetProblems($B, [hashtable]$Net) {
+    try { $out = @(& $B.Network.Verify $Net) } catch { return "Verify could not look: $(Get-AapWinError $_)" }
+    foreach ($o in $out) { if ($null -eq $o -or [string]$o -ceq '') { '(an empty problem line)' } else { Get-AapWinLine ([string]$o) 100 } }
+}
+# Verify, then the read-back of the VM's adapters from Hyper-V through the provider (never through the module) against
+# the declaration; any line of either is AAP_NetworkUntrusted.
+function Assert-AapWinNetwork($B, [hashtable]$Net, $Decl) {
+    $p = @(Get-AapWinNetProblems $B $Net)
+    if ($p.Count) { throw "AAP_NetworkUntrusted: $(@($p | Select-Object -First 3) -join '; ')" }   # check:network-verify
+    $nics = Get-AapWinField (& $B.Provider.GetVmConfig @{ VmId = $Net.VmId }) 'Adapters'
+    $p = @(Get-AapHostNetworkAdapterProblems -Declaration $Decl -Adapters @($nics | Where-Object { $null -ne $_ }))
+    if ($p.Count) { throw "AAP_NetworkUntrusted: read-back: $(@($p | Select-Object -First 3 | ForEach-Object { Get-AapWinLine ([string]$_) 100 }) -join '; ')" }   # check:net-readback
 }
 
 # ---- lifecycle ops ------------------------------------------------------------------------------------------------------
@@ -958,11 +1017,6 @@ function Invoke-AapWinCreate($B, $r, [string]$BaseSha256, $j) {
     } elseif ($named.Count) {
         throw "AAP_VmNotJournaled: a VM named $name exists that this journal never recorded; it is destroyed, never adopted"   # a crash between New-VM and its record
     }
-    $pw = New-AapWinPassword
-    & $B.Provider.WriteUnattend @{ Vhdx = $os; User = $script:User; Password = $pw }
-    if ($B.Guests.ContainsKey($rid)) { $B.Guests[$rid].Password.Clear() }
-    $B.Guests[$rid] = @{ VmId = $null; Password = $pw; Seq = 0; Started = $false; Hostile = $null }
-    Invoke-AapWinFault 'create:after-unattend'
     $diskList = @(@($os, $scratchDisk) | Where-Object { $_ })
     if (-not $id) {
         $id = ([string](Get-AapWinField (& $B.Provider.NewVm @{ Name = $name; Path = $clone; Cpus = [int]$r.cpus; MemGib = [int]$r.mem_gib; OsDisk = $os; ScratchDisk = $scratchDisk }) 'Id')).ToLowerInvariant()
@@ -971,14 +1025,19 @@ function Invoke-AapWinCreate($B, $r, [string]$BaseSha256, $j) {
         # The VM's id, before anything else touches it: the only VM a re-run may reuse.
         Write-AapWinJournal $B $r 'create' 'intent' -VmId $id -Disks $disks
     }
-    $B.Guests[$rid].VmId = $id
     Invoke-AapWinFault 'create:after-vm'
     Assert-AapWinVmConfig $B $r $id $clone $scratch $diskList
+    # The guest network (Consumer obligations 1): Attach with the VM Off, the declaration checked, then the answer file
+    # written from it while the VM is still Off (the per-clone credential and the static address, gateway and resolvers),
+    # then Verify and the read-back. A re-run attaches again (the same declaration) and writes the file again.
     $net = @{ VmId = $id; VmName = $name; Profile = 'windows' }
-    & $B.Network.Attach $net
-    $problems = @(& $B.Network.Verify $net | Where-Object { $_ })
-    if ($problems.Count) { throw "AAP_NetworkUntrusted: $(@($problems | ForEach-Object { Get-AapWinLine ([string]$_) 100 }) -join '; ')" }   # check:network-verify
-    Assert-AapWinVmConfig $B $r $id $clone $scratch $diskList -Adapters
+    $decl = Get-AapWinDeclaration $B $net
+    $pw = New-AapWinPassword
+    & $B.Provider.WriteUnattend @{ Vhdx = $os; User = $script:User; Password = $pw; Network = $decl }
+    if ($B.Guests.ContainsKey($rid)) { $B.Guests[$rid].Password.Clear() }
+    $B.Guests[$rid] = @{ VmId = $id; Password = $pw; Seq = 0; Started = $false; Hostile = $null }
+    Invoke-AapWinFault 'create:after-unattend'
+    Assert-AapWinNetwork $B $net $decl
     Write-AapWinJournal $B $r 'create' 'done' -VmId $id -Disks $disks -Code 'ok' -Detail 'differencing disk, scratch disk and VM created; network verified'
     Invoke-AapWinFault 'create:after-done'
     $id
@@ -1116,7 +1175,7 @@ function Invoke-AapWinDestroy($B, $r, $j, [switch]$Force, [switch]$Urgent) {
     $a = Get-AapWinAllocArgs $B $r
     $c = Complete-AapTeardown @a -Proof $proof
     if ($c.Ok) {
-        foreach ($t in $B.Leases, $B.Tried, $B.StatusAt, $B.StatusBusy, $B.Breached) { [void]$t.Remove($rid) }
+        foreach ($t in $B.Leases, $B.Tried, $B.StatusAt, $B.StatusBusy, $B.Breached, $B.NetAt) { [void]$t.Remove($rid) }
         $next = Get-AapWinField $c 'Reservation'
         if ($null -ne $next) { $r = $next }
         return (New-AapWinResult $r 'destroyed')
@@ -1161,7 +1220,8 @@ function Invoke-AapWinHostile($B, $r, $j, [string]$Op, [string]$Code) {
 # The limits backend-lifecycle.md lets end a running VM, checked from the host on every step of a reservation that has a
 # VM, with or without a guest channel (a guest that silences its agent is measured all the same): a paused VM, and a
 # clone folder over clone_gib or one that cannot be measured (fail closed: a step that threw every tick would leave the
-# VM unwatched). Returns the reason, or $null.
+# VM unwatched), and a running guest's network, verified again at least every NetSeconds (host-network-module.md, Consumer
+# obligations 3: the host's addresses may have changed; a problem or a throw ends the VM). Returns the reason, or $null.
 function Get-AapWinLimitBreach($B, $r, $j) {
     if (-not $j.VmId) { return $null }
     $vm = @(Get-AapWinVms $B | Where-Object { $_.Id -ceq [string]$j.VmId })
@@ -1170,6 +1230,13 @@ function Get-AapWinLimitBreach($B, $r, $j) {
     $clone = Join-Path $B.Storage.clone_root.Path ([string]$r.reservation_id)
     try { $bytes = [double](& $B.Provider.MeasureBytes @{ Path = $clone }) } catch { return 'clone not measurable' }
     if ($bytes -gt [double]$r.clone_gib * $script:GiB) { return 'clone over cap' }   # check:clone-cap
+    $rid = [string]$r.reservation_id
+    $now = Get-AapWinNow $B
+    if ($vm[0].State -ceq 'Running' -and (-not $B.NetAt.ContainsKey($rid) -or ($now - $B.NetAt[$rid]).TotalSeconds -ge $B.NetSeconds)) {
+        $B.NetAt[$rid] = $now
+        $p = @(Get-AapWinNetProblems $B @{ VmId = [string]$j.VmId; VmName = (Get-AapWinVmName $r); Profile = 'windows' })
+        if ($p.Count) { return "network: $($p[0])" }   # check:net-running
+    }
     $null
 }
 
@@ -1192,14 +1259,28 @@ function Step-AapWinCreating($B, $r, $j, $g, [string]$BaseSha256) {
     if (-not $j.Has['boot/done']) {
         Write-AapWinJournal $B $r 'boot' 'intent' -VmId $j.VmId
         Invoke-AapWinFault 'boot:after-intent'
-        try { & $B.Provider.StartVm @{ VmId = $j.VmId } }   # running already counts as done
-        catch { return (Invoke-AapWinAbandon $B $r $j 'boot' 'fatal' (Get-AapWinError $_)) }
+        try {
+            # Before the power-on (Consumer obligations 2), with the VM Off: Attach again (the module's declaration, never a
+            # kept copy), the declaration check, Verify and the read-back. A VM already running (a crash after Start-VM) is
+            # verified, and running counts as done.
+            $net = @{ VmId = [string]$j.VmId; VmName = (Get-AapWinVmName $r); Profile = 'windows' }
+            $vm = @(Get-AapWinVms $B | Where-Object { $_.Id -ceq [string]$j.VmId })
+            if (-not $vm.Count -or $vm[0].State -cne 'Running') {   # check:net-restart
+                Assert-AapWinNetwork $B $net (Get-AapWinDeclaration $B $net)
+            } else {
+                $p = @(Get-AapWinNetProblems $B $net)
+                if ($p.Count) { throw "AAP_NetworkUntrusted: $(@($p | Select-Object -First 3) -join '; ')" }
+            }
+            & $B.Provider.StartVm @{ VmId = $j.VmId }
+        } catch { return (Invoke-AapWinAbandon $B $r $j 'boot' 'fatal' (Get-AapWinError $_)) }
         Write-AapWinJournal $B $r 'boot' 'done' -VmId $j.VmId -Code 'ok' -Detail 'VM started'
         Invoke-AapWinFault 'boot:after-done'
         return (New-AapWinResult $r 'booted')
     }
     if (-not $j.Has['ready/done']) {
         if (-not $j.Has['ready/intent']) { Write-AapWinJournal $B $r 'ready' 'intent' -VmId $j.VmId }
+        $breach = Get-AapWinLimitBreach $B $r $j
+        if ($breach) { return (Invoke-AapWinAbandon $B $r $j 'ready' 'fatal' $breach) }
         $p = Invoke-AapWinCommand $B $r 'probe'
         if ($p.Kind -ceq 'hostile') { return (Invoke-AapWinHostile $B $r $j 'ready' $p.Code) }
         $ready = $p.Kind -ceq 'ok' -and $p.Reply['guest_state'] -ceq 'ready'
@@ -1407,8 +1488,8 @@ function New-AapWinBackend {
         Provider = $Provider; Network = $Network; Storage = $storage; AllocatorRoot = $AllocatorRoot; JournalRoot = $JournalRoot
         AllocArgs = @{ LockTimeoutSeconds = $LockTimeoutSeconds; RelaxedTrustForTests = [bool]$RelaxedTrustForTests }
         BrokerArgs = $broker; Relaxed = [bool]$RelaxedTrustForTests; TrustedSids = $trusted
-        Transport = $Transport; Now = $Clock; Sleep = $Sleep; StatusSeconds = $script:StatusSeconds
-        Guests = @{}; Leases = @{}; Tried = @{}; StatusAt = @{}; StatusBusy = @{}; Breached = @{}
+        Transport = $Transport; Now = $Clock; Sleep = $Sleep; StatusSeconds = $script:StatusSeconds; NetSeconds = $script:NetSeconds
+        Guests = @{}; Leases = @{}; Tried = @{}; StatusAt = @{}; StatusBusy = @{}; Breached = @{}; NetAt = @{}
     }
     if ($null -eq $B.Transport) { $B.Transport = { param($Call) Invoke-AapWinGuestChild $Call } }
     if ($null -eq $B.Now) { $B.Now = { [DateTime]::UtcNow } }

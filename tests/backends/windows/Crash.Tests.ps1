@@ -28,6 +28,7 @@ BeforeAll {
         $r.teardown_proof.vm_absent | Should -BeTrue
         $r.teardown_proof.disks_absent | Should -BeTrue
         @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinNetRecords $w).Count | Should -Be 0 -Because 'the network is detached after the VM is gone'
         Test-Path -LiteralPath (Join-Path $w.Clones $Id) | Should -BeFalse
         Test-Path -LiteralPath (Join-Path $w.Scratch $Id) | Should -BeFalse
         @(Get-WinCalls $w "NewVm $Name").Count | Should -BeLessOrEqual 1 -Because 'never a second VM'

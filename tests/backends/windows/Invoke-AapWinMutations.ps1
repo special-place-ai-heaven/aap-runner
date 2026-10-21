@@ -36,7 +36,7 @@ try {
     foreach ($tag in $tagged) {
         $dir = Join-Path $work "$tag\supervisor"
         [void][IO.Directory]::CreateDirectory($dir)
-        foreach ($sub in 'capacity', 'broker', 'backends') { Copy-Item -LiteralPath (Join-Path $repo "supervisor\$sub") -Destination (Join-Path $dir $sub) -Recurse }
+        foreach ($sub in 'capacity', 'broker', 'network', 'backends') { Copy-Item -LiteralPath (Join-Path $repo "supervisor\$sub") -Destination (Join-Path $dir $sub) -Recurse }
         $lineNos = @()
         foreach ($s in $sources) {
             $lines = $s.Lines

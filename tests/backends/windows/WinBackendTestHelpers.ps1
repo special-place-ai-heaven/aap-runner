@@ -1,8 +1,9 @@
 # Fake world for the P10 Windows backend tests. Pester 5, Windows PowerShell 5.1 and PowerShell 7.5+.
 # Real folders under the test drive for the storage roots, the journal and the allocator (the real AapCapacity.psm1 in
 # relaxed trust), and file-backed fakes for Hyper-V (vms.json), the guest agent (guests\<vm id>.json), the broker (its
-# -Invoker, leases.json) and the P10.0 network module, so a child process killed mid-step leaves the very world the
-# parent then recovers from. Nothing here calls Hyper-V, wsl.exe or the network.
+# -Invoker, leases.json) and the P10.0 network module (the shared strict fake, tests/common/AapHostNetworkFake.psm1, under
+# fake\net), so a child process killed mid-step leaves the very world the parent then recovers from. Nothing here calls
+# Hyper-V, wsl.exe or the network.
 # The fakes resolve $w (the world) at call time from the calling scope, as P06's do: a test names its world $w.
 # No secret is ever written: the fake broker keeps the SHA-256 of each JIT config, the fake disk the SHA-256 of the
 # per-clone password, and the fake guest the SHA-256 and length of what it received. The password is the backend's
@@ -12,6 +13,7 @@ $script:Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $script:BackendModule = $(if ($env:AAP_WINBACKEND_MODULE) { $env:AAP_WINBACKEND_MODULE } else { Join-Path $script:Repo 'supervisor\backends\windows\AapWinBackend.psm1' })
 $script:SupervisorDir = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $script:BackendModule))
 $script:CapModule = Join-Path $script:SupervisorDir 'capacity\AapCapacity.psm1'
+Import-Module (Join-Path $script:Repo 'tests\common\AapHostNetworkFake.psm1')
 $script:Validator = Join-Path $script:Repo 'parity\contracts\validate.py'
 $script:WinGen = 'win25-vs2026-x64/20261007.264.1-aap.1'
 $script:VolGuid = '00000000-0000-4000-8000-0000000000e1'
@@ -68,7 +70,7 @@ function New-WinWorld {
     }
     [void][IO.Directory]::CreateDirectory((Join-Path $root 'roots'))
     foreach ($d in $w.Base, $w.Clones, $w.Scratch, $w.Cap) { New-WinAclDir $d }
-    foreach ($d in $w.Fake, (Join-Path $w.Fake 'guests'), (Join-Path $w.Fake 'exchanges')) { [void][IO.Directory]::CreateDirectory($d) }
+    foreach ($d in $w.Fake, (Join-Path $w.Fake 'guests'), (Join-Path $w.Fake 'exchanges'), (Join-Path $w.Fake 'net\records'), (Join-Path $w.Fake 'net\host')) { [void][IO.Directory]::CreateDirectory($d) }
     $genDir = Join-Path $w.Base ($script:WinGen -replace '/', '\')
     [void][IO.Directory]::CreateDirectory($genDir)
     $w.BaseFile = Join-Path $genDir 'base.vhdx'
@@ -148,9 +150,13 @@ function New-WinProvider {
     $p.GetVhdParent = { param($a) $o = Get-WinKnob $w 'VhdParent' ''; if ($o) { return $o }; [IO.File]::ReadAllText($a.Path).Substring('differencing child of '.Length) }
     $p.NewDisk = { param($a) Add-WinCall $w "NewDisk $($a.Path) $($a.SizeBytes)"; [IO.File]::WriteAllText($a.Path, "dynamic vhdx max $($a.SizeBytes)") }
     $p.WriteUnattend = { param($a)
-        Add-WinCall $w "WriteUnattend $($a.Vhdx) $($a.User)"
+        # The real answer file's network part is Write-AapWinUnattend's (Create.Tests.ps1); here the call records what it got.
+        Add-WinCall $w "WriteUnattend $($a.Vhdx) $($a.User) $($a.Network.address)/$($a.Network.subnet) via $($a.Network.gateway) dns $(@($a.Network.resolvers) -join ',')"
         if (Get-WinKnob $w 'UnattendFails' $false) { throw 'AAP_DiskLayout: fake mount failed' }
         if ($a.Password -is [string] -or $a.Password.Length -ne 32) { throw 'fake: the password is not a 32-character secret object' }
+        if ($null -eq $a.Network) { throw 'fake: no network declaration' }
+        $vm = @(Get-WinVms $w | Where-Object { $_.OsDisk -eq $a.Vhdx })
+        if ($vm.Count -and $vm[0].State -ne 'Off') { throw 'fake: the clone disk is in use by a running VM' }
         [IO.File]::WriteAllText($a.Vhdx + '.cred', (Get-WinSha (Get-WinSecretBytes $a.Password)))
     }
     $p.NewVm = { param($a)
@@ -162,7 +168,7 @@ function New-WinProvider {
         [IO.File]::WriteAllText((Join-Path $cfg "$id.vmcx"), 'fake vm configuration')
         $vm = [ordered]@{ Id = $id; Name = $a.Name; State = 'Off'; Cpus = $a.Cpus; MemGib = $a.MemGib; Generation = 2; CheckpointType = 'Disabled'
             AutomaticStopAction = 'TurnOff'; AutomaticStartAction = 'Nothing'; GuestServiceInterface = $false; KeyValuePairExchange = $false
-            ConfigurationLocation = $a.Path; SnapshotFileLocation = $a.Path; SmartPagingFilePath = $a.Path; Cred = ($a.OsDisk + '.cred')
+            ConfigurationLocation = $a.Path; SnapshotFileLocation = $a.Path; SmartPagingFilePath = $a.Path; Cred = ($a.OsDisk + '.cred'); OsDisk = $a.OsDisk
             Disks = @(@($a.OsDisk, $a.ScratchDisk) | Where-Object { $_ }); Adapters = @(); ComPorts = 0; DvdDrives = 0; GpuPartitions = 0; AssignedDevices = 0
         }
         if (Get-WinKnob $w 'ExtraDisk' $false) { $vm.Disks = @($vm.Disks) + (Join-Path $a.Path 'extra.vhdx') }
@@ -171,7 +177,12 @@ function New-WinProvider {
         Save-WinVms $w (@(Get-WinVms $w) + [pscustomobject]$vm)
         @{ Id = $id.ToUpperInvariant() }
     }
-    $p.GetVmConfig = { param($a) @(Get-WinVms $w | Where-Object { $_.Id -eq $a.VmId })[0] }
+    $p.GetVmConfig = { param($a)
+        $v = @(Get-WinVms $w | Where-Object { $_.Id -eq $a.VmId })[0]
+        # Its adapters as Hyper-V would report them, in the contract's provider read-back shape (the shared fake's view).
+        if ($null -ne $v) { $v.Adapters = @(Get-AapFakeHostNetworkAdapter -Root (Join-Path $w.Fake 'net') -VmId $a.VmId) }
+        $v
+    }
     $p.StartVm = { param($a)
         Add-WinCall $w "StartVm $($a.VmId)"
         if (Get-WinKnob $w 'StartFails' $false) { throw 'fake: Start-VM failed' }
@@ -193,20 +204,38 @@ function New-WinProvider {
     $p
 }
 
+# The network module: the shared strict fake (host-network-module.md, Shared fake) over this world's VMs, its tampers and
+# faults set with Set-WinNet. Each call is logged. Knobs stand for a module that lies, which the backend must not trust:
+# 'NetDecl' (fields merged into the declaration Attach returns), 'NetVerifySilent' (Verify writes nothing) and
+# 'NetVerifyOut' (what Verify writes instead of its own answer; '<null>' writes a null).
+function Get-WinNet($World) {
+    New-AapFakeHostNetwork -Root (Join-Path $World.Fake 'net') -Vm { param($id)
+        $v = @(Get-WinVms $w | Where-Object { $_.Id -eq $id })
+        if (-not $v.Count) { return $null }
+        @{ State = [string]$v[0].State; Adapters = 0 }
+    }
+}
+function Set-WinNet($World, [string[]]$Tamper = @(), [string[]]$Fail = @()) { Set-AapFakeHostNetworkKnob -Root (Join-Path $World.Fake 'net') -Tamper $Tamper -Fail $Fail }
+function Get-WinNetRecords($World) { @(Get-AapFakeHostNetworkRecord -Root (Join-Path $World.Fake 'net')) }
 function New-WinNetwork {
     @{
         Attach = { param($a)
             Add-WinCall $w "NetAttach $($a.VmId) $($a.Profile)"
-            $vms = @(Get-WinVms $w)
-            foreach ($v in $vms) {
-                if ($v.Id -ne $a.VmId) { continue }
-                $v.Adapters = @([ordered]@{ SwitchName = (Get-WinKnob $w 'NetSwitch' 'aap-guests-win'); SwitchType = (Get-WinKnob $w 'NetSwitchType' 'Internal')
-                        DhcpGuard = (Get-WinKnob $w 'NetDhcpGuard' $true); RouterGuard = $true; MacAddressSpoofing = (Get-WinKnob $w 'NetMacSpoofing' $false) })
-            }
-            Save-WinVms $w $vms
+            $d = & (Get-WinNet $w).Attach $a
+            $edit = Get-WinKnob $w 'NetDecl' $null
+            if ($null -eq $edit) { return $d }
+            $o = [ordered]@{}
+            foreach ($q in $d.PSObject.Properties) { $o[$q.Name] = $q.Value }
+            foreach ($q in $edit.PSObject.Properties) { $o[$q.Name] = $q.Value }
+            [pscustomobject]$o
         }
-        Detach = { param($a) Add-WinCall $w "NetDetach $($a.VmId)"; if (Get-WinKnob $w 'DetachFails' $false) { throw 'fake: detach failed' } }
-        Verify = { param($a) @(Get-WinKnob $w 'NetProblems' @()) }
+        Detach = { param($a) Add-WinCall $w "NetDetach $($a.VmId)"; & (Get-WinNet $w).Detach $a }
+        Verify = { param($a)
+            Add-WinCall $w "NetVerify $($a.VmId)"
+            if (Get-WinKnob $w 'NetVerifySilent' $false) { return }
+            $out = Get-WinKnob $w 'NetVerifyOut' $null
+            if ($null -eq $out) { & (Get-WinNet $w).Verify $a } else { foreach ($o in @($out)) { if ($o -ceq '<null>') { $null } else { $o } } }
+        }
     }
 }
 
@@ -352,6 +381,7 @@ function New-WinBackend($World) {
         -AllocatorRoot $w.Cap -JournalRoot $w.Journal -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue `
         -Clock { [DateTime]::UtcNow.AddSeconds([double](Get-WinKnob $w 'ClockOffset' 0)) } -Sleep { param($s) }
     $B.StatusSeconds = 0
+    $B.NetSeconds = 0
     $B
 }
 
