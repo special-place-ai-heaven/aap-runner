@@ -34,8 +34,13 @@ BeforeAll {
         @(Get-WinVms $x.W).Count | Should -Be 0
         @(Get-WinCalls $x.W 'StartVm *').Count | Should -Be 0
         @(Get-ChildItem -LiteralPath $x.W.Clones).Count | Should -Be 0
+        @(Get-WinNetRecords $x.W).Count | Should -Be 0 -Because 'a refused clone is removed, then detached'
     }
     function Grant-WinAce([string]$Path, [string]$Grant) { $o = & icacls.exe $Path /grant $Grant 2>&1; if ($LASTEXITCODE) { throw "icacls: $o" } }
+    # A declaration as the network module returns it (host-network-module.md, host_network_attach).
+    $script:Decl = [pscustomobject]@{ schema = 1; kind = 'host_network_attach'; vm_id = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'; vm_name = 'aap-w-0-1-6f1d2c3b'
+        profile = 'windows'; subnet = '172.31.250.0/24'; gateway = '172.31.250.1'; address = '172.31.250.7'; resolvers = @('192.0.2.53', '198.51.100.53'); endpoints = @()
+    }
 }
 
 Describe 'trusted roots only' {
@@ -259,21 +264,140 @@ Describe 'the VM and its network' {
         @(Get-WinCalls $w 'NewVm *').Count | Should -Be 1
     }
 
-    It 'refuses a guest adapter on <Name> (<Type>), or without DHCP guard, or with MAC spoofing' -Tag 'switch' -ForEach @(
-        @{ Name = 'Default Switch'; Type = 'Internal'; Guard = $true; Spoof = $false }
-        @{ Name = 'aap-guests-win'; Type = 'External'; Guard = $true; Spoof = $false }
-        @{ Name = 'aap-guests-linux'; Type = 'Internal'; Guard = $true; Spoof = $false }
-        @{ Name = 'aap-guests-win'; Type = 'Internal'; Guard = $false; Spoof = $false }
-        @{ Name = 'aap-guests-win'; Type = 'Internal'; Guard = $true; Spoof = $true }
-    ) {
-        $x = Invoke-WinCreate -Knobs @{ NetSwitch = $Name; NetSwitchType = $Type; NetDhcpGuard = $Guard; NetMacSpoofing = $Spoof }
-        Assert-WinRefused $x '*AAP_VmUntrusted*adapter*'
+}
+
+# The guest network (parity/contracts/host-network-module.md, Consumer obligations) against the shared strict fake of the
+# P10.0 module: Attach with the VM Off, the declaration check, the answer file from the declaration, Verify unfiltered and
+# the read-back from Hyper-V itself; every tamper and fault of the fake refuses the clone before it boots.
+Describe 'the guest network' {
+    It 'attaches the VM Off, checks the declaration, writes the answer file from it, then verifies and reads back' {
+        $x = Invoke-WinCreate
+        $x.Step.Action | Should -Be 'created'
+        @(Get-WinCalls $x.W | ForEach-Object { ($_ -split ' ')[0] } | Where-Object { @('NewVm', 'NetAttach', 'WriteUnattend', 'NetVerify', 'StartVm') -contains $_ }) -join ',' |
+            Should -Be 'NewVm,NetAttach,WriteUnattend,NetVerify'
+        $rec = @(Get-WinNetRecords $x.W)
+        $rec.Count | Should -Be 1
+        $d = $rec[0].declaration
+        @(Get-WinCalls $x.W 'WriteUnattend *')[0] | Should -BeLike "* $($d.address)/$($d.subnet) via $($d.gateway) dns $(@($d.resolvers) -join ',')"
+        # The backend keeps no copy of the declaration: nothing of it is in the reservation's journal.
+        ((Get-WinJournalLines $x.W $x.Res.reservation_id) -join "`n") | Should -Not -Match '172\.31\.|192\.0\.2\.|198\.51\.100\.'
     }
 
-    It 'refuses when the network module''s own verification fails' -Tag 'network-verify' {
-        $x = Invoke-WinCreate -Knobs @{ NetProblems = @('port ACL missing: 169.254.0.0/16') }
-        Assert-WinRefused $x '*AAP_NetworkUntrusted*port ACL missing*'
+    It 'refuses the clone when the network shows <Tamper>: nothing boots, the VM goes, then the network' -Tag 'network-verify' -ForEach @(
+        @{ Tamper = 'no-adapter' }, @{ Tamper = 'second-adapter' }, @{ Tamper = 'external-switch' }, @{ Tamper = 'other-switch' }, @{ Tamper = 'dhcp-guard-off' }
+        @{ Tamper = 'router-guard-off' }, @{ Tamper = 'mac-spoofing-on' }, @{ Tamper = 'port-mirroring' }, @{ Tamper = 'vlan-trunk' }, @{ Tamper = 'storm-limit-off' }
+        @{ Tamper = 'legacy-acl' }, @{ Tamper = 'foreign-peer' }, @{ Tamper = 'drop-fixed-deny' }, @{ Tamper = 'drop-inbound-deny' }, @{ Tamper = 'scoped-deny' }
+        @{ Tamper = 'stateful-rule' }, @{ Tamper = 'isolated-rule' }, @{ Tamper = 'no-source-pin' }, @{ Tamper = 'pin-above-deny' }, @{ Tamper = 'extra-allow' }
+        @{ Tamper = 'public-host' }, @{ Tamper = 'host-empty' }, @{ Tamper = 'host-no-gateway' }, @{ Tamper = 'host-no-lan' }
+    ) {
+        $x = Invoke-WinCreate { param($w) Set-WinNet $w -Tamper $Tamper }
+        Assert-WinRefused $x '*AAP_NetworkUntrusted*'
     }
+
+    It 'refuses the clone when the module fails: <Fail>' -Tag 'network-verify' -ForEach @(
+        @{ Fail = 'Attach' }, @{ Fail = 'AttachAfterIntent' }, @{ Fail = 'AttachAfterAct' }, @{ Fail = 'Verify' }
+    ) {
+        $x = Invoke-WinCreate { param($w) Set-WinNet $w -Fail $Fail }
+        Assert-WinRefused $x '*AAP_NetworkUntrusted*'
+    }
+
+    It 'takes every object Verify writes as a problem, an empty one too (<Name>)' -Tag 'network-verify' -ForEach @(
+        @{ Name = 'an empty string'; Out = @('') }, @{ Name = 'a null'; Out = @('<null>') }
+    ) {
+        $x = Invoke-WinCreate -Knobs @{ NetVerifyOut = $Out }
+        Assert-WinRefused $x '*AAP_NetworkUntrusted*empty problem line*'
+    }
+
+    It 'reads the adapter back from Hyper-V itself: a module whose Verify says nothing does not pass <Tamper>' -Tag 'net-readback' -ForEach @(
+        @{ Tamper = 'dhcp-guard-off' }, @{ Tamper = 'foreign-peer' }, @{ Tamper = 'no-source-pin' }, @{ Tamper = 'second-adapter' }, @{ Tamper = 'stateful-rule' }
+    ) {
+        $x = Invoke-WinCreate { param($w) Set-WinNet $w -Tamper $Tamper } -Knobs @{ NetVerifySilent = $true }
+        Assert-WinRefused $x '*AAP_NetworkUntrusted: read-back*'
+    }
+
+    It 'refuses a declaration the shared check refuses (<Name>): AAP_NetworkInvalid, no answer file' -Tag 'net-declaration' -ForEach @(
+        @{ Name = 'the address is the gateway'; Edit = @{ address = '172.31.250.1' } }
+        @{ Name = 'a public subnet'; Edit = @{ subnet = '203.0.113.0/24'; gateway = '203.0.113.1'; address = '203.0.113.2' } }
+        @{ Name = 'an endpoint to the gateway'; Edit = @{ endpoints = @(@{ address = '172.31.250.1'; protocol = 'TCP'; port = 22 }) } }
+        @{ Name = 'another VM'; Edit = @{ vm_name = 'aap-w-9-1-0badc0de' } }
+    ) {
+        $x = Invoke-WinCreate -Knobs @{ NetDecl = $Edit }
+        Assert-WinRefused $x '*AAP_NetworkInvalid*'
+        @(Get-WinCalls $x.W 'WriteUnattend *').Count | Should -Be 0 -Because 'no answer file from a declaration the check refused'
+    }
+
+    It 'attaches again with the VM Off before it boots (the same declaration), verifies and reads back, then starts it' -Tag 'net-restart' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        $address = @(Get-WinNetRecords $w)[0].declaration.address
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'booted'
+        @(Get-WinCalls $w | ForEach-Object { ($_ -split ' ')[0] } | Where-Object { @('NewVm', 'NetAttach', 'WriteUnattend', 'NetVerify', 'StartVm') -contains $_ }) -join ',' |
+            Should -Be 'NewVm,NetAttach,WriteUnattend,NetVerify,NetAttach,NetVerify,StartVm'
+        @(Get-WinNetRecords $w)[0].declaration.address | Should -Be $address
+    }
+
+    It 'a network changed between create and boot stops the start (<Tamper><Fail>)' -Tag 'net-restart' -ForEach @(
+        @{ Tamper = 'dhcp-guard-off'; Fail = '' }, @{ Tamper = 'public-host'; Fail = '' }, @{ Tamper = ''; Fail = 'Attach' }, @{ Tamper = ''; Fail = 'Verify' }
+    ) {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        Set-WinNet $w -Tamper @($Tamper | Where-Object { $_ }) -Fail @($Fail | Where-Object { $_ })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha)
+        @(Get-WinCalls $w 'StartVm *').Count | Should -Be 0
+        @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinNetRecords $w).Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'boot' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_Network*'
+    }
+
+    It 'before boot it reads back with a fresh declaration: <Name>' -Tag 'net-restart' -ForEach @(
+        @{ Name = 'a silent Verify does not pass a DHCP guard turned off'; Knobs = @{ NetVerifySilent = $true }; Tamper = 'dhcp-guard-off'; Like = '*AAP_NetworkUntrusted: read-back*DHCP guard*' }
+        @{ Name = 'a declaration the check refuses is AAP_NetworkInvalid'; Knobs = @{ NetDecl = @{ address = '172.31.250.1' } }; Tamper = ''; Like = '*AAP_NetworkInvalid*' }
+    ) {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        Set-WinKnob $w $Knobs
+        Set-WinNet $w -Tamper @($Tamper | Where-Object { $_ })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha)
+        @(Get-WinCalls $w 'StartVm *').Count | Should -Be 0
+        @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'boot' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike $Like
+    }
+
+    It 'a VM this process started whose boot record was lost is read back against the declaration it booted with' -Tag 'net-boot-readback' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'booted'
+        # StartVm returned, the boot record's write threw: the journal ends at the boot intent, the VM runs.
+        $f = Join-Path $w.Journal "$rid.jsonl"
+        $lines = @(Get-WinJournalLines $w $rid)
+        [IO.File]::WriteAllText($f, (($lines[0..($lines.Count - 2)] -join "`n") + "`n"))
+        Set-WinKnob $w @{ NetVerifySilent = $true }
+        Set-WinNet $w -Tamper 'dhcp-guard-off'
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha)
+        @(Get-WinCalls $w 'StartVm *').Count | Should -Be 1
+        @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'boot' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_NetworkUntrusted: read-back*DHCP guard*'
+    }
+
+    It 'an adapter the module did not make stops the clone: AAP_NetworkUntrusted' {
+        $x = Invoke-WinCreate -Knobs @{ NetForeign = 1 }
+        Assert-WinRefused $x '*AAP_NetworkUntrusted*adapter Attach did not make*'
+    }
+}
+
+Describe 'more create refusals' {
 
     It 'without the P10.0 module every create fails closed' {
         $w = New-WinWorld
@@ -366,6 +490,13 @@ Describe 'the backend context' {
 }
 
 Describe 'offline disk helpers (the production provider uses them)' {
+    AfterAll {
+        # A mutant of check:own-sid leaves folders only SYSTEM and Administrators may open; this user owns them, so it can
+        # take its access back and the test drive can be removed.
+        $denied = $null
+        $null = Get-ChildItem -LiteralPath $TestDrive -Recurse -Directory -Force -ErrorAction SilentlyContinue -ErrorVariable denied
+        foreach ($e in @($denied)) { if ($e.TargetObject -is [string]) { $null = & icacls.exe $e.TargetObject /grant "*$($script:UserSid):F" 2>&1 } }
+    }
     It 'writes the answer file through plain folders only, SYSTEM/Administrators-only, replacing an old one' -Tag 'guest-write', 'own-sid', 'unattend-root' {
         # An elevated run (the supervisor, a hosted CI runner) gets no entry for its own account; an unelevated test does.
         $admin = (New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -373,7 +504,7 @@ Describe 'offline disk helpers (the production provider uses them)' {
         $pw = New-WinSecret 'Abc123-def456-Ghi789-jkl012-MNO3'
         $root = Join-Path $TestDrive 'disk1'
         [void][IO.Directory]::CreateDirectory($root)
-        Write-AapWinUnattend -Root $root -UserName 'runneradmin' -Password $pw
+        Write-AapWinUnattend -Network $script:Decl -Root $root -UserName 'runneradmin' -Password $pw
         $file = "$root\Windows\Panther\unattend.xml"
         [IO.File]::ReadAllText($file) | Should -Match '<Value>Abc123-def456-Ghi789-jkl012-MNO3</Value>'
         foreach ($p in "$root\Windows", "$root\Windows\Panther", $file) {
@@ -382,31 +513,31 @@ Describe 'offline disk helpers (the production provider uses them)' {
             @($acl.Access | ForEach-Object { $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } | Sort-Object -Unique) |
                 Should -Be $sids -Because $p
         }
-        Write-AapWinUnattend -Root $root -UserName 'runneradmin' -Password (New-WinSecret 'Second-pass-word-0123456789-abcd')
+        Write-AapWinUnattend -Network $script:Decl -Root $root -UserName 'runneradmin' -Password (New-WinSecret 'Second-pass-word-0123456789-abcd')
         [IO.File]::ReadAllText($file) | Should -Match 'Second-pass-word'
         $outside = Join-Path $TestDrive 'outside1'
         [void][IO.Directory]::CreateDirectory($outside)
         $root2 = Join-Path $TestDrive 'disk2'
         [void][IO.Directory]::CreateDirectory("$root2\Windows")
         & cmd.exe /c mklink /J "$root2\Windows\Panther" $outside | Out-Null
-        { Write-AapWinUnattend -Root $root2 -UserName 'runneradmin' -Password $pw } | Should -Throw '*AAP_UnsafePath: a link, not a plain folder*Panther'
+        { Write-AapWinUnattend -Network $script:Decl -Root $root2 -UserName 'runneradmin' -Password $pw } | Should -Throw '*AAP_UnsafePath: a link, not a plain folder*Panther'
         @(Get-ChildItem -LiteralPath $outside).Count | Should -Be 0
         $root3 = Join-Path $TestDrive 'disk3'
         [void][IO.Directory]::CreateDirectory("$root3\Windows\Panther")
         & cmd.exe /c mklink /J "$root3\Windows\Panther\unattend.xml" $outside | Out-Null
-        { Write-AapWinUnattend -Root $root3 -UserName 'runneradmin' -Password $pw } | Should -Throw '*AAP_UnsafePath: a link where the answer file goes*'
+        { Write-AapWinUnattend -Network $script:Decl -Root $root3 -UserName 'runneradmin' -Password $pw } | Should -Throw '*AAP_UnsafePath: a link where the answer file goes*'
         @(Get-ChildItem -LiteralPath $outside).Count | Should -Be 0
         # The provider's root is a volume mount point, a reparse point: taken as the root, never below it.
         $vol5 = Join-Path $TestDrive 'vol5'
         [void][IO.Directory]::CreateDirectory($vol5)
         & cmd.exe /c mklink /J "$TestDrive\mnt5" $vol5 | Out-Null
-        Write-AapWinUnattend -Root "$TestDrive\mnt5" -UserName 'runneradmin' -Password $pw
+        Write-AapWinUnattend -Network $script:Decl -Root "$TestDrive\mnt5" -UserName 'runneradmin' -Password $pw
         [IO.File]::ReadAllText("$vol5\Windows\Panther\unattend.xml") | Should -Match '<Value>Abc123-def456-Ghi789-jkl012-MNO3</Value>'
         $vol6 = Join-Path $TestDrive 'vol6'
         [void][IO.Directory]::CreateDirectory("$vol6\Windows")
         & cmd.exe /c mklink /J "$vol6\Windows\Panther" $outside | Out-Null
         & cmd.exe /c mklink /J "$TestDrive\mnt6" $vol6 | Out-Null
-        { Write-AapWinUnattend -Root "$TestDrive\mnt6" -UserName 'runneradmin' -Password $pw } | Should -Throw '*AAP_UnsafePath: a link, not a plain folder*Panther'
+        { Write-AapWinUnattend -Network $script:Decl -Root "$TestDrive\mnt6" -UserName 'runneradmin' -Password $pw } | Should -Throw '*AAP_UnsafePath: a link, not a plain folder*Panther'
         @(Get-ChildItem -LiteralPath $outside).Count | Should -Be 0
     }
 
@@ -432,15 +563,36 @@ Describe 'offline disk helpers (the production provider uses them)' {
         { Select-AapWinPartition -Partitions @() } | Should -Throw '*AAP_DiskLayout*'
     }
 
+    It 'the answer file carries the declaration''s static address, gateway and resolvers, DHCP off; nothing but IPv4 text gets in' -Tag 'unattend-network' {
+        $root = Join-Path $TestDrive 'disk7'
+        [void][IO.Directory]::CreateDirectory($root)
+        Write-AapWinUnattend -Network $script:Decl -Root $root -UserName 'runneradmin' -Password (New-WinSecret 'Abc123-def456-Ghi789-jkl012-MNO3')
+        $text = [IO.File]::ReadAllText("$root\Windows\Panther\unattend.xml")
+        $special = @(([xml]$text).unattend.settings | Where-Object { $_.pass -eq 'specialize' })[0]
+        @($special.component | ForEach-Object { $_.name }) | Should -Contain 'Microsoft-Windows-TCPIP'
+        @($special.component | ForEach-Object { $_.name }) | Should -Contain 'Microsoft-Windows-DNS-Client'
+        $text | Should -Match '<DhcpEnabled>false</DhcpEnabled>'
+        $text | Should -Match '<IpAddress wcm:action="add" wcm:keyValue="1">172\.31\.250\.7/24</IpAddress>'
+        $text | Should -Match '<Prefix>0\.0\.0\.0/0</Prefix>\s*<NextHopAddress>172\.31\.250\.1</NextHopAddress>'
+        $text | Should -Match 'keyValue="1">192\.0\.2\.53</IpAddress>\s*<IpAddress wcm:action="add" wcm:keyValue="2">198\.51\.100\.53</IpAddress>'
+        foreach ($bad in @(@{ address = '999.1.1.1' }, @{ gateway = 'gw' }, @{ subnet = '172.31.250.0/8' }, @{ subnet = '172.31.250.0/31' }, @{ resolvers = @() },
+                @{ resolvers = @('192.0.2.53', '192.0.2.54', '192.0.2.55') }, @{ resolvers = @('1.2.3.4</IpAddress><x/>') }, @{ address = $null })) {
+            $d = [ordered]@{}
+            foreach ($q in $script:Decl.PSObject.Properties) { $d[$q.Name] = $q.Value }
+            foreach ($k in $bad.Keys) { $d[$k] = $bad[$k] }
+            { Write-AapWinUnattend -Network ([pscustomobject]$d) -Root $root -UserName 'runneradmin' -Password (New-WinSecret 'x') } | Should -Throw '*AAP_UnattendInvalid: the network declaration*'
+        }
+    }
+
     It 'the answer file escapes the password, never enables autologon and keeps SanPolicy 1' {
         $root = Join-Path $TestDrive 'disk4'
         [void][IO.Directory]::CreateDirectory($root)
-        Write-AapWinUnattend -Root $root -UserName 'runneradmin' -Password (New-WinSecret 'a<b&c"d''e>f')
+        Write-AapWinUnattend -Network $script:Decl -Root $root -UserName 'runneradmin' -Password (New-WinSecret 'a<b&c"d''e>f')
         $xml = [IO.File]::ReadAllText("$root\Windows\Panther\unattend.xml")
         ([xml]$xml).unattend | Should -Not -BeNullOrEmpty
         $xml | Should -Match 'a&lt;b&amp;c&quot;d&apos;e&gt;f'
         $xml | Should -Not -Match 'AutoLogon'
         $xml | Should -Match '<SanPolicy>1</SanPolicy>'
-        { Write-AapWinUnattend -Root $root -UserName 'bad name' -Password (New-WinSecret 'x') } | Should -Throw '*AAP_UnattendInvalid*'
+        { Write-AapWinUnattend -Network $script:Decl -Root $root -UserName 'bad name' -Password (New-WinSecret 'x') } | Should -Throw '*AAP_UnattendInvalid*'
     }
 }

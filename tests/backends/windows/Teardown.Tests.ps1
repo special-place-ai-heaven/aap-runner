@@ -117,12 +117,13 @@ Describe 'no slot reuse before the teardown is observed' {
             $w = $x.W   # the fakes find their world as $w
             $h = $null
             if ($case -eq 'scratch') { $h = [IO.File]::Open((Join-Path $x.W.Scratch "$($x.Id)\held.bin"), 'Create', 'ReadWrite', 'None') }
-            if ($case -eq 'detach') { Set-WinKnob $w @{ DetachFails = $true } }
+            if ($case -eq 'detach') { Set-WinNet $w -Fail 'Detach' }
             if ($case -eq 'volume') { Set-WinKnob $w @{ WrongVolume = 'scratch' } }
             try { $s = Step-Win $x } finally { if ($h) { $h.Dispose() } }
             $s.Code | Should -Be 'teardown_failed' -Because $case
             (Get-WinRes $x.W $x.Id).state | Should -Be 'quarantined'
-            Set-WinKnob $w @{ DetachFails = $false; WrongVolume = '' }
+            Set-WinNet $w
+            Set-WinKnob $w @{ WrongVolume = '' }
             $x.B.Now = { [DateTime]::UtcNow.AddSeconds(60) }
             [void](Step-Win $x)
             (Get-WinRes $x.W $x.Id).state | Should -Be 'reconciled' -Because $case

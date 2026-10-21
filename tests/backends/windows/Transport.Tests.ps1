@@ -287,6 +287,34 @@ Start-Sleep -Seconds 600
         foreach ($p in @($env:PSModulePath -split ';' | Where-Object { $_ -and ($machine -split ';') -notcontains $_ -and $_ -notlike '*\Documents\WindowsPowerShell\Modules' })) { $mod | Should -Not -BeLike "*$p*" }
     }
 
+    It 'the password and the payload go to the pipe unbuffered: no copy stays in a stream buffer that nothing can zero' {
+        $pwBytes = [Text.Encoding]::ASCII.GetBytes('SYNTHETIC-PW-MARKER-' + [guid]::NewGuid().ToString('n'))
+        $jit = [Text.Encoding]::ASCII.GetBytes('SYNTHETIC-JIT-MARKER-' + [guid]::NewGuid().ToString('n'))
+        $streams = New-Object Collections.Generic.List[object]
+        $pw = [pscustomobject]@{ Length = $pwBytes.Length }
+        $pw.PSObject.Methods.Add([Management.Automation.PSScriptMethod]::new('WriteTo', { param([IO.Stream]$s) $streams.Add($s); $s.Write($pwBytes, 0, $pwBytes.Length) }.GetNewClosure()))
+        Set-WinModuleVar 'ChildScript' (Join-Path $script:Kids 'echo.ps1')
+        $env1 = '{"schema":1,"kind":"host_cmd","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","reservation_id":"r-1a2b3c4d000000b1","lease_generation":3,"seq":2,"nonce":"99999999999999999999999999999999","cmd":"deliver_registration","payload_bytes":' + $jit.Length + ',"expires_at":"2026-10-19T18:02:00Z"}'
+        $call = @{ VmId = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'; User = 'runneradmin'; Password = $pw; Envelope = $env1; PayloadLength = $jit.Length; TimeoutSeconds = 5
+            WritePayload = { param($s) $streams.Add($s); $s.Write($jit, 0, $jit.Length) }.GetNewClosure()
+        }
+        $raw = Invoke-WinInModule { param($c) Invoke-AapWinGuestChild $c } @($call)
+        $raw.ExitCode | Should -Be 0
+        [IO.File]::ReadAllText($script:Side) | Should -Match "pwlen=$($pwBytes.Length) user=runneradmin payload=$(Get-WinSha $jit) "
+        $streams.Count | Should -Be 2
+        # Every byte array inside the streams the secrets were written to, down through their System.IO helper objects (a
+        # redirected stdin's own stream keeps the last 4 KiB written in one: FileStream._buffer, or its strategy's).
+        function Find-WinMarker($o, [int]$Depth) {
+            if ($null -eq $o -or $Depth -gt 3) { return }
+            foreach ($f in $o.GetType().GetFields([Reflection.BindingFlags]'Instance, NonPublic, Public')) {
+                $v = $f.GetValue($o)
+                if ($v -is [byte[]]) { if ([Text.Encoding]::ASCII.GetString($v).Contains('SYNTHETIC-')) { "$($o.GetType().Name).$($f.Name)" } }
+                elseif ($null -ne $v -and -not $v.GetType().IsValueType -and [string]$v.GetType().Namespace -like 'System.IO*') { Find-WinMarker $v ($Depth + 1) }
+            }
+        }
+        foreach ($s in $streams) { @(Find-WinMarker $s 0) | Should -BeNullOrEmpty }
+    }
+
     It 'stdin arrives byte-exact under the <Name> console input encoding (no preamble)' -Tag 'stdin-bom' -ForEach @(
         @{ Name = 'current'; Cp = 0 }, @{ Name = '65001'; Cp = 65001 }, @{ Name = '850'; Cp = 850 }
     ) {

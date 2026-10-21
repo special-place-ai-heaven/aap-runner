@@ -155,6 +155,69 @@ Describe 'one job, end to end' {
         (Get-WinRes $w $rid).teardown_proof.runner_deregistered | Should -BeTrue
     }
 
+    It 'verifies a running guest''s network again: a host that changed (a public address) ends the clone' -Tag 'net-running' -ForEach @(
+        @{ Tamper = 'public-host'; Fail = '' }, @{ Tamper = 'dhcp-guard-off'; Fail = '' }, @{ Tamper = ''; Fail = 'Verify' }
+    ) {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))   # running
+        Set-WinKnob $w @{ RunnerBusy = $true }
+        Set-WinNet $w -Tamper @($Tamper | Where-Object { $_ }) -Fail @($Fail | Where-Object { $_ })
+        $s = Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)
+        $s.Action | Should -Be 'destroyed'
+        @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinNetRecords $w).Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'run_one' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike 'network: *'
+    }
+
+    It 'verifies a running guest''s network again: a non-terminating error Verify writes ends the clone' -Tag 'net-running' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))   # running
+        Set-WinKnob $w @{ RunnerBusy = $true; NetVerifyError = $true }
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Action | Should -Be 'destroyed'
+        @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'run_one' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike 'network: Verify wrote an error*'
+    }
+
+    It 'reads a running guest''s adapter back again: a silent Verify does not pass <Tamper>' -Tag 'net-running-readback' -ForEach @(
+        @{ Tamper = 'dhcp-guard-off' }, @{ Tamper = 'foreign-peer' }
+    ) {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))   # running
+        Set-WinKnob $w @{ RunnerBusy = $true; NetVerifySilent = $true }
+        Set-WinNet $w -Tamper $Tamper
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Action | Should -Be 'destroyed'
+        @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'run_one' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike 'network: read-back: *'
+    }
+
+    It 'verifies a running guest''s network at least every 60 s, not on every step' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $B.NetSeconds = 60
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))
+        $n = @(Get-WinCalls $w 'NetVerify *').Count
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))
+        @(Get-WinCalls $w 'NetVerify *').Count | Should -Be $n
+        $B.Now = { [DateTime]::UtcNow.AddSeconds(61) }
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))
+        @(Get-WinCalls $w 'NetVerify *').Count | Should -Be ($n + 1)
+    }
+
     It 'a drained VM kept for its release is held to its limits on every step, before the retry gate, after a restart too' -Tag 'deleting-limits' {
         foreach ($knob in @(@{ CloneBytes = 61 * $script:GiB }, @{ Paused = $true }, @{ MeasureFails = $true })) {
             foreach ($restart in $false, $true) {

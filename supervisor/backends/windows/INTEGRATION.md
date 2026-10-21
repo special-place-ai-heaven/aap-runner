@@ -88,17 +88,33 @@ supervisor, the installer, the guest image, the network or CI yet. How the backe
 
 ## P10.0: the guest network module
 
-The interface the backend calls, each op one hashtable `@{ VmId; VmName; Profile = 'windows' }`:
+The contract is [host-network-module.md](../../../parity/contracts/host-network-module.md); this backend follows its
+Consumer obligations (row P10.2 of its conformance table):
 
-| Op | Contract |
-|---|---|
-| `Attach` | Connect the VM to the profile's guest network: exactly the adapters it needs, each on the internal switch `aap-guests-win` with DHCP guard and router guard on and MAC spoofing off, port ACLs as guest-transport.md lists. Throw on any failure. The VM comes from `NewVm` with no adapter |
-| `Verify` | Return a list of problems (strings), empty when the VM's network is exactly as Attach made it, ACLs included. Never throw for a problem found; throw only when it cannot look |
-| `Detach` | Remove whatever Attach made for this VM beyond the VM itself (per-guest switch, NAT entries, rules). Idempotent: absent is done. Called at every destroy attempt, after `Remove-VM` |
+- It imports the shared check `supervisor\network\AapHostNetworkCheck.psm1` beside `capacity` and `broker`, so P19
+  deploys `network\` with the supervisor, admin-only, and the runtime check of admin-only code folders covers it too.
+- Create: `NewVm` with no adapter, `Attach` with the VM Off, `Get-AapHostNetworkDeclarationProblems`
+  (`AAP_NetworkInvalid`), the answer file written from the declaration while the VM is Off (static address and prefix
+  length, the gateway as default route, the resolvers as DNS servers, DHCP off; `Microsoft-Windows-TCPIP` and
+  `Microsoft-Windows-DNS-Client` in the specialize pass on the interface named `Ethernet`, D2), then `Verify` unfiltered
+  and `Get-AapHostNetworkAdapterProblems` on `GetVmConfig`'s adapters (`AAP_NetworkUntrusted`). No copy of the
+  declaration is written to the reservation's journal.
+- Boot: with the VM Off, `Attach` again, the declaration check, `Verify` and the read-back before `StartVm`. The
+  declaration from that Attach stays in this process's memory only, for the read-back while the VM runs. A VM found
+  running at boot is one this process started whose boot record was not written (`StartVm` returned, the journal write
+  threw); after a crash the lost-credential guard abandons the VM before this point. It gets `Verify` and the read-back
+  against the declaration it booted with.
+- Running guests (probing, ready, busy, draining, quarantined, deleting kept): `Verify` again at least
+  every 60 s (`$B.NetSeconds`; a non-terminating error it writes is a problem too), then the read-back against the
+  in-memory declaration; a problem or a throw ends the VM through the backend's failed path (`fatal`,
+  `network: <problem>`). A VM this process did not start (kept after a supervisor restart for its release or teardown)
+  has no declaration in memory and gets `Verify` only. P12 may call steps more often; the cadence is per reservation.
+- Teardown: `Remove-VM`, then `Detach`, on every attempt; a `Detach` that throws keeps the slot (`teardown_failed` after
+  three tries).
+- The provider's `GetVmConfig` reports the adapters in the contract's read-back shape (text values; `LegacyAcls`,
+  `Peers`, `Acls` with all ten fields).
 
-The backend also checks, from the VM's own settings, that every adapter is on `aap-guests-win` of type Internal with
-DHCP guard and router guard on and MAC spoofing off, and that the Guest Service Interface and Key-Value Pair Exchange are
-off per VM (`NewVm`, by integration service id). Enhanced Session Mode is a host setting, not a per-VM one: the backend
+The Guest Service Interface and Key-Value Pair Exchange are off per VM (`NewVm`, by integration service id). Enhanced Session Mode is a host setting, not a per-VM one: the backend
 only checks it (`Get-AapWinHostProblem`, create refuses `AAP_EnhancedSession`); turning it off for the host
 (`Set-VMHost -EnableEnhancedSessionMode $false`) and keeping Hyper-V Administrators empty belong to P10.0/P19's elevated
 host preparation.
@@ -149,7 +165,10 @@ host preparation.
   cap; remote `Write-Host`, prompts and stream floods end in a non-zero exit or an extra stdout byte (both hostile), never
   in a hang; `[Console]::SetOut([IO.TextWriter]::Null)` keeps remote host output off stdout.
 - Hyper-V attaches `os.avhdx` to a read-only `base.vhdx` (P06's ACL) and mounts a clone disk attached to an Off VM for
-  the answer-file rewrite after a crash.
+  the answer file (written after `Attach`, so always while the VM exists and is Off).
+- Windows Setup applies the answer file's static addressing (`Microsoft-Windows-TCPIP`, `Microsoft-Windows-DNS-Client`)
+  to the one adapter, named `Ethernet` on a generation 2 VM; if the name differs, the identifier is the lab's to fix
+  (the contract's addressing lab point).
 - How close a full scratch VHDX comes to its maximum size (the backend leaves 64 MiB under `scratch_gib`).
 - Whether Hyper-V adds per-VM entries (`S-1-5-83-1-...`) to the ACL of `base.vhdx` or its folder when a VM starts. If it
   does, `Get-AapWinSealedProblem` refuses every later create of that generation (fail closed); decide in the lab whether

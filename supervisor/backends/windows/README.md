@@ -8,7 +8,9 @@ inside the hidden, elevated supervisor and is the only code that drives Windows 
 (version 1). What other items must wire is in [INTEGRATION.md](INTEGRATION.md).
 
 **Status: authored against fakes only.** No VM, switch, disk or PowerShell Direct session was created. The guest
-transport is CANDIDATE (D2) until the lab proof P02.1 passes; the guest network is the P10.0 module, not built yet.
+transport is CANDIDATE (D2) until the lab proof P02.1 passes; the guest network is the P10.0 module, not built yet:
+the backend conforms to its contract, [host-network-module.md](../../../parity/contracts/host-network-module.md), and is
+tested against the contract's shared strict fake.
 
 | File | What it is |
 |---|---|
@@ -24,10 +26,10 @@ tick.
 
 | Allocator state | Step |
 |---|---|
-| `creating` | **create**: trust-check the roots and the host (Enhanced Session Mode off, nobody but SYSTEM and Administrators in Hyper-V Administrators), check that the generation folder and `base.vhdx` are sealed read-only, re-hash the base against the pin through a read handle held until the differencing disk exists, the reservation folders, `os.avhdx` (differencing child of the base), `scratch.vhdx` (its maximum size inside `scratch_gib`), a fresh per-clone password written offline into the clone's answer file, `New-VM` and its id journaled at once (or the VM whose id the journal already recorded), read back and verify every VM setting, its disks and devices, attach the guest network and verify it. Then **boot**, then **ready** (`probe` until `ready`, at most 15 minutes after boot) and `Set-AapSlotState ready` |
+| `creating` | **create**: trust-check the roots and the host (Enhanced Session Mode off, nobody but SYSTEM and Administrators in Hyper-V Administrators), check that the generation folder and `base.vhdx` are sealed read-only, re-hash the base against the pin through a read handle held until the differencing disk exists, the reservation folders, `os.avhdx` (differencing child of the base), `scratch.vhdx` (its maximum size inside `scratch_gib`), `New-VM` with no adapter and its id journaled at once (or the VM whose id the journal already recorded), read back and verify every VM setting, its disks and devices; then the guest network: `Attach` with the VM Off, the shared declaration check (`AAP_NetworkInvalid`), a fresh per-clone password and the declaration's static address, gateway and resolvers (DHCP off) written offline into the clone's answer file, `Verify` (every object it writes is a problem, a throw too) and the read-back of the adapter from Hyper-V through the provider against the declaration (`AAP_NetworkUntrusted`). No copy of the declaration is journaled. Then **boot**: with the VM Off, `Attach` again (the module returns the same declaration), the declaration check, `Verify` and the read-back, then `Start-VM`; that declaration stays in this process's memory only, for the read-back while the VM runs. Then **ready** (`probe` until `ready`, at most 15 minutes after boot) and `Set-AapSlotState ready` |
 | `ready` | **run_one**: `Invoke-AapBrokerLease`, `deliver_registration` with the JIT config on the call child's stdin, `start_runner` |
 | `ready`, `busy`, `draining` | **heartbeat**, at most every 30 s per reservation: guest `status` over this VM's own channel, broker status for `JobRunning`, `Update-AapHeartbeat`. A runner that GitHub reports gone ends the job (`collecting`); a draining runner that is idle is stopped; a busy one is never touched |
-| every state with a VM | **limits**, from the host on every step, with or without a guest channel, `deleting` included (a drained VM kept for its pending release), before the once-a-minute retry gate: a paused VM or a clone folder over `clone_gib` (or one that cannot be measured) destroys the VM (`fatal`), the slot held until the teardown proof |
+| every state with a VM | **limits**, from the host on every step, with or without a guest channel, probing and `deleting` included (a drained VM kept for its pending release), before the once-a-minute retry gate: a paused VM or a clone folder over `clone_gib` (or one that cannot be measured) destroys the VM (`fatal`), the slot held until the teardown proof; and a running VM's network, `Verify` again at least every 60 s (the host's addresses may have changed; a non-terminating error it writes is a problem) and the read-back against the in-memory declaration (a VM this process did not start gets `Verify` only), a problem or a throw destroys it the same way |
 | `collecting` | **collect**: the agent's bounded summary (returned as `Summary`, never written), then `deleting` |
 | `deleting` | **destroy**: `Invoke-AapBrokerRelease` if a lease was ever asked for, `Stop-VM -TurnOff`, `Remove-VM`, P10.0 detach, delete both reservation folders without following links, observe absence, `Complete-AapTeardown` |
 | `quarantined` | `heartbeat`: a validated reply plus a broker answer returns it; `hostile_guest`, `teardown_failed`, or a destroy already journaled: destroy again; `crash`, `unknown_vm`: held. The limits apply here too |
@@ -67,7 +69,8 @@ lock held returns `held` / `step_in_progress` at once.
 ### The per-clone credential
 
 A random 32-character password, generated at create, kept only in this process (`$B.Guests`), written once into the
-offline clone disk (`Windows\Panther\unattend.xml`, user `runneradmin`), and passed to each call child on its stdin. It
+offline clone disk (`Windows\Panther\unattend.xml`, user `runneradmin`), and passed to each call child on its stdin,
+unbuffered (with the JIT config), so no copy stays in a stream buffer nothing can zero. It
 lives in an object whose only property is `Length` (`WriteTo(stream)`, `Clear()`, the broker's JIT config pattern), so it
 is never a command's parameter value (module logging, event 4103), and it is zeroed at destroy. It is never in the
 journal, the allocator, a log or a result. The clone disk is mounted with no drive letter at an access path inside the
@@ -159,10 +162,10 @@ with `parity/contracts/validate.py`).
 
 | File | Covers |
 |---|---|
-| `Lifecycle.Tests.ps1` | one job end to end; caps; boot deadline; drain; heartbeat binding; clone cap; paused VM; heartbeat quarantine recovery |
+| `Lifecycle.Tests.ps1` | one job end to end; caps; boot deadline; drain; heartbeat binding; clone cap; paused VM; heartbeat quarantine recovery; a running guest's network (Verify problems, throws and errors, the read-back, the 60 s cadence) |
 | `Transport.Tests.ps1` | every reply check; every hostile case end to end; hostile with a failing allocator; the real capped child (overflow, hang, memory flood, grandchild, exit code, stdin only) |
 | `Teardown.Tests.ps1` | release outcomes; a VM or folder that will not go; no slot reuse before the proof; links in clone folders |
-| `Create.Tests.ps1` | untrusted roots; the base pin; VM settings; switch and guards; network verification; storage document; offline disk helpers |
+| `Create.Tests.ps1` | untrusted roots; the base pin; VM settings; the guest network against the shared fake (order, every tamper and fault, a lying module's Verify and declaration, the re-Attach and read-back before boot, a VM running at boot, an adapter the module did not make); storage document; offline disk helpers (the answer file's static addressing) |
 | `Recovery.Tests.ps1` | unreadable journals; lost credential; hostile records; restart with a busy runner; JIT delivery rule; inventory and reconcile callbacks; orphans |
 | `Crash.Tests.ps1` | a real process killed at every lifecycle boundary (19 points, plus a drain) and recovered |
 | `Hygiene.Tests.ps1` | no password or JIT config in any file; JIT never text; the password and answer-file bytes never a command's parameter (AST); antivirus patterns; AMSI compile |

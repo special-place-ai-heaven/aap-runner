@@ -6,7 +6,8 @@
 # exported Select-AapWinPartition and Write-AapWinUnattend. The per-clone password reaches WriteUnattend only as the
 # backend's secret object (Length, WriteTo, Clear) and is never a cmdlet's parameter value here.
 # The guest network (switch, NAT, port ACLs, guards) is not here: it is the P10.0 module behind $Backend.Network. NewVm
-# leaves the VM without a network adapter; P10.0's Attach adds the one adapter the backend then verifies.
+# leaves the VM without a network adapter; P10.0's Attach adds the one adapter the backend then verifies. GetVmConfig
+# reports the adapters in host-network-module.md's provider read-back shape, for the shared check.
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
@@ -75,7 +76,7 @@ function New-AapWinHyperVProvider {
             if ([IO.Directory]::Exists($mnt)) { [IO.Directory]::Delete($mnt) }   # an empty leftover of a crash; anything in it throws
             [void][IO.Directory]::CreateDirectory($mnt)
             Add-PartitionAccessPath -DiskNumber $disk.Number -PartitionNumber $os.PartitionNumber -AccessPath ($mnt + '\')
-            try { Write-AapWinUnattend -Root $mnt -UserName $a.User -Password $a.Password }
+            try { Write-AapWinUnattend -Root $mnt -UserName $a.User -Password $a.Password -Network $a.Network }
             finally { Remove-PartitionAccessPath -DiskNumber $disk.Number -PartitionNumber $os.PartitionNumber -AccessPath ($mnt + '\') }
         } finally {
             Hyper-V\Dismount-VHD -Path $a.Vhdx
@@ -102,10 +103,23 @@ function New-AapWinHyperVProvider {
         $vm = Get-AapWinHvVm $a.VmId
         $svc = @(Hyper-V\Get-VMIntegrationService -VM $vm)
         $on = { param($id) [bool](@($svc | Where-Object { $_.Id -like "*\$id" -and $_.Enabled }).Count) }
+        # The provider read-back of host-network-module.md (Consumer obligations), as Hyper-V shows each adapter: text values,
+        # compared exactly by the shared check; strict mode makes a misspelt property throw instead of reading as unset.
         $nics = foreach ($n in @(Hyper-V\Get-VMNetworkAdapter -VM $vm)) {
             $name = ''; $type = ''
             if ($n.SwitchId) { $sw = Hyper-V\Get-VMSwitch -Id $n.SwitchId -ErrorAction Stop; $name = [string]$sw.Name; $type = [string]$sw.SwitchType }
-            @{ SwitchName = $name; SwitchType = $type; DhcpGuard = ([string]$n.DhcpGuard -eq 'On'); RouterGuard = ([string]$n.RouterGuard -eq 'On'); MacAddressSpoofing = ([string]$n.MacAddressSpoofing -eq 'On') }
+            @{  SwitchName = $name; SwitchType = $type
+                DhcpGuard = [string]$n.DhcpGuard; RouterGuard = [string]$n.RouterGuard; MacAddressSpoofing = [string]$n.MacAddressSpoofing
+                PortMirroringMode = [string]$n.PortMirroringMode; VlanMode = [string]$n.VlanSetting.OperationMode; StormLimit = [string]$n.StormLimit
+                LegacyAcls = @(Hyper-V\Get-VMNetworkAdapterAcl -VMNetworkAdapter $n).Count
+                # the other VMs with an adapter on the same switch; the host's own adapters are not VMs
+                Peers = @(Hyper-V\Get-VMNetworkAdapter -All | Where-Object { $name -and -not $_.IsManagementOs -and $_.SwitchName -ceq $name -and $_.VMId -ne $vm.Id } |
+                    ForEach-Object { [string]$_.VMName })
+                Acls = @(Hyper-V\Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter $n | ForEach-Object {
+                        @{ Action = [string]$_.Action; Direction = [string]$_.Direction; RemoteAddress = [string]$_.RemoteIPAddress
+                            LocalAddress = [string]$_.LocalIPAddress; Protocol = [string]$_.Protocol; RemotePort = [string]$_.RemotePort
+                            LocalPort = [string]$_.LocalPort; Weight = $_.Weight; Stateful = [string]$_.Stateful; IsolationId = [string]$_.IsolationID } })
+            }
         }
         @{
             Generation = [int]$vm.Generation; CheckpointType = [string]$vm.CheckpointType
