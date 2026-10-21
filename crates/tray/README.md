@@ -15,13 +15,13 @@ admin-written.
 | File | Writer | Content |
 |---|---|---|
 | `inbox\state.json` | tray (atomic: `.tmp` then rename) | `{"desired":"on"}` or `{"desired":"off"}` |
-| `inbox\settings.json` | tray (atomic) | `{"runner_count":1..5,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` plus schema 2 keys; `"windows_runner_count":0..4` is reserved for a tray with a Windows backend and never written by this one in schema 2. Schema 3 ([`settings-v3.schema.json`](../../parity/contracts/settings-v3.schema.json), every key) only while a fresh `status.v5.json` lists 3 in `settings_schemas`, see below |
+| `inbox\settings.json` | tray (atomic) | `{"runner_count":1..5,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` plus schema 2 keys; `"windows_runner_count":0..4` is reserved for a tray with a Windows backend and never written by this one in schema 2. Schema 3 ([`settings-v3.schema.json`](../../parity/contracts/settings-v3.schema.json), every key) over a stored schema 3 file, or while a fresh `status.v5.json` lists 3 in `settings_schemas`, see below |
 | `inbox\tray.log` | tray, appended if `inbox\` exists | one line per failed write/spawn |
 | `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`, or the `identity` request below. Install uses schema 2 (First-run wizard). The elevated helper reads it. |
 | `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code` |
 | `jobs\<id>\log.txt`, `exit.txt` | elevated helper | live log and the process exit code |
 | `status.json` | supervisor, never the tray | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"…","updated":"<RFC3339>","detail":"…","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/…/actions/runs/N"}` (the last five optional; `repo` and `run_url` may be `""`). Schema 4 adds `work_disk_gib`, `work_disk_free_gb`, `work_disk_floor_gb` and `cleaning`; schema 3 still reads, with no disk sample and cleaning false. A schema above 4 is rejected. |
-| `status.v5.json` | supervisor, never the tray | [`status-v5.schema.json`](../../parity/contracts/status-v5.schema.json): both profiles, every backend's slots, storage, the legacy pool. Read at most 64 KiB; missing, unparseable, stale (180 s), a `schema` other than 5, or not exactly the Linux and Windows profiles = not there, and the tray keeps to `status.json` and settings schema 2 |
+| `status.v5.json` | supervisor, never the tray | [`status-v5.schema.json`](../../parity/contracts/status-v5.schema.json): both profiles, every backend's slots, storage, the legacy pool. Read at most 64 KiB; missing, unparseable, stale (over 180 s old, or `updated` in the future), a `schema` other than 5, or not exactly the Linux and Windows profiles = not there, and the tray keeps to `status.json` and settings schema 2 |
 | `logs\` | supervisor | opened by "Open logs" via `C:\Windows\explorer.exe` (absolute path) |
 
 - `inbox\` missing: `Not installed`; Start/Stop/Restart, Pause/Resume and Settings are disabled.
@@ -48,15 +48,19 @@ admin-written.
   that times the Linux count (3 Linux + 2 Windows on 26 / 72 caps: 5 CPUs and 14 GiB each, Linux
   15 / 42). The window shows that even share for Windows now, marked prospective. With Windows 0
   the file is exactly what it was before.
-- Settings schema 3: while a fresh `status.v5.json` lists 3 (a supervisor with the capacity
-  module), Apply and Pause/Resume write schema 3 instead, with every key. The keys the window has
-  no control for yet (`linux_backend`, the Windows count, `host_reserve_percent`, `share_mode`,
-  both shares, `lease_wall_clock_hours`) are kept from the stored schema 3 file, else taken from
-  what `status.v5.json` reports (lease 6 h). The Windows choice stays tray-local until the window
-  gets a live Windows control (P20). A write that breaks a schema 3 rule (Linux plus the kept
-  Windows count over 5, shares that no longer fit the counts) is refused and the file stays. A
-  stored schema 3 file reads with Linux 0 allowed; one that fails a schema 3 rule reads as the
-  defaults, like any bad file.
+- Settings schema 3: over a stored schema 3 file, or while a fresh `status.v5.json` lists 3 (a
+  supervisor with the capacity module), Apply and Pause/Resume write schema 3 instead, with every
+  key; never schema 2 over a stored schema 3 file, also while `status.v5.json` is stale (a
+  supervisor restart or a long block), missing or newer. The keys the window has no control for
+  yet (`linux_backend`, `host_reserve_percent`, `share_mode`, both shares,
+  `lease_wall_clock_hours`) are kept from the stored schema 3 file, else taken from what
+  `status.v5.json` reports (lease 6 h), and so is the Windows count until a schema 3 file is
+  stored: the tray-local choice never reaches the supervisor. A stored schema 3 file shows its
+  own two counts (Linux 0 allowed) and Apply writes the edited ones. Every write is checked
+  against the schema it writes: a write that breaks a schema 3 rule (Linux plus Windows over 5,
+  shares that no longer fit the counts), or a schema 2 write with Linux 0, is refused and the
+  file stays. A stored schema 3 file that fails a schema 3 rule reads as the defaults, like any
+  bad file.
 - Host caps: the VM size comes from `[wsl2]` `processors=` / `memory=` in `%USERPROFILE%\.wslconfig`
   (`GB`/`G`/`MB`/`M`; missing file or key: 28 CPUs / 80 GiB, shown as "assumed"). Totals may use at
   most VM minus 2 CPUs and VM minus 8 GiB (26 / 72 on a 28 / 80 VM).

@@ -90,6 +90,7 @@ impl SettingsPanel {
     /// rewrites only that).
     fn edit(&self) -> Settings {
         let keep = Settings {
+            schema: self.stored.schema,
             io_percent: self.io_percent,
             sharing: self.sharing,
             ..Settings::default()
@@ -250,8 +251,10 @@ impl SettingsPanel {
         let edit = self.edit();
         let linux = linux_line(&edit, &vm);
         let windows = windows_line(&edit, self.windows, &vm);
-        let fits_linux = settings::count_range(Os::Linux, self.windows, WINDOWS_BACKEND);
-        let fits_windows = settings::count_range(Os::Windows, self.linux, WINDOWS_BACKEND);
+        // A stored schema 3 file is the supervisor's word that it runs Windows: Linux may be 0.
+        let backend = WINDOWS_BACKEND || self.stored.schema >= 3;
+        let fits_linux = settings::count_range(Os::Linux, self.windows, backend);
+        let fits_windows = settings::count_range(Os::Windows, self.linux, backend);
         ui.horizontal(|ui| {
             os_label(ui, p, Os::Linux);
             segmented(
@@ -563,6 +566,7 @@ fn step5(v: u32) -> u32 {
 /// What Apply writes: the derived limits with the IO cap and sharing mode from `keep`.
 fn edited(keep: &Settings, linux: u32, windows: u32, paused: bool, vm: &VmLimit) -> Settings {
     Settings {
+        schema: keep.schema,
         io_percent: keep.io_percent,
         sharing: keep.sharing,
         ..Settings::derived(linux, windows, paused, vm)
@@ -816,6 +820,30 @@ mod tests {
         assert!(panel.write_error.is_some());
         assert_eq!(settings::read_settings(&base), panel.stored);
         assert_eq!(panel.stored.runner_count, 2);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A stored schema 3 file shows its own two counts (Windows only included), Linux 0 is a
+    /// choice, and Apply keeps schema 3 with the edited Windows count.
+    #[test]
+    fn a_schema_three_file_shows_and_applies_its_counts() {
+        let base = crate::state::temp_base("settings-panel-v3");
+        std::fs::write(
+            crate::state::inbox(&base).join("settings.json"),
+            crate::state::fixture("settings-v3/valid/windows-only-even.json"),
+        )
+        .unwrap();
+        settings::write_windows_choice(&settings::windows_choice_path(&base), 1).unwrap();
+        let mut panel = SettingsPanel::load(&base);
+        panel.vm = VmLimit::ASSUMED;
+        assert_eq!((panel.linux, panel.windows, panel.changes()), (0, 2, 0));
+        panel.windows = 3;
+        assert!(panel.apply(&base), "{:?}", panel.write_error);
+        let s = settings::read_settings(&base);
+        assert_eq!(
+            (s.schema, s.runner_count, s.windows_runner_count),
+            (3, 0, 3)
+        );
         std::fs::remove_dir_all(&base).unwrap();
     }
 

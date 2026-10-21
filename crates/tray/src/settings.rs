@@ -5,9 +5,9 @@
 //! `windows_runner_count` is reserved for the Windows profile's count: read when present, never
 //! written while no Windows backend exists (the count lives in a tray-local file instead), so
 //! every file this tray writes is what it always was. `runner_count` stays the Linux count.
-//! Schema 3 (two counts 0..5, shares, host reserve) is written only while a fresh
-//! `status.v5.json` says the supervisor reads it; its keys the window has no control for yet are
-//! kept as they are.
+//! Schema 3 (two counts 0..5, shares, host reserve) is written over a stored schema 3 file, or
+//! while a fresh `status.v5.json` says the supervisor reads it, never schema 2 over schema 3; its
+//! keys the window has no control for yet are kept as they are.
 
 use crate::state::{StatusV5, inbox, read_bounded, read_status_v5, write_atomic};
 use serde::{Deserialize, Serialize};
@@ -122,10 +122,11 @@ pub fn write_windows_choice(path: &Path, windows: u32) -> io::Result<()> {
 }
 
 /// What the window shows as stored: `settings.json`, with the Windows count from the tray-local
-/// file while no Windows backend exists (0 when it does not fit the stored Linux count).
+/// file while no Windows backend exists (0 when it does not fit the stored Linux count). A schema 3
+/// file has its own Windows count: the supervisor runs it.
 pub fn read_with_windows_choice(base: &Path) -> Settings {
     let mut s = read_settings(base);
-    if !WINDOWS_BACKEND {
+    if !WINDOWS_BACKEND && s.schema < 3 {
         let w = read_windows_choice(&windows_choice_path(base));
         s.windows_runner_count = if counts_valid(s.runner_count, w, false) {
             w
@@ -416,22 +417,31 @@ pub fn read_settings(base: &Path) -> Settings {
         .unwrap_or_default()
 }
 
-/// Refuses to write a file that fails `validate`. Writes schema 3 while a fresh
-/// `status.v5.json` lists it in `settings_schemas` (status-settings.md, compatibility rules),
-/// else schema 2.
+/// Writes schema 3 over a stored schema 3 file, or while a fresh `status.v5.json` lists it in
+/// `settings_schemas`, else schema 2 (status-settings.md, compatibility rules): a supervisor that
+/// is restarting or busy past the 180 s never gets its shares, reserve and Windows count dropped.
+/// Refuses a file that fails the rules of the schema it writes.
 pub fn write_settings(base: &Path, s: &Settings, vm: &VmLimit) -> io::Result<()> {
+    write_settings_at(base, s, vm, SystemTime::now())
+}
+
+fn write_settings_at(base: &Path, s: &Settings, vm: &VmLimit, now: SystemTime) -> io::Result<()> {
     let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
-    s.validate(vm).map_err(invalid)?;
-    let bytes = match read_status_v5(base, SystemTime::now()) {
-        Some(v5) if v5.takes_settings_v3() => {
-            let v3 = SettingsV3::edited(s, kept_v3(base, &v5));
+    let bytes = match kept_v3(base, now) {
+        Some(kept) => {
+            let v3 = SettingsV3::edited(s, kept);
+            v3.settings().validate(vm).map_err(invalid)?;
             v3.check().map_err(invalid)?;
             serde_json::to_vec(&v3)?
         }
-        _ => serde_json::to_vec(&Settings {
-            schema: SETTINGS_SCHEMA,
-            ..*s
-        })?,
+        None => {
+            let v2 = Settings {
+                schema: SETTINGS_SCHEMA,
+                ..*s
+            };
+            v2.validate(vm).map_err(invalid)?;
+            serde_json::to_vec(&v2)?
+        }
     };
     write_atomic(&inbox(base).join("settings.json"), &bytes)
 }
@@ -476,12 +486,13 @@ struct SettingsV3 {
 }
 
 impl SettingsV3 {
-    /// The window's edit over the kept keys. The Windows count stays the kept one while the
-    /// tray has no Windows backend: its own choice is tray-local.
+    /// The window's edit over the kept keys. The Windows count is the edit's when it was read
+    /// from a schema 3 file (or the tray has a Windows backend), else the kept one: a tray-local
+    /// choice never reaches the supervisor.
     fn edited(s: &Settings, kept: SettingsV3) -> SettingsV3 {
         SettingsV3 {
             runner_count: s.runner_count,
-            windows_runner_count: if WINDOWS_BACKEND {
+            windows_runner_count: if WINDOWS_BACKEND || s.schema >= 3 {
                 s.windows_runner_count
             } else {
                 kept.windows_runner_count
@@ -570,13 +581,14 @@ fn parse_v3(text: &str) -> Option<SettingsV3> {
     s.check().is_ok().then_some(s)
 }
 
-/// The schema 3 keys the window has no control for yet: those of the stored schema 3 file, else
-/// what `status.v5.json` reports (Linux backend, Windows count, reserve, shares) and a 6 h lease
-/// wall clock.
-fn kept_v3(base: &Path, v5: &StatusV5) -> SettingsV3 {
+/// The schema 3 keys the window has no control for yet: those of the stored schema 3 file, else,
+/// while a fresh `status.v5.json` lists schema 3, what it reports (Linux backend, Windows count,
+/// reserve, shares) and a 6 h lease wall clock. `None`: write schema 2.
+fn kept_v3(base: &Path, now: SystemTime) -> Option<SettingsV3> {
     if let Some(v3) = read_bounded(&inbox(base).join("settings.json")).and_then(|t| parse_v3(&t)) {
-        return v3;
+        return Some(v3);
     }
+    let v5 = read_status_v5(base, now).filter(StatusV5::takes_settings_v3)?;
     let d = Settings::default();
     let per_profile = v5.capacity.share_mode == "per_profile";
     let share = |name: &str| {
@@ -584,7 +596,7 @@ fn kept_v3(base: &Path, v5: &StatusV5) -> SettingsV3 {
             .and_then(|p| p.share_percent)
             .filter(|_| per_profile)
     };
-    SettingsV3 {
+    Some(SettingsV3 {
         schema: 3,
         linux_backend: if v5
             .profile("linux")
@@ -610,7 +622,7 @@ fn kept_v3(base: &Path, v5: &StatusV5) -> SettingsV3 {
         linux_share_percent: share("linux"),
         windows_share_percent: share("windows"),
         lease_wall_clock_hours: 6,
-    }
+    })
 }
 
 #[cfg(test)]
@@ -1095,7 +1107,7 @@ mod tests {
     }
 
     /// A `status.v5.json` from the contract fixtures with `settings_schemas` and `updated`
-    /// replaced: a far-future time is fresh (clock skew counts as fresh), 2000 is stale.
+    /// replaced: `FRESH` is a minute before `now()`, 2000 is stale, a time after `now()` too.
     fn write_v5(base: &Path, schemas: &str, updated: &str) {
         let mut v: serde_json::Value =
             serde_json::from_str(&fixture("status-v5/valid/mixed-five-slots.json")).unwrap();
@@ -1104,7 +1116,11 @@ mod tests {
         fs::write(base.join("status.v5.json"), v.to_string()).unwrap();
     }
 
-    const FRESH: &str = "2099-01-01T00:00:00Z";
+    const FRESH: &str = "2026-10-19T18:00:00Z";
+
+    fn now() -> SystemTime {
+        crate::state::parse_rfc3339("2026-10-19T18:01:00Z").unwrap()
+    }
 
     fn written(base: &Path) -> serde_json::Value {
         serde_json::from_str(&fs::read_to_string(inbox(base).join("settings.json")).unwrap())
@@ -1189,18 +1205,76 @@ mod tests {
             ("[1,2,3]", FRESH, 3),
             ("[1,2]", FRESH, 2),
             ("[2,3]", "2000-01-01T00:00:00Z", 2),
+            ("[2,3]", "2026-10-19T18:05:00Z", 2),
         ] {
             let _ = fs::remove_file(inbox(&base).join("settings.json"));
             write_v5(&base, schemas, updated);
-            write_settings(&base, &s, &VM).unwrap();
+            write_settings_at(&base, &s, &VM, now()).unwrap();
             assert_eq!(written(&base)["schema"], want, "{schemas} {updated}");
         }
         // A newer status.v5.json is not read: schema 2.
         let six = fixture("status-v5/invalid/future-schema-6.json")
             .replace("2026-10-19T18:00:00Z", FRESH);
         fs::write(base.join("status.v5.json"), six).unwrap();
-        write_settings(&base, &s, &VM).unwrap();
+        write_settings_at(&base, &s, &VM, now()).unwrap();
         assert_eq!(written(&base)["schema"], 2);
+        // Schema 2 is checked as schema 2: no Linux 0, whatever the edit was read as.
+        let windows_only = Settings {
+            schema: 3,
+            runner_count: 0,
+            windows_runner_count: 2,
+            ..s
+        };
+        let err = write_settings_at(&base, &windows_only, &VM, now()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(written(&base)["runner_count"], 3);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn never_writes_schema_two_over_a_stored_schema_three_file() {
+        let base = temp_base("settings-v3-kept");
+        for name in ["owner-example-per-profile", "windows-only-even"] {
+            for v5 in ["stale", "missing", "newer"] {
+                let stored: serde_json::Value =
+                    serde_json::from_str(&fixture(&format!("settings-v3/valid/{name}.json")))
+                        .unwrap();
+                fs::write(inbox(&base).join("settings.json"), stored.to_string()).unwrap();
+                let _ = fs::remove_file(base.join("status.v5.json"));
+                match v5 {
+                    "stale" => write_v5(&base, "[1,2,3]", "2000-01-01T00:00:00Z"),
+                    "newer" => fs::write(
+                        base.join("status.v5.json"),
+                        fixture("status-v5/invalid/future-schema-6.json"),
+                    )
+                    .unwrap(),
+                    _ => {}
+                }
+                // Pause as the menu does it: read, flip, write.
+                let paused = Settings {
+                    paused: true,
+                    ..read_settings(&base)
+                };
+                write_settings_at(&base, &paused, &VM, now()).unwrap();
+                let mut want = stored.clone();
+                want["paused"] = true.into();
+                assert_eq!(written(&base), want, "{name} {v5}");
+            }
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_window_shows_a_schema_three_file_with_its_own_windows_count() {
+        let base = temp_base("settings-v3-window");
+        write_windows_choice(&windows_choice_path(&base), 1).unwrap();
+        fs::write(
+            inbox(&base).join("settings.json"),
+            fixture("settings-v3/valid/windows-only-even.json"),
+        )
+        .unwrap();
+        let s = read_with_windows_choice(&base);
+        assert_eq!((s.runner_count, s.windows_runner_count), (0, 2));
         fs::remove_dir_all(&base).unwrap();
     }
 
@@ -1210,7 +1284,7 @@ mod tests {
         write_v5(&base, "[1,2,3]", FRESH);
         // The fixture reports per_profile 60/30 with Windows 2 and reserve 10.
         let s = Settings::derived(3, 1, false, &VM);
-        write_settings(&base, &s, &VM).unwrap();
+        write_settings_at(&base, &s, &VM, now()).unwrap();
         let w = written(&base);
         assert_eq!(
             w.as_object().unwrap().len(),
@@ -1256,13 +1330,13 @@ mod tests {
             paused: true,
             ..read_settings(&base)
         };
-        write_settings(&base, &paused, &VM).unwrap();
+        write_settings_at(&base, &paused, &VM, now()).unwrap();
         let mut want = stored.clone();
         want["paused"] = true.into();
         assert_eq!(written(&base), want);
         // An edit that no longer fits the kept Windows count is refused and leaves the file.
         let four = Settings::derived(4, 0, false, &VM);
-        let err = write_settings(&base, &four, &VM).unwrap_err();
+        let err = write_settings_at(&base, &four, &VM, now()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(written(&base), want);
         fs::remove_dir_all(&base).unwrap();

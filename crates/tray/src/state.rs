@@ -510,9 +510,9 @@ impl StatusV5 {
     }
 }
 
-/// `status.v5.json`, or `None` when it is missing, over 64 KiB, unparseable, stale, of another
-/// schema or without exactly the Linux and Windows profiles: then the tray keeps to
-/// `status.json` and to settings schema 2 (an older supervisor writes no such file).
+/// `status.v5.json`, or `None` when it is missing, over 64 KiB, unparseable, stale (over 180 s
+/// old, or `updated` in the future), of another schema or without exactly the Linux and Windows
+/// profiles: then the tray keeps to `status.json` (an older supervisor writes no such file).
 pub fn read_status_v5(base: &Path, now: SystemTime) -> Option<StatusV5> {
     parse_status_v5(&read_bounded(&base.join("status.v5.json"))?, now)
 }
@@ -520,9 +520,9 @@ pub fn read_status_v5(base: &Path, now: SystemTime) -> Option<StatusV5> {
 pub fn parse_status_v5(json: &str, now: SystemTime) -> Option<StatusV5> {
     let v: StatusV5 = serde_json::from_str(json.trim_start_matches('\u{feff}')).ok()?;
     let updated = parse_rfc3339(&v.updated)?;
-    let fresh = !now
+    let fresh = now
         .duration_since(updated)
-        .is_ok_and(|age| age > STALE_AFTER);
+        .is_ok_and(|age| age <= STALE_AFTER);
     let two =
         v.profiles.len() == 2 && v.profile("linux").is_some() && v.profile("windows").is_some();
     (v.schema == SCHEMA_V5 && fresh && two).then_some(v)
@@ -1059,8 +1059,8 @@ mod tests {
             "stale after 180 s"
         );
         assert!(
-            parse_status_v5(&good, at("2026-10-19T17:00:00Z")).is_some(),
-            "clock skew counts as fresh"
+            parse_status_v5(&good, at("2026-10-19T17:59:59Z")).is_none(),
+            "an updated time in the future is stale"
         );
         assert!(parse_status_v5("not json", now).is_none());
         let one: serde_json::Value = serde_json::from_str(&good).unwrap();

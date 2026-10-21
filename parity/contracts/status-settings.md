@@ -62,7 +62,9 @@ the existing strict patterns, usage), and `legacy_pool` (the schema 4 pool numbe
 is re-validated before it is written, as today.
 
 `generation_state` per profile, from the catalog and allocator (null exactly when
-`image_generation` is null, for example the legacy pool):
+`image_generation` is null, for example a VM profile with no active generation and no live slot;
+the legacy pool reports the manager generation its slots were granted on, `legacy-manager` before
+any grant, as `active`):
 
 | Catalog / allocator situation | `generation_state` |
 |---|---|
@@ -104,9 +106,10 @@ with the codes `owner`, `acl`, `reparse`, `ancestor`, `drive-type`, `volume`, `m
 
 When the allocator holds back, the top-level `detail` of `status.v5.json` starts with a fixed
 reason word followed by a short ASCII explanation: `resize_waits` (a smaller count waits for its
-running jobs to drain) or `pool_over_live` (a host measurement no longer holds the live
-reservations; the stored host is clamped and nothing more is admitted). See allocator.md, Resize
-and host measurement.
+running jobs to drain), `pool_over_live` (a host measurement no longer holds the live
+reservations; the stored host is clamped and nothing more is admitted) or `grant_waits` (raised
+`job_cpus` or `job_memory_gib` reach a granted legacy slot only with its next grant). See
+allocator.md, Resize and host measurement.
 
 ## Supervisor states and control distro uptime (DECIDED, owner 2026-10-19)
 
@@ -122,9 +125,9 @@ exit" holds only when desired is off or both counts are 0. P12 writes this into
 | Writer / reader | Rule |
 |---|---|
 | New tray, old supervisor | no `status.v5.json`, so the tray writes schema 2 and keeps the Windows count tray-local (P20.0 behaviour) |
-| New tray, new supervisor | tray writes schema 3 only when `status.v5.json` is fresh (180 s) and lists 3 in `settings_schemas`; then it stops reading its tray-local file and may delete it |
+| New tray, new supervisor | tray writes schema 3 when the stored `settings.json` is a valid schema 3 file (keeping its keys the window has no control for, whatever `status.v5.json` says: a supervisor restart or a long block makes it stale), or when `status.v5.json` is fresh (at most 180 s old, not in the future) and lists 3 in `settings_schemas`; it never writes schema 2 over a stored schema 3 file, and it checks what it writes against the schema it writes. With schema 3 stored it shows that file's two counts and stops reading its tray-local file (it may delete it) |
 | Old tray, new supervisor | old tray reads schema 4 `status.json` and writes schema 2; supervisor keeps accepting 1 and 2 forever (`settings_schemas` must contain 2) |
-| Downgrade of the supervisor | an old supervisor rejects schema 3 with one warning and keeps the last valid settings; the new tray sees no `status.v5.json` and writes schema 2 again |
+| Downgrade of the supervisor | an old supervisor rejects schema 3 with one warning and keeps the last valid settings; the new tray keeps writing schema 3 over the stored schema 3 file, which that supervisor keeps rejecting, until the owner removes `settings.json` (then the tray writes schema 2 again) |
 | Unknown future schema | supervisor: settings with `schema` above its maximum are rejected, last valid settings kept, one warning, status `detail` names it. Tray: `status.v5.json` with schema above 5 is ignored and the tray falls back to `status.json`; never shows readiness from a file it cannot read |
 | Mixed state | schema 4 `status.json` describes the legacy pool only; Windows and VM slots appear only in `status.v5.json` |
 
