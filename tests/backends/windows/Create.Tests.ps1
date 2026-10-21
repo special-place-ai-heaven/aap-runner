@@ -449,6 +449,13 @@ Describe 'the backend context' {
 }
 
 Describe 'offline disk helpers (the production provider uses them)' {
+    AfterAll {
+        # A mutant of check:own-sid leaves folders only SYSTEM and Administrators may open; this user owns them, so it can
+        # take its access back and the test drive can be removed.
+        $denied = $null
+        $null = Get-ChildItem -LiteralPath $TestDrive -Recurse -Directory -Force -ErrorAction SilentlyContinue -ErrorVariable denied
+        foreach ($e in @($denied)) { if ($e.TargetObject -is [string]) { $null = & icacls.exe $e.TargetObject /grant "*$($script:UserSid):F" 2>&1 } }
+    }
     It 'writes the answer file through plain folders only, SYSTEM/Administrators-only, replacing an old one' -Tag 'guest-write', 'own-sid', 'unattend-root' {
         # An elevated run (the supervisor, a hosted CI runner) gets no entry for its own account; an unelevated test does.
         $admin = (New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
