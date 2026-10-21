@@ -192,16 +192,19 @@ Everything else is copied. These 19 functions are verbatim copies of P06's (same
 
 ## P03: inputs
 
-- P03.1 (chair) adds a literal-pinned entry for the `actions/runner-images` archive at
+- P03.1 (done 2026-10-21) added the literal-pinned entry `runner-images-7e7dc1b` for the `actions/runner-images` archive at
   `7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe` as `.tar.gz` (images/ubuntu scripts, assets, toolsets, and
-  helpers/software-report-base; the agent requires exactly one top-level folder). Then rerun
-  `New-AapUbuntuBuildPlan.ps1 -ScriptsDir <extracted images\ubuntu\scripts> -SourceEntry <entry> -SourceSha256 <hex>` with
-  pwsh 7: it pins the 72 script hashes and the archive and drops `p07-upstream-source-archive`.
-- Add the Ubuntu 24.04 live-server ISO with Canonical's signed `SHA256SUMS` as its hash source, then rerun the generator with
-  `-MediaEntry <entry> -MediaSha256 <hex>` (drops `p07-ubuntu-server-media`).
-- Both of those blockers are **unwaivable**: a waiver for either is `AAP_ConfigInvalid`. The 14 P03 Ubuntu blockers and
-  `p07-upstream-variables-unverified` stay waivable: each resolved, or waived by id with a chair approval record (`id`,
-  `rationale`, `plan_sha256`, `approver`) passed in `Waivers` and recorded in `build.json`.
+  helpers/software-report-base; the agent requires exactly one top-level folder), and reran
+  `New-AapUbuntuBuildPlan.ps1 -ScriptsDir <extracted images\ubuntu\scripts> -SourceEntry runner-images-7e7dc1b
+  -SourceSha256 <hex> -MediaEntry ubuntu-24.04.5-live-server -MediaSha256 <hex>` with pwsh 7: the 72 script hashes, the
+  archive and the media are pinned, and `p07-upstream-source-archive`, `p07-upstream-variables-unverified` (checked
+  against `variable.ubuntu.pkr.hcl` inside the archive) and `p07-ubuntu-server-media` are all dropped.
+- The checksum entry `ubuntu-server-24.04.5-sha256sums` is pinned from the kernel.org `ubuntu-releases` mirror because
+  `releases.ubuntu.com` serves no Content-Type and the acquisition tool would refuse it; the bytes were verified
+  identical on 2026-10-21. The signed `SHA256SUMS.gpg` was not verified (no key); transport integrity only.
+- The 14 P03 Ubuntu blockers stay blockers: a build needs each resolved, or waived by id with a chair approval record
+  (`id`, `rationale`, `plan_sha256`, `approver`) passed in `Waivers` and recorded in `build.json`; a bare id is refused. The
+  former plan blockers were resolved by pinning (source and media) and by the variables check, not waived.
 
 ## P06.1 (opened by the coordinator for the Windows twin)
 

@@ -28,7 +28,7 @@
     "imagedata_file": "/imagegeneration/imagedata.json",
     "install_user": "installer"
   },
-  "variables_source": "upstream images/ubuntu/templates/variable.ubuntu.pkr.hcl defaults at 7e7dc1b, not stored in parity/baselines; image_folder is the P01 baseline (/imagegeneration), image_os the hosted ImageOS, image_version the P01 baseline",
+  "variables_source": "upstream images/ubuntu/templates/variable.ubuntu.pkr.hcl defaults at 7e7dc1b, checked 2026-10-21 against the pinned runner-images archive (P03.1): every default matches except image_version (the P01 baseline; upstream default dev) and image_os (the hosted ImageOS ubuntu24; upstream default empty), both passed per build",
   "base": {
     "boot_command": [
       "<wait5>",
@@ -95,34 +95,15 @@
   },
   "inputs": {
     "source": {
-      "entry": null,
-      "sha256": null
+      "entry": "runner-images-7e7dc1b",
+      "sha256": "762c1a584d7caadbdebca94d381f08cef86a4537e758697a8ff2131761c6a267"
     },
     "media": {
-      "entry": null,
-      "sha256": null
+      "entry": "ubuntu-24.04.5-live-server",
+      "sha256": "97f3d7ffb032c3eb3b23d2c8be9cc76e60c2c1f2c0146ba5ba9fe01cafae0fd8"
     }
   },
-  "blockers": [
-    {
-      "id": "p07-upstream-source-archive",
-      "waivable": false,
-      "reason": "images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at 7e7dc1b (images/ubuntu scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive, pinned here in inputs.source.",
-      "owner_action": "P03 owner adds a literal-pinned entry for the archive of actions/runner-images at 7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe, then this generator is rerun with -ScriptsDir, -SourceEntry and -SourceSha256."
-    },
-    {
-      "id": "p07-upstream-variables-unverified",
-      "waivable": true,
-      "reason": "The variable defaults above come from the upstream variables file, which P01 did not store. They are not yet checked against the pinned bytes.",
-      "owner_action": "Compare them with variable.ubuntu.pkr.hcl inside the P03-staged archive and drop this blocker in the same change."
-    },
-    {
-      "id": "p07-ubuntu-server-media",
-      "waivable": false,
-      "reason": "The Ubuntu 24.04 live-server ISO is not a P03 manifest entry, so nothing ties the media a build boots to the signed Canonical SHA256SUMS.",
-      "owner_action": "P03 adds the ISO with Canonical's signed SHA256SUMS as its hash source and records the point release (the hosted image reports 24.04.5); this generator is rerun with -MediaEntry and -MediaSha256."
-    }
-  ],
+  "blockers": [],
   "phases": [
     {
       "id": "p01",
@@ -162,7 +143,7 @@
       "scripts": [
         {
           "name": "configure-apt-mock.sh",
-          "sha256": null
+          "sha256": "b44da22951e9c92c96a0c80048f6d68bf24b46b577715d0693dfb5f8851bf15f"
         }
       ],
       "env": {},
@@ -185,15 +166,15 @@
       "scripts": [
         {
           "name": "install-ms-repos.sh",
-          "sha256": null
+          "sha256": "babdd1e974e85e13b382f65fc976f36331886bbb76423b3467f35d73be8604c3"
         },
         {
           "name": "configure-apt-sources.sh",
-          "sha256": null
+          "sha256": "90b1cde55a1daacb8b65efd19faa3a1fe61c24353c3fef829da2104ff6be5f16"
         },
         {
           "name": "configure-apt.sh",
-          "sha256": null
+          "sha256": "0857e4ceed76b032bbf82588f52ea2f9acea086c9c2609f170d03a6705f48807"
         }
       ],
       "env": {
@@ -219,7 +200,7 @@
       "scripts": [
         {
           "name": "configure-limits.sh",
-          "sha256": null
+          "sha256": "dffa61b40972a43dde6b7893d6b68fc11eeb87a55343baa29a685e5976e24375"
         }
       ],
       "env": {},
@@ -307,7 +288,7 @@
       "scripts": [
         {
           "name": "configure-image-data.sh",
-          "sha256": null
+          "sha256": "2033b817aaff4c5dca2e98d26bbd07cc4acd3f8f9948b9701e96a74a720868e7"
         }
       ],
       "env": {
@@ -334,7 +315,7 @@
       "scripts": [
         {
           "name": "configure-environment.sh",
-          "sha256": null
+          "sha256": "bff498996645698d7fdc2950cd0a49c04d609424457c59ab1414b02099732b94"
         }
       ],
       "env": {
@@ -361,7 +342,7 @@
       "scripts": [
         {
           "name": "install-apt-vital.sh",
-          "sha256": null
+          "sha256": "1e13eaf0693a2dab4cc7993bbd4a83cf7c22da5f9676bd2715ebd318bb088f6c"
         }
       ],
       "env": {
@@ -388,7 +369,7 @@
       "scripts": [
         {
           "name": "install-powershell.sh",
-          "sha256": null
+          "sha256": "78fa3b077af32480960d04da140ea2ba54550488406c326084d0008a02c97ceb"
         }
       ],
       "env": {
@@ -414,11 +395,11 @@
       "scripts": [
         {
           "name": "Install-PowerShellModules.ps1",
-          "sha256": null
+          "sha256": "267da779f34cbb89f2a0fd6b9030b358fb3f9f9c80f45e525d5511be16554391"
         },
         {
           "name": "Install-PowerShellAzModules.ps1",
-          "sha256": null
+          "sha256": "993d9d6f1ef8396662e6a11424eb8719a5bcd2f8294ee0fcfa3c0510bf2c6e72"
         }
       ],
       "env": {
@@ -444,207 +425,207 @@
       "scripts": [
         {
           "name": "install-actions-cache.sh",
-          "sha256": null
+          "sha256": "8ec62dc0aa740986e50393aafb2aaa900cc7c99fa821a7baf335532b1d819537"
         },
         {
           "name": "install-apt-common.sh",
-          "sha256": null
+          "sha256": "72654102a58168ec19abaed57f8633701087855f12eebf9aec88ca75b524c0fd"
         },
         {
           "name": "install-azcopy.sh",
-          "sha256": null
+          "sha256": "c18be1afe25df2fa3198d760448136704f52bbdf4f7bb8fcf23f49e923534fdd"
         },
         {
           "name": "install-azure-cli.sh",
-          "sha256": null
+          "sha256": "91bbeccb9862d639f02b857ccbc58410f5960a2fdf0bf58937d60f3902f85296"
         },
         {
           "name": "install-azure-devops-cli.sh",
-          "sha256": null
+          "sha256": "706616e2dc80996b36d773c74621ecebccefeea5d7c15437ad6aa8f41d8cb7e4"
         },
         {
           "name": "install-bicep.sh",
-          "sha256": null
+          "sha256": "0259648067acfe60809f6d0ac2b5b654cf3a41bd8b3141fd946053662c906410"
         },
         {
           "name": "install-apache.sh",
-          "sha256": null
+          "sha256": "86c3eee41dc6c879fbbc150d59706b1018d8d1c4a17997670caeecb2bb47f3a3"
         },
         {
           "name": "install-aws-tools.sh",
-          "sha256": null
+          "sha256": "484d277e185f0053e26f8296bbadd4ef093bb2db6ba5ff2d95ba22610423542e"
         },
         {
           "name": "install-clang.sh",
-          "sha256": null
+          "sha256": "17df3ade8507d0fa8c419588ca6c1d453155400110266eacca4a141ec7868d86"
         },
         {
           "name": "install-swift.sh",
-          "sha256": null
+          "sha256": "1d106c1cf5714fdabaaba88fe1c5a9515dded8f422ad5f51cbe4ebf3b9175d8d"
         },
         {
           "name": "install-cmake.sh",
-          "sha256": null
+          "sha256": "8602e7294c9ac816267f7838fefb04c5ab710ad1072110d05bee21e4588cee85"
         },
         {
           "name": "install-codeql-bundle.sh",
-          "sha256": null
+          "sha256": "2dbf17348d131bc850d79261e5f8f6cd12505962c34a7384a816b464f5994dd7"
         },
         {
           "name": "install-awf.sh",
-          "sha256": null
+          "sha256": "598e7756e95a1d5a5c15ffa87956dd561128a82bbf9fd4b552c4628044e62e73"
         },
         {
           "name": "install-container-tools.sh",
-          "sha256": null
+          "sha256": "1c2d136e1c258f2470710ac9304041cb4b4adee7ef1a7af27ed67c0c90b71a2d"
         },
         {
           "name": "install-dotnetcore-sdk.sh",
-          "sha256": null
+          "sha256": "9654c96a98e216a19aac6071f7d49cbc02b48fa6e0b09669c7cb81a3420e9c23"
         },
         {
           "name": "install-microsoft-edge.sh",
-          "sha256": null
+          "sha256": "aa31669b47fadfd9bce06fea3e2a77a2ef82f298f6062ac4793d5ca7a1ecb0c3"
         },
         {
           "name": "install-gcc-compilers.sh",
-          "sha256": null
+          "sha256": "1de0f3c658e9311db3206cbe669102176a9c391b7607071f615ce63492e444d2"
         },
         {
           "name": "install-firefox.sh",
-          "sha256": null
+          "sha256": "edcc8e0d687e420bd2e39d791f8a194f8531e147f029129c3e0dbe430612f233"
         },
         {
           "name": "install-gfortran.sh",
-          "sha256": null
+          "sha256": "0c7dfab62985cdca0562074bee63f3140a77de4d080dd348c78b9d8810da6aaa"
         },
         {
           "name": "install-git.sh",
-          "sha256": null
+          "sha256": "07074dbe9e0126b8d44569f9ddc826fadea978f623ed8294c6fadf493e85d159"
         },
         {
           "name": "install-git-lfs.sh",
-          "sha256": null
+          "sha256": "f98a17353e0099e4c8821fd54f1ad5eaba1c03800aea6810b13978dab2071ed1"
         },
         {
           "name": "install-github-cli.sh",
-          "sha256": null
+          "sha256": "090a041ae554bb55be7a12689726728b2c1aecb294d991582329a4aeea8394fb"
         },
         {
           "name": "install-google-chrome.sh",
-          "sha256": null
+          "sha256": "73dfff23f2ae59d94c9f44cd5212fadc309fd15889df3b4d9bb5eeddef555386"
         },
         {
           "name": "install-google-cloud-cli.sh",
-          "sha256": null
+          "sha256": "e9133774f689c6e85a2c28f003105db42ffa8be3216e03ecc27f6861cf5e45e6"
         },
         {
           "name": "install-haskell.sh",
-          "sha256": null
+          "sha256": "5ca594cba3c931b5f4d11d73819c85456f072853f2690f0450c524edb6fd00bf"
         },
         {
           "name": "install-java-tools.sh",
-          "sha256": null
+          "sha256": "11a27811fe1f725dba4d0d339ef7d44cd8b999a1917fa8de1b577994a8636017"
         },
         {
           "name": "install-kubernetes-tools.sh",
-          "sha256": null
+          "sha256": "1667bbf9a8e5b36a152c785af792bb219d74e8c6c157925b466382b511c9160f"
         },
         {
           "name": "install-miniconda.sh",
-          "sha256": null
+          "sha256": "991e425c20fbd730e8651c5132245986f043ca6b10ef7fe1aa61e40b97255952"
         },
         {
           "name": "install-kotlin.sh",
-          "sha256": null
+          "sha256": "ee0e250948d8f7d903c8bfd4cee81500d777953b306ca6e0d5bb6872333bae6d"
         },
         {
           "name": "install-mysql.sh",
-          "sha256": null
+          "sha256": "aebff32e0e7c22ec110d78d0014b2d343b2163e6121f91902fdf16431b322734"
         },
         {
           "name": "install-nginx.sh",
-          "sha256": null
+          "sha256": "71e0b56377dcb72c9e36d4d68c7bb8a730db4400a8e47bbea218fc88c28014e0"
         },
         {
           "name": "install-nvm.sh",
-          "sha256": null
+          "sha256": "6843cc0d0d8300fbac2d2cbbb894eab896bfd570ad5b9cea015e260cd4bdea77"
         },
         {
           "name": "install-nodejs.sh",
-          "sha256": null
+          "sha256": "d7eeb0bb16e2cbed150808c51bd1beb4cdadb9c5c56edd65d6b5ed9246c8ac24"
         },
         {
           "name": "install-copilot-cli.sh",
-          "sha256": null
+          "sha256": "c6198b6df383523c14c6500358b21d8697022568dfea12adadfcbef5d202d70e"
         },
         {
           "name": "install-bazel.sh",
-          "sha256": null
+          "sha256": "febb5b1626823e6712a2305737b5a9118411b68ce140d175d1888706ec3d12c7"
         },
         {
           "name": "install-php.sh",
-          "sha256": null
+          "sha256": "3dde06f5ad78a0e8c6df8abb49d13937b42a5cae1adb48f0b2f8d6d32a955d62"
         },
         {
           "name": "install-postgresql.sh",
-          "sha256": null
+          "sha256": "5078d283b675bb5e1fff632433a183a993fa91f91bf89c6a1c94c6825d776065"
         },
         {
           "name": "install-pulumi.sh",
-          "sha256": null
+          "sha256": "c89848ed6b4242d32d3c5a2afd959d238ad0605f09095464f152cdd7952f98ac"
         },
         {
           "name": "install-ruby.sh",
-          "sha256": null
+          "sha256": "9494cc684607340c6915e028a581a5a8247b46eb387b4129c219bddd0158684e"
         },
         {
           "name": "install-rust.sh",
-          "sha256": null
+          "sha256": "c69f6ecb2836a0e33f328757cbc88e48790fda844918a54cdcf4c083b189f045"
         },
         {
           "name": "install-julia.sh",
-          "sha256": null
+          "sha256": "b8aad6badf75ec872d485d26ff8cb2c8e63ff8e8bfa2c880756d5451eba7fe89"
         },
         {
           "name": "install-selenium.sh",
-          "sha256": null
+          "sha256": "faed61abd8c986e044e8478b7963fb7df22bd1af9cd81dbf1d9787c3b478542a"
         },
         {
           "name": "install-packer.sh",
-          "sha256": null
+          "sha256": "d4f95dc623d73bef0e33f1becec2e9323eabe08952ac201436e197daf5767785"
         },
         {
           "name": "install-vcpkg.sh",
-          "sha256": null
+          "sha256": "ced04ac5cd6c5541e8da684f2a7f4a49b9175a22a299a3f8a7df81833d95c46e"
         },
         {
           "name": "configure-dpkg.sh",
-          "sha256": null
+          "sha256": "3c3e54ab59103c4f5c689ce9e98bc16434a1e64baeee6ffed6e83d2d17870cd9"
         },
         {
           "name": "install-yq.sh",
-          "sha256": null
+          "sha256": "a73127d88b4065a2d5cbb2eba40857a2b8c22033f1d4bb6cff4e234790b4d0b4"
         },
         {
           "name": "install-android-sdk.sh",
-          "sha256": null
+          "sha256": "17c5823f6e9696a99bad3b3550808e858293d1d793c5df259b6cc3b7c17cdfe9"
         },
         {
           "name": "install-pypy.sh",
-          "sha256": null
+          "sha256": "fa1a3a37c772162996d61cbabc18f4e35fe223b24345d00a13611b2125f4fa16"
         },
         {
           "name": "install-python.sh",
-          "sha256": null
+          "sha256": "0d172660b438bebf7744a3a810aa0f62847009e225d92d8ffba25e5a359f3363"
         },
         {
           "name": "install-zstd.sh",
-          "sha256": null
+          "sha256": "5617d41696a2c86e6b4c83bb2961a34f8b8cb71a450ea8e28b282b6455705d39"
         },
         {
           "name": "install-ninja.sh",
-          "sha256": null
+          "sha256": "308a6deebdba733b94531b5da57c9bc8dd851d969dac73b6b628ee547209dd02"
         }
       ],
       "env": {
@@ -671,7 +652,7 @@
       "scripts": [
         {
           "name": "install-docker.sh",
-          "sha256": null
+          "sha256": "8222fe77b22abd48b6a7f585bcf9cdaabc9a1d1afdadee0e235fbec551a5860c"
         }
       ],
       "env": {
@@ -697,11 +678,11 @@
       "scripts": [
         {
           "name": "Install-Toolset.ps1",
-          "sha256": null
+          "sha256": "beaeb116d10c9f48c58a8d9da58ec1992bf5fd40c0cd52a62034a57b0a53a2ac"
         },
         {
           "name": "Configure-Toolset.ps1",
-          "sha256": null
+          "sha256": "d175aacbf4a9ef466089a4f5ceebe6be7a9cee3821adf4781f42ee877a9f68ed"
         }
       ],
       "env": {
@@ -727,7 +708,7 @@
       "scripts": [
         {
           "name": "install-pipx-packages.sh",
-          "sha256": null
+          "sha256": "ffd5b1f9cbc09310a50857276fb11f1ef091e3f4b56be1ab6d8020a95742bf64"
         }
       ],
       "env": {
@@ -753,7 +734,7 @@
       "scripts": [
         {
           "name": "install-homebrew.sh",
-          "sha256": null
+          "sha256": "97db544987cb827aedc5a7b414cc3a90c124b7b33f94b620e729daefe27cf093"
         }
       ],
       "env": {
@@ -780,7 +761,7 @@
       "scripts": [
         {
           "name": "configure-snap.sh",
-          "sha256": null
+          "sha256": "eb9318854aac758fc67ca89bd586de503a13b6764359b6b9bb5b55f1e9f8575f"
         }
       ],
       "env": {
@@ -805,7 +786,7 @@
       "scripts": [
         {
           "name": "list-dpkg.sh",
-          "sha256": null
+          "sha256": "8e8b7c58e5c8e181716f46706be865e9066cd0c75fce80510ac1ae0a7a280caa"
         }
       ],
       "env": {},
@@ -839,7 +820,7 @@
       "scripts": [
         {
           "name": "cleanup.sh",
-          "sha256": null
+          "sha256": "3009c0638a473d72445f1e15fed89fe19462de792781c23b2a96fed03f920e3f"
         }
       ],
       "env": {},
@@ -904,7 +885,7 @@
       "scripts": [
         {
           "name": "configure-system.sh",
-          "sha256": null
+          "sha256": "604976982f8515d86df578993b6c852bc636d53555fefeaa61fa984ecc7fef11"
         }
       ],
       "env": {
@@ -931,7 +912,7 @@
       "scripts": [
         {
           "name": "post-build-validation.sh",
-          "sha256": null
+          "sha256": "74c5480f012895892fcbb478fca8f882960b8f3b3bfbf5307ea4e761ce9b7ec5"
         }
       ],
       "env": {

@@ -53,10 +53,21 @@ Describe 'build plan mirrors the pinned upstream template' {
         $script:Plan = Get-Content -Raw -LiteralPath (Join-Path $script:Repo 'images\windows\build-plan.json') | ConvertFrom-Json
         $script:Scripts = @($script:Plan.phases | Where-Object { $_.kind -eq 'scripts' } | ForEach-Object { $_.scripts } | ForEach-Object { $_ })
     }
-    It 'is exactly what the generator derives from the template' {
+    It 'is exactly what the generator derives from the template (the script hashes and the archive pin come from the P03-staged archive, not from the repo)' {
         $tmp = Join-Path $TestDrive 'plan.json'
         $null = & (Join-Path $script:Repo 'images\windows\New-AapWinBuildPlan.ps1') -OutFile $tmp
-        (Get-Content -Raw $tmp | ConvertFrom-Json | ConvertTo-Json -Depth 12 -Compress) | Should -Be ($script:Plan | ConvertTo-Json -Depth 12 -Compress)
+        $regen = Get-Content -Raw $tmp | ConvertFrom-Json
+        # What only -ScriptsDir/-SourceSha256 can produce is stripped from both sides: the script hashes, the archive
+        # hash and the archive blocker (P03.1 pinned both in the committed plan). The skeleton must still match byte
+        # for byte: phases, order, env, elevation, variables and baseline. The regen keeps the archive blocker.
+        foreach ($p in @($regen.phases)) { if ($p.kind -eq 'scripts') { foreach ($s in $p.scripts) { $s.sha256 = $null } } }
+        $regen.source.sha256 = $null
+        $regen.blockers = @()
+        $skeleton = Get-Content -Raw (Join-Path $script:Repo 'images\windows\build-plan.json') | ConvertFrom-Json
+        foreach ($p in @($skeleton.phases)) { if ($p.kind -eq 'scripts') { foreach ($s in $p.scripts) { $s.sha256 = $null } } }
+        $skeleton.source.sha256 = $null
+        $skeleton.blockers = @()
+        ($regen | ConvertTo-Json -Depth 12 -Compress) | Should -Be ($skeleton | ConvertTo-Json -Depth 12 -Compress)
     }
     It 'pins the build-commit template and locals by hash' {
         $script:Plan.baseline.template_sha256 | Should -Be (Get-FileSha (Join-Path $script:Repo ($script:Plan.baseline.template_path -replace '/', '\')))
@@ -106,9 +117,9 @@ Describe 'build plan mirrors the pinned upstream template' {
         $script:Plan.temp_disk_gib | Should -Be 150
         (Get-Content -Raw (Join-Path $script:Repo 'images\windows\AapWinImage.psm1')) | Should -Not -Match '\b60\b'
     }
-    It 'refuses the committed plan until every script hash is pinned' -Tag 'plan-unpinned' {
-        @($script:Scripts | Where-Object { $null -ne $_.sha256 }).Count | Should -Be 0
-        { Read-AapWinBuildPlan -Path (Join-Path $script:Repo 'images\windows\build-plan.json') } | Should -Throw 'AAP_ScriptUnpinned*'
+    It 'pins every script hash of the committed plan, so the builder no longer refuses it with AAP_ScriptUnpinned' -Tag 'plan-unpinned' {
+        @($script:Scripts | Where-Object { $null -eq $_.sha256 }).Count | Should -Be 0
+        { Read-AapWinBuildPlan -Path (Join-Path $script:Repo 'images\windows\build-plan.json') } | Should -Not -Throw
     }
     It 'refuses a plan with one unpinned script and accepts it fully pinned' -Tag 'plan-unpinned' {
         $p = New-PinnedPlan (Join-Path $TestDrive 'pinned.json')
@@ -117,18 +128,25 @@ Describe 'build plan mirrors the pinned upstream template' {
         Write-TestJson $p (Join-Path $TestDrive 'one-bad.json')
         { Read-AapWinBuildPlan -Path (Join-Path $TestDrive 'one-bad.json') } | Should -Throw 'AAP_ScriptUnpinned*Install-WSL2.ps1*'
     }
-    It 'names the source archive entry, leaves its hash unpinned and keeps the unwaivable blocker until P03 stages it' {
+    It 'names the source archive entry and pins its hash from the P03 manifest, so no blocker stays' {
+        $m = Get-Content -Raw (Join-Path $script:Repo 'images\common\artifacts.manifest.json') | ConvertFrom-Json
+        $e = @($m.entries | Where-Object { $_.name -eq 'runner-images-aee0669' })
+        $e.Count | Should -Be 1
         $script:Plan.source.entry | Should -Be 'runner-images-aee0669'
-        $script:Plan.source.sha256 | Should -BeNullOrEmpty
-        @($script:Plan.blockers | ForEach-Object { $_.id }) | Should -Contain 'p06-upstream-source-archive'
+        $script:Plan.source.sha256 | Should -Be $e[0].hash.value
+        @($script:Plan.blockers) | Should -Be @()
     }
-    It 'pins the archive and drops its blocker when the generator gets its hash' {
+    It 'keeps the unwaivable archive blocker when the generator gets no hash, and drops it with one' {
+        $gen = Join-Path $script:Repo 'images\windows\New-AapWinBuildPlan.ps1'
         $tmp = Join-Path $TestDrive 'pinned-source.json'
-        $null = & (Join-Path $script:Repo 'images\windows\New-AapWinBuildPlan.ps1') -OutFile $tmp -SourceSha256 ('ab' * 32)
+        $null = & $gen -OutFile $tmp
+        $plain = Get-Content -Raw $tmp | ConvertFrom-Json
+        @($plain.blockers | ForEach-Object { $_.id }) | Should -Be @('p06-upstream-source-archive')
+        $null = & $gen -OutFile $tmp -SourceSha256 ('ab' * 32)
         $p = Get-Content -Raw $tmp | ConvertFrom-Json
         $p.source.sha256 | Should -Be ('ab' * 32)
-        @($p.blockers | ForEach-Object { $_.id }) | Should -Be @('p06-upstream-variables-unverified')
-        { & (Join-Path $script:Repo 'images\windows\New-AapWinBuildPlan.ps1') -OutFile $tmp -SourceSha256 'ABC' } | Should -Throw 'AAP_PlanSource*'
+        @($p.blockers) | Should -Be @()
+        { & $gen -OutFile $tmp -SourceSha256 'ABC' } | Should -Throw 'AAP_PlanSource*'
     }
     It 'refuses a plan whose source is <Case>' -TestCases @(
         @{ Case = 'missing'; Edit = { param($p) $p.PSObject.Properties.Remove('source') } }
@@ -139,12 +157,12 @@ Describe 'build plan mirrors the pinned upstream template' {
         Write-TestJson $p (Join-Path $TestDrive 'src.json')
         { Read-AapWinBuildPlan -Path (Join-Path $TestDrive 'src.json') } | Should -Throw 'AAP_PlanInvalid*source*'
     }
-    It 'lists every P03 Windows blocker plus its own' {
+    It 'lists every P03 Windows blocker, and none of its own: source and variables are pinned' {
         $b = @(Get-AapWinBlockers -Plan $script:Plan -ManifestPath (Join-Path $script:Repo 'images\common\artifacts.manifest.json'))
         $b | Should -Contain 'windows-server-2025-media'
         $b | Should -Contain 'visual-studio-2026-bootstrapper'
-        $b | Should -Contain 'p06-upstream-source-archive'
-        $b | Should -Contain 'p06-upstream-variables-unverified'
+        $b | Should -Not -Contain 'p06-upstream-source-archive'
+        $b | Should -Not -Contain 'p06-upstream-variables-unverified'
         $b | Should -Not -Contain 'azure-base-image-ubuntu-24.04'
     }
 }

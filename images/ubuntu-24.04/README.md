@@ -5,9 +5,9 @@ Hyper-V host, from the official Ubuntu 24.04 live-server ISO and the provisionin
 commit `7e7dc1b`. PowerShell 5.1 (the supervisor's host) and PowerShell 7 on the host; bash in the guests.
 
 **Status: authored and tested with fakes only.** No VM was created, no Hyper-V cmdlet ran, no media was read and nothing was
-downloaded. The first real run is the D2 lab (see [What is not done](#what-is-not-done)). The committed plan is deliberately
-not runnable yet: its upstream script hashes are not pinned (`AAP_ScriptUnpinned`), and neither are the upstream source
-archive and the ISO, whose blockers cannot be waived (`AAP_Blocked`).
+downloaded. The first real run is the D2 lab (see [What is not done](#what-is-not-done)). Since P03.1 the committed plan
+pins every upstream script hash, the source archive and the media, so it no longer stops with `AAP_ScriptUnpinned`;
+a build is still refused until the 14 P03 blockers are resolved or waived (`AAP_Blocked`).
 
 The Windows twin is `images/windows` (P06). This builder imports five of its helpers (the path walk, safe deletion, read-only
 ACL and storage record, from `images/windows/AapWinImage.psm1`) and carries verbatim copies of 19 smaller ones (listed in
@@ -353,13 +353,14 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
   downloaded: `aap-verify.sh` expects its NUnit results at `<OutputDirectory>/testResults.xml`, as the Windows twin does;
   if the Ubuntu runner writes them elsewhere, verification fails closed (no results counts as a failed test) until the
   path is corrected.
-- **Upstream scripts are not pinned.** The runner-images archive at `7e7dc1b` is not a P03 manifest entry (P03.1 adds it), so
-  the plan's 72 script hashes are null and every build is refused (`AAP_ScriptUnpinned`). Rerun the generator with
-  `-ScriptsDir` once P03 stages the archive.
+- **Upstream scripts are pinned (P03.1).** The runner-images archive at `7e7dc1b` is the P03 manifest entry
+  `runner-images-7e7dc1b` (literal SHA-256 over the release-tag tarball that targets that commit), and the plan pins it plus
+  every one of its 72 script hashes and the media (`ubuntu-24.04.5-live-server`, checksum-file hash source), so no build is
+  refused with `AAP_ScriptUnpinned` and the plan carries no blocker. The builder still copies the scripts only from the
+  P03-staged archive and checks each against the plan pin (`AAP_ScriptHashMismatch` on a changed or corrupt tree).
 - **Inputs are blockers.** 14 P03 Ubuntu blockers (the Azure base image, superseded apt versions, vendor repositories,
-  proprietary components, release feeds, install scripts, floating container images, tool-cache manifests, ...) plus the
-  plan's 3. A build needs each resolved or waived by a chair approval record, except the source archive and the media, which
-  only pinning resolves; P07 decides none.
+  proprietary components, release feeds, install scripts, floating container images, tool-cache manifests, ...). A build
+  needs each resolved or waived by a chair approval record; P07 decides none.
 - **The base is not the hosted base.** Hosted runners start from the Azure Marketplace image `canonical:ubuntu-24_04-lts:server`;
   this build installs the live-server ISO instead (the `azure-base-image-ubuntu-24.04` blocker must be waived for it). Known
   differences: partition layout (EFI + root here, the cloud image's BIOS-boot + EFI + root there), `walinuxagent` masked

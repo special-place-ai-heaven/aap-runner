@@ -5,8 +5,9 @@ Hyper-V host, from the owner's Windows Server 2025 Evaluation media and the prov
 P01 build commit `aee0669`. PowerShell 5.1 (the supervisor's host) and PowerShell 7.
 
 **Status: authored and tested with fakes only.** No VM was created, no Hyper-V cmdlet ran, no media was read and nothing
-was downloaded. The first real run is the D2 lab (see [What is not done](#what-is-not-done)). The committed plan is
-deliberately not runnable yet: its upstream script hashes are not pinned, so the builder refuses with `AAP_ScriptUnpinned`.
+was downloaded. The first real run is the D2 lab (see [What is not done](#what-is-not-done)). Since P03.1 the committed plan
+pins every upstream script hash and the runner-images archive, so it no longer stops with `AAP_ScriptUnpinned`; a build is
+still refused until the owner supplies the media and the 14 P03 blockers are resolved or waived (`AAP_Blocked`).
 
 | File | Role |
 |---|---|
@@ -271,12 +272,13 @@ user in the place of Administrators).
 - **No real build.** The provider is written against documented cmdlets and has never run. The D2 lab proves it: DISM
   apply and boot, PowerShell Direct by VM id with the answer-file user, S4U elevation, reboots, nested features,
   `Optimize-VHD`, the read-only ACL with differencing children.
-- **Upstream scripts are not pinned.** The runner-images archive at `aee0669` is not a P03 manifest entry (P03.1 adds it),
-  so the plan's 82 script hashes and the archive hash are null and every build is refused (`AAP_ScriptUnpinned`). Rerun
-  the generator with `-ScriptsDir` and `-SourceSha256` once P03 stages the archive.
+- **Upstream scripts are pinned (P03.1).** The runner-images archive at `aee0669` is the P03 manifest entry
+  `runner-images-aee0669` (literal SHA-256), and the plan pins it plus every one of its 82 script hashes, so no build
+  stops with `AAP_ScriptUnpinned`. The builder still copies the scripts only from the P03-staged archive and checks each
+  against the plan pin (`AAP_ScriptHashMismatch` on a changed or corrupt tree).
 - **Inputs are blockers.** 14 P03 Windows blockers (media, Windows Updates level, Visual Studio channel, vendor feeds,
-  Chocolatey, ...) plus the plan's 2. A build needs each resolved or waived by a chair approval record (never the media
-  or the source archive blocker); P06 decides none.
+  Chocolatey, ...). A build needs each resolved or waived by a chair approval record (never the media); P06 decides
+  none. The plan itself carries no blocker since P03.1 pinned the source archive and checked the variables.
 - **No host network module yet.** P10.0 owns the adapter, its controls and the port ACLs, P19 the switch `aap-build-win`
   and its NAT; until both exist every build is refused (`AAP_NetworkUnavailable`, or the module's Attach on the missing
   switch). Upstream scripts download from the internet themselves. A crashed run's attachment is not detached by the next

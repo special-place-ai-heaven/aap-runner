@@ -1013,6 +1013,38 @@ Describe 'coverage of the P01 inputs' {
         $en.note | Should -Match 'dists/noble/InRelease'
         $en.note | Should -Match 'F6EC B376 2474 EDA9 D21B 7022 8719 20D1 991B C93C'
     }
+    It 'pins the runner-images source archives and the Ubuntu server media that P03.1 added' {
+        $win = @($script:Man.entries | Where-Object name -eq 'runner-images-aee0669')
+        $ubu = @($script:Man.entries | Where-Object name -eq 'runner-images-7e7dc1b')
+        $sums = @($script:Man.entries | Where-Object name -eq 'ubuntu-server-24.04.5-sha256sums')
+        $iso = @($script:Man.entries | Where-Object name -eq 'ubuntu-24.04.5-live-server')
+        ($win.Count + $ubu.Count + $sums.Count + $iso.Count) | Should -Be 4
+        # Both archives are literal-pinned whole-repo downloads of the P01 build commits; a null or short value,
+        # a missing size or a URL off the pinned commit would fail here.
+        foreach ($e in @($win + $ubu)) {
+            $e.hash.source | Should -Be 'literal'
+            $e.hash.value | Should -Match '^[0-9a-f]{64}$'
+            $e.size_bytes | Should -BeGreaterThan 0
+            $e.license.class | Should -Be 'open-source'
+        }
+        ($win[0].urls -join ' ') | Should -Match 'actions/runner-images/zip/aee0669dd04510a11756664eb77f5630debabed3'
+        ($ubu[0].urls -join ' ') | Should -Match 'actions/runner-images/tar\.gz/ubuntu24%2F20261012\.334'
+        $ubu[0].version | Should -Be '7e7dc1bcc0ef464e5e315a2b4c33609590c6ffe'
+        @($win[0].scripts).Count | Should -Be 81
+        @($ubu[0].scripts).Count | Should -Be 72
+        # The media chain: the ISO hash comes from the checksum entry, which is itself literal-pinned; a missing
+        # ISO hash, a broken upstream_entry or a checksum entry without its own value fails here.
+        $iso[0].hash.source | Should -Be 'upstream-file'
+        $iso[0].hash.value | Should -Match '^[0-9a-f]{64}$'
+        $iso[0].hash.upstream_entry | Should -Be 'ubuntu-server-24.04.5-sha256sums'
+        $iso[0].hash.upstream_key | Should -Be 'ubuntu-24.04.5-live-server-amd64.iso'
+        $iso[0].size_bytes | Should -Be 4080486400
+        $iso[0].license.note.Length | Should -BeGreaterThan 20
+        $sums[0].hash.source | Should -Be 'literal'
+        $sums[0].hash.value | Should -Match '^[0-9a-f]{64}$'
+        $sums[0].size_bytes | Should -Be 893
+        ($iso[0].note + ' ' + $sums[0].note) | Should -Match 'releases\.ubuntu\.com/24\.04\.5'
+    }
 }
 
 Describe 'staging trust' {
