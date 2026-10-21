@@ -42,18 +42,34 @@ $null = New-Item -ItemType Directory -Force -Path (Join-Path $root 'artifacts')
 $names = @(Get-ChildItem Env: | ForEach-Object { $_.Name } | Sort-Object)
 Add-Line (Join-Path $root 'fake-env.log') (($names -join ' ') + ' MODE=' + $env:ZCCACHE_MODE + ' SIZE=' + $env:ZCCACHE_CACHE_SIZE_BYTES)
 if ($env:FAKE_ZC_STDIN -eq '1') {
-    # Synchronous on purpose (see the header): no wait budget, no thread pool, nothing scheduled.
+    # Synchronous on purpose (see the header): no wait budget, no thread pool, nothing scheduled. Every fact the
+    # probe observes lands in fake-stdin-facts.log, so a CI failure names what the probe saw (P13.5).
     $sw = New-Object System.Diagnostics.Stopwatch
     $sw.Start()
     Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int which);
 [DllImport("kernel32.dll")] public static extern int GetFileType(IntPtr h);' -Name Zc -Namespace P135
+    $facts = Join-Path $root 'fake-stdin-facts.log'
+    $stdinLog = Join-Path $root 'fake-stdin.log'
     $t = [P135.Zc]::GetFileType([P135.Zc]::GetStdHandle(-10))
-    Add-Line (Join-Path $root 'fake-stdin-facts.log') ("pid={0} type={1} redirected={2}" -f $PID, $t, [Console]::IsInputRedirected)
-    $buf = New-Object byte[] 1
-    $n = [Console]::OpenStandardInput().Read($buf, 0, 1)
-    if ($n -gt 0) { Add-Line (Join-Path $root 'fake-stdin.log') 'open'; exit 7 }
-    Add-Line (Join-Path $root 'fake-stdin.log') 'eof'
-    Add-Line (Join-Path $root 'fake-stdin-facts.log') ("result=eof ms={0}" -f $sw.ElapsedMilliseconds)
+    $me = Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId=' + $PID) -ErrorAction SilentlyContinue
+    $parent = $(if ($me) { [int]$me.ParentProcessId } else { 0 })
+    $pe = $(if ($parent) { Get-Process -Id $parent -ErrorAction SilentlyContinue } else { $null })
+    Add-Line $facts ("pid={0} parent={1}({2}) type={3} redirected={4}" -f $PID, $parent, $(if ($pe) { $pe.ProcessName } else { '?' }), $t, [Console]::IsInputRedirected)
+    $s = [Console]::OpenStandardInput()
+    $buf = New-Object byte[] 64
+    $n = $s.Read($buf, 0, 1)
+    $hex = $(if ($n -gt 0) { '{0:x2}' -f $buf[0] } else { '' })
+    Add-Line $facts ("read1 n={0} byte=0x{1} ms={2}" -f $n, $hex, $sw.ElapsedMilliseconds)
+    if ($n -gt 0) {
+        # What is in the pipe decides: eof carries on, anything else is the caller's open stdin.
+        $n2 = $s.Read($buf, 1, 63)
+        Add-Line $facts ("read2 n={0}" -f $n2)
+        Add-Line $stdinLog 'open'
+        Add-Line $facts 'result=open'
+        exit 7
+    }
+    Add-Line $stdinLog 'eof'
+    Add-Line $facts ("result=eof ms={0}" -f $sw.ElapsedMilliseconds)
 }
 if ($env:FAKE_ZC_CRASH -eq '1') { exit 139 }
 if ($argv[0] -eq 'session-start') {
