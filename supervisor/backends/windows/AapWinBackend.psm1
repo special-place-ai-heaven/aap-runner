@@ -786,10 +786,13 @@ function Invoke-AapWinGuestChild([hashtable]$Call) {
             $head = [Text.Encoding]::ASCII.GetBytes(('{0}{2}{1}{2}' -f $Call.VmId, $Call.User, "`n"))
             $tail = [Text.Encoding]::ASCII.GetBytes("`n" + $Call.Envelope + "`n")
             $in.Write($head, 0, $head.Length)
-            $Call.Password.WriteTo($in)
-            $in.Write($tail, 0, $tail.Length)
-            if ([int]$Call.PayloadLength -gt 0) { & $Call.WritePayload $in }
-            $in.Flush()
+            # The password and the payload (a JIT config) go to the pipe unbuffered: written through $in they would stay
+            # behind in that stream's private 4 KiB write buffer, which nothing can zero. Asking for the handle flushes the
+            # head first.
+            $pipe = New-Object IO.FileStream($in.SafeFileHandle, [IO.FileAccess]::Write, 1)
+            $Call.Password.WriteTo($pipe)
+            $pipe.Write($tail, 0, $tail.Length)
+            if ([int]$Call.PayloadLength -gt 0) { & $Call.WritePayload $pipe }
         } catch {
             $null = $_   # it exited without reading; its exit code tells why
         }

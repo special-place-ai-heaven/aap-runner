@@ -67,7 +67,8 @@ lock held returns `held` / `step_in_progress` at once.
 ### The per-clone credential
 
 A random 32-character password, generated at create, kept only in this process (`$B.Guests`), written once into the
-offline clone disk (`Windows\Panther\unattend.xml`, user `runneradmin`), and passed to each call child on its stdin. It
+offline clone disk (`Windows\Panther\unattend.xml`, user `runneradmin`), and passed to each call child on its stdin,
+unbuffered (with the JIT config), so no copy stays in a stream buffer nothing can zero. It
 lives in an object whose only property is `Length` (`WriteTo(stream)`, `Clear()`, the broker's JIT config pattern), so it
 is never a command's parameter value (module logging, event 4103), and it is zeroed at destroy. It is never in the
 journal, the allocator, a log or a result. The clone disk is mounted with no drive letter at an access path inside the
