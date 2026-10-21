@@ -997,8 +997,29 @@ Describe 'Get-AapCacheTrustClass (contract rule 6, amended)' {
         @{ Case = 'the string 01'; Enabled = '01' }
         @{ Case = 'the string " 1"'; Enabled = ' 1' }
         @{ Case = 'the string "1 "'; Enabled = '1 ' }
+        @{ Case = 'a decimal 1'; Enabled = [decimal]1 }
+        @{ Case = 'a list holding a decimal 1'; Enabled = @([decimal]1) }
+        @{ Case = 'a uint32 1'; Enabled = [uint32]1 }
+        @{ Case = 'a list holding a uint32 1'; Enabled = @([uint32]1) }
     ) {
         Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -BranchRef (New-Ref) -EnabledRepositoryIds $Enabled | Should -BeNullOrEmpty
+    }
+    # A culture-aware comparison ignores these characters (Windows PowerShell and pwsh 7) or folds these digits (pwsh 7's
+    # ICU), so an entry spelled with them would equal '1'. The JSON escapes keep the characters visible here.
+    It 'an entry <Case> enables nothing' -Tag 'TRUST-ACTIVATION' -TestCases @(
+        @{ Case = 'with a BOM before 1'; Json = '"\ufeff1"' }
+        @{ Case = 'with a soft hyphen after 1'; Json = '"1\u00ad"' }
+        @{ Case = 'with a zero-width joiner before 1'; Json = '"\u200d1"' }
+        @{ Case = 'with a NUL after 1'; Json = '"1\u0000"' }
+        @{ Case = 'with a zero-width space before 1'; Json = '"\u200b1"' }
+        @{ Case = 'in Arabic-Indic digits (1)'; Json = '"\u0661"' }
+        @{ Case = 'in Arabic-Indic digits (12) for repository 12'; Json = '"\u0661\u0662"'; Id = 12 }
+    ) {
+        $id = $(if ($Id) { $Id } else { 1 })
+        $repo = [pscustomobject]@{ id = $id; full_name = 'org/repo'; default_branch = 'main' }
+        $entry = $Json | ConvertFrom-Json
+        $entry.Length | Should -BeGreaterThan 0 -Because 'the escape must decode to a string'
+        Get-AapCacheTrustClass -Run (New-Run 'push' 'main' $id $id) -Repository $repo -BranchRef (New-Ref) -EnabledRepositoryIds @($entry) | Should -BeNullOrEmpty
     }
     It 'an enabled repository given as <Case> is trusted' -Tag 'TRUST-ACTIVATION' -TestCases @(
         @{ Case = 'an int'; Enabled = 1 }

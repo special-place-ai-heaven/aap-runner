@@ -23,8 +23,10 @@ is the wiring for after that proof.
 4. **Activation.** Shared roots stay OFF until the lab proof exists (top of this page). After it, a repository gets a
    shared root only once the owner's decision to enable that repository is recorded host-side; until then its jobs use
    private roots. The host passes the enabled repository ids to `Get-AapCacheTrustClass -EnabledRepositoryIds`, which
-   returns no class for any other repository (a missing or empty list enables none; entries are compared as exact
-   decimal strings, and anything that is not an integer or a string, such as `$true` or `1.0`, is ignored). Rule 6 leaves no other
+   returns no class for any other repository (a missing or empty list enables none; entries are compared with the
+   canonical decimal id as strings, ordinally, so an entry carrying an invisible or non-ASCII character such as a BOM,
+   a zero-width character or Arabic-Indic digits matches nothing; anything that is not an integer or a string, such as
+   `$true`, `1.0`, a decimal or an unsigned integer, is ignored). Rule 6 leaves no other
    per-repository condition to check before that decision (no merge-method or tag-rule precondition): it trusts only a
    run of the default branch's current head.
 
