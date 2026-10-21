@@ -123,11 +123,11 @@ Stopping `aap-wbuild-*` VMs whose build lock nobody holds is the P12/P19 reconci
 
 ## P03: inputs
 
-- P03.1 (chair) adds a literal-pinned entry for the `actions/runner-images` archive at
-  `aee0669dd04510a11756664eb77f5630debabed3` (images/windows scripts, assets, toolsets, helpers/software-report-base). Then
-  rerun `New-AapWinBuildPlan.ps1 -ScriptsDir <extracted images\windows\scripts> -SourceSha256 <the entry's SHA-256>`
-  (and `-SourceEntry <name>` if the entry is not `runner-images-aee0669`) with pwsh 7 to pin the 82 script hashes and the
-  archive; that drops `p06-upstream-source-archive`, which no waiver clears.
+- P03.1 (done 2026-10-21) added the literal-pinned entry `runner-images-aee0669` for the `actions/runner-images` archive at
+  `aee0669dd04510a11756664eb77f5630debabed3` (images/windows scripts, assets, toolsets, helpers/software-report-base), and
+  reran `New-AapWinBuildPlan.ps1 -ScriptsDir <extracted images\windows\scripts> -SourceSha256 <the entry's SHA-256>` with
+  pwsh 7: the 82 script hashes and the archive are pinned, `p06-upstream-source-archive` is dropped, and the variables
+  were checked against `variable.windows.pkr.hcl` inside the archive, so `p06-upstream-variables-unverified` is dropped too.
 - The 14 Windows blockers stay blockers. A build needs each resolved, or waived by id with a chair approval record
   (`id`, `rationale`, `plan_sha256`, `approver`) passed in `Waivers` and recorded in `build.json`; a bare id is refused.
   `windows-server-2025-media` is never waivable: the builder's media check against the pinned `MediaSha256` clears it.
@@ -140,7 +140,7 @@ Stopping `aap-wbuild-*` VMs whose build lock nobody holds is the P12/P19 reconci
 3. **Registry checks**: in the guest as SYSTEM just before sysprep, returned in the capped reply; the host scans files only
    and loads no guest hive. Host parsing of guest NTFS on mount is an accepted risk with a host patch-level requirement.
 4. **Scratch disk**: 150 GiB like the hosted `D:`; not a gap.
-5. **runner-images archive entry**: P03.1.
+5. **runner-images archive entry**: P03.1 (done 2026-10-21: `runner-images-aee0669`, literal SHA-256).
 6. **Verification network**: the verification VM stays without network. An upstream test that needs the network fails by
    name and is handled by a waiver (approval record bound to `plan_sha256`) or decided in the D2 lab; the verify VM never
    gets the switch.

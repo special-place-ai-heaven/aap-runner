@@ -63,10 +63,21 @@ Describe 'build plan mirrors the pinned upstream template' {
         $script:Plan = Get-PlanText | ConvertFrom-Json
         $script:Scripts = @($script:Plan.phases | Where-Object { $_.kind -eq 'scripts' } | ForEach-Object { $_.scripts } | ForEach-Object { $_ })
     }
-    It 'is exactly what the generator derives from the template' {
+    It 'is exactly what the generator derives from the template (the script hashes, the archive and the media pins come from the P03-staged inputs, not from the repo)' {
         $tmp = Join-Path $TestDrive 'plan.json'
         $null = & (Join-Path $script:Repo 'images\ubuntu-24.04\New-AapUbuntuBuildPlan.ps1') -OutFile $tmp
-        (Get-Content -Raw $tmp | ConvertFrom-Json | ConvertTo-Json -Depth 12 -Compress) | Should -Be ($script:Plan | ConvertTo-Json -Depth 12 -Compress)
+        $regen = Get-Content -Raw $tmp | ConvertFrom-Json
+        # What only -ScriptsDir/-SourceEntry/-MediaEntry can produce is stripped from both sides: the script hashes,
+        # the input pins and the source/media blockers (P03.1 pinned all three in the committed plan). The skeleton
+        # must still match byte for byte: phases, order, env, exec mode, variables, base and verify gates.
+        foreach ($p in @($regen.phases)) { if ($p.kind -eq 'scripts') { foreach ($s in $p.scripts) { $s.sha256 = $null } } }
+        foreach ($k in 'source', 'media') { $regen.inputs.$k.entry = $null; $regen.inputs.$k.sha256 = $null }
+        $regen.blockers = @()
+        $skeleton = Get-Content -Raw (Join-Path $script:Repo 'images\ubuntu-24.04\build-plan.json') | ConvertFrom-Json
+        foreach ($p in @($skeleton.phases)) { if ($p.kind -eq 'scripts') { foreach ($s in $p.scripts) { $s.sha256 = $null } } }
+        foreach ($k in 'source', 'media') { $skeleton.inputs.$k.entry = $null; $skeleton.inputs.$k.sha256 = $null }
+        $skeleton.blockers = @()
+        ($regen | ConvertTo-Json -Depth 12 -Compress) | Should -Be ($skeleton | ConvertTo-Json -Depth 12 -Compress)
     }
     It 'pins the build-commit template, locals, toolset, hosted capture, inventory and comparison reference by hash' {
         $b = $script:Plan.baseline
@@ -183,10 +194,17 @@ print('\n'.join(sorted(out)))
         $g.tools.gcc = $null
         { & $compare } | Should -Throw 'AAP_VerifyFailed*missing-required tools.gcc*'
     }
-    It 'pins the source archive and the media nowhere yet, so both stay unwaivable blockers' {
-        $script:Plan.inputs.source.entry | Should -BeNullOrEmpty
-        $script:Plan.inputs.media.sha256 | Should -BeNullOrEmpty
-        @($script:Plan.blockers | Where-Object { $_.waivable -eq $false } | ForEach-Object { $_.id }) | Should -Be @('p07-upstream-source-archive', 'p07-ubuntu-server-media')
+    It 'pins the source archive and the media from the P03 manifest, so no unwaivable blocker stays' {
+        $m = Get-Content -Raw (Join-Path $script:Repo 'images\common\artifacts.manifest.json') | ConvertFrom-Json
+        $src = @($m.entries | Where-Object { $_.name -eq 'runner-images-7e7dc1b' })
+        $iso = @($m.entries | Where-Object { $_.name -eq 'ubuntu-24.04.5-live-server' })
+        $src.Count | Should -Be 1
+        $iso.Count | Should -Be 1
+        $script:Plan.inputs.source.entry | Should -Be 'runner-images-7e7dc1b'
+        $script:Plan.inputs.source.sha256 | Should -Be $src[0].hash.value
+        $script:Plan.inputs.media.entry | Should -Be 'ubuntu-24.04.5-live-server'
+        $script:Plan.inputs.media.sha256 | Should -Be $iso[0].hash.value
+        @($script:Plan.blockers | Where-Object { $_.waivable -eq $false }) | Should -Be @()
     }
     It 'refuses a plan whose <Case>' -Tag 'plan-inputs' -TestCases @(
         @{ Case = 'media is neither pinned nor blocked'; Edit = { param($p) $p.inputs.media.entry = $null; $p.inputs.media.sha256 = $null } },
@@ -220,9 +238,9 @@ print('\n'.join(sorted(out)))
         @($script:Plan.base.masked_services) | Should -Be @('walinuxagent.service')
         ($script:Plan.base.boot_command -join '') | Should -Match 'autoinstall ds=nocloud'
     }
-    It 'refuses the committed plan until every script hash is pinned' -Tag 'plan-unpinned' {
-        @($script:Scripts | Where-Object { $null -ne $_.sha256 }).Count | Should -Be 0
-        { Read-AapUbuntuBuildPlan -Path (Join-Path $script:Repo 'images\ubuntu-24.04\build-plan.json') } | Should -Throw 'AAP_ScriptUnpinned*'
+    It 'pins every script hash of the committed plan, so the builder no longer refuses it with AAP_ScriptUnpinned' -Tag 'plan-unpinned' {
+        @($script:Scripts | Where-Object { $null -eq $_.sha256 }).Count | Should -Be 0
+        { Read-AapUbuntuBuildPlan -Path (Join-Path $script:Repo 'images\ubuntu-24.04\build-plan.json') } | Should -Not -Throw
     }
     It 'refuses a plan with one unpinned script and accepts it fully pinned' -Tag 'plan-unpinned' {
         $p = New-PinnedPlan (Join-Path $TestDrive 'pinned.json')
@@ -243,11 +261,12 @@ print('\n'.join(sorted(out)))
         Write-TestJson $p (Join-Path $TestDrive 'ref.json')
         { Read-AapUbuntuBuildPlan -Path (Join-Path $TestDrive 'ref.json') } | Should -Throw 'AAP_PlanInvalid*reference*'
     }
-    It 'lists every P03 Ubuntu blocker plus its own, and no Windows one' {
+    It 'lists every P03 Ubuntu blocker, and none of its own: source, media and variables are pinned' {
         $b = @(Get-AapUbuntuBlockers -Plan $script:Plan -ManifestPath (Join-Path $script:Repo 'images\common\artifacts.manifest.json'))
-        foreach ($id in 'azure-base-image-ubuntu-24.04', 'ubuntu-superseded-apt-versions', 'tool-cache-manifests', 'p07-upstream-source-archive', 'p07-upstream-variables-unverified', 'p07-ubuntu-server-media') { $b | Should -Contain $id }
+        foreach ($id in 'azure-base-image-ubuntu-24.04', 'ubuntu-superseded-apt-versions', 'tool-cache-manifests') { $b | Should -Contain $id }
+        foreach ($id in 'p07-upstream-source-archive', 'p07-upstream-variables-unverified', 'p07-ubuntu-server-media') { $b | Should -Not -Contain $id }
         $b | Should -Not -Contain 'windows-server-2025-media'
-        $b.Count | Should -Be 17
+        $b.Count | Should -Be 14
     }
     It 'the comparison reference is what P05 parses from the pinned hosted capture' -Skip:(-not $script:Py) {
         $out = Join-Path $TestDrive 'ref.json'
@@ -559,7 +578,7 @@ Describe 'a full build with fakes' {
         $script:Ev.plan_sha256 | Should -Be (Get-FileSha $w.PlanPath)
         $script:Ev.inputs_manifest_sha256 | Should -Be (Get-FileSha (Join-Path $script:Repo 'images\common\artifacts.manifest.json'))
         $script:Ev.builder_commit | Should -Be '0123456789abcdef0123456789abcdef01234567'
-        @($script:Ev.waivers).Count | Should -Be 15   # the P03 blockers and the variables blocker; source and media are pinned
+        @($script:Ev.waivers).Count | Should -Be 14   # the P03 Ubuntu blockers; source, media and variables are pinned
         $script:Ev.base.kernel_package | Should -Be 'linux-azure'
         $script:Ev.media.sha256 | Should -Be $w.MediaSha
         $script:Ev.media.entry | Should -Be 'ubuntu-24.04.5-live-server'

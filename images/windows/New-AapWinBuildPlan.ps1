@@ -143,11 +143,10 @@ $plan = [ordered]@{
         helper_script_folder  = 'C:\Program Files\WindowsPowerShell\Modules\'
         install_user          = 'installer'
     }
-    variables_source = 'upstream images/windows/templates/variable.windows.pkr.hcl defaults at aee0669, not stored in parity/baselines; image_version is the P01 baseline'
+    variables_source = 'upstream images/windows/templates/variable.windows.pkr.hcl defaults at aee0669, checked 2026-10-21 against the pinned runner-images archive (P03.1): every default matches except image_version (the P01 baseline; upstream default dev) and image_os (the profile; upstream default empty), both passed per build'
     source           = [ordered]@{ entry = $SourceEntry; sha256 = $(if ($SourceSha256) { $SourceSha256 } else { $null }) }
     blockers         = @(
         if (-not $SourceSha256) { [ordered]@{ id = 'p06-upstream-source-archive'; reason = 'images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at aee0669 (images/windows scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive whose SHA-256 this plan pins. No waiver clears this blocker.'; owner_action = 'P03 owner adds a literal-pinned entry for the archive of actions/runner-images at aee0669dd04510a11756664eb77f5630debabed3, then this generator is rerun with -ScriptsDir and -SourceSha256 to pin every script hash and the archive.' } }
-        [ordered]@{ id = 'p06-upstream-variables-unverified'; reason = 'The variable defaults above come from the upstream variables file, which P01 did not store. They are not yet checked against the pinned bytes.'; owner_action = 'Compare them with variable.windows.pkr.hcl inside the P03-staged archive and drop this blocker in the same change.' }
     )
     phases           = $phases
 }
