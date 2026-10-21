@@ -1,5 +1,6 @@
-# Mutation check for the P11 Linux backend (P10's method): every safety check in AapLinBackend.psm1 and hvsock-relay.ps1
-# carries '# check:<name>'. For each name this copies supervisor\ (the backend imports ..\..\capacity and ..\..\broker) to a
+# Mutation check for the P11 Linux backend (P10's method): every safety check in AapLinBackend.psm1, hvsock-relay.ps1 and
+# AapLinBackend.HyperV.psm1 carries '# check:<name>'. For each name this copies supervisor\ (the backend imports
+# ..\..\capacity, ..\..\broker and ..\..\network, the shared network check, which its own runner mutates) to a
 # temp folder, replaces the condition of every if-statement tagged with that name by $false (found with the PowerShell
 # parser, not by text search), and runs the tests tagged <name> against the copy in a child process. A check is covered
 # only if at least one of its tests then fails. A control run of every tagged test against an unmutated copy must pass
@@ -46,14 +47,14 @@ try {
     # Control: the unmutated copy passes every tagged test.
     $dir = Join-Path $work 'control\supervisor'
     [void][IO.Directory]::CreateDirectory($dir)
-    foreach ($sub in 'capacity', 'broker', 'backends') { Copy-Item -LiteralPath (Join-Path $repo "supervisor\$sub") -Destination (Join-Path $dir $sub) -Recurse }
+    foreach ($sub in 'capacity', 'broker', 'network', 'backends') { Copy-Item -LiteralPath (Join-Path $repo "supervisor\$sub") -Destination (Join-Path $dir $sub) -Recurse }
     $control = Invoke-AapLinMutantRun (@($tagged) -join ',') (Join-Path $dir 'backends\linux\AapLinBackend.psm1')
     Write-Host ('{0,-22} tests={1} failed={2}' -f 'CONTROL', $control[0], $control[1])
     if ($control[0] -eq 0 -or $control[1] -ne 0) { throw "the control run must pass: tests=$($control[0]) failed=$($control[1])" }
     foreach ($tag in $tagged) {
         $dir = Join-Path $work "$tag\supervisor"
         [void][IO.Directory]::CreateDirectory($dir)
-        foreach ($sub in 'capacity', 'broker', 'backends') { Copy-Item -LiteralPath (Join-Path $repo "supervisor\$sub") -Destination (Join-Path $dir $sub) -Recurse }
+        foreach ($sub in 'capacity', 'broker', 'network', 'backends') { Copy-Item -LiteralPath (Join-Path $repo "supervisor\$sub") -Destination (Join-Path $dir $sub) -Recurse }
         $lineNos = @()
         foreach ($s in $sources) {
             $lines = $s.Lines
