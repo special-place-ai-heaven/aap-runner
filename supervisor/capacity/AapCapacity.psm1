@@ -434,7 +434,8 @@ function Get-AapCaps($Doc) {
             if ($total) { $each = @((Get-AapFloorDiv $pool[0] $total), (Get-AapFloorDiv $pool[1] $total)) }
             $cap = @(($each[0] * $n), ($each[1] * $n))
         } else {
-            $cap = @((Get-AapFloorDiv ([long]$h.cpu_cores * [long]$prof.share_percent) 100), (Get-AapFloorDiv ([long]$h.mem_gib * [long]$prof.share_percent) 100))
+            # Memory: the share of the pool after the control VM, so the caps never sum over it.
+            $cap = @((Get-AapFloorDiv ([long]$h.cpu_cores * [long]$prof.share_percent) 100), (Get-AapFloorDiv ($pool[1] * [long]$prof.share_percent) (100 - $reserve)))
             $each = @(0, 0)
             if ($n) { $each = @((Get-AapFloorDiv $cap[0] $n), (Get-AapFloorDiv $cap[1] $n)) }
         }

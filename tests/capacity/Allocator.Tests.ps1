@@ -38,7 +38,7 @@ Describe 'initialize and read' {
         (Initialize-AapAllocator -Root $root -HostInfo (New-CapHostInfo) -Linux 3 -Windows 2 -ShareMode per_profile -LinuxShare 60 -WindowsShare 30).Ok | Should -BeTrue
         $s = Get-AapAllocatorState -Root $root
         $s.Profiles.linux.EachCpus | Should -Be 6
-        $s.Profiles.linux.EachMemGib | Should -Be 19
+        $s.Profiles.linux.EachMemGib | Should -Be 18
         $s.Profiles.windows.EachCpus | Should -Be 4
         $s.Profiles.windows.EachMemGib | Should -Be 14
         $s.PoolCpus | Should -Be 28
@@ -148,9 +148,9 @@ Describe 'initialize and read' {
         $r.Reason | Should -Be 'pool_over_live'
         @($r.Clamped) | Should -Be @('control_distro_mem_gib')
         $s = Get-AapAllocatorState -Root $root
-        $s.State.host.control_distro_mem_gib | Should -Be 30
-        $s.UsedMemGib | Should -Be $s.PoolMemGib
-        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2' -Cpus 1 -MemGib 1).Reason | Should -Be 'memory'
+        # The Windows share of the memory pool must still hold 2 x 28 GiB: floor(84 * 60 / 90) = 56.
+        $s.State.host.control_distro_mem_gib | Should -Be 2
+        (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2' -Cpus 1 -MemGib 1).Reason | Should -Be 'pool_over_live'
     }
 
     It 'a smaller CPU or RAM measurement is raised only to the least the admitted runners fit, and admits nothing more' {
@@ -293,12 +293,30 @@ Describe 'admission' {
         $ok.Reservation.mem_gib | Should -Be 13
     }
 
-    It 'pays the control VM first: memory over the pool is refused (memory)' {
-        $root = New-CapAllocator -Mode per_profile -LinuxShare 60 -WindowsShare 30 -HostInfo (New-CapHostInfo -Ctl 5) -LegacySlots 3
+    It 'pays the control VM first: a draining overhang over the memory pool is refused (memory)' {
+        $root = New-CapAllocator -Mode per_profile -LinuxShare 60 -WindowsShare 30 -LegacySlots 3
+        # Two legacy slots of 6 CPUs and 18 GiB drain; Windows 4 at 70 % gets 5 CPUs and 16 GiB each.
+        (Set-AapProfileCounts -Root $root -Linux 1 -Windows 4 -LinuxShare 20 -WindowsShare 70).Ok | Should -BeTrue
         [void](New-CapVm $root)
+        # 54 + 16 + 16 GiB is over the 85 GiB pool (96 * 90 % - 1 for the control VM).
         $r = Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100
         $r.Reason | Should -Be 'memory'
         @(Get-CapLive (Get-CapDoc $root)).Count | Should -Be 4
+    }
+
+    It 'admits the owner example in full, 3 Linux at 60 % and 2 Windows at 30 %, and keeps the reserve on <cpu> CPUs and <mem> GiB' -ForEach @(
+        @{ cpu = 32; mem = 96 }, @{ cpu = 16; mem = 32 }, @{ cpu = 8; mem = 16 }
+    ) {
+        $root = New-CapAllocator -Mode per_profile -LinuxShare 60 -WindowsShare 30 -HostInfo (New-CapHostInfo -Cpu $cpu -Mem $mem -Ctl 2)
+        foreach ($i in 1..3) { (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2').Ok | Should -BeTrue }
+        foreach ($i in 1..2) { (Request-AapReservation -Root $root -Profile windows -MemOverheadMib 512 -CloneGib 150 -ScratchGib 40 -IoMbps 100).Ok | Should -BeTrue }
+        $live = @(Get-CapLive (Get-CapDoc $root))
+        $live.Count | Should -Be 5
+        $cpus = ($live | Measure-Object -Property cpus -Sum).Sum
+        $gib = ($live | ForEach-Object { $_.mem_gib + [Math]::Ceiling($_.mem_overhead_mib / 1024) } | Measure-Object -Sum).Sum
+        $cpus | Should -BeLessOrEqual ([Math]::Floor($cpu * 0.9))
+        ($gib + 2) | Should -BeLessOrEqual ([Math]::Floor($mem * 0.9))
+        (Test-AapAllocatorState -Path (Join-Path $root 'allocator.json')).Valid | Should -BeTrue
     }
 
     It 'counts clone and scratch caps on the volume that holds each tier' {
@@ -382,7 +400,7 @@ Describe 'profile counts and shares' {
     It 'refuses a larger reserve the live reservations cannot fit, and changes nothing' {
         $root = New-CapAllocator -Mode per_profile -LinuxShare 60 -WindowsShare 30 -LegacySlots 3
         $rev = (Get-CapDoc $root).revision
-        $r = Set-AapProfileCounts -Root $root -Linux 3 -Windows 2 -HostReservePercent 40 -LinuxShare 40 -WindowsShare 20
+        $r = Set-AapProfileCounts -Root $root -Linux 3 -Windows 2 -HostReservePercent 50 -LinuxShare 30 -WindowsShare 20
         $r.Reason | Should -Be 'pool_over_live'
         (Get-CapDoc $root).revision | Should -Be $rev
         (Get-CapDoc $root).host_reserve_percent | Should -Be 10

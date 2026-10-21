@@ -1,5 +1,5 @@
 {
-  "expect": "exceed the pool",
+  "expect": "exceeds the per-runner share of linux",
   "instance": {
     "schema": 2,
     "revision": 42,

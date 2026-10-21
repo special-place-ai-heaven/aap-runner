@@ -1,6 +1,6 @@
 //! Pure file contract. Trust split: the tray writes only under `<base>\inbox\`
-//! (`state.json`, `settings.json`, `tray.log`); it reads the admin-written `<base>\status.json`.
-//! No UI here.
+//! (`state.json`, `settings.json`, `tray.log`); it reads the admin-written `<base>\status.json`
+//! and `<base>\status.v5.json`. No UI here.
 
 use crate::mark::Sym;
 use serde::Deserialize;
@@ -431,6 +431,103 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
     }
 }
 
+/// The `status.v5.json` schema this app reads.
+pub const SCHEMA_V5: u32 = 5;
+
+/// CPUs and GiB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct Res {
+    pub cpus: u32,
+    pub mem_gib: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct CapacityV5 {
+    pub used_slots: u32,
+    pub free_slots: u32,
+    pub host_reserve_percent: u32,
+    /// `even` or `per_profile`.
+    pub share_mode: String,
+    pub host: Res,
+}
+
+/// One runner profile: `linux` or `windows`, its backend (`wsl-legacy`, `hyperv-vm` or `none`),
+/// its count and share, and the caps the allocator gives it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ProfileV5 {
+    pub profile: String,
+    pub os: String,
+    pub backend: String,
+    pub count: u32,
+    pub share_percent: Option<u32>,
+    pub per_runner: Res,
+    pub profile_cap: Res,
+    pub image_generation: Option<String>,
+    pub generation_state: Option<String>,
+    pub available: bool,
+    pub unavailable_reason: String,
+}
+
+/// One slot of any backend. `run_url` and `job_url` go through [`valid_run_url`] and
+/// [`valid_job_url`] before anything opens them.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct SlotV5 {
+    pub slot: u32,
+    pub profile: String,
+    pub os: String,
+    pub backend: String,
+    pub lifecycle: String,
+    pub image_generation: String,
+    pub job: String,
+    pub repo: String,
+    pub run_url: String,
+    pub job_url: Option<String>,
+}
+
+/// `status.v5.json`, written by the supervisor beside `status.json` (supervisor/README.md):
+/// both profiles and the slots of every backend. `status.json` stays the legacy pool's.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct StatusV5 {
+    schema: u32,
+    pub state: String,
+    pub updated: String,
+    pub detail: String,
+    /// The `inbox\settings.json` schemas the supervisor accepts.
+    pub settings_schemas: Vec<u32>,
+    pub capacity: CapacityV5,
+    pub profiles: Vec<ProfileV5>,
+    pub slots: Vec<SlotV5>,
+}
+
+impl StatusV5 {
+    pub fn profile(&self, name: &str) -> Option<&ProfileV5> {
+        self.profiles.iter().find(|p| p.profile == name)
+    }
+
+    /// The supervisor reads settings schema 3, so the tray may write it.
+    pub fn takes_settings_v3(&self) -> bool {
+        self.settings_schemas.contains(&3)
+    }
+}
+
+/// `status.v5.json`, or `None` when it is missing, over 64 KiB, unparseable, stale (over 180 s
+/// old, or `updated` in the future), of another schema or without exactly the Linux and Windows
+/// profiles: then the tray keeps to `status.json` (an older supervisor writes no such file).
+pub fn read_status_v5(base: &Path, now: SystemTime) -> Option<StatusV5> {
+    parse_status_v5(&read_bounded(&base.join("status.v5.json"))?, now)
+}
+
+pub fn parse_status_v5(json: &str, now: SystemTime) -> Option<StatusV5> {
+    let v: StatusV5 = serde_json::from_str(json.trim_start_matches('\u{feff}')).ok()?;
+    let updated = parse_rfc3339(&v.updated)?;
+    let fresh = now
+        .duration_since(updated)
+        .is_ok_and(|age| age <= STALE_AFTER);
+    let two =
+        v.profiles.len() == 2 && v.profile("linux").is_some() && v.profile("windows").is_some();
+    (v.schema == SCHEMA_V5 && fresh && two).then_some(v)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Desired {
     On,
@@ -583,6 +680,20 @@ pub(crate) fn temp_base(name: &str) -> std::path::PathBuf {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(inbox(&dir)).unwrap();
     dir
+}
+
+/// A contract fixture as written: an invalid one is wrapped as {"expect", "instance"}.
+#[cfg(test)]
+pub(crate) fn fixture(rel: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../parity/contracts/fixtures")
+        .join(rel);
+    let text = fs::read_to_string(&path).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    match v.get("instance") {
+        Some(i) => i.to_string(),
+        None => text,
+    }
 }
 
 #[cfg(test)]
@@ -898,6 +1009,78 @@ mod tests {
             parse_status(newer, now).status,
             Status::Error(NEWER_SCHEMA.into())
         );
+    }
+
+    #[test]
+    fn status_v5_reads_the_contract_fixtures() {
+        let now = at("2026-10-19T18:01:00Z");
+        for name in [
+            "mixed-five-slots",
+            "storage-missing-and-untrusted",
+            "storage-unconfigured",
+        ] {
+            let v = parse_status_v5(&fixture(&format!("status-v5/valid/{name}.json")), now)
+                .expect(name);
+            assert_eq!(v.profile("linux").unwrap().os, "Linux", "{name}");
+            assert_eq!(v.profile("windows").unwrap().os, "Windows", "{name}");
+        }
+        let v = parse_status_v5(&fixture("status-v5/valid/mixed-five-slots.json"), now).unwrap();
+        assert!(v.takes_settings_v3());
+        assert_eq!((v.capacity.used_slots, v.capacity.free_slots), (5, 0));
+        assert_eq!(v.capacity.share_mode, "per_profile");
+        let win = v.profile("windows").unwrap();
+        assert_eq!((win.count, win.share_percent), (2, Some(30)));
+        assert_eq!(
+            win.profile_cap,
+            Res {
+                cpus: 9,
+                mem_gib: 28
+            }
+        );
+        assert_eq!(v.slots.len(), 5);
+        assert_eq!(v.slots[3].os, "Windows");
+        assert_eq!(v.slots[3].backend, "hyperv-vm");
+        assert!(valid_run_url(&v.slots[0].run_url));
+    }
+
+    #[test]
+    fn status_v5_is_ignored_when_newer_stale_or_unreadable() {
+        let now = at("2026-10-19T18:01:00Z");
+        let good = fixture("status-v5/valid/mixed-five-slots.json");
+        assert!(parse_status_v5(&good, now).is_some());
+        assert!(
+            parse_status_v5(&format!("\u{feff}{good}"), now).is_some(),
+            "BOM"
+        );
+        assert!(parse_status_v5(&fixture("status-v5/invalid/future-schema-6.json"), now).is_none());
+        assert!(parse_status_v5(&good.replace("\"schema\": 5", "\"schema\": 4"), now).is_none());
+        assert!(
+            parse_status_v5(&good, at("2026-10-19T18:03:01Z")).is_none(),
+            "stale after 180 s"
+        );
+        assert!(
+            parse_status_v5(&good, at("2026-10-19T17:59:59Z")).is_none(),
+            "an updated time in the future is stale"
+        );
+        assert!(parse_status_v5("not json", now).is_none());
+        let one: serde_json::Value = serde_json::from_str(&good).unwrap();
+        let mut one = one;
+        one["profiles"].as_array_mut().unwrap().pop();
+        assert!(
+            parse_status_v5(&one.to_string(), now).is_none(),
+            "both profiles or nothing"
+        );
+        let base = temp_base("status-v5");
+        assert!(read_status_v5(&base, now).is_none(), "missing");
+        fs::write(base.join("status.v5.json"), &good).unwrap();
+        assert!(read_status_v5(&base, now).is_some());
+        fs::write(
+            base.join("status.v5.json"),
+            format!("{good}{}", " ".repeat(64 * 1024)),
+        )
+        .unwrap();
+        assert!(read_status_v5(&base, now).is_none(), "over 64 KiB");
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

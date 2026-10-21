@@ -134,6 +134,47 @@ Describe 'one job, end to end' {
         @(Get-WinCalls $w 'Broker status_request *').Count | Should -Be ($n + 1)
     }
 
+    It 'a runner that takes a job between the drain sample and the release keeps its VM and its job' -Tag 'release-busy' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))   # running, listening, no job
+        [void](Set-AapSlotState -Root $w.Cap -ReservationId $rid -LeaseGeneration $r.lease_generation -State draining -RelaxedTrustForTests)
+        Set-WinKnob $w @{ BusyAfterStatus = $true }
+        $s = Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)
+        $s.Code | Should -Be 'release_pending'
+        @(Get-WinCalls $w 'Broker release_request *').Count | Should -Be 0
+        @(Get-WinVms $w).Count | Should -Be 1
+        @(Get-WinCalls $w 'RemoveVm *').Count | Should -Be 0
+        # The job ends and the one-job runner leaves: now it is released and the VM goes.
+        Set-WinKnob $w @{ RunnerBusy = $false; RunnerStatus = 'absent' }
+        $B.Now = { [DateTime]::UtcNow.AddSeconds(60) }
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Action | Should -Be 'destroyed'
+        @(Get-WinVms $w).Count | Should -Be 0
+    }
+
+    It 'a broker that cannot say the drained runner is still idle (<how>) keeps the runner and its VM' -Tag 'release-busy' -ForEach @(
+        @{ how = 'unavailable' }, @{ how = 'timeout' }, @{ how = 'bad_reply' }
+    ) {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))   # running, listening, no job
+        [void](Set-AapSlotState -Root $w.Cap -ReservationId $rid -LeaseGeneration $r.lease_generation -State draining -RelaxedTrustForTests)
+        Set-WinKnob $w @{ StatusAfterStatus = $how }
+        $s = Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)
+        $s.Code | Should -Be 'release_pending'
+        @(Get-WinCalls $w 'Broker release_request *').Count | Should -Be 0
+        @(Get-WinVms $w).Count | Should -Be 1
+        Set-WinKnob $w @{ StatusOutcome = 'ok'; RunnerStatus = 'absent' }
+        $B.Now = { [DateTime]::UtcNow.AddSeconds(60) }
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Action | Should -Be 'destroyed'
+    }
+
     It 'a drained runner whose release is not final keeps its VM until it is' -Tag 'drain-keep' {
         $w = New-WinWorld
         $B = New-WinBackend $w

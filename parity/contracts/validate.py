@@ -264,7 +264,8 @@ def _profile_caps(doc_host, reserve, mode, profiles):
             each = (pool[0] // total, pool[1] // total) if total else (0, 0)
             caps[name] = {"each": each, "cap": (each[0] * n, each[1] * n)}
         else:
-            cap = (doc_host["cpu_cores"] * p["share_percent"] // 100, doc_host["mem_gib"] * p["share_percent"] // 100)
+            # Memory: the share of the pool after the control VM, so the caps never sum over it.
+            cap = (doc_host["cpu_cores"] * p["share_percent"] // 100, pool[1] * p["share_percent"] // (100 - reserve))
             each = (cap[0] // n, cap[1] // n) if n else (0, 0)
             caps[name] = {"each": each, "cap": cap}
     return pool, caps

@@ -133,8 +133,10 @@ create) and the runner part is final:
 
 The VM goes whatever the release answered, except after a drain: a runner that was listening may still be listed, so
 its VM stays until the release is final, and stays held to every limit on every step. Kept 6 h past the drain, it is
-flagged (`waiting`/`drain_overdue`, journaled once), never destroyed for time. A hostile guest, a broken limit or a
-failed op removes the VM in every case.
+flagged (`waiting`/`drain_overdue`, journaled once), never destroyed for time. Its release is asked only after the
+broker's status answers ok with the runner not busy; busy, unavailable, a timeout or an unreadable reply keep the runner
+and the VM (pending), so a job that started after the drain's idle sample runs on. An urgent teardown does not ask. A job
+starting between that answer and the release is not covered: the broker has no conditional release. A hostile guest, a broken limit or a failed op removes the VM in every case.
 Absence counts only with both tier roots present on the volumes the storage document records, and only after the
 network detach succeeded. A VM, network or folder still there after three tries 5 s apart quarantines the slot
 (`teardown_failed`, capacity held); the next steps try again, at most once a minute. Deletes never follow a junction or

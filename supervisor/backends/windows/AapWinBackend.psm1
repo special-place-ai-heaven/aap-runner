@@ -1057,10 +1057,17 @@ function Invoke-AapWinCreate($B, $r, [string]$BaseSha256, $j) {
 # The runner part of the teardown proof (broker INTEGRATION.md, rules for the callers): never_registered when no lease
 # was ever asked for, $true or 'github-removed' when the release closed the lease, 'pending' to ask again later and
 # 'uncertain' when the broker lost a lease it had issued (never proof).
-function Get-AapWinRunnerProof($B, $r, $j) {
+function Get-AapWinRunnerProof($B, $r, $j, [bool]$Recheck = $true) {
     if (-not $j.Has['run_one/intent']) { return 'never_registered' }
     if (-not $j.LeaseId) { return 'uncertain' }
     $ba = $B.BrokerArgs
+    if ($Recheck -and $j.DrainedOnline) {
+        # The drain saw the runner idle one sample ago; a job may have started since. Released only on the broker's word
+        # that it is still idle: busy, unavailable, timed out or an unreadable reply keep the runner and its VM (pending).
+        # An urgent teardown (a broken limit, a hostile guest) does not ask: its VM goes anyway.
+        $bs = Invoke-AapBrokerStatus -LeaseId $j.LeaseId @ba
+        if ($bs.Outcome -cne 'ok' -or $bs.RunnerBusy -ne $false) { return 'pending' }   # check:release-busy
+    }
     $rel = Invoke-AapBrokerRelease -LeaseId $j.LeaseId @ba
     if ($rel.Outcome -ceq 'deregistered') { return $true }
     if ($rel.Outcome -ceq 'already_gone') { return 'github-removed' }
@@ -1137,7 +1144,7 @@ function Invoke-AapWinDestroy($B, $r, $j, [switch]$Force, [switch]$Urgent) {
     if ($j.Last -notlike 'destroy/*') { Write-AapWinJournal $B $r 'destroy' 'intent' -VmId $vmId }
     if ($breach) { Write-AapWinJournal $B $r 'destroy' 'failed' -VmId $vmId -Code 'fatal' -Detail "limit broken while kept: $breach" }
     Invoke-AapWinFault 'destroy:after-intent'
-    $runner = Get-AapWinRunnerProof $B $r $j
+    $runner = Get-AapWinRunnerProof $B $r $j (-not $Urgent)
     Invoke-AapWinFault 'destroy:after-release'
     if (-not $Urgent -and $runner -is [string] -and $runner -ceq 'pending' -and $j.DrainedOnline) {   # check:drain-keep
         if ($null -ne $j.DrainAt -and ($now - $j.DrainAt).TotalHours -ge $script:DrainKeepHours) {   # check:drain-overdue
