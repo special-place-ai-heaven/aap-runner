@@ -86,7 +86,10 @@ only a private per-job root, and the namespace key adds the zccache version. No 
    manager-side oldest-file eviction. Requirements: [retention.md](../cache/qualification/retention.md)
    (retention.md requirement 4 is superseded by rule 6).
 7. A wrapper failure at runtime falls back to the direct compiler for that invocation and reports
-   cache state `degraded` in `status.v5.json`; it never fails a build that would pass direct.
+   cache state `degraded` in `status.v5.json`; it never fails a build that would pass direct. A zero
+   exit whose declared outputs (the object, the depfile) are missing, empty or not regular files is
+   a wrapper failure (P13.3); outputs the shim cannot name rely on zccache's own delivery and P04's
+   evidence.
 
 ## Matrix template (both platforms)
 

@@ -15,7 +15,11 @@ its own temp folder (TMPDIR; TEMP and TMP too, except for Git Bash), and whateve
 the folder removed after the run.
 
 Bash runs through Git Bash on Windows (never System32\\bash.exe, which is WSL); cases that need symbolic links are
-skipped there, so LNX-DIR-LINK and LNX-BIND-LINK are proven only on real Linux.
+skipped there, so LNX-DIR-LINK, LNX-BIND-LINK, LNX-OUT-CHECK#2 and LNX-OUT-CLEAR are proven only on real Linux.
+WIN-OUT-CLEAR needs a symbolic link from PowerShell 7 (developer mode or elevation); without one its test is skipped
+and it reports NO-TEST. WIN-OUT-CHECK has no mutation that drops only the reparse-point test: on Windows a symbolic
+link's FileInfo.Length is 0 on both editions, so the length test refuses it as well, and no unprivileged test can make
+a reparse point with a non-zero length. The reparse-point test stays as defense in depth; the link test still runs.
 """
 
 import argparse
@@ -76,6 +80,11 @@ MUTATIONS = {
     "WIN-TIMEOUT-DAEMON": (W, "if (Test-AapZcDaemonAlive $d.Root.daemon) { Stop-AapZcTree", "if ($false) { Stop-AapZcTree"),
     "WIN-TIMEOUT-CLASS": (W, "if ($Classes -contains 'compile-object') {", "if ($true) {"),
     "WIN-SHIM-FALLBACK": (W, "$code = (Invoke-AapZcProcess -FilePath $exe -Arguments $rest).ExitCode  # SAFETY:WIN-SHIM-FALLBACK", "$code = $(if ($r) { $r.ExitCode } else { 1 })"),
+    "WIN-OUT-UNKNOWN": (W, "if ($null -eq $outs) { $d.Reason = 'outputs-unknown'; return $d }", "if ($null -eq $outs) { $outs = @() }"),
+    "WIN-OUT-STALE": (W, "try { [IO.File]::Delete($f) }  # SAFETY:WIN-OUT-STALE", "try { }  #"),
+    "WIN-OUT-CHECK": [(W, "return ($fi.Exists -and -not ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $fi.Length -gt 0)", "return $true"),
+                      (W, "return ($fi.Exists -and -not ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $fi.Length -gt 0)", "return ($fi.Exists -and -not ($fi.Attributes -band [IO.FileAttributes]::ReparsePoint))")],
+    "WIN-OUT-CLEAR": (W, "foreach ($f in $d.Outputs) { try { [IO.File]::Delete($f) } catch { $null = $_ } }  # SAFETY:WIN-OUT-CLEAR", "#"),
     "TRUST-JOB-MATCH": (T, "if ($m.Count -ne 1) { return $null }", "if ($false) { return $null }"),
     "TRUST-SAME-REPO": (T, "if ($runRepo -ne $repoId) { return $null }", "if ($false) { return $null }"),
     "TRUST-EVENT": (T, "if (@('push', 'schedule') -cnotcontains $ev) {", "if ($false) {"),
@@ -121,6 +130,12 @@ MUTATIONS = {
     "LNX-TIMEOUT-DAEMON": (L, 'zc_daemon_alive "${pid}" "${start}" && zc_kill_tree "${pid}"', 'true'),
     "LNX-TIMEOUT-CLASS": (L, 'if [[ " $1 " == *" compile-object "* ]]; then', 'if true; then'),
     "LNX-SHIM-FALLBACK": (L, '"${path}" "$@"  # SAFETY:LNX-SHIM-FALLBACK', "false"),
+    "LNX-OUT-UNKNOWN": (L, 'then reason="outputs-unknown"; fi', 'then reason=""; fi'),
+    "LNX-OUT-STALE": (L, 'rm -f -- "${o}" 2> /dev/null ||', "true ||"),
+    "LNX-OUT-CLEAR": (L, '[[ -n "${o}" ]] && rm -f -- "${o}" 2> /dev/null; done', '[[ -n "${o}" ]] && true; done'),
+    "LNX-OUT-CHECK": [(L, '[[ -f "${o}" && ! -L "${o}" && -s "${o}" ]]', "true"),
+                      (L, '[[ -f "${o}" && ! -L "${o}" && -s "${o}" ]]', '[[ -f "${o}" && -s "${o}" ]]'),
+                      (L, '[[ -f "${o}" && ! -L "${o}" && -s "${o}" ]]', '[[ -f "${o}" && ! -L "${o}" ]]')],
     "GEN-VALIDATE": (G, "if r.returncode != 0:", "if False:"),
     "GEN-BINARY-PIN": (G, 'if z["binary_sha256"] != pins["members"][0]["sha256"]:', "if False:"),
     "GEN-ACQUIRE": (G, "if (acq is None or", "if False and (acq is None or"),
@@ -155,17 +170,18 @@ def pwsh():
 
 
 def run_pids(marker):
-    """Processes whose command line or program names marker (a suite's fakes run from inside its temp folder)."""
+    """Processes whose command line or program (Linux: or environment) names marker (a suite's fakes run from inside
+    its temp folder)."""
     if os.name == "nt":
         ps = ("Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ([string]$_.CommandLine + "
               "[string]$_.ExecutablePath).Contains('" + marker + "') } | ForEach-Object { $_.ProcessId }")
         r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True)
         return [int(x) for x in r.stdout.split()]
     pids = []
-    for f in Path("/proc").glob("[0-9]*/cmdline"):
-        try:
-            if marker.encode() in f.read_bytes():
-                pids.append(int(f.parent.name))
+    for d in Path("/proc").glob("[0-9]*"):
+        try:  # environ too: a daemon started with a relative path names the folder only in its TMPDIR
+            if any(marker.encode() in (d / n).read_bytes() for n in ("cmdline", "environ")):
+                pids.append(int(d.name))
         except OSError:
             pass
     return pids

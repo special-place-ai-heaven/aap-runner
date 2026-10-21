@@ -24,6 +24,10 @@ ZC_DAEMON_ENV="PATH HOME PWD TMPDIR LANG LC_ALL CARGO_HOME RUSTUP_HOME RUSTUP_TO
 # A shared root's namespace: binding, disk marker and the guest's own identity must agree on every field.
 ZC_NS_KEYS='["repository_id", "repository", "trust_class", "platform", "toolchain_digest", "zccache_version"]'
 ZC_TMP=""
+ZC_T=() ZC_RSP=0
+# zccache's client prints these to stderr while a compile waits or runs (cli/commands/wrap/ipc.rs:347-366 at the pin),
+# always before the compile's own stderr, which arrives with the result.
+ZC_PROGRESS_RE='^zccache\[info\]\[Q\]: daemon under load: [a-z_]+, ([0-9]+ compiles in flight|position [0-9]+ of [0-9]+ queued, [0-9]+ in flight)$'
 
 zc_die() { echo "aap-zccache: $*" >&2; exit 1; }
 zc_sha() { sha256sum -- "$1" | cut -d' ' -f1; }
@@ -137,17 +141,18 @@ zc_bin() { # INSTALL_DIR
   echo "$1/bin/$(jq -r --arg p "${ZC_PLATFORM}" '.platforms[$p].members[0].name' "$1/wrappers.json")"
 }
 
-# Daemon candidates for a root being primed: processes running from BIN whose environment names exactly this root. A
-# compile client running at the same time works on another root (the private one during an attach), so it never
-# matches.
-zc_find_daemons() { # BIN ROOT_DIR [PID...]
-  local bin dir=$2 p exe
-  bin=$(readlink -f -- "$1"); shift 2
+# Daemon candidates for a root being primed: processes whose environment names exactly this root, running either from
+# the copy zccache deploys into the root and starts its daemon from (ROOT_DIR/vVERSION/zccache-daemon,
+# cli/runtime/deploy.rs:106-125 at the pin) or, when that copy fails, from BIN itself. A compile client running at the
+# same time works on another root (the private one during an attach), so it never matches.
+zc_find_daemons() { # BIN ROOT_DIR VERSION [PID...]
+  local bin dir=$2 deployed p exe
+  bin=$(readlink -f -- "$1"); deployed="$(readlink -f -- "$2")/v$3/zccache-daemon"; shift 3
   for p in /proc/[0-9]*; do
     p=${p##*/}
     [[ " $* " == *" ${p} "* ]] && continue
     exe=$(readlink -f -- "/proc/${p}/exe" 2> /dev/null) || continue
-    [[ "${exe}" == "${bin}/"* ]] || continue
+    [[ "${exe}" == "${deployed}" || "${exe}" == "${bin}/"* ]] || continue
     tr '\0' '\n' < "/proc/${p}/environ" 2> /dev/null | grep -qxF -- "ZCCACHE_CACHE_DIR=${dir}" && echo "${p}"  # SAFETY:LNX-DAEMON-ID
   done
 }
@@ -189,7 +194,7 @@ zc_start_daemon() { # INSTALL_DIR JOB_ROOT ROOT_ID -> rewrites config with the d
   [[ -n "${sid}" ]] && timeout 60 env -i "${keep[@]}" ZCCACHE_CACHE_DIR="${dir}" ZCCACHE_MODE=COPY ZCCACHE_CACHE_SIZE_BYTES="${budget}" \
     "${zc}" session-end "${sid}" > /dev/null 2>&1
   read -r -a known <<< "$(jq -r '[.roots[] | .daemon.pid // empty | tostring] | join(" ")' "${cfg}")"
-  mapfile -t pids < <(zc_find_daemons "$(dirname "${zc}")" "${dir}" "${known[@]}")
+  mapfile -t pids < <(zc_find_daemons "$(dirname "${zc}")" "${dir}" "$(jq -r .zccache.version "${install}/wrappers.json")" "${known[@]}")
   if [[ ${rc} != 0 || ${#pids[@]} -ne 1 ]]; then
     # A failed start, or none or several candidates: stop every candidate rather than leave an unrecorded daemon on a
     # root this job will not use.
@@ -318,22 +323,31 @@ zc_state() { # JOB_ROOT -> {"state","detail","bytes"} for status.v5.json cache.s
 
 # ---- invocation classes (contract enum); prints them, or fails when the call cannot be classified ----
 
-zc_classify() { # COMPILER ARGS...
-  local compiler=$1 t=() a rsp=0 i n classes=() compile=0 pch=0 types=""
-  shift
+# The call's arguments with response files expanded (one level) into ZC_T; ZC_RSP=1 when there was one. Fails on a
+# missing or nested response file.
+zc_expand() { # ARGS...
+  local a n
+  ZC_T=() ZC_RSP=0
   for a in "$@"; do
     if [[ "${a}" == @* ]]; then
-      rsp=1
+      ZC_RSP=1
       [[ -f "${a:1}" ]] || return 1
       while IFS= read -r n; do
         n=${n#\"}; n=${n%\"}
         [[ "${n}" == @* ]] && return 1  # nested response files are not classified
-        t+=("${n}")
+        ZC_T+=("${n}")
       done < <(grep -oE '"[^"]*"|[^[:space:]]+' -- "${a:1}")
     else
-      t+=("${a}")
+      ZC_T+=("${a}")
     fi
   done
+}
+
+zc_classify() { # COMPILER ARGS...
+  local compiler=$1 t a rsp i n classes=() compile=0 pch=0 types=""
+  shift
+  zc_expand "$@" || return 1
+  t=("${ZC_T[@]}") rsp=${ZC_RSP}
   case "${compiler}" in
     rustc)
       for ((i = 0; i < ${#t[@]}; i++)); do
@@ -370,6 +384,47 @@ zc_classify() { # COMPILER ARGS...
   printf '%s\n' "${classes[@]}" | sort -u
 }
 
+# The files a call must have written when zccache exits 0, one per line: its -o file and, with -MD or -MMD, its
+# depfile (-MF, or the -o name with its last suffix replaced by .d, as gcc and clang name it). Fails when they cannot be
+# named (not exactly one -o, -o to - or /dev, more than one -MF, a name whose depfile is not derived that way): that
+# call builds directly. rustc prints nothing: its outputs follow --out-dir, --emit, the crate name and
+# -C extra-filename, and stay with zccache's own delivery (README, residual). Other sidecars (.dwo, .gcno, -save-temps
+# files) are not named either.
+zc_outputs() { # COMPILER ARGS...
+  local compiler=$1 i a o="" n=0 mf="" nmf=0 md=0 base
+  shift
+  [[ "${compiler}" == rustc ]] && return 0
+  zc_expand "$@" || return 1
+  for ((i = 0; i < ${#ZC_T[@]}; i++)); do
+    a=${ZC_T[i]}
+    case "${a}" in
+      -o) o=${ZC_T[i + 1]:-}; n=$((n + 1)); i=$((i + 1)) ;;
+      -MF) mf=${ZC_T[i + 1]:-}; nmf=$((nmf + 1)); i=$((i + 1)) ;;
+      -MF?*) mf=${a:3}; nmf=$((nmf + 1)) ;;
+      -MD | -MMD) md=1 ;;
+    esac
+  done
+  [[ ${n} == 1 && -n "${o}" && "${o}" != - && "${o}" != /dev/* && ${nmf} -le 1 ]] || return 1
+  echo "${o}"
+  [[ ${md} == 1 ]] || return 0
+  if [[ ${nmf} == 1 ]]; then
+    [[ -n "${mf}" && "${mf}" != - && "${mf}" != /dev/* ]] || return 1
+    echo "${mf}"
+    return 0
+  fi
+  base=${o##*/}
+  if [[ "${base}" != *.* ]]; then echo "${o}.d"
+  elif [[ -n "${base%.*}" && -n "${base##*.}" ]]; then echo "${o%.*}.d"
+  else return 1
+  fi
+}
+
+# zccache's stderr without its leading progress lines (ZC_PROGRESS_RE); everything from the first other line on is
+# passed on byte for byte, so a compiler message that only looks like one is kept.
+zc_unprogress() { # FILE
+  sed -E -e "/${ZC_PROGRESS_RE}/d" -e ':a' -e 'n' -e 'ba' -- "$1"
+}
+
 # ---- the shim ----
 
 zc_log() { # JOB_ROOT LINE; never fails a build, never writes to the compile's stderr
@@ -401,7 +456,7 @@ zc_wrapper_timeout() { # CLASSES SHORT LONG
 
 zc_shim() { # COMPILER ARGS...
   [[ $# -ge 1 ]] || { echo "zcshim: usage: zcshim COMPILER [ARGS...]" >&2; exit 2; }
-  local compiler=$1 self path cfg=${AAP_ZC_STATE:-} info reason="" job="" state root dir budget abudget pid start zcname tmo tmol kind real bytes mtime quals c tc out err rc rc2
+  local compiler=$1 self path cfg=${AAP_ZC_STATE:-} info reason="" job="" state root dir budget abudget pid start zcname tmo tmol kind real bytes mtime quals c tc out err rc rc2 outs="" o bad=""
   shift
   # zccache is always the pinned member of the install this shim runs from, never a path from the job's config.
   self=$(dirname "$(readlink -f -- "${BASH_SOURCE[0]}")")
@@ -426,6 +481,7 @@ zc_shim() { # COMPILER ARGS...
     elif ! tc=$(zc_classify "${kind}" "$@"); then reason=unclassified
     else
       for c in ${tc}; do [[ " ${quals} " == *" ${c} "* ]] || { reason="not-qualified:${c}"; break; }; done  # SAFETY:LNX-SHIM-QUALIFIED
+      if [[ -z "${reason}" ]] && ! outs=$(zc_outputs "${kind}" "$@"); then reason="outputs-unknown"; fi  # SAFETY:LNX-OUT-UNKNOWN
       if [[ -z "${reason}" ]]; then
         if [[ -f "${job}/shim/degraded-${root}" ]]; then reason=degraded  # SAFETY:LNX-SHIM-FLAG
         else
@@ -442,29 +498,45 @@ zc_shim() { # COMPILER ARGS...
     exec "${path}" "$@"
   fi
   { out=$(mktemp "${job}/shim/out.XXXXXX") && err=$(mktemp "${job}/shim/err.XXXXXX"); } 2> /dev/null || exec "${path}" "$@"
+  # An output left by an earlier build must not pass for this call's: every declared output goes first.
+  while IFS= read -r o; do
+    [[ -z "${o}" ]] && continue
+    rm -f -- "${o}" 2> /dev/null || { rm -f -- "${out}" "${err}"; zc_log "${job}" "direct ${path##*/} output-not-removable"; exec "${path}" "$@"; }  # SAFETY:LNX-OUT-STALE
+  done <<< "${outs}"
   tmo=$(zc_wrapper_timeout "${tc}" "${tmo}" "${tmol}")
   zc_child_env "${dir}" "${abudget}" timeout -k 5 "${tmo}" "${self}/bin/${zcname}" "${path}" "$@" > "${out}" 2> "${err}"  # SAFETY:LNX-SHIM-TIMEOUT
   rc=$?
   if [[ ${rc} == 0 ]]; then
-    cat -- "${out}"; cat -- "${err}" >&2; rm -f -- "${out}" "${err}"
-    zc_log "${job}" "zccache ${path##*/} exit 0"
-    exit 0
+    # Exit 0 is not taken on trust: every declared output must now be a non-empty regular file, not a link. That proves
+    # delivery, not that the bytes are right (the trust rule bounds who writes a root).
+    while IFS= read -r o; do
+      [[ -z "${o}" ]] || [[ -f "${o}" && ! -L "${o}" && -s "${o}" ]] || { bad=${o}; break; }  # SAFETY:LNX-OUT-CHECK
+    done <<< "${outs}"
+    if [[ -z "${bad}" ]]; then
+      cat -- "${out}"; zc_unprogress "${err}" >&2; rm -f -- "${out}" "${err}"
+      zc_log "${job}" "zccache ${path##*/} exit 0"
+      exit 0
+    fi
   fi
-  # Any zccache failure, a compile error included, is answered by the direct compiler: its exit code and output are
-  # the build's (contract rule 7). The wrapped call's output is dropped so errors are not reported twice, and a compile
-  # error costs two compiler runs. A call that ran past the bound (timeout: 124, or 137 after the kill; timeout killed
-  # the client's whole process group) marks the root degraded either way, and the root's daemon is stopped first: it may
-  # still be compiling this call's output, which the direct compile is about to write. Other wrapped calls on that root
-  # then fail and compile directly too.
+  # Any zccache failure, a compile error or an exit 0 without its outputs included, is answered by the direct compiler:
+  # its exit code and output are the build's (contract rule 7). The wrapped call's output is dropped so errors are not
+  # reported twice, and a compile error costs two compiler runs. A call that ran past the bound (timeout: 124, or 137
+  # after the kill; timeout killed the client's whole process group) marks the root degraded either way, and the root's
+  # daemon is stopped first: it may still be compiling this call's output, which the direct compile is about to write.
+  # Other wrapped calls on that root then fail and compile directly too. Whatever zccache left at a declared output
+  # goes before the compiler writes it: a link into the root would be written through.
   rm -f -- "${out}" "${err}"
-  if [[ ${rc} == 124 || ${rc} == 137 ]]; then
+  if [[ -n "${bad}" ]]; then
+    zc_degrade "${job}" "${root}" delivery
+  elif [[ ${rc} == 124 || ${rc} == 137 ]]; then
     zc_degrade "${job}" "${root}" wrapper-timeout
     zc_daemon_alive "${pid}" "${start}" && zc_kill_tree "${pid}"  # SAFETY:LNX-TIMEOUT-DAEMON
   fi
+  while IFS= read -r o; do [[ -n "${o}" ]] && rm -f -- "${o}" 2> /dev/null; done <<< "${outs}"  # SAFETY:LNX-OUT-CLEAR
   "${path}" "$@"  # SAFETY:LNX-SHIM-FALLBACK
   rc2=$?
-  [[ ${rc} != 124 && ${rc} != 137 && ${rc2} == 0 ]] && zc_degrade "${job}" "${root}" wrapper-failure
-  zc_log "${job}" "fallback ${path##*/} zccache-exit ${rc} direct-exit ${rc2}"
+  [[ -z "${bad}" && ${rc} != 124 && ${rc} != 137 && ${rc2} == 0 ]] && zc_degrade "${job}" "${root}" wrapper-failure
+  zc_log "${job}" "fallback ${path##*/} zccache-exit ${rc}${bad:+ delivery} direct-exit ${rc2}"
   exit "${rc2}"
 }
 
