@@ -430,7 +430,12 @@ function New-LinBroker {
                 return (& $out $res)
             }
             'status_request' {
-                if ((Get-LinKnob $w 'StatusOutcome' 'ok') -eq 'unavailable') { return $down }
+                $how = Get-LinKnob $w 'StatusOutcome' 'ok'
+                # StatusAfterStatus: this answer is normal, the next ones are that outcome.
+                if (Get-LinKnob $w 'StatusAfterStatus' $null) { Set-LinKnob $w @{ StatusOutcome = (Get-LinKnob $w 'StatusAfterStatus' $null); StatusAfterStatus = $null } }
+                if ($how -eq 'unavailable') { return $down }
+                if ($how -eq 'timeout') { return [pscustomobject]@{ ExitCode = $null; Stdout = $null; TimedOut = $true; Overflow = $false } }
+                if ($how -eq 'bad_reply') { return [pscustomobject]@{ ExitCode = 0; Stdout = [Text.Encoding]::ASCII.GetBytes('{"schema":1,"kind":"status_response"'); TimedOut = $false; Overflow = $false } }
                 $res = [ordered]@{ schema = 1; kind = 'status_response'; lease_id = $req.lease_id; result = 'refused'; reason = 'not_found'; runner = $null }
                 if ($null -eq $l) { return (& $out $res) }
                 $res.result = 'ok'; $res.reason = 'ok'

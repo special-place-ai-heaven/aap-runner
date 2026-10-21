@@ -1161,14 +1161,16 @@ function Invoke-AapLinCreate($B, $r, [string]$BaseSha256, $j) {
 # The runner part of the teardown proof (broker INTEGRATION.md, rules for the callers): never_registered when no lease
 # was ever asked for, $true or 'github-removed' when the release closed the lease, 'pending' to ask again later and
 # 'uncertain' when the broker lost a lease it had issued (never proof).
-function Get-AapLinRunnerProof($B, $r, $j) {
+function Get-AapLinRunnerProof($B, $r, $j, [bool]$Recheck = $true) {
     if (-not $j.Has['run_one/intent']) { return 'never_registered' }
     if (-not $j.LeaseId) { return 'uncertain' }
     $ba = $B.BrokerArgs
-    if ($j.DrainedOnline) {
-        # The drain saw the runner idle one sample ago; a job may have started since. A busy runner is never released.
+    if ($Recheck -and $j.DrainedOnline) {
+        # The drain saw the runner idle one sample ago; a job may have started since. Released only on the broker's word
+        # that it is still idle: busy, unavailable, timed out or an unreadable reply keep the runner and its VM (pending).
+        # An urgent teardown (a broken limit, a hostile guest) does not ask: its VM goes anyway.
         $bs = Invoke-AapBrokerStatus -LeaseId $j.LeaseId @ba
-        if ($bs.Outcome -ceq 'ok' -and $bs.RunnerBusy -eq $true) { return 'pending' }   # check:release-busy
+        if ($bs.Outcome -cne 'ok' -or $bs.RunnerBusy -ne $false) { return 'pending' }   # check:release-busy
     }
     $rel = Invoke-AapBrokerRelease -LeaseId $j.LeaseId @ba
     if ($rel.Outcome -ceq 'deregistered') { return $true }
@@ -1248,7 +1250,7 @@ function Invoke-AapLinDestroy($B, $r, $j, [switch]$Force, [switch]$Urgent) {
     if ($j.Last -notlike 'destroy/*') { Write-AapLinJournal $B $r 'destroy' 'intent' -VmId $vmId }   # check:destroy-once
     if ($breach) { Write-AapLinJournal $B $r 'destroy' 'failed' -VmId $vmId -Code 'fatal' -Detail "limit broken while kept: $breach" }
     Invoke-AapLinFault 'destroy:after-intent'
-    $runner = Get-AapLinRunnerProof $B $r $j
+    $runner = Get-AapLinRunnerProof $B $r $j (-not $Urgent)
     Invoke-AapLinFault 'destroy:after-release'
     if (-not $Urgent -and $runner -is [string] -and $runner -ceq 'pending' -and $j.DrainedOnline) {   # check:drain-keep
         if ($null -ne $j.DrainAt -and ($now - $j.DrainAt).TotalHours -ge $script:DrainKeepHours) {   # check:drain-overdue
