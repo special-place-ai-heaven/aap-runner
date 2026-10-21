@@ -22,8 +22,10 @@ is the wiring for after that proof.
    decision (README.md).
 4. **Activation.** Shared roots stay OFF until the lab proof exists (top of this page). After it, a repository gets a
    shared root only once the owner's decision to enable that repository is recorded host-side; until then its jobs use
-   private roots. Rule 6 leaves no per-repository condition to check before that decision (no merge-method or tag-rule
-   precondition): it trusts only a run of the default branch's current head.
+   private roots. The host passes the enabled repository ids to `Get-AapCacheTrustClass -EnabledRepositoryIds`, which
+   returns no class for any other repository (a missing or empty list enables none). Rule 6 leaves no other
+   per-repository condition to check before that decision (no merge-method or tag-rule precondition): it trusts only a
+   run of the default branch's current head.
 
 ## Where the job's trust class comes from (decision for P16; option A chosen for the design)
 
@@ -61,29 +63,40 @@ their own separate token with the self-hosted-runners permission. The App key st
    ledger> -RunnerGroupId <the pool's group>`: exactly one job or `$null`. Never match by runner name.
 4. `GET /repos/{o}/{r}/actions/runs/{job.run_id}` (the run: `event`, `head_branch`, `head_sha`, `repository.id`,
    `head_repository.id`), `GET /repos/{o}/{r}` (`id`, `full_name`, `default_branch`) and, at bind time,
-   `GET /repos/{o}/{r}/compare/{default_branch}...{head_sha}`: `-Compare` is its parsed body when it answered 200
-   (`status`, `base_commit.sha`), `$null` for any other answer or none.
-5. `Get-AapCacheTrustClass -Run <run> -Repository <repository> -Compare <compare body or $null>` returns `trust_class`,
-   `repository_id` and `repository`, or `$null`.
+   `GET /repos/{o}/{r}/git/ref/heads/{default_branch}`, the singular branch-only endpoint (an exact match, 404
+   otherwise; never `git/refs/...` or `git/matching-refs/...`, which match prefixes): `-BranchRef` is its parsed body
+   when it answered 200 (`ref`, `url`, `object.type`, `object.sha`), `$null` for any other answer or none.
+5. `Get-AapCacheTrustClass -Run <run> -Repository <repository> -BranchRef <ref body or $null> -EnabledRepositoryIds
+   <the owner's enabled list>` returns `trust_class`, `repository_id` and `repository`, or `$null`.
 
-Zero or several matching jobs, any failed call, a run of another repository, or a compare answer that is missing,
-has no `status`, or says `identical` about another commit mean `$null`: no class, private root only.
+Zero or several matching jobs, any failed call, a run of another repository, a repository `id` that is not a positive
+integer, a repository the owner did not enable, or a ref answer that is missing, has no `object.sha`, or names another
+ref (`refs/tags/<default>`, a longer branch name, another case), another object type or another repository (its
+`url`, compared exactly with `https://api.github.com/repos/<full_name>/git/refs/heads/<default>`) mean `$null`: no
+class, private root only.
 
 **Tag pushes and re-runs.** GitHub's run record has no ref field, and for a tag push `head_branch` is the tag's name,
 so a tag named like the default branch produces a record that looks exactly like a push to that branch. The rule does
 not try to tell them apart. It trusts a run only when its `head_sha` is the default branch's head when the class is
-bound (`status` exactly `identical`, `base_commit.sha` equal to the run's `head_sha`); `behind`, `ahead`, `diverged`
-and any other status are untrusted. A tag at an older commit, live or deleted, a re-run of an older run and a run
+bound (the default branch's ref points at the run's `head_sha`); a ref at any other commit is untrusted. A tag at an older commit, live or deleted, a re-run of an older run and a run
 whose push was superseded before binding all fail that; a tag at the current head runs exactly the reviewed head.
 The cost is a private root for runs superseded before binding and for re-runs of older runs (a lower hit rate,
-accepted). The compare call needs `contents: read`, already part of option A.
+accepted). The ref call needs `contents: read`, already part of option A.
 
 **Required call-site tests (P02.3, the host code that makes these calls).** With a recorded or faked GitHub, the bind
-step must show, per compare answer, the class it hands on: 200 `identical` with the run's head as base: trusted;
-200 `behind`, `ahead`, `diverged`: untrusted; 200 `identical` with another base commit, 200 without `status`, 404,
-any other error status, a rate-limit answer (403/429), a timeout and a truncated or unparseable body: `$null`. Only
-`identical` is ever trusted. Parse the body with `Invoke-RestMethod` or `ConvertFrom-Json`; both editions give the
-same object (tested in `AapZcCache.Tests.ps1`).
+step must show:
+- the request: `GET /repos/{o}/{r}/git/ref/heads/{default_branch}` for the repository the job was matched in, with
+  that repository's narrowed token (assert the URL; never `git/refs/` or `git/matching-refs/`);
+- per answer, the class it hands on: 200 with `ref` `refs/heads/<default>`, `object.type` `commit`, that
+  repository's `url` and `object.sha` equal to the run's head: trusted; the same with another sha: untrusted; 200
+  naming `refs/tags/<default>`, a longer branch name or the branch in another case, `object.type` `tag`, the `url`
+  of another repository or a fork, a list body, no `object.sha`; 404, any other error status, a rate-limit answer
+  (403/429), a timeout and a truncated or unparseable body: `$null`;
+- the enabled list it passes is the owner's recorded list (a repository missing from it: `$null`), and a repository
+  record whose `id` is not a positive integer gives `$null` without throwing.
+
+Parse the body with `Invoke-RestMethod` or `ConvertFrom-Json`; the function reads what either edition gives the same
+way (pwsh 7 unrolls a one-item list to the item, 5.1 does not; tested in `AapZcCache.Tests.ps1`).
 
 **Deadline.** If the class is not established within a bounded time after the runner turns busy (start with 60 s),
 the job keeps its private root for its whole life. No retry later in the job.

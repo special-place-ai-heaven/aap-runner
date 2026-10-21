@@ -19,8 +19,9 @@ zccache version. No schema change.
 
 Rule 6 amendment (P13.2, 2026-10-21): GitHub's run record does not say whether `head_branch` names a
 branch or a tag, so reachability from the default branch is not enough: a job is trusted only when
-its `head_sha` is the default branch's head when the host binds the class (`compare` status exactly
-`identical`). Runs superseded before binding and re-runs of older runs get a private root. No schema
+its `head_sha` is the default branch's head when the host binds the class (the branch-only ref
+endpoint names that branch of that repository at that commit), and only in a repository the owner
+enabled. Runs superseded before binding and re-runs of older runs get a private root. No schema
 change.
 
 ## Rules (DECIDED)
@@ -63,10 +64,13 @@ change.
    not name. GitHub's run record has no ref field, and for a tag push `head_branch` is the tag's
    name, so a tag named like the default branch gives a record that looks exactly like a push to
    that branch. The rule therefore does not depend on telling them apart: the job is trusted only
-   when, at the time the host binds the class, its `head_sha` IS the default branch's head (`compare
-   default...head_sha` answers `identical` and its base commit is that `head_sha`); `behind`,
-   `ahead`, `diverged`, any other status, a failed call or an answer about another commit is not
-   trusted, and an unknown answer means no shared root. A tag or a re-run at any older commit,
+   when, at the time the host binds the class, its `head_sha` IS the default branch's head: the
+   branch-only, exact-match endpoint `GET /repos/{o}/{r}/git/ref/heads/{default_branch}` answers
+   `ref` exactly `refs/heads/<default_branch>`, `object.type` `commit`, the `url` of that ref in that
+   repository and `object.sha` equal to that `head_sha`. Another sha is untrusted; a failed call or
+   an answer about another ref, object or repository means no class and no shared root. A
+   repository gets a shared root only once the owner's decision to enable it is recorded host-side;
+   the host computes no class for any other repository. A tag or a re-run at any older commit,
    including an intermediate commit of a merged pull request that was never reviewed on its own, is
    untrusted, live or deleted. What remains is a run of the current head started at a time a writer
    chose (a tag at the current head, a re-run while its commit is still the head): it runs exactly
