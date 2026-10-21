@@ -1,15 +1,18 @@
-# Status and settings contract (settings schema 3 and status schema 5 drafts, revision 2)
+# Status and settings contract (settings schema 3 and status schema 5, revision 3)
 
 Owners: **P12** (supervisor side, `supervisor/README.md`, both-side tests) and **P20** (tray).
 Readers: P19, P22. Schemas: [`settings-v3.schema.json`](settings-v3.schema.json),
 [`status-v5.schema.json`](status-v5.schema.json), [`tray-windows-choice.schema.json`](tray-windows-choice.schema.json).
-These are DRAFTS frozen for shape: P12 lands them, updates the versioned contract docs
-(`supervisor/README.md`, `crates/tray/README.md`) and both sides' tests in one PR, as CLAUDE.md requires.
+P12 landed both (revision 3, 2026-10-21): the supervisor reads settings schema 3 and writes
+`status.v5.json` when the capacity module is deployed beside it, and writes `status.v5.json` with
+`settings_schemas` `[1,2]` without it; the tray reads `status.v5.json` and writes schema 3 under the
+compatibility rules below. The versioned docs are `supervisor/README.md` (Contracts, Capacity) and
+`crates/tray/README.md`. The window's controls for shares, reserve and a live Windows count are P20's.
 
 Revision 2 (P02.2, 2026-10-20): `status.v5.json` reports the storage tiers; settings schema 3 is
 unchanged and carries no path.
 
-## What exists today (unchanged by P02)
+## Before P12 (what an older supervisor or tray still does)
 
 - `inbox\settings.json` schema 2: `runner_count` 1..5 (the Linux count), `job_cpus` 1..28,
   `job_memory_gib` 1..80, `paused`, optional `schema` 2, `io_percent`, `sharing`, and the
@@ -21,7 +24,7 @@ unchanged and carries no path.
   `{"schema":1,"windows_runner_count":0..4}`; the tray treats anything else as 0.
 - Install journals (`jobs\install\state.json`, `config.json`) schema 1: unchanged.
 
-## Settings schema 3 (DRAFT)
+## Settings schema 3
 
 Same keys as schema 2 with the same meaning, plus `linux_backend`, `host_reserve_percent` (10..90),
 `share_mode` (`even` | `per_profile`), `linux_share_percent`, `windows_share_percent`
@@ -46,7 +49,7 @@ Same keys as schema 2 with the same meaning, plus `linux_backend`, `host_reserve
   flips it, and the supervisor refuses `hyperv-vm` (keeping the last valid settings) unless an
   Ubuntu generation is `active` in the catalog.
 
-## Status schema 5 (DRAFT): a new file, not a new `status.json`
+## Status schema 5: a new file, not a new `status.json`
 
 `C:\ProgramData\aap-runner\status.v5.json`, written by the supervisor in the same tick and with
 the same atomic rename and validation rules as `status.json`. `status.json` keeps schema 4 and
@@ -69,7 +72,7 @@ is re-validated before it is written, as today.
 | the generation reached its evaluation expiry: the catalog moves it to `quarantined` (never `active`) and admissions stop | `quarantined` |
 | the profile's last generation was `quarantined` and no `active` one exists; no admissions | `quarantined` |
 
-## Storage in status schema 5 (DRAFT, revision 2)
+## Storage in status schema 5 (revision 2)
 
 `status.v5.json` has a `storage` object built from the admin-only storage document
 (backend-lifecycle.md, Storage tiers): `state`, `detail`, `volume_floor_gib` and, per tier

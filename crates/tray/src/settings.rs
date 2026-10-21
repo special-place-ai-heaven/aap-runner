@@ -5,12 +5,16 @@
 //! `windows_runner_count` is reserved for the Windows profile's count: read when present, never
 //! written while no Windows backend exists (the count lives in a tray-local file instead), so
 //! every file this tray writes is what it always was. `runner_count` stays the Linux count.
+//! Schema 3 (two counts 0..5, shares, host reserve) is written only while a fresh
+//! `status.v5.json` says the supervisor reads it; its keys the window has no control for yet are
+//! kept as they are.
 
-use crate::state::{inbox, read_bounded, write_atomic};
+use crate::state::{StatusV5, inbox, read_bounded, read_status_v5, write_atomic};
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// The Linux count the supervisor accepts.
 pub const RUNNERS: RangeInclusive<u32> = 1..=5;
@@ -159,8 +163,11 @@ pub fn cpu_share(total: u32, runners: u32, fixed: bool) -> f64 {
 pub const CPUS: RangeInclusive<u32> = 1..=28;
 pub const MEMORY_GIB: RangeInclusive<u32> = 1..=80;
 pub const IO_PERCENT: RangeInclusive<u32> = 0..=100;
-/// What this tray writes.
+/// What this tray writes while the supervisor does not read schema 3.
 pub const SETTINGS_SCHEMA: u32 = 2;
+/// `host_reserve_percent` in schema 3, and `lease_wall_clock_hours`.
+pub const HOST_RESERVE_PERCENT: RangeInclusive<u32> = 10..=90;
+pub const LEASE_HOURS: RangeInclusive<u32> = 1..=72;
 
 /// How the pool is shared between the runners.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,11 +264,15 @@ impl Settings {
                 Err(format!("{name} must be {}..{}", r.start(), r.end()))
             }
         };
-        check("Runners", self.runner_count, &RUNNERS)?;
+        // Schema 3 is the supervisor's word that it runs Windows: Linux may be 0.
+        let v3 = self.schema >= 3;
+        if !v3 {
+            check("Runners", self.runner_count, &RUNNERS)?;
+        }
         if !counts_valid(
             self.runner_count,
             self.windows_runner_count,
-            WINDOWS_BACKEND,
+            WINDOWS_BACKEND || v3,
         ) {
             return Err(format!(
                 "Linux plus Windows runners must be at most {MAX_RUNNERS}"
@@ -391,28 +402,221 @@ pub(crate) fn parse_wslconfig(text: &str) -> (Option<u32>, Option<u32>) {
 
 /// Missing, unparseable or misshapen file = defaults. Missing fields take their defaults.
 /// Caps and divisibility are not checked here, so the window can show and fix such a file.
+/// A schema 3 file must pass every schema 3 rule; another schema above 2 is not this tray's.
 pub fn read_settings(base: &Path) -> Settings {
-    read_bounded(&inbox(base).join("settings.json"))
-        .and_then(|s| serde_json::from_str::<Settings>(s.trim_start_matches('\u{feff}')).ok())
-        .filter(|s| s.check_shape().is_ok())
+    let Some(text) = read_bounded(&inbox(base).join("settings.json")) else {
+        return Settings::default();
+    };
+    if let Some(v3) = parse_v3(&text) {
+        return v3.settings();
+    }
+    serde_json::from_str::<Settings>(text.trim_start_matches('\u{feff}'))
+        .ok()
+        .filter(|s| s.schema < 3 && s.check_shape().is_ok())
         .unwrap_or_default()
 }
 
-/// Refuses to write a file that fails `validate`. Always writes schema 2.
+/// Refuses to write a file that fails `validate`. Writes schema 3 while a fresh
+/// `status.v5.json` lists it in `settings_schemas` (status-settings.md, compatibility rules),
+/// else schema 2.
 pub fn write_settings(base: &Path, s: &Settings, vm: &VmLimit) -> io::Result<()> {
-    s.validate(vm)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let s = Settings {
-        schema: SETTINGS_SCHEMA,
-        ..*s
+    let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
+    s.validate(vm).map_err(invalid)?;
+    let bytes = match read_status_v5(base, SystemTime::now()) {
+        Some(v5) if v5.takes_settings_v3() => {
+            let v3 = SettingsV3::edited(s, kept_v3(base, &v5));
+            v3.check().map_err(invalid)?;
+            serde_json::to_vec(&v3)?
+        }
+        _ => serde_json::to_vec(&Settings {
+            schema: SETTINGS_SCHEMA,
+            ..*s
+        })?,
     };
-    write_atomic(&inbox(base).join("settings.json"), &serde_json::to_vec(&s)?)
+    write_atomic(&inbox(base).join("settings.json"), &bytes)
+}
+
+/// Where the Linux runners run (schema 3). Supervisor-side: the tray writes it back unchanged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LinuxBackend {
+    #[default]
+    WslLegacy,
+    HypervVm,
+}
+
+/// How the host is divided (schema 3): an even part per runner, or a share per profile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShareMode {
+    #[default]
+    Even,
+    PerProfile,
+}
+
+/// `inbox\settings.json` schema 3 (parity/contracts/settings-v3.schema.json): every key, nothing
+/// else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsV3 {
+    schema: u32,
+    linux_backend: LinuxBackend,
+    runner_count: u32,
+    windows_runner_count: u32,
+    job_cpus: u32,
+    job_memory_gib: u32,
+    paused: bool,
+    io_percent: u32,
+    sharing: Sharing,
+    host_reserve_percent: u32,
+    share_mode: ShareMode,
+    linux_share_percent: Option<u32>,
+    windows_share_percent: Option<u32>,
+    lease_wall_clock_hours: u32,
+}
+
+impl SettingsV3 {
+    /// The window's edit over the kept keys. The Windows count stays the kept one while the
+    /// tray has no Windows backend: its own choice is tray-local.
+    fn edited(s: &Settings, kept: SettingsV3) -> SettingsV3 {
+        SettingsV3 {
+            runner_count: s.runner_count,
+            windows_runner_count: if WINDOWS_BACKEND {
+                s.windows_runner_count
+            } else {
+                kept.windows_runner_count
+            },
+            job_cpus: s.job_cpus,
+            job_memory_gib: s.job_memory_gib,
+            paused: s.paused,
+            io_percent: s.io_percent,
+            sharing: s.sharing,
+            ..kept
+        }
+    }
+
+    fn settings(&self) -> Settings {
+        Settings {
+            schema: 3,
+            runner_count: self.runner_count,
+            job_cpus: self.job_cpus,
+            job_memory_gib: self.job_memory_gib,
+            paused: self.paused,
+            io_percent: self.io_percent,
+            sharing: self.sharing,
+            windows_runner_count: self.windows_runner_count,
+        }
+    }
+
+    /// The schema's ranges and validate.py's rules: Linux and Windows 0..5 and 1..5 together;
+    /// per_profile shares plus the reserve are 100 and a share is 0 exactly when its count is;
+    /// even has no shares.
+    fn check(&self) -> Result<(), String> {
+        let within = |name: &str, v: u32, r: RangeInclusive<u32>| {
+            if r.contains(&v) {
+                Ok(())
+            } else {
+                Err(format!("{name} must be {}..{}", r.start(), r.end()))
+            }
+        };
+        if self.schema != 3 {
+            return Err("schema must be 3".into());
+        }
+        if !counts_valid(self.runner_count, self.windows_runner_count, true) {
+            return Err(format!(
+                "Linux plus Windows runners must be 1..{MAX_RUNNERS}"
+            ));
+        }
+        within("Total CPUs", self.job_cpus, CPUS)?;
+        within("Total memory GiB", self.job_memory_gib, MEMORY_GIB)?;
+        within("IO cap percent", self.io_percent, IO_PERCENT)?;
+        within(
+            "Host reserve percent",
+            self.host_reserve_percent,
+            HOST_RESERVE_PERCENT,
+        )?;
+        within("Lease hours", self.lease_wall_clock_hours, LEASE_HOURS)?;
+        match (
+            self.share_mode,
+            self.linux_share_percent,
+            self.windows_share_percent,
+        ) {
+            (ShareMode::Even, None, None) => Ok(()),
+            (ShareMode::Even, _, _) => Err("even sharing has no profile shares".into()),
+            (ShareMode::PerProfile, Some(l), Some(w)) => {
+                if l > 90 || w > 90 || l + w + self.host_reserve_percent != 100 {
+                    Err("profile shares plus the host reserve must be 100".into())
+                } else if (self.runner_count == 0) != (l == 0)
+                    || (self.windows_runner_count == 0) != (w == 0)
+                {
+                    Err("a profile has share 0 exactly when its count is 0".into())
+                } else {
+                    Ok(())
+                }
+            }
+            _ => Err("per-profile sharing needs both profile shares".into()),
+        }
+    }
+}
+
+/// A schema 3 file that has every key and passes `check`, else `None`.
+fn parse_v3(text: &str) -> Option<SettingsV3> {
+    let v: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    // serde fills a missing Option with None; schema 3 requires every key.
+    if v.as_object()?.len() != 14 {
+        return None;
+    }
+    let s: SettingsV3 = serde_json::from_value(v).ok()?;
+    s.check().is_ok().then_some(s)
+}
+
+/// The schema 3 keys the window has no control for yet: those of the stored schema 3 file, else
+/// what `status.v5.json` reports (Linux backend, Windows count, reserve, shares) and a 6 h lease
+/// wall clock.
+fn kept_v3(base: &Path, v5: &StatusV5) -> SettingsV3 {
+    if let Some(v3) = read_bounded(&inbox(base).join("settings.json")).and_then(|t| parse_v3(&t)) {
+        return v3;
+    }
+    let d = Settings::default();
+    let per_profile = v5.capacity.share_mode == "per_profile";
+    let share = |name: &str| {
+        v5.profile(name)
+            .and_then(|p| p.share_percent)
+            .filter(|_| per_profile)
+    };
+    SettingsV3 {
+        schema: 3,
+        linux_backend: if v5
+            .profile("linux")
+            .is_some_and(|p| p.backend == "hyperv-vm")
+        {
+            LinuxBackend::HypervVm
+        } else {
+            LinuxBackend::WslLegacy
+        },
+        runner_count: d.runner_count,
+        windows_runner_count: v5.profile("windows").map_or(0, |p| p.count),
+        job_cpus: d.job_cpus,
+        job_memory_gib: d.job_memory_gib,
+        paused: d.paused,
+        io_percent: d.io_percent,
+        sharing: d.sharing,
+        host_reserve_percent: v5.capacity.host_reserve_percent,
+        share_mode: if per_profile {
+            ShareMode::PerProfile
+        } else {
+            ShareMode::Even
+        },
+        linux_share_percent: share("linux"),
+        windows_share_percent: share("windows"),
+        lease_wall_clock_hours: 6,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::temp_base;
+    use crate::state::{fixture, temp_base};
     use std::fs;
 
     const VM: VmLimit = VmLimit::ASSUMED;
@@ -887,6 +1091,180 @@ mod tests {
         fs::write(&file, r#"{"runner_count":1,"windows_runner_count":4}"#).unwrap();
         assert_eq!(read_settings(&base).windows_runner_count, 4);
         assert!(write_settings(&base, &with(|s| s.windows_runner_count = 5), &VM).is_err());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A `status.v5.json` from the contract fixtures with `settings_schemas` and `updated`
+    /// replaced: a far-future time is fresh (clock skew counts as fresh), 2000 is stale.
+    fn write_v5(base: &Path, schemas: &str, updated: &str) {
+        let mut v: serde_json::Value =
+            serde_json::from_str(&fixture("status-v5/valid/mixed-five-slots.json")).unwrap();
+        v["settings_schemas"] = serde_json::from_str(schemas).unwrap();
+        v["updated"] = updated.into();
+        fs::write(base.join("status.v5.json"), v.to_string()).unwrap();
+    }
+
+    const FRESH: &str = "2099-01-01T00:00:00Z";
+
+    fn written(base: &Path) -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(inbox(base).join("settings.json")).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn schema_three_reads_the_contract_fixtures() {
+        for (name, linux, windows) in [
+            ("owner-example-per-profile", 3, 2),
+            ("legacy-totals-capped-by-share", 3, 2),
+            ("windows-only-even", 0, 2),
+        ] {
+            let v3 = parse_v3(&fixture(&format!("settings-v3/valid/{name}.json"))).expect(name);
+            let s = v3.settings();
+            assert_eq!(
+                (s.runner_count, s.windows_runner_count),
+                (linux, windows),
+                "{name}"
+            );
+            assert_eq!(s.check_shape(), Ok(()), "{name}");
+        }
+        for name in [
+            "future-schema-4",
+            "share-for-zero-count",
+            "shares-plus-reserve-not-100",
+            "shares-sum-95",
+            "string-count",
+            "three-plus-three",
+            "unknown-linux-backend",
+            "zero-plus-zero",
+        ] {
+            assert!(
+                parse_v3(&fixture(&format!("settings-v3/invalid/{name}.json"))).is_none(),
+                "{name}"
+            );
+        }
+        let base = temp_base("settings-v3-read");
+        fs::write(
+            inbox(&base).join("settings.json"),
+            fixture("settings-v3/valid/windows-only-even.json"),
+        )
+        .unwrap();
+        let s = read_settings(&base);
+        assert_eq!(
+            (s.schema, s.runner_count, s.windows_runner_count),
+            (3, 0, 2)
+        );
+        fs::write(
+            inbox(&base).join("settings.json"),
+            fixture("settings-v3/invalid/shares-sum-95.json"),
+        )
+        .unwrap();
+        assert_eq!(read_settings(&base), Settings::default());
+        let missing = fixture("settings-v3/valid/windows-only-even.json")
+            .replace("\"linux_share_percent\": null,", "");
+        fs::write(inbox(&base).join("settings.json"), missing).unwrap();
+        assert_eq!(
+            read_settings(&base),
+            Settings::default(),
+            "every schema 3 key is required"
+        );
+        fs::write(
+            inbox(&base).join("settings.json"),
+            r#"{"schema":7,"runner_count":2}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_settings(&base),
+            Settings::default(),
+            "not this tray's schema"
+        );
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn writes_schema_three_only_while_a_fresh_status_v5_lists_it() {
+        let base = temp_base("settings-v3-write");
+        let s = Settings::derived(3, 0, false, &VM);
+        for (schemas, updated, want) in [
+            ("[2,3]", FRESH, 3),
+            ("[1,2,3]", FRESH, 3),
+            ("[1,2]", FRESH, 2),
+            ("[2,3]", "2000-01-01T00:00:00Z", 2),
+        ] {
+            let _ = fs::remove_file(inbox(&base).join("settings.json"));
+            write_v5(&base, schemas, updated);
+            write_settings(&base, &s, &VM).unwrap();
+            assert_eq!(written(&base)["schema"], want, "{schemas} {updated}");
+        }
+        // A newer status.v5.json is not read: schema 2.
+        let six = fixture("status-v5/invalid/future-schema-6.json")
+            .replace("2026-10-19T18:00:00Z", FRESH);
+        fs::write(base.join("status.v5.json"), six).unwrap();
+        write_settings(&base, &s, &VM).unwrap();
+        assert_eq!(written(&base)["schema"], 2);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn schema_three_takes_the_supervisor_side_keys_from_status_v5() {
+        let base = temp_base("settings-v3-keys");
+        write_v5(&base, "[1,2,3]", FRESH);
+        // The fixture reports per_profile 60/30 with Windows 2 and reserve 10.
+        let s = Settings::derived(3, 1, false, &VM);
+        write_settings(&base, &s, &VM).unwrap();
+        let w = written(&base);
+        assert_eq!(
+            w.as_object().unwrap().len(),
+            14,
+            "exactly the schema 3 keys"
+        );
+        assert_eq!(w["linux_backend"], "wsl-legacy");
+        assert_eq!(w["runner_count"], 3);
+        assert_eq!(
+            w["windows_runner_count"], 2,
+            "the reported count, not the tray-local choice"
+        );
+        assert_eq!(w["share_mode"], "per_profile");
+        assert_eq!(
+            (
+                w["linux_share_percent"].clone(),
+                w["windows_share_percent"].clone()
+            ),
+            (60.into(), 30.into())
+        );
+        assert_eq!(w["host_reserve_percent"], 10);
+        assert_eq!(w["lease_wall_clock_hours"], 6);
+        assert_eq!(parse_v3(&w.to_string()).map(|v| v.check()), Some(Ok(())));
+        assert_eq!(read_settings(&base).runner_count, 3);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn schema_three_keeps_the_stored_keys_across_pause() {
+        let base = temp_base("settings-v3-pause");
+        write_v5(&base, "[1,2,3]", FRESH);
+        let mut stored: serde_json::Value =
+            serde_json::from_str(&fixture("settings-v3/valid/owner-example-per-profile.json"))
+                .unwrap();
+        stored["job_cpus"] = 19.into();
+        stored["job_memory_gib"] = 57.into();
+        stored["host_reserve_percent"] = 20.into();
+        stored["linux_share_percent"] = 50.into();
+        stored["lease_wall_clock_hours"] = 12.into();
+        fs::write(inbox(&base).join("settings.json"), stored.to_string()).unwrap();
+        // Pause as the menu does it: read, flip, write.
+        let paused = Settings {
+            paused: true,
+            ..read_settings(&base)
+        };
+        write_settings(&base, &paused, &VM).unwrap();
+        let mut want = stored.clone();
+        want["paused"] = true.into();
+        assert_eq!(written(&base), want);
+        // An edit that no longer fits the kept Windows count is refused and leaves the file.
+        let four = Settings::derived(4, 0, false, &VM);
+        let err = write_settings(&base, &four, &VM).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(written(&base), want);
         fs::remove_dir_all(&base).unwrap();
     }
 }
