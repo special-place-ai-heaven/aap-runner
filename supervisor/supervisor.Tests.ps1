@@ -1961,11 +1961,20 @@ Describe 'aap-runner host supervisor' {
             [void](New-Item -ItemType Directory -Path $sub)
             $file = Join-Path $sub 'AapWinBackend.psm1'
             [IO.File]::WriteAllText($file, '')
-            @(Get-AapCodeProblem $script:dir) -join '; ' | Should -Match ([regex]::Escape("is not an admin: $file"))
+            # Owned by the test user, also when the test runs elevated (then new files belong to Administrators, which is trusted).
+            $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            if ((Get-Acl -LiteralPath $file).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me) {
+                $out = & icacls.exe $file /setowner "*$me" 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "icacls failed: $out" }
+            }
+            @(Get-AapCodeProblem $script:dir) -join '; ' | Should -Match ([regex]::Escape("owner $me is not an admin: $file"))
         }
 
         It 'refuses a folder under an ancestor someone else owns' -Tag 'code-ancestor' {
-            @(Get-AapCodeProblem $script:dir) -join '; ' | Should -Match 'ancestor [^;]+: owner S-1-5-21-[-0-9]+ is not an admin'
+            # The folder under test is owned by the test user (BeforeEach), so it is the ancestor someone else owns.
+            $child = Join-Path $script:dir 'inner'
+            [void](New-Item -ItemType Directory -Path $child)
+            @(Get-AapCodeProblem $child) -join '; ' | Should -Match ('ancestor ' + [regex]::Escape($script:dir) + ': owner S-1-5-21-[-0-9]+ is not an admin')
         }
 
         It 'refuses a folder anyone else may write' -Tag 'code-write' {
