@@ -1,5 +1,5 @@
 {
-  "expect": "resolver 255.255.255.255 is private but not a declared endpoint on port 53",
+  "expect": "resolver 255.255.255.255 is neither public nor a declared endpoint on port 53",
   "instance": {
     "schema": 1,
     "kind": "host_network_attach",

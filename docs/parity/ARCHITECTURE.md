@@ -372,13 +372,14 @@ CANDIDATE (D2):
   guest-transport.md, Wire framing.
 - Network: the enforcement shape is DECIDED (no External or Default switch; DHCP guard and router
   guard on, MAC spoofing off; extended port ACLs denying the host vEthernet addresses, private,
-  link-local, CGNAT, multicast, limited broadcast and ULA ranges, the LAN IPv6 prefix and other clones; enhanced
+  link-local, CGNAT, multicast, limited broadcast, reserved and loopback ranges, all IPv6 and other clones, and a
+  source pin so a guest sends only from its own address; enhanced
   session and Guest Service Interface off; host ports blocked on the guest vEthernet). The
   mechanism (internal switch per profile with NAT, or an internal switch per guest; a private switch has no host adapter and is not viable) is CANDIDATE D2,
   owned by the P10.0 guest network module. The lab proves internet egress works and every denied
   path fails, over IPv4 and IPv6. The module's interface for both backends and both image
   builders (`Attach`, `Detach`, `Verify`; remove the VM, then detach; static guest addressing with
-  no DHCP and no Allow by default; the consumers' read-back through one shared check; a build VM's
+  no DHCP and no Allow by default but the source pin; the consumers' read-back through one shared check; a build VM's
   own switch; failure codes) is [host-network-module.md](../../parity/contracts/host-network-module.md).
 
 ```mermaid

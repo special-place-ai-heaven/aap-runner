@@ -631,34 +631,34 @@ def sem_cleanup_receipt(doc):
             raise Invalid(f"disposed {d.get('id', d.get('resource'))}: absence not observed")
 
 
-def _host_net_fixed():
-    """The fixed deny ranges, read from their one copy, the shared check (host-network-module.md, Rules and weights)."""
+def _host_net_ranges(name):
+    """A list of ranges read from its one copy, the shared check (host-network-module.md, Rules and weights): FixedDeny, the
+    fixed deny ranges, or PrivateRanges, the fixed ranges a NAT routes unicast in."""
     path = HERE.parent.parent / "supervisor" / "network" / "AapHostNetworkCheck.psm1"
-    m = re.search(r"^\$script:FixedDeny = @\(([^)]*)\)", path.read_text(encoding="utf-8"), re.M)
+    m = re.search(r"^\$script:" + name + r" = @\(([^)]*)\)", path.read_text(encoding="utf-8"), re.M)
     if not m:
-        raise Invalid(f"no $script:FixedDeny list in {path.name}")
+        raise Invalid(f"no $script:{name} list in {path.name}")
     return [ipaddress.ip_network(s) for s in re.findall(r"'([^']+)'", m.group(1))]
 
 
-def _host_net_private(net, fixed):
-    """Inside a fixed range and unicast a NAT routes: neither link-local nor multicast nor broadcast (the shared check's
-    Test-AapNetPrivate)."""
-    return (net.version == 4 and any(f.version == 4 and net.subnet_of(f) for f in fixed)
-            and not net.network_address.is_link_local and net.network_address.packed[0] < 224)
+def _host_net_private(net):
+    """IPv4 and inside a range a NAT routes unicast in (the shared check's Test-AapNetPrivate)."""
+    return net.version == 4 and any(net.subnet_of(f) for f in _host_net_ranges("PrivateRanges"))
 
 
 def _host_net_declaration(d):
     """host-network-module.md, Attach: the name's letter is the profile's; a private subnet holding the gateway and the
-    VM's static address; the endpoints one private resolver outside the subnet (UDP and TCP 53, the schema's part); a
-    private resolver only as an endpoint. The shared check's Get-AapHostNetworkDeclarationProblems applies the same rules."""
+    VM's static address; the endpoints one private resolver outside the subnet (UDP and TCP 53, the schema's part) that is
+    one of the resolvers; every other resolver public (outside every fixed range). The shared check's
+    Get-AapHostNetworkDeclarationProblems applies the same rules."""
     if d["vm_name"][4] != d["profile"][0]:
         raise Invalid(f"vm_name {d['vm_name']} does not match profile {d['profile']}")
-    fixed = _host_net_fixed()
+    fixed = _host_net_ranges("FixedDeny")
     try:
         net = ipaddress.ip_network(d["subnet"])
     except ValueError:
         raise Invalid(f"subnet {d['subnet']} is not a network address")
-    if not _host_net_private(net, fixed):
+    if not _host_net_private(net):
         raise Invalid(f"subnet {d['subnet']} is not inside a private fixed range")
     def host(a):
         ip = ipaddress.ip_address(a)
@@ -671,14 +671,16 @@ def _host_net_declaration(d):
     on53 = set()
     for e in d["endpoints"]:
         ip = ipaddress.ip_network(e["address"])
-        if not _host_net_private(ip, fixed) or ip.subnet_of(net):
+        if not _host_net_private(ip) or ip.subnet_of(net):
             raise Invalid(f"endpoint {e['address']} is not one private IPv4 address outside {d['subnet']}")
         on53.add(e["address"])
     if len(on53) > 1:
         raise Invalid(f"endpoints name {len(on53)} addresses, not one resolver")
     for r in d["resolvers"]:
         if any(f.version == 4 and ipaddress.ip_network(r).subnet_of(f) for f in fixed) and r not in on53:
-            raise Invalid(f"resolver {r} is private but not a declared endpoint on port 53")
+            raise Invalid(f"resolver {r} is neither public nor a declared endpoint on port 53")
+    for a in sorted(on53 - set(d["resolvers"])):
+        raise Invalid(f"endpoint {a} is not one of the resolvers")
 
 
 def sem_host_network_module(doc):
@@ -690,6 +692,9 @@ def sem_host_network_module(doc):
         _host_net_declaration(doc["declaration"])
         if [c["kind"] for c in doc["created"]].count("adapter") != 1:
             raise Invalid("a record names exactly one adapter")
+        for c in doc["created"]:
+            if c["name"].startswith(("aap-guests-", "aap-build-")):
+                raise Invalid(f"a record names {c['name']}, a switch P19 owns")
 
 
 SEMANTIC = {
