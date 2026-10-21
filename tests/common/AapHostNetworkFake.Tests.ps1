@@ -312,6 +312,30 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             @(Get-AapFakeHostNetworkRecord -Root $t.Root).Count | Should -Be 0
         }
 
+        It 'never frees or reuses a live VM''s address in a crash window: Attach after its intent record, Detach after the released list' -Tag attach-exhausted {
+            # Every address but .2 and .3 held, so the next Attach takes whatever is not held: only the record keeps .2 back.
+            foreach ($i in 4..254) { Write-TestRecord $t ([guid]::NewGuid().ToString()) "aap-w-1-$i-0a0b0c0d" "172.31.250.$i" }
+            $t.Vms[$script:WinId] = Off; $t.Vms[$script:WinId2] = Off; $t.Vms[$script:WinId3] = Off
+            $w2 = Win 'aap-w-2-4-0f0e0d0c' $script:WinId2; $w3 = Win 'aap-w-3-1-01020304' $script:WinId3
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Fail AttachAfterIntent
+            { & $t.Net.Attach (Win) } | Should -Throw '*Attach stopped after its intent record*'
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).declaration.address | Should -Be '172.31.250.2'
+            (& $t.Net.Attach $w2).address | Should -Be '172.31.250.3'
+            { & $t.Net.Attach $w3 } | Should -Throw 'AAP_NetworkUntrusted: no free address on aap-guests-win' -Because 'the intent record holds .2 before any adapter exists'
+            $null = & $t.Net.Attach (Win)
+            $t.Vms.Remove($script:WinId)
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Fail DetachAfterReleased
+            { & $t.Net.Detach (Win) } | Should -Throw '*Detach stopped after the released list*'
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            @([IO.File]::ReadAllText((Join-Path $t.Root 'released.json')) | ConvertFrom-Json | ForEach-Object { $_ }) | Should -Be @('172.31.250.2')
+            (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).declaration.address | Should -Be '172.31.250.2'
+            { & $t.Net.Attach $w3 } | Should -Throw 'AAP_NetworkUntrusted: no free address on aap-guests-win' -Because 'the record still holds .2 though the released list names it'
+            & $t.Net.Detach (Win)
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).Count | Should -Be 0
+            (& $t.Net.Attach $w3).address | Should -Be '172.31.250.2'
+        }
+
         It 'refuses a VM id recorded under another name or profile and keeps the record' -Tag detach-same-vm {
             $t.Vms[$script:WinId] = Off
             $null = & $t.Net.Attach (Win)
@@ -390,6 +414,16 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             @(& $t.Net.Verify (Win 'aap-wbuild-0123abcd')) | Should -Be @("VM $($script:WinId) is recorded as aap-w-1-3-1a2b3c4d (windows)")
         }
 
+        It 'cannot look while an adapter of an existing VM has no record (an owner deleted it); removing that VM clears it' -Tag verify-orphan {
+            $w2 = Win 'aap-w-2-4-0f0e0d0c' $script:WinId2
+            $t.Vms[$script:WinId2] = Off
+            $null = & $t.Net.Attach $w2
+            Remove-Item -LiteralPath (Join-Path $t.Root "records\$($script:WinId2).json")
+            foreach ($w in (Win), $w2) { { & $t.Net.Verify $w } | Should -Throw "AAP_NetworkUntrusted: the adapter aap-guest-$($script:WinId2) of an existing VM has no record*" }
+            $t.Vms.Remove($script:WinId2)
+            @(& $t.Net.Verify (Win)).Count | Should -Be 0
+        }
+
         It 'reports a VM Hyper-V no longer has' -Tag verify-vm {
             $t.Vms.Remove($script:WinId)
             @(& $t.Net.Verify (Win)) | Should -Be @("VM $($script:WinId) does not exist")
@@ -423,7 +457,9 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             @{ Case = 'an unknown state'; Text = '{"schema":1,"kind":"host_network_record","state":"detaching","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest"}]}' }
             @{ Case = 'a switch P19 owns'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"switch","name":"aap-guests-win"}]}' }
             @{ Case = 'another VM''s rule'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"aap-guest-block-0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b"}]}' }
-            @{ Case = 'a host rule'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"FPS-SMB-In-TCP"}]}' }) {
+            @{ Case = 'a host rule'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"FPS-SMB-In-TCP"}]}' }
+            @{ Case = 'a host rule ending in its own id'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"FPS-SMB-In-TCP-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"}]}' }
+            @{ Case = 'a name a culture compare would match (soft hyphen)'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b\u00ad"}]}' }) {
             $path = Join-Path $t.Root "records\$($script:WinId).json"
             [IO.File]::WriteAllText($path, $Text)
             $t.Vms[$script:WinId] = Off
@@ -453,6 +489,8 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             [IO.File]::WriteAllText($path, $Text)
             { & $t.Net.Attach (Win 'aap-w-2-4-0f0e0d0c' $script:WinId2) } | Should -Throw 'AAP_NetworkUntrusted: released.json is unreadable*'
             @(Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId2).Count | Should -Be 0
+            { & $t.Net.Attach (Win) } | Should -Throw 'AAP_NetworkUntrusted: released.json is unreadable*' -Because 'a repeated Attach reads it first too'
+            { & $t.Net.Detach (Win 'aap-w-3-1-01020304' $script:WinId3) } | Should -Throw 'AAP_NetworkUntrusted: released.json is unreadable*' -Because 'so does a Detach with no record'
             $t.Vms.Remove($script:WinId)
             $before = Get-TestState $t
             { & $t.Net.Detach (Win) } | Should -Throw 'AAP_NetworkUntrusted: released.json is unreadable*'

@@ -131,11 +131,15 @@ has no host adapter, so it cannot carry host SSH.
 
 Rule: guests reach the internet (GitHub, package registries, DNS) through the host's NAT, send only
 from their own address, and reach none of the denied ranges: the host's and the LAN's private and
-link-local addresses, multicast, broadcast and all IPv6. Not covered, listed as residuals in
+link-local addresses, multicast, broadcast and all IPv6. The one exception is a declared private
+resolver (none by default): DNS to its address on port 53 outbound, and from its port 53 to any
+guest port inbound; those Allows outweigh the private-range deny (host-network-module.md,
+Limitations). Not covered, listed as residuals in
 host-network-module.md (Limitations, Scope of the guarantee): LAN or routed targets on public
 addresses, a hairpin through the router to the owner's public address, and host addresses outside
 every fixed range (a host with a public IPv4 address is not certified). Clones on one shared switch
-can still poison each other's ARP (Open points, 1 there). One shared guest-network module implements it for both providers; its owner is the
+can still poison each other's ARP (Open points, 1 there), so neither profile serves public
+repositories until clone isolation is required there and proven in the lab. One shared guest-network module implements it for both providers; its owner is the
 ledger item **P10.0 guest network module** (consumed by P10 and P11; the coordinator adds it).
 
 Enforcement shape every candidate must satisfy:
