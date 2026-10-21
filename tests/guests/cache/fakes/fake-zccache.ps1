@@ -15,6 +15,15 @@
 # FAKE_ZC_NODELIVER=1 writes nothing, FAKE_ZC_EMPTY=1 an empty object, FAKE_ZC_LINK=1 a symbolic link to the entry
 # (zccache.cmd runs this under PowerShell 7 then, which can make one in developer mode). FAKE_ZC_PROGRESS=N first prints N of zccache's
 # progress lines to stderr.
+# FAKE_ZC_STDIN=1 (P04.1) appends eof to fake-stdin.log and carries on when this call's stdin drains to EOF: the
+# client must never be handed the caller's open stdin (that never EOFs and would hang it). The reads are synchronous,
+# so the kernel answers at once for a pipe the module closed (RedirectStandardInput, closed right after Start),
+# while an open stdin blocks the fake until the shim's timeout stops it, and the log then stays empty (the count
+# assertion fails). Whatever a .NET Framework redirect writer put in the pipe first is drained and ignored: on a
+# UTF-8 console its StandardInput StreamWriter emits the encoding's three-byte preamble into the pipe before close,
+# so a byte-strict empty check would fail on every CI host that runs one (the CI host's probe saw EF BB BF,
+# P13.5). ReadAsync plus a wait budget was also wrong: it cannot tell a loaded VM from an open stdin.
+# fake-stdin-facts.log records what each probe saw, for failure messages.
 $ErrorActionPreference = 'Stop'
 $all = [Environment]::GetCommandLineArgs()
 $i = 1
@@ -35,6 +44,32 @@ if (-not $root) { [Console]::Error.WriteLine('fake-zccache: no ZCCACHE_CACHE_DIR
 $null = New-Item -ItemType Directory -Force -Path (Join-Path $root 'artifacts')
 $names = @(Get-ChildItem Env: | ForEach-Object { $_.Name } | Sort-Object)
 Add-Line (Join-Path $root 'fake-env.log') (($names -join ' ') + ' MODE=' + $env:ZCCACHE_MODE + ' SIZE=' + $env:ZCCACHE_CACHE_SIZE_BYTES)
+if ($env:FAKE_ZC_STDIN -eq '1') {
+    # Synchronous on purpose (see the header): no wait budget, no thread pool, nothing scheduled. Every fact the
+    # probe observes lands in fake-stdin-facts.log, so a CI failure names what the probe saw (P13.5).
+    $sw = New-Object System.Diagnostics.Stopwatch
+    $sw.Start()
+    Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int which);
+[DllImport("kernel32.dll")] public static extern int GetFileType(IntPtr h);' -Name Zc -Namespace P135
+    $facts = Join-Path $root 'fake-stdin-facts.log'
+    $stdinLog = Join-Path $root 'fake-stdin.log'
+    $t = [P135.Zc]::GetFileType([P135.Zc]::GetStdHandle(-10))
+    $me = Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId=' + $PID) -ErrorAction SilentlyContinue
+    $parent = $(if ($me) { [int]$me.ParentProcessId } else { 0 })
+    $pe = $(if ($parent) { Get-Process -Id $parent -ErrorAction SilentlyContinue } else { $null })
+    Add-Line $facts ("pid={0} parent={1}({2}) type={3} redirected={4}" -f $PID, $parent, $(if ($pe) { $pe.ProcessName } else { '?' }), $t, [Console]::IsInputRedirected)
+    $s = [Console]::OpenStandardInput()
+    $buf = New-Object byte[] 256
+    $drained = 0
+    $n = $s.Read($buf, 0, $buf.Length)   # synchronous: data or EOF at once, an open stdin blocks
+    while ($n -gt 0) {
+        $drained += $n
+        if ($drained -le 16) { Add-Line $facts ("drained: {0}" -f ((($buf[0..([Math]::Min($n, 16) - 1)] | ForEach-Object { '{0:x2}' -f $_ }) -join ' '))) }
+        $n = $s.Read($buf, 0, $buf.Length)
+    }
+    Add-Line $stdinLog 'eof'
+    Add-Line $facts ("result=eof drained={0} ms={1}" -f $drained, $sw.ElapsedMilliseconds)
+}
 if ($env:FAKE_ZC_CRASH -eq '1') { exit 139 }
 if ($argv[0] -eq 'session-start') {
     $pidFile = Join-Path $root 'fake-daemon.pid'

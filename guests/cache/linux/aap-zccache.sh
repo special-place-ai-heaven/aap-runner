@@ -188,11 +188,11 @@ zc_start_daemon() { # INSTALL_DIR JOB_ROOT ROOT_ID -> rewrites config with the d
   # Output goes to a file, not a pipe: a daemon that inherited the pipe would hold a command substitution open.
   out="${job}/state/prime-${id}.out"
   timeout 60 env -i "${keep[@]}" ZCCACHE_CACHE_DIR="${dir}" ZCCACHE_MODE=COPY ZCCACHE_CACHE_SIZE_BYTES="${budget}" \
-    "${zc}" session-start --journal "${job}/state/prime-${id}.jsonl" > "${out}" 2> /dev/null  # SAFETY:LNX-DAEMON-ENV
+    "${zc}" session-start --journal "${job}/state/prime-${id}.jsonl" < /dev/null > "${out}" 2> /dev/null  # SAFETY:LNX-DAEMON-ENV
   rc=$?
   sid=$(jq -r '.session_id // empty' "${out}" 2> /dev/null)
   [[ -n "${sid}" ]] && timeout 60 env -i "${keep[@]}" ZCCACHE_CACHE_DIR="${dir}" ZCCACHE_MODE=COPY ZCCACHE_CACHE_SIZE_BYTES="${budget}" \
-    "${zc}" session-end "${sid}" > /dev/null 2>&1
+    "${zc}" session-end "${sid}" < /dev/null > /dev/null 2>&1
   read -r -a known <<< "$(jq -r '[.roots[] | .daemon.pid // empty | tostring] | join(" ")' "${cfg}")"
   mapfile -t pids < <(zc_find_daemons "$(dirname "${zc}")" "${dir}" "$(jq -r .zccache.version "${install}/wrappers.json")" "${known[@]}")
   if [[ ${rc} != 0 || ${#pids[@]} -ne 1 ]]; then
@@ -508,7 +508,9 @@ zc_shim() { # COMPILER ARGS...
     rm -f -- "${o}" 2> /dev/null || { rm -f -- "${out}" "${err}"; zc_log "${job}" "direct ${path##*/} output-not-removable"; exec "${path}" "$@"; }  # SAFETY:LNX-OUT-STALE
   done <<< "${outs}"
   tmo=$(zc_wrapper_timeout "${tc}" "${tmo}" "${tmol}")
-  zc_child_env "${dir}" "${abudget}" timeout -k 5 "${tmo}" "${self}/bin/${zcname}" "${path}" "$@" > "${out}" 2> "${err}"  # SAFETY:LNX-SHIM-TIMEOUT
+  # P04.1: an open stdin hangs the zccache client, so it always gets an empty one; the direct fallback below still
+  # gets the caller's, as a compiler reading stdin (clang -) is a legitimate call.
+  zc_child_env "${dir}" "${abudget}" timeout -k 5 "${tmo}" "${self}/bin/${zcname}" "${path}" "$@" < /dev/null > "${out}" 2> "${err}"  # SAFETY:LNX-SHIM-TIMEOUT
   rc=$?
   if [[ ${rc} == 0 ]]; then
     # Exit 0 is not taken on trust: every declared output must now be a non-empty regular file, not a link and not a
