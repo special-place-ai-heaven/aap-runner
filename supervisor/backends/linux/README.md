@@ -165,7 +165,8 @@ proof after the VM (by id and by name), the clone folder (with the key and seed)
 absent on roots present on their recorded volumes, after the network detach succeeded, with a final runner proof
 (`never_registered`, `true`, `github-removed`; `uncertain` holds the slot as `teardown_failed`; `pending` keeps it
 `deleting`, retried at most once a minute). A drained VM whose release is pending is kept, held to every limit on every
-step, flagged `drain_overdue` after 6 h, never destroyed for time. Three tries 5 s apart, then `teardown_failed`, capacity
+step, flagged `drain_overdue` after 6 h, never destroyed for time; its release waits while the broker shows the runner busy
+(a job that started after the drain's idle sample). Three tries 5 s apart, then `teardown_failed`, capacity
 held. Deletes never follow a junction or symbolic link, and an ACL is never written through one.
 
 ### Trust checks

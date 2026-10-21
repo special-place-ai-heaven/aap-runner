@@ -436,6 +436,8 @@ function New-LinBroker {
                 $res.result = 'ok'; $res.reason = 'ok'
                 if ($l.state -ne 'issued') { $res.runner = [ordered]@{ status = 'absent'; busy = $false } }
                 else { $res.runner = [ordered]@{ status = (Get-LinKnob $w 'RunnerStatus' 'online'); busy = [bool](Get-LinKnob $w 'RunnerBusy' $false) } }
+                # BusyAfterStatus: this answer says idle, and a job starts right after it.
+                if (Get-LinKnob $w 'BusyAfterStatus' $false) { Set-LinKnob $w @{ BusyAfterStatus = $false; RunnerBusy = $true } }
                 return (& $out $res)
             }
         }

@@ -1165,6 +1165,11 @@ function Get-AapLinRunnerProof($B, $r, $j) {
     if (-not $j.Has['run_one/intent']) { return 'never_registered' }
     if (-not $j.LeaseId) { return 'uncertain' }
     $ba = $B.BrokerArgs
+    if ($j.DrainedOnline) {
+        # The drain saw the runner idle one sample ago; a job may have started since. A busy runner is never released.
+        $bs = Invoke-AapBrokerStatus -LeaseId $j.LeaseId @ba
+        if ($bs.Outcome -ceq 'ok' -and $bs.RunnerBusy -eq $true) { return 'pending' }   # check:release-busy
+    }
     $rel = Invoke-AapBrokerRelease -LeaseId $j.LeaseId @ba
     if ($rel.Outcome -ceq 'deregistered') { return $true }
     if ($rel.Outcome -ceq 'already_gone') { return 'github-removed' }
