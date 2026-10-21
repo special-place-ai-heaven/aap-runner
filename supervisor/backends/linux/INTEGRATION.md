@@ -108,7 +108,11 @@ backend keeps no switch name or deny list of its own). What the backend does:
   and the read-back, then `Start-VM`; any failure tears the clone down. A VM found already running (a crash after its
   start) is verified instead.
 - a running clone: `Verify` at most every 30 s per reservation on every step (Consumer obligations 3, by polling); a
-  problem or a throw destroys the clone.
+  problem or a throw destroys the clone. Accepted residual: `Verify` only, no read-back, while the VM runs (the module
+  has no declaration then, and the backend keeps none); the read-back runs at create and at every boot.
+- the seed: the declaration's values go into `network-config` unquoted, which is safe because the shared check accepts
+  canonical IPv4 only; the backend checks again at that site that each is a dotted IPv4 address (the prefix length
+  digits) and throws `AAP_NetworkInvalid` otherwise.
 - destroy: `Remove-VM`, then `Detach`, on every attempt; a `Detach` that throws holds the slot (`teardown_failed`).
 - the provider refuses to read adapters back when an `aap-guest-<id>` adapter sits on a VM other than the one it names,
   when such a name appears twice on the host, or when the clone's adapter has another name (net-sec round 7; the

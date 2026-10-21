@@ -276,6 +276,22 @@ Describe 'the per-clone key and seed' {
         { New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd' $Change) } | Should -Throw '*AAP_SeedInvalid: the network declaration*'
     }
 
+    It 'New-AapLinSeed puts only dotted IPv4 addresses and a prefix length into the YAML, even past a shared check that accepts more (<Case>)' -Tag 'seed-yaml' -ForEach @(
+        @{ Case = 'a YAML line in a resolver'; Change = @{ resolvers = @("192.0.2.53]`n    dhcp4: true`n#") } }
+        @{ Case = 'a YAML line in the address'; Change = @{ address = "172.31.251.7/24]`n    dhcp4: true`n#" } }
+        @{ Case = 'a hostname as gateway'; Change = @{ gateway = 'gw.example' } }
+        @{ Case = 'a leading zero'; Change = @{ address = '172.31.251.07' } }
+        @{ Case = 'an IPv6 address'; Change = @{ address = 'fd00::7' } }
+        @{ Case = 'no prefix length'; Change = @{ subnet = '172.31.251.0' } }
+        @{ Case = 'a prefix length that is not digits'; Change = @{ subnet = '172.31.251.0/24 # x' } }
+        @{ Case = 'a subnet that is not an address'; Change = @{ subnet = 'x/24' } }
+    ) {
+        Mock -ModuleName AapLinBackend Get-AapHostNetworkDeclarationProblems { }
+        $pub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI' + ('A' * 43)
+        (New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd')).Keys -join ',' | Should -Be 'user-data,meta-data,network-config'
+        { New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd' $Change) } | Should -Throw '*AAP_NetworkInvalid*'
+    }
+
     It 'a key pair ssh-keygen did not make, or a public key of another shape, is refused' -Tag 'key-shape' {
         Assert-LinRefused (Invoke-LinCreate -Knobs @{ KeyFails = $true }) '*AAP_KeyInvalid*'
         Assert-LinRefused (Invoke-LinCreate -Knobs @{ PublicOverride = 'ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB' }) '*AAP_KeyInvalid: ssh-keygen gave no ed25519 public key*'
@@ -611,6 +627,7 @@ Describe 'the guest network before every start and while it runs' {
         $s.Action | Should -Be 'destroyed'
         @(Get-LinJournal $w $rid | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -Be 'network not verified'
         @(Get-LinVms $w).Count | Should -Be 0
+        $B.NetAt.ContainsKey($rid) | Should -BeFalse -Because 'the throttle entry goes with the reservation'
     }
 }
 

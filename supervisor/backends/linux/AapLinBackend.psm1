@@ -563,8 +563,19 @@ function New-AapLinSeed {
     $req = @{ VmId = [string](Get-AapLinField $Network 'vm_id'); VmName = $VmName; Profile = 'linux' }
     $bad = @(Get-AapHostNetworkDeclarationProblems -Request $req -Declaration $Network)
     if ($bad.Count) { throw "AAP_SeedInvalid: the network declaration: $(Get-AapLinLine ($bad -join '; ') 160)" }   # check:seed-network
-    $bits = ([string](Get-AapLinField $Network 'subnet')).Split('/')[1]
-    $dns = Get-AapLinField $Network 'resolvers'
+    # The lines below put these values into YAML unquoted. That is safe only because the shared check above accepts
+    # canonical dotted IPv4 (and a prefix length of digits) and nothing else; checked again here, so a looser shared
+    # check can never write a line of its own into the guest's network-config.
+    $address = [string](Get-AapLinField $Network 'address')
+    $gateway = [string](Get-AapLinField $Network 'gateway')
+    $subnet = ([string](Get-AapLinField $Network 'subnet')).Split('/')
+    $dns = Get-AapLinField $Network 'resolvers'   # one array: the field keeps it in one piece
+    $dns = @($dns | ForEach-Object { [string]$_ })
+    $ip = '^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\z'
+    if ($subnet.Count -ne 2 -or $subnet[1] -cnotmatch '^[0-9]{1,2}\z' -or @(@($address, $gateway, $subnet[0]) + $dns | Where-Object { $_ -cnotmatch $ip }).Count) {   # check:seed-yaml
+        throw 'AAP_NetworkInvalid: a network value for the seed is not a dotted IPv4 address or prefix length'
+    }
+    $bits = $subnet[1]
     $networkConfig = (@(
             'version: 2'
             'ethernets:'
@@ -575,12 +586,12 @@ function New-AapLinSeed {
             '    dhcp6: false'
             '    accept-ra: false'
             '    link-local: []'
-            "    addresses: [$([string](Get-AapLinField $Network 'address'))/$bits]"
+            "    addresses: [$address/$bits]"
             '    routes:'
             '      - to: default'
-            "        via: $([string](Get-AapLinField $Network 'gateway'))"
+            "        via: $gateway"
             '    nameservers:'
-            "      addresses: [$(@($dns | ForEach-Object { [string]$_ }) -join ', ')]"
+            "      addresses: [$($dns -join ', ')]"
         ) -join "`n") + "`n"
     $userData = @"
 #cloud-config
@@ -1281,7 +1292,7 @@ function Invoke-AapLinDestroy($B, $r, $j, [switch]$Force, [switch]$Urgent) {
     $a = Get-AapLinAllocArgs $B $r
     $c = Complete-AapTeardown @a -Proof $proof
     if ($c.Ok) {
-        foreach ($t in $B.Leases, $B.Tried, $B.StatusAt, $B.StatusBusy, $B.Breached) { [void]$t.Remove($rid) }
+        foreach ($t in $B.Leases, $B.Tried, $B.StatusAt, $B.StatusBusy, $B.Breached, $B.NetAt) { [void]$t.Remove($rid) }
         $next = Get-AapLinField $c 'Reservation'
         if ($null -ne $next) { $r = $next }
         return (New-AapLinResult $r 'destroyed')
