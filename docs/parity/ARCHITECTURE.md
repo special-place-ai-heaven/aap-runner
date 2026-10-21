@@ -374,7 +374,7 @@ CANDIDATE (D2):
   guard on, MAC spoofing off; extended port ACLs denying the host vEthernet addresses, private,
   link-local, CGNAT, multicast, limited broadcast, reserved and loopback ranges and all IPv6, other clones'
   addresses included, and a source pin so a guest sends only from its own address; two clones on one shared
-  switch can still poison each other's ARP, so the Windows profile serves no public repository until a clone
+  switch can still poison each other's ARP, so neither profile (Windows or Linux) serves a public repository until a clone
   isolation control is required by host-network-module.md and proven in the D2 lab; LAN targets on public
   addresses and a router hairpin to the owner's public address are residuals, not blocked; enhanced
   session and Guest Service Interface off; host ports blocked on the guest vEthernet). The

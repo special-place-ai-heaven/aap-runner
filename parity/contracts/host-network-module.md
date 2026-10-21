@@ -96,11 +96,15 @@ address on a guess.
 - Returns the **problem list**: zero or more strings written to the output stream, each one
   printable line of at most 200 characters, at most 64. Empty means every check below holds. It
   throws only when it cannot look: Hyper-V does not answer, a record it cannot read (check 1 reads
-  them all), or a partial host discovery: nothing, no gateway, or no address of a host interface
-  that is not a vEthernet adapter (check 5).
+  them all), an adapter of the module's with no record (check 1), or a partial host discovery:
+  nothing, no gateway, or no address of a host interface that is not a vEthernet adapter (check 5).
 - Checks, against the record and what Hyper-V and the host report now:
   1. The VM exists, its record is `attached` and names the same `VmName` and `Profile`, and no
-     other record on its switch holds its address.
+     other record on its switch holds its address. Every adapter named `aap-guest-<vm_id>` that
+     Hyper-V lists (on any switch, the VM's included) has a record for that VM id; one without
+     (an owner deleted the record of a VM that exists) is a throw: nothing would ever detach that
+     adapter, and its address would look free to Attach. The records and the adapter list are read
+     in one view, under the lock (Attach writes its record before its adapter).
   2. Exactly one adapter, on the VM's switch, which exists with type `Internal`; DHCP guard On,
      router guard On, MAC address spoofing Off, port mirroring None, VLAN mode Untagged or Access,
      storm limit 100, and no legacy port ACL (`Get-VMNetworkAdapterAcl` lists none).
@@ -144,13 +148,18 @@ address on a guess.
   adapter and never a bare name. It removes, newest first, what the record names beyond the VM's
   own adapter (which went with the VM): a per-guest switch, its NAT, its host firewall rules (the
   per-guest candidate, D2; nothing for the per-profile candidate), each by the name the record
-  holds. Each removal is idempotent (absent is done). The record goes last; its address goes to the
-  end of the released list.
-- Every name a record holds ends in its own VM id (`aap-guest-<vm_id>`, `aap-guest-block-<vm_id>`;
-  schema pattern `aap-<words>-<vm_id>`), so a record can never name another VM's object or a host
-  rule such as `FPS-SMB-In-TCP`. A record with a name that does not end in its own VM id, or that
-  names a switch P19 owns (`aap-guests-*`, `aap-build-*`), is not the module's to remove: it counts
-  as unreadable.
+  holds. Each removal is idempotent (absent is done). Then its address goes to the end of the
+  released list, and the record goes last: a crash between the two leaves the record, which still
+  holds the address (no Attach takes it), and a retry moves it to the end again and removes the
+  record.
+- Every name a record holds is `aap-<words>-<its own VM id>` (`aap-guest-<vm_id>`,
+  `aap-guest-block-<vm_id>`; the schema's pattern, anchored at both ends), so a record can never
+  name another VM's object or a host rule such as `FPS-SMB-In-TCP` or `FPS-SMB-In-TCP-<vm_id>`. A
+  record with any other name, or one that names a switch P19 owns (`aap-guests-*`, `aap-build-*`),
+  is not the module's to remove: it counts as unreadable. Names compare **ordinally**
+  (case-sensitive, code unit by code unit, never a culture's comparison: `String.EndsWith(string)`
+  is culture-sensitive and ignores a soft hyphen, so `aap-guest-<vm_id>` followed by U+00AD would
+  pass it).
 - Idempotent: no record means nothing to do, and success (never attached, already detached).
 - A record it cannot read, or one naming another `VmName` or `Profile`, makes it throw; the record
   stays.
@@ -220,8 +229,9 @@ address on a guess.
   guest from inheriting traffic meant for the old one. It is written exactly like a record: to a
   temporary name in the same folder, flushed, and renamed over the old file, under the lock.
 - **An unreadable `released.json`** (not a JSON list of IPv4 addresses) fails closed: Attach and
-  Detach throw `AAP_NetworkUntrusted: released.json is unreadable` and change nothing; Verify does
-  not read it. Nothing rebuilds it silently. Only the module's **recovery op** (an owner's explicit
+  Detach throw `AAP_NetworkUntrusted: released.json is unreadable` and change nothing. Every
+  Attach and every Detach reads it first under the lock, before any record, so a repeated Attach
+  (which allocates nothing) and a Detach that finds no record throw too; Verify does not read it. Nothing rebuilds it silently. Only the module's **recovery op** (an owner's explicit
   step outside `Attach`, `Detach` and `Verify`, never called by a consumer) rebuilds it: under the
   lock, from every record (one it cannot read makes it throw), it writes each switch's addresses
   that no record holds, lowest first; the old order is lost, so addresses freed shortly before the
@@ -231,7 +241,11 @@ address on a guess.
   owns it, and Verify judges it before any start); when Hyper-V cannot say, the reconcile stops
   and every call throws until it can. An unreadable record stays and is reported; while it is
   there, every Attach and every Verify throw (they read every record), and so does every call for
-  that VM id, until an owner looks; Detach of other VMs goes on. Records are per VM id and VM ids
+  that VM id, until an owner looks; Detach of other VMs goes on. **The owner's remedy: remove the
+  VM first** (its adapter and port ACLs go with it), then delete the record. Never delete the
+  record of a VM that exists: its adapter would stay with no record to detach it and its address
+  would look free; Verify throws while any adapter named `aap-guest-<vm_id>` has no record (check
+  1), so no VM starts until that VM is removed. Records are per VM id and VM ids
   are never reused, so two processes meet only on the lock and on a removed VM, where Detach and
   the reconcile are both idempotent. This is the "module's own reconcile" P06 relies on for a
   crashed run's attachment. An address is free again only when no record holds it, so a crashed
@@ -319,8 +333,12 @@ those rules are a second barrier, not the only one.
 - **Scope of the guarantee.** A guest reaches the internet through the host's NAT, sends only from
   its own address (the source pin), and reaches none of the denied ranges in either direction: the
   private, CGNAT, link-local, loopback, reserved, multicast and broadcast IPv4 ranges and all IPv6,
-  which covers the host's and the LAN's private addresses and every discovered host target. The
-  contract does **not** block: LAN or routed targets on public addresses (the guest's traffic to
+  which covers the host's and the LAN's private addresses and every discovered host target. **The
+  one exception is the declared private resolver** (only when the owner chose one; none by
+  default): outbound, the guest reaches that one address on port 53 over UDP and TCP; inbound, that
+  address may send from its port 53 to any port of the guest. Those Allows outweigh the
+  private-range Deny that contains the address, so that endpoint is reachable both ways despite
+  the deny; nothing else in the denied ranges is. The contract does **not** block: LAN or routed targets on public addresses (the guest's traffic to
   them leaves through NAT like any internet traffic); a hairpin through the owner's router to the
   owner's own public address and from there to its port forwards; or a host address outside every
   fixed range, which makes the host not certified rather than covered. A host interface that comes
@@ -499,9 +517,11 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
   Attach's preconditions (Off, no adapter of the consumer's); the journal lock (an exclusive
   `lock` file) around every record write and every read of all records; records written
   to a temporary name and renamed; every Attach and every Verify refused while any record is
-  unreadable (a record naming a P19 switch, or a name without its own VM id, included); an
-  unreadable `released.json` stopping Attach and Detach until `Repair-AapFakeHostNetworkReleased`
-  (the recovery op) rebuilds it; least recently used allocation with
+  unreadable (a record naming a P19 switch, or a name other than `aap-<words>-<its own VM id>`,
+  compared ordinally, included); Verify throwing on an adapter of an existing VM with no record; an
+  unreadable `released.json` stopping every Attach and Detach (a repeated Attach and a Detach with
+  no record included) until `Repair-AapFakeHostNetworkReleased` (the recovery op) rebuilds it;
+  the released list written before the record goes; least recently used allocation with
   exhaustion refused; intent before act; the same declaration on a repeated Attach; a second VM
   refused on a build switch; Detach refused while the VM exists or Hyper-V cannot say; the record
   removed by Detach and its address released; Verify computed from the records and the simulated
@@ -526,8 +546,9 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
   and `host-no-lan` (a discovery that finds nothing, no gateway, or no LAN address: Verify
   throws). Faults:
   `Attach`, `Detach`, `Verify` (the op throws), `AttachAfterIntent` (Attach stops after its intent
-  record) and `AttachAfterAct` (after the adapter exists, before the record says `attached`), as a
-  crash would.
+  record), `AttachAfterAct` (after the adapter exists, before the record says `attached`) and
+  `DetachAfterReleased` (Detach stops after the released list, before the record goes), as a crash
+  would.
 - `Get-AapFakeHostNetworkRecord -Root [-VmId]` returns the journal records.
 - Fake host: the four switches with `172.31.250.0/24` (`aap-guests-win`), `172.31.251.0/24`
   (`aap-guests-linux`), `172.31.252.0/24` (`aap-build-win`) and `172.31.253.0/24`
@@ -598,10 +619,12 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
 
 1. **Known residual (owner decision 8): two clones on one shared guest switch can poison each
    other's ARP**, and the host's entry for each other, so a hostile clone can receive what the
-   internet sends its neighbour. **The Windows profile must not serve public repositories until a
-   clone isolation control (permanent host neighbour entries with the source pin, or a switch per
-   guest) is REQUIRED by this contract and proven in the D2 lab.** Until then this contract
-   requires neither, and the check keeps refusing `VlanMode` `Private`.
+   internet sends its neighbour. **Neither profile serves public repositories until a clone
+   isolation control (permanent host neighbour entries with the source pin, or a switch per guest)
+   is REQUIRED by this contract and proven in the D2 lab:** not the Windows profile's clones on
+   `aap-guests-win`, and not the Linux profile's on `aap-guests-linux`, which share their switch
+   the same way and are just as exposed (no part of the residual is specific to Windows). Until
+   then this contract requires neither, and the check keeps refusing `VlanMode` `Private`.
    **Runner clones share their profile's switch** under the per-profile candidate: a D2 design
    decision for P02.1 (the build VM's own switch is decided above). The guards do not stop ARP
    poisoning between clones either: a clone that poisons the host's ARP entry for a neighbour

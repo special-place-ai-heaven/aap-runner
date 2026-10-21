@@ -37,7 +37,7 @@ $script:GuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\
 $script:TamperNames = @('no-adapter', 'second-adapter', 'external-switch', 'other-switch', 'dhcp-guard-off', 'router-guard-off', 'mac-spoofing-on',
     'port-mirroring', 'vlan-trunk', 'storm-limit-off', 'legacy-acl', 'foreign-peer', 'drop-fixed-deny', 'drop-inbound-deny', 'scoped-deny', 'stateful-rule',
     'isolated-rule', 'no-source-pin', 'pin-above-deny', 'extra-allow', 'public-host', 'host-empty', 'host-no-gateway', 'host-no-lan')
-$script:FailNames = @('Attach', 'AttachAfterIntent', 'AttachAfterAct', 'Detach', 'Verify')
+$script:FailNames = @('Attach', 'AttachAfterIntent', 'AttachAfterAct', 'Detach', 'DetachAfterReleased', 'Verify')
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 
 function New-AapFakeHostNetwork {
@@ -64,8 +64,8 @@ function Invoke-AapFakeHostNetwork {
     $have = & $Vm $q.VmId
     switch ($Op) {
         'Attach' { Add-AapFakeNetAttachment $Root $q $have $fail }
-        'Detach' { Remove-AapFakeNetAttachment $Root $q $have }
-        'Verify' { Get-AapFakeNetProblem $Root $q $have }
+        'Detach' { Remove-AapFakeNetAttachment $Root $q $have $fail }
+        'Verify' { Get-AapFakeNetProblem $Root $q $have $Vm }
     }
 }
 
@@ -123,7 +123,8 @@ function Get-AapFakeHostNetworkAdapter {
 function Set-AapFakeHostNetworkKnob {
     <# Tampers change the simulated host, so Verify and the read-back both see them; faults make an op throw
        (AttachAfterIntent: Attach stops after its intent record; AttachAfterAct: after the adapter exists, before the record
-       says attached; as a crash would). Each call replaces both lists. #>
+       says attached; DetachAfterReleased: Detach stops after the released list, before the record goes; as a crash would).
+       Each call replaces both lists. #>
     param([Parameter(Mandatory)][string]$Root, [string[]]$Tamper = @(), [string[]]$Fail = @())
     $unknown = @(@($Tamper | Where-Object { $script:TamperNames -cnotcontains $_ }) + @($Fail | Where-Object { $script:FailNames -cnotcontains $_ }))
     if ($unknown.Count) { throw "fake: unknown tamper or fault: $($unknown -join ', ')" }   # check:knob-names
@@ -156,7 +157,9 @@ function Add-AapFakeNetAttachment([string]$Root, $q, $Vm, [string[]]$Fail) {
     if ($Vm.Adapters -ne 0) { throw "AAP_NetworkUntrusted: VM $($q.VmId) has a network adapter Attach did not make" }   # check:attach-foreign-adapter
     $lock = Enter-AapFakeNetLock $Root
     try {
-        # Every record, under the lock: one it cannot read stops every Attach (the address it holds is unknown).
+        # The released list first, then every record, under the lock: one it cannot read stops every Attach, a repeated one
+        # too (the address it holds, or the order of reuse, is unknown).
+        $released = @(Read-AapFakeNetReleased $Root)
         $all = @(Get-AapFakeNetRecords $Root)
         $rec = @($all | Where-Object { $_.declaration.vm_id -ceq $q.VmId }) | Select-Object -First 1
         if ($null -ne $rec -and ($rec.declaration.vm_name -cne $q.VmName -or $rec.declaration.profile -cne $q.Profile)) {   # check:attach-same-vm
@@ -168,7 +171,7 @@ function Add-AapFakeNetAttachment([string]$Root, $q, $Vm, [string[]]$Fail) {
             # A build VM shares its switch with no VM (contract, Switches): refused while another record names that switch.
             if ($sw -clike 'aap-build-*' -and $others.Count) { throw "AAP_NetworkUntrusted: $sw already carries $(@($others | ForEach-Object { $_.declaration.vm_name }) -join ', ')" }   # check:attach-peers
             $n = $script:Net[$sw]
-            $address = Get-AapFakeNetFreeAddress $Root $n @($others | ForEach-Object { [string]$_.declaration.address })
+            $address = Get-AapFakeNetFreeAddress $n @($others | ForEach-Object { [string]$_.declaration.address }) $released
             if (-not $address) { throw "AAP_NetworkUntrusted: no free address on $sw" }   # check:attach-exhausted
             # Intent before act: the record names the declaration and what Attach creates before anything changes.
             $decl = [ordered]@{ schema = 1; kind = 'host_network_attach'; vm_id = $q.VmId; vm_name = $q.VmName; profile = $q.Profile; subnet = $n.Subnet
@@ -190,35 +193,49 @@ function Add-AapFakeNetAttachment([string]$Root, $q, $Vm, [string[]]$Fail) {
     $rec.declaration
 }
 
-function Remove-AapFakeNetAttachment([string]$Root, $q, $Vm) {
+function Remove-AapFakeNetAttachment([string]$Root, $q, $Vm, [string[]]$Fail) {
     if ($null -ne $Vm) { throw "AAP_NetworkUntrusted: VM $($q.VmId) still exists; remove the VM before Detach" }   # check:detach-order
     $lock = Enter-AapFakeNetLock $Root
     try {
+        # The released list first: one it cannot read stops every Detach before anything changes, one with no record too.
+        $released = @(Read-AapFakeNetReleased $Root)
         $rec = Read-AapFakeNetRecord $Root $q.VmId
         if ($null -eq $rec) { return }   # never attached, or detached already
         if ($rec.declaration.vm_name -cne $q.VmName -or $rec.declaration.profile -cne $q.Profile) {   # check:detach-same-vm
             throw "AAP_NetworkUntrusted: VM $($q.VmId) is recorded as $($rec.declaration.vm_name) ($($rec.declaration.profile))"
         }
         # The adapter and its port ACLs went with the VM and the per-profile switch is not the VM's: only the record is left,
-        # removed by the VM's id, and with it goes the VM's address, now the most recently used.
-        # The released list first: one it cannot read stops Detach before anything changes.
+        # removed by the VM's id, and with it goes the VM's address, now the most recently used. The released list before the
+        # record: a crash between them leaves the record, which still holds the address, and a retry finishes.
         $address = [string]$rec.declaration.address
-        $released = @(@(Read-AapFakeNetReleased $Root | Where-Object { $_ -cne $address }) + $address)
+        $released = @(@($released | Where-Object { $_ -cne $address }) + $address)
         $hostPath = Get-AapFakeNetHostPath $Root $q.VmId
         if ([IO.File]::Exists($hostPath)) { [IO.File]::Delete($hostPath) }
         Write-AapFakeNetReleased $Root $released
+        if ($Fail -ccontains 'DetachAfterReleased') { throw 'AAP_NetworkUntrusted: fake: Detach stopped after the released list' }
         $path = Get-AapFakeNetRecordPath $Root $q.VmId
         if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }   # check:detach-removes
     } finally { $lock.Dispose() }
 }
 
 # Verify: check 1 from the records, checks 2 to 7 the shared check on the simulated adapter with the fake host's targets;
-# never from a knob directly. A record it cannot read, or a host discovery that found nothing or no gateway: it cannot look.
-function Get-AapFakeNetProblem([string]$Root, $q, $Vm) {
+# never from a knob directly. A record it cannot read, an adapter of the module's on an existing VM with no record, or a host
+# discovery that found nothing, no gateway or no LAN address: it cannot look.
+function Get-AapFakeNetProblem([string]$Root, $q, $Vm, [scriptblock]$VmHook) {
     $id = $q.VmId
     if ($null -eq $Vm) { return "VM $id does not exist" }   # check:verify-vm
+    # The records and the module's adapters in one view, under the lock: Attach writes a record before its adapter.
     $lock = Enter-AapFakeNetLock $Root
-    try { $all = @(Get-AapFakeNetRecords $Root) } finally { $lock.Dispose() }
+    try {
+        $all = @(Get-AapFakeNetRecords $Root)
+        $adapters = @(Get-ChildItem -LiteralPath (Join-Path $Root 'host') -File | ForEach-Object { $_.Name })
+    } finally { $lock.Dispose() }
+    # An adapter aap-guest-<id> whose VM exists but has no record (an owner deleted it): nothing would ever detach it, and
+    # its address would look free. A removed VM's adapter went with it.
+    $known = @($all | ForEach-Object { [string]$_.declaration.vm_id })
+    foreach ($a in $adapters) {
+        if ($known -cnotcontains $a -and $null -ne (& $VmHook $a)) { throw "AAP_NetworkUntrusted: the adapter aap-guest-$a of an existing VM has no record; remove that VM first: cannot look" }   # check:verify-orphan
+    }
     $rec = @($all | Where-Object { $_.declaration.vm_id -ceq $id }) | Select-Object -First 1
     if ($null -eq $rec -or $rec.state -cne 'attached') { return "VM $id is not attached" }   # check:verify-record
     $d = $rec.declaration
@@ -244,10 +261,12 @@ function Read-AapFakeNetRecord([string]$Root, [string]$VmId) {
     $ok = $false
     try {
         $rec = [IO.File]::ReadAllText($path) | ConvertFrom-Json
-        # A record that names a switch P19 owns, or anything whose name does not end in its own VM id (another VM's rule, a
-        # host rule), is not the module's to remove (contract, Detach).
+        # A record that names a switch P19 owns, or anything not named aap-<words>-<its own VM id> (another VM's rule, a host
+        # rule, FPS-SMB-In-TCP-<id>), is not the module's to remove (contract, Detach). Compared ordinally: a case-sensitive,
+        # anchored match, never a culture's (which ignores a soft hyphen).
+        $owned = '^aap-[a-z]+(-[a-z]+)*-' + [regex]::Escape($VmId) + '\z'
         $ok = $rec.kind -ceq 'host_network_record' -and @('attaching', 'attached') -ccontains $rec.state -and $rec.declaration.vm_id -ceq $VmId -and
-            -not @($rec.created | Where-Object { ([string]$_.name) -clike 'aap-guests-*' -or ([string]$_.name) -clike 'aap-build-*' -or -not ([string]$_.name).EndsWith("-$VmId") }).Count
+            -not @($rec.created | Where-Object { ([string]$_.name) -clike 'aap-guests-*' -or ([string]$_.name) -clike 'aap-build-*' -or ([string]$_.name) -cnotmatch $owned }).Count
     } catch { $ok = $false }
     if (-not $ok) { throw "AAP_NetworkUntrusted: the record of VM $VmId is unreadable; it stays for an owner" }   # check:record-readable
     $rec
@@ -298,10 +317,10 @@ function Write-AapFakeNetReleased([string]$Root, [string[]]$Addresses) {
 
 # The least recently used free address of switch $n's subnet: one never released first (lowest), then the one released
 # longest ago; nothing when every address but the gateway is held.
-function Get-AapFakeNetFreeAddress([string]$Root, $n, [string[]]$Held) {
+function Get-AapFakeNetFreeAddress($n, [string[]]$Held, [string[]]$Released) {
     $base = $n.Subnet.Substring(0, $n.Subnet.LastIndexOf('.'))
     $free = @(1..254 | ForEach-Object { "$base.$_" } | Where-Object { $_ -cne $n.Gateway -and $Held -cnotcontains $_ })
-    $released = @(Read-AapFakeNetReleased $Root)
+    $released = @($Released)
     $never = @($free | Where-Object { $released -cnotcontains $_ })
     if ($never.Count) { return $never[0] }   # check:alloc-lru
     @($released | Where-Object { $free -ccontains $_ }) | Select-Object -First 1
