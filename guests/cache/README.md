@@ -101,8 +101,8 @@ source (`-`), a driver link without `-c`, rustc probes (`-vV`, `--print`, stdin)
 The enforcement point is the **host**: it decides which disk it attaches to which VM, and only after it has the job's
 trust class from GitHub's records of the job assigned to that runner (INTEGRATION.md names the API calls, the token and
 the permission decision). Only `trusted` (contract rule 6 as amended: `push` or `schedule` on the default branch, the
-head commit reachable from it, the repository itself as head repository) ever gets a shared root; **every untrusted job
-gets only its private root**. A job runs with admin/sudo inside its guest, so nothing inside the guest can stop it
+head commit being that branch's head when the class is bound, the repository itself as head repository) ever gets a
+shared root; **every untrusted job gets only its private root**. A job runs with admin/sudo inside its guest, so nothing inside the guest can stop it
 from writing whatever is attached; the guest-side checks catch mis-wiring.
 
 **Shared mutable roots stay off until the lab proof exists** (P04/P22: the concurrency, poisoning and
@@ -162,7 +162,7 @@ same repository gets the private root.
 | A tampered or substituted zccache archive or binary | P03 provenance (strict run) plus the installer's own archive and member hashes; re-hash at every boot; any mismatch disables the cache; the shim runs only the install's own `bin` member |
 | Archive path traversal or link members | members with absolute paths, `..`, drive letters or link types refuse the whole archive; only the two pinned members are extracted |
 | Untrusted job poisons a cache a trusted job reads | the host attaches a shared root only for a `trusted` class from GitHub's records; there is no untrusted shared root; the guest refuses any non-trusted binding and any marker/binding mismatch; shared roots are off until the lab proof |
-| A forged trust record (wrong job, wrong repository, a tag named like the default branch) | the host matches the job by runner id and runner group (exactly one), requires the run's repository to be the repository it looked up, and checks the head commit is reachable from the default branch; anything incomplete means no class and no shared root |
+| A forged trust record (wrong job, wrong repository, a tag named like the default branch) | the host matches the job by runner id and runner group (exactly one), requires the run's repository to be the repository it looked up, and trusts only a run whose head commit is the default branch's head when the class is bound, in a repository the owner enabled (a tag push looks like a branch push in GitHub's run record, so a tag or re-run at any older commit is untrusted); anything incomplete means no class and no shared root |
 | Hardlink poisoning (a build step writes into a delivered output that shares an inode with the store) | `ZCCACHE_MODE=COPY` on every call, overriding whatever the job set; hardlink and reflink stay off until P04/P22 prove them |
 | A well-formed malicious entry in a root | out of reach of any integrity check (README 1123); bounded by the trust rule: only equally trusted writers share a root |
 | A corrupted entry, a crashing or hung daemon | any zccache failure is answered by the direct compiler; a call past its bound is killed; the root is marked degraded |

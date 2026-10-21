@@ -776,46 +776,130 @@ Describe 'ConvertTo-AapZcArg' {
 
 Describe 'Get-AapCacheTrustClass (contract rule 6, amended)' {
     BeforeAll {
-        function New-Run([string]$Event = 'push', [string]$Branch = 'main', [int]$Repo = 1, [int]$Head = 1) {
-            [pscustomobject]@{ event = $Event; head_branch = $Branch; head_sha = ('a' * 40); repository = [pscustomobject]@{ id = $Repo }; head_repository = [pscustomobject]@{ id = $Head } }
+        $script:Head = 'a' * 40
+        function New-Run([string]$Event = 'push', [string]$Branch = 'main', $Repo = 1, $Head = 1) {
+            [pscustomobject]@{ event = $Event; head_branch = $Branch; head_sha = $script:Head; repository = [pscustomobject]@{ id = $Repo }; head_repository = [pscustomobject]@{ id = $Head } }
+        }
+        # The branch ref as the host's call gets it (GET /repos/org/repo/git/ref/heads/main; shape as api.github.com
+        # answered on 2026-10-21), parsed from JSON text on whichever edition runs the suite. Each field can be changed
+        # alone, so each check has a case that only it rejects.
+        function New-Ref([string]$Sha = $script:Head, [string]$Ref = 'refs/heads/main', [string]$Type = 'commit', [string]$Url = 'https://api.github.com/repos/org/repo/git/refs/heads/main') {
+            ('{"ref":"' + $Ref + '","node_id":"REF_x","url":"' + $Url + '","object":{"sha":"' + $Sha + '","type":"' + $Type + '","url":"https://api.github.com/repos/org/repo/git/commits/' + $Sha + '"}}') | ConvertFrom-Json
         }
         $script:Repository = [pscustomobject]@{ id = 1; full_name = 'org/repo'; default_branch = 'main' }
     }
-    It '<Case> is <Want>' -Tag 'TRUST-EVENT', 'TRUST-BRANCH', 'TRUST-HEAD-REPO', 'TRUST-REACH-UNKNOWN', 'TRUST-REACHABLE' -TestCases @(
-        @{ Case = 'push to the default branch'; Run = @('push', 'main', 1, 1); Reach = $true; Want = 'trusted' }
-        @{ Case = 'schedule'; Run = @('schedule', 'main', 1, 1); Reach = $true; Want = 'trusted' }
-        @{ Case = 'workflow_dispatch on the default branch'; Run = @('workflow_dispatch', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'pull_request'; Run = @('pull_request', 'main', 1, 2); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'pull_request_target on the default branch'; Run = @('pull_request_target', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'workflow_run on the default branch'; Run = @('workflow_run', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'issue_comment on the default branch'; Run = @('issue_comment', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'merge_group'; Run = @('merge_group', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'an event the rule does not name'; Run = @('repository_dispatch', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'push to dependabot/*'; Run = @('push', 'dependabot/npm/x', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'push to a branch named like the default in another case'; Run = @('push', 'Main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'push from another head repository'; Run = @('push', 'main', 1, 2); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'a tag named like the default branch, already deleted, head not on the default branch'; Run = @('push', 'main', 1, 1); Reach = $false; Want = 'untrusted' }
-        @{ Case = 'a push whose head was not checked against the default branch'; Run = @('push', 'main', 1, 1); Reach = $null; Want = $null }
+    It '<Case> is <Want>' -Tag 'TRUST-EVENT', 'TRUST-BRANCH', 'TRUST-HEAD-REPO' -TestCases @(
+        @{ Case = 'push to the default branch'; Run = @('push', 'main', 1, 1); Want = 'trusted' }
+        @{ Case = 'schedule'; Run = @('schedule', 'main', 1, 1); Want = 'trusted' }
+        @{ Case = 'workflow_dispatch on the default branch'; Run = @('workflow_dispatch', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'pull_request'; Run = @('pull_request', 'main', 1, 2); Want = 'untrusted' }
+        @{ Case = 'pull_request_target on the default branch'; Run = @('pull_request_target', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'workflow_run on the default branch'; Run = @('workflow_run', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'issue_comment on the default branch'; Run = @('issue_comment', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'merge_group'; Run = @('merge_group', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'an event the rule does not name'; Run = @('repository_dispatch', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'push to dependabot/*'; Run = @('push', 'dependabot/npm/x', 1, 1); Want = 'untrusted' }
+        @{ Case = 'push to a branch named like the default in another case'; Run = @('push', 'Main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'push from another head repository'; Run = @('push', 'main', 1, 2); Want = 'untrusted' }
     ) {
-        $got = Get-AapCacheTrustClass -Run (New-Run @Run) -Repository $script:Repository -HeadOnDefaultBranch $Reach
+        $got = Get-AapCacheTrustClass -Run (New-Run @Run) -Repository $script:Repository -BranchRef (New-Ref) -EnabledRepositoryIds 1
+        $got.trust_class | Should -BeExactly $Want
+        $got.repository_id | Should -Be 1
+        $got.repository | Should -BeExactly 'org/repo'
+    }
+    # GitHub's record of a tag push is the record of a branch push with the tag's name as head_branch: no ref, no ref
+    # kind. Only the run's head being the default branch's current head makes it trusted, whatever pushed it.
+    It 'a push run named like the default branch, <Case>, is <Want>' -Tag 'TRUST-HEAD-UNKNOWN', 'TRUST-HEAD-REF', 'TRUST-HEAD-TYPE', 'TRUST-HEAD-URL', 'TRUST-HEAD-CURRENT' -TestCases @(
+        @{ Case = 'at the branch''s current head (a branch push, or a tag at that head)'; Ref = @{}; Want = 'trusted' }
+        @{ Case = 'superseded before binding'; Ref = @{ Sha = 'b' * 40 }; Want = 'untrusted' }
+        @{ Case = 'from a tag at an older commit, live or deleted before binding'; Ref = @{ Sha = 'b' * 40 }; Want = 'untrusted' }
+        @{ Case = 'from a re-run of an older run'; Ref = @{ Sha = 'b' * 40 }; Want = 'untrusted' }
+        @{ Case = 'from a tag at an unreviewed commit C1 that a merge made reachable, tag deleted before binding'; Ref = @{ Sha = 'b' * 40 }; Want = 'untrusted' }
+        @{ Case = 'from a tag at a commit not on the branch'; Ref = @{ Sha = 'c' * 40 }; Want = 'untrusted' }
+        @{ Case = 'with the branch head spelled in another case'; Ref = @{ Sha = 'A' * 40 }; Want = 'untrusted' }
+        @{ Case = 'with no ref answer (404, error, rate limit, timeout)'; Ref = $null; Want = $null }
+        @{ Case = 'with a ref answer without a sha'; Ref = @{ Sha = '' }; Want = $null }
+        @{ Case = 'with the ref of a tag named like the branch'; Ref = @{ Ref = 'refs/tags/main' }; Want = $null }
+        @{ Case = 'with the ref of another branch (a prefix match)'; Ref = @{ Ref = 'refs/heads/main-x' }; Want = $null }
+        @{ Case = 'with the branch ref in another case'; Ref = @{ Ref = 'refs/heads/Main' }; Want = $null }
+        @{ Case = 'with a ref to a tag object'; Ref = @{ Type = 'tag' }; Want = $null }
+        @{ Case = 'with a ref of another repository'; Ref = @{ Url = 'https://api.github.com/repos/other/repo/git/refs/heads/main' }; Want = $null }
+        @{ Case = 'with a ref of a fork named like the repository'; Ref = @{ Url = 'https://api.github.com/repos/fork/repo/git/refs/heads/main' }; Want = $null }
+        @{ Case = 'with a ref url in another case than the repository''s name'; Ref = @{ Url = 'https://api.github.com/repos/Org/Repo/git/refs/heads/main' }; Want = $null }
+        @{ Case = 'with a ref from another host'; Ref = @{ Url = 'https://ghe.example/api/v3/repos/org/repo/git/refs/heads/main' }; Want = $null }
+    ) {
+        $branchRef = if ($null -eq $Ref) { $null } else { New-Ref @Ref }
+        $got = Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -BranchRef $branchRef -EnabledRepositoryIds 1
         if ($null -eq $Want) { $got | Should -BeNullOrEmpty }
-        else {
-            $got.trust_class | Should -BeExactly $Want
-            $got.repository_id | Should -Be 1
-            $got.repository | Should -BeExactly 'org/repo'
-        }
+        else { $got.trust_class | Should -BeExactly $Want }
+    }
+    # The plural endpoint (git/refs/heads/main) answers a list of prefix matches. pwsh 7 unrolls a one-item list to the
+    # item, 5.1 does not; either way only the exact branch ref can pass.
+    It 'a list answer (the prefix-matching refs endpoint) with <Case> yields no class' -Tag 'TRUST-HEAD-UNKNOWN', 'TRUST-HEAD-REF' -TestCases @(
+        @{ Case = 'the branch and a longer name'; Refs = @('refs/heads/main', 'refs/heads/main-x') }
+        @{ Case = 'only a longer name'; Refs = @('refs/heads/main-x') }
+    ) {
+        $list = ('[' + (@($Refs | ForEach-Object { New-Ref -Ref $_ | ConvertTo-Json -Compress }) -join ',') + ']') | ConvertFrom-Json
+        Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -BranchRef $list -EnabledRepositoryIds 1 | Should -BeNullOrEmpty
+    }
+    It 'a run without a head commit yields no class' -Tag 'TRUST-HEAD-UNKNOWN' {
+        $run = New-Run
+        $run.head_sha = ''
+        Get-AapCacheTrustClass -Run $run -Repository $script:Repository -BranchRef (New-Ref) -EnabledRepositoryIds 1 | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run $run -Repository $script:Repository -BranchRef (New-Ref -Sha '') -EnabledRepositoryIds 1 | Should -BeNullOrEmpty
     }
     It 'a run of another repository yields no class' -Tag 'TRUST-SAME-REPO' {
-        Get-AapCacheTrustClass -Run (New-Run 'push' 'main' 2 2) -Repository $script:Repository -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run (New-Run 'push' 'main' 2 2) -Repository $script:Repository -BranchRef (New-Ref) -EnabledRepositoryIds 1, 2 | Should -BeNullOrEmpty
+    }
+    # INTEGRATION.md decision 4: a repository gets a shared root only once the owner enabled it, recorded host-side.
+    It 'a repository the owner did not enable yields no class (<Case>)' -Tag 'TRUST-ACTIVATION' -TestCases @(
+        @{ Case = 'no list'; Enabled = $null }
+        @{ Case = 'an empty list'; Enabled = @() }
+        @{ Case = 'other repositories only'; Enabled = @(2, 3) }
+        @{ Case = '$true (PowerShell would call it equal to 1)'; Enabled = $true }
+        @{ Case = 'a list holding $true'; Enabled = @($true) }
+        @{ Case = 'the string True'; Enabled = 'True' }
+        @{ Case = '1.0 (a double)'; Enabled = 1.0 }
+        @{ Case = 'the string 01'; Enabled = '01' }
+        @{ Case = 'the string " 1"'; Enabled = ' 1' }
+        @{ Case = 'the string "1 "'; Enabled = '1 ' }
+    ) {
+        Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -BranchRef (New-Ref) -EnabledRepositoryIds $Enabled | Should -BeNullOrEmpty
+    }
+    It 'an enabled repository given as <Case> is trusted' -Tag 'TRUST-ACTIVATION' -TestCases @(
+        @{ Case = 'an int'; Enabled = 1 }
+        @{ Case = 'a long'; Enabled = [long]1 }
+        @{ Case = 'the string 1'; Enabled = '1' }
+        @{ Case = 'a list of strings'; Enabled = @('3', '1') }
+    ) {
+        (Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -BranchRef (New-Ref) -EnabledRepositoryIds $Enabled).trust_class | Should -BeExactly 'trusted'
+    }
+    It 'a repository id given as a string matches an int in the list' -Tag 'TRUST-ACTIVATION' {
+        $repo = [pscustomobject]@{ id = '1'; full_name = 'org/repo'; default_branch = 'main' }
+        (Get-AapCacheTrustClass -Run (New-Run) -Repository $repo -BranchRef (New-Ref) -EnabledRepositoryIds 1).trust_class | Should -BeExactly 'trusted'
+    }
+    It 'an enabled repository read from a JSON list is trusted' -Tag 'TRUST-ACTIVATION' {
+        $enabled = '{"repository_ids":[3,1]}' | ConvertFrom-Json
+        (Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -BranchRef (New-Ref) -EnabledRepositoryIds $enabled.repository_ids).trust_class | Should -BeExactly 'trusted'
+    }
+    # The run, the repository and the list all name the same id, so only the id check can refuse it.
+    It 'a repository id <Id> that is not a positive integer yields no class, without throwing' -Tag 'TRUST-REPO-ID' -TestCases @(
+        @{ Id = 'x' }, @{ Id = '' }, @{ Id = '0' }, @{ Id = '-1' }, @{ Id = '1.5' }, @{ Id = '99999999999999999999' }
+    ) {
+        $repo = [pscustomobject]@{ id = $Id; full_name = 'org/repo'; default_branch = 'main' }
+        { Get-AapCacheTrustClass -Run (New-Run 'push' 'main' 0 0) -Repository $repo -BranchRef (New-Ref) -EnabledRepositoryIds 0 } | Should -Not -Throw
+        Get-AapCacheTrustClass -Run (New-Run 'push' 'main' 0 0) -Repository $repo -BranchRef (New-Ref) -EnabledRepositoryIds 0 | Should -BeNullOrEmpty
     }
     It 'an incomplete record yields no class, without throwing under strict mode' {
         Set-StrictMode -Version Latest
-        Get-AapCacheTrustClass -Run $null -Repository $script:Repository -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
-        Get-AapCacheTrustClass -Run (New-Run) -Repository $null -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
-        Get-AapCacheTrustClass -Run (New-Run) -Repository ([pscustomobject]@{ id = 1; full_name = 'org/repo' }) -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
-        Get-AapCacheTrustClass -Run ([pscustomobject]@{ head_branch = 'main' }) -Repository $script:Repository -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
-        Get-AapCacheTrustClass -Run ([pscustomobject]@{ event = 'push'; head_branch = 'main'; repository = [pscustomobject]@{ id = 1 } }) -Repository $script:Repository -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
-        Get-AapCacheTrustClass -Run @{ event = 'push'; head_branch = 'main'; repository = @{ id = 1 }; head_repository = @{} } -Repository $script:Repository -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
+        $c = New-Ref
+        Get-AapCacheTrustClass -Run $null -Repository $script:Repository -BranchRef $c -EnabledRepositoryIds 1 | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run (New-Run) -Repository $null -BranchRef $c -EnabledRepositoryIds 1 | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run (New-Run) -Repository ([pscustomobject]@{ id = 1; full_name = 'org/repo' }) -BranchRef $c -EnabledRepositoryIds 1 | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run ([pscustomobject]@{ head_branch = 'main' }) -Repository $script:Repository -BranchRef $c -EnabledRepositoryIds 1 | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run ([pscustomobject]@{ event = 'push'; head_branch = 'main'; repository = [pscustomobject]@{ id = 1 } }) -Repository $script:Repository -BranchRef $c -EnabledRepositoryIds 1 | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run @{ event = 'push'; head_branch = 'main'; repository = @{ id = 1 }; head_repository = @{} } -Repository $script:Repository -BranchRef $c -EnabledRepositoryIds 1 | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -BranchRef 'refs/heads/main' -EnabledRepositoryIds 1 | Should -BeNullOrEmpty
     }
 }
 
