@@ -161,6 +161,15 @@ function New-LinProvider {
         if (Get-LinKnob $w 'SeedFails' $false) { throw 'fake: IMAPI2 failed' }
         $files = [ordered]@{}; foreach ($k in $a.Files.Keys) { $files[$k] = [string]$a.Files[$k] }
         Write-LinJson $a.Path ([ordered]@{ label = $a.Label; files = $files })
+        # What the writer produced, as the production provider reports it; knob SeedLost: the file on disk is not that
+        # ('short': its last byte lost, 'stale': the right size with another byte, as a short read used to leave it).
+        $bytes = [IO.File]::ReadAllBytes($a.Path)
+        $made = @{ Bytes = [long]$bytes.Length; Sha256 = (Get-LinSha $bytes) }
+        switch ([string](Get-LinKnob $w 'SeedLost' '')) {
+            'short' { [IO.File]::WriteAllBytes($a.Path, [byte[]]$bytes[0..($bytes.Length - 2)]) }
+            'stale' { $bytes[$bytes.Length - 2] = 0; [IO.File]::WriteAllBytes($a.Path, $bytes) }
+        }
+        $made
     }
     $p.NewVm = { param($a)
         Add-LinCall $w "NewVm $($a.Name)"

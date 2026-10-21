@@ -17,7 +17,7 @@ transport is CANDIDATE (D2) until the lab proof P02.1 passes; the guest network 
 |---|---|
 | `AapLinBackend.psm1` | The lifecycle: `New-AapLinBackend`, `Invoke-AapLinStep`, the reconcile callbacks, the journal, the trust checks, the seed's content (`New-AapLinSeed`), the guest channel and its checks |
 | `AapLinBackend.HyperV.psm1` | The production provider: every Hyper-V, CIM (Key-Value Pair Exchange), IMAPI2 (seed ISO), ssh-keygen and hash call, behind one hashtable of ops. NOT RUN |
-| `hvsock-relay.ps1` | ssh.exe's ProxyCommand: one AF_HYPERV stream to the VM's runtime service, bytes both ways. Only its argument checks and its address layout have run |
+| `hvsock-relay.ps1` | ssh.exe's ProxyCommand: one AF_HYPERV stream to the VM's runtime service, bytes both ways, only from inside the call child's job object. Only its argument checks, its job guard and its address layout have run |
 
 ## What differs from the Windows twin
 
@@ -58,7 +58,7 @@ a protected DACL): one backend-lifecycle `op` record per line (`profile` `linux`
 |---|---|
 | reservation persisted, nothing journaled | create |
 | `create` intent, before or after `New-VM` | re-runs create: reuses the disk it made and only the VM whose id the journal recorded right after `New-VM`, makes a fresh key pair and seed (the clone never booted), never a second VM. A VM found only by its name is destroyed, never adopted |
-| `create` done, `boot` or `ready` in flight | re-probes over the kept channel, `seq` above the persisted mark; on the 15-minute deadline destroy. A lost key folder or a damaged mark: destroyed, never probed |
+| `create` done, `boot` or `ready` in flight | re-probes over the kept channel, `seq` above the persisted mark; on the 15-minute deadline destroy. A lost key folder, or a missing or damaged mark: destroyed, never probed |
 | lease asked for, not delivered | broker status: busy waits; anything else stops the runner and destroys, releasing the lease |
 | runner started | heartbeats go on over the kept channel; never cancelled |
 | `destroy` partial | destroy again; only observed absence completes it |
@@ -89,6 +89,10 @@ The seed (`New-AapLinSeed`, written by the provider's `NewSeedImage` as ISO 9660
   `restrict,command="/usr/local/libexec/aap-guest/agent" ssh-ed25519 <public> aap-management`.
 - `meta-data`: a fresh `instance-id` (`aap-<rid hex>-<lease generation>-<random>`) and `local-hostname`.
 
+The writer takes only full blocks from IMAPI2's image stream (a short read fails the image instead of leaving stale bytes
+in it) and reports the size and SHA-256 of what it wrote; create reads the file back through a read-only handle against
+both before any VM gets it (`AAP_SeedInvalid`).
+
 Never a private key, a JIT config, a registration token, a password or a host key. Once the guest answers its first probe
 `ready`, the seed is ejected (`EjectSeed`), deleted, and the VM is checked to hold no medium; a failure destroys the clone
 (never registered).
@@ -96,10 +100,16 @@ Never a private key, a JIT config, a registration token, a password or a host ke
 ### The guest channel
 
 Each command is one hidden `C:\Windows\System32\OpenSSH\ssh.exe -F "<clone>\ssh\ssh_config" -T aap-guest` with the
-machine `PSModulePath`, inside a job object (512 MiB, CPU time and kill-on-close; the wall cap is the command's timeout
-plus 10 s, session setup included). Its ProxyCommand, `hvsock-relay.ps1` under Windows PowerShell, is its child and in the
-same job. Its stdin carries the envelope line, then exactly the payload; at most 8193 bytes of stdout are read; stderr is
-drained through a 4 KiB buffer and dropped, never parsed.
+machine `PSModulePath`, inside a job object made before it starts under a random name (`aap-lin-call-<32 hex>`; 512 MiB,
+CPU time and kill-on-close; the wall cap is the command's timeout plus 10 s, session setup included). ssh.exe is put in
+the job just after it starts, so a child it made before then would be outside it. Its ProxyCommand, `hvsock-relay.ps1`
+under Windows PowerShell, therefore talks to the guest only from inside that job: it gets the name in `AAP_RELAY_JOB`
+(inherited through ssh.exe), opens the job and asks `IsProcessInJob`, closing the handle at once (one held from inside the
+job would keep kill-on-close from firing), and outside it exits 4 before any socket exists; ssh.exe then fails (255) and
+the command is a failed guest the next one retries. Its stdin carries the envelope line, then exactly the payload, written
+to the pipe unbuffered (through the redirected stdin's own stream a JIT config would stay behind in that stream's private
+4 KiB buffer, which nothing can zero); at most 8193 bytes of stdout are read; stderr is drained through a 4 KiB buffer and
+dropped, never parsed.
 
 `ssh_config` (security review M4): `User root`, `HostName <vm id>`, the relay by absolute path, `IdentityFile`,
 `UserKnownHostsFile` (the pin) and an empty `GlobalKnownHostsFile` in the clone's ssh folder, `HostKeyAlias aap-guest`,
@@ -111,8 +121,10 @@ the system-wide configuration. Paths are written with forward slashes and refuse
 Nothing is sent before the host key is pinned or through a channel folder that is not a plain folder (`channel_unusable`,
 a failed guest). `seq` grows by one per send and is never reused, also across a restart: the mark in `<clone>\ssh\seq` is
 written (whole, flushed, swapped in) before the first send past it, in blocks of 1000; a send the mark does not cover is
-never made. The agent accepts any `seq` strictly greater than the last one it accepted (guest-transport.md, Sequence
-rule), so a lost reply or an unreachable guest leaves a gap and never wedges the channel.
+never made. Create writes it as `0` with the key pair, so every channel has one: after a restart a missing mark is as
+lost as a damaged one (nothing is sent; the guest is unreachable). The agent accepts any `seq` strictly greater than the
+last one it accepted (guest-transport.md, Sequence rule), so a lost reply or an unreachable guest leaves a gap and never
+wedges the channel.
 
 Every reply is hostile input, checked in this order, each failure a fixed `hostile_guest` reason (guest text is never
 kept):
@@ -130,11 +142,11 @@ kept):
 | `bad_state` | a `guest_state` the command cannot produce |
 | `bad_host_key` | the host key published in KVP is not one `ssh-ed25519` public key |
 
-ssh.exe's own failure (exit 255: the relay could not connect, the pinned host key or the client key was refused, the
-connection dropped mid-reply), a timeout or an empty reply is a **failed guest**, never a hostile one: a guest that
-breaks its channel gains nothing it could not get by staying silent. A valid `refused` or `error` reply stops the step it
-belongs to. A hostile reply is final: journaled `hostile_guest`, the slot straight to `deleting`, the VM destroyed in the
-same step even when the allocator call fails.
+ssh.exe's own failure (exit 255: the relay could not connect or was outside its job, the pinned host key or the client
+key was refused, the connection dropped mid-reply), a timeout or an empty reply is a **failed guest**, never a hostile
+one: a guest that breaks its channel gains nothing it could not get by staying silent. A valid `refused` or `error` reply
+stops the step it belongs to. A hostile reply is final: journaled `hostile_guest`, the slot straight to `deleting`, the VM
+destroyed in the same step even when the allocator call fails.
 
 Which reservation a heartbeat belongs to comes from the VM this process sent the command to; whether a job runs comes
 from the broker's status of the runner, never from the guest.
@@ -185,10 +197,10 @@ guest's first boot and its agent, the broker and the network (no Hyper-V, ssh, W
 | File | Covers |
 |---|---|
 | `Lifecycle.Tests.ps1` | one job end to end; boot and host-key deadline; lost replies; drain; heartbeat binding; the limits in every state and after a restart; two consecutive jobs on one slot observe nothing of each other |
-| `Transport.Tests.ps1` | every reply check; ssh failures are failed guests; every hostile case end to end; bad host key; changed host key; pin first; the ssh_config hardening; the real capped child (overflow, stderr flood, hang, memory flood, grandchild, exit codes, stdin only, BOM-free stdin under three code pages); the relay's arguments and address |
+| `Transport.Tests.ps1` | every reply check; ssh failures are failed guests; every hostile case end to end; bad host key; changed host key; pin first; the ssh_config hardening; the real capped child (overflow, stderr flood, hang, memory flood, grandchild, exit codes, stdin only, BOM-free stdin under three code pages, the payload unbuffered); the relay's arguments and address; its job guard (the call child's job named for it: inside, on to its socket; another job, another name for the same job, no name, a job it is not in: exit 4 and no socket; no handle kept on the job) |
 | `Teardown.Tests.ps1` | release outcomes; a VM, key or folder that will not go; no slot reuse before the proof; links in clone folders |
-| `Create.Tests.ps1` | untrusted roots; the base pin and seal; host settings; the seed's content; key and seed failures; re-run create; VM settings; switch, guards and network verification; eject; the pin file; the storage document and context |
-| `Recovery.Tests.ps1` | unreadable journals; hostile records; restart keeps the channel (probe, heartbeats, collect); damaged seq mark and lost key folder; restart between delivery and start; JIT delivery rule; inventory and reconcile callbacks; orphans |
+| `Create.Tests.ps1` | untrusted roots; the base pin and seal; host settings; the seed's content; key and seed failures; the ISO writer's full blocks and short reads; the seed read back (lost or stale bytes); re-run create; VM settings; switch, guards and network verification; eject; the pin file; the storage document and context |
+| `Recovery.Tests.ps1` | unreadable journals; hostile records; restart keeps the channel (probe, heartbeats, collect); a fresh channel's initial mark; missing or damaged seq mark and lost key folder; restart between delivery and start; JIT delivery rule; inventory and reconcile callbacks; orphans |
 | `Crash.Tests.ps1` | a real process killed at every lifecycle boundary (22 points, plus a drain and a running job) and recovered: never a second VM or lease, no refused `seq`, no secret left |
 | `Hygiene.Tests.ps1` | no JIT config or private key in any file; the private key never read; the JIT object never a command's parameter; antivirus patterns; AMSI compile; hidden children with no data on their command line; one `Add-Type`, under the admin-only `%TMP%` |
 | `Invoke-AapLinMutations.ps1` | a control run, then disables each `# check:` (in `AapLinBackend.psm1` and `hvsock-relay.ps1`) in turn; every check must make a test fail |
@@ -201,7 +213,9 @@ pwsh -File tests/backends/linux/Invoke-AapLinMutations.ps1
 ## What is not done
 
 - No real run: the production provider, ssh.exe through the relay, the IMAPI2 seed writer, the KVP read and the job
-  object's limits on a real ssh session are proven only by P02.1 (lab) and P22.
+  object's limits on a real ssh session are proven only by P02.1 (lab) and P22. That ssh.exe passes `AAP_RELAY_JOB` on
+  to its ProxyCommand is one of them: if it did not, every relay would refuse and no clone would get past its first probe
+  (fail closed, seen at once).
 - The guest network module (P10.0) does not exist; without it every create fails closed (`AAP_NetworkUnavailable`).
 - The guest agent, the sshd vsock socket and the KVP host-key publisher (P15) do not exist; the fake guest follows
   guest-transport.md and INTEGRATION.md, P15.

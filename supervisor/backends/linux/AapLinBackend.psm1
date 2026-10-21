@@ -44,6 +44,7 @@ $script:ChildExe = $script:SshExe       # tests point these two at a stand-in; t
 $script:ChildArgs = '-F "{0}" -T aap-guest'
 $script:RelayExe = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
 $script:RelayScript = Join-Path $PSScriptRoot 'hvsock-relay.ps1'
+$script:RelayJobVar = 'AAP_RELAY_JOB'   # names the call child's job object; the relay refuses to run outside it
 $script:Agent = '/usr/local/libexec/aap-guest/agent'
 $script:SecureBootTemplate = 'MicrosoftUEFICertificateAuthority'
 $script:ChildMemoryBytes = 536870912    # job object cap on ssh.exe and its relay, all their processes together
@@ -635,12 +636,11 @@ function Write-AapLinSshConfig([string]$Dir, [string]$VmId) {
 function Test-AapLinPinned($g) { (Get-AapLinPathKind (Join-Path $g.Dir 'known_hosts')) -ceq 'file' }
 
 # The channel's seq high-water mark: every seq ever sent is at most the number in ssh\seq, written before the first send
-# past it (a block of SeqBlock at a time), so a restarted supervisor continues above every seq it sent before.
+# past it (a block of SeqBlock at a time), so a restarted supervisor continues above every seq it sent before. Create
+# writes 0 with the key pair, so a channel always has its mark: a missing one is as lost as a damaged one ($null).
 function Read-AapLinSeq([string]$Dir) {
     $p = Join-Path $Dir 'seq'
-    $kind = Get-AapLinPathKind $p
-    if ($kind -ceq 'absent') { return [long]0 }
-    if ($kind -cne 'file' -or (New-Object IO.FileInfo $p).Length -gt 16) { return $null }
+    if ((Get-AapLinPathKind $p) -cne 'file' -or (New-Object IO.FileInfo $p).Length -gt 16) { return $null }
     $t = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($p))
     if ($t -cnotmatch '^[0-9]{1,10}\z' -or [long]$t -gt $script:SeqMax) { return $null }   # check:seq-file
     [long]$t
@@ -659,7 +659,7 @@ function Get-AapLinGuest($B, $r, $j) {
         Assert-AapLinPlainPath -Root $B.Storage.clone_root.Path -Path $dir -Reason 'AAP_UnsafePath'
         if ((Get-AapLinPathKind $dir) -cne 'dir' -or (Get-AapLinPathKind (Join-Path $dir 'id_ed25519')) -cne 'file') { return $null }
         $seq = Read-AapLinSeq $dir
-        if ($null -eq $seq) { return $null }
+        if ($null -eq $seq) { return $null }   # check:seq-absent
         Write-AapLinSshConfig $dir ([string]$j.VmId)
     } catch { return $null }
     $g = @{ VmId = [string]$j.VmId; Dir = $dir; Seq = $seq; Ceiling = $seq; Started = [bool]$j.Started; Hostile = $j.Hostile }
@@ -776,31 +776,48 @@ public static class AapLinJobObject {
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
-    // Kill on close (0x2000), job memory (0x200), job CPU time (0x4), no error dialog on a crash (0x400).
-    public static IntPtr Start(IntPtr process, long memoryBytes, long cpuSeconds) {
-        IntPtr job = CreateJobObjectW(IntPtr.Zero, null);
+    // A job under the name the relay checks its membership against (hvsock-relay.ps1): kill on close (0x2000), job memory
+    // (0x200), job CPU time (0x4), no error dialog on a crash (0x400).
+    public static IntPtr Create(string name, long memoryBytes, long cpuSeconds) {
+        IntPtr job = CreateJobObjectW(IntPtr.Zero, name);
         if (job == IntPtr.Zero) throw new Win32Exception();
         Extended info = new Extended();
         info.Limits.LimitFlags = 0x2000 | 0x200 | 0x4 | 0x400;
         info.Limits.PerJobUserTimeLimit = cpuSeconds * 10000000L;
         info.JobMemoryLimit = new UIntPtr((ulong)memoryBytes);
-        if (!SetInformationJobObject(job, 9, ref info, Marshal.SizeOf(typeof(Extended))) || !AssignProcessToJobObject(job, process)) {
+        if (!SetInformationJobObject(job, 9, ref info, Marshal.SizeOf(typeof(Extended)))) {
             int e = Marshal.GetLastWin32Error();
             CloseHandle(job);
             throw new Win32Exception(e);
         }
         return job;
     }
+    public static void Assign(IntPtr job, IntPtr process) { if (!AssignProcessToJobObject(job, process)) throw new Win32Exception(); }
     public static void Kill(IntPtr job) { TerminateJobObject(job, 1); }
     public static void Close(IntPtr job) { CloseHandle(job); }
 }
 public static class AapLinIsoWriter {
-    public static void Save(object stream, string path, int blockSize, int blocks) {
+    // Every read must fill its block: a short one would leave stale bytes in an image of the right size. Returns the
+    // SHA-256 of what was written, which the backend checks the file on disk against.
+    public static string Save(object stream, string path, int blockSize, int blocks) {
         System.Runtime.InteropServices.ComTypes.IStream s = (System.Runtime.InteropServices.ComTypes.IStream)stream;
-        using (FileStream fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
-            byte[] buf = new byte[blockSize];
-            for (int i = 0; i < blocks; i++) { s.Read(buf, blockSize, IntPtr.Zero); fs.Write(buf, 0, blockSize); }
-        }
+        IntPtr got = Marshal.AllocCoTaskMem(4);
+        try {
+            using (System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create())
+            using (FileStream fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) {
+                byte[] buf = new byte[blockSize];
+                for (int i = 0; i < blocks; i++) {
+                    Marshal.WriteInt32(got, 0);
+                    s.Read(buf, blockSize, got);
+                    if (Marshal.ReadInt32(got) != blockSize) throw new IOException("AAP_SeedInvalid: a short read from the image stream");
+                    sha.TransformBlock(buf, 0, blockSize, null, 0);
+                    fs.Write(buf, 0, blockSize);
+                }
+                sha.TransformFinalBlock(buf, 0, 0);
+                fs.Flush(true);
+                return BitConverter.ToString(sha.Hash).Replace("-", "").ToLowerInvariant();
+            }
+        } finally { Marshal.FreeCoTaskMem(got); }
     }
 }
 '@
@@ -818,12 +835,13 @@ function Start-AapLinProcess([Diagnostics.ProcessStartInfo]$Psi) {
 }
 
 # The default transport: one hidden ssh.exe per command, by absolute path, with a fixed command line that names only the
-# per-clone configuration file, inside a job object with a memory cap, a CPU-time cap and kill-on-close (its ProxyCommand
-# relay is its child and in the same job); the wall cap is the command's timeout plus 10 s, session setup included. Its
-# stdin gets the envelope line and then exactly the payload, which ssh carries to the forced agent command; at most 8193
-# bytes of its stdout are read, and stderr is drained through a 4 KiB buffer and dropped, never parsed.
-# ponytail: the child runs for a moment before it is assigned to the job; it reads nothing from the guest until the
-# supervisor writes its stdin, which happens only after the assignment. CREATE_SUSPENDED would close that gap.
+# per-clone configuration file, inside a job object with a memory cap, a CPU-time cap and kill-on-close; the wall cap is
+# the command's timeout plus 10 s, session setup included. ssh.exe is put in the job just after it starts, and its
+# ProxyCommand relay talks to the guest only from inside that job (named in AAP_RELAY_JOB, which ssh.exe passes on): a
+# relay started before the assignment refuses (hvsock-relay.ps1), ssh.exe fails (255) and the command is a failed guest
+# the next one retries. Its stdin gets the envelope line and then exactly the payload, which ssh carries to the forced
+# agent command; at most 8193 bytes of its stdout are read, and stderr is drained through a 4 KiB buffer and dropped,
+# never parsed.
 function Invoke-AapLinGuestChild([hashtable]$Call) {
     if (-not ('AapLinJobObject' -as [type])) { throw 'AAP_ChildUncapped: the job object type is compiled by New-AapLinBackend' }
     $psi = New-Object Diagnostics.ProcessStartInfo
@@ -835,19 +853,24 @@ function Invoke-AapLinGuestChild([hashtable]$Call) {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.EnvironmentVariables['PSModulePath'] = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+    $name = 'aap-lin-call-' + (New-AapLinHex 16)
+    $psi.EnvironmentVariables[$script:RelayJobVar] = $name
     $wall = [int]$Call.TimeoutSeconds + 10
     $deadline = [DateTime]::UtcNow.AddSeconds($wall)
     $buf = New-Object byte[] $script:ReadMax
     $n = 0
     $job = [IntPtr]::Zero
-    $p = Start-AapLinProcess $psi
+    try { $job = [AapLinJobObject]::Create($name, $script:ChildMemoryBytes, $wall) } catch { throw 'AAP_ChildUncapped: the job object for the call child could not be made' }
+    try { $p = Start-AapLinProcess $psi } catch { [AapLinJobObject]::Close($job); throw }
     try {
-        try { $job = [AapLinJobObject]::Start($p.Handle, $script:ChildMemoryBytes, $wall) } catch { throw 'AAP_ChildUncapped: the call child could not be put in its job object' }
+        try { [AapLinJobObject]::Assign($job, $p.Handle) } catch { throw 'AAP_ChildUncapped: the call child could not be put in its job object' }
         $in = $p.StandardInput.BaseStream
         try {
             $head = [Text.Encoding]::ASCII.GetBytes($Call.Envelope + "`n")
             $in.Write($head, 0, $head.Length)
-            if ([int]$Call.PayloadLength -gt 0) { & $Call.WritePayload $in }
+            # The payload (a JIT config) goes to the pipe unbuffered: written through $in it would stay behind in that
+            # stream's private 4 KiB write buffer, which nothing can zero. Asking for the handle flushes the envelope first.
+            if ([int]$Call.PayloadLength -gt 0) { & $Call.WritePayload (New-Object IO.FileStream($in.SafeFileHandle, [IO.FileAccess]::Write, 1)) }
             $in.Flush()
         } catch {
             $null = $_   # it exited without reading; its exit code tells why
@@ -1027,12 +1050,22 @@ function Invoke-AapLinCreate($B, $r, [string]$BaseSha256, $j) {
     $public = [string](& $B.Provider.NewKeyPair @{ Dir = $dir })
     if ($public -cnotmatch $script:Ed25519Re) { throw 'AAP_KeyInvalid: ssh-keygen gave no ed25519 public key' }   # check:key-shape
     if ((Get-AapLinPathKind (Join-Path $dir 'id_ed25519')) -cne 'file') { throw 'AAP_KeyInvalid: no private key file' }
+    Write-AapLinFile (Join-Path $dir 'seq') ([Text.Encoding]::ASCII.GetBytes('0'))   # the channel's seq mark: nothing sent yet
     Invoke-AapLinFault 'create:after-key'
     $seed = Join-Path $clone 'seed.iso'
     Remove-AapLinTree $seed $clone
     $files = New-AapLinSeed -VmName $name -InstanceId ('aap-' + $rid.Substring(2) + '-' + [long]$r.lease_generation + '-' + (New-AapLinHex 4)) -PublicKey $public
-    & $B.Provider.NewSeedImage @{ Path = $seed; Label = 'CIDATA'; Files = $files }
+    $made = & $B.Provider.NewSeedImage @{ Path = $seed; Label = 'CIDATA'; Files = $files }
     if ((Get-AapLinPathKind $seed) -cne 'file') { throw 'AAP_SeedInvalid: no seed image was written' }
+    # The image on disk read back against what the writer produced, its size and SHA-256, through a handle that shares
+    # only reading: a short or lost write never becomes the VM's DVD.
+    $hold = New-Object IO.FileStream($seed, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $size = [long](Get-AapLinField $made 'Bytes')
+        if ($size -le 0 -or $hold.Length -ne $size -or [string](& $B.Provider.HashFile @{ Path = $seed; Stream = $hold }) -cne [string](Get-AapLinField $made 'Sha256')) {   # check:seed-written
+            throw 'AAP_SeedInvalid: the seed image on disk is not the image that was written'
+        }
+    } finally { $hold.Dispose() }
     Invoke-AapLinFault 'create:after-seed'
     if (-not $id) {
         $id = ([string](Get-AapLinField (& $B.Provider.NewVm @{ Name = $name; Path = $clone; Cpus = [int]$r.cpus; MemGib = [int]$r.mem_gib; OsDisk = $os; Seed = $seed }) 'Id')).ToLowerInvariant()

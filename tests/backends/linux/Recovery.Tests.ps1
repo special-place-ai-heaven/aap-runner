@@ -168,6 +168,32 @@ Describe 'a restarted supervisor keeps the guest channel' {
         }
     }
 
+    It 'a seq mark that is missing is as lost as a damaged one: nothing is sent, the probing clone is destroyed' -Tag 'seq-absent', 'lost-credential' {
+        $x = New-LinAt 'creating'
+        $w = $x.W
+        [IO.File]::Delete((Join-Path $w.Clones "$($x.Id)\ssh\seq"))
+        $n = @(Get-ChildItem -LiteralPath (Join-Path $w.Fake 'exchanges')).Count
+        $B2 = New-LinBackend $w
+        $s = Invoke-AapLinStep -Backend $B2 -Reservation (Get-LinRes $w $x.Id)
+        $s.Action | Should -Be 'destroyed'
+        @(Get-LinJournal $w $x.Id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -Be 'guest channel lost before ready'
+        @(Get-ChildItem -LiteralPath (Join-Path $w.Fake 'exchanges')).Count | Should -Be $n
+        Get-LinRefusals $w | Should -BeNullOrEmpty
+    }
+
+    It 'a channel that never sent a command keeps its initial mark across a restart and starts at seq 1' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $r = New-LinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)   # created: nothing sent yet
+        [IO.File]::ReadAllText((Join-Path $w.Clones "$rid\ssh\seq")) | Should -BeExactly '0'
+        $B2 = New-LinBackend $w
+        @(Invoke-LinSteps $B2 $w $rid -Max 3 -Until { param($x) $x.state -eq 'ready' } | ForEach-Object { $_.Action }) -join ',' | Should -Be 'booted,ready'
+        Get-LinRefusals $w | Should -BeNullOrEmpty
+        @(Get-ChildItem -LiteralPath (Join-Path $w.Fake 'exchanges') | ForEach-Object { [long](Read-LinJson $_.FullName $null).cmd.seq } | Sort-Object)[0] | Should -Be 1
+    }
+
     It 'a key folder lost before boot: the clone is destroyed, never booted or probed' -Tag 'lost-credential' {
         $w = New-LinWorld
         $B = New-LinBackend $w

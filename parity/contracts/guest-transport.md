@@ -129,19 +129,30 @@ has no host adapter, so it cannot carry host SSH.
 
 ## Guest network attachment (enforcement shape DECIDED; mechanism CANDIDATE D2)
 
-Rule: guests reach the internet (GitHub, package registries, DNS) and nothing else on the machine
-or the LAN. One shared guest-network module implements it for both providers; its owner is the
+Rule: guests reach the internet (GitHub, package registries, DNS) through the host's NAT, send only
+from their own address, and reach none of the denied ranges: the host's and the LAN's private and
+link-local addresses, multicast, broadcast and all IPv6. Not covered, listed as residuals in
+host-network-module.md (Limitations, Scope of the guarantee): LAN or routed targets on public
+addresses, a hairpin through the router to the owner's public address, and host addresses outside
+every fixed range (a host with a public IPv4 address is not certified). Clones on one shared switch
+can still poison each other's ARP (Open points, 1 there). One shared guest-network module implements it for both providers; its owner is the
 ledger item **P10.0 guest network module** (consumed by P10 and P11; the coordinator adds it).
 
 Enforcement shape every candidate must satisfy:
 
-- **No External switch and no Default Switch** for guests. Guests attach only to the switches the
-  module creates.
+- **No External switch and no Default Switch** for guests. Guests attach only to the internal
+  switches P19 creates for them (the per-profile guest switches and the build switches; under the
+  per-guest candidate, the switch the network module creates for each guest).
 - Per VM adapter: DHCP guard **on**, router guard **on**, MAC address spoofing **off**.
-- Extended port ACLs on every guest adapter deny traffic to: the host's vEthernet addresses
-  (except the explicit DHCP and DNS endpoints the design uses), RFC 1918 ranges, 169.254.0.0/16,
-  100.64.0.0/10, multicast, fe80::/10, fc00::/7, the LAN's IPv6 prefix, and the clone subnet except
-  its gateway. Internet egress is allowed.
+- Extended port ACLs on every guest adapter deny traffic to and from (both directions) the host's
+  addresses, RFC 1918 ranges, 169.254.0.0/16, 100.64.0.0/10, multicast, 255.255.255.255,
+  0.0.0.0/8, 127.0.0.0/8, 240.0.0.0/4, all IPv6 (guests have none), the LAN's IPv6 prefix and the
+  guest subnet, its gateway included. Outbound, a source pin lets out only IPv4 packets whose
+  source is the guest's own address. No Allow names the host or the gateway: routing needs none,
+  and guests get static addressing and resolvers from their seed or answer file, so no DHCP or DNS
+  service runs for them. The only other Allow is an exception the network module declares: DNS
+  (UDP and TCP 53) to one private resolver the owner chose. Internet egress is allowed. Rules,
+  weights and the declaration: [host-network-module.md](host-network-module.md).
 - Enhanced session mode and the Guest Service Interface integration service are **off** for guest VMs.
 - Host firewall / WFP rules (created by the installer through the existing helper, P19) block the
   host's listening ports (at least 135, 139, 445, 3389, 5985) on the guest-facing vEthernet adapters.
@@ -151,9 +162,12 @@ Candidate mechanism: one Hyper-V internal switch per profile (`aap-guests-win`,
 egress. An internal switch gives the host a vEthernet adapter on that subnet, so the host **is**
 reachable at layer 3 unless the ACLs and firewall rules above block it; that is why those rules are
 mandatory, not optional. Alternative candidate: one **internal** switch per guest (its own subnet
-and NAT, same ACLs and firewall rules). A Hyper-V private switch has no host adapter, so it cannot
-carry host NAT egress or host SSH and is not viable for these designs. P02.1 picks one with evidence, and must also show the design holds with WSL in mirrored
-networking mode.
+and NAT, same ACLs and firewall rules). Either way the rule is one: guests and build VMs attach
+only to internal switches, never to a private switch, which has no host adapter and so no NAT
+egress (the guest channels use hvsocket, not the network). Build VMs (P06, P07) never share a
+switch: under the per-profile candidate they get their own, `aap-build-win` and `aap-build-linux`.
+P02.1 picks per profile or per guest with evidence, and must also show the design holds with WSL
+in mirrored networking mode.
 
 ## What is never supplied to a guest (DECIDED)
 
@@ -205,7 +219,9 @@ Negative tests (each must fail closed, and the provider must journal the stated 
 | Hostile guest replies: 100 MB output, 10 000-level nested object, crafted CLIXML (type-confused or oversized objects), remote host-UI calls (prompts, credential requests), floods on the error/verbose/warning/progress streams, extra fields, control bytes, wrong echo, never answers, closes mid-reply | supervisor stays responsive; the call child is capped and killed by its job object; each call ends within its timeout; wrong shape or content gives `hostile_guest` and immediate `deleting`; silence gives `timeout`; no host file written from guest data |
 | Guest Administrator replaces `agent.ps1` or the remoting endpoint configuration | replies are still bounded and validated; anything off-contract is `hostile_guest` |
 | Guest Administrator / root connects over IPv4 and IPv6 to every host vEthernet address (ports 135, 139, 445, 3389, 5985 and a full TCP sweep), the WSL distro (NAT and mirrored mode), `192.168.1.1` and the LAN, the other profile's subnet, another guest on the same switch, `fd00:aaaa::1`, or the hvsocket service of another VM | all fail while step 7 still passes |
-| ARP spoofing and a rogue DHCP server or router advertisement from one clone against another clone and the host | blocked by DHCP guard, router guard and MAC spoofing off; no other clone or the host changes its address, gateway or resolver |
+| A rogue DHCP server or router advertisement from one clone against another clone and the host | blocked by DHCP guard and router guard; no other clone or the host changes its address, gateway or resolver |
+| ARP spoofing from one clone: poison ARP for the switch's gateway, for a neighbour, and the host's entry for that neighbour (the guards do not filter ARP) | none of the neighbour's own packets reach the poisoner (its inbound denies drop their private source), nothing the poisoner addresses to the neighbour arrives, and nothing it sends with the neighbour's address leaves (source pin); what the internet sends the neighbour can reach the poisoner while they share a switch and the host's entry can be poisoned, so a build VM never shares one and clone-to-clone isolation is the P02.1 decision in host-network-module.md (Open points, 1: permanent host neighbour entries or a switch per guest; private VLAN alone is expected to fail this case) |
+| A guest sends with a forged source address (a LAN device's, the host's LAN address, another guest subnet's, a neighbour's, `0.0.0.0`) to a public destination | dropped by the source pin; a capture on the host's LAN card sees none of it |
 | Guest tries to open a session to the host over hvsocket or PowerShell Direct | impossible or refused |
 | A runner credential copied out of a running job, then used to request a second job | GitHub refuses a second job for that runner; no job is assigned to the copy |
 | Supervisor killed between each command | restart reconciles from the journal; no second registration; no orphan VM |

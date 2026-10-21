@@ -1,0 +1,6 @@
+{
+  "expect": "$[0]: does not match pattern",
+  "instance": [
+    "deny missing\u0007"
+  ]
+}

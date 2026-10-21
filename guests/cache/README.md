@@ -194,6 +194,9 @@ hosted Ubuntu job is a coordinator change (INTEGRATION.md).
   can match it exactly instead of excluding compile clients.
 - Whether zccache's daemon spawn inherits a client's stdio handles (a wrapped call that restarts the daemon must not
   hang the build), and whether zccache passes the client's environment to the compiler.
+- That zccache never exits 0 without having written every output, including a hit delivered while concurrent misses
+  replace the same entry: the shim trusts exit 0 and cannot see a missing `-o` file (the test double once did exactly
+  that, P13.1).
 - Whether a byte budget below upstream's 40 GiB clamp is honoured, and the real non-artifact growth per root (the 3/4
   split is a starting value).
 - Journal and log growth on a long-lived shared root, and `zccache clear`'s effect on them.

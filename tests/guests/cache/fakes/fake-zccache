@@ -40,8 +40,12 @@ if [[ -n "${out}" && -f "${store}" ]]; then
     exit 5
   fi
   echo hit >> "${root}/fake-journal.log"
-  rm -f -- "${out}"
-  if [[ "${ZCCACHE_MODE:-}" == COPY ]]; then cp -- "${store}" "${out}"; else ln -- "${store}" "${out}"; fi
+  # Like a real cache: a delivery that fails is a failed call, and the output appears whole or not at all. The entry is
+  # read with one open (cat): concurrent misses rename new entries over it, and GNU cp refuses a source renamed between
+  # its stat and its open ("replaced while being copied"), exiting 1 with no output.
+  tmp="${out}.zc$$"
+  if [[ "${ZCCACHE_MODE:-}" == COPY ]]; then cat -- "${store}" > "${tmp}"; else ln -f -- "${store}" "${tmp}"; fi &&
+    mv -f -- "${tmp}" "${out}" || { rm -f -- "${tmp}"; echo "fake-zccache: cannot deliver ${out}" >&2; exit 6; }
   exit 0
 fi
 echo miss >> "${root}/fake-journal.log"
