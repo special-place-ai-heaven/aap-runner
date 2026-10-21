@@ -45,9 +45,10 @@ obj | (.meta | obj) as $m | (.runs | obj | map_values(obj)) as $r | (.errors | o
     poisoned_marker_rejected: rejected($r.poisoned_marker; $u),
     zccache_env_clean: (($r | length) >= 1 and all($r[], $e[]; (.zccache_env | type) == "array"
       and all(.zccache_env[]; IN(harness_vars[])))),
+    # A daemon runs the private copy or the copy zccache deployed into one of the harness's roots.
     daemons_pinned: (($t.zccache_sha256 | sha) and ($t["zccache-fp_sha256"] | sha)
       and ($m.daemons | type) == "array" and ($m.daemons | length) >= 1
-      and all($m.daemons[]; type == "object" and .in_private_bin == true and (.sha256 | sha)
+      and all($m.daemons[]; type == "object" and (.in_private_bin == true or .in_cache_root == true) and (.sha256 | sha)
         and (.sha256 == $t.zccache_sha256 or .sha256 == $t["zccache-fp_sha256"]))),
     no_crash_dumps: (($m.crash_dumps | type) == "object" and ($m.crash_dumps | length) >= 1
       and all($m.crash_dumps[]; num and . == 0)),

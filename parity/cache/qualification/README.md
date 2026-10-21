@@ -2,9 +2,11 @@
 
 **State: static qualification and harness only. No row is qualified. Every row is `direct`.**
 This host runs the live production pool, and the authorized lab (gate D2) does not exist yet. So
-nothing here ran zccache or a compiler under zccache. The runtime matrix is a tracked follow-up
-that P13 and P22 run in the lab with the harness below. Until a row qualifies, its compiler and
-invocation build directly with no wrapper. Full parity must hold that way (contract rule 3).
+no qualification run exists. The runtime matrix is a tracked follow-up that P13 and P22 run in the
+lab with the harness below. Until a row qualifies, its compiler and invocation build directly with
+no wrapper. Full parity must hold that way (contract rule 3). P04.1 ran the Linux harness against
+the pinned binary in WSL to find harness defects ("Smoke runs outside the lab"). Those runs are not
+evidence for any row.
 
 | File | Purpose |
 |---|---|
@@ -18,7 +20,8 @@ invocation build directly with no wrapper. Full parity must hold that way (contr
 Tests live in `tests/parity/cache/qualification/`. Pester covers the Windows harness and
 `record.jq`, and Python covers the matrices. `harness_test.sh` covers the Linux harness and needs
 real Linux with bash, coreutils and jq. Hosted `ubuntu-latest` is enough, and the test needs no
-zccache.
+zccache. `mutate.py` disables each P04.1 harness rule in a copy and requires the test written for
+it to fail.
 
 ## Verdicts
 
@@ -51,8 +54,8 @@ all three conditions for every `qualified` row. The matrices already carry a uni
 `evidence_ref` per row. Those files do not exist yet.
 
 A pair absent from a matrix is `direct`. That covers nvcc (FEATURE-MATRIX line 18 `no`), emcc,
-MinGW `gcc 15.2.0` on the Windows image, the clang bundled with Visual Studio (the P01 inventory
-does not record its version) and `-g` builds with non-default Linux compilers (see "Rows").
+MinGW `gcc 15.2.0` on the Windows image and the clang bundled with Visual Studio (the P01 inventory
+does not record its version).
 
 ## Rows
 
@@ -61,10 +64,8 @@ Compiler versions come from the P01 inventories, and a test ties them to those f
 | Platform | Compiler | Versions | Invocations | Rows |
 |---|---|---|---|---:|
 | Linux | rustc | 1.99.0 | rustc-wrapper, link, path-with-spaces | 3 |
-| Linux | clang, clang++ | 16.0.6, 17.0.6, 18.1.3 | compile-object, compile-pch, response-file, depfile, path-with-spaces | 30 |
-| Linux | clang, clang++ | 18.1.3 | debug-pdb (`-g`) | 2 |
-| Linux | gcc, g++ | 12.4.0, 13.3.0, 14.2.0 | compile-object, compile-pch, response-file, depfile | 24 |
-| Linux | gcc, g++ | 13.3.0 | debug-pdb (`-g`) | 2 |
+| Linux | clang, clang++ | 16.0.6, 17.0.6, 18.1.3 | compile-object, compile-pch, response-file, depfile, path-with-spaces, debug-pdb (`-g`) | 36 |
+| Linux | gcc, g++ | 12.4.0, 13.3.0, 14.2.0 | compile-object, compile-pch, response-file, depfile, debug-pdb (`-g`) | 30 |
 | Windows | rustc | 1.99.0 | rustc-wrapper, link, path-with-spaces, debug-pdb | 4 |
 | Windows | clang, clang++ | 20.1.8 | as Linux clang without debug-pdb | 10 |
 | Windows | clang-cl | 20.1.8 | compile-object, response-file, debug-pdb, path-with-spaces | 4 |
@@ -73,17 +74,17 @@ Compiler versions come from the P01 inventories, and a test ties them to those f
 
 | Reason class | Rows |
 |---|---:|
-| Unqualified, pending lab | 77 |
+| Unqualified, pending lab | 85 |
 | Direct per upstream binary-crate pass-through (rustc link, debug-pdb) | 3 |
 | Direct-only, MSVC partial (cl, link) | 5 |
-| Total (Linux 61, Windows 24) | 85 |
+| Total (Linux 69, Windows 24) | 93 |
 
 The contract has no separate `-g` class, so on Linux `debug-pdb` stands for DWARF `-g` output.
-Those rows target the classic `DW_AT_comp_dir` cache hazard. The schema caps a matrix at 64 rows,
-so `-g` rows exist only for the image defaults. Clang 18 is the default per the P01 baseline
-(B3 `clang.default_version`). GCC 13 is the default because the image's `gcc` package
-`4:13.2.0-7ubuntu1` selects gcc-13. Other versions build `-g` directly until a contract revision
-(P02) raises `maxItems`.
+Those rows target the classic `DW_AT_comp_dir` cache hazard. P04 shipped them only for the image
+defaults (clang 18, gcc 13) under the 64-row cap of contract revision 1. Contract revision 2 raised
+the cap to 256, and P04.1 added them for every compiler version in matrix revision 2: clang and
+clang++ 16.0.6 and 17.0.6, gcc and g++ 12.4.0 and 14.2.0. Each new row is `unqualified - pending
+lab` like the rest. No WSL distro here carries those compiler versions, and WSL is not the lab.
 
 The inventory gives the cl and link version only as the Visual Studio and VC.Tools component
 versions. The harness records the `cl` banner. The lab replaces the version string with the exact
@@ -104,6 +105,9 @@ distro. Use the archive verified per [artifacts.md](artifacts.md). One harness c
 
 Before any build, the harness does the following:
 
+- It runs every build and every zccache call with an empty stdin (`/dev/null` on Linux). The
+  zccache client reads its stdin. A client that inherited a shell's open stdin waited on it forever
+  before compiling (seen in WSL, P04.1).
 - It removes every `ZCCACHE_*` variable inherited from the lab shell, including `ZCCACHE_ENDPOINT`,
   `ZCCACHE_PATH_REMAP` and `ZCCACHE_SESSION_ID`, and records the removed names. It sets only
   `ZCCACHE_MODE=COPY`, plus `ZCCACHE_CACHE_DIR` and `ZCCACHE_SESSION_ID` for each wrapped run. Every
@@ -125,10 +129,19 @@ Before any build, the harness does the following:
   never deletes a cache root.
 - It runs every build with the working directory at the fixture tree.
 
+zccache keeps its state one level below the root that `ZCCACHE_CACHE_DIR` names, in `v1.15.6/`
+(`resolve.rs` `versioned_subdir` at the pin; observed in WSL). That folder holds the artifact
+store, `crashes/`, `crash-spool/` and a copy of the `zccache` binary that zccache deploys as
+`v1.15.6/zccache-daemon` and runs as the root's daemon (`cli/runtime/deploy.rs` 106-125). The
+README's root layout (README 433-436) leaves the version folder out.
+
 After the builds, the harness lists every visible `zccache*` process with its executable path and
-SHA-256. It counts the files under each root's `crashes/` folder, because upstream writes crash
-dumps there (README 433-434). Then it stops every process running from its private copy, also
-after a failure. The dumps themselves never leave the VM. They can hold process memory and
+SHA-256. It marks whether each runs from the private copy or from a deployed daemon copy at exactly
+`<work>/cache-<case>/v1.15.6/zccache-daemon`. It counts every file in a `crashes/` folder below each
+root (README 433-434) and every non-empty file in a `crash-spool/` folder. Each live zccache process
+keeps an empty `pending-*.rpcrash` there, which a crash fills (`crash.rs` 24-34; seen on Linux, to
+confirm on Windows). Then it stops every process running from the private copy or a deployed copy,
+also after a failure. The dumps themselves never leave the VM. They can hold process memory and
 environment.
 
 1. **Uncached.** Build the fixture with the compiler directly, with no wrapper. Record the exit code
@@ -147,14 +160,16 @@ environment.
 4. **Poisoned cache, three variants.** Upstream does not claim to prove cache integrity
    (README 1123), so corruption handling needs its own evidence. Each variant gets its own root.
    The harness primes the root with one build through zccache and corrupts regular files under
-   `<root>/artifacts/` (README 433). It never follows a link or junction. Then it builds again in
-   a journaled session.
+   `<root>/v1.15.6/artifacts/`. It never follows a link or junction. Then it stops the daemons and
+   builds again in a journaled session, so a fresh daemon reads the store from disk. In WSL the
+   daemon alive since priming served a hit with correct bytes after every store file was replaced,
+   which says nothing about the store.
    - `artifact` flips one byte in the middle of each store file whose SHA-256 equals an uncached
      artifact, in place. The file keeps its length and modification time, and nothing else in the
      store changes, so this variant asks whether zccache checks the content it serves. Upstream
      delivers hits as hardlinks or reflinks of the cache file (README 548-560), so the store should
-     hold artifact bytes verbatim. That is **to confirm in lab**. If no stored file matches, the
-     variant corrupts nothing and fails.
+     hold artifact bytes verbatim. In WSL it did, as `artifacts/.staged-v2/<key>/<hash>/output-0`.
+     The lab confirms it per row. If no stored file matches, the variant corrupts nothing and fails.
    - `same_size` flips one byte in the middle of every file under `artifacts/` in the same way.
      Those files can include per-entry metadata, which a format check might reject without any
      content check. So a pass here does not by itself show that content is verified. What
@@ -241,7 +256,7 @@ holds these fields:
 - `env`: the variables the harness set and the `ZCCACHE_*` names it removed.
 - `runs` and `error_runs`: each with exit code, artifact hashes, argv, cache root name,
   `ZCCACHE_*` names in effect and journal counts.
-- `daemons`, `daemons_stopped` and `crash_dumps`.
+- `daemons` (each with `in_private_bin` and `in_cache_root`), `daemons_stopped` and `crash_dumps`.
 - `checks`, `harness_pass` and `lab_gates`.
 - `row`: always `direct`.
 
@@ -257,8 +272,8 @@ compare equal.
 | `errors_stay_errors` | Error-case builds keep the uncached non-zero exit and leave no primary artifact |
 | `poisoned_artifact_rejected`, `poisoned_same_size_rejected`, `poisoned_marker_rejected` | Step 4 holds for each variant |
 | `zccache_env_clean` | Every run records its `ZCCACHE_*` names as a list, and only the harness's own reached any build |
-| `daemons_pinned` | At least one `zccache*` process was seen, and every one ran from the private copy with a pinned hash |
-| `no_crash_dumps` | Crash dumps were counted for at least one cache root, and every count is zero |
+| `daemons_pinned` | At least one `zccache*` process was seen, and every one ran from the private copy or a deployed daemon copy in one of the harness's roots, with a pinned hash |
+| `no_crash_dumps` | Crash files were counted for at least one cache root, and every count is zero |
 | `tool_versions_recorded` | `tool_versions` holds every field above as printable text |
 | `compiler_version_observed` (non-MSVC) | The recorded banner names the matrix version |
 | `relocated_matches_direct` (debug-pdb) | The relocated build equals its direct build |
@@ -329,21 +344,44 @@ The reviewer commits each record at its `evidence_ref`, whether it passed or fai
 changes only under the "Verdicts" conditions. Then `matrix_revision` is bumped and
 `python -I -B parity/contracts/validate.py cache-qualification <matrix>` must pass.
 
+## Smoke runs outside the lab (P04.1, not evidence)
+
+On 2026-10-21 P04.1 ran `qualify.sh` in WSL Ubuntu-24.04 against the pinned Linux archive, with
+its hash checked. A driver outside the repository skipped the clean-lab gate. The compiler was
+`gcc-13` 13.4.0, which is not a matrix version. The runs tested only the harness, and they found
+five defects, fixed here:
+
+- the daemons ran from the deployed copy in each root, so `daemons_pinned` always failed and no
+  daemon was stopped;
+- the store and the crash folders sit in `v1.15.6/`, so the poison step corrupted nothing and the
+  crash-dump count was always zero;
+- the poisoned build was served by the daemon still alive from priming;
+- a compiler argv that starts with `-c`, `-g` or `-x` broke the record's `jq` call, because jq
+  still parses options after `--args`;
+- an open stdin hung the zccache client before it compiled.
+
+After the fixes, `compile-object` passed every step 1-6 check. The cold build missed and the warm
+build hit. All three poison variants were rejected as a `miss`, and the error case stayed an
+error. `debug-pdb` (`-g`) did not pass. The cold and warm objects differed from the direct build,
+because zccache adds `-H` to the GCC compile and GCC records its switches in `DW_AT_producer`
+(`-grecord-gcc-switches` is on by default). The relocated build missed, so no stale
+`DW_AT_comp_dir` was served. A GCC `-g` row therefore needs the documented semantic comparison
+("Equivalence") or stays `direct`. The lab confirms this for each matrix version.
+
 ## Deferred to P13 and P22
 
-- Every runtime result: steps 1-10 for all 85 rows, plus the exact cl and link toolset version.
+- Every runtime result: steps 1-10 for all 93 rows, plus the exact cl and link toolset version.
 - Several items **to confirm in lab**:
   - the `session-end --json` layout;
-  - the artifact store layout and the journal outcome of a rejected entry, for the poison step;
+  - the artifact store layout and the journal outcome of a rejected entry, for the poison step
+    (in WSL a rejected entry showed as a `miss` once the daemon had restarted);
   - whether the store holds artifact bytes verbatim and what else `artifacts/` holds, for the
     `artifact` and `same_size` variants;
+  - the `crash-spool/` and deployed-daemon layout on Windows;
   - the daemon kill method;
   - pass-through for unsupported invocations other than rustc binary crates;
   - the clang-cl `/Zi /Fd` PDB behaviour;
   - journal and log growth;
   - whether a byte budget below the 40 GiB clamp is honoured.
-- Running `tests/parity/cache/qualification/harness_test.sh` and shellcheck on real Linux. CI on
-  hosted `ubuntu-latest` is a coordinator follow-up.
-- `-g` rows for the non-default Linux compilers, which need a contract revision raising `maxItems`.
 - The hardlink and reflink modes, and any sharing across jobs or worktrees
   ([retention.md](retention.md)).

@@ -8,7 +8,7 @@
     "binary_sha256": "f97ae874042ab5c80fc2e35342e406972437f1fd45ec81372be33c0f5cbb18cc"
   },
   "platform": "linux-x86_64",
-  "matrix_revision": 1,
+  "matrix_revision": 2,
   "rows": [
     {
       "compiler": "rustc",
@@ -156,6 +156,22 @@
     },
     {
       "compiler": "clang",
+      "compiler_version": "16.0.6",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-16.0.6-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "clang",
+      "compiler_version": "17.0.6",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clang-17.0.6-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "clang",
       "compiler_version": "18.1.3",
       "invocation": "debug-pdb",
       "mode": "direct",
@@ -284,6 +300,22 @@
     },
     {
       "compiler": "clang++",
+      "compiler_version": "16.0.6",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-16.0.6-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "clang++",
+      "compiler_version": "17.0.6",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/clangxx-17.0.6-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "clang++",
       "compiler_version": "18.1.3",
       "invocation": "debug-pdb",
       "mode": "direct",
@@ -388,6 +420,22 @@
     },
     {
       "compiler": "gcc",
+      "compiler_version": "12.4.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-12.4.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "gcc",
+      "compiler_version": "14.2.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gcc-14.2.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "gcc",
       "compiler_version": "13.3.0",
       "invocation": "debug-pdb",
       "mode": "direct",
@@ -489,6 +537,22 @@
       "mode": "direct",
       "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-14.2.0-depfile.json",
       "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "12.4.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-12.4.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required; debug-pdb = -g DWARF output; relocated build checks comp_dir"
+    },
+    {
+      "compiler": "g++",
+      "compiler_version": "14.2.0",
+      "invocation": "debug-pdb",
+      "mode": "direct",
+      "evidence_ref": "parity/cache/qualification/evidence/linux-x86_64/gxx-14.2.0-debug-pdb.json",
+      "reason": "unqualified - pending lab (P13/P22); FEATURE-MATRIX L13 yes; GCC not in README tool list, own evidence required; debug-pdb = -g DWARF output; relocated build checks comp_dir"
     },
     {
       "compiler": "g++",

@@ -22,8 +22,8 @@ expect_rc() { # WANT NAME CMD...
   if [[ ${rc} -eq ${want} ]]; then ok "${name}"; else no "${name} (rc ${rc}, want ${want})"; fi
 }
 tmp=$(mktemp -d)
-bg=""
-trap '[[ -n "${bg}" ]] && kill "${bg}" 2> /dev/null; chmod -R u+w "${tmp}" 2> /dev/null; rm -rf "${tmp}"' EXIT
+bg=()
+trap '((${#bg[@]})) && kill "${bg[@]}" 2> /dev/null; chmod -R u+w "${tmp}" 2> /dev/null; rm -rf "${tmp}"' EXIT
 clean() { env -i PATH="${PATH}" HOME="${HOME:-/}" "$@"; }  # an environment without CI credentials
 
 # ---- lab gate ----
@@ -118,6 +118,8 @@ printf '#!/bin/sh\nenv > "$1"\n' > "${tmp}/envdump"; chmod +x "${tmp}/envdump"
 e=$(cat "${tmp}/env.txt")
 [[ "${e}" != *hunter7* && "${e}" != *ZCCACHE_ENDPOINT* && "${e}" == *"ZCCACHE_MODE=COPY"* && "${e}" == *"PWD=${tmp}"* && "${e}" == *"PATH=${PATH}"* &&
   "${e}" == *"TMPDIR=${tmp}"* ]] && ok "builds run under env -i with only the allowlist" || no "builds run under env -i with only the allowlist: ${e}"
+out=$(echo from-the-shell | zq_run readlink /proc/self/fd/0)
+[[ "${out}" == /dev/null ]] && ok "builds and zccache calls read /dev/null, not the shell's stdin" || no "builds and zccache calls read /dev/null: ${out}"
 out=$(unset ZCCACHE_CACHE_DIR ZCCACHE_SESSION_ID; export ZCCACHE_MODE=COPY ZCCACHE_ENDPOINT=pipe; zq_kept_zccache_names)
 [[ "${out}" == "ZCCACHE_MODE " ]] && ok "records only the ZCCACHE_ names a build sees" || no "records only the ZCCACHE_ names a build sees: ${out}"
 store="${tmp}/store"
@@ -141,24 +143,59 @@ n=$(zq_corrupt "${tmp}/store2" artifact "x $(printf abc | sha256sum | cut -d' ' 
 mkdir -p "${tmp}/w/cache-ok/crashes" "${tmp}/w/cache-error"; : > "${tmp}/w/cache-ok/crashes/dump.bin"
 [[ "$(zq_crash_dumps "${tmp}/w")" == '{"cache-error":0,"cache-ok":1}' || "$(zq_crash_dumps "${tmp}/w")" == '{"cache-ok":1,"cache-error":0}' ]] &&
   ok "counts crash dumps per cache root" || no "counts crash dumps per cache root: $(zq_crash_dumps "${tmp}/w")"
+mkdir -p "${tmp}/w/cache-ok/v1.15.6/crashes" "${tmp}/w/cache-ok/v1.15.6/artifacts" "${tmp}/w/cache-error/v1.15.6/crash-spool"
+: > "${tmp}/w/cache-ok/v1.15.6/crashes/d.dmp"; : > "${tmp}/w/cache-ok/v1.15.6/artifacts/x"
+: > "${tmp}/w/cache-error/v1.15.6/crash-spool/pending-1-2-a.rpcrash"; printf 'r' > "${tmp}/w/cache-error/v1.15.6/crash-spool/pending-3-4-b.rpcrash"
+[[ "$(zq_crash_dumps "${tmp}/w" | jq -c -S .)" == '{"cache-error":1,"cache-ok":2}' ]] &&
+  ok "counts crash dumps and filled crash-spool records in zccache's v1.15.6 state folder, not empty pending ones" ||
+  no "counts crash dumps and filled crash-spool records: $(zq_crash_dumps "${tmp}/w")"
+out=$(export ZQ_WORK=/w; zq_phase() { echo "phase $4" >> "${tmp}/poison-steps"; echo '{"exit":0}'; }
+  zq_corrupt() { echo "corrupt $1" >> "${tmp}/poison-steps"; echo 1; }; zq_stop_daemons() { echo "stop $1" >> "${tmp}/poison-steps"; echo true; }
+  zq_poison /s /w/cache-poison-artifact artifact h)
+[[ "$(cat "${tmp}/poison-steps")" == $'phase ok-prime-artifact\ncorrupt /w/cache-poison-artifact/v1.15.6/artifacts\nstop /w\nphase ok-poisoned-artifact' &&
+  "$(jq -c . <<<"${out}")" == '{"exit":0,"prime_exit":0,"corrupted_files":1}' ]] &&
+  ok "poisons zccache's store in the v1.15.6 state folder, then stops the daemons before the poisoned build" ||
+  no "poisons zccache's store in the v1.15.6 state folder: $(cat "${tmp}/poison-steps") ${out}"
+mkdir -p "${tmp}/run/src" "${tmp}/run/logs"; printf '#!/bin/sh\n: > out/hello.o\n' > "${tmp}/run/cc"; chmod +x "${tmp}/run/cc"
+out=$(export ZQ_COMPILER=gcc ZQ_INVOCATION=debug-pdb ZQ_CC="${tmp}/run/cc" ZQ_LOGS="${tmp}/run/logs" ZQ_RSP="${tmp}/run/a.rsp"; zq_phase "${tmp}/run/src" ok "" direct)
+[[ "$(jq -c '[.exit, .argv, .primary_present, .cache_dir, .journal]' <<<"${out}" 2> /dev/null)" == '[0,["-g","-c","hello.c","-o","out/hello.o"],true,null,null]' ]] &&
+  ok "a run entry records an argv that starts with options" || no "a run entry records an argv that starts with options: ${out}"
 [[ "$(zq_os | jq -r '.kernel_release | length > 0')" == true ]] && ok "records the kernel release" || no "records the kernel release"
-mkdir -p "${tmp}/bin"; cp "$(command -v sleep)" "${tmp}/bin/zccache-sleep"
-"${tmp}/bin/zccache-sleep" 60 & bg=$!
+for c in "/w/bin/zccache|bin" "/w/bin/sub/x|bin" "/w/cache-ok/v1.15.6/zccache-daemon|root" "/w/cache-poison-marker/v1.15.6/zccache-daemon|root" \
+  "/w/cache-ok/v1.15.6/zccache|" "/w/cache-ok/v1.15.5/zccache-daemon|" "/w/cache-ok/x/v1.15.6/zccache-daemon|" "/w/src/v1.15.6/zccache-daemon|" \
+  "/w/cache-ok/zccache-daemon|" "/w/cache-ok/v1.15.6/zccache-daemon.old|" "/wx/bin/zccache|" "/other/bin/zccache|"; do
+  [[ "$(zq_owner /w "${c%%|*}")" == "${c#*|}" ]] && ok "owner of ${c%%|*} is '${c#*|}'" || no "owner of ${c%%|*}: $(zq_owner /w "${c%%|*}")"
+done
+dw="${tmp}/dw"; mkdir -p "${dw}/bin" "${dw}/cache-ok/v1.15.6" "${dw}/cache-ok/v9.9.9"
+# Copies of bash, not sleep: a multi-call coreutils (uutils) refuses to run under another file name.
+for x in bin/zccache-sleep cache-ok/v1.15.6/zccache-daemon cache-ok/v9.9.9/zccache-daemon; do cp "$(command -v bash)" "${dw}/${x}"; done
+loop='while :; do sleep 1; done'
+"${dw}/bin/zccache-sleep" -c "${loop}" & bg+=($!)
+"${dw}/cache-ok/v1.15.6/zccache-daemon" -c "${loop}" & bg+=($!)
+"${dw}/cache-ok/v9.9.9/zccache-daemon" -c "${loop}" & decoy=$!; bg+=("${decoy}")
 sleep 0.3
-d=$(zq_daemons "${tmp}/bin")
-[[ "$(jq -r --argjson p "${bg}" --arg s "$(sha256sum "${tmp}/bin/zccache-sleep" | cut -d' ' -f1)" \
-  'map(select(.pid == $p)) | length == 1 and (.[0].in_private_bin == true) and (.[0].sha256 == $s)' <<<"${d}")" == true ]] &&
+d=$(zq_daemons "${dw}")
+s=$(sha256sum "${dw}/bin/zccache-sleep" | cut -d' ' -f1)
+[[ "$(jq -r --argjson p "${bg[0]}" --arg s "${s}" \
+  'map(select(.pid == $p)) | length == 1 and (.[0].in_private_bin == true) and (.[0].in_cache_root == false) and (.[0].sha256 == $s)' <<<"${d}")" == true ]] &&
   ok "lists a zccache process from the private copy with its hash" || no "lists a zccache process from the private copy: ${d}"
-stopped=$(zq_stop_daemons "${tmp}/bin")
-[[ "${stopped}" == true ]] && { wait "${bg}" 2> /dev/null; bg=""; }  # reap it; a zombie still answers kill -0
-[[ "${stopped}" == true && -z "$(zq_own_pids "${tmp}/bin")" ]] && ok "stops what runs from the private copy" || no "stops what runs from the private copy"
+[[ "$(jq -r --argjson p "${bg[1]}" --arg s "${s}" \
+  'map(select(.pid == $p)) | length == 1 and (.[0].in_private_bin == false) and (.[0].in_cache_root == true) and (.[0].sha256 == $s)' <<<"${d}")" == true ]] &&
+  ok "lists the daemon zccache deployed into a cache root with its hash" || no "lists the deployed daemon: ${d}"
+[[ "$(jq -r --argjson p "${decoy}" 'map(select(.pid == $p)) | length == 1 and (.[0].in_private_bin == false) and (.[0].in_cache_root == false)' <<<"${d}")" == true ]] &&
+  ok "a zccache process elsewhere is listed but not owned" || no "a zccache process elsewhere is listed but not owned: ${d}"
+stopped=$(zq_stop_daemons "${dw}")
+gone() { [[ "$(cut -d' ' -f3 "/proc/$1/stat" 2> /dev/null || echo X)" == [ZX] ]]; }  # exited: unreaped (a zombie) or no entry
+[[ "${stopped}" == true ]] && gone "${bg[0]}" && gone "${bg[1]}" && ok "stops the private copy and the deployed daemon" ||
+  no "stops the private copy and the deployed daemon"
+gone "${decoy}" && no "leaves a process it does not own running" || ok "leaves a process it does not own running"
 [[ "$(zq_stop_daemons "${tmp}/nothing-runs-here")" == true ]] && ok "nothing to stop is a success" || no "nothing to stop is a success"
-for b in "" bin rel/bin /; do
+for b in "" work rel/work /; do
   # kill is shadowed, so even a regressed guard could not signal anything here.
   out=$(kill() { echo "would kill $*"; }; zq_stop_daemons "${b}" 2> /dev/null; echo "rc=$?")
-  [[ "${out}" == $'false\nrc=1' ]] && ok "stop refuses bin path '${b}'" || no "stop refuses bin path '${b}': ${out}"
-  expect_rc 1 "pid lookup refuses bin path '${b}'" zq_own_pids "${b}"
-  [[ "$(zq_daemons "${b}" 2> /dev/null)" == '[]' ]] && ok "bin path '${b}' lists nothing" || no "bin path '${b}' lists nothing"
+  [[ "${out}" == $'false\nrc=1' ]] && ok "stop refuses work path '${b}'" || no "stop refuses work path '${b}': ${out}"
+  expect_rc 1 "pid lookup refuses work path '${b}'" zq_own_pids "${b}"
+  [[ "$(zq_daemons "${b}" 2> /dev/null)" == '[]' ]] && ok "work path '${b}' lists nothing" || no "work path '${b}' lists nothing"
 done
 
 # ---- verdict (record.jq): the harness never emits qualified ----
@@ -204,6 +241,8 @@ for c in 'warm_has_hits#.runs.warm.journal.hit = 0' 'cold_has_no_hits#.runs.cold
   'zccache_env_clean#.runs.warm.zccache_env = "ZCCACHE_MODE"' \
   'daemons_pinned#.meta.daemons = []' 'daemons_pinned#.meta.daemons[0].in_private_bin = false' 'daemons_pinned#.meta.daemons[0].sha256 = "0"' \
   'daemons_pinned#.meta.daemons[0].sha256 = null | .meta.tool_versions.zccache_sha256 = null' \
+  'daemons_pinned#.meta.daemons[0] |= (.in_private_bin = false | .in_cache_root = false)' \
+  'daemons_pinned#.meta.daemons[0] |= (.in_private_bin = false | .in_cache_root = "true")' \
   'no_crash_dumps#.meta.crash_dumps["cache-ok"] = 1' 'no_crash_dumps#.meta.crash_dumps = null' \
   'no_crash_dumps#.meta.crash_dumps["cache-ok"] = null' 'no_crash_dumps#.meta.crash_dumps = {}' \
   'tool_versions_recorded#del(.meta.tool_versions)' 'tool_versions_recorded#del(.meta.tool_versions.jq)' \
@@ -222,6 +261,8 @@ for bad in '{}' '[]' '{"meta":5,"runs":"x","errors":[1]}'; do
   [[ "$(verdict "${bad}" | jq -r '"\(.harness_pass)|\([.checks[] | select(. == true)] | length)"')" == "false|0" ]] &&
     ok "input ${bad} fails every check without a jq error" || no "input ${bad} fails every check without a jq error"
 done
+r=$(verdict "$(jq -c '.meta.daemons[0] |= (.in_private_bin = false | .in_cache_root = true | .exe = "/w/cache-ok/v1.15.6/zccache-daemon")' <<<"${input}")")
+[[ "$(jq -r '"\(.harness_pass)|\(.checks.daemons_pinned)"' <<<"${r}")" == "true|true" ]] && ok "a pinned daemon deployed into a cache root passes" || no "a pinned daemon deployed into a cache root passes"
 dbg=$(jq -c '.meta.invocation = "debug-pdb" | .runs.relocated_direct = (.runs.uncached | .artifacts = {"hello.o": "b"})
   | .runs.relocated = (.runs.cold | .artifacts = {"hello.o": "b"})' <<<"${input}")
 [[ "$(verdict "${dbg}" | jq -r '"\(.harness_pass)|\(.checks.relocated_matches_direct)"')" == "true|true" ]] && ok "debug-pdb adds the relocated check" || no "debug-pdb adds the relocated check"
