@@ -480,21 +480,55 @@ def sem_broker(doc):
         _no_secret_keys(doc)
 
 
+IDENTITY_BIND = ("vm_id", "reservation_id", "lease_generation")
+
+
 def sem_guest_transport(doc):
-    if doc["kind"] == "exchange":
+    kind = doc["kind"]
+    if kind == "exchange":
         sem_guest_transport(doc["cmd"])
         sem_guest_transport(doc["reply"])
-        for k in ("vm_id", "reservation_id", "lease_generation", "seq", "nonce"):
+        for k in IDENTITY_BIND + ("seq", "nonce"):
             if doc["cmd"][k] != doc["reply"][k]:
                 raise Invalid(f"reply does not echo {k}: hostile guest")
         return
-    if doc["kind"] == "host_cmd":
+    if kind == "identity_exchange":
+        # The record the guest bound at the first probe of its boot, one command and its reply
+        # (guest-transport.md, Per-clone identity record): the command must carry the record's
+        # vm_id, reservation_id and lease_generation. A `reread` is what the guest's later check of
+        # the bootstrap material found: before cleanup the material is still there and holds the
+        # bound record again (and the schema keeps the reply out of listening, busy and job_done,
+        # which follow cleanup); after cleanup it is gone, and a record found there, identical or
+        # not, was not written by the host. The guest never rebinds.
+        sem_guest_transport(doc["record"])
+        sem_guest_transport(doc["cmd"])
+        sem_guest_transport(doc["reply"])
+        for k in IDENTITY_BIND:
+            if doc["cmd"][k] != doc["record"][k]:
+                raise Invalid(f"cmd.{k} does not match the identity record: the guest binds at the first probe and refuses a mismatch")
+        for k in IDENTITY_BIND + ("seq", "nonce"):
+            if doc["cmd"][k] != doc["reply"][k]:
+                raise Invalid(f"reply does not echo {k}: hostile guest")
+        reread = doc.get("reread")
+        if reread is not None:
+            if reread["phase"] == "before_cleanup" and reread["record"] != doc["record"]:
+                raise Invalid("reread before cleanup differs from the bound record: a second or changed identity record is never bound and fails closed")
+            if reread["phase"] == "after_cleanup" and reread["record"] is not None:
+                raise Invalid("a record was found after cleanup, identical or not: the bootstrap material stays gone, so the clone fails closed")
+        return
+    if kind == "guest_identity":
+        return  # the shape is the whole rule: five fields, tight patterns, additionalProperties false
+    if kind == "host_cmd":
         if (doc["cmd"] == "deliver_registration") != (doc["payload_bytes"] > 0):
             raise Invalid("payload_bytes > 0 exactly for deliver_registration")
     else:
         if len(json.dumps(doc, separators=(",", ":"), ensure_ascii=False).encode()) > 8192:
             raise Invalid("reply larger than 8192 bytes")
         _no_secret_keys(doc)
+
+
+# guest-transport.md, Admission: the first revision whose agent binds the per-clone identity record.
+MIN_AGENT_REVISION = 2
 
 
 def sem_image_catalog(doc):
@@ -531,6 +565,19 @@ def sem_image_catalog(doc):
                 raise Invalid(f"{profile}.{key} must name a {want} generation of that profile")
         if actives and ptr["active"] != actives[0]["generation_id"]:
             raise Invalid(f"{profile}: active pointer does not name the active generation")
+    # guest-transport.md, Admission: the wire cannot tell a revision-1 agent from a revision-2 one, so
+    # every generation a clone can be admitted from (the rollback one included) must certify the revision in
+    # its catalog entry. Last, so a catalog broken another way still reports that first.
+    for g in gens.values():
+        for o in g["overlays"]:
+            if o["name"] != "guest-agent" and "guest_transport_revision" in o:
+                raise Invalid(f"{g['generation_id']}: only the guest-agent overlay has a guest_transport_revision")
+        if g["state"] in ("approved", "active", "retired"):
+            agents = [o for o in g["overlays"] if o["name"] == "guest-agent"]
+            if not agents or min(o.get("guest_transport_revision", 0) for o in agents) < MIN_AGENT_REVISION:
+                raise Invalid(f"{g['generation_id']}: {g['state']} needs a guest-agent overlay with guest_transport_revision "
+                              f"{MIN_AGENT_REVISION} or later: an older agent binds the first command it sees and ignores the "
+                              "identity record (guest-transport.md, Admission)")
 
 
 def sem_cache_qualification(doc):

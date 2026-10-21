@@ -1,9 +1,10 @@
-# Guest management transport contract (version 1)
+# Guest management transport contract (version 2)
 
 Owners: P10/P11 (host side), P14/P15 (guest agent). The lab proof below is the single-owner ledger
 child **P02.1**, which gates P10/P11 fan-out. Readers: P08, P22, P26. Schema:
-[`guest-transport.schema.json`](guest-transport.schema.json) (`host_cmd` envelope and the only
-`guest_reply` the host accepts). Fixtures: `fixtures/guest-transport/`.
+[`guest-transport.schema.json`](guest-transport.schema.json) (`host_cmd` envelope, the only
+`guest_reply` the host accepts, the per-clone `guest_identity` record of revision 2, and the
+`exchange`/`identity_exchange` test composites). Fixtures: `fixtures/guest-transport/`.
 
 **Status: CANDIDATE (D2).** Every mechanism here is the chosen candidate, not a proven one. No VM
 was created for this contract. P10 and P11 may implement against simulated providers only until
@@ -24,13 +25,15 @@ job per VM), so a new counter only ever starts with a new VM and a new `lease_ge
 classes, accepted once per boot: `deliver_registration`, `start_runner`, `shutdown`. Repeatable:
 `probe` (until `ready`), `status`, `collect`. Heartbeats every 30 s cannot exhaust the counter.
 
-The guest agent (P14/P15, baked into the image) is a fixed program. It refuses a command whose
-`vm_id` is not its own (read from the hypervisor, not from disk), whose `lease_generation` differs
-from the first one it saw this boot, whose `seq` is not strictly greater than the last `seq` it
-accepted (a gap is allowed; a `seq` less than or equal to the last accepted one is refused as a
+The guest agent (P14/P15, baked into the image) is a fixed program. It binds its clone's
+[per-clone identity record](#per-clone-identity-record-decided-revision-2) at the first `probe`
+of this boot and refuses a command whose `vm_id` is not the record's, whose `reservation_id` or
+`lease_generation` differs from the record's (the binding is the host's OFFLINE write, no longer
+the first command the channel delivered), whose `seq` is not strictly greater than the last `seq`
+it accepted (a gap is allowed; a `seq` less than or equal to the last accepted one is refused as a
 replay), whose `nonce` was seen, whose one-shot class already ran, or that has expired. It echoes
 the request's `nonce` and `seq` in its reply. It deletes its own bootstrap material
-(credential, seed, unattend file) before it answers `listening`.
+(credential, seed, unattend file — the record included) before it answers `listening`.
 
 The host accepts one `guest_reply` per command: the exact schema, `seq`, `nonce`, `vm_id`,
 `reservation_id` and `lease_generation` echoed, `diag` printable ASCII up to 512 characters.
@@ -43,6 +46,141 @@ More data, extra fields, a wrong echo or a non-printable byte is a **hostile gue
 journals `hostile_guest` and the slot goes straight to `deleting`, final. The host never
 evaluates, imports or opens anything the guest returns; job summaries come from `collect` as the
 same bounded JSON.
+
+## Per-clone identity record (DECIDED; revision 2)
+
+Owner decision 2026-10-21; ledger item P02.5. Revision 2 adds one document, the per-clone
+**identity record** (`kind: "guest_identity"`, `schema: 2`), which a guest binds once, at its first
+probe, for the rest of its life. It is the only thing that tells a guest which clone it is.
+
+**Who writes it, where, when.** The host backend writes it OFFLINE, at `create`, once the VM and its
+scratch disk (if any) exist, because the record holds their ids, and before the clone boots even
+once. It goes into the clone's own bootstrap material, never into the base image or the catalog
+(both are shared by every clone). `create` is idempotent (backend-lifecycle.md): a re-run after a
+crash rewrites the same record, replacing the whole file or seed, never appending, and only into a
+clone that has never booted.
+
+- Windows (P10): the per-clone answer file `Windows\Panther\unattend.xml`, the same offline write
+  into the never-booted differencing disk that carries the credential and the static addressing
+  ([Credential bootstrap](#windows-candidate-powershell-direct)).
+- Linux (P11): the per-clone cloud-init NoCloud seed (`<clone_root>/<reservation_id>/seed.iso`,
+  user-data), the same seed that carries the credential.
+
+The record never travels through Hyper-V Data Exchange (KVP): host-to-guest KVP stays off (the P06
+security review: enabling the service hands every job the host's fully qualified name and reopens
+the pool P06 closed; P10 turns it off for every Windows clone). The Linux profile keeps the service
+on for the guest-to-host host-key item only (P11; the host writes no item to a guest), and what
+Hyper-V itself publishes to a guest with the service on is a P02.1 lab point for that profile.
+Encoding the clone identity in the SMBIOS system UUID was rejected (owner, 2026-10-21). The offline
+record is the identity carrier. The exact XML/YAML embedding is the conformance item's (P10, P11),
+provided the platform's own parser ignores it, the agent's fixed reader finds exactly one record,
+and the material dies with the clone (`destroy` observes its absence).
+
+**Fields, and nothing else.** `vm_id`, `reservation_id`, `lease_generation`, and `scratch`: the
+expected scratch disk, `size_gib` and `identity`, or `null` exactly when the clone has no scratch
+disk (the Linux profile; a reservation whose `scratch_gib` is 0). `vm_id` is the clone's Hyper-V VM
+id: the id the transport addresses (`-VMId`, the `AF_HYPERV` connect) and the backend journals at
+`create`. `size_gib` is the reservation's `scratch_gib`, the cap the host reserved for the disk (at
+most 4096, the allocator's maximum). The image's own maximum size is a little under it, by less than
+1 GiB: backend-lifecycle.md keeps the whole file within the cap, so the host leaves headroom for the
+VHDX metadata. The guest therefore compares the size the disk reports, rounded UP to whole GiB, with
+`size_gib`; that Windows reports exactly the image's maximum size is a P02.1 lab point. `identity`
+is the scratch disk image's unique id, a UUID the host records from the image it just made; which
+guest-visible identifier equals it is a P02.1 lab point. The schema closes the record
+(`additionalProperties: false`, `scratch` included, and tight patterns), so **no host-identifying
+data can ride it**: no host name, no host path, no user name, nothing beyond `schema`, `kind` and
+these fields.
+
+**The sequence: bind, cleanup, presence check.** One order, and no other:
+
+1. **Bind.** At the FIRST `probe` of this boot the agent reads the material, finds exactly one valid
+   record, checks the scratch disk against it and stores the binding in its own state, never in the
+   material. This is the only read that binds. The state outlives the one-process-per-command agent
+   and a reboot of the guest. Nothing is bound until all of that holds.
+2. **Before cleanup.** While the bootstrap still runs, the material is still there and unchanged
+   (the host writes a clone only at `create`). A later probe may read it again: it must hold the
+   identical record, and reading it again changes nothing.
+3. **Cleanup.** The bootstrap deletes every copy of the material it knows (answer files, seed
+   copies), the record included, and notes in its state that it did, before it answers `listening`.
+   `busy` and `job_done` only follow a started runner, so an answer in `listening`, `busy` or
+   `job_done` was given after cleanup; an answer in `booting`, `ready`, `registered` or `failed` may
+   come before it or after.
+4. **After cleanup.** The material stays gone. Before every command the agent looks for a record in
+   the places it deleted. One found there, identical or not, was not written by the host (which
+   writes nothing after `create`), and a record equal to the binding proves nothing about who wrote
+   it: it is never read as input and ends the clone.
+
+Binding and every later check fail closed; each rule below ends the clone or refuses the command,
+never a partial bind:
+
+- **Missing record** — no record in the material, or material the agent cannot read: the first
+  `probe` answers `error`/`failed`, final. Nothing becomes `ready`; the backend abandons the VM.
+- **Malformed record** — one that fails the schema, or two records in the material: the same,
+  final.
+- **A mismatched envelope** — from the first probe on, every command's `vm_id`, `reservation_id`
+  and `lease_generation` must equal the record's; any mismatch is `refused`. The agent takes its
+  identity from the record alone: not from the SMBIOS system UUID (rejected as the carrier, owner
+  2026-10-21; on Hyper-V it is the VM's BIOS GUID, not necessarily the VM id), not from KVP, not
+  from a path a command could name.
+- **A scratch disk that does not match** — with a `scratch` object the guest adopts a data disk
+  only if it carries the record's `identity` and its size, rounded up to whole GiB, equals
+  `size_gib` (Windows: the disk it finds as `D:`); with `scratch: null` it must find none. Another
+  identity or size, a disk where the record says none, none where the record says one: the first
+  `probe` fails closed, final.
+- **A second or changed record** — before cleanup, a record that differs from the bound one, or a
+  second record in the material; after cleanup, any record at all, identical or not. It is never
+  bound (the agent never rebinds): every later command is answered `refused` with `guest_state`
+  `failed`, final. The identical record read again before cleanup is the normal case and changes
+  nothing.
+
+No job exists when the first probe binds (a job runs only after `start_runner`), so a job cannot
+choose the binding. After `start_runner` the job user can rewrite the guest, the agent's state
+included (guests/windows/INTEGRATION.md, Host invariants), so the binding guards the host's commands
+against a host bug or a compromised channel, not against a job: the control against a job is
+destroying the VM (JIT secrecy rule).
+
+The first-writer binding of revision 1 (the first `reservation_id` and `lease_generation` the agent
+accepted) is replaced by the record: the values are the host's OFFLINE write, so a host bug or a
+compromised channel cannot rebind a clone to another reservation or generation.
+
+`identity_exchange` (`schema: 2`) is the test/evidence composite: the bound `record`, one `cmd` and
+the guest's `reply` to it (echo rules as `exchange`), and an optional `reread`, what the guest's
+check of the clone's bootstrap material found when it answered `cmd`: `before_cleanup` (the material
+is still there and holds a record) or `after_cleanup` (the material is gone, so `record` is `null`).
+`validate.py` refuses a `cmd` whose `vm_id`, `reservation_id` or `lease_generation` differs from the
+record's, a `reread` before cleanup that differs from the record or that comes with a `reply` in
+`listening`, `busy` or `job_done` (the guest deletes the material before it answers `listening`, step
+3; the schema carries that rule), and a `reread` after cleanup that holds a record, identical or
+not; a guest's `refused` answer to such a violation is a plain `exchange`. The fixtures here prove
+the record's shape, its field closure (no host data, `scratch` included), its agreement with the
+envelope, and what ONE exchange may show about the material: its re-read, its absence, and the
+states that cannot precede cleanup. They do not prove the cleanup sequence: a composite is one
+command and one reply, so nothing here checks the order across commands (the cleanup happens once,
+before the first `listening`; the check for a record runs before every later command). That order,
+and the guest-side rules (the missing, malformed and second record, the scratch checks, the refusal
+of a mismatched command, never rebinding), are the conformance items' agent tests (P14, P15) and the
+P02.1 lab.
+
+## Admission: only agents certified for revision 2 (DECIDED; revision 2)
+
+Revision 2 changes what the agent does with its bootstrap material, not what crosses the wire: the
+envelope and reply documents stay schema 1, so a revision-1 agent (first-writer binding, VM id from
+KVP or SMBIOS) sends byte-identical replies and nothing on the wire shows which revision answered. A
+guest cannot be asked either, because its answer proves nothing. So revision 2 is enforced where the
+guest cannot write, at admission:
+
+- A generation's `guest-agent` overlay records `guest_transport_revision` (image-catalog.md, rule 8):
+  the revision the agent implements, set by P21 from the agent's conformance record (the P14/P15
+  agent tests and the P02.1 lab), never read from a guest. An `approved`, `active` or `retired`
+  generation, the retained rollback generation included, needs it at 2 or later; `validate.py`
+  rejects the catalog otherwise.
+- Every `create` (P10, P11) admits a generation only when the catalog and the supervisor's
+  admin-only `approved-images.json` entry agree on a revision the host implements, before any VM,
+  disk or answer file exists. A rollback gets no exemption: the generation it activates passes the
+  same check, and P25 refuses a rollback to one that does not. A certification run of a candidate
+  needs it too.
+- A host that implements revision 2 writes the record for every clone it creates, in both
+  profiles.
 
 ## Wire framing (DECIDED shape; CANDIDATE D2 until proven)
 
@@ -85,13 +223,15 @@ guest. It works "regardless of network configuration".
 
 - **Credential bootstrap**: the image has no usable password. At `create` the provider generates
   a random 32-character local administrator password, held only in supervisor memory and passed to
-  the call child on stdin, and writes it into the clone before first boot. Two sub-candidates,
-  chosen by P02.1: (a) an `unattend.xml` in the offline differencing disk (specialize pass), which
-  the guest agent deletes at first boot; (b) a Hyper-V Data Exchange (KVP) host-to-guest item read
-  once by the agent and deleted. The credential is never in the base image, catalog, journal,
-  status or logs, and dies with the clone.
+  the call child on stdin, and writes it into the clone before first boot, in an `unattend.xml` on
+  the offline differencing disk (specialize pass), which the guest agent deletes at first boot.
+  Host-to-guest KVP is not a channel for it (the [identity record
+  section](#per-clone-identity-record-decided-revision-2) keeps it off). The credential is never in
+  the base image, catalog, journal, status or logs, and dies with the clone.
 - **Per-clone identity**: the Hyper-V VM id recorded at `create`, plus the VM name. `-VMId`
-  addressing targets one partition on the hypervisor bus; there is no network name to spoof.
+  addressing targets one partition on the hypervisor bus; there is no network name to spoof. The
+  guest binds that id from the [identity record](#per-clone-identity-record-decided-revision-2),
+  which rides the same offline answer file as the credential.
 - **Host to guest auth**: the per-clone credential. Guest Administrator can read its own
   credential; that is accepted because it opens nothing but that guest.
 - **Guest to host**: nothing initiated by the guest. A guest can replace its own agent or its
@@ -118,10 +258,11 @@ has no host adapter, so it cannot carry host SSH.
   `StrictHostKeyChecking yes`, a per-clone `UserKnownHostsFile` and an empty
   `GlobalKnownHostsFile`.
 - **Credential bootstrap**: per-clone ed25519 client key pair generated by the supervisor; the
-  public key goes into a per-clone cloud-init NoCloud seed (`<clone_root>\<id>\seed.iso`) or KVP; the
+  public key goes into a per-clone cloud-init NoCloud seed (`<clone_root>\<id>\seed.iso`); the
   private key lives in a per-reservation file under a folder with a protected ACL (SYSTEM and
   Administrators only, inheritance off, no entry for the operator account), deleted at destroy.
-  The image has no authorized key and password login is disabled.
+  The image has no authorized key and password login is disabled. The
+  [identity record](#per-clone-identity-record-decided-revision-2) rides the same seed.
 - **Host key pinning**: the guest generates its host key at first boot and publishes the
   fingerprint through KVP (guest-to-host pool). The provider pins it before the first SSH command.
 - **Auth, replay, cleanup**: as the envelope rules; the forced command makes the key unable to
@@ -202,9 +343,9 @@ step 6. No live install, `C:\wsl`, `C:\ProgramData\aap-runner` or live distro is
 | # | Step | Oracle (pass means) |
 |---|---|---|
 | 1 | Build a minimal Windows Server 2025 guest and Ubuntu 24.04 guest from lawful media; no credential in the image; record base hashes | images boot; the image-catalog scan targets find nothing, including the synthetic marker |
-| 2 | Create two differencing clones of each; inject distinct per-clone credentials offline (Windows: unattend sub-candidate a, then KVP sub-candidate b; Linux: seed ISO, then KVP) | each clone accepts only its own credential; the base disk hash is unchanged after both clones ran |
-| 3 | PowerShell Direct `probe` through the call child and the agent entrypoint, by VM id; the same through the framed hvsocket comparison | reply validates against the schema; echo fields match; works with the clone's network adapter disconnected |
-| 4 | Linux SSH over vsock port 5222 through the relay, `probe` with the pinned host key | connects with networking disabled; a changed host key is refused; the key cannot open a shell or forward |
+| 2 | Create two differencing clones of each; inject distinct per-clone credentials and identity records offline (Windows: the unattend answer file; Linux: the seed ISO) | each clone accepts only its own credential and answers only commands that carry its own record's ids; the base disk hash is unchanged after both clones ran |
+| 3 | PowerShell Direct `probe` through the call child and the agent entrypoint, by VM id; the same through the framed hvsocket comparison | reply validates against the schema; echo fields match; the exchange validates as an `identity_exchange` against the record written at create; works with the clone's network adapter disconnected |
+| 4 | Linux SSH over vsock port 5222 through the relay, `probe` with the pinned host key | connects with networking disabled; the exchange validates as an `identity_exchange` against the seed's record; a changed host key is refused; the key cannot open a shell or forward |
 | 5 | With PowerShell module logging for all modules (`*`), script-block logging and transcription **enabled on the host and in the guest** (otherwise this step is void): `deliver_registration` with the synthetic marker, then `start_runner` against a stub `Runner.Listener` that records how it received input | stub sees the marker only in `ACTIONS_RUNNER_INPUT_JITCONFIG`; marker absent from guest and host argv (process lists sampled during start), guest event logs (PowerShell 4103/4104, transcription), **host PowerShell Operational 4103/4104 and transcription output**, files, journald, the supervisor log, status files and evidence |
 | 6 | Real runner (pinned release) with a JIT config from the lab App for the test repo | runner takes one job and exits; the registration disappears; reusing the JIT config is rejected by GitHub; an unused JIT runner is deleted by `release_request` |
 | 7 | Network, positive | from each guest: DNS resolves `github.com`; HTTPS to `github.com`, `api.github.com` and one package registry per OS succeeds |
@@ -216,7 +357,7 @@ Negative tests (each must fail closed, and the provider must journal the stated 
 | Case | Expected |
 |---|---|
 | Wrong credential, credential of another clone | auth refused; `failed` |
-| Command with wrong `vm_id`, stale `lease_generation`, repeated or lower `seq` (not strictly greater than the last accepted), reused `nonce`, expired, second one-shot command | guest refuses; host records `refused` and does not proceed |
+| Command with wrong `vm_id`, another `reservation_id`, stale `lease_generation`, repeated or lower `seq` (not strictly greater than the last accepted), reused `nonce`, expired, second one-shot command | guest refuses; host records `refused` and does not proceed |
 | Lose the reply after the agent accepted the request; the next probe (a higher `seq`) | the next probe is accepted; no false `refused` |
 | A failed or timed-out probe, then a probe with a `seq` that skips the lost ones (a gap) | the gapped `seq` is accepted; the counter only rises |
 | A reply that echoes the wrong `nonce` or `seq` | host records `hostile_guest`; slot goes to `deleting` |
@@ -229,6 +370,14 @@ Negative tests (each must fail closed, and the provider must journal the stated 
 | Guest tries to open a session to the host over hvsocket or PowerShell Direct | impossible or refused |
 | A runner credential copied out of a running job, then used to request a second job | GitHub refuses a second job for that runner; no job is assigned to the copy |
 | Supervisor killed between each command | restart reconciles from the journal; no second registration; no orphan VM |
+| An answer file / seed with no identity record, a malformed record, or two records | the first `probe` fails closed (`error`/`failed`, final); nothing becomes `ready`; the backend abandons the VM |
+| The answer file or seed of another clone, swapped in before first boot | the clone binds the other clone's record, so every command (it carries this clone's ids) is `refused`; nothing becomes `ready` |
+| A different or second record read before cleanup | never bound: every command is refused and the clone fails final; the same record read again changes nothing |
+| A record, identical or not, found after cleanup (the answer file or user-data rewritten, a cached copy that reappears, a seed re-attached) | never bound or read as input: every command is refused and the clone fails final |
+| An agent that answers `listening`, `busy` or `job_done` while a copy of the material is still there (cleanup skipped or late) | the lab's `identity_exchange` evidence for that answer is refused by `validate.py` (a `before_cleanup` re-read beside such a reply), and the clone fails the lab |
+| A scratch disk that does not match the record (another identity or size, one where the record says none, none where the record says one) | the first `probe` fails closed, final; the clone never becomes `ready` |
+| A clone from a generation whose catalog entry certifies a guest agent older than revision 2, or none (the active generation and the retained rollback generation alike) | `create` refuses before any VM, disk or answer file exists |
+| Host-to-guest KVP on any clone (the record and the credential never use it) | Windows clone: the Key-Value Pair Exchange service is disabled, read back from Hyper-V, and the guest holds no host name (`HKLM\SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters`); Linux clone: the service serves the guest-to-host host-key item only, `HostExchangeItems` is empty, and the host's intrinsic items a job can read (pool 3) are listed for the owner's decision; any host-to-guest item fails the case |
 
 Evidence: one evidence-bundle record per step and case, plus the P00 cleanup receipt listing every
 lab VM id and switch observed absent. Until steps 1-9 and every negative case pass, this contract

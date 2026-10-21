@@ -1,5 +1,5 @@
 {
-  "expect": "below minimum 10",
+  "expect": "must equal 100",
   "instance": {
     "schema": 3,
     "linux_backend": "wsl-legacy",
@@ -11,9 +11,9 @@
     "paused": false,
     "io_percent": 90,
     "sharing": "slice",
-    "host_reserve_percent": 5,
+    "host_reserve_percent": 10,
     "share_mode": "per_profile",
     "linux_share_percent": 60,
-    "windows_share_percent": 30
+    "windows_share_percent": 40
   }
 }

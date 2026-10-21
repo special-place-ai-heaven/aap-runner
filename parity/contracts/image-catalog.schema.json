@@ -237,6 +237,12 @@
               },
               "sha256": {
                 "$ref": "#/$defs/sha256"
+              },
+              "guest_transport_revision": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 99,
+                "description": "guest-agent overlay only (validate.py): the guest-transport revision the agent implements, written by P21 from the agent's conformance record and never read from a guest. An approved, active or retired generation, the rollback one included, needs 2 or later: revision 1 and 2 replies are identical on the wire, so admission is the only place an older agent can be excluded (guest-transport.md, Admission)."
               }
             }
           }

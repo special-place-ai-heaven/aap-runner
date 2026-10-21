@@ -1,0 +1,8 @@
+{
+  "schema": 2,
+  "kind": "guest_identity",
+  "vm_id": "0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b",
+  "reservation_id": "r-2b3c4d5e000000c2",
+  "lease_generation": 2,
+  "scratch": null
+}
