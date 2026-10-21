@@ -173,6 +173,35 @@ Describe 'one job, end to end' {
         @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'run_one' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike 'network: *'
     }
 
+    It 'verifies a running guest''s network again: a non-terminating error Verify writes ends the clone' -Tag 'net-running' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))   # running
+        Set-WinKnob $w @{ RunnerBusy = $true; NetVerifyError = $true }
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Action | Should -Be 'destroyed'
+        @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'run_one' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike 'network: Verify wrote an error*'
+    }
+
+    It 'reads a running guest''s adapter back again: a silent Verify does not pass <Tamper>' -Tag 'net-running-readback' -ForEach @(
+        @{ Tamper = 'dhcp-guard-off' }, @{ Tamper = 'foreign-peer' }
+    ) {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))   # running
+        Set-WinKnob $w @{ RunnerBusy = $true; NetVerifySilent = $true }
+        Set-WinNet $w -Tamper $Tamper
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)).Action | Should -Be 'destroyed'
+        @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'run_one' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike 'network: read-back: *'
+    }
+
     It 'verifies a running guest''s network at least every 60 s, not on every step' {
         $w = New-WinWorld
         $B = New-WinBackend $w

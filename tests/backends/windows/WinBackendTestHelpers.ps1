@@ -206,13 +206,14 @@ function New-WinProvider {
 
 # The network module: the shared strict fake (host-network-module.md, Shared fake) over this world's VMs, its tampers and
 # faults set with Set-WinNet. Each call is logged. Knobs stand for a module that lies, which the backend must not trust:
-# 'NetDecl' (fields merged into the declaration Attach returns), 'NetVerifySilent' (Verify writes nothing) and
-# 'NetVerifyOut' (what Verify writes instead of its own answer; '<null>' writes a null).
+# 'NetDecl' (fields merged into the declaration Attach returns), 'NetVerifySilent' (Verify writes nothing),
+# 'NetVerifyOut' (what Verify writes instead of its own answer; '<null>' writes a null) and 'NetVerifyError' (Verify writes
+# a non-terminating error and nothing else). 'NetForeign' is the count of the VM's adapters the module did not make.
 function Get-WinNet($World) {
     New-AapFakeHostNetwork -Root (Join-Path $World.Fake 'net') -Vm { param($id)
         $v = @(Get-WinVms $w | Where-Object { $_.Id -eq $id })
         if (-not $v.Count) { return $null }
-        @{ State = [string]$v[0].State; Adapters = 0 }
+        @{ State = [string]$v[0].State; Adapters = [int](Get-WinKnob $w 'NetForeign' 0) }
     }
 }
 function Set-WinNet($World, [string[]]$Tamper = @(), [string[]]$Fail = @()) { Set-AapFakeHostNetworkKnob -Root (Join-Path $World.Fake 'net') -Tamper $Tamper -Fail $Fail }
@@ -233,6 +234,7 @@ function New-WinNetwork {
         Verify = { param($a)
             Add-WinCall $w "NetVerify $($a.VmId)"
             if (Get-WinKnob $w 'NetVerifySilent' $false) { return }
+            if (Get-WinKnob $w 'NetVerifyError' $false) { Write-Error 'fake: Verify could not read a port ACL' -ErrorAction Continue; return }
             $out = Get-WinKnob $w 'NetVerifyOut' $null
             if ($null -eq $out) { & (Get-WinNet $w).Verify $a } else { foreach ($o in @($out)) { if ($o -ceq '<null>') { $null } else { $o } } }
         }

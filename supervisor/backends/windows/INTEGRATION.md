@@ -98,12 +98,17 @@ Consumer obligations (row P10.2 of its conformance table):
   length, the gateway as default route, the resolvers as DNS servers, DHCP off; `Microsoft-Windows-TCPIP` and
   `Microsoft-Windows-DNS-Client` in the specialize pass on the interface named `Ethernet`, D2), then `Verify` unfiltered
   and `Get-AapHostNetworkAdapterProblems` on `GetVmConfig`'s adapters (`AAP_NetworkUntrusted`). No copy of the
-  declaration is kept between steps or written to the reservation's journal.
-- Boot: with the VM Off, `Attach` again, the declaration check, `Verify` and the read-back before `StartVm`; a VM found
-  running (a crash after `Start-VM`) is verified only.
+  declaration is written to the reservation's journal.
+- Boot: with the VM Off, `Attach` again, the declaration check, `Verify` and the read-back before `StartVm`. The
+  declaration from that Attach stays in this process's memory only, for the read-back while the VM runs. A VM found
+  running at boot is one this process started whose boot record was not written (`StartVm` returned, the journal write
+  threw); after a crash the lost-credential guard abandons the VM before this point. It gets `Verify` and the read-back
+  against the declaration it booted with.
 - Running guests (probing, ready, busy, draining, quarantined, deleting kept): `Verify` again at least
-  every 60 s (`$B.NetSeconds`); a problem or a throw ends the VM through the backend's failed path (`fatal`,
-  `network: <problem>`). P12 may call steps more often; the cadence is per reservation.
+  every 60 s (`$B.NetSeconds`; a non-terminating error it writes is a problem too), then the read-back against the
+  in-memory declaration; a problem or a throw ends the VM through the backend's failed path (`fatal`,
+  `network: <problem>`). A VM this process did not start (kept after a supervisor restart for its release or teardown)
+  has no declaration in memory and gets `Verify` only. P12 may call steps more often; the cadence is per reservation.
 - Teardown: `Remove-VM`, then `Detach`, on every attempt; a `Detach` that throws keeps the slot (`teardown_failed` after
   three tries).
 - The provider's `GetVmConfig` reports the adapters in the contract's read-back shape (text values; `LegacyAcls`,

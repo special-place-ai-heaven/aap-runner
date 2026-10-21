@@ -354,6 +354,47 @@ Describe 'the guest network' {
         @(Get-WinNetRecords $w).Count | Should -Be 0
         @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'boot' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_Network*'
     }
+
+    It 'before boot it reads back with a fresh declaration: <Name>' -Tag 'net-restart' -ForEach @(
+        @{ Name = 'a silent Verify does not pass a DHCP guard turned off'; Knobs = @{ NetVerifySilent = $true }; Tamper = 'dhcp-guard-off'; Like = '*AAP_NetworkUntrusted: read-back*DHCP guard*' }
+        @{ Name = 'a declaration the check refuses is AAP_NetworkInvalid'; Knobs = @{ NetDecl = @{ address = '172.31.250.1' } }; Tamper = ''; Like = '*AAP_NetworkInvalid*' }
+    ) {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        Set-WinKnob $w $Knobs
+        Set-WinNet $w -Tamper @($Tamper | Where-Object { $_ })
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha)
+        @(Get-WinCalls $w 'StartVm *').Count | Should -Be 0
+        @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'boot' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike $Like
+    }
+
+    It 'a VM this process started whose boot record was lost is read back against the declaration it booted with' -Tag 'net-boot-readback' {
+        $w = New-WinWorld
+        $B = New-WinBackend $w
+        $r = New-WinReservation $w
+        $rid = $r.reservation_id
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'booted'
+        # StartVm returned, the boot record's write threw: the journal ends at the boot intent, the VM runs.
+        $f = Join-Path $w.Journal "$rid.jsonl"
+        $lines = @(Get-WinJournalLines $w $rid)
+        [IO.File]::WriteAllText($f, (($lines[0..($lines.Count - 2)] -join "`n") + "`n"))
+        Set-WinKnob $w @{ NetVerifySilent = $true }
+        Set-WinNet $w -Tamper 'dhcp-guard-off'
+        [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid) -BaseSha256 $w.BaseSha)
+        @(Get-WinCalls $w 'StartVm *').Count | Should -Be 1
+        @(Get-WinVms $w).Count | Should -Be 0
+        @(Get-WinJournal $w $rid | Where-Object { $_.op -eq 'boot' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_NetworkUntrusted: read-back*DHCP guard*'
+    }
+
+    It 'an adapter the module did not make stops the clone: AAP_NetworkUntrusted' {
+        $x = Invoke-WinCreate -Knobs @{ NetForeign = 1 }
+        Assert-WinRefused $x '*AAP_NetworkUntrusted*adapter Attach did not make*'
+    }
 }
 
 Describe 'more create refusals' {

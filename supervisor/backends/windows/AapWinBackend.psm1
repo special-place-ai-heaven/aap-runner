@@ -828,6 +828,7 @@ function Invoke-AapWinGuestChild([hashtable]$Call) {
     try {
         try { $job = [AapWinJobObject]::Start($p.Handle, $script:ChildMemoryBytes, $wall) } catch { throw 'AAP_ChildUncapped: the call child could not be put in its job object' }
         $in = $p.StandardInput.BaseStream
+        $pipe = $null
         try {
             $head = [Text.Encoding]::ASCII.GetBytes(('{0}{2}{1}{2}' -f $Call.VmId, $Call.User, "`n"))
             $tail = [Text.Encoding]::ASCII.GetBytes("`n" + $Call.Envelope + "`n")
@@ -843,6 +844,8 @@ function Invoke-AapWinGuestChild([hashtable]$Call) {
             $null = $_   # it exited without reading; its exit code tells why
         }
         try { $p.StandardInput.Close() } catch { $null = $_ }
+        # It shares stdin's handle, so it goes only after stdin is closed.
+        if ($null -ne $pipe) { try { $pipe.Dispose() } catch { $null = $_ } }
         $out = $p.StandardOutput.BaseStream
         $err = $p.StandardError.BaseStream
         $scratch = New-Object byte[] 4096
@@ -936,19 +939,27 @@ function Get-AapWinDeclaration($B, [hashtable]$Net) {
     if ($p.Count) { throw "AAP_NetworkInvalid: $(@($p | Select-Object -First 3 | ForEach-Object { Get-AapWinLine ([string]$_) 100 }) -join '; ')" }   # check:net-declaration
     $decl
 }
-# Verify's problem list, unfiltered: every object it writes is a problem (an empty or null one too), and a throw is one.
+# Verify's problem list, unfiltered: every object it writes is a problem (an empty or null one too), a non-terminating
+# error it writes is one (2>&1: it would otherwise pass unseen), and a throw is one.
 function Get-AapWinNetProblems($B, [hashtable]$Net) {
-    try { $out = @(& $B.Network.Verify $Net) } catch { return "Verify could not look: $(Get-AapWinError $_)" }
-    foreach ($o in $out) { if ($null -eq $o -or [string]$o -ceq '') { '(an empty problem line)' } else { Get-AapWinLine ([string]$o) 100 } }
+    try { $out = @(& $B.Network.Verify $Net 2>&1) } catch { return "Verify could not look: $(Get-AapWinError $_)" }
+    foreach ($o in $out) {
+        if ($o -is [Management.Automation.ErrorRecord]) { "Verify wrote an error: $(Get-AapWinLine ([string]$o.Exception.Message) 100)" }
+        elseif ($null -eq $o -or [string]$o -ceq '') { '(an empty problem line)' } else { Get-AapWinLine ([string]$o) 100 }
+    }
 }
-# Verify, then the read-back of the VM's adapters from Hyper-V through the provider (never through the module) against
-# the declaration; any line of either is AAP_NetworkUntrusted.
+# The read-back of the VM's adapters from Hyper-V through the provider (never through the module) against the
+# declaration: the shared check's lines.
+function Get-AapWinReadBackProblems($B, [string]$VmId, $Decl) {
+    $nics = Get-AapWinField (& $B.Provider.GetVmConfig @{ VmId = $VmId }) 'Adapters'
+    @(Get-AapHostNetworkAdapterProblems -Declaration $Decl -Adapters @($nics | Where-Object { $null -ne $_ }) | ForEach-Object { Get-AapWinLine ([string]$_) 100 })
+}
+# Verify, then the read-back; any line of either is AAP_NetworkUntrusted.
 function Assert-AapWinNetwork($B, [hashtable]$Net, $Decl) {
     $p = @(Get-AapWinNetProblems $B $Net)
     if ($p.Count) { throw "AAP_NetworkUntrusted: $(@($p | Select-Object -First 3) -join '; ')" }   # check:network-verify
-    $nics = Get-AapWinField (& $B.Provider.GetVmConfig @{ VmId = $Net.VmId }) 'Adapters'
-    $p = @(Get-AapHostNetworkAdapterProblems -Declaration $Decl -Adapters @($nics | Where-Object { $null -ne $_ }))
-    if ($p.Count) { throw "AAP_NetworkUntrusted: read-back: $(@($p | Select-Object -First 3 | ForEach-Object { Get-AapWinLine ([string]$_) 100 }) -join '; ')" }   # check:net-readback
+    $p = @(Get-AapWinReadBackProblems $B $Net.VmId $Decl)
+    if ($p.Count) { throw "AAP_NetworkUntrusted: read-back: $(@($p | Select-Object -First 3) -join '; ')" }   # check:net-readback
 }
 
 # ---- lifecycle ops ------------------------------------------------------------------------------------------------------
@@ -1035,7 +1046,7 @@ function Invoke-AapWinCreate($B, $r, [string]$BaseSha256, $j) {
     $pw = New-AapWinPassword
     & $B.Provider.WriteUnattend @{ Vhdx = $os; User = $script:User; Password = $pw; Network = $decl }
     if ($B.Guests.ContainsKey($rid)) { $B.Guests[$rid].Password.Clear() }
-    $B.Guests[$rid] = @{ VmId = $id; Password = $pw; Seq = 0; Started = $false; Hostile = $null }
+    $B.Guests[$rid] = @{ VmId = $id; Password = $pw; Seq = 0; Started = $false; Hostile = $null; Decl = $null }
     Invoke-AapWinFault 'create:after-unattend'
     Assert-AapWinNetwork $B $net $decl
     Write-AapWinJournal $B $r 'create' 'done' -VmId $id -Disks $disks -Code 'ok' -Detail 'differencing disk, scratch disk and VM created; network verified'
@@ -1221,7 +1232,9 @@ function Invoke-AapWinHostile($B, $r, $j, [string]$Op, [string]$Code) {
 # VM, with or without a guest channel (a guest that silences its agent is measured all the same): a paused VM, and a
 # clone folder over clone_gib or one that cannot be measured (fail closed: a step that threw every tick would leave the
 # VM unwatched), and a running guest's network, verified again at least every NetSeconds (host-network-module.md, Consumer
-# obligations 3: the host's addresses may have changed; a problem or a throw ends the VM). Returns the reason, or $null.
+# obligations 3: the host's addresses may have changed; a problem or a throw ends the VM), then read back against the
+# declaration this process got from Attach before it started the VM. A VM this process did not start (one kept after a
+# supervisor restart for its release or teardown) has no such copy and is verified only. Returns the reason, or $null.
 function Get-AapWinLimitBreach($B, $r, $j) {
     if (-not $j.VmId) { return $null }
     $vm = @(Get-AapWinVms $B | Where-Object { $_.Id -ceq [string]$j.VmId })
@@ -1236,6 +1249,10 @@ function Get-AapWinLimitBreach($B, $r, $j) {
         $B.NetAt[$rid] = $now
         $p = @(Get-AapWinNetProblems $B @{ VmId = [string]$j.VmId; VmName = (Get-AapWinVmName $r); Profile = 'windows' })
         if ($p.Count) { return "network: $($p[0])" }   # check:net-running
+        if ($B.Guests.ContainsKey($rid) -and $null -ne $B.Guests[$rid].Decl) {   # check:net-running-readback
+            $p = @(Get-AapWinReadBackProblems $B ([string]$j.VmId) $B.Guests[$rid].Decl)
+            if ($p.Count) { return "network: read-back: $($p[0])" }   # check:net-running-readback
+        }
     }
     $null
 }
@@ -1261,15 +1278,22 @@ function Step-AapWinCreating($B, $r, $j, $g, [string]$BaseSha256) {
         Invoke-AapWinFault 'boot:after-intent'
         try {
             # Before the power-on (Consumer obligations 2), with the VM Off: Attach again (the module's declaration, never a
-            # kept copy), the declaration check, Verify and the read-back. A VM already running (a crash after Start-VM) is
-            # verified, and running counts as done.
+            # journaled copy), the declaration check, Verify and the read-back. The declaration stays in this process's
+            # memory only, for the read-back while the VM runs. A VM already running here is one this process started
+            # whose boot record did not get written (StartVm returned, the journal write threw); after a crash the
+            # lost-credential guard above abandons it first. It gets Verify and the read-back against that copy, and
+            # running counts as done.
             $net = @{ VmId = [string]$j.VmId; VmName = (Get-AapWinVmName $r); Profile = 'windows' }
             $vm = @(Get-AapWinVms $B | Where-Object { $_.Id -ceq [string]$j.VmId })
             if (-not $vm.Count -or $vm[0].State -cne 'Running') {   # check:net-restart
-                Assert-AapWinNetwork $B $net (Get-AapWinDeclaration $B $net)
+                $decl = Get-AapWinDeclaration $B $net
+                Assert-AapWinNetwork $B $net $decl
+                $g.Decl = $decl
             } else {
                 $p = @(Get-AapWinNetProblems $B $net)
                 if ($p.Count) { throw "AAP_NetworkUntrusted: $(@($p | Select-Object -First 3) -join '; ')" }
+                $p = @(Get-AapWinReadBackProblems $B ([string]$j.VmId) $g.Decl)
+                if ($p.Count) { throw "AAP_NetworkUntrusted: read-back: $(@($p | Select-Object -First 3) -join '; ')" }   # check:net-boot-readback
             }
             & $B.Provider.StartVm @{ VmId = $j.VmId }
         } catch { return (Invoke-AapWinAbandon $B $r $j 'boot' 'fatal' (Get-AapWinError $_)) }
