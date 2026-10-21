@@ -149,7 +149,8 @@ run $'schema=1\nphase=p02\nkind=action\naction=upload-helpers\n'"${avars}"
 seal_world() {
   reset_root
   mkdir -p "${tmp}/root/logs" "${tmp}/sys/etc/ssh" "${tmp}/sys/etc/sudoers.d" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/root" "${tmp}/sys/home/runner" \
-    "${tmp}/sys/etc/ssl/private" "${tmp}/sys/etc/ssl/certs" "${tmp}/sys/var/lib/systemd" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/sockets.target.wants"
+    "${tmp}/sys/etc/ssl/private" "${tmp}/sys/etc/ssl/certs" "${tmp}/sys/var/lib/systemd" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/sockets.target.wants" \
+    "${tmp}/sys/etc/netplan" "${tmp}/sys/etc/cloud/cloud.cfg.d"
   printf 'root:x:0:0::/root:/bin/bash\n' > "${tmp}/sys/etc/passwd"
   printf 'root:*:20000:0:99999:7:::\n' > "${tmp}/sys/etc/shadow"
   echo key > "${tmp}/sys/etc/ssh/ssh_host_ed25519_key"
@@ -158,6 +159,9 @@ seal_world() {
   echo agent > "${tmp}/sys/usr/local/libexec/aap-build/agent"
   echo unit > "${tmp}/sys/etc/systemd/system/aap-agent.socket"; echo unit > "${tmp}/sys/etc/systemd/system/aap-agent@.service"
   ln -s /etc/systemd/system/aap-agent.socket "${tmp}/sys/etc/systemd/system/sockets.target.wants/aap-agent.socket"
+  # the build VM's static address, as the installer leaves it
+  printf 'network: {version: 2, ethernets: {nic: {addresses: [172.31.253.2/24]}}}\n' > "${tmp}/sys/etc/netplan/50-cloud-init.yaml"
+  printf 'network: {version: 2}\n' > "${tmp}/sys/etc/cloud/cloud.cfg.d/90-installer-network.cfg"
 }
 # seal_check alone, sourced, over the current world
 seal_only() {
@@ -168,10 +172,11 @@ dvars=$'var=install_user=installer\nvar=image_folder=/imagegeneration\n'
 seal_world
 run $'schema=1\nphase=p30\nkind=action\naction=deprovision\n'"${dvars}"
 [ "$(reply 'r["status"], sorted(r["data"]["seal"]["checked"]), r["data"]["seal"]["findings"], r["data"]["seal"]["unreadable"]')" = \
-  "('ok', ['install-user-absent', 'no-agent', 'no-authorized-keys', 'no-build-sudoers', 'no-cloud-state', 'no-password-hash', 'no-ssh-host-keys'], [], [])" ] || fail "deprovision: $(out)"
+  "('ok', ['install-user-absent', 'no-agent', 'no-authorized-keys', 'no-build-network', 'no-build-sudoers', 'no-cloud-state', 'no-password-hash', 'no-ssh-host-keys'], [], [])" ] || fail "deprovision: $(out)"
 [ ! -e "${tmp}/sys/etc/ssh/ssh_host_ed25519_key" ] && [ ! -e "${tmp}/root" ] && [ ! -e "${tmp}/sys/var/lib/cloud/instance" ] || fail 'deprovision left build state'
 for f in etc/ssl/private/ssl-cert-snakeoil.key etc/ssl/certs/ssl-cert-snakeoil.pem var/lib/systemd/random-seed usr/local/libexec/aap-build \
-  etc/systemd/system/aap-agent.socket etc/systemd/system/aap-agent@.service etc/systemd/system/sockets.target.wants/aap-agent.socket; do
+  etc/systemd/system/aap-agent.socket etc/systemd/system/aap-agent@.service etc/systemd/system/sockets.target.wants/aap-agent.socket \
+  etc/netplan/50-cloud-init.yaml etc/cloud/cloud.cfg.d/90-installer-network.cfg; do
   [ ! -e "${tmp}/sys/${f}" ] && [ ! -L "${tmp}/sys/${f}" ] || fail "deprovision left ${f}"
 done
 grep -qx 'datasource_list: \[ NoCloud, None \]' "${tmp}/sys/etc/cloud/cloud.cfg.d/90-aap-nocloud.cfg" || fail 'cloud-init is not pointed at NoCloud'
@@ -179,7 +184,8 @@ grep -q '^waagent -force -deprovision$' "${STUB_LOG}" && grep -q '^userdel -r in
 grep -q '^journalctl --rotate --vacuum-time=1s$' "${STUB_LOG}" || fail "the journal was not rotated and vacuumed: $(cat "${STUB_LOG}")"
 # Anything of the agent left behind fails the seal check, a dangling unit link included.
 for left in root usr/local/libexec/aap-build etc/systemd/system/aap-agent.socket etc/systemd/system/aap-agent@.service etc/systemd/system/sockets.target.wants/aap-agent.socket; do
-  seal_world; rm -rf "${tmp}/root" "${tmp}/sys/etc/ssh/ssh_host_ed25519_key" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/aap-agent"*
+  seal_world; rm -rf "${tmp}/root" "${tmp}/sys/etc/ssh/ssh_host_ed25519_key" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/aap-agent"* \
+    "${tmp}/sys/etc/netplan"/* "${tmp}/sys/etc/cloud/cloud.cfg.d/90-installer-network.cfg"
   rm -f "${tmp}/sys/etc/systemd/system/sockets.target.wants/aap-agent.socket"
   seal_only
   [ "$(reply 'r["findings"]')" = '[]' ] || fail "a clean seal world: $(out)"
@@ -191,6 +197,15 @@ for left in root usr/local/libexec/aap-build etc/systemd/system/aap-agent.socket
   esac
   seal_only
   [ "$(reply 'r["findings"]')" = "['no-agent']" ] || fail "the seal check missed ${left}: $(out)"
+done
+# The build VM's static network configuration left behind fails the seal check: a clone's addressing is its own seed's.
+for left in etc/netplan/01-build.yaml etc/cloud/cloud.cfg.d/90-installer-network.cfg; do
+  seal_world; rm -rf "${tmp}/root" "${tmp}/sys/etc/ssh/ssh_host_ed25519_key" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/aap-agent"* \
+    "${tmp}/sys/etc/netplan"/* "${tmp}/sys/etc/cloud/cloud.cfg.d/90-installer-network.cfg"
+  rm -f "${tmp}/sys/etc/systemd/system/sockets.target.wants/aap-agent.socket"
+  echo 'network: {version: 2}' > "${tmp}/sys/${left}"
+  seal_only
+  [ "$(reply 'r["findings"]')" = "['no-build-network']" ] || fail "the seal check missed ${left}: $(out)"
 done
 seal_world
 mkdir -p "${tmp}/sys/home/runner/.ssh"; echo k > "${tmp}/sys/home/runner/.ssh/authorized_keys"

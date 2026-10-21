@@ -5,9 +5,9 @@
 # Invoke-AapManifest -Offline.
 # The guests are hostile. The host never attaches or mounts a guest disk: files go in on host-built seed images, and the
 # only channel back is an hvsocket connection to the guest agent (vsock port from the plan) whose reply is capped while it
-# is received. No guest gets a network adapter except the build VM, on the internal switch aap-guests-linux, with the
-# per-adapter controls of guest-transport.md (DHCP and router guard on, MAC spoofing off, the extended port ACL set from the
-# P10.0 guest network module), read back after the VM is made; the scanner and verification VMs must have no adapter.
+# is received. NewVm makes every VM with no network adapter; the build VM's adapter is the P10.0 host network module's
+# (host-network-module.md), which the builder calls itself, and GetVmNetwork reads a VM's adapters back from Hyper-V in the
+# contract's provider shape for the shared check.
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -18,14 +18,8 @@ $script:Manifest = Join-Path $PSScriptRoot '..\common\artifacts.manifest.json'
 $script:Certify = Join-Path $PSScriptRoot '..\..\tools\parity-certify\certify.py'
 $script:TrustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 $script:VmSid = 'S-1-5-83-0'   # NT VIRTUAL MACHINE\Virtual Machines: VM worker processes read the parent of a differencing disk
-$script:SwitchName = 'aap-guests-linux'
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 $script:Python = $null
-$script:GuestNetwork = $null
-# The fixed part of guest-transport.md's deny set, which every guest adapter's extended port ACLs must carry outbound. The
-# host-specific entries (the host's vEthernet addresses, the LAN's IPv6 prefix, the guest subnet except its gateway) are
-# the P10.0 module's to add and prove.
-$script:DenyRanges = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'fe80::/10', 'fc00::/7', 'ff00::/8')
 
 # The hvsocket client: a SOCKADDR_HV endpoint (family 34, VM id, service id) and one call per connection that sends the
 # header and payload, closes the sending side, and reads the reply until the guest closes it, at most maxBytes.
@@ -96,22 +90,6 @@ function Initialize-AapTypes([string]$TempDir) {
     finally { $env:TEMP = $old[0]; $env:TMP = $old[1] }
 }
 
-# Problems with a VM's network adapters after NewVm. No switch: no adapter at all. The build VM: exactly one adapter, on
-# that switch, DHCP guard and router guard on, MAC spoofing off, and an outbound Deny entry for every fixed range.
-function Get-AapAdapterProblems($Adapters, $Acls, [string]$SwitchName) {
-    $nics = @($Adapters | Where-Object { $null -ne $_ })
-    if (-not $SwitchName) { if ($nics.Count) { "the VM has $($nics.Count) network adapters and must have none" }; return }
-    if ($nics.Count -ne 1) { "the VM has $($nics.Count) network adapters, not one"; return }
-    $n = $nics[0]
-    if ([string]$n.SwitchName -cne $SwitchName) { "the adapter is on '$($n.SwitchName)', not $SwitchName" }
-    if ([string]$n.DhcpGuard -ne 'On') { 'DHCP guard is not on' }
-    if ([string]$n.RouterGuard -ne 'On') { 'router guard is not on' }
-    if ([string]$n.MacAddressSpoofing -ne 'Off') { 'MAC address spoofing is not off' }
-    foreach ($r in $script:DenyRanges) {
-        if (-not @($Acls | Where-Object { $null -ne $_ -and [string]$_.Action -eq 'Deny' -and @('Outbound', 'Both') -contains [string]$_.Direction -and [string]$_.RemoteIPAddress -eq $r }).Count) { "no outbound Deny ACL for $r" }
-    }
-}
-
 function Get-AapVm($A) {
     $vm = @(Hyper-V\Get-VM -Id $A.VmId)
     if ($vm.Count -ne 1) { throw "AAP_Unexpected: VM $($A.VmId) not found" }
@@ -159,14 +137,12 @@ function Invoke-AapChannel($A, [IO.Stream]$Reply) {
 function New-AapUbuntuHyperVProvider {
     <# The provider hashtable Invoke-AapUbuntuImageBuild expects. PythonPath: the python 3 the installer deploys for P05's
        comparison (absolute path to a real file, not an app execution alias or other reparse point; its folder must pass
-       the admin-only check, which the builder runs on ExecFolders before anything else). GuestNetwork: the P10.0 guest
-       network module's adapter step, called with @{ VmId; SwitchName } after the build VM's adapter is connected; it adds
-       the contract's extended port ACL set, which NewVm then reads back. #>
-    param([Parameter(Mandatory)][string]$PythonPath, [Parameter(Mandatory)][scriptblock]$GuestNetwork)
+       the admin-only check, which the builder runs on ExecFolders before anything else). The guest network is not the
+       provider's: the builder takes the P10.0 host network module as Invoke-AapUbuntuImageBuild -Network. #>
+    param([Parameter(Mandatory)][string]$PythonPath)
     if ($PythonPath -cnotmatch '^[A-Za-z]:\\' -or -not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) { throw 'AAP_ProviderInvalid: PythonPath must be an absolute path to python.exe' }
     if (([int][IO.File]::GetAttributes($PythonPath) -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'AAP_ProviderInvalid: PythonPath is a reparse point (an app execution alias or link), not an installed python' }
     $script:Python = $PythonPath
-    $script:GuestNetwork = $GuestNetwork
     $p = @{}
     # Folders whose code this provider runs elevated, for the builder's admin-only check: python's install folder.
     $p.ExecFolders = { param($a) @([IO.Path]::GetDirectoryName($script:Python)) }
@@ -231,26 +207,48 @@ function New-AapUbuntuHyperVProvider {
         # The scanner boots with no disk at all; its disk is added once its live system answers (AttachDisk).
         if ($a.OsDisk) { Hyper-V\Add-VMHardDiskDrive -VM $vm -Path $a.OsDisk }
         foreach ($iso in @($a.Dvds)) { Hyper-V\Add-VMDvdDrive -VM $vm -Path $iso }
+        # The last DVD drive is the seed's, empty until SetSeed: the build seed carries the network declaration, which exists
+        # only once the VM does and is attached.
+        Hyper-V\Add-VMDvdDrive -VM $vm
         $first = $(if ($a.BootFromDvd) { @(Hyper-V\Get-VMDvdDrive -VM $vm)[0] } else { @(Hyper-V\Get-VMHardDiskDrive -VM $vm)[0] })
         Hyper-V\Set-VMFirmware -VM $vm -FirstBootDevice $first
         # No file copy and no key-value exchange between host and guest; the hvsocket agent is the only channel.
         foreach ($svc in 'Guest Service Interface', 'Key-Value Pair Exchange') { Hyper-V\Disable-VMIntegrationService -VM $vm -Name $svc }
-        $nic = @(Hyper-V\Get-VMNetworkAdapter -VM $vm)
-        if ($a.SwitchName) {
-            $s = @(Hyper-V\Get-VMSwitch -Name $a.SwitchName -ErrorAction SilentlyContinue)
-            if ([string]$a.SwitchName -cne $script:SwitchName -or $s.Count -ne 1 -or [string]$s[0].SwitchType -ne 'Internal') { throw "AAP_NetworkUntrusted: guests attach only to the internal switch $($script:SwitchName)" }
-            $nic | Hyper-V\Connect-VMNetworkAdapter -SwitchName $a.SwitchName
-            $nic | Hyper-V\Set-VMNetworkAdapter -DhcpGuard On -RouterGuard On -MacAddressSpoofing Off
-            $null = & $script:GuestNetwork @{ VmId = [string]$vm.Id; SwitchName = [string]$a.SwitchName }
-        } else {
-            $nic | Hyper-V\Remove-VMNetworkAdapter
-        }
-        # Post-condition, read back from Hyper-V: a VM that does not have exactly the adapter state asked for never starts.
-        $now = @(Hyper-V\Get-VMNetworkAdapter -VM $vm)
-        $acls = $(if ($now.Count) { @(Hyper-V\Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter $now) } else { @() })
-        $problems = @(Get-AapAdapterProblems $now $acls ([string]$a.SwitchName))
-        if ($problems.Count) { throw "AAP_NetworkUntrusted: $($a.Name): $($problems -join '; ')" }
+        # No adapter: New-VM's default one goes. Only the host network module attaches one (the build VM's); the builder reads
+        # every VM's adapters back before it starts it (GetVmNetwork).
+        @(Hyper-V\Get-VMNetworkAdapter -VM $vm) | Hyper-V\Remove-VMNetworkAdapter
         @{ Id = [string]$vm.Id }
+    }
+    # The seed image into the VM's last DVD drive, only while the VM is Off.
+    $p.SetSeed = { param($a)
+        $vm = Get-AapVm $a
+        $drives = @(Hyper-V\Get-VMDvdDrive -VM $vm)
+        if ([string]$vm.State -ne 'Off' -or $drives.Count -lt 1) { throw "AAP_Unexpected: $($a.VmName) is not Off or has no seed drive" }
+        Hyper-V\Set-VMDvdDrive -VMDvdDrive $drives[-1] -Path $a.Path
+    }
+    $p.GetVmConfig = { param($a)
+        $vm = Get-AapVm $a
+        @{ AutomaticStartAction = [string]$vm.AutomaticStartAction; CheckpointType = [string]$vm.CheckpointType }
+    }
+    # Each adapter as Hyper-V shows it, in host-network-module.md's provider shape (Consumer obligations, read-back), for the
+    # shared check. Strict mode 2 is on in this module: a misspelt property throws instead of reading as unset.
+    $p.GetVmNetwork = { param($a)
+        $vm = Get-AapVm $a
+        foreach ($n in @(Hyper-V\Get-VMNetworkAdapter -VM $vm)) {
+            $name = ''; $type = ''
+            if ($n.SwitchId) { $sw = Hyper-V\Get-VMSwitch -Id $n.SwitchId -ErrorAction Stop; $name = [string]$sw.Name; $type = [string]$sw.SwitchType }
+            @{  SwitchName = $name; SwitchType = $type
+                DhcpGuard = [string]$n.DhcpGuard; RouterGuard = [string]$n.RouterGuard; MacAddressSpoofing = [string]$n.MacAddressSpoofing
+                PortMirroringMode = [string]$n.PortMirroringMode; VlanMode = [string]$n.VlanSetting.OperationMode; StormLimit = [string]$n.StormLimit
+                LegacyAcls = @(Hyper-V\Get-VMNetworkAdapterAcl -VMNetworkAdapter $n).Count
+                # the other VMs with an adapter on the same switch; the host's own adapters are not VMs
+                Peers = @(Hyper-V\Get-VMNetworkAdapter -All | Where-Object { $name -and -not $_.IsManagementOs -and $_.SwitchName -ceq $name -and $_.VMId -ne $vm.Id } |
+                    ForEach-Object { [string]$_.VMName })
+                Acls = @(Hyper-V\Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter $n | ForEach-Object {
+                    @{ Action = [string]$_.Action; Direction = [string]$_.Direction; RemoteAddress = [string]$_.RemoteIPAddress
+                       LocalAddress = [string]$_.LocalIPAddress; Protocol = [string]$_.Protocol; RemotePort = [string]$_.RemotePort
+                       LocalPort = [string]$_.LocalPort; Weight = $_.Weight; Stateful = [string]$_.Stateful; IsolationId = [string]$_.IsolationID } }) }
+        }
     }
     $p.AttachDisk = { param($a) Hyper-V\Add-VMHardDiskDrive -VM (Get-AapVm $a) -ControllerType SCSI -Path $a.Path }
     $p.StartVm = { param($a) $vm = Get-AapVm $a; if ($vm.State -ne 'Running') { Hyper-V\Start-VM -VM $vm } }

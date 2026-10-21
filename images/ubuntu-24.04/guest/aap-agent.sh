@@ -23,7 +23,7 @@ ROOT=${AAP_AGENT_ROOT:-/var/lib/aap-build}
 S=${AAP_SYSROOT:-}   # tests only: a fake system root for the seal steps; empty in a guest
 PUT_MAX=1073741824
 RUN_MAX=65536
-SEAL_RULES='install-user-absent no-password-hash no-authorized-keys no-ssh-host-keys no-agent no-cloud-state no-build-sudoers'
+SEAL_RULES='install-user-absent no-password-hash no-authorized-keys no-ssh-host-keys no-agent no-cloud-state no-build-sudoers no-build-network'
 
 # --- reply helpers ---------------------------------------------------------------------------------------------------
 printable() { # $1 -> printable ASCII, at most $2 characters
@@ -198,6 +198,8 @@ seal_check() { # JSON {checked, findings, unreadable} of the seal rules
         done ;;
       no-cloud-state) { [ -e "${S}/var/lib/cloud/instance" ] || [ -e "${S}/var/log/installer" ] || [ -e "${S}/etc/cloud/cloud.cfg.d/99-installer.cfg" ]; } && found=1 ;;
       no-build-sudoers) grep -rqs "${user}" "${S}/etc/sudoers.d" && found=1 ;;
+      # the build VM's static address (host network declaration): a clone takes its addressing only from its own seed
+      no-build-network) [ -z "$(compgen -G "${S}/etc/netplan/*.yaml")" ] && [ ! -e "${S}/etc/cloud/cloud.cfg.d/90-installer-network.cfg" ] || found=1 ;;   # check:agent-seal-network
     esac
     checked+=" ${rule}"
     [ "${found}" = 0 ] || findings+=" ${rule}"
@@ -206,9 +208,10 @@ seal_check() { # JSON {checked, findings, unreadable} of the seal rules
 }
 
 # Upstream's last step deprovisions the Azure agent's user; here the install user, the agent with its units and token,
-# cloud-init and installer state, the journal, the per-machine snakeoil TLS key and the random seed go (each clone makes its
-# own at first boot), cloud-init is pointed at the NoCloud seed each clone gets, free space is trimmed and the seal rules are
-# checked.
+# cloud-init and installer state, the build VM's static network configuration (the installer's netplan; each clone's
+# cloud-init writes its own from its seed's network-config), the journal, the per-machine snakeoil TLS key and the random
+# seed go (each clone makes its own at first boot), cloud-init is pointed at the NoCloud seed each clone gets, free space is
+# trimmed and the seal rules are checked.
 deprovision() {
   local user seal rc=0
   user=$(var install_user) || { reply "${R[phase]}" failed 'no install_user'; return; }
@@ -219,6 +222,7 @@ deprovision() {
   cloud-init clean --logs --seed --machine-id > /dev/null 2>&1 || true
   rm -rf "${S}/var/lib/cloud/instance" "${S}/var/lib/cloud/instances" "${S}/var/lib/cloud/seed" "${S}/var/log/installer"
   rm -f "${S}/etc/cloud/cloud.cfg.d/99-installer.cfg" "${S}/etc/cloud/cloud.cfg.d/90-installer-network.cfg" "${S}/etc/cloud/cloud-init.disabled"
+  rm -f "${S}"/etc/netplan/*.yaml
   mkdir -p "${S}/etc/cloud/cloud.cfg.d"
   printf 'datasource_list: [ NoCloud, None ]\n' > "${S}/etc/cloud/cloud.cfg.d/90-aap-nocloud.cfg"
   rm -f "${S}"/etc/ssh/ssh_host_* "${S}/root/.bash_history"

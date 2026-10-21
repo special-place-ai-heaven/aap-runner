@@ -1,5 +1,6 @@
 # Fake world for the P07 builder tests: real temp folders for the storage roots, a fake provider that records every call
-# and never touches Hyper-V, disks, ACLs, sockets or the network, and a fake guest agent that answers like
+# and never touches Hyper-V, disks, ACLs, sockets or the network, the shared strict fake of the host network module
+# (tests/common/AapHostNetworkFake.psm1, state under <world>\net) and a fake guest agent that answers like
 # guest/aap-agent.sh. Storage roots must pass the contract's path form (letters, digits, space and ._()- only), so the world
 # lives under $env:AAP_P07_TESTROOT when set, else %LOCALAPPDATA%\aap-p07-tests; the caller removes it.
 
@@ -88,7 +89,11 @@ function New-FakeWorld {
         InventoryText = '{"schema":1,"probe":"fake"}'; ReportText = '# software report'; ScanReport = $null; ScanText = $null
         CompareReport = $null; CompareExit = 1; Vms = @{}; VmIds = @{}; ReadOnly = (New-Object System.Collections.Generic.List[string])
         SourceArchive = $null; MediaPath = $null; MediaSha = $null; Provider = $null; PythonDir = (Join-Path $root 'python'); MemOverheadMib = 280
-        Switch = @{ Name = 'aap-guests-linux'; SwitchType = 'Internal' }
+        Switch = @{ Name = 'aap-build-linux'; SwitchType = 'Internal' }
+        # The host network module (the shared fake) and what Hyper-V says about VMs beyond it: adapters the module did not
+        # make (VM name -> provider-shape adapters), a VM's configuration, and a Hyper-V that cannot look.
+        NetRoot = (Join-Path $root 'net'); Network = $null; ForeignNics = @{}; VmConfig = @{ AutomaticStartAction = 'Nothing'; CheckpointType = 'Disabled' }; VmLookFails = $false
+        Seeded = @{}
     }
     $w.Staging = $(if ($SeparateStaging) { Join-Path $root 'vol3\staging' } else { Join-Path $w.Base 'staging' })
     foreach ($d in $w.Base, $w.Clone, $w.Scratch, $w.Staging, $w.Capacity, $w.Evidence, (Join-Path $w.Base 'media')) { [void][IO.Directory]::CreateDirectory($d) }
@@ -123,11 +128,12 @@ function New-FakeWorld {
     Set-ModuleVar 'HelloC' (Join-Path $repo 'tools\parity-certify\workloads\fixtures\hello.c')
     Set-ModuleVar 'RepoRoot' $repo
     Set-ModuleVar 'PollSeconds' 0
+    Set-ModuleVar 'NetVerifyMinutes' 1   # a test that wants the running build VM verified before every phase sets 0
     $planSha = Get-FileSha $w.PlanPath
     $w.Config = @{
         StoragePath = $w.StoragePath; EvidenceRoot = $w.Evidence; AapBuild = 1
         BuildCpus = 4; BuildMemGib = 10; StagingGibMax = 400; BaseGibMax = 186; JobDiskGibMax = 55
-        BuilderCommit = '0123456789abcdef0123456789abcdef01234567'; Inputs = @(); SwitchName = 'aap-guests-linux'
+        BuilderCommit = '0123456789abcdef0123456789abcdef01234567'; Inputs = @()
         Waivers = @(Get-AapUbuntuBlockers -Plan $w.Plan -ManifestPath $manifest | ForEach-Object { New-TestWaiver $_ $planSha })
     }
     $w.Sizes['os.vhdx'] = [double]61 * $script:GiB
@@ -136,6 +142,19 @@ function New-FakeWorld {
     $w.CompareReport = Get-FakeCompareReport
     $w.Guest = { param($w, $req) Get-FakeGuestReply $w $req }
     $w.Provider = New-FakeProvider $w
+    # Hyper-V's answer for a VM id, as the module asks it: $null only for a VM it does not have. The builder gets the fake's
+    # three ops wrapped so the world records each call in order with the provider's.
+    $w | Add-Member -NotePropertyName NetFake -NotePropertyValue $null
+    $w.Network = @{
+        Attach = { param($a) Add-FakeCall 'Attach' $a; & $w.NetFake.Attach $a }
+        Detach = { param($a) Add-FakeCall 'Detach' $a; & $w.NetFake.Detach $a }
+        Verify = { param($a) Add-FakeCall 'Verify' $a; & $w.NetFake.Verify $a }
+    }
+    $w.NetFake = New-AapFakeHostNetwork -Root $w.NetRoot -Vm { param($id)
+        if ($w.VmLookFails) { throw 'fake Hyper-V: the service does not answer' }
+        $name = @($w.VmIds.Keys | Where-Object { $w.VmIds[$_] -eq $id }) | Select-Object -First 1
+        if (-not $name -or -not $w.Vms.ContainsKey($name)) { return $null }
+        @{ State = $w.Vms[$name]; Adapters = @($w.ForeignNics[$name] | Where-Object { $null -ne $_ }).Count } }
     return $w
 }
 
@@ -154,7 +173,7 @@ function Get-FakeGuestReply($w, $req) {
     $o = [ordered]@{ schema = 1; phase = $req.phase; status = 'ok'; message = '' }
     if ($req.kind -eq 'scripts') { $o.scripts = @($req.script | ForEach-Object { $n, $s = $_.Split(' '); [ordered]@{ name = $n; sha256 = $s; exit_code = 0; seconds = 3 } }) }
     if ($req.kind -eq 'action' -and $req.action -eq 'deprovision') {
-        $o.data = [ordered]@{ seal = [ordered]@{ checked = @('install-user-absent', 'no-password-hash', 'no-authorized-keys', 'no-ssh-host-keys', 'no-agent', 'no-cloud-state', 'no-build-sudoers'); findings = @(); unreadable = @() } }
+        $o.data = [ordered]@{ seal = [ordered]@{ checked = @('install-user-absent', 'no-password-hash', 'no-authorized-keys', 'no-ssh-host-keys', 'no-agent', 'no-cloud-state', 'no-build-sudoers', 'no-build-network'); findings = @(); unreadable = @() } }
     }
     if ($req.kind -eq 'action' -and $req.action -eq 'software-report-and-tests') { $o.data = [ordered]@{ report_exit = 0; tests_exit = 0 } }
     if ($req.kind -eq 'verify') {
@@ -185,10 +204,15 @@ function New-FakeProvider($w) {
         [IO.File]::WriteAllText($a.Path, [string]$a.Files['user-data']) }
     $p.GetSwitch = { param($a) Add-FakeCall 'GetSwitch' $a; $w.Switch }
     $p.NewVm = { param($a) Add-FakeCall 'NewVm' $a; $w.Vms[$a.Name] = 'Off'; $w.VmIds[$a.Name] = [guid]::NewGuid().ToString(); @{ Id = $w.VmIds[$a.Name] } }
+    $p.SetSeed = { param($a) Add-FakeCall 'SetSeed' $a; if ($w.Vms[$a.VmName] -ne 'Off') { throw 'fake: SetSeed on a VM that is not Off' }; $w.Seeded[$a.VmName] = $a.Path }
+    $p.GetVmConfig = { param($a) Add-FakeCall 'GetVmConfig' $a; $w.VmConfig }
+    # Hyper-V's read-back: the module's adapter (the shared fake, tampers applied) and any adapter the module did not make.
+    $p.GetVmNetwork = { param($a) Add-FakeCall 'GetVmNetwork' $a
+        @(Get-AapFakeHostNetworkAdapter -Root $w.NetRoot -VmId $a.VmId) + @($w.ForeignNics[$a.VmName] | Where-Object { $null -ne $_ }) }
     $p.AttachDisk = { param($a) Add-FakeCall 'AttachDisk' $a }
     $p.StartVm = { param($a) Add-FakeCall 'StartVm' $a; $w.Vms[$a.VmName] = 'Running' }
     $p.TypeBootCommand = { param($a) Add-FakeCall 'TypeBootCommand' $a }
-    $p.WaitVmOff = { param($a) Add-FakeCall 'WaitVmOff' $a; $w.InstallOff }
+    $p.WaitVmOff = { param($a) Add-FakeCall 'WaitVmOff' $a; if ($w.InstallOff) { $w.Vms[$a.VmName] = 'Off' }; $w.InstallOff }
     $p.RemoveDvds = { param($a) Add-FakeCall 'RemoveDvds' $a }
     $p.StopVm = { param($a) Add-FakeCall 'StopVm' $a; $w.Vms[$a.VmName] = 'Off' }
     $p.RemoveVm = { param($a) Add-FakeCall 'RemoveVm' $a; $w.Vms.Remove($a.Name) }

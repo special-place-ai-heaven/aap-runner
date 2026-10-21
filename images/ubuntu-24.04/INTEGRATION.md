@@ -85,15 +85,13 @@ Everything else is copied. These 19 functions are verbatim copies of P06's (same
    `facts.read_ahead_kb_root`).
 6. **Budgets.** Admission counts `clone_gib_max` from `budget.json` and `scratch_gib_max` 0. The clone peak comes from the
    verification guest only; re-measure with real jobs (P22).
-7. **Switch.** Clones attach only to `aap-guests-linux` (P10.0). The build VM needs that switch with internet egress during
-   the install and the phases; the scanner and verification VMs have no adapter (read back after create). **Shared-switch
-   hazard**: guest-transport.md names no build-only switch, so the build VM, which runs internet-sourced installers as root,
-   shares `aap-guests-linux` (one L2 segment) with runner clones. The per-adapter ACLs deny the guest subnet except its
-   gateway and the guards stop DHCP, router and MAC spoofing, but they do not stop ARP poisoning (a guest can still claim a
-   neighbour's or the gateway's address on the segment), so a build and running clones are still neighbours. P07
-   recommends a build-only internal switch in the contract (for example `aap-build-linux`, its own subnet and NAT, the same
-   controls); until the contract names one, P07 builds only on `aap-guests-linux`, and keeping a build and Linux clones apart
-   is a **hard P12 rule** (P12 below).
+7. **Switch.** Clones attach only to `aap-guests-linux`, through the P10.0 host network module
+   (`parity/contracts/host-network-module.md`). The build VM is on its own switch, `aap-build-linux` (contract, Switches:
+   a build VM never shares a switch), so the shared-switch hazard P07 raised (ARP poisoning between a build and clones,
+   which no guard stops) is closed by the contract; the scanner and verification VMs have no adapter (read back before they
+   start). The seed of each clone carries its own `network-config` (static, from its declaration); the image carries no
+   address (the seal removes the build VM's netplan file and the installer's network configuration, seal rule
+   `no-build-network`).
 
 ## P15: Linux guest bootstrap
 
@@ -116,26 +114,22 @@ Everything else is copied. These 19 functions are verbatim copies of P06's (same
   not start without it. P07's verification seed runs exactly this step before anything is checked: keep the two in step.
   `/var/lib/systemd/random-seed` is recreated by systemd.
 
-## P10.0: guest network module
+## P10.0: host network module (host-network-module.md, P07.1 conformance)
 
-- `aap-guests-linux` must exist as an **Internal** switch before a build; the builder refuses otherwise and creates nothing.
-- The build guest uses DHCP (autoinstall `network`: `dhcp4: true` on the `hv_netvsc` adapter) and needs DNS and internet
-  egress to the Ubuntu archive, GitHub and the vendor feeds the upstream scripts use. Provide DHCP and DNS on the switch, or
-  tell P07 the static addressing to put in the seed.
-- **Adapter step interface.** `New-AapUbuntuHyperVProvider -GuestNetwork <scriptblock>` takes the module's per-adapter step.
-  P07 calls it once per build VM, after connecting the adapter and setting DHCP guard on, router guard on and MAC spoofing
-  off, with `@{ VmId = '<guid>'; SwitchName = 'aap-guests-linux' }`. It must add guest-transport.md's full extended port ACL
-  set to that VM's adapter: deny the host's vEthernet addresses (except the DHCP and DNS endpoints the design uses), RFC 1918,
-  169.254.0.0/16, 100.64.0.0/10, multicast (224.0.0.0/4, ff00::/8), fe80::/10, fc00::/7, the LAN's IPv6 prefix and the guest
-  subnet except its gateway; allow internet egress. It throws on failure. P07 then reads the adapter back
-  (`Get-VMNetworkAdapter`, `Get-VMNetworkAdapterExtendedAcl`) and refuses (`AAP_NetworkUntrusted`) unless the guards are set
-  and every fixed range has an outbound Deny entry. **Open item for P10.0**: the host-specific entries (vEthernet addresses,
-  LAN prefix, subnet) depend on the module's design; P07 cannot verify them and P10.0 must prove them in the lab (negative
-  cases of guest-transport.md). Until the module exists there is no `-GuestNetwork` to pass and no build.
-- **Known open item (P07.1)**: the read-back proves only that the Deny entries exist (a higher-weight Allow overrides a Deny,
-  a port- or protocol-scoped Deny passes as if it covered the whole range, and outbound entries miss inbound traffic and ARP
-  poisoning); a shared validator delivered with the host-network-module contract fixes this once, and P07 then conforms.
-- The shared-switch hazard above (P11 item 7) is a request for a build-only switch.
+- The builder takes the module as `Invoke-AapUbuntuImageBuild -Network` (`Attach`, `Detach`, `Verify`; absent is
+  `AAP_NetworkUnavailable`, incomplete `AAP_NetworkInvalid`) and calls it as the contract's Consumer obligations say, for the
+  build VM `aap-lbuild-<8 hex>` only, profile `linux`: `NewVm` with no adapter (no automatic start, no checkpoints, read
+  back), `Attach` and the shared declaration check, the declaration's address, prefix length, gateway and resolvers as the
+  autoinstall `network` section (`dhcp4: false`, matched by driver `hv_netvsc`) in a seed made after `Attach` and put in the
+  VM's seed drive while it is Off (`SetSeed`), then before each of its two starts `Attach` again, `Verify` and the
+  provider's read-back (`GetVmNetwork`, the contract's provider shape) through `Get-AapHostNetworkAdapterProblems`; `Verify`
+  again before a phase once a minute has passed since the last check; `RemoveVm` then `Detach`, also on every failure path
+  and for a crashed run's build VM (its id is in `state.json`). The scanner and verification VMs never reach the module.
+- `aap-build-linux` must exist as an **Internal** switch (P19); the builder refuses otherwise, before anything is made, and
+  never falls back to a guest switch. Nothing on the switch serves DHCP or DNS: the build guest has static addressing and
+  reaches the Ubuntu archive, GitHub and the vendor feeds through NAT and public resolvers.
+- The read-back is the shared check's, so it covers both directions, scope, weights, the source pin, stateless rules and
+  peers; the host-specific targets are the module's own `Verify` (check 5).
 
 ## P19: installer, helper, storage
 
@@ -145,8 +139,11 @@ Everything else is copied. These 19 functions are verbatim copies of P06's (same
   `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\GuestCommunicationServices`, through the existing
   elevated helper, **only for the duration of a build** (register before, remove after, also after a failed build), beside
   the runtime GUID guest-transport.md names. Nothing else on the host may listen on or connect to that GUID.
-- Deploy `images/ubuntu-24.04`, `images/windows` (the shared helpers; same commit, see Dependency on P06), `images/common`
-  and `tools/parity-certify` (probe, comparison, allowlist, `workloads/fixtures/hello.c`) to an Administrators-only folder
+- Create the Internal switch `aap-build-linux` with its own subnet, the host's vEthernet address as gateway, NAT and the
+  host firewall rules (host-network-module.md, Switches) before the first build; without it the builder refuses.
+- Deploy `images/ubuntu-24.04`, `images/windows` (the shared helpers; same commit, see Dependency on P06), `images/common`,
+  `supervisor/network` (the shared network check the builder imports) and `tools/parity-certify` (probe, comparison,
+  allowlist, `workloads/fixtures/hello.c`) to an Administrators-only folder
   and run the builder from there; it refuses (`AAP_BuilderUntrusted`) unless each of those folders passes the admin-only
   check. The check runs after the modules loaded (README, Trust in the builder's own files): the admin-only deployment is
   the protection, the check proves it is in place.
@@ -168,8 +165,9 @@ Everything else is copied. These 19 functions are verbatim copies of P06's (same
   unfiltered.
 - Never render `software-report.md` (guest-authored Markdown); show its hash at most.
 - Admission refuses the Ubuntu profile until a generation has a measured `budget.json`.
-- **Hard rule until guest-transport.md names a build-only switch**: a Linux image build and Linux runner clones never share
-  `aap-guests-linux`. Admit no Linux clone while a build runs, and start a build only when no Linux clone runs (P11 item 7).
+- A Linux image build and Linux runner clones never share a switch: the build VM is on `aap-build-linux`
+  (host-network-module.md, Switches), enforced by the module's `Attach`, its `Verify` and the builder's read-back (`Peers`).
+  P12 needs no admission rule for it; it still builds the module once and hands it to the builder.
 - Admission counts a running build VM: 4 vCPU and 10 GiB static memory (plus its worker overhead), the build folder up to
   `StagingGibMax` on the staging volume, and one `os_disk_gib` copy on the base volume while it publishes. One image build at
   a time (the builder's `aap-image-build.lock`).
@@ -205,8 +203,7 @@ Everything else is copied. These 19 functions are verbatim copies of P06's (same
 
 ## P06.1 (opened by the coordinator for the Windows twin)
 
-- The same per-adapter controls and post-condition the Ubuntu provider now has (DHCP guard, router guard, MAC spoofing,
-  the P10.0 ACL step, read back before start; zero adapters on VMs without a switch).
+- Network conformance is P06.2's, against host-network-module.md, as P07.1 did here.
 - One image build at a time across both builders: take `<staging root>\build\aap-image-build.lock`, the lock P07 takes.
 
 ## guest-transport.md: open item (for the coordinator to amend)
@@ -241,3 +238,6 @@ it, its registration window (P19) and the rule that no clone image may contain i
 5. **Verification network**: none, as in P06.
 6. **Inputs are pinned in the plan, not passed in config**: the source archive and the ISO by P03 entry and SHA-256.
 7. **Scanner boots without a disk**; the sealed disk is hot-added after the live system answers.
+8. **Network conformance (P07.1)**: a running build VM is verified again before the next phase once 60 seconds have
+   passed, not every 60 seconds (a phase is one synchronous guest call of up to hours); a host address change inside a
+   phase is seen at the next phase.

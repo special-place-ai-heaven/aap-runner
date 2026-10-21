@@ -17,6 +17,8 @@ BeforeDiscovery {
 BeforeAll {
     . (Join-Path $PSScriptRoot 'UbuntuImageTestHelpers.ps1')
     Import-Module (Join-Path (Get-TestRepo) 'images\windows\AapWinImage.psm1') -Force
+    Import-Module (Join-Path (Get-TestRepo) 'supervisor\network\AapHostNetworkCheck.psm1') -Force
+    Import-Module (Join-Path (Get-TestRepo) 'tests\common\AapHostNetworkFake.psm1') -Force
     Import-Module (Get-TestModulePath) -Force
     $script:Repo = Get-TestRepo
     $script:Py = Find-TestPython
@@ -25,7 +27,9 @@ BeforeAll {
     $script:Gen = 'ubuntu-24.04-x64/20261012.334.1-aap.1'
     $script:Sha0 = '0' * 64
 
-    function Invoke-Build { Invoke-AapUbuntuImageBuild -Config $w.Config -Provider $w.Provider }
+    function Invoke-Build { Invoke-AapUbuntuImageBuild -Config $w.Config -Provider $w.Provider -Network $w.Network }
+    # The VM ops in call order, the host network module's included.
+    function Get-OpOrder([string[]]$Only) { @($w.Calls | Where-Object { $Only -contains $_.Op } | ForEach-Object { $_.Op }) }
     function Get-EvidenceDir { Join-Path $w.Evidence "P07\$script:BuildId" }
     function Assert-NothingStarted {
         (Get-Ops $w 'NewVm').Count | Should -Be 0
@@ -256,7 +260,7 @@ Describe 'storage record and roots' {
         @{ Which = 'its own folder'; Rel = '.' }, @{ Which = 'the guest payload'; Rel = '<repo>\images\ubuntu-24.04\guest' },
         @{ Which = 'the shared P06 helpers'; Rel = '..\windows' }, @{ Which = 'images\common'; Rel = '..\common' },
         @{ Which = 'the P05 harness'; Rel = '<repo>\tools\parity-certify' }, @{ Which = 'the probe'; Rel = '<repo>\tools\parity-certify\probe' },
-        @{ Which = 'the python the provider runs'; Rel = '<python>' }) {
+        @{ Which = 'the python the provider runs'; Rel = '<python>' }, @{ Which = 'the shared network check'; Rel = '..\..\supervisor\network' }) {
         # Folders next to the module are taken from where it was loaded (the mutation run loads a copy); the rest from the repository.
         $here = Split-Path -Parent (Get-Module AapUbuntuImage).Path
         $path = $(if ($Rel -eq '<python>') { $w.PythonDir } elseif ($Rel.StartsWith('<repo>')) { Join-Path $script:Repo $Rel.Substring(7) } else { Join-Path $here $Rel })
@@ -267,7 +271,7 @@ Describe 'storage record and roots' {
     }
     It 'the production provider refuses a user-owned folder with the real ACL rules (no Hyper-V call)' {
         Import-Module (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.HyperV.psm1') -Force
-        $p = New-AapUbuntuHyperVProvider -PythonPath (Get-Process -Id $PID).Path -GuestNetwork { }
+        $p = New-AapUbuntuHyperVProvider -PythonPath (Get-Process -Id $PID).Path
         $dir = Join-Path $w.Root 'userdir'
         [void](New-Item -ItemType Directory -Path $dir)
         @(& $p.TestRootTrust @{ Path = $dir }).Count | Should -BeGreaterThan 0
@@ -276,14 +280,14 @@ Describe 'storage record and roots' {
         Import-Module (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.HyperV.psm1') -Force
         $py = Join-Path $w.Root 'py\python.exe'
         [void](New-Item -ItemType Directory -Path (Split-Path -Parent $py)); [IO.File]::WriteAllText($py, 'not python')
-        $p = New-AapUbuntuHyperVProvider -PythonPath $py -GuestNetwork { }
+        $p = New-AapUbuntuHyperVProvider -PythonPath $py
         $folders = @(& $p.ExecFolders @{})
         $folders | Should -Be @((Split-Path -Parent $py))
         @(& $p.TestRootTrust @{ Path = $folders[0] }).Count | Should -BeGreaterThan 0
     }
     It 'the production provider refuses the python app execution alias, a reparse point' -Skip:(-not (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\python.exe'))) {
         Import-Module (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.HyperV.psm1') -Force
-        { New-AapUbuntuHyperVProvider -PythonPath (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\python.exe') -GuestNetwork { } } | Should -Throw 'AAP_ProviderInvalid*reparse*'
+        { New-AapUbuntuHyperVProvider -PythonPath (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\python.exe') } | Should -Throw 'AAP_ProviderInvalid*reparse*'
     }
 }
 
@@ -351,9 +355,9 @@ Describe 'preflight refusals change nothing' {
         $r.Detail | Should -Match 'live-server amd64'
         Assert-NothingStarted
     }
-    It 'refuses a config without <Key>' -TestCases @(@{ Key = 'BuilderCommit' }, @{ Key = 'StagingGibMax' }, @{ Key = 'BaseGibMax' }, @{ Key = 'JobDiskGibMax' }, @{ Key = 'BuildCpus' }, @{ Key = 'BuildMemGib' }, @{ Key = 'SwitchName' }) {
+    It 'refuses a config without <Key>' -TestCases @(@{ Key = 'BuilderCommit' }, @{ Key = 'StagingGibMax' }, @{ Key = 'BaseGibMax' }, @{ Key = 'JobDiskGibMax' }, @{ Key = 'BuildCpus' }, @{ Key = 'BuildMemGib' }) {
         $w.Config.Remove($Key)
-        (Invoke-Build).Reason | Should -BeIn @('AAP_ConfigInvalid', 'AAP_NetworkUntrusted')
+        (Invoke-Build).Reason | Should -Be 'AAP_ConfigInvalid'
         Assert-NothingStarted
     }
     It 'refuses <Key> = <Value>, outside the owner-approved lab ceiling' -Tag 'owner-limits' -TestCases @(
@@ -382,14 +386,26 @@ Describe 'preflight refusals change nothing' {
         $w.Provider.Remove('CompareInventory')
         (Invoke-Build).Reason | Should -Be 'AAP_ProviderInvalid'
     }
-    It 'refuses <Case>' -Tag 'network' -TestCases @(
-        @{ Case = 'another switch name in the config'; Edit = { param($w) $w.Config.SwitchName = 'Default Switch' } },
-        @{ Case = 'the Windows guests switch'; Edit = { param($w) $w.Config.SwitchName = 'aap-guests-win' } },
-        @{ Case = 'a missing switch'; Edit = { param($w) $w.Switch = $null } },
-        @{ Case = 'an External switch of the right name'; Edit = { param($w) $w.Switch = @{ Name = 'aap-guests-linux'; SwitchType = 'External' } } },
-        @{ Case = 'a Private switch of the right name'; Edit = { param($w) $w.Switch = @{ Name = 'aap-guests-linux'; SwitchType = 'Private' } } }) {
+    It 'refuses <Case>: the build switch aap-build-linux, never a guest switch' -Tag 'network' -TestCases @(
+        @{ Case = 'a missing build switch'; Edit = { param($w) $w.Switch = $null } },
+        @{ Case = 'only the Linux guests switch'; Edit = { param($w) $w.Switch = @{ Name = 'aap-guests-linux'; SwitchType = 'Internal' } } },
+        @{ Case = 'an External switch of the right name'; Edit = { param($w) $w.Switch = @{ Name = 'aap-build-linux'; SwitchType = 'External' } } },
+        @{ Case = 'a Private switch of the right name'; Edit = { param($w) $w.Switch = @{ Name = 'aap-build-linux'; SwitchType = 'Private' } } }) {
         & $Edit $w
         (Invoke-Build).Reason | Should -Be 'AAP_NetworkUntrusted'
+        (Get-Ops $w 'GetSwitch')[0].Args.Name | Should -Be 'aap-build-linux'
+        Assert-NothingStarted
+    }
+    It 'refuses to build without the host network module' -Tag 'network-module' {
+        $r = Invoke-AapUbuntuImageBuild -Config $w.Config -Provider $w.Provider
+        $r.Reason | Should -Be 'AAP_NetworkUnavailable'
+        Assert-NothingStarted
+    }
+    It 'refuses a host network module without <Op>' -Tag 'network-ops' -TestCases @(@{ Op = 'Attach' }, @{ Op = 'Detach' }, @{ Op = 'Verify' }) {
+        $w.Network.Remove($Op)
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkInvalid'
+        $r.Detail | Should -Match $Op
         Assert-NothingStarted
     }
     It 'refuses a plan whose image version could name a path' -Tag 'plan-version' {
@@ -424,13 +440,18 @@ Describe 'a full build with fakes' {
         $script:R.Ok | Should -BeTrue
         Test-Path (Join-Path $w.Base 'ubuntu-24.04-x64\20261012.334.1-aap.1\base.vhdx') | Should -BeTrue
     }
-    It 'installs the ISO unattended: empty disk, media and seed, boot command, power-off, media out, seed deleted, boot from disk' {
+    It 'installs the ISO unattended: empty disk, VM, network, seed, boot command, power-off, media out, seed deleted, boot from disk' {
         $ops = @($w.Calls | ForEach-Object { $_.Op })
         $first = [array]::IndexOf($ops, 'NewBuildDisk')
-        @($ops[$first..($first + 9)]) | Should -Be @('NewBuildDisk', 'NewSeedImage', 'NewVm', 'StartVm', 'TypeBootCommand', 'WaitVmOff', 'RemoveDvds', 'StartVm', 'WaitGuestReady', 'InvokeGuest')
+        # host-network-module.md, Consumer obligations 1 and 2: NewVm with no adapter, Attach and the declaration check, the
+        # seed from the declaration while the VM is Off, then before every start Attach again, Verify and the read-back.
+        @($ops[$first..($first + 20)]) | Should -Be @('NewBuildDisk', 'NewVm', 'GetVmConfig', 'Attach', 'NewSeedImage', 'SetSeed', 'Attach', 'Verify', 'GetVmNetwork', 'StartVm',
+            'TypeBootCommand', 'WaitVmOff', 'RemoveDvds', 'Attach', 'Verify', 'GetVmNetwork', 'StartVm', 'WaitGuestReady', 'InvokeGuest', 'InvokeGuest', 'MeasureBytes')
         $vm = (Get-Ops $w 'NewVm')[0].Args
         $vm.Name | Should -Match '^aap-lbuild-[0-9a-f]{8}$'
-        @($vm.Dvds | ForEach-Object { Split-Path -Leaf $_ }) | Should -Be @('ubuntu-24.04.5-live-server-amd64.iso', 'seed.iso')
+        $vm.ContainsKey('SwitchName') | Should -BeFalse
+        @($vm.Dvds | ForEach-Object { Split-Path -Leaf $_ }) | Should -Be @('ubuntu-24.04.5-live-server-amd64.iso')
+        Split-Path -Leaf (Get-Ops $w 'SetSeed')[0].Args.Path | Should -Be 'seed.iso'
         $vm.BootFromDvd | Should -BeTrue
         (Get-Ops $w 'NewBuildDisk')[0].Args.SizeGib | Should -Be 150
         @((Get-Ops $w 'TypeBootCommand')[0].Args.Keys) -join '' | Should -Match 'autoinstall ds=nocloud<enter>'
@@ -502,7 +523,8 @@ Describe 'a full build with fakes' {
         $script:Ev.media.entry | Should -Be 'ubuntu-24.04.5-live-server'
         $script:Ev.verify.inventory_compare.extra_count | Should -Be 2
         @($script:Ev.verify.inventory_compare.extra | ForEach-Object { "$($_.section).$($_.key)" }) | Should -Be @('tool_cache.node/24.22.0', 'env.AAP')
-        $script:Ev.switch | Should -Be 'aap-guests-linux'
+        $script:Ev.switch | Should -Be 'aap-build-linux'
+        $script:Ev.network.address | Should -Match '^172\.31\.253\.'
         $script:Ev.seal_check.findings.Count | Should -Be 0
         $script:Ev.verify.upstream_tests.failed | Should -Be 0
         $script:Ev.verify.facts.kernel | Should -Be '6.17.0-1030-azure'
@@ -517,9 +539,8 @@ Describe 'a full build with fakes' {
     It 'scans in a guest of the pinned media with no network and no disk at boot, then hot-adds the sealed disk as a differencing child' {
         $vm = (Get-Ops $w 'NewVm')[1].Args
         $vm.Name | Should -Match '^aap-lscan-'
-        $vm.SwitchName | Should -BeNullOrEmpty
         $vm.OsDisk | Should -BeNullOrEmpty
-        @($vm.Dvds | ForEach-Object { Split-Path -Leaf $_ }) | Should -Be @('ubuntu-24.04.5-live-server-amd64.iso', 'seed.iso')
+        @($vm.Dvds | ForEach-Object { Split-Path -Leaf $_ }) | Should -Be @('ubuntu-24.04.5-live-server-amd64.iso')
         $vm.BootFromDvd | Should -BeTrue
         $d = (Get-Ops $w 'NewDiffDisk')[0].Args
         $d.Parent | Should -Be (Join-Path $w.Staging "build\$script:BuildId\os.vhdx")
@@ -542,8 +563,7 @@ Describe 'a full build with fakes' {
     It 'verifies in a fresh guest of the sealed disk with no network and no media, as the job user, then compares the inventory' {
         $vm = (Get-Ops $w 'NewVm')[2].Args
         $vm.Name | Should -Match '^aap-lverify-'
-        $vm.SwitchName | Should -BeNullOrEmpty
-        @($vm.Dvds | ForEach-Object { Split-Path -Leaf $_ }) | Should -Be @('seed.iso')
+        @($vm.Dvds).Count | Should -Be 0
         $vm.BootFromDvd | Should -BeFalse
         @($w.Puts | Where-Object { $_.Vm -like 'aap-lverify-*' } | ForEach-Object { $_.Name }) | Should -Be @('aap-verify.sh', 'linux.sh', 'hello.c', 'runner-images.tar.gz')
         $q = $w.Requests | Where-Object { $_.kind -eq 'verify' }
@@ -571,6 +591,11 @@ Describe 'a full build with fakes' {
         # The verification guest boots like a clone (P15): a new snakeoil TLS pair before the agent answers.
         $v | Should -Match '(?m)^runcmd:\n  - \[make-ssl-cert, generate-default-snakeoil, --force-overwrite\]\n  - \[systemctl, daemon-reload\]\n  - \[systemctl, enable, --now, aap-agent\.socket\]$'
         foreach ($x in $b, $s) { $x | Should -Not -Match 'make-ssl-cert' }
+        # The build guest's network is the declaration, static (contract: no DHCP); the others have no network at all.
+        $d = $script:Ev.network
+        $b | Should -Match ("(?m)^        dhcp4: false\n        dhcp6: false\n        accept-ra: false\n        addresses: \[" + [regex]::Escape("$($d.address)/24") + "\]\n        routes:\n          - to: default\n            via: " + [regex]::Escape($d.gateway) + "\n        nameservers:\n          addresses: \[192\.0\.2\.53, 198\.51\.100\.53\]$")
+        foreach ($x in $b, $s, $v) { $x | Should -Not -Match 'dhcp4: true' }
+        foreach ($x in $s, $v) { $x | Should -Not -Match 'network:' }
         foreach ($x in $b, $s, $v) {
             $x | Should -Match 'ListenStream=vsock::5223'
             $x | Should -Not -Match '(?m)^\s*-?\s*(passwd|plain_text_passwd|hashed_passwd|ssh_authorized_keys|password):'
@@ -610,6 +635,130 @@ Describe 'a full build with fakes' {
         $r2 = Invoke-Build
         $r2.Status | Should -Be 'unchanged'
         @($w.Calls | Select-Object -Skip $before | Where-Object { $_.Op -in 'NewVm', 'NewBuildDisk', 'NewSeedImage' }).Count | Should -Be 0
+    }
+}
+
+Describe 'the build VM''s network: the host network module (host-network-module.md, Consumer obligations)' {
+    BeforeEach { $w = New-FakeWorld }
+    AfterEach { Remove-World $w }
+    It 'attaches only the build VM, the same declaration at every start, verifies it while it runs and detaches it after RemoveVm' -Tag 'network-running' {
+        Set-ModuleVar 'NetVerifyMinutes' 0
+        (Invoke-Build).Status | Should -Be 'built'
+        $build = (Get-Ops $w 'NewVm')[0].Args.Name
+        $att = @(Get-Ops $w 'Attach')
+        $att.Count | Should -Be 3   # the declaration for the seed, then before each of the two starts
+        foreach ($a in $att) { $a.Args.VmName | Should -Be $build; $a.Args.Profile | Should -Be 'linux'; @($a.Args.Keys).Count | Should -Be 3 }
+        @(Get-Ops $w 'Verify').Count | Should -Be (2 + @($w.Plan.phases).Count)   # before each start and before each phase
+        $ops = $w.Calls.ToArray()
+        $removed = @(0..($ops.Count - 1) | Where-Object { $ops[$_].Op -eq 'RemoveVm' -and $ops[$_].Args.Name -eq $build })[0]
+        $detached = @(0..($ops.Count - 1) | Where-Object { $ops[$_].Op -eq 'Detach' })
+        $detached.Count | Should -Be 1
+        $detached[0] | Should -BeGreaterThan $removed
+        $ops[$detached[0]].Args.VmId | Should -Be $att[0].Args.VmId
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot) | Should -BeNullOrEmpty
+        # The scanner and the verification VM: never attached, read back with no adapter before they start.
+        foreach ($vm in @(Get-Ops $w 'NewVm' | Select-Object -Skip 1 | ForEach-Object { $_.Args.Name })) {
+            $read = @(0..($ops.Count - 1) | Where-Object { $ops[$_].Op -eq 'GetVmNetwork' -and $ops[$_].Args.VmName -eq $vm })
+            $start = @(0..($ops.Count - 1) | Where-Object { $ops[$_].Op -eq 'StartVm' -and $ops[$_].Args.VmName -eq $vm })
+            $read.Count | Should -Be 1 -Because $vm
+            $read[0] | Should -BeLessThan $start[0]
+        }
+    }
+    It 'refuses to start the build VM when the module''s Verify reports <Tamper>' -Tag 'network-verify' -TestCases @(
+        @{ Tamper = 'public-host' }, @{ Tamper = 'host-empty' }, @{ Tamper = 'host-no-gateway' }, @{ Tamper = 'host-no-lan' }, @{ Tamper = 'no-adapter' },
+        @{ Tamper = 'second-adapter' }, @{ Tamper = 'external-switch' }, @{ Tamper = 'other-switch' }, @{ Tamper = 'dhcp-guard-off' }, @{ Tamper = 'router-guard-off' },
+        @{ Tamper = 'mac-spoofing-on' }, @{ Tamper = 'port-mirroring' }, @{ Tamper = 'vlan-trunk' }, @{ Tamper = 'storm-limit-off' }, @{ Tamper = 'legacy-acl' },
+        @{ Tamper = 'foreign-peer' }, @{ Tamper = 'drop-fixed-deny' }, @{ Tamper = 'drop-inbound-deny' }, @{ Tamper = 'scoped-deny' }, @{ Tamper = 'stateful-rule' },
+        @{ Tamper = 'isolated-rule' }, @{ Tamper = 'no-source-pin' }, @{ Tamper = 'pin-above-deny' }, @{ Tamper = 'extra-allow' }) {
+        Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Tamper @($Tamper)
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        (Get-Ops $w 'StartVm').Count | Should -Be 0
+        Assert-CleanedUp
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot) | Should -BeNullOrEmpty   # RemoveVm, then Detach
+    }
+    It 'counts every object Verify writes as a problem, an empty or null one included: <Case>' -Tag 'network-verify' -TestCases @(
+        @{ Case = 'null'; Out = { $null } }, @{ Case = 'empty'; Out = { '' } }) {
+        $w | Add-Member -NotePropertyName VerifyOut -NotePropertyValue $Out -Force
+        $w.Network.Verify = { param($a) Add-FakeCall 'Verify' $a; & $w.VerifyOut }
+        (Invoke-Build).Reason | Should -Be 'AAP_NetworkUntrusted'
+        (Get-Ops $w 'StartVm').Count | Should -Be 0
+    }
+    It 'verifies the running build VM again before each phase, and stops it when the host changes' -Tag 'network-verify', 'network-running' {
+        Set-ModuleVar 'NetVerifyMinutes' 0
+        Set-GuestFault 'p05' { param($w, $req) Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Tamper @('public-host'); Get-FakeGuestReply $w $req }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match 'public IPv4'
+        ($w.Requests | Select-Object -Last 1).phase | Should -Be 'p05'
+        Assert-CleanedUp
+    }
+    It 'reads the adapter back itself: a module whose Verify reports nothing does not get a VM with <Tamper> started' -Tag 'network-readback' -TestCases @(
+        @{ Tamper = 'dhcp-guard-off' }, @{ Tamper = 'extra-allow' }, @{ Tamper = 'drop-inbound-deny' }, @{ Tamper = 'foreign-peer' }) {
+        $w.Network.Verify = { param($a) Add-FakeCall 'Verify' $a }
+        Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Tamper @($Tamper)
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        (Get-Ops $w 'StartVm').Count | Should -Be 0
+        Assert-CleanedUp
+    }
+    It 'refuses a declaration the shared check refuses, before any seed is made: <Case>' -Tag 'network-declaration' -TestCases @(
+        @{ Case = 'the address is the gateway'; Edit = { param($d) $d.address = $d.gateway } },
+        @{ Case = 'another VM''s name'; Edit = { param($d) $d.vm_name = 'aap-lbuild-ffffffff' } },
+        @{ Case = 'a public subnet'; Edit = { param($d) $d.subnet = '8.8.8.0/24' } }) {
+        $w | Add-Member -NotePropertyName DeclEdit -NotePropertyValue $Edit -Force
+        $w.Network.Attach = { param($a) Add-FakeCall 'Attach' $a; $d = & $w.NetFake.Attach $a; & $w.DeclEdit $d; $d }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkInvalid'
+        (Get-Ops $w 'NewSeedImage').Count | Should -Be 0
+        Assert-CleanedUp
+    }
+    It 'stops, removes the VM and then detaches when the module fails: <Fail>' -TestCases @(@{ Fail = 'Attach' }, @{ Fail = 'AttachAfterIntent' }, @{ Fail = 'AttachAfterAct' }, @{ Fail = 'Verify' }) {
+        Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Fail @($Fail)
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        (Get-Ops $w 'StartVm').Count | Should -Be 0
+        Assert-CleanedUp
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot) | Should -BeNullOrEmpty   # the record a failed Attach kept goes with Detach
+    }
+    It 'reports a Detach that fails as a network not proven detached, and keeps the record for the module''s reconcile' {
+        Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Fail @('Detach')
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match 'not proven detached'
+        $r.Detail | Should -Match 'cleanup failed'
+        @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 1
+    }
+    It 'refuses a VM that could start on its own or keep a checkpoint: <Case>' -Tag 'vm-config' -TestCases @(
+        @{ Case = 'automatic start'; Config = @{ AutomaticStartAction = 'StartIfRunning'; CheckpointType = 'Disabled' } },
+        @{ Case = 'checkpoints'; Config = @{ AutomaticStartAction = 'Nothing'; CheckpointType = 'Standard' } }) {
+        $w.VmConfig = $Config
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        (Get-Ops $w 'Attach').Count | Should -Be 0
+        Assert-CleanedUp
+    }
+    It 'refuses to start the <Which> VM with any network adapter' -Tag 'nic-none' -TestCases @(@{ Which = 'scanner'; Prop = 'ScanVm' }, @{ Which = 'verification'; Prop = 'VerifyVm' }) {
+        $name = (Get-AapUbuntuNames $w.Plan 1).$Prop
+        $w.ForeignNics[$name] = @(@{ SwitchName = 'aap-guests-linux'; SwitchType = 'Internal' })
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        @(Get-Ops $w 'StartVm' | Where-Object { $_.Args.VmName -eq $name }).Count | Should -Be 0
+        Assert-CleanedUp
+    }
+    It 'detaches a crashed run''s build VM once its VM is gone, before it builds again' {
+        $names = Get-AapUbuntuNames $w.Plan 1
+        $old = [guid]::NewGuid().ToString()
+        $w.Vms[$names.BuildVm] = 'Off'; $w.VmIds[$names.BuildVm] = $old
+        $null = & $w.NetFake.Attach @{ VmId = $old; VmName = $names.BuildVm; Profile = 'linux' }
+        $bd = Join-Path $w.Staging "build\$script:BuildId"
+        [void][IO.Directory]::CreateDirectory($bd)
+        Write-TestJson ([ordered]@{ schema = 1; status = 'running'; vm_id = $old; steps = [ordered]@{}; written = @(); evidence_created = $false }) (Join-Path $bd 'state.json')
+        $r = Invoke-Build
+        $r.Status | Should -Be 'built'
+        $r.PartialCleaned | Should -BeTrue
+        (Get-Ops $w 'Detach')[0].Args.VmId | Should -Be $old
+        Get-AapFakeHostNetworkRecord -Root $w.NetRoot -VmId $old | Should -BeNullOrEmpty
     }
 }
 
@@ -864,7 +1013,7 @@ Describe 'secret scan of the sealed disk' {
         $s = Get-Content -Raw (Join-Path (Get-EvidenceDir) 'secret-scan.json') | ConvertFrom-Json
         $s.result | Should -Be 'clean'
         $s.large_files[0].path | Should -Be 'usr/lib/big.so'
-        $s.seal.checked.Count | Should -Be 7
+        $s.seal.checked.Count | Should -Be 8
         $s.rules | Should -Contain 'build-credential'
     }
     It 'refuses to publish when the scanner found <Rule> and keeps only the scan record' -Tag 'secret-found' -TestCases @(
@@ -972,9 +1121,16 @@ Describe 'secret scan allowlist' {
 }
 
 Describe 'seeds and requests are host-authored and bounded' {
-    BeforeAll { $script:SPlan = Get-PlanText | ConvertFrom-Json }
-    It 'refuses a malformed instance id, a scanner without the build token, and a known token for any other guest' -Tag 'seed-values' {
-        $known = (New-AapUbuntuSeed -Mode build -Plan $script:SPlan -InstanceId 'aap-1-build').Token
+    BeforeAll {
+        $script:SPlan = Get-PlanText | ConvertFrom-Json
+        # A declaration as the host network module returns it for the build VM (the shared fake host's build switch).
+        $script:Decl = [ordered]@{ schema = 1; kind = 'host_network_attach'; vm_id = '0b0b0b0b-1111-4222-8333-444455556666'; vm_name = 'aap-lbuild-0123abcd'; profile = 'linux'
+            subnet = '172.31.253.0/24'; gateway = '172.31.253.1'; address = '172.31.253.2'; resolvers = @('192.0.2.53', '198.51.100.53'); endpoints = @() }
+    }
+    It 'refuses a malformed instance id, a scanner without the build token, a known token for any other guest, and a network for any but the build' -Tag 'seed-values' {
+        $known = (New-AapUbuntuSeed -Mode build -Plan $script:SPlan -InstanceId 'aap-1-build' -Network $script:Decl).Token
+        { New-AapUbuntuSeed -Mode build -Plan $script:SPlan -InstanceId 'aap-1-build' } | Should -Throw 'AAP_SeedInvalid*'
+        { New-AapUbuntuSeed -Mode verify -Plan $script:SPlan -InstanceId 'aap-1-verify' -Network $script:Decl } | Should -Throw 'AAP_SeedInvalid*'
         { New-AapUbuntuSeed -Mode verify -Plan $script:SPlan -InstanceId "x`nlocal-hostname: evil" } | Should -Throw 'AAP_SeedInvalid*'
         { New-AapUbuntuSeed -Mode scan -Plan $script:SPlan -InstanceId 'aap-1-scan' } | Should -Throw 'AAP_SeedInvalid*'
         { New-AapUbuntuSeed -Mode scan -Plan $script:SPlan -InstanceId 'aap-1-scan' -Known ('a' * 64) } | Should -Throw 'AAP_SeedInvalid*'
@@ -987,7 +1143,18 @@ Describe 'seeds and requests are host-authored and bounded' {
         @{ Case = 'job user group'; Edit = { param($p) $p.job_user.groups = @('sudo]', 'x') } }) {
         $p = Get-PlanText | ConvertFrom-Json
         & $Edit $p
-        { New-AapUbuntuSeed -Mode build -Plan $p -InstanceId 'aap-1-build' } | Should -Throw 'AAP_PlanInvalid*'
+        { New-AapUbuntuSeed -Mode build -Plan $p -InstanceId 'aap-1-build' -Network $script:Decl } | Should -Throw 'AAP_PlanInvalid*'
+    }
+    It 'refuses a declaration value that could break out of the seed YAML: <Case>' -Tag 'seed-network' -TestCases @(
+        @{ Case = 'address'; Edit = { param($d) $d.address = "172.31.253.2]`n  late-commands: [reboot" } },
+        @{ Case = 'gateway'; Edit = { param($d) $d.gateway = 'gw' } },
+        @{ Case = 'resolver'; Edit = { param($d) $d.resolvers = @('192.0.2.53, 1.1.1.1') } },
+        @{ Case = 'no resolver'; Edit = { param($d) $d.resolvers = @() } },
+        @{ Case = 'prefix length'; Edit = { param($d) $d.subnet = '172.31.253.0/24]' } }) {
+        $d = [ordered]@{}; foreach ($k in $script:Decl.Keys) { $d[$k] = $script:Decl[$k] }
+        & $Edit $d
+        { New-AapUbuntuSeed -Mode build -Plan $script:SPlan -InstanceId 'aap-1-build' -Network $d } | Should -Throw 'AAP_SeedInvalid*'
+        (New-AapUbuntuSeed -Mode build -Plan $script:SPlan -InstanceId 'aap-1-build' -Network $script:Decl).Files['user-data'] | Should -Match 'addresses: \[172\.31\.253\.2/24\]'
     }
     It 'makes a distinct token per seed, which prints as [aap token] and never as its value' {
         $s = @(1..20 | ForEach-Object { New-AapUbuntuSeed -Mode verify -Plan $script:SPlan -InstanceId 'aap-1-verify' })
@@ -1104,53 +1271,43 @@ Describe 'the production provider (static: it is never run here)' {
     BeforeAll {
         $script:ProvText = Get-Content -Raw (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.HyperV.psm1')
         Import-Module (Join-Path $script:Repo 'images\ubuntu-24.04\AapUbuntuImage.HyperV.psm1') -Force
-        $script:Prov = New-AapUbuntuHyperVProvider -PythonPath (Get-Process -Id $PID).Path -GuestNetwork { }
-        function Get-AdapterProblems($Adapters, $Acls, [string]$Switch) { & (Get-Module AapUbuntuImage.HyperV) { param($a, $b, $c) @(Get-AapAdapterProblems $a $b $c) } $Adapters $Acls $Switch }
-        function New-GoodAcls { @(& (Get-Module AapUbuntuImage.HyperV) { $script:DenyRanges }) | ForEach-Object { [pscustomobject]@{ Action = 'Deny'; Direction = 'Outbound'; RemoteIPAddress = $_ } } }
+        $script:Prov = New-AapUbuntuHyperVProvider -PythonPath (Get-Process -Id $PID).Path
     }
     It 'implements every op the builder calls' {
         foreach ($op in (& (Get-Module AapUbuntuImage) { $script:ProviderOps })) { $script:Prov[$op] | Should -BeOfType [scriptblock] -Because $op }
     }
     It 'refuses a python path that is not an absolute file' {
-        { New-AapUbuntuHyperVProvider -PythonPath 'python.exe' -GuestNetwork { } } | Should -Throw 'AAP_ProviderInvalid*'
+        { New-AapUbuntuHyperVProvider -PythonPath 'python.exe' } | Should -Throw 'AAP_ProviderInvalid*'
     }
     It 'names the python install folder for the builder trust check' {
         @(& $script:Prov.ExecFolders @{}) | Should -Be @((Split-Path -Parent (Get-Process -Id $PID).Path))
     }
-    It 'sets the contract adapter controls on the build VM, has P10.0 add its ACLs, then reads both back before the VM can start' {
-        $script:ProvText | Should -Match 'Set-VMNetworkAdapter -DhcpGuard On -RouterGuard On -MacAddressSpoofing Off'
-        $script:ProvText | Should -Match '\$null = & \$script:GuestNetwork @\{ VmId'
-        $script:ProvText | Should -Match 'Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter \$now'
-        $script:ProvText | Should -Match 'if \(\$problems\.Count\) \{ throw "AAP_NetworkUntrusted'
+    It 'makes every VM with no network adapter and attaches none itself: the host network module does' {
+        $script:ProvText | Should -Match '@\(Hyper-V\\Get-VMNetworkAdapter -VM \$vm\) \| Hyper-V\\Remove-VMNetworkAdapter'
+        $script:ProvText | Should -Not -Match 'Connect-VMNetworkAdapter|Set-VMNetworkAdapter |Add-VMNetworkAdapter|ExtendedAcl -VMNetworkAdapter \$now|aap-guests|GuestNetwork|DenyRanges'
     }
-    It 'accepts the build adapter only with every control: <Case>' -TestCases @(
-        @{ Case = 'all set'; Edit = { param($n, $acl) }; Problem = $null },
-        @{ Case = 'DHCP guard off'; Edit = { param($n, $acl) $n.DhcpGuard = 'Off' }; Problem = 'DHCP guard' },
-        @{ Case = 'router guard off'; Edit = { param($n, $acl) $n.RouterGuard = 'Off' }; Problem = 'router guard' },
-        @{ Case = 'MAC spoofing on'; Edit = { param($n, $acl) $n.MacAddressSpoofing = 'On' }; Problem = 'MAC address spoofing' },
-        @{ Case = 'another switch'; Edit = { param($n, $acl) $n.SwitchName = 'Default Switch' }; Problem = 'not aap-guests-linux' },
-        @{ Case = 'CGNAT allowed'; Edit = { param($n, $acl) ($acl | Where-Object { $_.RemoteIPAddress -eq '100.64.0.0/10' }).Action = 'Allow' }; Problem = '100.64.0.0/10' },
-        @{ Case = 'a ULA rule inbound only'; Edit = { param($n, $acl) ($acl | Where-Object { $_.RemoteIPAddress -eq 'fc00::/7' }).Direction = 'Inbound' }; Problem = 'fc00::/7' }) {
-        $nic = [pscustomobject]@{ SwitchName = 'aap-guests-linux'; DhcpGuard = 'On'; RouterGuard = 'On'; MacAddressSpoofing = 'Off' }
-        $acl = @(New-GoodAcls)
-        & $Edit $nic $acl
-        $p = @(Get-AdapterProblems @($nic) $acl 'aap-guests-linux')
-        if ($Problem) { ($p -join '; ') | Should -Match ([regex]::Escape($Problem)) } else { $p | Should -BeNullOrEmpty }
+    It 'reads a VM''s adapters back exactly in the provider shape host-network-module.md prescribes' {
+        # Every code line of the contract's read-back block appears in GetVmNetwork, so the shared check sees what Hyper-V shows.
+        $contract = Get-Content -Raw (Join-Path $script:Repo 'parity\contracts\host-network-module.md')
+        $block = [regex]::Match($contract, '(?s)```powershell\r?\n(foreach \(\$n in .*?)```').Groups[1].Value
+        $lines = @($block.Split("`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+        $lines.Count | Should -BeGreaterThan 10
+        $prov = @($script:ProvText.Split("`n") | ForEach-Object { $_.Trim() })
+        foreach ($l in $lines) { $prov | Should -Contain $l }
     }
-    It 'refuses a second build adapter, and any adapter on the scanner or verification VM' {
-        $nic = [pscustomobject]@{ SwitchName = 'aap-guests-linux'; DhcpGuard = 'On'; RouterGuard = 'On'; MacAddressSpoofing = 'Off' }
-        (@(Get-AdapterProblems @($nic, $nic) @(New-GoodAcls) 'aap-guests-linux') -join '') | Should -Match '2 network adapters'
-        (@(Get-AdapterProblems @($nic) @() '') -join '') | Should -Match 'must have none'
-        @(Get-AdapterProblems @() @() '') | Should -BeNullOrEmpty
+    It 'puts the seed image into the last DVD drive, only while the VM is Off' {
+        $script:ProvText | Should -Match "if \(\[string\]\`$vm.State -ne 'Off' -or \`$drives.Count -lt 1\) \{ throw"
+        $script:ProvText | Should -Match 'Hyper-V\\Set-VMDvdDrive -VMDvdDrive \$drives\[-1\] -Path \$a\.Path'
+        $script:ProvText | Should -Match '(?m)^        Hyper-V\\Add-VMDvdDrive -VM \$vm$'
     }
     It 'never attaches or mounts a guest disk, and never builds a seed by mounting one' {
         $script:ProvText | Should -Not -Match 'Mount-VHD|Mount-DiskImage|Add-PartitionAccessPath|Get-Partition|Expand-WindowsImage'
         $script:ProvText | Should -Match "Optimize-VHD -Path \`$a.Vhdx -Mode Pretrimmed"
     }
-    It 'disables key-value exchange and guest services and attaches only the internal switch' {
+    It 'disables key-value exchange and guest services, automatic start and checkpoints' {
         $script:ProvText | Should -Match "'Guest Service Interface', 'Key-Value Pair Exchange'"
-        $script:ProvText | Should -Match "SwitchType -ne 'Internal'"
-        $script:ProvText | Should -Match 'Remove-VMNetworkAdapter'
+        $script:ProvText | Should -Match '-CheckpointType Disabled -AutomaticStopAction TurnOff -AutomaticStartAction Nothing'
+        $script:ProvText | Should -Match 'AutomaticStartAction = \[string\]\$vm\.AutomaticStartAction; CheckpointType = \[string\]\$vm\.CheckpointType'
         $script:ProvText | Should -Not -Match 'EnhancedSession|ExposeVirtualizationExtensions'
     }
     It 'talks to a guest only through the capped hvsocket call, and writes bytes without a BOM' {

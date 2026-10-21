@@ -1,5 +1,5 @@
 # Mutation check for the P07 builder: every safety check in AapUbuntuImage.psm1 carries '# check:<name>'. For each name this
-# copies images\ubuntu-24.04 (and the P06 helpers it loads) to a temp folder, replaces the condition of every if-statement
+# copies images\ubuntu-24.04 (and the P06 helpers and the shared network check it loads) to a temp folder, replaces the condition of every if-statement
 # tagged with that name by $false (found with the PowerShell parser, not by text search), and runs the tests tagged <name>
 # against the copy in a child process. A check is covered only if at least one of its tests then fails. A control run of the
 # same tests against the unmutated copy must pass first, so a test that fails for another reason cannot count as a kill.
@@ -40,6 +40,8 @@ $rows = New-Object System.Collections.Generic.List[object]
 function New-Copy([string]$Dir, [string]$ModuleText) {
     [void][IO.Directory]::CreateDirectory((Join-Path $Dir 'images'))
     foreach ($d in 'ubuntu-24.04', 'windows') { Copy-Item -LiteralPath (Join-Path $repo "images\$d") -Destination (Join-Path $Dir "images\$d") -Recurse }
+    [void][IO.Directory]::CreateDirectory((Join-Path $Dir 'supervisor'))
+    Copy-Item -LiteralPath (Join-Path $repo 'supervisor\network') -Destination (Join-Path $Dir 'supervisor\network') -Recurse
     $module = Join-Path $Dir 'images\ubuntu-24.04\AapUbuntuImage.psm1'
     [IO.File]::WriteAllText($module, $ModuleText, (New-Object Text.UTF8Encoding($false)))
     return $module
