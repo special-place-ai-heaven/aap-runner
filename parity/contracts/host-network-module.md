@@ -51,18 +51,18 @@ code in a thrown message (Consumer obligations).
   - `vm_id`, `vm_name`, `profile`;
   - `subnet`: its switch's, IPv4 `/16` to `/30` and private (inside `10.0.0.0/8`,
     `172.16.0.0/12`, `192.168.0.0/16` or `100.64.0.0/10`: a fixed range that is neither link-local
-    nor multicast);
+    nor multicast nor broadcast);
   - `gateway`: the host's vEthernet address on that switch, a usable address of the subnet
     (neither its network nor its broadcast address);
   - `address`: the VM's static address, a usable address of the subnet other than the gateway that
     no other record on the switch holds (Attach allocates it; the record keeps it until Detach);
   - `resolvers`: one or two IPv4 addresses for DNS, each public (outside every fixed range, so
     reached through NAT with no Allow) or the address of an endpoint on port 53;
-  - `endpoints`: the narrowed exceptions it allowed, **none by default**, at most four. Each is
-    `{ address, protocol, port }`: one private IPv4 address outside the subnet (never the gateway
-    or another guest; Verify check 5 refuses one of the host's own addresses), `TCP` or `UDP`, and
-    one port 1 to 65535. The module declares one only where the owner chose it, for example UDP
-    and TCP 53 to one private resolver.
+  - `endpoints`: the narrowed exceptions it allowed, **none by default** (DECIDED, coordinator,
+    2026-10-21; there is no `gateway` or `dhcp` endpoint). The one kind there is: DNS to one
+    private resolver the owner chose, as at most two entries `{ address, protocol, port }` with
+    the same address, one private IPv4 address outside the subnet (never the gateway or another
+    guest; Verify check 5 refuses one of the host's own addresses), `UDP` and `TCP`, port `53`.
 
   Its keys are the schema's; serialized, it validates.
 - **No DHCP.** The guest learns its address, gateway and resolvers only from the declaration, which
@@ -190,7 +190,9 @@ The module writes only these rules, all stateless:
 
 - **Fixed denies**, unscoped (local address, protocol, local port and remote port all unrestricted),
   each range Inbound and Outbound: `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
-  `169.254.0.0/16`, `100.64.0.0/10`, `224.0.0.0/4`, `ff00::/8`, `fe80::/10`, `fc00::/7`. The one
+  `169.254.0.0/16`, `100.64.0.0/10`, `224.0.0.0/4`, `ff00::/8`, `fe80::/10`, `fc00::/7` and the
+  IPv4 limited broadcast `255.255.255.255/32` (adopted 2026-10-21: without DHCP nothing needs it,
+  and it reaches the host's vEthernet adapter and every neighbour). The one
   copy in code is the shared check's (`Get-AapHostNetworkFixedDeny`); the module writes from it and
   `validate.py` reads it from there.
 - **Host-specific denies**, the same shape, both directions: enough to satisfy Verify check 5; an
@@ -211,14 +213,14 @@ reaching it. Outbound denies stop it addressing them. Neither stops what the int
 neighbour (a public source) once the host's ARP cache points at the poisoner: hence a build VM's
 own switch ([Switches](#switches-decided)) and Open points, 1.
 Why unscoped: a Deny narrowed to TCP, to port 1 or to one local address does not deny the range.
-Why no Allow by default: a port ACL matches a packet's IP header. A routed packet's destination is
+Why no Allow by default (DECIDED, coordinator, 2026-10-21): a port ACL matches a packet's IP header. A routed packet's destination is
 the far host; only its frame goes to the gateway's MAC address, and ARP is not IP. So internet
 egress needs no Allow for the gateway, public resolvers lie outside every denied range, and with
 static addressing nothing needs DHCP. An Allow for the gateway or any other address of the host
 would open the host's ports to the guest at the IP level, and an Allow for a range, for an address
 nobody declared, or wider than its endpoint's protocol and port would open a hole that no check of
-the denies can see. An exception exists only for a private address the owner chose (a resolver, a
-mirror) and is narrowed to one protocol and one port.
+the denies can see. The one exception is DNS to a private resolver the owner chose, narrowed to
+its address and port 53 over UDP and TCP.
 
 Not the module's: the Guest Service Interface and Key-Value Pair Exchange are turned off by the
 consumers' `NewVm` and read back there; Enhanced Session Mode is a host setting (P19 sets it, the
@@ -271,7 +273,7 @@ Tests: `tests/network/AapHostNetworkCheck.Tests.ps1`, a failing case for every r
 field, and a parity test: on every `attach-*` fixture the check judges as `validate.py` does (the
 Python reference predicate, which reads the fixed ranges from this module);
 `tests/common/Invoke-AapHostNetworkMutations.ps1` disables each of the check's `# check:`
-conditions in turn (44) and requires a test to fail for each.
+conditions in turn (45) and requires a test to fail for each.
 
 ## Consumer obligations (DECIDED)
 
@@ -302,8 +304,8 @@ Order:
 `Get-AapHostNetworkDeclarationProblems -Request $req -Declaration $decl`. It requires the schema's
 keys; `VmId`, `VmName` and `Profile` echoed; a runner clone or build VM of that profile; a private
 subnet `/16` to `/30`; the gateway and the address usable addresses of it, the address not the
-gateway; one or two resolvers, each public or an endpoint's address on port 53; and at most four
-endpoints, each one private IPv4 address outside the subnet, `TCP` or `UDP`, and one port.
+gateway; one or two resolvers, each public or an endpoint's address; and at most two endpoints,
+both one private IPv4 address outside the subnet, `UDP` or `TCP`, port 53.
 
 **Read-back** (`AAP_NetworkUntrusted` when it fails), from Hyper-V through the consumer's own
 provider, never through the module:
@@ -407,8 +409,9 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
   neighbour's ARP cache receives none of the neighbour's own packets (negative case below).
 - ARP passes the IP rules; internet egress and DNS to a public resolver need no IP-level Allow (a
   routed packet's destination is the far host); the multicast denies break nothing a statically
-  addressed IPv4 guest needs; a narrowed exception reaches its address on its protocol and port and
-  nothing else there (the other protocol, another port).
+  addressed IPv4 guest needs; a port ACL matches `255.255.255.255/32` and so drops limited
+  broadcasts both ways; the private resolver exception reaches its address on port 53 and nothing
+  else there (another port).
 - **Addressing without DHCP**: that each guest takes its address, gateway and resolvers from its
   seed or answer file and from nothing else: Ubuntu 24.04 cloud-init NoCloud `network-config`
   version 2 on `hv_netvsc` (matched by driver, not by a MAC address Hyper-V may assign at first
@@ -423,7 +426,7 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
 - The four switches' subnets and NAT (one `NetNat` whose prefix covers all four subnets, or one per
   switch, within what WinNAT supports); per-profile switch or per-guest switch (P02.1); adapters and
   their ACLs vanish with `Remove-VM`.
-- Negative case to add to guest-transport.md's list: a guest poisons ARP for its switch's gateway,
+- Negative case (in guest-transport.md's list since 2026-10-21): a guest poisons ARP for its switch's gateway,
   for a neighbour, and the host's entry for that neighbour. Expected: none of the neighbour's own
   packets reach the poisoner and nothing the poisoner addresses to it arrives; what the internet
   sends the neighbour can reach the poisoner while they share a switch, which is why a build VM
@@ -431,24 +434,32 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
 
 ## Open points
 
-1. **Runner clones share their profile's switch** under the per-profile candidate. The guards do not
-   stop ARP poisoning between them either: a clone that poisons the host's ARP entry for a
-   neighbour receives what the internet sends that neighbour and can send with its address (the
-   denies stop only what carries private addresses). The per-guest candidate separates them at
-   layer 2; on a shared switch, static host neighbour entries for every guest (their addresses are
-   now the module's) plus an outbound deny of every source address but the guest's own would narrow
-   it (not designed here; either needs the lab). An owner decision for P02.1; the build VM's own
-   switch is decided above.
-2. **IPv4 limited broadcast** (`255.255.255.255`) lies in no fixed range, so a guest's broadcasts
-   reach the host's vEthernet adapter (UDP services listening on every address) and its neighbours.
-   Without DHCP nothing needs it. Recommendation: add `255.255.255.255/32` to the fixed ranges
-   (guest-transport.md, the shared check's copy and this contract), denied both ways; the lab
-   confirms a port ACL matches it.
-3. Text outside this revision's reach: guest-transport.md:138-139 says guests attach "only to the
-   switches the module creates" (under the per-profile candidate P19 creates them), and its ARP
-   negative case (line 208) expects ARP spoofing "blocked by DHCP guard, router guard and MAC
-   spoofing off", which this contract says they do not do (negative case under Lab points). The
-   ledger's P10.0 text says "per-guest private switch", against guest-transport.md's rule
+1. **Runner clones share their profile's switch** under the per-profile candidate: a D2 design
+   decision for P02.1 (the build VM's own switch is decided above). The guards do not stop ARP
+   poisoning between clones either: a clone that poisons the host's ARP entry for a neighbour
+   receives what the internet sends that neighbour and can send with its address (the denies stop
+   only what carries private addresses).
+   - **Preferred candidate: private VLAN, isolated mode.** Every clone port on `aap-guests-*` is a
+     secondary VLAN in `Isolated` mode, the host's vEthernet adapter on that switch is
+     `Promiscuous` for that primary and secondary VLAN, so clones cannot reach each other at layer
+     2 (ARP included) and still reach the host side for NAT. Alternatives: one internal switch per
+     guest; or static host neighbour entries for every guest (their addresses are the module's)
+     plus an outbound deny of every source address but the guest's own.
+   - **The check until the lab decides**: it keeps refusing `VlanMode` `Private` (fail closed).
+   - **The rule if the lab confirms the preferred candidate**: on an `aap-guests-*` switch a clone's
+     read-back must show `VlanMode` `Private`, `PrivateVlanMode` `Isolated`, `PrimaryVlanId` and
+     `SecondaryVlanId` equal to the pair P19 records for that switch, and nothing else is accepted
+     there (`Untagged`, `Access`, `Trunk`, `Community` and `Promiscuous` refused for a guest port);
+     the provider read-back gains `PrivateVlanMode`, `PrimaryVlanId` and `SecondaryVlanId` (from
+     `Get-VMNetworkAdapterVlan`), and Verify also checks the host's vEthernet adapter on the switch
+     is `Promiscuous` with that primary VLAN and secondary list. Build switches keep `Untagged` (one
+     VM, nothing to isolate from).
+   - **Lab questions**: does a private VLAN work on an internal switch with the host's vEthernet
+     adapter promiscuous and WinNAT on top (egress, DNS); does it stop ARP poisoning and every
+     other frame between two isolated ports, the host's ARP entries included; how
+     `Set-VMNetworkAdapterVlan -ManagementOS -Promiscuous` and `Get-VMNetworkAdapterVlan` report
+     the host's adapter and a guest port; and whether WSL in mirrored mode changes any of it.
+2. The ledger's P10.0 text says "per-guest private switch", against guest-transport.md's rule
    (internal switches only); the ledger job corrects it.
 
 ## Conformance of the consumers
@@ -460,10 +471,10 @@ declaration instead of relying on DHCP.
 
 | Item | Consumer | Changes needed |
 |---|---|---|
-| P06.2 | `images/windows` | Import the check after `TestRootTrust` passes for `supervisor\network` (add it to the preflight's folders, README.md:145-152); drop `$script:SwitchName` (`AapWinImage.psm1:27`, `:652`, `:989-990`, `:1054`: the build VM is on `aap-build-win`) and `$script:DenyRanges` (`:35`). `Connect-AapBuildNetwork` (`:816-822`): keep `$decl = & $Ctx.Network.Attach $net`, `Get-AapHostNetworkDeclarationProblems -Request $net -Declaration $decl` (`AAP_NetworkInvalid`), Verify unfiltered and a throw `AAP_NetworkUntrusted`. Static addressing: the build VM's answer file is written by `ApplyWindowsImage` (`:1066-1068`), before the VM exists; after Attach, write it again with `WriteOfflineFiles` (as `:855` does) carrying the declaration's address, prefix length, gateway and resolvers (`New-AapWinUnattend`, `:430-480`, gains `Microsoft-Windows-TCPIP` and `Microsoft-Windows-DNS-Client`), then Verify and the read-back before `StartVm` (`:1077`). `Assert-AapVmAdapters` (`:824-843`): for the build VM `Get-AapHostNetworkAdapterProblems -Declaration $decl -Adapters @(GetVmNetwork)`; the verification VM keeps its zero-adapter read-back (`:858`). `GetVmNetwork` (`AapWinImage.HyperV.psm1:260-273`): the provider read-back above. Verify and the read-back before `RestartVm` (`:786`). `RemoveVm` then `Detach` (`:1092-1093` swapped; `:1157` after `Remove-AapWinBuild`). The seal leaves no build address in the base (Consumer obligations, 5). INTEGRATION.md and README.md follow; tests use the shared fake |
-| P07.1 | `images/ubuntu-24.04` (PR #49) | A fourth variant today: `New-AapUbuntuHyperVProvider -GuestNetwork` (`AapUbuntuImage.HyperV.psm1:159-170`), a step called with `@{ VmId; SwitchName }` (`:244`) after `NewVm` connects `aap-guests-linux` itself and sets the guards (`:239-243`); its own read-back `Get-AapAdapterProblems` (`:99-114`, outbound only, no scope, allow, weight, mirroring or VLAN check; its `'Both'` never occurs) on its own list (`:25-28`). Instead: take the module as `-Network` on `Invoke-AapUbuntuImageBuild` like P06; `NewVm` removes the default adapter for every VM (`:245-246` today does it only without a switch) and connects nothing; after `NewVm` of the build VM (`AapUbuntuImage.psm1:701`): Attach, the declaration check, Verify and `Get-AapHostNetworkAdapterProblems` on a `GetVmNetwork` op with the provider read-back (replacing `:249-253`), again before each `StartVm` of the build VM (`:703`, `:710`); the scanner and verification VMs keep the zero-adapter read-back (`:101-103`). Static addressing: the build VM's seed is made before its VM (`New-AapGuest`, `AapUbuntuImage.psm1:687-695`) and its autoinstall `network` asks for DHCP (`:331-337`); make it after Attach instead, with the declaration's address, prefix length, gateway and resolvers as a static `network` (`dhcp4: false`), and give it to the VM before `:703`; the seal removes the installer's netplan file so a clone takes only its own seed's `network-config`. Drop `$script:SwitchName` (`HyperV.psm1:21`; `AapUbuntuImage.psm1:34`, `:237`, `:884-885`, `:952`: the build VM is on `aap-build-linux`). `RemoveVm` then `Detach` for the build VM (`:976`; `:844` in `Remove-AapUbuntuBuild`). INTEGRATION.md:76-83 (the shared-switch hazard, resolved by `aap-build-linux`), :104-120 (the adapter step, replaced by `-Network`; "Provide DHCP and DNS on the switch", :107-108, withdrawn) follow; tests use the shared fake |
-| P10.2 | `supervisor/backends/windows` | Import `..\..\network\AapHostNetworkCheck.psm1` beside capacity and broker (`AapWinBackend.psm1:32-33`); drop `$script:SwitchName` (`:37`). Create (`:975-978`): keep the declaration, `Get-AapHostNetworkDeclarationProblems` (`AAP_NetworkInvalid`), Verify unfiltered and a throw `AAP_NetworkUntrusted`, the declaration kept in the reservation's journal for later starts. Static addressing: `WriteUnattend` (`:959`) runs before `NewVm` (`:965`) and Attach (`:975`); move it after Attach and give `Write-AapWinUnattend` (`:271-342`) the declaration's address, prefix length, gateway and resolvers, so each clone's answer file carries its own; a re-run of create re-attaches (the same declaration) and rewrites the file. `Assert-AapWinVmConfig -Adapters` (`:880-888`): `Get-AapHostNetworkAdapterProblems -Declaration $decl -Adapters $nics`. `GetVmConfig` adapters (`AapWinBackend.HyperV.psm1:105-109`): the provider read-back above (today MAC spoofing reads `-eq 'On'`, so an unknown value passes). Verify and the read-back before boot's `StartVm` (`:1192`). Destroy order (`:1083`, `:1087`) conforms. INTEGRATION.md follows; tests use the shared fake |
-| P11.2 | `supervisor/backends/linux` | As P10.2: import beside capacity and broker (`AapLinBackend.psm1:37-38`); drop `$script:SwitchName` (`:41`); create (`:1048-1050`) keeps and checks the declaration; `Assert-AapLinNetwork` (`:950-962`): Verify unfiltered (`:951`; its throw is already `AAP_NetworkUntrusted`), then the shared check instead of `:953-961`; `GetVmConfig` adapters (`AapLinBackend.HyperV.psm1:149-153`) the provider read-back. Static addressing: the seed is built before `NewVm` (`:1031-1038`) and Attach (`:1049`); build it after Attach with a `network-config` file (version 2, static from the declaration, matched by driver `hv_netvsc`) beside `user-data` and `meta-data` (`New-AapLinSeed`, `:541`), and give it to the VM before its first start. Verify and the read-back before boot's `StartVm` (`:1302`); destroy order (`:1157`, `:1161`) conforms. INTEGRATION.md stops relying on Verify alone for the port ACLs, and withdraws "clones need DHCP and DNS on the switch" (`:101`) |
+| P06.2 | `images/windows` | Import the check after `TestRootTrust` passes for `supervisor\network` (add it to the preflight's folders, README.md:145-152); drop `$script:SwitchName` (`AapWinImage.psm1:27`, `:652`, `:989-990`, `:1054`: the build VM is on `aap-build-win`) and `$script:DenyRanges` (`:35`). `Connect-AapBuildNetwork` (`:816-822`): keep `$decl = & $Ctx.Network.Attach $net`, `Get-AapHostNetworkDeclarationProblems -Request $net -Declaration $decl` (`AAP_NetworkInvalid`), Verify unfiltered and a throw `AAP_NetworkUntrusted`. Static addressing: the build VM's answer file is written by `ApplyWindowsImage` (`:1066-1068`), before the VM exists; after Attach, write it again with `WriteOfflineFiles` (as `:855` does) carrying the declaration's address, prefix length, gateway and resolvers (`New-AapWinUnattend`, `:430-480`, gains `Microsoft-Windows-TCPIP` and `Microsoft-Windows-DNS-Client`), then Verify and the read-back before `StartVm` (`:1077`). `Assert-AapVmAdapters` (`:824-843`): for the build VM `Get-AapHostNetworkAdapterProblems -Declaration $decl -Adapters @(GetVmNetwork)`; the verification VM keeps its zero-adapter read-back (`:858`). `GetVmNetwork` (`AapWinImage.HyperV.psm1:260-273`): the provider read-back above. Verify and the read-back before `RestartVm` (`:786`). `RemoveVm` then `Detach` (`:1092-1093` swapped; `:1157` after `Remove-AapWinBuild`). The seal leaves no build address in the base (Consumer obligations, 5). INTEGRATION.md and README.md follow. Tests: `tests/images/windows/WinImageTestHelpers.ps1` replaces its own module (`:110-112`, the `NetProblems` and `NicEdit` knobs) with `New-AapFakeHostNetwork` and its `GetVmNetwork` (`:201`) with `Get-AapFakeHostNetworkAdapter`; `WinImage.Tests.ps1` (`:507-510`) expects Attach, the answer file rewrite, Verify and the read-back before `StartVm`, one case per fake tamper, and an answer file that carries the declaration's address, gateway and resolvers |
+| P07.1 | `images/ubuntu-24.04` (PR #49) | A fourth variant today: `New-AapUbuntuHyperVProvider -GuestNetwork` (`AapUbuntuImage.HyperV.psm1:159-170`), a step called with `@{ VmId; SwitchName }` (`:244`) after `NewVm` connects `aap-guests-linux` itself and sets the guards (`:239-243`); its own read-back `Get-AapAdapterProblems` (`:99-114`, outbound only, no scope, allow, weight, mirroring or VLAN check; its `'Both'` never occurs) on its own list (`:25-28`). Instead: take the module as `-Network` on `Invoke-AapUbuntuImageBuild` like P06; `NewVm` removes the default adapter for every VM (`:245-246` today does it only without a switch) and connects nothing; after `NewVm` of the build VM (`AapUbuntuImage.psm1:701`): Attach, the declaration check, Verify and `Get-AapHostNetworkAdapterProblems` on a `GetVmNetwork` op with the provider read-back (replacing `:249-253`), again before each `StartVm` of the build VM (`:703`, `:710`); the scanner and verification VMs keep the zero-adapter read-back (`:101-103`). Static addressing: the build VM's seed is made before its VM (`New-AapGuest`, `AapUbuntuImage.psm1:687-695`) and its autoinstall `network` asks for DHCP (`:331-337`); make it after Attach instead, with the declaration's address, prefix length, gateway and resolvers as a static `network` (`dhcp4: false`), and give it to the VM before `:703`; the seal removes the installer's netplan file so a clone takes only its own seed's `network-config`. Drop `$script:SwitchName` (`HyperV.psm1:21`; `AapUbuntuImage.psm1:34`, `:237`, `:884-885`, `:952`: the build VM is on `aap-build-linux`). `RemoveVm` then `Detach` for the build VM (`:976`; `:844` in `Remove-AapUbuntuBuild`). INTEGRATION.md:76-83 (the shared-switch hazard, resolved by `aap-build-linux`), :104-120 (the adapter step, replaced by `-Network`; "Provide DHCP and DNS on the switch", :107-108, withdrawn) follow. Tests: `tests/images/ubuntu-24.04/UbuntuImage.Tests.ps1` drops `-GuestNetwork` (`:236`, `:245`, `:252`, `:1040`, `:1048`, `:1055`) for `-Network` with `New-AapFakeHostNetwork` and a `GetVmNetwork` fake from `Get-AapFakeHostNetworkAdapter`; seed tests require a static `network` (`dhcp4: false`) from the declaration and no `dhcp4: true`; one case per fake tamper |
+| P10.2 | `supervisor/backends/windows` | Import `..\..\network\AapHostNetworkCheck.psm1` beside capacity and broker (`AapWinBackend.psm1:32-33`); drop `$script:SwitchName` (`:37`). Create (`:975-978`): keep the declaration, `Get-AapHostNetworkDeclarationProblems` (`AAP_NetworkInvalid`), Verify unfiltered and a throw `AAP_NetworkUntrusted`, the declaration kept in the reservation's journal for later starts. Static addressing: `WriteUnattend` (`:959`) runs before `NewVm` (`:965`) and Attach (`:975`); move it after Attach and give `Write-AapWinUnattend` (`:271-342`) the declaration's address, prefix length, gateway and resolvers, so each clone's answer file carries its own; a re-run of create re-attaches (the same declaration) and rewrites the file. `Assert-AapWinVmConfig -Adapters` (`:880-888`): `Get-AapHostNetworkAdapterProblems -Declaration $decl -Adapters $nics`. `GetVmConfig` adapters (`AapWinBackend.HyperV.psm1:105-109`): the provider read-back above (today MAC spoofing reads `-eq 'On'`, so an unknown value passes). Verify and the read-back before boot's `StartVm` (`:1192`). Destroy order (`:1083`, `:1087`) conforms. INTEGRATION.md follows. Tests: `tests/backends/windows/WinBackendTestHelpers.ps1` replaces its knob-driven module (`:198-209`: `NetSwitch`, `NetSwitchType`, `NetProblems`) with `New-AapFakeHostNetwork`, and `GetVmConfig.Adapters` (`:166`) with `Get-AapFakeHostNetworkAdapter`; `Create.Tests.ps1` requires the answer file after Attach with the declaration's addressing and a refused start for each fake tamper; `Invoke-AapWinMutations.ps1` keeps a mutation per new check |
+| P11.2 | `supervisor/backends/linux` | As P10.2: import beside capacity and broker (`AapLinBackend.psm1:37-38`); drop `$script:SwitchName` (`:41`); create (`:1048-1050`) keeps and checks the declaration; `Assert-AapLinNetwork` (`:950-962`): Verify unfiltered (`:951`; its throw is already `AAP_NetworkUntrusted`), then the shared check instead of `:953-961`; `GetVmConfig` adapters (`AapLinBackend.HyperV.psm1:149-153`) the provider read-back. Static addressing: the seed is built before `NewVm` (`:1031-1038`) and Attach (`:1049`); build it after Attach with a `network-config` file (version 2, static from the declaration, matched by driver `hv_netvsc`) beside `user-data` and `meta-data` (`New-AapLinSeed`, `:541`), and give it to the VM before its first start. Verify and the read-back before boot's `StartVm` (`:1302`); destroy order (`:1157`, `:1161`) conforms. INTEGRATION.md stops relying on Verify alone for the port ACLs, and withdraws "clones need DHCP and DNS on the switch" (`:101`). Tests: `tests/backends/linux/LinBackendTestHelpers.ps1` replaces its knob-driven module (`:240-252`) with `New-AapFakeHostNetwork`, and `GetVmConfig.Adapters` (`:175`) with `Get-AapFakeHostNetworkAdapter`; `Create.Tests.ps1` requires the seed after Attach with a `network-config` carrying the declaration's address, gateway and resolvers, and a refused start for each fake tamper; `Invoke-AapLinMutations.ps1` keeps a mutation per new check |
 
 ## References
 

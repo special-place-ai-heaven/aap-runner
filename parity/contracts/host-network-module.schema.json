@@ -51,9 +51,7 @@
           ]
         },
         "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535
+          "const": 53
         }
       }
     },
@@ -111,7 +109,7 @@
         },
         "endpoints": {
           "type": "array",
-          "maxItems": 4,
+          "maxItems": 2,
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/endpoint"

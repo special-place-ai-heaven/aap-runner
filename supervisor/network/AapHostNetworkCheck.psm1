@@ -9,7 +9,7 @@ Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 
 # guest-transport.md's fixed deny ranges in canonical text: the only copy. The module writes them, every read-back checks them.
-$script:FixedDeny = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'ff00::/8', 'fe80::/10', 'fc00::/7')
+$script:FixedDeny = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'ff00::/8', 'fe80::/10', 'fc00::/7', '255.255.255.255/32')
 $script:Directions = @('Inbound', 'Outbound')   # an extended port ACL has no 'Both'
 $script:AdapterKeys = @('SwitchName', 'SwitchType', 'DhcpGuard', 'RouterGuard', 'MacAddressSpoofing', 'PortMirroringMode', 'VlanMode', 'Peers', 'Acls')
 $script:RuleKeys = @('Action', 'Direction', 'RemoteAddress', 'LocalAddress', 'Protocol', 'RemotePort', 'LocalPort', 'Weight')
@@ -72,9 +72,10 @@ function Get-AapNetDeclarationProblem($Request, $d) {
     if (-not (Test-AapNetHost $net (Split-AapNetAddress $gw))) { $p.Add("the gateway $(Format-AapNetText $gw) is not a host address of $($net.Text)") }   # check:decl-gateway
     $addr = [string](Get-AapNetField $d 'address')
     if (-not (Test-AapNetHost $net (Split-AapNetAddress $addr)) -or $addr -ceq $gw) { $p.Add("the address $(Format-AapNetText $addr) is not a host address of $($net.Text) other than the gateway") }   # check:decl-address
-    # The narrowed exceptions, none by default: one private address outside the subnet, TCP or UDP, one port.
+    # The narrowed exceptions, none by default; at most one: a private resolver the owner chose, outside the subnet, UDP and
+    # TCP to port 53.
     $ends = Get-AapNetList $d 'endpoints'
-    if ($null -eq $ends -or $ends.Count -gt 4) { $p.Add('the endpoints are not a list of at most 4') }   # check:decl-endpoints
+    if ($null -eq $ends -or $ends.Count -gt 2) { $p.Add('the endpoints are not a list of at most 2') }   # check:decl-endpoints
     $dns = New-Object Collections.Generic.List[string]
     $seen = New-Object Collections.Generic.List[string]
     foreach ($e in $ends) {
@@ -82,12 +83,13 @@ function Get-AapNetDeclarationProblem($Request, $d) {
         $text = [string](Get-AapNetField $e 'address'); $proto = [string](Get-AapNetField $e 'protocol'); $port = Get-AapNetField $e 'port'
         $ip = Split-AapNetAddress $text
         if ($null -eq $ip -or -not (Test-AapNetPrivate $ip) -or (Test-AapNetCover $net $ip)) { $p.Add("the endpoint $(Format-AapNetText $text) is not one private IPv4 address outside $($net.Text)"); continue }   # check:decl-endpoint-address
-        if (@('TCP', 'UDP') -cnotcontains $proto -or -not ((Test-AapNetInt $port) -and $port -ge 1 -and $port -le 65535)) { $p.Add("the endpoint $text is not narrowed to TCP or UDP and one port 1 to 65535"); continue }   # check:decl-endpoint-narrow
+        if (@('TCP', 'UDP') -cnotcontains $proto -or -not ((Test-AapNetInt $port) -and $port -eq 53)) { $p.Add("the endpoint $text is not narrowed to TCP or UDP and port 53"); continue }   # check:decl-endpoint-narrow
         $key = "$text $proto $port"
         if ($seen -ccontains $key) { $p.Add("the endpoint $key is declared twice") }   # check:decl-endpoints
         $seen.Add($key)
-        if ($port -eq 53) { $dns.Add($text) }
+        if ($dns -cnotcontains $text) { $dns.Add($text) }
     }
+    if ($dns.Count -gt 1) { $p.Add("the endpoints name $($dns.Count) addresses, not one resolver") }   # check:decl-endpoint-one
     # The resolvers the guest is given: public ones need no Allow; a private one only as an endpoint on port 53.
     $res = Get-AapNetList $d 'resolvers'
     if ($null -eq $res -or $res.Count -lt 1 -or $res.Count -gt 2) { $p.Add('the resolvers are not a list of one or two addresses'); return $p.ToArray() }   # check:decl-resolvers
@@ -268,7 +270,7 @@ function Split-AapNetAddress([string]$Text) {
 function Test-AapNetFixed($P) { @($script:FixedDeny | Where-Object { Test-AapNetCover (Split-AapNetPrefix $_) $P }).Count -gt 0 }
 
 # Whether IPv4 address or prefix $P is private: inside a fixed range, and unicast a NAT routes (neither link-local
-# 169.254.0.0/16 nor multicast), so inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10.
+# 169.254.0.0/16 nor multicast nor broadcast), so inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10.
 function Test-AapNetPrivate($P) {
     $P.Width -eq 32 -and (Test-AapNetFixed $P) -and -not ($P.Bytes[0] -eq 169 -and $P.Bytes[1] -eq 254) -and $P.Bytes[0] -lt 224
 }

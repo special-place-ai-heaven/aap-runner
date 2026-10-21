@@ -1,5 +1,5 @@
 {
-  "expect": "$.endpoints: more than 4 items",
+  "expect": "endpoints name 2 addresses, not one resolver",
   "instance": {
     "schema": 1,
     "kind": "host_network_attach",
@@ -10,7 +10,8 @@
     "gateway": "172.31.252.1",
     "address": "172.31.252.2",
     "resolvers": [
-      "192.168.1.53"
+      "192.168.1.53",
+      "10.0.0.53"
     ],
     "endpoints": [
       {
@@ -19,22 +20,7 @@
         "port": 53
       },
       {
-        "address": "192.168.1.54",
-        "protocol": "UDP",
-        "port": 53
-      },
-      {
-        "address": "192.168.1.55",
-        "protocol": "UDP",
-        "port": 53
-      },
-      {
-        "address": "192.168.1.56",
-        "protocol": "UDP",
-        "port": 53
-      },
-      {
-        "address": "192.168.1.57",
+        "address": "10.0.0.53",
         "protocol": "UDP",
         "port": 53
       }

@@ -1,5 +1,5 @@
 {
-  "expect": "resolver 192.168.1.53 is private but not a declared endpoint on port 53",
+  "expect": "$.endpoints[0].port: must be 53",
   "instance": {
     "schema": 1,
     "kind": "host_network_attach",

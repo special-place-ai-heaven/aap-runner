@@ -641,15 +641,16 @@ def _host_net_fixed():
 
 
 def _host_net_private(net, fixed):
-    """Inside a fixed range and unicast a NAT routes: neither link-local nor multicast (the shared check's Test-AapNetPrivate)."""
+    """Inside a fixed range and unicast a NAT routes: neither link-local nor multicast nor broadcast (the shared check's
+    Test-AapNetPrivate)."""
     return (net.version == 4 and any(f.version == 4 and net.subnet_of(f) for f in fixed)
-            and not net.network_address.is_link_local and not net.network_address.is_multicast)
+            and not net.network_address.is_link_local and net.network_address.packed[0] < 224)
 
 
 def _host_net_declaration(d):
     """host-network-module.md, Attach: the name's letter is the profile's; a private subnet holding the gateway and the
-    VM's static address; each endpoint one private address outside the subnet; a private resolver only as an endpoint
-    on port 53. The shared check's Get-AapHostNetworkDeclarationProblems applies the same rules."""
+    VM's static address; the endpoints one private resolver outside the subnet (UDP and TCP 53, the schema's part); a
+    private resolver only as an endpoint. The shared check's Get-AapHostNetworkDeclarationProblems applies the same rules."""
     if d["vm_name"][4] != d["profile"][0]:
         raise Invalid(f"vm_name {d['vm_name']} does not match profile {d['profile']}")
     fixed = _host_net_fixed()
@@ -672,8 +673,9 @@ def _host_net_declaration(d):
         ip = ipaddress.ip_network(e["address"])
         if not _host_net_private(ip, fixed) or ip.subnet_of(net):
             raise Invalid(f"endpoint {e['address']} is not one private IPv4 address outside {d['subnet']}")
-        if e["port"] == 53:
-            on53.add(e["address"])
+        on53.add(e["address"])
+    if len(on53) > 1:
+        raise Invalid(f"endpoints name {len(on53)} addresses, not one resolver")
     for r in d["resolvers"]:
         if any(f.version == 4 and ipaddress.ip_network(r).subnet_of(f) for f in fixed) and r not in on53:
             raise Invalid(f"resolver {r} is private but not a declared endpoint on port 53")

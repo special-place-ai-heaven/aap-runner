@@ -67,9 +67,9 @@ Describe 'the shared host network fake' {
             @($n.Peers).Count | Should -Be 0
             @($n.Acls | Where-Object { $_.Action -ne 'Deny' }).Count | Should -Be 0
             $deny = @($n.Acls | Where-Object { $_.Action -eq 'Deny' })
-            $deny.Count | Should -Be 32
+            $deny.Count | Should -Be 34
             @($deny | Where-Object { $_.Weight -ne 10 -or "$($_.LocalAddress)$($_.Protocol)$($_.LocalPort)$($_.RemotePort)" -ne 'ANYANYANYANY' }).Count | Should -Be 0
-            @($deny | Where-Object { $_.Direction -eq 'Inbound' }).Count | Should -Be 16
+            @($deny | Where-Object { $_.Direction -eq 'Inbound' }).Count | Should -Be 17
             @($deny | Where-Object { $_.RemoteAddress -eq '172.31.250.1/32' } | ForEach-Object { $_.Direction }) | Should -Be @('Inbound', 'Outbound')
             Get-TestReadback $t $d $script:WinId | Should -BeNullOrEmpty
             @(& $t.Net.Verify (Win)).Count | Should -Be 0
@@ -246,7 +246,7 @@ Describe 'the shared host network fake' {
             @{ Tamper = 'drop-inbound-deny'; Want = @('no unscoped Inbound deny for 10.0.0.0/8') }
             @{ Tamper = 'scoped-deny'; Want = @('no unscoped Inbound deny for 192.168.0.0/16') }
             @{ Tamper = 'drop-host-deny'; Want = @("no unscoped Inbound deny covers the host's 2001:db8:1::/64", "no unscoped Outbound deny covers the host's 2001:db8:1::/64") }
-            @{ Tamper = 'extra-allow'; Want = @('rule 33: the Outbound allow 172.31.250.1/32 is not exactly a declared endpoint') }
+            @{ Tamper = 'extra-allow'; Want = @('rule 35: the Outbound allow 172.31.250.1/32 is not exactly a declared endpoint') }
             @{ Tamper = 'public-host'; Want = @("the host's 203.0.113.7/32 is public IPv4, outside the enforcement shape: not certified (contract, Limitations)") }) {
             Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $Tamper
             @(& $t.Net.Verify (Win)) | Should -Be $Want

@@ -21,7 +21,7 @@
       {
         "address": "224.0.0.251",
         "protocol": "UDP",
-        "port": 5353
+        "port": 53
       }
     ]
   }

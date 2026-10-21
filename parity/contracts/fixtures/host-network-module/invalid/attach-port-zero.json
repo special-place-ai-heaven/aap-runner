@@ -1,5 +1,5 @@
 {
-  "expect": "$.endpoints[1].port: below minimum 1",
+  "expect": "$.endpoints[1].port: must be 53",
   "instance": {
     "schema": 1,
     "kind": "host_network_attach",

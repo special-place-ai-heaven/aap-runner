@@ -372,7 +372,7 @@ CANDIDATE (D2):
   guest-transport.md, Wire framing.
 - Network: the enforcement shape is DECIDED (no External or Default switch; DHCP guard and router
   guard on, MAC spoofing off; extended port ACLs denying the host vEthernet addresses, private,
-  link-local, CGNAT, multicast and ULA ranges, the LAN IPv6 prefix and other clones; enhanced
+  link-local, CGNAT, multicast, limited broadcast and ULA ranges, the LAN IPv6 prefix and other clones; enhanced
   session and Guest Service Interface off; host ports blocked on the guest vEthernet). The
   mechanism (internal switch per profile with NAT, or an internal switch per guest; a private switch has no host adapter and is not viable) is CANDIDATE D2,
   owned by the P10.0 guest network module. The lab proves internet egress works and every denied

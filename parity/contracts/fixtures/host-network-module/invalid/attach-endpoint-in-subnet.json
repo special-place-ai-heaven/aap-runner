@@ -21,7 +21,7 @@
       {
         "address": "172.31.252.9",
         "protocol": "TCP",
-        "port": 443
+        "port": 53
       }
     ]
   }

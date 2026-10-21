@@ -1,4 +1,4 @@
 [
-  "rule 23: the Outbound allow 172.31.250.1/32 is not exactly a declared endpoint",
+  "rule 35: the Outbound allow 172.31.250.1/32 is not exactly a declared endpoint",
   "no unscoped Inbound deny covers the host's 2001:db8:1::/64"
 ]
