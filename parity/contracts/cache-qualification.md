@@ -114,7 +114,14 @@ change.
    manager-side oldest-file eviction. Requirements: [retention.md](../cache/qualification/retention.md)
    (retention.md requirement 4 is superseded by rule 6).
 7. A wrapper failure at runtime falls back to the direct compiler for that invocation and reports
-   cache state `degraded` in `status.v5.json`; it never fails a build that would pass direct.
+   cache state `degraded` in `status.v5.json`; it never fails a build that would pass direct. A zero
+   exit whose declared outputs (the object, the depfile) are missing, empty or not regular files is
+   a wrapper failure (P13.3); a call whose outputs the shim cannot name (including calls that write
+   sidecars it does not check, and Windows device outputs) builds directly; rustc, link and
+   clang-cl `/Fd` outputs rely on zccache's own delivery and P04's evidence. Accepted residuals
+   (guests/cache/README.md): concurrent writers of one output path inside one VM, hard-linked outputs
+   on Windows (COPY mode is the control), and the daemon copy zccache deploys into a root, which is
+   not hash-checked until P22.
 
 ## Matrix template (both platforms)
 

@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# Fake compiler for the P13 tests (no real toolchain): -o OUT gets "OBJ" plus the input file; "#error" in the input
-# fails with exit 1 and no output; --version prints a banner; @FILE names the input inside a response file.
-out="" in=""
+# Fake compiler for the P13 tests (no real toolchain): -o OUT gets "OBJ" plus the input file; with -MD or -MMD the
+# depfile (-MF, or OUT with its suffix replaced by .d) gets "DEP" plus the input's name; "#error" in the input fails
+# with exit 1 and no output; --version prints a banner; @FILE names the input inside a response file.
+# FAKE_CC_STDERR=TEXT prints TEXT to stderr. Run by zccache (ZCCACHE_CACHE_DIR set), FAKE_CC_OMIT="obj dep" leaves out
+# those outputs while still exiting 0: a cache that reports success without delivering them.
+out="" in="" mf="" md=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) echo "fake-cc version 18.1.3"; exit 0 ;;
     -o) out=$2; shift 2; continue ;;
+    -MF) mf=$2; shift 2; continue ;;
+    -MD | -MMD) md=1 ;;
     @*) while IFS= read -r t; do [[ -f "${t}" ]] && in=${t}; done < <(grep -oE '[^[:space:]]+' -- "${1:1}") ;;
     *) [[ -f "$1" ]] && in=$1 ;;
   esac
@@ -13,5 +18,9 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "${in}" ]] || { echo "fake-cc: no input" >&2; exit 2; }
 grep -q '#error' -- "${in}" && { echo "fake-cc: error: deliberate" >&2; exit 1; }
+[[ -n "${FAKE_CC_STDERR:-}" ]] && printf '%s\n' "${FAKE_CC_STDERR}" >&2
+omit=" "; [[ -n "${ZCCACHE_CACHE_DIR:-}" ]] && omit=" ${FAKE_CC_OMIT:-} "
 [[ -z "${out}" ]] && exit 0
-{ echo OBJ; cat -- "${in}"; } > "${out}"
+[[ "${omit}" == *" obj "* ]] || { echo OBJ; cat -- "${in}"; } > "${out}"
+if [[ ${md} == 1 && "${omit}" != *" dep "* ]]; then echo "DEP ${in##*/}" > "${mf:-${out%.*}.d}"; fi
+exit 0

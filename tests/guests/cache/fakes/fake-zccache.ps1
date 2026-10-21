@@ -9,8 +9,12 @@
 # sidecar is refused with exit 5 (a cache that detects a corrupted entry); FAKE_ZC_HANG=SECONDS records this process in
 # fake-client.pid and sleeps that long before exiting 0 (a hung client); with FAKE_ZC_LATE=SECONDS it first starts a
 # child that writes LATE to the -o file after that long (a straggler the timeout must stop).
-# FAKE_ZC_ARGV_LOG=PATH writes the arguments it received to PATH as JSON and exits 0, before anything else; it then
-# needs no cache root. The arguments come from the process command line, as zcshim.ps1 takes them.
+# FAKE_ZC_ARGV_LOG=PATH writes the arguments it received to PATH as JSON, writes the -o file and exits 0, before
+# anything else; it then needs no cache root. The arguments come from the process command line, as zcshim.ps1 takes them.
+# A hit delivers the object and, with -MD/-MMD, the depfile. Delivery faults on a hit, all exiting 0:
+# FAKE_ZC_NODELIVER=1 writes nothing, FAKE_ZC_EMPTY=1 an empty object, FAKE_ZC_LINK=1 a symbolic link to the entry
+# (zccache.cmd runs this under PowerShell 7 then, which can make one in developer mode). FAKE_ZC_PROGRESS=N first prints N of zccache's
+# progress lines to stderr.
 $ErrorActionPreference = 'Stop'
 $all = [Environment]::GetCommandLineArgs()
 $i = 1
@@ -18,6 +22,8 @@ while ($i -lt $all.Count -and $all[$i] -ne '-File') { $i++ }
 $argv = @($all | Select-Object -Skip ($i + 2))
 if ($env:FAKE_ZC_ARGV_LOG) {
     [IO.File]::WriteAllText($env:FAKE_ZC_ARGV_LOG, (ConvertTo-Json -InputObject ([object[]]$argv) -Compress), (New-Object System.Text.UTF8Encoding($false)))
+    $o = [array]::IndexOf([string[]]$argv, '-o')
+    if ($o -ge 0 -and $o + 1 -lt $argv.Count) { [IO.File]::WriteAllText($argv[$o + 1], 'OBJ') }  # delivered, as the shim checks
     exit 0
 }
 function Add-Line([string]$Path, [string]$Line) {
@@ -44,11 +50,14 @@ if ($argv[0] -eq 'session-start') {
     exit 0
 }
 if ($argv[0] -eq 'session-end') { exit 0 }
+for ($i = 0; $i -lt [int]$env:FAKE_ZC_PROGRESS; $i++) { [Console]::Error.Write("zccache[info][Q]: daemon under load: compiling, $($i + 2) compiles in flight`n") }
 $cc = $argv[0]
 $rest = @($argv | Select-Object -Skip 1)
-$out = $null; $in = $null; $keyArgs = @()
+$out = $null; $in = $null; $keyArgs = @(); $mf = $null; $md = $false
 for ($i = 0; $i -lt $rest.Count; $i++) {
     if ($rest[$i] -eq '-o' -and $i + 1 -lt $rest.Count) { $out = $rest[$i + 1]; $i++; continue }
+    if ($rest[$i] -ceq '-MF' -and $i + 1 -lt $rest.Count) { $mf = $rest[$i + 1] }
+    if ($rest[$i] -cin @('-MD', '-MMD')) { $md = $true }
     if (Test-Path -LiteralPath $rest[$i] -PathType Leaf) { $in = $rest[$i] }
     $keyArgs += $rest[$i]
 }
@@ -65,17 +74,27 @@ $keyText = $cc + "`n" + ($keyArgs -join "`n") + "`n" + $(if ($in) { [IO.File]::R
 $h = [Security.Cryptography.SHA256]::Create()
 $key = -join ($h.ComputeHash([Text.Encoding]::UTF8.GetBytes($keyText)) | ForEach-Object { $_.ToString('x2') })
 $store = Join-Path $root ('artifacts\' + $key)
-if ($out -and (Test-Path -LiteralPath $store)) {
+$dep = $(if ($md -and $out) { if ($mf) { $mf } else { [IO.Path]::ChangeExtension($out, '.d') } })
+if ($out -and (Test-Path -LiteralPath $store) -and (-not $dep -or (Test-Path -LiteralPath ($store + '.dep')))) {
     if ($env:FAKE_ZC_VERIFY -eq '1' -and (Get-Sha $store) -ne (Get-Content -LiteralPath ($store + '.sha'))) { [Console]::Error.WriteLine('fake-zccache: corrupt entry'); exit 5 }
     Add-Line (Join-Path $root 'fake-journal.log') 'hit'
+    if ($env:FAKE_ZC_NODELIVER -eq '1') { exit 0 }
+    if ($env:FAKE_ZC_EMPTY -eq '1') { [IO.File]::WriteAllBytes($out, [byte[]]@()); exit 0 }
+    if ($env:FAKE_ZC_LINK -eq '1') {
+        if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
+        $null = New-Item -ItemType SymbolicLink -Path $out -Value $store
+        exit 0
+    }
     if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
     if ($env:ZCCACHE_MODE -eq 'COPY') { Copy-Item -LiteralPath $store -Destination $out } else { $null = New-Item -ItemType HardLink -Path $out -Value $store }
+    if ($dep) { Copy-Item -LiteralPath ($store + '.dep') -Destination $dep -Force }
     exit 0
 }
 Add-Line (Join-Path $root 'fake-journal.log') 'miss'
 & $cc @rest
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ($out -and (Test-Path -LiteralPath $out)) {
+    if ($dep -and (Test-Path -LiteralPath $dep)) { Copy-Item -LiteralPath $dep -Destination ($store + '.dep') -Force }
     $tmp = $store + '.' + $PID + '.tmp'
     Copy-Item -LiteralPath $out -Destination $tmp
     Move-Item -LiteralPath $tmp -Destination $store -Force

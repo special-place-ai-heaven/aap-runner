@@ -26,6 +26,9 @@ $script:LauncherShell = $(if ($PSVersionTable.PSEdition -eq 'Core') { Join-Path 
 $script:LogLimit = 1MB
 $script:UsageEverySeconds = 30
 $script:Utf8 = New-Object System.Text.UTF8Encoding($false)
+# zccache's client prints these to stderr while a compile waits or runs (cli/commands/wrap/ipc.rs:347-366 at the pin),
+# always before the compile's own stderr, which arrives with the result.
+$script:Progress = '^zccache\[info\]\[Q\]: daemon under load: [a-z_]+, ([0-9]+ compiles in flight|position [0-9]+ of [0-9]+ queued, [0-9]+ in flight)$'
 
 function Get-AapZcProp($Object, [string]$Name) {
     if ($null -eq $Object) { return $null }
@@ -273,16 +276,19 @@ function Get-AapZcProcessList {
     }
 }
 
-# Daemon candidates for a root being primed: processes running from the installed bin folder, started at or after
-# $After, not a recorded daemon, and not a compile client. Every client the shim starts names a recorded compiler on
-# its command line, so a wrapped compile running during an attach is never taken for the new root's daemon.
+# Daemon candidates for a root being primed: processes running from the copy zccache deploys into the root and starts
+# its daemon from (RootDir\v<Version>\zccache-daemon.exe, cli/runtime/deploy.rs:106-125 at the pin) or, when that copy
+# fails, from the installed bin folder; started at or after $After, not a recorded daemon, and not a compile client.
+# Every client the shim starts names a recorded compiler on its command line, so a wrapped compile running during an
+# attach is never taken for the new root's daemon.
 # ponytail: Windows cannot read another process's environment without native code; Linux matches the daemon by its
 # ZCCACHE_CACHE_DIR instead. The lab (P22) records the daemon's own command line, which can then be matched exactly.
-function Get-AapZcDaemonProcess([string]$BinDir, [datetime]$After, [int[]]$Exclude = @(), $Toolchains) {
+function Get-AapZcDaemonProcess([string]$BinDir, [string]$RootDir, [string]$Version, [datetime]$After, [int[]]$Exclude = @(), $Toolchains) {
     $prefix = $BinDir.TrimEnd('\') + '\'
+    $deployed = Join-Path $RootDir ('v' + $Version + '\zccache-daemon.exe')
     $compilers = @($Toolchains | ForEach-Object { [string](Get-AapZcProp $_ 'path') } | Where-Object { $_ })
     foreach ($p in @(Get-AapZcProcessList)) {
-        if (-not $p.Path -or -not $p.Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or $null -eq $p.Start -or $p.Start -lt $After -or $Exclude -contains $p.Id) { continue }
+        if (-not $p.Path -or -not ([string]::Equals($p.Path, $deployed, [StringComparison]::OrdinalIgnoreCase) -or $p.Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) -or $null -eq $p.Start -or $p.Start -lt $After -or $Exclude -contains $p.Id) { continue }
         $line = [string]$p.CommandLine
         if (@($compilers | Where-Object { $line.IndexOf($_, [StringComparison]::OrdinalIgnoreCase) -ge 0 }).Count) { continue }  # SAFETY:WIN-DAEMON-ID
         $p
@@ -310,7 +316,7 @@ function Start-AapZcDaemon($Config, [string]$RootId, [string]$InstallDir) {
     if ($sid) { $null = Invoke-AapZcProcess -FilePath $zc -Arguments @('session-end', [string]$sid) -Environment $envVars -Capture -TimeoutSeconds 60 }
     $names = $(if ($Config.roots -is [System.Collections.IDictionary]) { @($Config.roots.Keys) } else { @($Config.roots.PSObject.Properties | ForEach-Object { $_.Name }) })
     $known = @(foreach ($n in $names) { $k = Get-AapZcProp (Get-AapZcProp $Config.roots $n) 'daemon'; if ($k) { [int](Get-AapZcProp $k 'pid') } })
-    $d = @(Get-AapZcDaemonProcess -BinDir (Split-Path -Parent $zc) -After $before -Exclude $known -Toolchains (Get-AapZcProp $Config 'toolchains'))
+    $d = @(Get-AapZcDaemonProcess -BinDir (Split-Path -Parent $zc) -RootDir ([string]$root.dir) -Version ([string](Get-AapZcPlatform (Join-Path $InstallDir 'wrappers.json')).Version) -After $before -Exclude $known -Toolchains (Get-AapZcProp $Config 'toolchains'))
     $p = $(if ($r.ExitCode -eq 0 -and $d.Count -eq 1) { Get-Process -Id $d[0].Id -ErrorAction SilentlyContinue })
     if (-not $p) {
         # A failed start, or none or several candidates: stop every candidate rather than leave an unrecorded daemon on a
@@ -528,6 +534,91 @@ function Get-AapZcInvocation {
     return @($classes | Sort-Object -Unique)
 }
 
+# Whether a name is a Windows device (NUL, CON, PRN, AUX, COM1-9, LPT1-9, with or without an extension, in any case)
+# or a \\.\ or //./ device path: a compile writes there, but nothing is delivered to check.
+function Test-AapZcDevice([string]$Name) {
+    if ($Name.StartsWith('\\.\') -or $Name.StartsWith('//./')) { return $true }
+    return ((($Name -split '[\\/]')[-1] -split '\.')[0] -match '^(NUL|CON|PRN|AUX|COM[1-9]|LPT[1-9])$')
+}
+
+# The files a call must have written when zccache exits 0: clang's -o file and, with -MD or -MMD, its depfile (-MF, or
+# the -o name with its last suffix replaced by .d); clang-cl's /Fo file. $null when they cannot be named (not exactly
+# one -o or /Fo file, /Fo naming a folder, -o to - or /dev, more than one -MF, a depfile name derived some other way,
+# a Windows device, or a call that writes sidecars this does not check): that call builds directly. Empty for rustc and
+# link: their outputs stay with zccache's own delivery (README, residual). Not named: /Fd (clang-cl writes no PDB at
+# compile time, and cl's shared PDB is never removed).
+function Get-AapZcOutputs {
+    param([Parameter(Mandatory)][string]$Compiler, [string[]]$Arguments = @())
+    $outs = Get-AapZcOutputNames $Compiler $Arguments
+    if ($null -eq $outs) { return $null }
+    if (@($outs | Where-Object { Test-AapZcDevice $_ }).Count) { return $null }  # SAFETY:WIN-OUT-DEVICE
+    return , [string[]]$outs
+}
+
+function Get-AapZcOutputNames([string]$Compiler, [string[]]$Arguments) {
+    if ($Compiler -in @('rustc', 'link', 'lld-link')) { return , [string[]]@() }
+    $x = Expand-AapZcArgs $Arguments
+    if ($null -eq $x) { return $null }
+    $t = @($x.Tokens)
+    # A depfile asked for in another spelling cannot be named: -Wp,-MD,FILE, -Xpreprocessor, the long --*dependencies
+    # forms, clang-cl's /clang:-M...
+    if (@($t | Where-Object { $_ -cmatch '^(-Wp,.*-M|-Xpreprocessor$|--.*dependencies$|[/-]clang:-M)' }).Count) { return $null }  # SAFETY:WIN-OUT-DEPFLAG
+    # Sidecars this does not check: -MJ, -save-temps, coverage and profile files, split DWARF, /sourceDependencies.
+    if (@($t | Where-Object { $_ -cmatch '^(-MJ|-save-temps(=.*)?$|--coverage$|-ftest-coverage$|-fprofile-arcs$|-fprofile-generate|-gsplit-dwarf$|[/-]sourceDependencies)' }).Count) { return $null }  # SAFETY:WIN-OUT-SIDECAR
+    if ($Compiler -in @('clang-cl', 'cl')) {
+        # /FoNAME, /Fo:NAME or /Fo: NAME; a name without an extension gets .obj, as clang-cl writes it.
+        $fo = @()
+        for ($i = 0; $i -lt $t.Count; $i++) {
+            if ($t[$i] -cmatch '^[/-]Fo(:?)(.*)$') {
+                $v = $Matches[2]
+                if ($Matches[1] -and -not $v -and $i + 1 -lt $t.Count) { $i++; $v = $t[$i] }
+                $fo += , $v
+            }
+        }
+        if ($fo.Count -ne 1 -or -not $fo[0] -or $fo[0] -match '[\\/]$') { return $null }
+        if (($fo[0] -split '[\\/]')[-1] -notmatch '\.') { return , [string[]]@($fo[0] + '.obj') }
+        return , [string[]]@($fo[0])
+    }
+    $o = $null; $n = 0; $mf = $null; $nmf = 0; $md = $false
+    for ($i = 0; $i -lt $t.Count; $i++) {
+        $a = $t[$i]
+        if ($a -ceq '-o') { $n++; $o = $(if ($i + 1 -lt $t.Count) { $t[$i + 1] }); $i++ }
+        elseif ($a -ceq '-MF') { $nmf++; $mf = $(if ($i + 1 -lt $t.Count) { $t[$i + 1] }); $i++ }
+        elseif ($a -clike '-MF?*') { $nmf++; $mf = $a.Substring(3) }
+        elseif ($a -cin @('-MD', '-MMD')) { $md = $true }
+    }
+    if ($n -ne 1 -or -not $o -or $o -eq '-' -or $o.StartsWith('/dev/') -or $nmf -gt 1) { return $null }
+    if (-not $md) { return , [string[]]@($o) }
+    if ($nmf -eq 1) {
+        if (-not $mf -or $mf -eq '-' -or $mf.StartsWith('/dev/')) { return $null }
+        return , [string[]]@($o, $mf)
+    }
+    $base = ($o -split '[\\/]')[-1]
+    $dot = $base.LastIndexOf('.')
+    if ($dot -lt 0) { return , [string[]]@($o, ($o + '.d')) }
+    if ($dot -eq 0 -or $dot -eq $base.Length - 1) { return $null }
+    return , [string[]]@($o, ($o.Substring(0, $o.Length - ($base.Length - $dot)) + '.d'))
+}
+
+# zccache's stderr without its leading progress lines ($script:Progress); everything from the first other line on is
+# passed on byte for byte, so a compiler message that only looks like one is kept.
+function Remove-AapZcProgress([byte[]]$Bytes) {
+    $i = 0
+    while ($i -lt $Bytes.Length) {
+        $j = [Array]::IndexOf($Bytes, [byte]10, $i)
+        if ($j -lt 0 -or $script:Utf8.GetString($Bytes, $i, $j - $i).TrimEnd([char]13) -cnotmatch $script:Progress) { break }
+        $i = $j + 1
+    }
+    $rest = New-Object byte[] ($Bytes.Length - $i)
+    [Array]::Copy($Bytes, $i, $rest, 0, $rest.Length)
+    return , $rest
+}
+
+# Whether a declared output (its IO.FileInfo) is a non-empty regular file, not a link or other reparse point.
+function Test-AapZcDelivered($File) {
+    return ($File.Exists -and -not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $File.Length -gt 0)  # SAFETY:WIN-OUT-CHECK
+}
+
 # ---- the shim ----
 
 function Write-AapZcLog($Config, [string]$Line) {
@@ -572,7 +663,7 @@ function Get-AapZcWrapperTimeout($Config, [string[]]$Classes) {
 }
 
 function Get-AapZcDecision([string]$ConfigPath, [string]$Compiler, [string[]]$Arguments) {
-    $d = [pscustomobject]@{ Mode = 'direct'; Reason = $null; Path = (Resolve-AapZcCompiler $Compiler); Config = $null; RootId = $null; Root = $null; Classes = @() }
+    $d = [pscustomobject]@{ Mode = 'direct'; Reason = $null; Path = (Resolve-AapZcCompiler $Compiler); Config = $null; RootId = $null; Root = $null; Classes = @(); Outputs = @() }
     if (-not $ConfigPath -or -not [IO.File]::Exists($ConfigPath)) { $d.Reason = 'no-state'; return $d }
     $cfg = Read-AapZcJson $ConfigPath
     $d.Config = $cfg
@@ -590,6 +681,9 @@ function Get-AapZcDecision([string]$ConfigPath, [string]$Compiler, [string[]]$Ar
         $q = @($cfg.qualified | Where-Object { $_.compiler -eq $tc.compiler -and $_.compiler_version -eq $tc.compiler_version -and $_.invocation -eq $c })
         if (-not $q.Count) { $d.Reason = 'not-qualified:' + $c; return $d }  # SAFETY:WIN-SHIM-QUALIFIED
     }
+    $outs = Get-AapZcOutputs -Compiler $tc.compiler -Arguments $Arguments
+    if ($null -eq $outs) { $d.Reason = 'outputs-unknown'; return $d }  # SAFETY:WIN-OUT-UNKNOWN
+    $d.Outputs = @($outs)
     $d.RootId = [string]$cfg.active_root
     $d.Root = Get-AapZcProp $cfg.roots $d.RootId
     if ([IO.File]::Exists((Get-AapZcFlagPath $cfg $d.RootId))) { $d.Reason = 'degraded'; return $d }  # SAFETY:WIN-SHIM-FLAG
@@ -611,30 +705,49 @@ function Invoke-AapZcShim {
     catch { $d = [pscustomobject]@{ Mode = 'direct'; Reason = 'shim-error'; Path = $null; Config = $null; RootId = $null; Root = $null } }
     $exe = $(if ($d.Path) { $d.Path } else { $compiler })
     if ($d.Mode -eq 'zccache') {
+        # An output left by an earlier build must not pass for this call's: every declared output goes first.
+        foreach ($f in $d.Outputs) {
+            try { [IO.File]::Delete($f) }  # SAFETY:WIN-OUT-STALE
+            catch [IO.DirectoryNotFoundException] { $null = $_ }
+            catch { $d.Mode = 'direct'; $d.Reason = 'output-not-removable' }
+        }
+    }
+    if ($d.Mode -eq 'zccache') {
         $r = $null
         $timeout = Get-AapZcWrapperTimeout $d.Config $d.Classes
         try {
             $r = Invoke-AapZcProcess -FilePath (Get-AapZcBinary $InstallDir) -Arguments (@($exe) + $rest) -Environment (Get-AapZcChildEnv $d.Root) -Capture -TimeoutSeconds $timeout  # SAFETY:WIN-SHIM-TIMEOUT
         } catch { $r = $null }
-        if ($null -ne $r -and -not $r.TimedOut -and $r.ExitCode -eq 0) {
+        # Exit 0 is not taken on trust: every declared output must now be a non-empty regular file, not a link. That
+        # proves delivery, not that the bytes are right (the trust rule bounds who writes a root).
+        $bad = @($d.Outputs | Where-Object { -not (Test-AapZcDelivered (New-Object IO.FileInfo($_))) })
+        if ($null -ne $r -and -not $r.TimedOut -and $r.ExitCode -eq 0 -and -not $bad.Count) {
             $o = [Console]::OpenStandardOutput(); $o.Write($r.Stdout, 0, $r.Stdout.Length); $o.Flush()
-            $e = [Console]::OpenStandardError(); $e.Write($r.Stderr, 0, $r.Stderr.Length); $e.Flush()
+            $err = Remove-AapZcProgress $r.Stderr
+            $e = [Console]::OpenStandardError(); $e.Write($err, 0, $err.Length); $e.Flush()
             Write-AapZcLog $d.Config ('zccache {0} exit 0' -f [IO.Path]::GetFileName($exe))
             return 0
         }
-        # Any zccache failure, a compile error included, is answered by the direct compiler: its exit code and output
-        # are the build's (contract rule 7). The wrapped call's output is dropped so errors are not reported twice, and a
-        # compile error costs two compiler runs. A call that ran past the bound marks the root degraded either way, and
-        # the root's daemon is stopped first: it may still be compiling this call's output, which the direct compile is
-        # about to write. Other wrapped calls on that root then fail and compile directly too.
+        # Any zccache failure, a compile error or an exit 0 without its outputs included, is answered by the direct
+        # compiler: its exit code and output are the build's (contract rule 7). The wrapped call's output is dropped so
+        # errors are not reported twice, and a compile error costs two compiler runs. A call that ran past the bound marks
+        # the root degraded either way, and so does an exit 0 without its outputs; the root's daemon is stopped first: it
+        # may still be compiling or copying this call's output, which the direct compile is about to write. Other wrapped calls on that root then fail and compile
+        # directly too. Whatever zccache left at a declared output goes before the compiler writes it: a link into the
+        # root would be written through.
         $timedOut = ($null -ne $r -and $r.TimedOut)
-        if ($timedOut) {
+        $undelivered = ($null -ne $r -and -not $timedOut -and $r.ExitCode -eq 0)
+        if ($undelivered) {
+            Set-AapZcDegraded $d.Config $d.RootId 'delivery'
+            if (Test-AapZcDaemonAlive $d.Root.daemon) { Stop-AapZcTree ([int]$d.Root.daemon.pid) }  # SAFETY:WIN-OUT-DAEMON
+        } elseif ($timedOut) {
             Set-AapZcDegraded $d.Config $d.RootId 'wrapper-timeout'
             if (Test-AapZcDaemonAlive $d.Root.daemon) { Stop-AapZcTree ([int]$d.Root.daemon.pid) }  # SAFETY:WIN-TIMEOUT-DAEMON
         }
+        foreach ($f in $d.Outputs) { try { [IO.File]::Delete($f) } catch { $null = $_ } }  # SAFETY:WIN-OUT-CLEAR
         $code = (Invoke-AapZcProcess -FilePath $exe -Arguments $rest).ExitCode  # SAFETY:WIN-SHIM-FALLBACK
-        if (-not $timedOut -and $code -eq 0) { Set-AapZcDegraded $d.Config $d.RootId 'wrapper-failure' }
-        Write-AapZcLog $d.Config ('fallback {0} zccache-exit {1} direct-exit {2}' -f [IO.Path]::GetFileName($exe), $(if ($timedOut) { 'timeout' } elseif ($r) { $r.ExitCode } else { 'none' }), $code)
+        if (-not $timedOut -and -not $undelivered -and $code -eq 0) { Set-AapZcDegraded $d.Config $d.RootId 'wrapper-failure' }
+        Write-AapZcLog $d.Config ('fallback {0} zccache-exit {1}{2} direct-exit {3}' -f [IO.Path]::GetFileName($exe), $(if ($timedOut) { 'timeout' } elseif ($r) { $r.ExitCode } else { 'none' }), $(if ($undelivered) { ' delivery' } else { '' }), $code)
         return $code
     }
     try { $code = (Invoke-AapZcProcess -FilePath $exe -Arguments $rest).ExitCode }
@@ -644,4 +757,4 @@ function Invoke-AapZcShim {
 }
 
 Export-ModuleMember -Function Install-AapZcCache, Initialize-AapZcJob, Connect-AapZcSharedRoot, Get-AapZcState, Invoke-AapZcShim,
-    Get-AapZcInvocation, Get-AapZcToolchainDigest, Get-AapZcChildEnv, ConvertTo-AapZcArg
+    Get-AapZcInvocation, Get-AapZcOutputs, Get-AapZcToolchainDigest, Get-AapZcChildEnv, ConvertTo-AapZcArg
