@@ -186,7 +186,7 @@ for pair in "${TARGET}|" "${ESP}|boot/efi/"; do
   [ -z "${KNOWN}" ] || content build-credential -F "${KNOWN}"   # check:scan-known-ascii
   [ -z "${wide}" ] || content build-credential -P "${wide}"   # check:scan-known-wide
   # Compressed logs and documents: each .gz decompressed in a stream, checked once against everything, then rule by rule. A
-  # stream that ends early (truncated, corrupt) or a grep that fails (a line too long for memory) is unreadable, never clean.
+  # stream that ends early (truncated, corrupt) or a grep that fails (a line too long for memory) is never clean.
   while IFS= read -r -d '' rel; do
     f="${TREE}/${rel}"; GZ_BAD=0
     if gz "${f}" -E "${ANY[@]}" || gz "${f}" -P "${wide}"; then
@@ -194,7 +194,9 @@ for pair in "${TARGET}|" "${ESP}|boot/efi/"; do
       ! gz "${f}" -F -e "${KNOWN}" || add_finding build-credential "${rel}"   # check:scan-gz-known
       ! gz "${f}" -P -e "${wide}" || add_finding build-credential "${rel}"   # check:scan-gz-wide
     fi
-    [ "${GZ_BAD}" = 0 ] || unread "${PRE}${rel}: the decompressed stream was not read to its end"
+    # A finding of its own rule with the file's hash: a reviewed allowlist entry (that rule, exact path and bytes) can cover
+    # a .gz the image ships damaged and nothing else found in it; the host counts an uncovered one as incomplete, not found.
+    [ "${GZ_BAD}" = 0 ] || add_finding unreadable-stream "${rel}"
   done < "${tmp}/gz"
 done
 while IFS= read -r line; do unread "${line}"; done < "${tmp}/grep.err"
@@ -207,6 +209,6 @@ joined() { local f=$1; paste -sd, "${f}"; }
   printf '"large_files_count":%s,"large_files":[%s],' "${large}" "$(joined "${tmp}/large")"
   printf '"rules":["runner-credentials","runner-config","ssh-host-key","ssh-authorized-keys","shell-history","app-key","cloud-init-seed",'
   printf '"installer-answers","azure-provisioning-data","shadow-password-hash","pem-private-key","github-token","github-pat","jit-config",'
-  printf '"synthetic-marker","build-credential","build-agent","build-sudoers"]}\n'
+  printf '"synthetic-marker","build-credential","build-agent","build-sudoers","unreadable-stream"]}\n'
 } > "${OUT}"
 echo "aap-scan: ${scanned} files content-scanned, ${findings} findings, ${unreadable} unreadable, ${large} large"

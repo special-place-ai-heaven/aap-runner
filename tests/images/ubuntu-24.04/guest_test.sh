@@ -149,7 +149,8 @@ run $'schema=1\nphase=p02\nkind=action\naction=upload-helpers\n'"${avars}"
 seal_world() {
   reset_root
   mkdir -p "${tmp}/root/logs" "${tmp}/sys/etc/ssh" "${tmp}/sys/etc/sudoers.d" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/root" "${tmp}/sys/home/runner" \
-    "${tmp}/sys/etc/ssl/private" "${tmp}/sys/etc/ssl/certs" "${tmp}/sys/var/lib/systemd" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/sockets.target.wants"
+    "${tmp}/sys/etc/ssl/private" "${tmp}/sys/etc/ssl/certs" "${tmp}/sys/var/lib/systemd" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/sockets.target.wants" \
+    "${tmp}/sys/etc/netplan" "${tmp}/sys/etc/cloud/cloud.cfg.d"
   printf 'root:x:0:0::/root:/bin/bash\n' > "${tmp}/sys/etc/passwd"
   printf 'root:*:20000:0:99999:7:::\n' > "${tmp}/sys/etc/shadow"
   echo key > "${tmp}/sys/etc/ssh/ssh_host_ed25519_key"
@@ -158,6 +159,9 @@ seal_world() {
   echo agent > "${tmp}/sys/usr/local/libexec/aap-build/agent"
   echo unit > "${tmp}/sys/etc/systemd/system/aap-agent.socket"; echo unit > "${tmp}/sys/etc/systemd/system/aap-agent@.service"
   ln -s /etc/systemd/system/aap-agent.socket "${tmp}/sys/etc/systemd/system/sockets.target.wants/aap-agent.socket"
+  # the build VM's static address, as the installer leaves it
+  printf 'network: {version: 2, ethernets: {nic: {addresses: [172.31.253.2/24]}}}\n' > "${tmp}/sys/etc/netplan/50-cloud-init.yaml"
+  printf 'network: {version: 2}\n' > "${tmp}/sys/etc/cloud/cloud.cfg.d/90-installer-network.cfg"
 }
 # seal_check alone, sourced, over the current world
 seal_only() {
@@ -168,10 +172,11 @@ dvars=$'var=install_user=installer\nvar=image_folder=/imagegeneration\n'
 seal_world
 run $'schema=1\nphase=p30\nkind=action\naction=deprovision\n'"${dvars}"
 [ "$(reply 'r["status"], sorted(r["data"]["seal"]["checked"]), r["data"]["seal"]["findings"], r["data"]["seal"]["unreadable"]')" = \
-  "('ok', ['install-user-absent', 'no-agent', 'no-authorized-keys', 'no-build-sudoers', 'no-cloud-state', 'no-password-hash', 'no-ssh-host-keys'], [], [])" ] || fail "deprovision: $(out)"
+  "('ok', ['install-user-absent', 'no-agent', 'no-authorized-keys', 'no-build-network', 'no-build-sudoers', 'no-cloud-state', 'no-password-hash', 'no-ssh-host-keys'], [], [])" ] || fail "deprovision: $(out)"
 [ ! -e "${tmp}/sys/etc/ssh/ssh_host_ed25519_key" ] && [ ! -e "${tmp}/root" ] && [ ! -e "${tmp}/sys/var/lib/cloud/instance" ] || fail 'deprovision left build state'
 for f in etc/ssl/private/ssl-cert-snakeoil.key etc/ssl/certs/ssl-cert-snakeoil.pem var/lib/systemd/random-seed usr/local/libexec/aap-build \
-  etc/systemd/system/aap-agent.socket etc/systemd/system/aap-agent@.service etc/systemd/system/sockets.target.wants/aap-agent.socket; do
+  etc/systemd/system/aap-agent.socket etc/systemd/system/aap-agent@.service etc/systemd/system/sockets.target.wants/aap-agent.socket \
+  etc/netplan/50-cloud-init.yaml etc/cloud/cloud.cfg.d/90-installer-network.cfg; do
   [ ! -e "${tmp}/sys/${f}" ] && [ ! -L "${tmp}/sys/${f}" ] || fail "deprovision left ${f}"
 done
 grep -qx 'datasource_list: \[ NoCloud, None \]' "${tmp}/sys/etc/cloud/cloud.cfg.d/90-aap-nocloud.cfg" || fail 'cloud-init is not pointed at NoCloud'
@@ -179,7 +184,8 @@ grep -q '^waagent -force -deprovision$' "${STUB_LOG}" && grep -q '^userdel -r in
 grep -q '^journalctl --rotate --vacuum-time=1s$' "${STUB_LOG}" || fail "the journal was not rotated and vacuumed: $(cat "${STUB_LOG}")"
 # Anything of the agent left behind fails the seal check, a dangling unit link included.
 for left in root usr/local/libexec/aap-build etc/systemd/system/aap-agent.socket etc/systemd/system/aap-agent@.service etc/systemd/system/sockets.target.wants/aap-agent.socket; do
-  seal_world; rm -rf "${tmp}/root" "${tmp}/sys/etc/ssh/ssh_host_ed25519_key" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/aap-agent"*
+  seal_world; rm -rf "${tmp}/root" "${tmp}/sys/etc/ssh/ssh_host_ed25519_key" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/aap-agent"* \
+    "${tmp}/sys/etc/netplan"/* "${tmp}/sys/etc/cloud/cloud.cfg.d/90-installer-network.cfg"
   rm -f "${tmp}/sys/etc/systemd/system/sockets.target.wants/aap-agent.socket"
   seal_only
   [ "$(reply 'r["findings"]')" = '[]' ] || fail "a clean seal world: $(out)"
@@ -191,6 +197,15 @@ for left in root usr/local/libexec/aap-build etc/systemd/system/aap-agent.socket
   esac
   seal_only
   [ "$(reply 'r["findings"]')" = "['no-agent']" ] || fail "the seal check missed ${left}: $(out)"
+done
+# The build VM's static network configuration left behind fails the seal check: a clone's addressing is its own seed's.
+for left in etc/netplan/01-build.yaml etc/cloud/cloud.cfg.d/90-installer-network.cfg; do
+  seal_world; rm -rf "${tmp}/root" "${tmp}/sys/etc/ssh/ssh_host_ed25519_key" "${tmp}/sys/var/lib/cloud/instance" "${tmp}/sys/usr/local/libexec/aap-build" "${tmp}/sys/etc/systemd/system/aap-agent"* \
+    "${tmp}/sys/etc/netplan"/* "${tmp}/sys/etc/cloud/cloud.cfg.d/90-installer-network.cfg"
+  rm -f "${tmp}/sys/etc/systemd/system/sockets.target.wants/aap-agent.socket"
+  echo 'network: {version: 2}' > "${tmp}/sys/${left}"
+  seal_only
+  [ "$(reply 'r["findings"]')" = "['no-build-network']" ] || fail "the seal check missed ${left}: $(out)"
 done
 seal_world
 mkdir -p "${tmp}/sys/home/runner/.ssh"; echo k > "${tmp}/sys/home/runner/.ssh/authorized_keys"
@@ -215,7 +230,10 @@ printf '#!/bin/bash\n[ "$1" = -r ] && echo 6.17.0-1022-azure\n' > "${vstub}/unam
 printf '#!/bin/bash\ncase "$2" in SOURCE) echo /dev/sda2 ;; OPTIONS) echo rw,relatime,discard,commit=30,data=writeback ;; esac\n' > "${vstub}/findmnt"
 printf '#!/bin/bash\necho sda\n' > "${vstub}/lsblk"
 chmod +x "${vstub}"/*
-mkdir -p "${tmp}/root/in" "${tmp}/sys/imagegeneration/post-generation" "${tmp}/vsrc/runner-images-x/images/ubuntu/toolsets" "${tmp}/vsrc/runner-images-x/images/ubuntu/scripts/tests"
+mkdir -p "${tmp}/root/in" "${tmp}/sys/imagegeneration/post-generation" "${tmp}/vsrc/runner-images-x/images/ubuntu/toolsets" "${tmp}/vsrc/runner-images-x/images/ubuntu/scripts/tests" \
+  "${tmp}/sys/etc/ssl/private" "${tmp}/sys/etc/ssl/certs"
+# what the verification seed's first-boot step (make-ssl-cert) leaves
+echo key > "${tmp}/sys/etc/ssl/private/ssl-cert-snakeoil.key"; echo cert > "${tmp}/sys/etc/ssl/certs/ssl-cert-snakeoil.pem"
 echo '{}' > "${tmp}/vsrc/runner-images-x/images/ubuntu/toolsets/toolset-2404.json"
 echo '# tests' > "${tmp}/vsrc/runner-images-x/images/ubuntu/scripts/tests/RunAll-Tests.ps1"
 tar -czf "${tmp}/root/in/runner-images.tar.gz" -C "${tmp}/vsrc" runner-images-x
@@ -242,6 +260,13 @@ rm -f "${tmp}/post-generation-ran"
 verify_run
 [ -e "${tmp}/post-generation-ran" ] && [ "$(reply 'r["data"]["discovery"]["post_generation"]')" = False ] || fail "a failing post-generation script passed: $(out)"
 rm -f "${tmp}/sys/imagegeneration/post-generation/zz-fails.sh"
+# cloud-init does not stop on a failed runcmd: a first boot that made no snakeoil pair fails tls_snakeoil by name.
+for gone in etc/ssl/private/ssl-cert-snakeoil.key etc/ssl/certs/ssl-cert-snakeoil.pem; do
+  mv "${tmp}/sys/${gone}" "${tmp}/kept"
+  verify_run
+  [ "$(reply 'sorted(k for k, v in r["data"]["discovery"].items() if v is not True)')" = "['tls_snakeoil']" ] || fail "a missing ${gone} passed: $(out)"
+  mv "${tmp}/kept" "${tmp}/sys/${gone}"
+done
 
 # --- secret scan over a planted tree -----------------------------------------------------------------------------------
 t="${tmp}/target"
@@ -308,9 +333,22 @@ python3 -B -I -c 'import gzip, sys; d = gzip.compress(b"clean filler line\n" * 5
 head -c 536870912 /dev/zero | gzip -1 > "${u}/var/log/bomb.log.gz"
 for sigpipe in default ignored; do
   RC=0; ( if [ "${sigpipe}" = ignored ]; then trap '' PIPE; fi; ulimit -v 131072; exec bash "${guest}/aap-scan.sh" --known-file "${tmp}/known" --out "${tmp}/out" --target "${u}" ) > "${tmp}/scan.log" 2>&1 || RC=$?
-  [ "${RC}" = 0 ] && [ "$(reply 'r["findings_count"], r["unreadable_count"], sorted(x.split(":")[0] for x in r["unreadable"])')" = "(0, 2, ['var/log/bomb.log.gz', 'var/log/trunc.log.gz'])" ] ||
+  [ "${RC}" = 0 ] && [ "$(reply 'r["unreadable_count"], sorted((f["rule"], f["path"]) for f in r["findings"])')" = \
+    "(0, [('unreadable-stream', 'var/log/bomb.log.gz'), ('unreadable-stream', 'var/log/trunc.log.gz')])" ] ||
     fail "a .gz not read to its end passed (SIGPIPE ${sigpipe}): $(out) $(cat "${tmp}/scan.log")"
+  # with the file's hash, for an exact allowlist entry
+  [ "$(reply '[f["sha256"] for f in r["findings"] if f["path"].endswith("trunc.log.gz")][0]')" = "$(sha "${u}/var/log/trunc.log.gz")" ] || fail "an unreadable stream lacks its hash: $(out)"
 done
+# A damaged .gz with a token in its readable head: a finding of each rule over the same bytes, so the host's allowlist
+# entry for the unreadable stream (bound to its rule) never covers the token.
+v="${tmp}/both"
+mkdir -p "${v}/var/log"
+python3 -B -I -c 'import gzip, sys; d = gzip.compress(("token=ghp_" + "W" * 36 + "\n" + "clean filler line\n" * 50000).encode()); open(sys.argv[1], "wb").write(d[:len(d) // 2])' "${v}/var/log/both.log.gz"
+RC=0; bash "${guest}/aap-scan.sh" --known-file "${tmp}/known" --out "${tmp}/out" --target "${v}" > "${tmp}/scan.log" 2>&1 || RC=$?
+h=$(sha "${v}/var/log/both.log.gz")
+[ "${RC}" = 0 ] && [ "$(reply 'sorted((f["rule"], f["path"], f["sha256"]) for f in r["findings"])')" = \
+  "[('github-token', 'var/log/both.log.gz', '${h}'), ('unreadable-stream', 'var/log/both.log.gz', '${h}')]" ] ||
+  fail "a damaged .gz with a token did not report both rules: $(out) $(cat "${tmp}/scan.log")"
 printf 'nothex\n' > "${tmp}/badknown"
 RC=0; bash "${guest}/aap-scan.sh" --known-file "${tmp}/badknown" --out "${tmp}/scan2.json" --target "${t}" > /dev/null 2>&1 || RC=$?
 [ "${RC}" = 2 ] && [ ! -e "${tmp}/scan2.json" ] || fail 'a malformed known token was accepted'

@@ -2,6 +2,9 @@
 # Every Hyper-V, disk, seed-image, guest-channel, ACL and comparison call goes through the provider (a hashtable of
 # scriptblocks, AapUbuntuImage.HyperV.psm1 in production, fakes in tests). This module itself does filesystem work inside
 # the build and evidence folders only, and never touches the network: inputs come from P03 staging, verified by the provider.
+# The build VM's network is the P10.0 host network module's (parity/contracts/host-network-module.md), taken as -Network:
+# Attach, the shared declaration check, Verify and Hyper-V's read-back through the shared check before every start, the
+# declaration written into the build seed as static addressing, and Detach after the VM is removed.
 # The build, scan and verification guests run (or read) what internet-sourced installers produced and are treated as
 # hostile: every reply is size-capped while received and validated, files received from a guest land in the build folder
 # first, and no host path is ever resolved through guest-authored file system metadata. The host never mounts a guest file
@@ -22,7 +25,7 @@ $script:Profile = 'ubuntu-24.04-x64'
 $script:GiB = 1073741824
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 $script:ProviderOps = @('TestRootTrust', 'ExecFolders', 'GetVolume', 'MeasureBytes', 'VerifyInputs', 'NewBuildDisk', 'NewDiffDisk', 'NewSeedImage', 'GetSwitch', 'NewVm',
-    'AttachDisk', 'StartVm', 'TypeBootCommand', 'WaitVmOff', 'RemoveDvds', 'StopVm', 'RemoveVm', 'WaitGuestReady', 'InvokeGuest', 'ReceiveFile', 'OptimizeDisk',
+    'SetSeed', 'GetVmConfig', 'GetVmNetwork', 'AttachDisk', 'StartVm', 'TypeBootCommand', 'WaitVmOff', 'RemoveDvds', 'StopVm', 'RemoveVm', 'WaitGuestReady', 'InvokeGuest', 'ReceiveFile', 'OptimizeDisk',
     'SetReadOnlyAcl', 'GetVmMemoryOverheadMib', 'CompareInventory')
 # Repository files the builder reads. Not configurable: a caller cannot point the builder at another plan, manifest, guest
 # payload or comparison reference (tests replace them in module scope).
@@ -33,19 +36,24 @@ $script:AllowlistPath = Join-Path $PSScriptRoot 'secret-allowlist.json'
 $script:GuestDir = Join-Path $PSScriptRoot 'guest'
 $script:ProbeScript = Join-Path $PSScriptRoot '..\..\tools\parity-certify\probe\linux.sh'
 $script:HelloC = Join-Path $PSScriptRoot '..\..\tools\parity-certify\workloads\fixtures\hello.c'
-$script:SwitchName = 'aap-guests-linux'   # the P10.0 internal switch (guest-transport.md candidate); never External or Default Switch
+$script:NetworkOps = @('Attach', 'Detach', 'Verify')
+# A running build VM is verified again before the next phase once this long has passed since the last check (contract,
+# Consumer obligations 3: at most every minute, at phase granularity here).
+$script:NetVerifyMinutes = 1
+# The shared check of host-network-module.md, loaded only once the builder's trust check passed for its folder.
+$script:NetCheckPath = Join-Path $PSScriptRoot '..\..\supervisor\network\AapHostNetworkCheck.psm1'
 $script:MediaName = '^ubuntu-24\.04(\.[0-9]+)?-live-server-amd64\.iso\z'   # Ubuntu 24.04 only; never 26.04
 $script:PollSeconds = 15
 $script:Actions = @('make-image-folder', 'upload-helpers', 'upload-build-scripts', 'upload-image-folder', 'upload-report-base', 'upload-toolset',
     'layout-image-folder', 'software-report-and-tests', 'download-software-report-md', 'download-software-report-json', 'deprovision')
-$script:SealRules = @('install-user-absent', 'no-password-hash', 'no-authorized-keys', 'no-ssh-host-keys', 'no-agent', 'no-cloud-state', 'no-build-sudoers')
+$script:SealRules = @('install-user-absent', 'no-password-hash', 'no-authorized-keys', 'no-ssh-host-keys', 'no-agent', 'no-cloud-state', 'no-build-sudoers', 'no-build-network')
 $script:ScanRules = @('runner-credentials', 'runner-config', 'ssh-host-key', 'ssh-authorized-keys', 'shell-history', 'app-key', 'cloud-init-seed',
     'installer-answers', 'azure-provisioning-data', 'shadow-password-hash', 'pem-private-key', 'github-token', 'github-pat', 'jit-config',
-    'synthetic-marker', 'build-credential', 'build-agent', 'build-sudoers')
+    'synthetic-marker', 'build-credential', 'build-agent', 'build-sudoers', 'unreadable-stream')
 # Findings no allowlist entry can cover: the build's own credential and agent.
 $script:NeverAllowed = @('build-credential', 'build-agent')
 $script:Discovery = @('gcc', 'gxx', 'clang', 'cmake', 'ninja', 'make', 'pkg_config', 'hello_gcc', 'hello_clang', 'pwsh', 'python3', 'docker_daemon',
-    'sudo_nopasswd', 'systemd_pid1', 'kernel_azure', 'job_user', 'post_generation')
+    'sudo_nopasswd', 'systemd_pid1', 'kernel_azure', 'job_user', 'post_generation', 'tls_snakeoil')
 $script:ScriptPhaseSeconds = 6 * 3600
 $script:ActionSeconds = 3 * 3600
 $script:ReadySeconds = 1800
@@ -64,6 +72,10 @@ $script:CapHeadroom = 1.25              # cap = measured peak x 1.25, rounded up
 $script:MemOverheadMibMax = 1024
 # The owner-approved lab ceilings (contracts README, Resolved 2026-10-20): a config may ask for less, never more.
 $script:OwnerLimits = [ordered]@{ BuildCpus = 4; BuildMemGib = 10; BaseGibMax = 186; JobDiskGibMax = 55 }
+# The difference sections P05's certify.py compare reports (compare_inventories; a test derives them from certify.py). A
+# plan section name outside this list would match no difference and so gate nothing.
+$script:CompareSections = @('coverage', 'image', 'infra', 'user', 'env', 'credential_env', 'path.process', 'path.machine', 'shells', 'tools', 'command_paths',
+    'tool_cache', 'tool_cache.defaults', 'action_archive_cache', 'services', 'docker', 'docker.images', 'hardware', 'limits', 'limits.sysctl')
 $script:Uuid = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 $script:Safe = '^[A-Za-z0-9_./:+-]{0,200}\z'   # every value that reaches the guest request or the seed
 
@@ -173,6 +185,8 @@ function Read-AapUbuntuBuildPlan {
     $foreign = @('image', 'infra', 'run_identity', 'credential_env')
     $owned = @(Get-AapProp (Get-AapProp $plan 'verify') 'required_sections' | Where-Object { $_ })
     if ($owned.Count -eq 0 -or @($owned | Where-Object { $foreign -ccontains [string]$_ }).Count) { throw "AAP_PlanInvalid: verify.required_sections must name the sections the image owns and none of $($foreign -join ', ')" }   # check:plan-required
+    $unknown = @(@(Get-AapProp (Get-AapProp $plan 'verify') 'gate_sections') + $owned | Where-Object { $script:CompareSections -cnotcontains [string]$_ })
+    if ($unknown.Count) { throw "AAP_PlanInvalid: verify names sections P05's comparison never reports: $(@($unknown | ForEach-Object { Get-AapPrintable ([string]$_) 40 }) -join ', ')" }   # check:plan-sections
     # The upstream source archive and the installation media are P03 entries pinned here by name and SHA-256, so plan_sha256
     # covers them. Until one is pinned, its blocker must be in the plan and must not be waivable.
     foreach ($k in @(@{ Key = 'source'; Blocker = 'p07-upstream-source-archive' }, @{ Key = 'media'; Blocker = 'p07-ubuntu-server-media' })) {
@@ -233,7 +247,7 @@ function Get-AapUbuntuWaivers($Config, [string[]]$Known, [string]$PlanSha, [stri
 }
 
 function Assert-AapUbuntuConfig($Config) {
-    foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit', 'SwitchName') {
+    foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit') {
         if ($null -eq (Get-AapProp $Config $k) -or [string](Get-AapProp $Config $k) -eq '') { throw "AAP_ConfigInvalid: $k is required" }
     }
     # Numbers are parsed, never cast: casting 'four' would throw outside the builder's refusals.
@@ -245,7 +259,6 @@ function Assert-AapUbuntuConfig($Config) {
     foreach ($k in @($script:OwnerLimits.Keys)) {
         if (-not [int]::TryParse([string](Get-AapProp $Config $k), [ref]$n) -or $n -lt 1 -or $n -gt $script:OwnerLimits[$k]) { throw "AAP_ConfigInvalid: $k must be 1 to $($script:OwnerLimits[$k]), the owner-approved lab ceiling" }   # check:owner-limits
     }
-    if ([string]$Config.SwitchName -cne $script:SwitchName) { throw "AAP_NetworkUntrusted: SwitchName must be the internal switch $($script:SwitchName), never an External switch or the Default Switch" }   # check:network
 }
 
 function Get-AapUbuntuNames($Plan, [int]$AapBuild) {
@@ -268,13 +281,14 @@ function ConvertTo-AapYamlIndent([string]$Text, [int]$Indent) {
 function New-AapUbuntuSeed {
     <# The cloud-init NoCloud seed (files user-data and meta-data) for one guest, and the new guest's channel token (an
        AapToken, made here so it is never a parameter). build: the unattended install (autoinstall) of the live-server ISO,
-       whose installed system gets the install user (no password, key or login) and the agent. verify: the job user and the
+       whose installed system gets the install user (no password, key or login) and the agent, and its network is the static
+       addressing of -Network, the host network module's declaration (no DHCP). verify: the job user and the
        agent for a fresh guest of the sealed image, after the first-boot step every clone gets (P15). scan: the agent for the
        live system that scans the sealed disk, and in /var/lib/aap-build/known the build guest's token (-Known) to look for.
        The agent listens on hvsocket only; no guest gets a password, an SSH key or a host share. Returns Files (user-data,
        meta-data) and Token. #>
-    param([Parameter(Mandatory)][ValidateSet('build', 'verify', 'scan')][string]$Mode, [Parameter(Mandatory)]$Plan, [Parameter(Mandatory)][string]$InstanceId, $Known)
-    if ($InstanceId -cnotmatch '^[a-z0-9-]{1,64}\z' -or (($Mode -eq 'scan') -ne ($Known -is [AapToken]))) { throw 'AAP_SeedInvalid: instance id, or a known token for anything but the scanner' }   # check:seed-values
+    param([Parameter(Mandatory)][ValidateSet('build', 'verify', 'scan')][string]$Mode, [Parameter(Mandatory)]$Plan, [Parameter(Mandatory)][string]$InstanceId, $Known, $Network)
+    if ($InstanceId -cnotmatch '^[a-z0-9-]{1,64}\z' -or (($Mode -eq 'scan') -ne ($Known -is [AapToken])) -or (($Mode -eq 'build') -ne ($null -ne $Network))) { throw 'AAP_SeedInvalid: instance id, a known token for anything but the scanner, or a network for anything but the build' }   # check:seed-values
     $token = [AapToken]::new()
     $agent = [IO.File]::ReadAllText((Join-Path $script:GuestDir 'aap-agent.sh')).Replace("`r`n", "`n")
     if ($agent -match '[^\x0a\x20-\x7e]') { throw 'AAP_SeedInvalid: the agent must be printable ASCII without tabs' }
@@ -330,6 +344,12 @@ $($firstBoot)  - [systemctl, daemon-reload]
     if ($Mode -ne 'build') { $userData = "#cloud-config`n" + $config.Replace("`r`n", "`n") + "`n" }
     else {
         $b = $Plan.base
+        # The declaration's values, checked again where they enter YAML: dotted IPv4 addresses and a prefix length only.
+        $ip = '^(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}\z'
+        $prefix = [string]@(([string](Get-AapProp $Network 'subnet')).Split('/'))[-1]
+        $resolvers = @(Get-AapProp $Network 'resolvers' | ForEach-Object { [string]$_ })
+        $addrs = @([string](Get-AapProp $Network 'address'), [string](Get-AapProp $Network 'gateway')) + $resolvers
+        if ($prefix -cnotmatch '^(1[6-9]|2[0-9]|30)\z' -or $resolvers.Count -lt 1 -or @($addrs | Where-Object { $_ -cnotmatch $ip }).Count) { throw 'AAP_SeedInvalid: the network declaration is not static IPv4 addressing' }   # check:seed-network
         $userData = @"
 #cloud-config
 autoinstall:
@@ -349,7 +369,15 @@ autoinstall:
       nic:
         match:
           driver: hv_netvsc
-        dhcp4: true
+        dhcp4: false
+        dhcp6: false
+        accept-ra: false
+        addresses: [$($Network.address)/$prefix]
+        routes:
+          - to: default
+            via: $($Network.gateway)
+        nameservers:
+          addresses: [$($resolvers -join ', ')]
   storage:
     swap:
       size: 0
@@ -460,8 +488,9 @@ function Assert-AapSealReply($Reply) {
 # SHA-256, never the matched value; the host validates its report and applies the reviewed allowlist.
 
 function Read-AapUbuntuAllowlist {
-    <# secret-allowlist.json: reviewed exceptions, each an exact relative path (forward slashes, from the image root) and
-       SHA-256 with its justification. No wildcard: an entry suppresses a finding only for that path with those bytes. #>
+    <# secret-allowlist.json: reviewed exceptions, each a scan rule, an exact relative path (forward slashes, from the image
+       root) and SHA-256 with its justification. No wildcard: an entry suppresses a finding only of that rule for that path
+       with those bytes, so an entry for a damaged .gz never covers a key or token found in the same bytes. #>
     param([Parameter(Mandatory)][string]$Path)
     if ((Get-AapPathKind $Path) -ne 'file' -or (New-Object IO.FileInfo $Path).Length -gt 65536) { throw "AAP_AllowlistInvalid: $Path is missing or over 64 KiB" }
     try { $doc = Read-AapJson $Path } catch { throw "AAP_AllowlistInvalid: $Path is not JSON" }
@@ -469,13 +498,13 @@ function Read-AapUbuntuAllowlist {
     $out = New-Object System.Collections.Generic.List[object]
     foreach ($e in @($doc.entries | Where-Object { $null -ne $_ })) {
         $names = $(if ($e -is [Management.Automation.PSCustomObject]) { (@(Get-AapNames $e | Sort-Object) -join ',') } else { '' })
-        $p = [string](Get-AapProp $e 'path')
-        if (@($out | Where-Object { $_.path -ceq $p }).Count) { throw "AAP_AllowlistInvalid: $(Get-AapPrintable $p 200) is listed twice" }   # check:allowlist-duplicate
-        if ($names -cne 'justification,path,sha256' -or $p -cnotmatch '^[A-Za-z0-9._()+@ -]+(/[A-Za-z0-9._()+@ -]+)*\z' -or $p -match '(^|/)\.\.?(/|$)' -or   # check:allowlist
+        $p = [string](Get-AapProp $e 'path'); $r = [string](Get-AapProp $e 'rule')
+        if (@($out | Where-Object { $_.path -ceq $p -and $_.rule -ceq $r }).Count) { throw "AAP_AllowlistInvalid: $(Get-AapPrintable "$r $p" 200) is listed twice" }   # check:allowlist-duplicate
+        if ($names -cne 'justification,path,rule,sha256' -or $script:ScanRules -cnotcontains $r -or $p -cnotmatch '^[A-Za-z0-9._()+@ -]+(/[A-Za-z0-9._()+@ -]+)*\z' -or $p -match '(^|/)\.\.?(/|$)' -or   # check:allowlist
             [string](Get-AapProp $e 'sha256') -cnotmatch '^[0-9a-f]{64}\z' -or [string](Get-AapProp $e 'justification') -cnotmatch '^[\x20-\x7e]{10,1000}\z') {
-            throw 'AAP_AllowlistInvalid: every entry needs exactly a relative path, its sha256 and a justification'
+            throw 'AAP_AllowlistInvalid: every entry needs exactly a scan rule, a relative path, its sha256 and a justification'
         }
-        $out.Add([pscustomobject]@{ path = $p; sha256 = [string]$e.sha256 })
+        $out.Add([pscustomobject]@{ rule = $r; path = $p; sha256 = [string]$e.sha256 })
     }
     return $out.ToArray()
 }
@@ -512,28 +541,36 @@ function ConvertFrom-AapScanReport {
 
 function Get-AapUbuntuScanResult {
     <# Applies the allowlist to a validated scan report. 'found': a finding the allowlist does not cover (a build-credential
-       finding is never covered), or an allowlist entry that matches no finding with exactly its path and bytes.
-       'incomplete': an unreadable path, a finding list the scanner had to cut, or more large files than it lists. #>
+       finding is never covered), or an allowlist entry that matches no finding with exactly its rule, path and bytes.
+       'incomplete': an unreadable path, a finding list the scanner had to cut, or more large files than it lists, or an
+       unreadable-stream (a .gz the scanner could not decompress to its end) that no entry covers with exactly its rule, path
+       and bytes: a reviewed entry is how a file the image legitimately ships damaged, such as a test fixture, passes. #>
     param([Parameter(Mandatory)]$Report, [Parameter(Mandatory)][string]$AllowlistPath, $Seal = $null)
     $allow = @(Read-AapUbuntuAllowlist -Path $AllowlistPath)
     $findings = New-Object System.Collections.Generic.List[object]
     $allowed = New-Object System.Collections.Generic.List[object]
+    $streams = New-Object System.Collections.Generic.List[string]
     $used = @{}
     foreach ($f in @($Report.findings)) {
         $hit = $null
-        foreach ($a in $allow) { if ($a.path -ceq [string]$f.path) { $hit = $a } }
+        foreach ($a in $allow) {
+            if ($a.rule -cne [string]$f.rule) { continue }   # check:allowlist-rule
+            if ($a.path -ceq [string]$f.path) { $hit = $a }
+        }
         if ($script:NeverAllowed -ccontains [string]$f.rule -or $null -eq $hit -or [string]$f.sha256 -cne $hit.sha256) {   # check:allowlist-exact
-            $findings.Add([pscustomobject]@{ rule = [string]$f.rule; path = [string]$f.path })
+            # An uncovered stream the scanner could not read is not a secret found, but the scan is not complete without it.
+            if ([string]$f.rule -ceq 'unreadable-stream') { $streams.Add("unreadable-stream $([string]$f.path)") }   # check:allowlist-stream
+            else { $findings.Add([pscustomobject]@{ rule = [string]$f.rule; path = [string]$f.path }) }
         } else {
-            $allowed.Add([pscustomobject]@{ rule = [string]$f.rule; path = $hit.path; sha256 = $hit.sha256 }); $used[$hit.path] = $true
+            $allowed.Add([pscustomobject]@{ rule = $hit.rule; path = $hit.path; sha256 = $hit.sha256 }); $used["$($hit.rule) $($hit.path)"] = $true
         }
     }
-    foreach ($a in $allow) { if (-not $used.ContainsKey($a.path)) { $findings.Add([pscustomobject]@{ rule = 'allowlist-mismatch'; path = $a.path }) } }   # check:allowlist-stale
+    foreach ($a in $allow) { if (-not $used.ContainsKey("$($a.rule) $($a.path)")) { $findings.Add([pscustomobject]@{ rule = 'allowlist-mismatch'; path = $a.path }) } }   # check:allowlist-stale
     $result = 'clean'
-    if ($Report.unreadable_count -gt 0 -or $Report.findings_count -gt @($Report.findings).Count -or $Report.large_files_count -gt @($Report.large_files).Count) { $result = 'incomplete' }   # check:scan-incomplete
+    if ($Report.unreadable_count -gt 0 -or $streams.Count -or $Report.findings_count -gt @($Report.findings).Count -or $Report.large_files_count -gt @($Report.large_files).Count) { $result = 'incomplete' }   # check:scan-incomplete
     if ($findings.Count) { $result = 'found' }
     return [pscustomobject]@{ schema = 1; result = $result; scanned_by = 'scanner guest from the pinned installation media, no network'; files_scanned = $Report.files_scanned
-        unreadable_count = $Report.unreadable_count; unreadable = @($Report.unreadable); large_files_count = $Report.large_files_count; large_files = @($Report.large_files)
+        unreadable_count = $Report.unreadable_count + $streams.Count; unreadable = @(@($Report.unreadable) + $streams.ToArray() | Select-Object -First $script:ListMax); large_files_count = $Report.large_files_count; large_files = @($Report.large_files)
         allowlisted = $allowed.ToArray(); findings = @($findings | Select-Object -First $script:ListMax); seal = $Seal
         rules = @($script:ScanRules) + @('allowlist-mismatch') + $script:SealRules }
 }
@@ -704,30 +741,90 @@ function Invoke-AapUbuntuPhase($Ctx, $P) {
     }
 }
 
-# A guest with its own seed, VM and token. Build folder subfolder $Sub holds its disks and seed.
-function New-AapGuest($Ctx, [string]$Mode, [string]$Vm, [string]$Dir, [string]$OsDisk, [string[]]$Dvds, [bool]$BootFromDvd, $Switch, $Known = $null) {
-    $made = New-AapUbuntuSeed -Mode $Mode -Plan $Ctx.Plan -InstanceId "aap-$($Ctx.Names.Tag)-$Mode" -Known $Known
-    $seed = Join-Path $Dir 'seed.iso'
-    $null = Invoke-AapProvider $Ctx.Provider 'NewSeedImage' @{ Path = $seed; Label = 'CIDATA'; Files = $made.Files }
-    $vmMade = Invoke-AapProvider $Ctx.Provider 'NewVm' @{ Name = $Vm; Path = $Dir; OsDisk = $OsDisk; Dvds = @(@($Dvds) + $seed); BootFromDvd = $BootFromDvd
-        Cpus = [int]$Ctx.Config.BuildCpus; MemGib = [int]$Ctx.Config.BuildMemGib; SwitchName = $Switch }
-    return [pscustomobject]@{ Provider = $Ctx.Provider; Vm = $Vm; VmId = (Get-AapVmId $vmMade); Port = [int]$Ctx.Plan.channel.vsock_port; Token = $made.Token; Seed = $seed }
+# A guest with its own VM, seed and token, in folder $Dir. NewVm makes the VM with no network adapter and an empty DVD drive
+# for the seed; the build VM is then attached by the host network module, and its seed carries the declaration's static
+# addressing, so the seed is made after Attach and put in that drive while the VM is Off.
+function New-AapGuest($Ctx, [string]$Mode, [string]$Vm, [string]$Dir, [string]$OsDisk, [string[]]$Dvds, [bool]$BootFromDvd, $Known = $null) {
+    $vmMade = Invoke-AapProvider $Ctx.Provider 'NewVm' @{ Name = $Vm; Path = $Dir; OsDisk = $OsDisk; Dvds = @($Dvds); BootFromDvd = $BootFromDvd
+        Cpus = [int]$Ctx.Config.BuildCpus; MemGib = [int]$Ctx.Config.BuildMemGib }
+    $g = [pscustomobject]@{ Provider = $Ctx.Provider; Vm = $Vm; VmId = (Get-AapVmId $vmMade); Mode = $Mode; Port = [int]$Ctx.Plan.channel.vsock_port; Token = $null
+        Seed = (Join-Path $Dir 'seed.iso'); Network = $null }
+    if ($Mode -eq 'build') { $Ctx.State.vm_id = $g.VmId; Save-AapState $Ctx }   # so a later cleanup can Detach it
+    # Only Attach starts a VM's network, and only the builder starts a VM: no automatic start, no checkpoint (contract,
+    # Consumer obligations 1 and 2), read back from Hyper-V.
+    $cfg = Invoke-AapProvider $Ctx.Provider 'GetVmConfig' @{ VmName = $g.Vm; VmId = $g.VmId }
+    if ([string](Get-AapProp $cfg 'AutomaticStartAction') -cne 'Nothing' -or [string](Get-AapProp $cfg 'CheckpointType') -cne 'Disabled') { throw "AAP_NetworkUntrusted: $Vm may start on its own or keep a checkpoint" }   # check:vm-config
+    $decl = $(if ($Mode -eq 'build') { Connect-AapGuestNetwork $Ctx $g } else { $null })
+    $made = New-AapUbuntuSeed -Mode $Mode -Plan $Ctx.Plan -InstanceId "aap-$($Ctx.Names.Tag)-$Mode" -Known $Known -Network $decl
+    $null = Invoke-AapProvider $Ctx.Provider 'NewSeedImage' @{ Path = $g.Seed; Label = 'CIDATA'; Files = $made.Files }
+    $null = Invoke-AapProvider $Ctx.Provider 'SetSeed' @{ VmName = $g.Vm; VmId = $g.VmId; Path = $g.Seed; Dvds = @($Dvds) }
+    $g.Token = $made.Token
+    return $g
+}
+
+# Attach (the VM Off) and the shared declaration check. The declaration comes from the module's journal each time; the
+# builder uses the latest for the seed and the read-back, and build.json records it (the private subnet, the resolvers and
+# the VM's GUID, no secret: build.json stays out of the public repository, README).
+function Connect-AapGuestNetwork($Ctx, $Guest) {
+    $req = @{ VmId = $Guest.VmId; VmName = $Guest.Vm; Profile = 'linux' }
+    try { $decl = & $Ctx.Network.Attach $req } catch { throw "AAP_NetworkUntrusted: Attach of $($Guest.Vm) failed: $(Get-AapPrintable ([string]$_.Exception.Message) 300)" }
+    $bad = @(Get-AapHostNetworkDeclarationProblems -Request $req -Declaration $decl)
+    if ($bad.Count) { throw "AAP_NetworkInvalid: $(@($bad | Select-Object -First 3 | ForEach-Object { Get-AapPrintable ([string]$_) 150 }) -join '; ')" }   # check:network-declaration
+    $Guest.Network = $decl
+    return $decl
+}
+
+# Verify, and before a start Hyper-V's read-back of the build VM against its declaration through the shared check. While it
+# runs (-Running, between phases) Verify alone, as Consumer obligations 3 asks. Every object Verify writes is a problem, an
+# empty or $null one included, and so is every error it writes without throwing (a Verify that outputs nothing but errors
+# has not verified).
+function Assert-AapGuestNetwork($Ctx, $Guest, [switch]$Running) {
+    $req = @{ VmId = $Guest.VmId; VmName = $Guest.Vm; Profile = 'linux' }
+    try { $out = @(& $Ctx.Network.Verify $req 2>&1) } catch { throw "AAP_NetworkUntrusted: Verify of $($Guest.Vm) failed: $(Get-AapPrintable ([string]$_.Exception.Message) 300)" }
+    $errors = @($out | Where-Object { $_ -is [Management.Automation.ErrorRecord] })
+    $problems = @($out | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] })
+    if ($errors.Count) { throw "AAP_NetworkUntrusted: Verify of $($Guest.Vm) wrote errors: $(@($errors | Select-Object -First 3 | ForEach-Object { Get-AapPrintable ([string]$_) 150 }) -join '; ')" }   # check:network-verify-errors
+    if ($problems.Count) { throw "AAP_NetworkUntrusted: $($Guest.Vm): $(@($problems | Select-Object -First 3 | ForEach-Object { Get-AapPrintable ([string]$_) 150 }) -join '; ')" }   # check:network-verify
+    $Ctx.NetVerifiedAt = Get-Date
+    if ($Running) { return }
+    $nics = @(Invoke-AapProvider $Ctx.Provider 'GetVmNetwork' @{ VmName = $Guest.Vm; VmId = $Guest.VmId })
+    $bad = @(Get-AapHostNetworkAdapterProblems -Declaration $Guest.Network -Adapters $nics)
+    if ($bad.Count) { throw "AAP_NetworkUntrusted: $($Guest.Vm): $(@($bad | Select-Object -First 3 | ForEach-Object { Get-AapPrintable ([string]$_) 150 }) -join '; ')" }   # check:network-readback
+}
+
+# Every host-initiated start. The build VM: Attach again while Off, the declaration check, Verify and the read-back. The
+# scanner and verification VMs: no adapter at all, read back.
+function Start-AapGuest($Ctx, $Guest) {
+    if ($Guest.Mode -eq 'build') {
+        $null = Connect-AapGuestNetwork $Ctx $Guest
+        Assert-AapGuestNetwork $Ctx $Guest
+    } else {
+        $nics = @(Invoke-AapProvider $Ctx.Provider 'GetVmNetwork' @{ VmName = $Guest.Vm; VmId = $Guest.VmId })
+        if ($nics.Count) { throw "AAP_NetworkUntrusted: $($Guest.Vm) has $($nics.Count) network adapters and must have none" }   # check:nic-none
+    }
+    $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $Guest.Vm; VmId = $Guest.VmId }
+}
+
+# The build VM's network goes after the VM itself (contract, Consumer obligations 4): RemoveVm, then Detach.
+function Disconnect-AapGuestNetwork($Network, [string]$VmId, [string]$VmName) {
+    try { $null = & $Network.Detach @{ VmId = $VmId; VmName = $VmName; Profile = 'linux' } }
+    catch { throw "AAP_NetworkUntrusted: the network of $VmName is not proven detached: $(Get-AapPrintable ([string]$_.Exception.Message) 300)" }
 }
 
 # The live-server ISO, installed unattended: the seed's autoinstall answers every question, the boot command adds
 # 'autoinstall' to the installer's kernel command line, and the installer powers the VM off when it is done. Then the
 # media is ejected, the seed with its copy of the token deleted, and the installed system boots from its disk.
 function Invoke-AapInstall($Ctx) {
-    $g = New-AapGuest $Ctx 'build' $Ctx.Names.BuildVm $Ctx.BuildDir $Ctx.OsDisk @($Ctx.Media) $true $script:SwitchName
-    $Ctx.VmId = $g.VmId; $Ctx.Token = $g.Token
-    $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $g.Vm; VmId = $g.VmId }
+    $g = New-AapGuest $Ctx 'build' $Ctx.Names.BuildVm $Ctx.BuildDir $Ctx.OsDisk @($Ctx.Media) $true
+    $Ctx.VmId = $g.VmId; $Ctx.Token = $g.Token; $Ctx.Guest = $g
+    Start-AapGuest $Ctx $g
     $null = Invoke-AapProvider $Ctx.Provider 'TypeBootCommand' @{ VmName = $g.Vm; VmId = $g.VmId; Keys = @($Ctx.Plan.base.boot_command) }
     if (-not (Invoke-AapProvider $Ctx.Provider 'WaitVmOff' @{ VmName = $g.Vm; VmId = $g.VmId; TimeoutSeconds = [int]$Ctx.Plan.base.install_timeout_seconds })) {   # check:install-timeout
         throw "AAP_InstallTimeout: the unattended install did not power off within $($Ctx.Plan.base.install_timeout_seconds) s"
     }
     $null = Invoke-AapProvider $Ctx.Provider 'RemoveDvds' @{ VmName = $g.Vm; VmId = $g.VmId }
     Remove-AapTree $g.Seed $Ctx.BuildDir
-    $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $g.Vm; VmId = $g.VmId }
+    Start-AapGuest $Ctx $g
     if (-not (Wait-AapGuestReady $Ctx $script:ReadySeconds)) { throw 'AAP_GuestUnreachable: the installed system did not answer on its channel' }
     $Ctx.State.installed_at = Get-AapUtc
 }
@@ -741,8 +838,8 @@ function Invoke-AapScan($Ctx) {
     [void](New-Item -ItemType Directory -Path $dir)
     $child = Join-Path $dir 'os.avhdx'
     $null = Invoke-AapProvider $Ctx.Provider 'NewDiffDisk' @{ Parent = $Ctx.OsDisk; Path = $child }
-    $g = New-AapGuest $Ctx 'scan' $Ctx.Names.ScanVm $dir $null @($Ctx.Media) $true $null $Ctx.Token
-    $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $g.Vm; VmId = $g.VmId }
+    $g = New-AapGuest $Ctx 'scan' $Ctx.Names.ScanVm $dir $null @($Ctx.Media) $true $Ctx.Token
+    Start-AapGuest $Ctx $g
     if (-not (Wait-AapGuestReady $g $script:ReadySeconds)) { throw 'AAP_ScanIncomplete: the scanner guest did not answer' }
     $null = Invoke-AapProvider $Ctx.Provider 'AttachDisk' @{ VmName = $g.Vm; VmId = $g.VmId; Path = $child }
     Send-AapGuestFile $g (Join-Path $script:GuestDir 'aap-scan.sh') 'aap-scan.sh'
@@ -764,8 +861,8 @@ function Invoke-AapVerify($Ctx) {
     [void](New-Item -ItemType Directory -Path $dir)
     $child = Join-Path $dir 'os.avhdx'
     $null = Invoke-AapProvider $Ctx.Provider 'NewDiffDisk' @{ Parent = $Ctx.OsDisk; Path = $child }
-    $g = New-AapGuest $Ctx 'verify' $Ctx.Names.VerifyVm $dir $child @() $false $null
-    $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $g.Vm; VmId = $g.VmId }
+    $g = New-AapGuest $Ctx 'verify' $Ctx.Names.VerifyVm $dir $child @() $false
+    Start-AapGuest $Ctx $g
     if (-not (Wait-AapGuestReady $g $script:ReadySeconds)) { throw 'AAP_VerifyFailed: fresh guest not ready' }
     foreach ($f in @(@{ H = (Join-Path $script:GuestDir 'aap-verify.sh'); N = 'aap-verify.sh' }, @{ H = $script:ProbeScript; N = 'linux.sh' }, @{ H = $script:HelloC; N = 'hello.c' }, @{ H = $Ctx.SourceArchive; N = 'runner-images.tar.gz' })) {
         Send-AapGuestFile $g $f.H $f.N
@@ -855,13 +952,20 @@ function Remove-AapUbuntuBuild {
     <# Removes a build's VMs, build folder and, if this build began publishing and did not finish, its generation folder. An
        unfinished build's evidence files go too, exactly those its state.json lists, except secret-scan.json, which stays as
        the record of why it failed; its evidence folder goes if it made it and it is then empty. Idempotent: everything
-       absent counts as done. Never touches another generation or anything outside these folders. #>
-    param([Parameter(Mandatory)]$Storage, [Parameter(Mandatory)]$Provider, [Parameter(Mandatory)]$Names, [string]$EvidenceRoot)
+       absent counts as done. Never touches another generation or anything outside these folders. The build VM's network is
+       detached with -Network once its VM is gone (the VM id comes from state.json); a build that recorded a VM id and no
+       -Network is refused before anything is removed. A Detach that throws throws once the rest of the cleanup is done:
+       the module keeps the attachment in its journal for its own reconcile. #>
+    param([Parameter(Mandatory)]$Storage, [Parameter(Mandatory)]$Provider, [Parameter(Mandatory)]$Names, [string]$EvidenceRoot, [hashtable]$Network)
     $buildDir = Join-Path (Join-Path $Storage.Staging.Path 'build') $Names.BuildId
     $state = $null
     $statePath = Join-Path $buildDir 'state.json'
     if ((Get-AapPathKind $statePath) -eq 'file') { try { $state = Read-AapJson $statePath } catch { $state = $null } }
+    $vmId = [string](Get-AapProp $state 'vm_id')
+    if ($vmId -and -not $Network) { throw "AAP_NetworkUnavailable: $($Names.BuildId) recorded a build VM; its cleanup needs the host network module (-Network) to detach it" }   # check:cleanup-network
     foreach ($vm in $Names.BuildVm, $Names.ScanVm, $Names.VerifyVm) { $null = Invoke-AapProvider $Provider 'RemoveVm' @{ Name = $vm } }
+    $detachError = $null
+    if ($vmId) { try { Disconnect-AapGuestNetwork $Network $vmId $Names.BuildVm } catch { $detachError = $_ } }
     $done = $null -ne $state -and (Get-AapProp $state 'status') -eq 'done'
     $publishing = $null -ne $state -and (Get-AapProp (Get-AapProp $state 'steps') 'publish') -eq 'intent'
     if ($publishing -and -not $done) {
@@ -875,37 +979,47 @@ function Remove-AapUbuntuBuild {
         if ((Get-AapProp $state 'evidence_created') -eq $true -and (Get-AapPathKind $ev) -eq 'dir' -and @([IO.Directory]::GetFileSystemEntries($ev)).Count -eq 0) { Remove-AapTree $ev $EvidenceRoot }
     }
     Remove-AapTree $buildDir $Storage.Staging.Path
+    if ($detachError) { throw $detachError }   # check:cleanup-detach
 }
 
 function Invoke-AapUbuntuImageBuild {
     <# Builds, scans, verifies, publishes and records one generation. Returns Ok, Status (built, unchanged, refused, failed),
        Reason, Detail, GenerationId and the record paths. A refusal before the build folder exists changes nothing; a failure
-       after it removes the VMs, build disks, any partly published generation and the evidence files it wrote. #>
-    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Provider)
+       after it removes the VMs, build disks, any partly published generation and the evidence files it wrote. -Network is
+       the P10.0 host network module (Attach, Detach, Verify); without it nothing is built. #>
+    param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)]$Provider, [hashtable]$Network)
     $result = [ordered]@{ Ok = $false; Status = 'refused'; Reason = $null; Detail = $null; GenerationId = $null; RecordPath = $null; BudgetPath = $null; EvidencePath = $null; PartialCleaned = $false }
     $lock = $null; $started = $false; $published = $false; $ctx = $null; $storage = $null; $names = $null; $evidenceRoot = $null
     try {
         Assert-AapProvider $Provider
+        if ($null -eq $Network) { throw 'AAP_NetworkUnavailable: the P10.0 host network module is not installed; no guest is attached' }   # check:network-module
+        $missing = @($script:NetworkOps | Where-Object { -not ($Network[$_] -is [scriptblock]) })
+        if ($missing.Count) { throw "AAP_NetworkInvalid: the host network module lacks $($missing -join ', ')" }   # check:network-ops
         $here = $PSScriptRoot
         # The builder runs elevated: its own code, the P06 helpers it loads, every folder it sends files from and every folder
         # whose code the provider runs (python) must be as protected as the roots it writes (P19 deploys them admin-only).
         # Folders are checked, not each file in them. This runs after the modules loaded: it refuses a deployment anyone but
         # the administrators can change, it cannot undo code that was already changed when it loaded (README, Trust).
         foreach ($d in @($here, $script:GuestDir, [IO.Path]::GetFullPath((Join-Path $here '..\windows')), [IO.Path]::GetFullPath((Join-Path $here '..\common')),
-            [IO.Path]::GetFullPath((Join-Path $script:RepoRoot 'tools\parity-certify')), [IO.Path]::GetFullPath((Split-Path -Parent $script:ProbeScript)), [IO.Path]::GetFullPath((Split-Path -Parent $script:HelloC))) +
+            [IO.Path]::GetFullPath((Join-Path $script:RepoRoot 'tools\parity-certify')), [IO.Path]::GetFullPath((Split-Path -Parent $script:ProbeScript)), [IO.Path]::GetFullPath((Split-Path -Parent $script:HelloC)),
+            [IO.Path]::GetFullPath((Split-Path -Parent $script:NetCheckPath))) +
             @(Invoke-AapProvider $Provider 'ExecFolders')) {
             $problems = @(Invoke-AapProvider $Provider 'TestRootTrust' @{ Path = $d } | Where-Object { $_ })
             if ($problems.Count) { throw "AAP_BuilderUntrusted: ${d}: $(@($problems | ForEach-Object { Get-AapPrintable ([string]$_) 300 }) -join '; ')" }   # check:builder-untrusted
         }
+        Import-Module $script:NetCheckPath   # only now: its folder passed the check above
         Assert-AapUbuntuConfig $Config
         $storage = Read-AapStorageRecord -Path $Config.StoragePath
         $evidenceRoot = [IO.Path]::GetFullPath([string]$Config.EvidenceRoot)
         Assert-AapStorageTrusted $storage $Provider $evidenceRoot
-        $sw = Invoke-AapProvider $Provider 'GetSwitch' @{ Name = $script:SwitchName }
-        if ($null -eq $sw -or [string](Get-AapProp $sw 'Name') -cne $script:SwitchName -or [string](Get-AapProp $sw 'SwitchType') -cne 'Internal') { throw "AAP_NetworkUntrusted: $($script:SwitchName) is not an existing internal switch" }   # check:network
         $plan = Read-AapUbuntuBuildPlan -Path $script:PlanPath
         $planSha = Get-AapSha256File $script:PlanPath
         $names = Get-AapUbuntuNames $plan ([int]$Config.AapBuild)
+        # The build VM's switch (contract, Switches): aap-build-linux, its own segment; P19 creates it, and without it no
+        # build starts (never a fallback to a guest switch).
+        $switch = Get-AapHostNetworkSwitchName -VmName $names.BuildVm
+        $sw = Invoke-AapProvider $Provider 'GetSwitch' @{ Name = $switch }
+        if (-not $switch -or $null -eq $sw -or [string](Get-AapProp $sw 'Name') -cne $switch -or [string](Get-AapProp $sw 'SwitchType') -cne 'Internal') { throw "AAP_NetworkUntrusted: the build switch $switch is not an existing internal switch" }   # check:network
         $result.GenerationId = $names.GenerationId
         $known = @(Get-AapUbuntuBlockers -Plan $plan -ManifestPath $script:ManifestPath)
         $waivers = @(Get-AapUbuntuWaivers $Config $known $planSha @($plan.blockers | Where-Object { $_.waivable -eq $false } | ForEach-Object { [string]$_.id }))
@@ -928,7 +1042,7 @@ function Invoke-AapUbuntuImageBuild {
 
         $buildDir = Join-Path $buildRoot $names.BuildId
         if ((Get-AapPathKind $buildDir) -ne 'absent') {
-            Remove-AapUbuntuBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot
+            Remove-AapUbuntuBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot -Network $Network
             $result.PartialCleaned = $true
         }
         if ((Get-AapPathKind $genDir) -ne 'absent') {
@@ -961,15 +1075,15 @@ function Invoke-AapUbuntuImageBuild {
         [void](New-Item -ItemType Directory -Path $buildDir)
         $started = $true
         $ctx = [pscustomobject]@{
-            Config = $Config; Provider = $Provider; Plan = $plan; Names = $names; BuildDir = $buildDir; EvidenceDir = $evidenceDir; Media = $media
+            Config = $Config; Provider = $Provider; Network = $Network; Guest = $null; NetVerifiedAt = $null; Plan = $plan; Names = $names; BuildDir = $buildDir; EvidenceDir = $evidenceDir; Media = $media
             StatePath = (Join-Path $buildDir 'state.json'); OsDisk = (Join-Path $buildDir 'os.vhdx'); Vm = $names.BuildVm; VmId = $null; Port = [int]$plan.channel.vsock_port; Token = $null
             SourceArchive = $source; Seal = $null
-            State = [ordered]@{ schema = 1; build_id = $names.BuildId; generation_id = $names.GenerationId; status = 'running'; started_at = (Get-AapUtc); steps = [ordered]@{}
+            State = [ordered]@{ schema = 1; build_id = $names.BuildId; generation_id = $names.GenerationId; status = 'running'; started_at = (Get-AapUtc); vm_id = $null; steps = [ordered]@{}
                 evidence_created = $false; written = (New-Object System.Collections.Generic.List[string]); staging_peak_bytes = [double]0; clone_peak_bytes = [double]0; mem_overhead_mib = 0 }
             Evidence = [ordered]@{ schema = 2; item = 'P07'; build_id = $names.BuildId; generation_id = $names.GenerationId; builder_commit = $Config.BuilderCommit
                 plan_sha256 = $planSha; inputs_manifest_sha256 = (Get-AapSha256File $script:ManifestPath); template_sha256 = $plan.baseline.template_sha256
                 media = [ordered]@{ entry = [string]$pin.media.entry; file = (Split-Path -Leaf $media); sha256 = [string]$pin.media.sha256 }; base = [ordered]@{ kernel_package = $plan.base.kernel_package; deviation = $plan.base.deviation }
-                switch = $script:SwitchName; waivers = $waivers; phases = (New-Object System.Collections.Generic.List[object]); reports = [ordered]@{}; verify = $null; seal_check = $null }
+                switch = $switch; network = $null; waivers = $waivers; phases = (New-Object System.Collections.Generic.List[object]); reports = [ordered]@{}; verify = $null; seal_check = $null }
         }
         Save-AapState $ctx
         Assert-AapPlainPath -Root $evidenceRoot -Path (Split-Path -Parent $evidenceDir) -Reason 'AAP_StorageUntrusted' -Create
@@ -980,10 +1094,14 @@ function Invoke-AapUbuntuImageBuild {
         Set-AapStep $ctx 'install' 'intent'
         $null = Invoke-AapProvider $Provider 'NewBuildDisk' @{ Path = $ctx.OsDisk; SizeGib = [int]$plan.os_disk_gib }
         Invoke-AapInstall $ctx
+        $ctx.Evidence.network = $ctx.Guest.Network
         Send-AapGuestFile $ctx $source 'runner-images.tar.gz'
         Set-AapStep $ctx 'install' 'done'
 
         foreach ($p in @($plan.phases)) {
+            # The running build VM is verified again before a phase once a minute has passed: Verify sees host address changes
+            # (contract, Consumer obligations 3, at phase granularity; a watcher inside a phase is the lab's, README).
+            if (((Get-Date) - $ctx.NetVerifiedAt).TotalMinutes -ge $script:NetVerifyMinutes) { Assert-AapGuestNetwork $ctx $ctx.Guest -Running }   # check:network-running
             Set-AapStep $ctx $p.id 'intent'
             Invoke-AapUbuntuPhase $ctx $p
             Assert-AapStagingBudget $ctx
@@ -994,6 +1112,7 @@ function Invoke-AapUbuntuImageBuild {
         Set-AapStep $ctx 'seal' 'intent'
         $null = Invoke-AapProvider $Provider 'StopVm' @{ VmName = $ctx.Vm; VmId = $ctx.VmId; TimeoutSeconds = 1800 }
         $null = Invoke-AapProvider $Provider 'RemoveVm' @{ Name = $ctx.Vm }
+        Disconnect-AapGuestNetwork $Network $ctx.VmId $ctx.Vm
         $null = Invoke-AapProvider $Provider 'OptimizeDisk' @{ Vhdx = $ctx.OsDisk }
         Assert-AapStagingBudget $ctx
         $sealedSha = Get-AapSha256File $ctx.OsDisk
@@ -1053,7 +1172,7 @@ function Invoke-AapUbuntuImageBuild {
         if ($started -and -not $published) {
             $result.Status = 'failed'
             if ($ctx) { try { $ctx.State.status = 'failed'; Save-AapState $ctx } catch { $null = $_ } }
-            try { Remove-AapUbuntuBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot } catch { $result.Detail = Get-AapPrintable "$($result.Detail); cleanup failed: $($_.Exception.Message)" 500 }
+            try { Remove-AapUbuntuBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot -Network $Network } catch { $result.Detail = Get-AapPrintable "$($result.Detail); cleanup failed: $($_.Exception.Message)" 500 }
         }
     } finally {
         if ($lock) { $lock.Dispose() }

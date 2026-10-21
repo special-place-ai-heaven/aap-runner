@@ -23,7 +23,7 @@ ROOT=${AAP_AGENT_ROOT:-/var/lib/aap-build}
 S=${AAP_SYSROOT:-}   # tests only: a fake system root for the seal steps; empty in a guest
 PUT_MAX=1073741824
 RUN_MAX=65536
-SEAL_RULES='install-user-absent no-password-hash no-authorized-keys no-ssh-host-keys no-agent no-cloud-state no-build-sudoers'
+SEAL_RULES='install-user-absent no-password-hash no-authorized-keys no-ssh-host-keys no-agent no-cloud-state no-build-sudoers no-build-network'
 
 # --- reply helpers ---------------------------------------------------------------------------------------------------
 printable() { # $1 -> printable ASCII, at most $2 characters
@@ -198,6 +198,8 @@ seal_check() { # JSON {checked, findings, unreadable} of the seal rules
         done ;;
       no-cloud-state) { [ -e "${S}/var/lib/cloud/instance" ] || [ -e "${S}/var/log/installer" ] || [ -e "${S}/etc/cloud/cloud.cfg.d/99-installer.cfg" ]; } && found=1 ;;
       no-build-sudoers) grep -rqs "${user}" "${S}/etc/sudoers.d" && found=1 ;;
+      # the build VM's static address (host network declaration): a clone takes its addressing only from its own seed
+      no-build-network) [ -z "$(compgen -G "${S}/etc/netplan/*.yaml")" ] && [ ! -e "${S}/etc/cloud/cloud.cfg.d/90-installer-network.cfg" ] || found=1 ;;   # check:agent-seal-network
     esac
     checked+=" ${rule}"
     [ "${found}" = 0 ] || findings+=" ${rule}"
@@ -206,9 +208,10 @@ seal_check() { # JSON {checked, findings, unreadable} of the seal rules
 }
 
 # Upstream's last step deprovisions the Azure agent's user; here the install user, the agent with its units and token,
-# cloud-init and installer state, the journal, the per-machine snakeoil TLS key and the random seed go (each clone makes its
-# own at first boot), cloud-init is pointed at the NoCloud seed each clone gets, free space is trimmed and the seal rules are
-# checked.
+# cloud-init and installer state, the build VM's static network configuration (the installer's netplan; each clone's
+# cloud-init writes its own from its seed's network-config), the journal, the per-machine snakeoil TLS key and the random
+# seed go (each clone makes its own at first boot), cloud-init is pointed at the NoCloud seed each clone gets, free space is
+# trimmed and the seal rules are checked.
 deprovision() {
   local user seal rc=0
   user=$(var install_user) || { reply "${R[phase]}" failed 'no install_user'; return; }
@@ -219,6 +222,7 @@ deprovision() {
   cloud-init clean --logs --seed --machine-id > /dev/null 2>&1 || true
   rm -rf "${S}/var/lib/cloud/instance" "${S}/var/lib/cloud/instances" "${S}/var/lib/cloud/seed" "${S}/var/log/installer"
   rm -f "${S}/etc/cloud/cloud.cfg.d/99-installer.cfg" "${S}/etc/cloud/cloud.cfg.d/90-installer-network.cfg" "${S}/etc/cloud/cloud-init.disabled"
+  rm -f "${S}"/etc/netplan/*.yaml
   mkdir -p "${S}/etc/cloud/cloud.cfg.d"
   printf 'datasource_list: [ NoCloud, None ]\n' > "${S}/etc/cloud/cloud.cfg.d/90-aap-nocloud.cfg"
   rm -f "${S}"/etc/ssh/ssh_host_* "${S}/root/.bash_history"
@@ -272,9 +276,11 @@ run_action() {
 
 # A fresh guest of the sealed image: post-generation scripts as root, each the way hosted provisioning runs them (find
 # -exec bash, in find's order), then the checks as the job user, whose result and inventory the host fetches. find -exec
-# ignores a script's exit code; here any script that fails, or a missing folder, fails post_generation.
+# ignores a script's exit code; here any script that fails, or a missing folder, fails post_generation. The first-boot step
+# every clone gets (the seed's make-ssl-cert, which cloud-init runs without stopping on a failure) is checked here, as root:
+# without the snakeoil pair PostgreSQL does not start, so a failed step fails tls_snakeoil by name.
 run_verify() {
-  local user work pg f rc=0
+  local user work pg f rc=0 snake=1
   user=$(var job_user) || { reply verify failed 'no job_user'; return; }
   mkdir -p "${ROOT}/logs" "${ROOT}/out"
   unpack_sources || { reply verify failed 'sources not staged'; return; }
@@ -283,11 +289,12 @@ run_verify() {
     [ -d "${pg}" ] || rc=1
     while IFS= read -r -d '' f; do bash "${f}" || rc=1; done < <(find "${pg}" -mindepth 1 -maxdepth 1 -type f -name '*.sh' -print0 2> /dev/null)   # check:agent-postgen
   } > "${ROOT}/logs/verify-post-generation.log" 2>&1
+  [ -s "${S}/etc/ssl/private/ssl-cert-snakeoil.key" ] && [ -s "${S}/etc/ssl/certs/ssl-cert-snakeoil.pem" ] || snake=0   # check:agent-snakeoil
   work=$(sudo -u "${user}" mktemp -d) || { reply verify failed 'no work folder'; return; }
   cp "${ROOT}/in/aap-verify.sh" "${ROOT}/in/linux.sh" "${ROOT}/in/hello.c" "${work}/" && chown -R "${user}:" "${work}"
   ln -s "${ROOT}/src" "${work}/src"
   # shellcheck disable=SC2024 # the agent runs as root and keeps the job user's output in its own root-only log
-  sudo -u "${user}" -H /bin/bash --noprofile --norc "${work}/aap-verify.sh" "${work}" "${rc}" > "${ROOT}/logs/verify.log" 2>&1 || true
+  sudo -u "${user}" -H /bin/bash --noprofile --norc "${work}/aap-verify.sh" "${work}" "${rc}" "${snake}" > "${ROOT}/logs/verify.log" 2>&1 || true
   rm -f "${ROOT}/out/job-inventory.json"
   cp "${work}/job-inventory.json" "${ROOT}/out/job-inventory.json" 2>/dev/null || true
   if [ ! -s "${work}/verify.json" ] || [ "$(wc -c < "${work}/verify.json")" -gt 16384 ]; then reply verify failed 'the verification wrote no result'; return; fi

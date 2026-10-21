@@ -6,11 +6,12 @@
 #  3. What a job relies on: compilers that build and run a program, the job user's identity and passwordless sudo, systemd
 #     as PID 1, the Docker daemon, the Azure kernel flavour.
 # Writes <work>/verify.json (one object, the reply's data) and <work>/job-inventory.json. Downloads nothing.
-#   aap-verify.sh <work folder> <post-generation exit code>
+#   aap-verify.sh <work folder> <post-generation exit code> <1 when the first boot made the snakeoil TLS pair>
 set -u
 export LC_ALL=C
 W=$1
 POSTGEN_RC=${2:-1}
+SNAKEOIL=${3:-0}
 cd "${W}" || exit 1
 # The Actions runner reads /etc/environment itself (a --norc job shell does not); the checks see what a job step sees.
 set -a
@@ -67,7 +68,8 @@ facts_kernel=$(uname -r)
   printf '"docker_daemon":%s,"sudo_nopasswd":%s,' "$(ok docker info)" "$(ok sudo -n true)"
   printf '"systemd_pid1":%s,' "$(ok grep -qx systemd /proc/1/comm)"
   printf '"kernel_azure":%s,' "$( [[ ${facts_kernel} == *-azure ]] && printf true || printf false)"
-  printf '"job_user":%s,"post_generation":%s},' "${job_user}" "$( [ "${POSTGEN_RC}" = 0 ] && printf true || printf false)"
+  printf '"job_user":%s,"post_generation":%s,' "${job_user}" "$( [ "${POSTGEN_RC}" = 0 ] && printf true || printf false)"
+  printf '"tls_snakeoil":%s},' "$( [ "${SNAKEOIL}" = 1 ] && printf true || printf false)"
   printf '"facts":{"kernel":%s,"systemd_state":%s,' "$(js "${facts_kernel}")" "$(js "$(systemctl is-system-running 2>/dev/null)")"
   printf '"root_mount_options":%s,' "$(js "$(findmnt -no OPTIONS /)")"
   printf '"read_ahead_kb_root":%s},' "$(js "$(cat "/sys/block/${root_disk}/queue/read_ahead_kb" 2>/dev/null)")"
