@@ -48,17 +48,17 @@ guest-authored file system metadata (reparse points refused). In detail:
 ## Build flow
 
 `Invoke-AapWinImageBuild -Config <hashtable> -Provider <hashtable> -Network <hashtable>` returns `Ok`, `Status` (`built`,
-`unchanged`, `refused`, `failed`), `Reason`, `Detail`, `GenerationId` and the record paths. `-Network` is the P10.0 guest
-network module through the interface P10's backend takes (`Attach`, `Detach`, `Verify`, each called with `VmId`, `VmName`
-and `Profile` `windows`); without it every build is refused (`AAP_NetworkUnavailable`). A `refused` run changed nothing. A `failed`
+`unchanged`, `refused`, `failed`), `Reason`, `Detail`, `GenerationId` and the record paths. `-Network` is the P10.0 host
+network module (`parity/contracts/host-network-module.md`: `Attach`, `Detach`, `Verify`, each called with exactly `VmId`,
+`VmName` and `Profile` `windows`); without it every build is refused (`AAP_NetworkUnavailable`). A `refused` run changed nothing. A `failed`
 run removed everything it made (VMs, build disks, a partly published generation, the evidence files it wrote) and kept
 only `secret-scan.json` when the scan ran, as the record of why it failed.
 
-1. **Preflight** (refusals, nothing written): provider and network module completeness; the builder's own folder, `guest`, `images\common`
-   and the folders of the verification payload (`tools\parity-certify\probe`, `tools\parity-certify\workloads\fixtures`)
+1. **Preflight** (refusals, nothing written): provider and network module completeness; the builder's own folder, `guest`,
+   `images\common`, `supervisor\network` (the shared host network check, imported only once this has passed) and the
+   folders of the verification payload (`tools\parity-certify\probe`, `tools\parity-certify\workloads\fixtures`)
    must pass the same admin-only trust check as the roots (folders, not each file); config; the storage document; trust of the storage document's
-   folder, `base_root`, the staging root (admin-only, on the recorded volume) and the evidence root; the internal switch
-   `aap-guests-win`; the plan (every script hash pinned, `image_version` of the form `yyyymmdd.n.n`); input blockers (each
+   folder, `base_root`, the staging root (admin-only, on the recorded volume) and the evidence root; the plan (every script hash pinned, `image_version` of the form `yyyymmdd.n.n`); input blockers (each
    P03 Windows blocker and each plan blocker resolved, or waived by a chair approval record for this plan; the media
    blocker and `p06-upstream-source-archive` are never waivable: the media check clears the first, a plan that pins the
    archive the second); no reparse
@@ -68,30 +68,38 @@ only `secret-scan.json` when the scan ran, as the record of why it failed.
    entry `build-plan.json` `source` names, whose staged bytes must hash to the plan's pinned SHA-256) and any other input.
 2. **Disks**: a dynamic `os.vhdx` of the upstream OS disk size (150 GiB, `os_disk_size_gb` of `win25-vs2026` in the pinned
    locals) and a formatted `temp.vhdx` that becomes `D:` (hosted runners have `D:` as their temp disk, `TEMP_DIR` is
-   `D:\temp`). The edition is applied from the ISO's `install.wim` (DISM, no Setup UI), with a build answer file and the
-   guest runner written offline before the first boot.
+   `D:\temp`). The edition is applied from the ISO's `install.wim` (DISM, no Setup UI), with the guest runner written
+   offline; the answer file follows once the network is attached (step 3).
 3. **Build VM**: generation 2, Secure Boot off (upstream sets `bcdedit TESTSIGNING ON`), nested virtualization exposed
    (upstream enables Hyper-V, Containers and WSL2), checkpoints off, Guest Service Interface and Key-Value Pair Exchange
-   off, files in the build folder, created with no network adapter. The P10.0 module's `Attach` then gives it one adapter
-   on the internal switch `aap-guests-win` (refused unless it exists with type Internal; never an External switch or the
-   Default Switch) with DHCP guard and router guard on, MAC spoofing off and the extended port ACLs of guest-transport.md;
-   its `Verify` must report nothing. Before the first boot the builder reads the adapters back from Hyper-V itself:
-   exactly one, on that switch, the three settings reported as booleans, an unscoped outbound deny rule for each of
-   `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `100.64.0.0/10`, `224.0.0.0/4`, `ff00::/8`,
-   `fe80::/10` and `fc00::/7`, and no rule other than a deny that names more than one address (an allow is for one gateway,
-   DHCP or DNS endpoint). Anything else is `AAP_NetworkUntrusted`. The host-specific denies (the host's vEthernet
-   addresses, the LAN's IPv6 prefix, the clone subnet except its gateway) differ per host and are the module's `Verify`.
-   `Detach` runs before the VM is removed, and on a failed run. Enhanced Session is never enabled by the builder; it opens
-   no console to the VM.
+   off, files in the build folder, created with no network adapter; automatic start `Nothing` and checkpoints `Disabled`
+   are read back (`AAP_VmUntrusted` otherwise). Then, with the VM Off, the host network module contract's order
+   (Consumer obligations): `Attach` puts the build VM on its own switch `aap-build-win` (never shared, never a guest
+   switch; the module refuses until P19 has created it) and returns the declaration; the shared check
+   (`Get-AapHostNetworkDeclarationProblems`) must find nothing in it (`AAP_NetworkInvalid`); the answer file is written
+   offline with the declaration's static addressing (address with the subnet's prefix length, the gateway as default
+   route, the resolvers as DNS servers, DHCP off; no DHCP exists on the switch); `Verify` must write nothing at all (any
+   object it writes, `$null` and empty lines included, is a problem; a throw is too); and Hyper-V's read-back through the
+   provider's `GetVmNetwork`, in the contract's shape, must pass `Get-AapHostNetworkAdapterProblems` (guards, mirroring,
+   VLAN, storm limit, legacy ACLs, peers, the fixed denies both ways, the source pin, weights). Anything else is
+   `AAP_NetworkUntrusted`, and the build is torn down: the VM removed, then `Detach`. The builder keeps no switch name,
+   deny list or declaration of its own beyond the next start. While the VM runs, every provider call that waits on the
+   guest re-runs `Verify` and the read-back at most every 30 seconds; a problem ends the build (the cleanup turns the VM
+   off, removes it, then detaches). At the seal, and on every failed run, `Detach` follows `RemoveVm`; a `Detach` that
+   throws is reported as a cleanup that did not prove the network detached. Enhanced Session is never enabled by the
+   builder; it opens no console to the VM.
 4. **Phases** p01-p29 in upstream order (below). Each upstream script runs through Packer's wrapper
    (`& { $ProgressPreference='SilentlyContinue'; <env>; &'<script>'; exit $LastExitCode }`, written to a file and run with
    `-File`), so exit codes match upstream. Phases upstream marks `elevated_user` (p07 bcdedit, p13 Visual Studio, p19 LLVM
    and Windows Updates) run as a scheduled task of the install user with `RunLevel Highest`, as Packer does, with logon
-   type S4U so no password is stored in the task. A reboot counts only when the guest answers again with a later boot time
-   than before `Restart-VM`; a guest that does not answer meanwhile is waited for until the phase timeout. After each phase the build folder is measured against `StagingGibMax`.
+   type S4U so no password is stored in the task. A reboot is a host-initiated power-on, so it is a shutdown (`Stop-VM`,
+   guest shutdown, until Off), the network again (`Attach`, the declaration check, `Verify`, the read-back) and a start;
+   it counts only when the guest answers again with a later boot time than before the shutdown; a guest that does not
+   answer meanwhile is waited for until the phase timeout. After each phase the build folder is measured against `StagingGibMax`.
 5. **Seal**: the last phase deletes every answer file, gives the install user a fresh random password that never leaves the
    guest and disables it, runs the registry check as SYSTEM (Winlogon `DefaultPassword` and `AutoAdminLogon`, the LSA
-   `DefaultPassword` secret; any finding or unreadable value stops here, before sysprep), removes `C:\aap-build`, runs
+   `DefaultPassword` secret; any finding or unreadable value stops here, before sysprep), removes `C:\aap-build`, sets
+   every adapter back to DHCP with no address, route or DNS server of its own (the base carries no build address), runs
    `Sysprep /oobe /generalize /mode:vm /quiet /quit` and waits for `IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE`, as upstream
    does. The host shuts the VM down, removes it, deletes the temp disk, compacts and hashes `os.vhdx`.
 6. **Secret scan** of the sealed disk, mounted read-only, files only (rules below). Anything but `clean` fails the build.
@@ -133,7 +141,6 @@ plan, the P03 manifest, the allowlist and the verification payload are the files
 | `StagingGibMax` | Cap on the build folder; also the free space the staging volume must have above its floor |
 | `BaseGibMax`, `JobDiskGibMax` | The approved budget the measured one must fit (2026-10-20: base at most 200 GB, about 186 GiB; clone plus scratch at most 60 GB per runner, about 55 GiB) |
 | `BuilderCommit` | 40-hex commit of this builder, recorded in provenance |
-| `SwitchName` | Must be `aap-guests-win`, the P10.0 internal switch; anything else is `AAP_NetworkUntrusted`. P06 creates no switch, NAT or network rule |
 | `Inputs` (optional) | Further P03 entries to verify offline before the build |
 | `Waivers` (optional) | Chair approval records, one per waived blocker: exactly `id`, `rationale`, `plan_sha256` (of the `build-plan.json` it was approved for) and `approver`. A bare id, a missing field or another plan's hash is `AAP_ConfigInvalid`, and so is a waiver for `windows-server-2025-media` or `p06-upstream-source-archive`. Recorded in `build.json` |
 
@@ -142,8 +149,9 @@ neither name another archive nor waive the pin.
 
 ## What the builder's self-check protects
 
-Before anything else the builder asks the provider's `TestRootTrust` about its own folder, `guest`, `images\common` and the
-two payload folders, and refuses (`AAP_BuilderUntrusted`) unless each is admin-only. The production `TestRootTrust` checks
+Before anything else the builder asks the provider's `TestRootTrust` about its own folder, `guest`, `images\common`,
+`supervisor\network` and the two payload folders, and refuses (`AAP_BuilderUntrusted`) unless each is admin-only. Only
+then does it import the shared host network check from `supervisor\network`. The production `TestRootTrust` checks
 `images\common` with its own code (not a link, an administrator owner, a protected DACL with entries for SYSTEM,
 Administrators and TrustedInstaller only) before it imports P03's `AapArtifact.psm1` from there, then applies P03's rules
 and the same admin-only rule to the folder asked about. That is all it is: a refusal to run from a deployment that
@@ -199,7 +207,7 @@ context; the record holds what this build measured, and it must fit `BaseGibMax`
 
 `AAP_ProviderInvalid`, `AAP_BuilderUntrusted`, `AAP_ConfigInvalid`, `AAP_StorageMissing`, `AAP_StorageInvalid`,
 `AAP_StorageUntrusted` (also a reparse point on the way to the evidence, build or generation folder),
-`AAP_StorageVolumeMismatch`, `AAP_NetworkUnavailable`, `AAP_NetworkInvalid`, `AAP_NetworkUntrusted`, `AAP_PlanInvalid`, `AAP_ScriptUnpinned`, `AAP_Blocked`,
+`AAP_StorageVolumeMismatch`, `AAP_NetworkUnavailable`, `AAP_NetworkInvalid`, `AAP_NetworkUntrusted`, `AAP_VmUntrusted`, `AAP_PlanInvalid`, `AAP_ScriptUnpinned`, `AAP_Blocked`,
 `AAP_BuildBusy`, `AAP_GenerationExists`, `AAP_DiskLow`, `AAP_MediaMismatch`, `AAP_InputsUnverified`, `AAP_HostileGuest`,
 `AAP_GuestTimeout`, `AAP_GuestUnreachable`, `AAP_PhaseFailed`, `AAP_ScriptHashMismatch`, `AAP_RebootTimeout`, `AAP_BudgetExceeded`,
 `AAP_BudgetUnmeasured`, `AAP_SecretFound`, `AAP_ScanIncomplete`, `AAP_AllowlistInvalid`, `AAP_VerifyFailed`,
@@ -264,11 +272,14 @@ user in the place of Administrators).
 - **Inputs are blockers.** 14 P03 Windows blockers (media, Windows Updates level, Visual Studio channel, vendor feeds,
   Chocolatey, ...) plus the plan's 2. A build needs each resolved or waived by a chair approval record (never the media
   or the source archive blocker); P06 decides none.
-- **No guest network module yet.** P10.0 owns the switch, its NAT, the adapter controls and the port ACLs; until it
-  exists every build is refused (`AAP_NetworkUnavailable`). Upstream scripts download from the internet themselves. How
-  Hyper-V reports an unset port, protocol or local address of an extended ACL rule is unproven: the provider reads `''`,
-  `*` and `ANY` as unrestricted and the D2 lab confirms it. A crashed run's attachment is not detached by the next run's
-  cleanup (the VM is removed); the module's own reconcile owns that.
+- **No host network module yet.** P10.0 owns the adapter, its controls and the port ACLs, P19 the switch `aap-build-win`
+  and its NAT; until both exist every build is refused (`AAP_NetworkUnavailable`, or the module's Attach on the missing
+  switch). Upstream scripts download from the internet themselves. A crashed run's attachment is not detached by the next
+  run's cleanup (the VM's id is not kept); the module's reconcile removes the record once the VM is gone. D2 points: how
+  Hyper-V shows an unset ACL field (the shared check's question), that Windows Setup names the build guest's adapter
+  `Ethernet` (the answer file's interface identifier) and takes the static addressing from it, that a reboot as shutdown
+  plus start finishes what Windows Update stages at shutdown as a restart would, and that the seal's DHCP reset leaves no
+  build address in the generalized image.
 - **Elevated provisioners** run as an S4U scheduled task of the install user; Packer uses a password logon for its task.
   Whether any upstream script needs the user's network credentials or DPAPI keys under S4U is unproven.
 - **The verification guest has no network** (chair decision). An upstream test that needs the network fails

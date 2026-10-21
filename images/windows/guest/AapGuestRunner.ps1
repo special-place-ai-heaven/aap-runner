@@ -160,6 +160,18 @@ function Remove-AnswerFiles {
     }
 }
 
+# The build's static network goes before sysprep (host-network-module.md, Consumer obligations 6): every adapter back to
+# DHCP with no address, route or DNS server of its own, so a clone's only addressing is its own answer file. The management
+# channel is PowerShell Direct, which needs no network.
+function Remove-BuildNetwork {
+    foreach ($i in @(Get-NetIPInterface -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike 'Loopback*' })) {
+        Remove-NetRoute -InterfaceIndex $i.ifIndex -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-NetIPAddress -InterfaceIndex $i.ifIndex -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
+        Set-NetIPInterface -InterfaceIndex $i.ifIndex -Dhcp Enabled
+        Set-DnsClientServerAddress -InterfaceIndex $i.ifIndex -ResetServerAddresses
+    }
+}
+
 # A random password that never leaves this process, built into a SecureString one character at a time. Replaces the build
 # password before sysprep, so the sealed image carries no credential anyone knows.
 function Reset-InstallUser([string]$User) {
@@ -288,6 +300,7 @@ try {
                 $ok = $false; $msg = 'the registry check before sysprep did not pass; sysprep not run'
             } else {
                 foreach ($d in 'src', 'runner-images.zip', 'logs', 'request.json', 'registry-check.json') { $x = Join-Path $WorkRoot $d; if (Test-Path -LiteralPath $x) { Remove-Item -LiteralPath $x -Recurse -Force } }
+                Remove-BuildNetwork
                 & (Join-Path $env:SystemRoot 'System32\Sysprep\Sysprep.exe') /oobe /generalize /mode:vm /quiet /quit
                 $ok = Wait-Until { (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State').ImageState -eq 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' } 3600 10
                 if (-not $ok) { $msg = 'sysprep did not reach IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' }

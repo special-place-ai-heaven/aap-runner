@@ -44,27 +44,21 @@ tell them apart.
    is ever resolved through guest-authored file system metadata (reparse points refused). The builder reaches them over
    PowerShell Direct by VM id with capped receives (`Receive-AapCappedJob`); runner clones use P10's hardened transport
    (guest-transport.md, wire framing). The image does not contain `C:\Program Files\aap-guest`.
-7. **Switch.** The build VM attaches only to `aap-guests-win` (P10.0's internal switch with NAT), through the P10.0 module
-   (below); the builder refuses to start unless the switch exists with type Internal. The verification VM has no network
-   adapter, read back from Hyper-V before it boots.
+7. **Switch.** The build VM is on its own switch, `aap-build-win`, never a guest switch and never shared: no runner clone is
+   ever admitted beside a build VM (host-network-module.md, Switches). The verification VM has no network adapter, read
+   back from Hyper-V before it boots.
 
-## P10.0: guest network module
+## P10.0: host network module
 
-The builder takes the module as `-Network`, the same `Attach`, `Detach`, `Verify` hashtable P10's backend takes, each
-called with `@{ VmId; VmName; Profile = 'windows' }`. The build VM arrives with no adapter.
-
-- `Attach` gives it exactly one adapter on `aap-guests-win` with `Set-VMNetworkAdapter -DhcpGuard On -RouterGuard On
-  -MacAddressSpoofing Off` and the extended port ACLs of guest-transport.md (Guest network attachment): outbound deny for
-  the host's vEthernet addresses (except the DHCP and DNS endpoints the design uses), RFC 1918, `169.254.0.0/16`,
-  `100.64.0.0/10`, IPv4 and IPv6 multicast (`224.0.0.0/4`, `ff00::/8`), `fe80::/10`, `fc00::/7`, the LAN's IPv6 prefix
-  and the clone subnet except its gateway. Write each fixed range in exactly that form, with no port, protocol or local
-  address; an allow rule names one address only.
-- `Verify` returns one line per problem (nothing when the attachment is right). It owns the host-specific rules the
-  builder cannot know: the vEthernet addresses, the LAN prefix and the clone subnet.
-- `Detach` undoes `Attach` and is idempotent; the builder calls it before it removes the VM and again, best effort, on a
-  failed run.
-- The builder then reads the adapter back through the provider's `GetVmNetwork` (Hyper-V, not the module) and refuses
-  anything but one adapter with those settings and the fixed denies (README, Build flow step 3).
+The builder conforms to `parity/contracts/host-network-module.md` (version 1) as its row in Conformance of the consumers
+says, and takes the module as `-Network` (`Attach`, `Detach`, `Verify`, each called with exactly
+`@{ VmId; VmName; Profile = 'windows' }` for the build VM `aap-wbuild-<8 hex>`). The VM arrives Off, with no adapter,
+automatic start `Nothing` and checkpoints off. Before its first start and before each start after a reboot (a reboot is a
+shutdown and a start): `Attach`, `Get-AapHostNetworkDeclarationProblems`, before the first start the answer file with the
+declaration's static addressing, `Verify` (every object it writes is a problem) and `Get-AapHostNetworkAdapterProblems` on
+the provider's `GetVmNetwork`. While it runs: `Verify` and the read-back at most every 30 seconds. Teardown: `RemoveVm`,
+then `Detach`, on every failed run too; the next run does not know a crashed run's VM id, so the module's reconcile
+removes that record. The check is imported from `supervisor\network` only after that folder passes the admin-only check.
 
 ## P14: Windows guest bootstrap
 
@@ -87,11 +81,12 @@ called with `@{ VmId; VmName; Profile = 'windows' }`. The build VM arrives with 
   folders.
 - `EvidenceRoot` must be admin-only (protected DACL, Administrators and SYSTEM only, no reparse point on it or its
   ancestors); the builder trust-checks it like the storage roots.
-- `SwitchName` is `aap-guests-win`, P10.0's internal switch, and nothing else. Pass the P10.0 module as `-Network`.
-- Deploy `images/windows`, `images/common` and the verification payload it sends (`tools/parity-certify/probe/windows.ps1`,
+- Create the build switch `aap-build-win` (internal, its own subnet, NAT, the host firewall rules, no DHCP or DNS service;
+  host-network-module.md, Switches) before the first build, and pass the P10.0 module as `-Network`.
+- Deploy `images/windows`, `images/common`, `supervisor/network` and the verification payload it sends (`tools/parity-certify/probe/windows.ps1`,
   `tools/parity-certify/workloads/fixtures/hello.c`) to an Administrators-only folder and run the builder from there. Never
   run the elevated builder from a user-writable checkout: it refuses (`AAP_BuilderUntrusted`) unless its own folder,
-  `guest`, `images/common` and both payload folders pass the admin-only check.
+  `guest`, `images/common`, `supervisor/network` and both payload folders pass the admin-only check.
 - Copy the owner's evaluation ISO into `<base_root>\media\` (admin-only) and pin its SHA-256 in an admin-only record the
   caller passes as `MediaSha256`; the full hash is not in this repository.
 - Pass the owner-approved values: `BuildCpus` 4, `BuildMemGib` 10, `BaseGibMax` 186 and `JobDiskGibMax` 55 (GiB, from the

@@ -1,7 +1,7 @@
 # Mutation check for the P06 builder: every safety check in AapWinImage.psm1 carries '# check:<name>'. For each name this
-# copies images\windows to a temp folder, replaces the condition of every if-statement tagged with that name by $false
-# (found with the PowerShell parser, not by text search), and runs the tests tagged <name> against the copy in a child
-# process. A check is covered only if at least one of its tests then fails. Exit 0 when every check is covered.
+# copies images\windows and supervisor\network (the shared host network check it imports) to a temp folder, replaces
+# the condition of every if-statement tagged with that name by $false (found with the PowerShell parser, not by text
+# search), and runs the tests tagged <name> against the copy in a child process. A check is covered only if at least one of its tests then fails. Exit 0 when every check is covered.
 #   pwsh -File tests/images/windows/Invoke-AapWinMutations.ps1 [-Name <check>...]
 param([string[]]$Name, [string]$One, [string]$ModulePath)
 Set-StrictMode -Version 2.0
@@ -44,6 +44,9 @@ try {
         $dir = Join-Path $work "$tag\images\windows"
         [void][IO.Directory]::CreateDirectory((Split-Path -Parent $dir))
         Copy-Item -LiteralPath (Join-Path $repo 'images\windows') -Destination $dir -Recurse
+        $net = Join-Path $work "$tag\supervisor\network"   # the builder imports the shared check from ..\..\supervisor\network
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $net))
+        Copy-Item -LiteralPath (Join-Path $repo 'supervisor\network') -Destination $net -Recurse
         $module = Join-Path $dir 'AapWinImage.psm1'
         [IO.File]::WriteAllText($module, $mutated, (New-Object Text.UTF8Encoding($false)))
         $out = & $exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath -One $tag -ModulePath $module 2>&1

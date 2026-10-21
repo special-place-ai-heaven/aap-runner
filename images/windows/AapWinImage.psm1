@@ -15,7 +15,7 @@ $script:Profile = 'win25-vs2026-x64'
 $script:GiB = 1073741824
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 $script:ProviderOps = @('TestRootTrust', 'GetVolume', 'MeasureBytes', 'VerifyInputs', 'NewBuildDisk', 'ApplyWindowsImage', 'NewDiffDisk',
-    'WriteOfflineFiles', 'GetSwitch', 'NewVm', 'StartVm', 'StopVm', 'RestartVm', 'RemoveVm', 'WaitGuestReady', 'GetGuestBootTime', 'SendFile',
+    'WriteOfflineFiles', 'NewVm', 'GetVmConfig', 'StartVm', 'StopVm', 'RemoveVm', 'WaitGuestReady', 'GetGuestBootTime', 'SendFile',
     'InvokeGuest', 'ReceiveFile', 'OptimizeDisk', 'MountReadOnly', 'Dismount', 'SetReadOnlyAcl', 'GetVmMemoryOverheadMib', 'GetVmNetwork')
 # Repository files the builder reads. Not configurable: a caller cannot point the builder at another plan, manifest or
 # guest payload (tests replace them in module scope).
@@ -24,15 +24,16 @@ $script:ManifestPath = Join-Path $PSScriptRoot '..\common\artifacts.manifest.jso
 $script:AllowlistPath = Join-Path $PSScriptRoot 'secret-allowlist.json'
 $script:ProbeScript = Join-Path $PSScriptRoot '..\..\tools\parity-certify\probe\windows.ps1'
 $script:HelloC = Join-Path $PSScriptRoot '..\..\tools\parity-certify\workloads\fixtures\hello.c'
-$script:SwitchName = 'aap-guests-win'   # the P10.0 internal switch (guest-transport.md candidate); never External or Default Switch
-# The P10.0 guest network module, through the interface P10's backend takes (guest-transport.md, Guest network attachment):
-# Attach gives the VM one adapter on the internal switch with DHCP guard and router guard on, MAC spoofing off and the
-# extended port ACLs; Verify returns what is wrong with that attachment (nothing when it is right); Detach undoes Attach.
+# The P10.0 host network module (parity/contracts/host-network-module.md): Attach, Detach and Verify. Its switch for the build
+# VM, its rules and the read-back are the shared check's (supervisor\network\AapHostNetworkCheck.psm1), imported only after
+# that folder passes the builder's admin-only check.
 $script:NetworkOps = @('Attach', 'Detach', 'Verify')
-# Outbound deny rules every guest adapter must carry, read back from Hyper-V: RFC 1918, link-local, CGNAT, multicast,
-# IPv6 multicast, link-local and unique-local. The host's vEthernet addresses, the LAN's IPv6 prefix and the clone subnet
-# differ per host; the module's Verify owns those.
-$script:DenyRanges = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'ff00::/8', 'fe80::/10', 'fc00::/7')
+$script:NetworkCheck = Join-Path $PSScriptRoot '..\..\supervisor\network\AapHostNetworkCheck.psm1'
+# While the build VM runs, Verify and the read-back again at most this far apart (Consumer obligations, 3), from every
+# provider call that waits on the build guest (the Tick argument).
+$script:NetPollSeconds = 30   # the contract allows at most a minute between checks
+$script:BuildCtx = $null
+$script:NetTick = { if ($null -ne $script:BuildCtx) { Test-AapBuildNetworkDue $script:BuildCtx } }
 # Blockers no caller-supplied waiver clears. The media blocker is cleared only by the media check against the pinned
 # SHA-256; the source archive blocker only by a reviewed plan that pins the archive (New-AapWinBuildPlan.ps1 -SourceSha256).
 $script:Unwaivable = @('windows-server-2025-media', 'p06-upstream-source-archive')
@@ -162,14 +163,16 @@ function Receive-AapCappedJob {
        The streams are read in place, so nothing is replayed to the host. Returns the output items. A call that failed
        (guest down, rebooting, unreachable) throws AAP_GuestUnreachable, so it never reads as an empty answer.
        Ceiling: before a poll trips a cap, the host may already hold one poll interval of output and up to MaxRecords
-       records, each up to the PowerShell remoting per-object limit. #>
-    param([Parameter(Mandatory)]$Job, [Parameter(Mandatory)][long]$MaxBytes, [Parameter(Mandatory)][int]$TimeoutSeconds, [int]$PollSeconds = 5, [int]$MaxRecords = 16)
+       records, each up to the PowerShell remoting per-object limit. -Tick runs once per poll (the builder's network
+       re-check while its VM runs); what it throws stops the job. #>
+    param([Parameter(Mandatory)]$Job, [Parameter(Mandatory)][long]$MaxBytes, [Parameter(Mandatory)][int]$TimeoutSeconds, [int]$PollSeconds = 5, [int]$MaxRecords = 16, [scriptblock]$Tick)
     $out = New-Object System.Collections.Generic.List[object]
     $seen = @{}; $total = [long]0; $records = 0
     $until = (Get-Date).AddSeconds($TimeoutSeconds)
     try {
         while ($true) {
             $finished = [bool](Wait-Job -Job $Job -Timeout $PollSeconds)
+            if ($null -ne $Tick) { & $Tick }   # check:receive-tick
             $i = 0
             foreach ($c in @($Job.ChildJobs)) {
                 foreach ($s in 'Output', 'Error', 'Warning', 'Verbose', 'Debug', 'Information', 'Progress') {
@@ -430,11 +433,62 @@ function New-AapWinPassword {
 function New-AapWinUnattend {
     <# The answer file the builder writes offline into \Windows\Panther\unattend.xml of a disk before its first boot.
        It creates one local administrator (the build's install user, or the verification job user), skips OOBE, sets UTC and
-       en-US, and never enables autologon. The password is a plain-text value only inside the disk being prepared. #>
-    param([Parameter(Mandatory)][string]$UserName, [Parameter(Mandatory)][string]$Password)
+       en-US, and never enables autologon. The password is a plain-text value only inside the disk being prepared.
+       -Network, a host network declaration (host-network-module.md), gives the one adapter ('Ethernet', D2) its static
+       address with the subnet's prefix length, the gateway as default route and the resolvers as DNS servers, DHCP off. #>
+    param([Parameter(Mandatory)][string]$UserName, [Parameter(Mandatory)][string]$Password, $Network)
     if ($UserName -cnotmatch '^[A-Za-z][A-Za-z0-9_-]{0,19}$') { throw 'AAP_UnattendInvalid: user name' }
     $e = [Security.SecurityElement]::Escape($Password)
     $c = 'processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"'
+    $net = ''
+    if ($null -ne $Network) {
+        $ip = '^(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}\z'
+        $addr = [string](Get-AapProp $Network 'address'); $gw = [string](Get-AapProp $Network 'gateway'); $sub = [string](Get-AapProp $Network 'subnet')
+        $dns = @(Get-AapProp $Network 'resolvers' | ForEach-Object { [string]$_ })
+        $m = [regex]::Match($sub, '/(1[6-9]|2[0-9]|30)\z')
+        if ($addr -cnotmatch $ip -or $gw -cnotmatch $ip -or -not $m.Success -or $dns.Count -lt 1 -or $dns.Count -gt 2 -or @($dns | Where-Object { $_ -cnotmatch $ip }).Count) { throw 'AAP_UnattendInvalid: network' }
+        $servers = (@(for ($i = 0; $i -lt $dns.Count; $i++) { "            <IpAddress wcm:action=`"add`" wcm:keyValue=`"$($i + 1)`">$($dns[$i])</IpAddress>" }) -join "`n")
+        $net = @"
+
+    <component name="Microsoft-Windows-TCPIP" $c>
+      <Interfaces>
+        <Interface wcm:action="add">
+          <Identifier>Ethernet</Identifier>
+          <Ipv4Settings>
+            <DhcpEnabled>false</DhcpEnabled>
+            <RouterDiscoveryEnabled>false</RouterDiscoveryEnabled>
+          </Ipv4Settings>
+          <Ipv6Settings>
+            <DhcpEnabled>false</DhcpEnabled>
+            <RouterDiscoveryEnabled>false</RouterDiscoveryEnabled>
+          </Ipv6Settings>
+          <UnicastIpAddresses>
+            <IpAddress wcm:action="add" wcm:keyValue="1">$addr/$($m.Groups[1].Value)</IpAddress>
+          </UnicastIpAddresses>
+          <Routes>
+            <Route wcm:action="add">
+              <Identifier>0</Identifier>
+              <Prefix>0.0.0.0/0</Prefix>
+              <NextHopAddress>$gw</NextHopAddress>
+            </Route>
+          </Routes>
+        </Interface>
+      </Interfaces>
+    </component>
+    <component name="Microsoft-Windows-DNS-Client" $c>
+      <Interfaces>
+        <Interface wcm:action="add">
+          <Identifier>Ethernet</Identifier>
+          <DNSServerSearchOrder>
+$servers
+          </DNSServerSearchOrder>
+          <EnableAdapterDomainNameRegistration>false</EnableAdapterDomainNameRegistration>
+          <DisableDynamicUpdate>true</DisableDynamicUpdate>
+        </Interface>
+      </Interfaces>
+    </component>
+"@
+    }
     $xml = @"
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
@@ -445,7 +499,7 @@ function New-AapWinUnattend {
     <component name="Microsoft-Windows-Shell-Setup" $c>
       <ComputerName>*</ComputerName>
       <TimeZone>UTC</TimeZone>
-    </component>
+    </component>$net
   </settings>
   <settings pass="oobeSystem">
     <component name="Microsoft-Windows-International-Core" $c>
@@ -642,14 +696,13 @@ function Get-AapWinNames($Plan, [int]$AapBuild) {
 }
 
 function Assert-AapWinConfig($Config) {
-    foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'MediaFile', 'MediaSha256', 'Edition', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit', 'SwitchName') {
+    foreach ($k in 'StoragePath', 'EvidenceRoot', 'AapBuild', 'MediaFile', 'MediaSha256', 'Edition', 'BuildCpus', 'BuildMemGib', 'StagingGibMax', 'BaseGibMax', 'JobDiskGibMax', 'BuilderCommit') {
         if ($null -eq (Get-AapProp $Config $k) -or [string](Get-AapProp $Config $k) -eq '') { throw "AAP_ConfigInvalid: $k is required" }
     }
     if ([int]$Config.AapBuild -lt 1) { throw 'AAP_ConfigInvalid: AapBuild' }
     if ([string]$Config.MediaSha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'AAP_ConfigInvalid: MediaSha256' }
     if ([string]$Config.BuilderCommit -cnotmatch '^[0-9a-f]{40}$') { throw 'AAP_ConfigInvalid: BuilderCommit' }
     if ([string]$Config.MediaFile -cnotmatch '^[A-Za-z0-9._()\- ]{1,120}\.iso$') { throw 'AAP_ConfigInvalid: MediaFile must be a file name under <base_root>\media' }
-    if ([string]$Config.SwitchName -cne $script:SwitchName) { throw "AAP_NetworkUntrusted: SwitchName must be the internal switch $($script:SwitchName), never an External switch or the Default Switch" }   # check:network
 }
 
 function Get-AapWinWaivers($Config, [string[]]$Known, [string]$PlanSha) {
@@ -698,8 +751,8 @@ function Invoke-AapGuest($Ctx, [hashtable]$Request, [int]$TimeoutSeconds) {
     $Request['timeout_seconds'] = $TimeoutSeconds
     $local = Join-Path $Ctx.BuildDir 'request.json'
     [IO.File]::WriteAllText($local, (ConvertTo-Json -InputObject $Request -Depth 8), $script:Utf8)
-    $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; HostPath = $local; GuestPath = 'C:\aap-build\request.json' }
-    $text = Invoke-AapProvider $Ctx.Provider 'InvokeGuest' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; Script = $Ctx.GuestScript
+    $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; Tick = $Ctx.Tick; HostPath = $local; GuestPath = 'C:\aap-build\request.json' }
+    $text = Invoke-AapProvider $Ctx.Provider 'InvokeGuest' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; Tick = $Ctx.Tick; Script = $Ctx.GuestScript
         RequestPath = 'C:\aap-build\request.json'; TimeoutSeconds = $TimeoutSeconds; MaxBytes = $script:ReplyMaxBytes }
     return ConvertFrom-AapGuestReply -Text $text -Phase ([string]$Request.phase)
 }
@@ -710,7 +763,7 @@ function Receive-AapGuestFile($Ctx, $Guest, [string]$GuestPath, [string]$Name, [
     $part = Join-Path $Ctx.BuildDir "recv-$Name.part"
     $dest = Join-Path $Ctx.EvidenceDir $Name
     try {
-        $null = Invoke-AapProvider $Ctx.Provider 'ReceiveFile' @{ VmName = $Guest.Vm; VmId = $Guest.VmId; User = $Guest.User; Password = $Guest.Password; GuestPath = $GuestPath; HostPath = $part; MaxBytes = $MaxBytes }
+        $null = Invoke-AapProvider $Ctx.Provider 'ReceiveFile' @{ VmName = $Guest.Vm; VmId = $Guest.VmId; User = $Guest.User; Password = $Guest.Password; Tick = $Guest.Tick; GuestPath = $GuestPath; HostPath = $part; MaxBytes = $MaxBytes }
         if ((Get-AapPathKind $part) -ne 'file' -or (New-Object IO.FileInfo $part).Length -gt $MaxBytes) { throw "AAP_HostileGuest: $Name is missing or over $MaxBytes bytes" }   # check:receive-size
         [IO.File]::Move($part, $dest)
         Add-AapWritten $Ctx $dest
@@ -728,20 +781,20 @@ function Assert-AapStagingBudget($Ctx) {
 
 # The guest's last boot time in ticks, or $null while the guest does not answer (going down, booting); anything else is hostile.
 function Get-AapGuestBootTime($Guest) {
-    $t = [string](Invoke-AapProvider $Guest.Provider 'GetGuestBootTime' @{ VmName = $Guest.Vm; VmId = $Guest.VmId; User = $Guest.User; Password = $Guest.Password })
+    $t = [string](Invoke-AapProvider $Guest.Provider 'GetGuestBootTime' @{ VmName = $Guest.Vm; VmId = $Guest.VmId; User = $Guest.User; Password = $Guest.Password; Tick = $Guest.Tick })
     if ($t -eq '') { return $null }
     if ($t -cnotmatch '^[0-9]{1,18}\z') { throw 'AAP_HostileGuest: the guest boot time is not a tick count' }
     return [long]$t
 }
 
-# A reboot counts only once the guest answers again with a later boot time than it had before Restart-VM: a guest that
+# A reboot counts only once the guest answers again with a later boot time than it had before the shutdown: a guest that
 # answers before it went down, that is between down and up, or that never reboots, is not ready yet; the wait goes on
 # until the phase timeout.
 function Wait-AapReboot($Ctx, [long]$Before, [int]$TimeoutSeconds) {
     $until = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
         $left = [int][Math]::Max(1, [Math]::Ceiling(($until - (Get-Date)).TotalSeconds))
-        if (-not (Invoke-AapProvider $Ctx.Provider 'WaitGuestReady' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; TimeoutSeconds = $left })) { return $false }
+        if (-not (Invoke-AapProvider $Ctx.Provider 'WaitGuestReady' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; Tick = $Ctx.Tick; TimeoutSeconds = $left })) { return $false }
         $now = Get-AapGuestBootTime $Ctx
         if ($null -eq $now -or $now -le $Before) { Start-Sleep -Seconds $script:PollSeconds; continue }   # check:reboot-proof
         return $true
@@ -783,7 +836,11 @@ function Invoke-AapPhase($Ctx, $P) {
         'restart' {
             $before = Get-AapGuestBootTime $Ctx
             if ($null -eq $before) { throw "AAP_GuestUnreachable: $($P.id) the guest did not report its boot time before the reboot" }
-            $null = Invoke-AapProvider $Ctx.Provider 'RestartVm' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; TimeoutSeconds = [int]$P.timeout_seconds }
+            # A host-initiated power-on: the VM goes Off, gets its network attached and checked again, then starts
+            # (host-network-module.md, Consumer obligations 2). The boot time proves the reboot as before.
+            $null = Invoke-AapProvider $Ctx.Provider 'StopVm' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; TimeoutSeconds = [int]$P.timeout_seconds }
+            Connect-AapBuildNetwork $Ctx
+            $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId }
             $ok = Wait-AapReboot $Ctx $before ([int]$P.timeout_seconds)
             if (-not $ok) { throw "AAP_RebootTimeout: $($P.id) guest did not come back from a reboot within $($P.timeout_seconds) s" }   # check:reboot-timeout
             foreach ($check in @($(if ($P.check_registry) { 'wait-no-pending-reboot' }), $P.check) | Where-Object { $_ }) {
@@ -800,7 +857,7 @@ function Invoke-AapPhase($Ctx, $P) {
                     $Ctx.Evidence.reports["software-report.$ext"] = Get-AapSha256File $dest
                 }
                 default {
-                    if ($P.action -eq 'upload-sources') { $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; HostPath = $Ctx.SourceArchive; GuestPath = 'C:\aap-build\runner-images.zip' } }
+                    if ($P.action -eq 'upload-sources') { $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; Tick = $Ctx.Tick; HostPath = $Ctx.SourceArchive; GuestPath = 'C:\aap-build\runner-images.zip' } }
                     $req = @{ phase = $P.id; kind = 'action'; action = $P.action; elevated = $elevated; vars = $vars }
                     $r = Invoke-AapGuest $Ctx $req $script:ActionSeconds
                     if ($P.action -ceq 'sysprep-generalize') { $Ctx.Registry = Assert-AapRegistryReply $r }
@@ -812,33 +869,49 @@ function Invoke-AapPhase($Ctx, $P) {
     }
 }
 
-# The build VM's one adapter, through the P10.0 module and then read back from Hyper-V: the module's word is not enough.
-function Connect-AapBuildNetwork($Ctx) {
-    $net = @{ VmId = $Ctx.VmId; VmName = $Ctx.Vm; Profile = 'windows' }
-    $null = & $Ctx.Network.Attach $net
-    $problems = @(& $Ctx.Network.Verify $net | Where-Object { $_ })
-    if ($problems.Count) { throw "AAP_NetworkUntrusted: $(@($problems | ForEach-Object { Get-AapPrintable ([string]$_) 100 }) -join '; ')" }   # check:network-verify
-    Assert-AapVmAdapters $Ctx $Ctx.Vm $Ctx.VmId 1
+# One call of the host network module; whatever it throws is AAP_NetworkUntrusted (the contract's code for a throw).
+function Invoke-AapNetwork($Network, [string]$Op, [hashtable]$Request) {
+    try { & $Network[$Op] $Request } catch { throw "AAP_NetworkUntrusted: $Op threw: $(Get-AapPrintable ([string]$_.Exception.Message) 200)" }
+}
+function Get-AapNetRequest($Ctx) { @{ VmId = $Ctx.VmId; VmName = $Ctx.Vm; Profile = 'windows' } }
+
+# The build VM's network before each power-on, with the VM Off (host-network-module.md, Consumer obligations 1 and 2):
+# Attach (the module returns the same declaration every time; it is kept only until the next start), the declaration
+# check, before the first start the answer file with the declaration's static addressing, then Verify and the read-back.
+function Connect-AapBuildNetwork($Ctx, [switch]$First) {
+    $req = Get-AapNetRequest $Ctx
+    $decl = Invoke-AapNetwork $Ctx.Network 'Attach' $req
+    $bad = @(Get-AapHostNetworkDeclarationProblems -Request $req -Declaration $decl)
+    if ($bad.Count) { throw "AAP_NetworkInvalid: $(@($bad | Select-Object -First 3 | ForEach-Object { Get-AapPrintable ([string]$_) 200 }) -join '; ')" }   # check:net-declaration
+    $Ctx.Decl = $decl
+    if ($First) {
+        $null = Invoke-AapProvider $Ctx.Provider 'WriteOfflineFiles' @{ Vhdx = $Ctx.OsDisk; Files = @{ 'Windows\Panther\unattend.xml' = (New-AapWinUnattend -UserName $Ctx.User -Password $Ctx.Password -Network $decl) } }
+    }
+    Assert-AapBuildNetwork $Ctx
 }
 
-# A VM's adapters as Hyper-V reports them: exactly $Count, each on the internal switch with DHCP guard and router guard on
-# and MAC spoofing off (booleans, nothing else), an unscoped outbound deny rule for every range in $script:DenyRanges, and
-# no rule other than a deny that names more than one address (an allow is for one gateway, DHCP or DNS endpoint).
-function Assert-AapVmAdapters($Ctx, [string]$VmName, [string]$VmId, [int]$Count) {
-    $nics = @(Invoke-AapProvider $Ctx.Provider 'GetVmNetwork' @{ VmName = $VmName; VmId = $VmId } | Where-Object { $null -ne $_ })
-    if ($nics.Count -ne $Count) { throw "AAP_NetworkUntrusted: $VmName has $($nics.Count) network adapters, not $Count" }   # check:nic-count
-    foreach ($n in $nics) {
-        if ([string](Get-AapProp $n 'SwitchName') -cne $script:SwitchName -or [string](Get-AapProp $n 'SwitchType') -cne 'Internal') { throw "AAP_NetworkUntrusted: an adapter of $VmName is not on the internal switch $($script:SwitchName)" }   # check:nic-switch
-        if (-not ([object]::Equals((Get-AapProp $n 'DhcpGuard'), $true) -and [object]::Equals((Get-AapProp $n 'RouterGuard'), $true) -and [object]::Equals((Get-AapProp $n 'MacAddressSpoofing'), $false))) {   # check:nic-guards
-            throw "AAP_NetworkUntrusted: an adapter of $VmName lacks DHCP guard or router guard, or allows MAC spoofing"
-        }
-        $rules = @(Get-AapProp $n 'Acls' | Where-Object { $null -ne $_ })
-        $denied = @($rules | Where-Object { [string](Get-AapProp $_ 'Action') -ceq 'Deny' -and [string](Get-AapProp $_ 'Direction') -ceq 'Outbound' -and [object]::Equals((Get-AapProp $_ 'Scoped'), $false) } |
-                ForEach-Object { ([string](Get-AapProp $_ 'RemoteAddress')).ToLowerInvariant() })
-        $missing = @($script:DenyRanges | Where-Object { $denied -cnotcontains $_ })
-        if ($missing.Count) { throw "AAP_NetworkUntrusted: an adapter of $VmName does not deny $($missing -join ', ')" }   # check:nic-acl
-        $wide = @($rules | Where-Object { [string](Get-AapProp $_ 'Action') -cne 'Deny' -and [string](Get-AapProp $_ 'RemoteAddress') -cnotmatch '^([0-9]{1,3}(\.[0-9]{1,3}){3}(/32)?|[0-9a-fA-F:]{2,39}(/128)?)\z' })
-        if ($wide.Count) { throw "AAP_NetworkUntrusted: an adapter of $VmName has a rule that lets traffic through to more than one address" }   # check:nic-acl
+# Verify, unfiltered (every object it writes is a problem), then Hyper-V's read-back through the provider against the
+# declaration with the shared check: the module's word is not enough.
+function Assert-AapBuildNetwork($Ctx) {
+    $problems = @(Invoke-AapNetwork $Ctx.Network 'Verify' (Get-AapNetRequest $Ctx))
+    if ($problems.Count) { throw "AAP_NetworkUntrusted: Verify: $(@($problems | Select-Object -First 3 | ForEach-Object { Get-AapPrintable ([string]$_) 200 }) -join '; ')" }   # check:network-verify
+    $bad = @(Get-AapHostNetworkAdapterProblems -Declaration $Ctx.Decl -Adapters @(Invoke-AapProvider $Ctx.Provider 'GetVmNetwork' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId }))
+    if ($bad.Count) { throw "AAP_NetworkUntrusted: read-back: $(@($bad | Select-Object -First 3 | ForEach-Object { Get-AapPrintable ([string]$_) 200 }) -join '; ')" }   # check:net-readback
+    $Ctx.NetCheckedAt = Get-Date
+}
+
+# While the build VM runs: Verify and the read-back again once $script:NetPollSeconds have passed; a failure ends the build,
+# whose cleanup turns the VM off and removes it, then detaches.
+function Test-AapBuildNetworkDue($Ctx) {
+    if ($null -ne $Ctx.Decl -and ((Get-Date) - $Ctx.NetCheckedAt).TotalSeconds -ge $script:NetPollSeconds) { Assert-AapBuildNetwork $Ctx }   # check:net-poll
+}
+
+# What every VM must read back right after NewVm: never started by the host on its own, no checkpoint that could bring back
+# an older adapter (Consumer obligations, 1).
+function Assert-AapVmConfig($Ctx, [string]$VmName, [string]$VmId) {
+    $c = Invoke-AapProvider $Ctx.Provider 'GetVmConfig' @{ VmName = $VmName; VmId = $VmId }
+    if ([string](Get-AapProp $c 'AutomaticStartAction') -cne 'Nothing' -or [string](Get-AapProp $c 'CheckpointType') -cne 'Disabled') {   # check:vm-config
+        throw "AAP_VmUntrusted: $VmName reads back automatic start '$(Get-AapPrintable ([string](Get-AapProp $c 'AutomaticStartAction')) 40)' and checkpoints '$(Get-AapPrintable ([string](Get-AapProp $c 'CheckpointType')) 40)', not Nothing and Disabled"
     }
 }
 
@@ -854,8 +927,11 @@ function Invoke-AapVerify($Ctx) {
     $null = Invoke-AapProvider $Ctx.Provider 'NewBuildDisk' @{ Path = $temp; SizeGib = [int]$Ctx.Plan.temp_disk_gib; Format = $true }
     $null = Invoke-AapProvider $Ctx.Provider 'WriteOfflineFiles' @{ Vhdx = $child; Files = @{ 'Windows\Panther\unattend.xml' = (New-AapWinUnattend -UserName $user -Password $pw) } }
     $vm = Invoke-AapProvider $Ctx.Provider 'NewVm' @{ Name = $Ctx.Names.VerifyVm; Path = $dir; OsDisk = $child; TempDisk = $temp; Cpus = [int]$Ctx.Config.BuildCpus; MemGib = [int]$Ctx.Config.BuildMemGib }
-    $g = [pscustomobject]@{ Provider = $Ctx.Provider; BuildDir = $Ctx.BuildDir; Vm = $Ctx.Names.VerifyVm; VmId = (Get-AapVmId $vm); User = $user; Password = $pw; GuestScript = 'C:\aap-build\AapGuestVerify.ps1' }
-    Assert-AapVmAdapters $Ctx $g.Vm $g.VmId 0
+    $g = [pscustomobject]@{ Provider = $Ctx.Provider; BuildDir = $Ctx.BuildDir; Vm = $Ctx.Names.VerifyVm; VmId = (Get-AapVmId $vm); User = $user; Password = $pw; GuestScript = 'C:\aap-build\AapGuestVerify.ps1'; Tick = $null }
+    Assert-AapVmConfig $Ctx $g.Vm $g.VmId
+    # Never attached (Consumer obligations, 5): read back as zero adapters before it boots.
+    $nics = @(Invoke-AapProvider $Ctx.Provider 'GetVmNetwork' @{ VmName = $g.Vm; VmId = $g.VmId })
+    if ($nics.Count -ne 0) { throw "AAP_NetworkUntrusted: $($g.Vm) has $($nics.Count) network adapters, not 0" }   # check:verify-no-nic
     $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $g.Vm; VmId = $g.VmId }
     if (-not (Invoke-AapProvider $Ctx.Provider 'WaitGuestReady' @{ VmName = $g.Vm; VmId = $g.VmId; User = $user; Password = $pw; TimeoutSeconds = 1800 })) { throw 'AAP_VerifyFailed: fresh guest not ready' }
     foreach ($f in @(@{ H = $Ctx.VerifyScript; G = 'C:\aap-build\AapGuestVerify.ps1' }, @{ H = $Ctx.ProbeScript; G = 'C:\aap-build\probe-windows.ps1' }, @{ H = $Ctx.HelloC; G = 'C:\aap-build\hello.c' }, @{ H = $Ctx.SourceArchive; G = 'C:\aap-build\runner-images.zip' })) {
@@ -977,17 +1053,16 @@ function Invoke-AapWinImageBuild {
         $here = $PSScriptRoot
         # The builder runs elevated: its own code, and every folder it sends files from, must be as protected as the roots
         # it writes (P19 deploys them admin-only). Folders are checked, not each file in them.
-        foreach ($d in $here, (Join-Path $here 'guest'), [IO.Path]::GetFullPath((Join-Path $here '..\common')),
+        foreach ($d in $here, (Join-Path $here 'guest'), [IO.Path]::GetFullPath((Join-Path $here '..\common')), [IO.Path]::GetFullPath((Split-Path -Parent $script:NetworkCheck)),
             [IO.Path]::GetFullPath((Split-Path -Parent $script:ProbeScript)), [IO.Path]::GetFullPath((Split-Path -Parent $script:HelloC))) {
             $problems = @(Invoke-AapProvider $Provider 'TestRootTrust' @{ Path = $d } | Where-Object { $_ })
             if ($problems.Count) { throw "AAP_BuilderUntrusted: ${d}: $(@($problems | ForEach-Object { Get-AapPrintable ([string]$_) 300 }) -join '; ')" }   # check:builder-untrusted
         }
+        Import-Module $script:NetworkCheck   # only now: supervisor\network passed the admin-only check above
         Assert-AapWinConfig $Config
         $storage = Read-AapStorageRecord -Path $Config.StoragePath
         $evidenceRoot = [IO.Path]::GetFullPath([string]$Config.EvidenceRoot)
         Assert-AapStorageTrusted $storage $Provider $evidenceRoot
-        $sw = Invoke-AapProvider $Provider 'GetSwitch' @{ Name = $script:SwitchName }
-        if ($null -eq $sw -or [string](Get-AapProp $sw 'Name') -cne $script:SwitchName -or [string](Get-AapProp $sw 'SwitchType') -cne 'Internal') { throw "AAP_NetworkUntrusted: $($script:SwitchName) is not an existing internal switch" }   # check:network
         $plan = Read-AapWinBuildPlan -Path $script:PlanPath
         $planSha = Get-AapSha256File $script:PlanPath
         $names = Get-AapWinNames $plan ([int]$Config.AapBuild)
@@ -1045,15 +1120,17 @@ function Invoke-AapWinImageBuild {
             Config = $Config; Provider = $Provider; Network = $Network; Plan = $plan; Names = $names; BuildDir = $buildDir; EvidenceDir = $evidenceDir
             StatePath = (Join-Path $buildDir 'state.json'); OsDisk = (Join-Path $buildDir 'os.vhdx'); TempDisk = (Join-Path $buildDir 'temp.vhdx')
             Vm = $names.BuildVm; VmId = $null; User = [string]$plan.variables.install_user; Password = $pw; GuestScript = 'C:\aap-build\AapGuestRunner.ps1'
+            Decl = $null; NetCheckedAt = [DateTime]::MinValue; Tick = $script:NetTick
             SourceArchive = $source; VerifyScript = (Join-Path $here 'guest\AapGuestVerify.ps1'); ProbeScript = $script:ProbeScript; HelloC = $script:HelloC; Registry = $null
             State = [ordered]@{ schema = 1; build_id = $names.BuildId; generation_id = $names.GenerationId; status = 'running'; started_at = (Get-AapUtc); steps = [ordered]@{}
                 evidence_created = $false; written = (New-Object System.Collections.Generic.List[string])
                 staging_peak_bytes = [double]0; clone_peak_bytes = [double]0; scratch_peak_bytes = [double]0; mem_overhead_mib = 0 }
             Evidence = [ordered]@{ schema = 2; item = 'P06'; build_id = $names.BuildId; generation_id = $names.GenerationId; builder_commit = $Config.BuilderCommit
                 plan_sha256 = $planSha; inputs_manifest_sha256 = (Get-AapSha256File $script:ManifestPath); template_sha256 = $plan.baseline.template_sha256
-                media = [ordered]@{ file = $Config.MediaFile; sha256 = $Config.MediaSha256; edition = $Config.Edition }; switch = $script:SwitchName
+                media = [ordered]@{ file = $Config.MediaFile; sha256 = $Config.MediaSha256; edition = $Config.Edition }; switch = (Get-AapHostNetworkSwitchName -VmName $names.BuildVm)
                 waivers = $waivers; phases = (New-Object System.Collections.Generic.List[object]); reports = [ordered]@{}; verify = $null; registry_check = $null }
         }
+        $script:BuildCtx = $ctx
         Save-AapState $ctx
         Assert-AapPlainPath -Root $evidenceRoot -Path (Split-Path -Parent $evidenceDir) -Reason 'AAP_StorageUntrusted' -Create
         [void](New-Item -ItemType Directory -Path $evidenceDir)
@@ -1064,7 +1141,7 @@ function Invoke-AapWinImageBuild {
         $null = Invoke-AapProvider $Provider 'NewBuildDisk' @{ Path = $ctx.OsDisk; SizeGib = [int]$plan.os_disk_gib; Format = $false }
         $null = Invoke-AapProvider $Provider 'NewBuildDisk' @{ Path = $ctx.TempDisk; SizeGib = [int]$plan.temp_disk_gib; Format = $true }
         $applied = Invoke-AapProvider $Provider 'ApplyWindowsImage' @{ IsoPath = $media; Edition = $Config.Edition; Vhdx = $ctx.OsDisk
-            Files = @{ 'Windows\Panther\unattend.xml' = (New-AapWinUnattend -UserName $ctx.User -Password $pw) }
+            Files = @{}   # the answer file comes after Attach, with the declaration's addressing
             CopyFiles = @{ 'aap-build\AapGuestRunner.ps1' = (Join-Path $here 'guest\AapGuestRunner.ps1') } }
         $ctx.Evidence.media.image_index = [int]$applied.ImageIndex
         $ctx.Evidence.media.os_build = Get-AapPrintable ([string]$applied.Build) 40
@@ -1073,9 +1150,10 @@ function Invoke-AapWinImageBuild {
         Set-AapStep $ctx 'vm' 'intent'
         $vm = Invoke-AapProvider $Provider 'NewVm' @{ Name = $ctx.Vm; Path = $buildDir; OsDisk = $ctx.OsDisk; TempDisk = $ctx.TempDisk; Cpus = [int]$Config.BuildCpus; MemGib = [int]$Config.BuildMemGib }
         $ctx.VmId = Get-AapVmId $vm
-        Connect-AapBuildNetwork $ctx
+        Assert-AapVmConfig $ctx $ctx.Vm $ctx.VmId
+        Connect-AapBuildNetwork $ctx -First
         $null = Invoke-AapProvider $Provider 'StartVm' @{ VmName = $ctx.Vm; VmId = $ctx.VmId }
-        if (-not (Invoke-AapProvider $Provider 'WaitGuestReady' @{ VmName = $ctx.Vm; VmId = $ctx.VmId; User = $ctx.User; Password = $pw; TimeoutSeconds = 1800 })) { throw 'AAP_RebootTimeout: build guest not ready after first boot' }
+        if (-not (Invoke-AapProvider $Provider 'WaitGuestReady' @{ VmName = $ctx.Vm; VmId = $ctx.VmId; User = $ctx.User; Password = $pw; Tick = $ctx.Tick; TimeoutSeconds = 1800 })) { throw 'AAP_RebootTimeout: build guest not ready after first boot' }
         $ctx.State.installed_at = Get-AapUtc
         Set-AapStep $ctx 'vm' 'done'
 
@@ -1089,8 +1167,9 @@ function Invoke-AapWinImageBuild {
 
         Set-AapStep $ctx 'seal' 'intent'
         $null = Invoke-AapProvider $Provider 'StopVm' @{ VmName = $ctx.Vm; VmId = $ctx.VmId; TimeoutSeconds = 1800 }
-        $null = & $Network.Detach @{ VmId = $ctx.VmId; VmName = $ctx.Vm; Profile = 'windows' }
         $null = Invoke-AapProvider $Provider 'RemoveVm' @{ Name = $ctx.Vm }
+        $null = Invoke-AapNetwork $Network 'Detach' (Get-AapNetRequest $ctx)   # after the VM is gone (Consumer obligations, 4)
+        $ctx.Decl = $null
         $null = Invoke-AapProvider $Provider 'Dismount' @{ Vhdx = $ctx.TempDisk }
         Remove-AapTree $ctx.TempDisk $buildDir
         $null = Invoke-AapProvider $Provider 'OptimizeDisk' @{ Vhdx = $ctx.OsDisk }
@@ -1154,10 +1233,14 @@ function Invoke-AapWinImageBuild {
         if ($started -and -not $published) {
             $result.Status = 'failed'
             if ($ctx) { try { $ctx.State.status = 'failed'; Save-AapState $ctx } catch { $null = $_ } }
-            if ($ctx -and $ctx.VmId) { try { $null = & $Network.Detach @{ VmId = $ctx.VmId; VmName = $ctx.Vm; Profile = 'windows' } } catch { $null = $_ } }
             try { Remove-AapWinBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot } catch { $result.Detail = Get-AapPrintable "$($result.Detail); cleanup failed: $($_.Exception.Message)" 500 }
+            # The VMs are gone (or their removal failed and Detach refuses): Detach on every teardown, also after a failed Attach.
+            if ($ctx -and $ctx.VmId) {
+                try { $null = Invoke-AapNetwork $Network 'Detach' (Get-AapNetRequest $ctx) } catch { $result.Detail = Get-AapPrintable "$($result.Detail); cleanup failed, the network is not proven detached: $($_.Exception.Message)" 500 }
+            }
         }
     } finally {
+        $script:BuildCtx = $null
         if ($lock) { $lock.Dispose() }
     }
     return [pscustomobject]$result

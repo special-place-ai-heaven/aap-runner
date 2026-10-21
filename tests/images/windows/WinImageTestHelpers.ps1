@@ -4,6 +4,8 @@
 # $env:AAP_P06_TESTROOT when set, else %LOCALAPPDATA%\aap-p06-tests; the caller removes it.
 
 $script:GiB = 1073741824
+# The shared strict fake of the P10.0 host network module (parity/contracts/host-network-module.md); it imports the shared check.
+Import-Module (Join-Path $PSScriptRoot '..\..\common\AapHostNetworkFake.psm1')
 
 function Get-TestRepo { (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path }
 function Get-TestModulePath {
@@ -50,8 +52,7 @@ function New-FakeWorld {
         Guest = $null; ReadyAfterRestart = $true; InputsComplete = $true; Unattend = (New-Object System.Collections.Generic.List[string])
         InventoryText = '{"schema":1,"probe":"fake"}'; ReportText = '# software report'; Vms = @{}; VmIds = @{}; ReadOnly = (New-Object System.Collections.Generic.List[string])
         LastRequest = $null; SourceZip = $null; MediaSha = $null; Provider = $null; BootTime = $null
-        Switch = @{ Name = 'aap-guests-win'; SwitchType = 'Internal' }
-        Network = $null; Nics = @{}; NetProblems = @(); NicEdit = { param($l) $l }; VerifyHasNic = $false
+        Network = $null; NetFake = $null; NetRoot = (Join-Path $root 'net'); VerifyHasNic = $false; StartAction = 'Nothing'; Checkpoints = 'Disabled'
     }
     $w.Staging = $(if ($SeparateStaging) { Join-Path $root 'vol3\staging' } else { Join-Path $w.Base 'staging' })
     foreach ($d in $w.Base, $w.Clone, $w.Scratch, $w.Staging, $w.Capacity, $w.Evidence, $w.Disk, (Join-Path $w.Base 'media')) { [void][IO.Directory]::CreateDirectory($d) }
@@ -80,11 +81,12 @@ function New-FakeWorld {
     Set-ModuleVar 'HelloC' (Join-Path $repo 'tools\parity-certify\workloads\fixtures\hello.c')
     Set-ModuleVar 'AllowlistPath' (Join-Path (Split-Path -Parent (Get-TestModulePath)) 'secret-allowlist.json')
     Set-ModuleVar 'PollSeconds' 0
+    Set-ModuleVar 'NetPollSeconds' 3600   # no re-check while the VM runs unless a test asks for one
     $planSha = Get-FileSha $w.PlanPath
     $w.Config = @{
         StoragePath = $w.StoragePath; EvidenceRoot = $w.Evidence; AapBuild = 1; MediaFile = 'SERVER_EVAL_x64FRE_en-us.iso'; MediaSha256 = $w.MediaSha
         Edition = 'Windows Server 2025 Datacenter Evaluation (Desktop Experience)'; BuildCpus = 4; BuildMemGib = 10; StagingGibMax = 400; BaseGibMax = 186; JobDiskGibMax = 55
-        BuilderCommit = '0123456789abcdef0123456789abcdef01234567'; Inputs = @(); SwitchName = 'aap-guests-win'
+        BuilderCommit = '0123456789abcdef0123456789abcdef01234567'; Inputs = @()
         Waivers = @(Get-AapWinBlockers -Plan $w.Plan -ManifestPath $manifest | Where-Object { $_ -notin 'windows-server-2025-media', 'p06-upstream-source-archive' } | ForEach-Object { New-TestWaiver $_ $planSha })
     }
     $w.Sizes['os.vhdx'] = [double]128 * $script:GiB
@@ -92,25 +94,18 @@ function New-FakeWorld {
     $w.Sizes['temp.vhdx'] = [double]9 * $script:GiB
     $w.Guest = { param($w, $req) Get-FakeGuestReply $w $req }
     $w.Provider = New-FakeProvider $w
-    $w.Network = New-FakeNetwork
-    return $w
-}
-
-# One adapter as the P10.0 module should leave it, written out here rather than taken from the module under test.
-function New-FakeNic {
-    $acls = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'ff00::/8', 'fe80::/10', 'fc00::/7') |
-        ForEach-Object { @{ Action = 'Deny'; Direction = 'Outbound'; RemoteAddress = $_; Scoped = $false } }
-    $acls = @($acls) + @(@{ Action = 'Allow'; Direction = 'Outbound'; RemoteAddress = '192.168.240.1'; Scoped = $true })
-    @{ SwitchName = 'aap-guests-win'; SwitchType = 'Internal'; DhcpGuard = $true; RouterGuard = $true; MacAddressSpoofing = $false; Acls = $acls }
-}
-
-# The P10.0 interface (Attach, Detach, Verify). Attach records the adapter list $w.NicEdit makes of one good adapter.
-function New-FakeNetwork {
-    @{
-        Attach = { param($a) Add-FakeCall 'NetAttach' $a; $w.Nics[$a.VmId] = @(& $w.NicEdit @(New-FakeNic)) }
-        Detach = { param($a) Add-FakeCall 'NetDetach' $a; $w.Nics.Remove($a.VmId) }
-        Verify = { param($a) Add-FakeCall 'NetVerify' $a; $w.NetProblems }
+    # Hyper-V's answer for a VM id, from the world's VMs: $null once removed (or never made), else its state and no adapter of
+    # the builder's own (NewVm makes none).
+    $w.NetFake = New-AapFakeHostNetwork -Root $w.NetRoot -Vm { param($id)
+        $name = @($w.VmIds.Keys | Where-Object { $w.VmIds[$_] -ceq $id })
+        if ($name.Count -and $w.Vms.ContainsKey($name[0])) { @{ State = $w.Vms[$name[0]]; Adapters = 0 } } }
+    # The module as the builder takes it; each call is recorded first, then served by the shared fake.
+    $w.Network = @{
+        Attach = { param($a) Add-FakeCall 'NetAttach' $a; & $w.NetFake.Attach $a }
+        Detach = { param($a) Add-FakeCall 'NetDetach' $a; & $w.NetFake.Detach $a }
+        Verify = { param($a) Add-FakeCall 'NetVerify' $a; & $w.NetFake.Verify $a }
     }
+    return $w
 }
 
 function New-TestWaiver([string]$Id, [string]$PlanSha) { [ordered]@{ id = $Id; rationale = 'fake world: every blocker waived for the test'; plan_sha256 = $PlanSha; approver = 'chair (test)' } }
@@ -194,27 +189,29 @@ function New-FakeProvider($w) {
     # The fake guest disk is a real folder: offline writes go through the production path walk.
     $p.WriteOfflineFiles = { param($a) Add-FakeCall 'WriteOfflineFiles' $a
         foreach ($k in @($a.Files.Keys)) { Write-AapGuestFile -Root $w.Disk -RelPath $k -Bytes ([Text.Encoding]::UTF8.GetBytes($a.Files[$k])); $w.Unattend.Add($a.Files[$k]) } }
-    $p.GetSwitch = { param($a) Add-FakeCall 'GetSwitch' $a; $w.Switch }
-    $p.NewVm = { param($a) Add-FakeCall 'NewVm' $a; $w.Vms[$a.Name] = 'Off'; $w.VmIds[$a.Name] = [guid]::NewGuid().ToString()
-        if ($w.VerifyHasNic -and $a.Name -like 'aap-wverify-*') { $w.Nics[$w.VmIds[$a.Name]] = @(New-FakeNic) }
-        @{ Id = $w.VmIds[$a.Name] } }
-    $p.GetVmNetwork = { param($a) Add-FakeCall 'GetVmNetwork' $a; if ($w.Nics.ContainsKey($a.VmId)) { $w.Nics[$a.VmId] } }
+    $p.NewVm = { param($a) Add-FakeCall 'NewVm' $a; $w.Vms[$a.Name] = 'Off'; $w.VmIds[$a.Name] = [guid]::NewGuid().ToString(); @{ Id = $w.VmIds[$a.Name] } }
+    $p.GetVmConfig = { param($a) Add-FakeCall 'GetVmConfig' $a; @{ AutomaticStartAction = $w.StartAction; CheckpointType = $w.Checkpoints } }
+    # Hyper-V's read-back: what the shared fake's module attached (tampers applied); VerifyHasNic gives the verification VM one.
+    $p.GetVmNetwork = { param($a) Add-FakeCall 'GetVmNetwork' $a
+        if ($w.VerifyHasNic -and $a.VmName -like 'aap-wverify-*') { return @{ SwitchName = 'aap-guests-win'; SwitchType = 'Internal' } }
+        Get-AapFakeHostNetworkAdapter -Root $w.NetRoot -VmId $a.VmId }
     $p.GetGuestBootTime = { param($a) Add-FakeCall 'GetGuestBootTime' $a
         if ($w.BootTime) { return (& $w.BootTime $w) }
-        [string](630000000000000000 + @($w.Calls | Where-Object { $_.Op -eq 'RestartVm' }).Count) }
+        [string](630000000000000000 + @($w.Calls | Where-Object { $_.Op -eq 'StopVm' }).Count) }
     $p.StartVm = { param($a) Add-FakeCall 'StartVm' $a; $w.Vms[$a.VmName] = 'Running' }
     $p.StopVm = { param($a) Add-FakeCall 'StopVm' $a; $w.Vms[$a.VmName] = 'Off' }
-    $p.RestartVm = { param($a) Add-FakeCall 'RestartVm' $a }
     $p.RemoveVm = { param($a) Add-FakeCall 'RemoveVm' $a; $w.Vms.Remove($a.Name) }
+    # A restart is a shutdown (StopVm), the network again, and a start; the seal's StopVm comes after the last one.
     $p.WaitGuestReady = { param($a) Add-FakeCall 'WaitGuestReady' $a
-        $restarts = @($w.Calls | Where-Object { $_.Op -eq 'RestartVm' }).Count
+        if ($a.Tick) { & $a.Tick }
+        $restarts = @($w.Calls | Where-Object { $_.Op -eq 'StopVm' }).Count
         if ($restarts -eq 0) { return $true }
         if ($w.ReadyAfterRestart -is [scriptblock]) { return (& $w.ReadyAfterRestart $restarts) }
         return $w.ReadyAfterRestart }
     $p.SendFile = { param($a) Add-FakeCall 'SendFile' $a
         if ($a.GuestPath -like '*request.json') { $w.LastRequest = Get-Content -Raw -LiteralPath $a.HostPath | ConvertFrom-Json; $w.Requests.Add($w.LastRequest) }
         if ($a.GuestPath -like 'C:\aap-build\*' -and $a.GuestPath -notlike '*request.json') { $t = Join-Path $w.Disk ($a.GuestPath.Substring(3)); [void][IO.Directory]::CreateDirectory((Split-Path -Parent $t)); Copy-Item -LiteralPath $a.HostPath -Destination $t -Force } }
-    $p.InvokeGuest = { param($a) Add-FakeCall 'InvokeGuest' $a; & $w.Guest $w $w.LastRequest }
+    $p.InvokeGuest = { param($a) Add-FakeCall 'InvokeGuest' $a; if ($a.Tick) { & $a.Tick }; & $w.Guest $w $w.LastRequest }
     $p.ReceiveFile = { param($a) Add-FakeCall 'ReceiveFile' $a
         $text = $(if ($a.GuestPath -like '*job-inventory.json') { $w.InventoryText } else { $w.ReportText })
         [IO.File]::WriteAllText($a.HostPath, $text, (New-Object Text.UTF8Encoding($false))) }
