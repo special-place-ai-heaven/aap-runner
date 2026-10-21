@@ -39,8 +39,8 @@ it saw, a one-shot class (`deliver_registration`, `start_runner`, `shutdown`) th
 marks (`generation`, `seq`, `nonces`, `shots` in `/var/lib/aap-guest`, root 0700) and flushes them (`sync -f`) before any
 work, so a reply lost after that leaves a gap, never a false refusal. If any mark cannot be written or flushed (a full or
 broken state file system), the command does not run and gets no reply (a failed guest): it can never run later under an
-old `seq` or without its one-shot mark. Core dumps are off (`RLIMIT_CORE` 0) from the agent's first statement, before
-it reads any input, in every mode.
+old `seq` or without its one-shot mark. Core dumps are off (`RLIMIT_CORE` 0) from the agent's first statement, in every
+mode, before it reads any input; if the limit cannot be set it stops there, with no reply.
 
 | Command | Answer |
 |---|---|
@@ -86,7 +86,7 @@ never resumed: after any job, `/imagegeneration` (mode 777 upstream) may hold pl
 
 | Step | What it does and checks |
 |---|---|
-| `host_key` | `/etc/ssh/ssh_host_ed25519_key.pub` must be `ssh-ed25519` with a 68-character key; `hv-kvp-daemon.service` must be active; publishes exactly `ssh-ed25519 <key>` as the guest-to-host KVP item `aap-ssh-host-key-ed25519` (pool 1 record: 512-byte key, 2048-byte value, NUL padded; an earlier record of that key replaced, others kept; the new pool file is written beside it and renamed over it) |
+| `host_key` | `/etc/ssh/ssh_host_ed25519_key.pub` must be `ssh-ed25519` with a 68-character key; `hv-kvp-daemon.service` must be active; publishes exactly `ssh-ed25519 <key>` as the guest-to-host KVP item `aap-ssh-host-key-ed25519` (pool 1 record: 512-byte key, 2048-byte value, NUL padded; an earlier record of that key replaced, others kept; the new pool file is written beside it and renamed over it only when every read, copy and write worked and its size is exactly the records it should hold; otherwise the old pool stays) |
 | `identity` | `runner` has uid 1001 and home `/home/runner`, is in `adm`, `users`, `docker` and `systemd-journal`, and runs `sudo -n true`; no account has uid 1000 |
 | `scrub` | removes cloud-init's seed copies: `/var/lib/cloud/seed` and every instance's `user-data.txt*` and `cloud-config.txt` |
 | `tls` | `make-ssl-cert generate-default-snakeoil --force-overwrite`; both snakeoil files must exist (P07's verification runs the same) |

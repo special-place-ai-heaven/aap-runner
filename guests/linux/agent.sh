@@ -13,12 +13,12 @@
 #                    pipe; it runs Runner.Listener as the job user with the config in that process's environment only, and
 #                    records the runner's exit code. The config never reaches a file, a command line or a log.
 # Every guard carries '# check:<name>'; tests/guests/linux/agent_mutations.sh disables each in turn.
+# First of all, no core dump of the agent or the launcher (both hold the JIT config): if the limit cannot be set, stop
+# before any input is read, with no reply. PR_SET_DUMPABLE cannot be set from bash (INTEGRATION.md, P02.1).
+ulimit -c 0 || exit 0   # check:core-off
 set -u
 export LC_ALL=C
 umask 022
-# No core dump of the agent or the launcher (both hold the JIT config): before any input is read. A line of its own so the
-# mutation run can remove it; PR_SET_DUMPABLE cannot be set from bash (INTEGRATION.md, P02.1).
-ulimit -c 0   # check:core-off
 S=${AAP_SYSROOT:-}                    # tests only: a fake system root; empty in a guest
 ST="${S}/var/lib/aap-guest"           # agent state, root 0700
 RR="${S}/opt/actions-runner"          # runner root: the actions-runner overlay (P21); its registration files are written here
@@ -261,17 +261,22 @@ serve() {
 
 # --- first boot ------------------------------------------------------------------------------------------------------
 # The guest-to-host KVP item hv_kvp_daemon serves from pool 1: records of a 512-byte key and a 2048-byte value, NUL
-# padded. An earlier record with the same key is replaced; other records are kept. The new pool is swapped in whole.
+# padded. An earlier record with the same key is replaced; other records are kept. The new pool is built beside the old
+# one and renamed over it only when every step worked and it has exactly the records it should: a failed or short copy
+# leaves the old pool as it was.
 kvp_publish() { # KEY VALUE
-  local tmp n=0 i k
+  local tmp n=0 kept=0 i k size
   mkdir -p "${KVP_POOL%/*}" || return 1
+  if [ -e "${KVP_POOL}" ]; then size=$(stat -c %s "${KVP_POOL}") || return 1; n=$((size / 2560)); fi
   tmp=$(mktemp "${KVP_POOL}.XXXXXX") || return 1
-  [ ! -f "${KVP_POOL}" ] || n=$(( $(stat -c %s "${KVP_POOL}") / 2560 ))
   for ((i = 0; i < n; i++)); do
-    k=$(dd if="${KVP_POOL}" bs=2560 skip="${i}" count=1 2> /dev/null | head -c 512 | tr -d '\0')
-    [ "${k}" = "$1" ] || dd if="${KVP_POOL}" bs=2560 skip="${i}" count=1 2> /dev/null >> "${tmp}"
+    k=$(dd if="${KVP_POOL}" bs=2560 skip="${i}" count=1 status=none | head -c 512 | tr -d '\0')
+    [ "${k}" != "$1" ] || continue
+    dd if="${KVP_POOL}" bs=2560 skip="${i}" count=1 status=none >> "${tmp}" || { rm -f "${tmp}"; return 1; }
+    kept=$((kept + 1))
   done
   { printf '%s' "$1"; head -c $((512 - ${#1})) /dev/zero; printf '%s' "$2"; head -c $((2048 - ${#2})) /dev/zero; } >> "${tmp}" || { rm -f "${tmp}"; return 1; }
+  [ "$(stat -c %s "${tmp}" 2> /dev/null)" = $(((kept + 1) * 2560)) ] || { rm -f "${tmp}"; return 1; }   # check:kvp-complete
   { chmod 0644 "${tmp}" && mv -f "${tmp}" "${KVP_POOL}"; } || { rm -f "${tmp}"; return 1; }
 }
 

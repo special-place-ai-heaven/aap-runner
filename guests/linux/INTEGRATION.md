@@ -63,4 +63,4 @@ How the agent works: [README.md](README.md).
 
 - On hosted `ubuntu-latest`: `bash tests/guests/linux/agent_test.sh` (about 10 s; python3, jq, flock, setsid, coreutils).
 - shellcheck 0.11.0 at `-S warning` over `guests/linux/*.sh` and `tests/guests/linux/*.sh` (clean in WSL Ubuntu-24.04).
-- `bash tests/guests/linux/agent_mutations.sh` is the mutation run (32 checks, about 5 minutes); not needed on every push.
+- `bash tests/guests/linux/agent_mutations.sh` is the mutation run (33 checks, about 5 minutes); not needed on every push.

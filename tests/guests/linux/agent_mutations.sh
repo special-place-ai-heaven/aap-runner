@@ -3,7 +3,8 @@
 # copies the guest folder, disables that guard on every line tagged with it (the first '|| ' becomes '|| true || ', so the
 # guarded action never runs; a line without '||' has its 'return 1' or 'exit 1' replaced by 'true', and a line with
 # neither is removed), and runs agent_test.sh against the copy. A guard is covered only if a check of the suite then
-# fails (its exit code 10). Any other result of the suite (a timeout, a harness error) is an ERROR, never a kill.
+# fails (its exit code 10). Any other result of the suite (11, a missing prerequisite; a timeout; a harness error) is
+# an ERROR, never a kill.
 # Exit 0 when every guard is killed.
 #   bash tests/guests/linux/agent_mutations.sh [name...]
 set -euo pipefail

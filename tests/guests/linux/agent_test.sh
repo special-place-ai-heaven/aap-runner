@@ -24,7 +24,9 @@ stop_runners() {
 cleanup() { stop_runners 2> /dev/null || true; pkill -f "${tmp}/" 2> /dev/null || true; rm -rf "${tmp}"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 10; }   # 10: a check failed (agent_mutations.sh tells it from a harness error)
-[ "$(id -u)" != 0 ] || fail 'run the suite unprivileged (an unwritable file must stay unwritable to the agent)'
+# 11: the host cannot run the suite (agent_mutations.sh reports it as an ERROR, never as a kill)
+prereq() { echo "PREREQUISITE: $*" >&2; exit 11; }
+[ "$(id -u)" != 0 ] || prereq 'run the suite unprivileged (an unwritable file must stay unwritable to the agent)'
 VM=6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b
 RID=r-1a2b3c4d000000b1
 HK="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5$(printf 'Ab%.0s' {1..24})"
@@ -55,6 +57,7 @@ stubs make-ssl-cert '[ ! -e "${K}/no-tls" ] || exit 1' '[ -e "${K}/tls-empty" ] 
 stubs loginctl 'exit 0'
 stubs chown 'exit 0'
 stubs pgrep '[ -e "${K}/worker" ]'
+stubs dd '[ ! -e "${K}/dd-fail" ] || exit 1' 'if [ -e "${K}/dd-short" ]; then /bin/dd "$@" | head -c 100; else exec /bin/dd "$@"; fi'
 
 cat > "${tmp}/check.py" <<'EOF'
 # One reply line: printable, one JSON object, valid with its command as a guest-transport exchange, and a state the
@@ -137,11 +140,12 @@ EOF
 
 # agent IN [MODE]: the agent as sshd's forced command (or a mode) with IN as stdin; stdout in out, exit code in RC. It starts
 # with core dumps allowed (1024 blocks), so only its own limit keeps the JIT config out of a core file.
-(ulimit -c 1024) 2> /dev/null || fail 'this host does not allow a core limit of 1024 blocks; the core-dump check needs it'
+# XENV: one more NAME=VALUE for the agent's environment.
+(ulimit -c 1024) 2> /dev/null || prereq 'this host does not allow a core limit of 1024 blocks; the core-dump check needs it'
 agent() {
   local in=$1; shift
   RC=0
-  (ulimit -c 1024 && exec env AAP_SYSROOT="${S}" AAP_START_WAIT=5 SSH_CONNECTION='192.0.2.1 50000 192.0.2.2 5222' PATH="${stub}:${PATH}" \
+  (ulimit -c 1024 && exec env ${XENV:+"${XENV}"} AAP_SYSROOT="${S}" AAP_START_WAIT=5 SSH_CONNECTION='192.0.2.1 50000 192.0.2.2 5222' PATH="${stub}:${PATH}" \
     bash "${guest}/agent.sh" "$@") < "${in}" > "${tmp}/out" 2> "${tmp}/err" || RC=$?
 }
 firstboot() { agent /dev/null firstboot; }
@@ -167,6 +171,10 @@ env_of() { grep -m1 "^$1=" "${tmp}/listener.env" | cut -d= -f2-; }
 
 # --- envelope ---------------------------------------------------------------------------------------------------------
 reset
+# a core limit that cannot be set stops the agent before it reads anything (a bash function shadows the builtin)
+XENV='BASH_FUNC_ulimit%%=() { return 1; }' send probe 1
+noreply 'a core limit that cannot be set'
+[ ! -e "${ST}/nonces" ] && [ ! -e "${ST}/seq" ] || fail 'the agent read a command without its core limit'
 send probe 1
 expect ok booting null 'probe before first boot'
 BOM=$'\xef\xbb\xbf' send probe 2
@@ -185,7 +193,7 @@ send probe 10
 expect ok booting null 'a seq gap'
 send probe 5
 expect refused booting null 'a lower seq'
-NONCE=$(printf '%032x' 4097) send probe 11
+NONCE=$(printf '%032x' 4098) send probe 11   # the nonce of the first accepted probe
 expect refused booting null 'a reused nonce'
 GENX=8 send probe 12
 expect refused booting null 'another lease generation'
@@ -227,8 +235,16 @@ reset; echo '{}' > "${S}/opt/actions-runner/.credentials"; fb_fails runner_root 
 reset; mkdir -p "${ST}"; : > "${ST}/firstboot.started"; fb_fails interrupted 'an interrupted first boot'
 [ ! -e "${tmp}/postgen" ] || fail 'post-generation ran again after an interrupted first boot'
 
+# a pool copy that fails or comes out short leaves the old pool as it was
+for k in dd-fail dd-short; do
+  reset; cp "${S}/var/lib/hyperv/.kvp_pool_1" "${tmp}/pool.old"; touch "${K}/${k}"; fb_fails host_key "a KVP pool copy (${k})"
+  cmp -s "${tmp}/pool.old" "${S}/var/lib/hyperv/.kvp_pool_1" && [ "$(find "${S}/var/lib/hyperv" -mindepth 1 | wc -l)" = 1 ] ||
+    fail "a failed KVP pool copy (${k}) changed the pool or left its temp file"
+done
+
 # a good first boot
 reset
+inode=$(stat -c %i "${S}/var/lib/hyperv/.kvp_pool_1")
 firstboot
 [ "${RC}" = 0 ] && [ -e "${ST}/firstboot.done" ] || fail "first boot: rc ${RC} $(cat "${tmp}/out" "${tmp}/err")"
 python3 -B -I - "${S}/var/lib/hyperv/.kvp_pool_1" "${HK}" <<'EOF' || fail 'the KVP pool'
@@ -237,7 +253,8 @@ raw = open(sys.argv[1], 'rb').read()
 recs = [(raw[i:i + 512].rstrip(b'\0').decode(), raw[i + 512:i + 2560].rstrip(b'\0').decode()) for i in range(0, len(raw), 2560)]
 assert len(raw) % 2560 == 0 and recs == [('other', 'value'), ('aap-ssh-host-key-ed25519', sys.argv[2])], recs
 EOF
-[ "$(find "${S}/var/lib/hyperv" -mindepth 1 | wc -l)" = 1 ] && [ "$(stat -c %a "${S}/var/lib/hyperv/.kvp_pool_1")" = 644 ] || fail 'the KVP pool was not swapped in whole'
+[ "$(find "${S}/var/lib/hyperv" -mindepth 1 | wc -l)" = 1 ] && [ "$(stat -c %a "${S}/var/lib/hyperv/.kvp_pool_1")" = 644 ] &&
+  [ "$(stat -c %i "${S}/var/lib/hyperv/.kvp_pool_1")" != "${inode}" ] || fail 'the KVP pool was not swapped in whole (renamed over the old one)'
 [ -z "$(find "${S}/var/lib/cloud" -name 'user-data*' -o -name cloud-config.txt -o -name seed)" ] || fail "the seed's copies survived first boot"
 [ "$(sort "${tmp}/postgen" | tr '\n' ' ')" = 'a b ' ] || fail "post-generation: $(cat "${tmp}/postgen")"
 for c in 'make-ssl-cert generate-default-snakeoil --force-overwrite' 'loginctl enable-linger runner' 'systemctl start docker.service' \
@@ -258,14 +275,16 @@ send deliver_registration 2 "${JIT}"
 noreply 'deliver_registration with a full state file system'
 ! grep -q '^systemd-run' "${tmp}/calls" && [ ! -e "${ST}/runner.pid" ] || fail 'deliver_registration ran without its one-shot mark'
 chmod 0644 "${ST}/shots"
-agent "${tmp}/conn"
-expect refused ready null 'the same deliver_registration after the state file system recovered'
+NONCE=$(printf '%032x' 999999) send deliver_registration 2 "${JIT}"
+expect refused ready null 'deliver_registration with its old seq and a fresh nonce'
+[ "${DIAG}" = 'refused: seq not above the last accepted one' ] || fail "the seq did not persist: ${DIAG}"
 mkdir "${ST}/seq.tmp"
 send probe 3
 noreply 'a seq that cannot be saved'
 rmdir "${ST}/seq.tmp"
 agent "${tmp}/conn"
 expect refused ready null 'the same probe after the seq could be saved again'
+[ "${DIAG}" = 'refused: nonce seen before' ] || fail "the probe's nonce did not persist: ${DIAG}"
 send start_runner 4
 expect error ready null 'start_runner before any registration'
 send deliver_registration 5 'not base64!'
