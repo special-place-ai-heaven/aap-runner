@@ -35,8 +35,9 @@ BeforeAll {
         [IO.File]::WriteAllText((Join-Path $d['bin-msvc'] 'cl.exe'), 'cl')
         $w = @{
             Root = $root; Dirs = $d; VmId = $script:VmId; Setup = $true; Identity = @{ Name = 'WIN-AAP\runneradmin'; IsAdmin = $true }
-            Machine = @{ ImageOS = 'win25-vs2026'; ImageVersion = '20261007.264.1'; AGENT_TOOLSDIRECTORY = (Join-Path $root 'toolcache'); Path = $d['bin-clean'] + ';%SystemRoot%\system32' }
-            User = @{ Path = '' }; Volume = $null; Raw = @(1); Formatted = 0
+            Machine = @{ ImageOS = 'win25-vs2026'; ImageVersion = '20261007.264.1'; AGENT_TOOLSDIRECTORY = (Join-Path $root 'toolcache'); Path = $d['bin-clean'] + ';%SystemRoot%\system32'
+                PSModulePath = 'C:\Program Files\WindowsPowerShell\Modules;C:\Windows\system32\WindowsPowerShell\v1.0\Modules' }
+            User = @{ Path = '' }; Volume = $null; Disks = @(@{ Number = 1; Style = 'RAW'; Data = 0 }); Formatted = 0; FormattedNumber = $null
             Launcher = 'run'; Started = $null; Alive = $true; Worker = $false; ExitCode = 0; Psi = $null
             CacheThrows = $false; CacheSawJit = $null; CacheSawEnv = $null; CacheEnv = "AAP_ZC_STATE=D:\aap-cache\state\config.json`nCMAKE_C_COMPILER_LAUNCHER=pwsh.exe;-File;zcshim.ps1`nACTIONS_RUNNER_INPUT_EVIL=1`nlower=1`n"
             Shutdowns = 0; LauncherStarts = 0; Now = $null; Seq = 0
@@ -49,8 +50,8 @@ BeforeAll {
             Identity = { $w.Identity }.GetNewClosure()
             Env = { param($Scope) if ($Scope -eq 'Machine') { $w.Machine } else { $w.User } }.GetNewClosure()
             ScratchVolume = { $w.Volume }.GetNewClosure()
-            RawDisks = { $w.Raw }.GetNewClosure()
-            FormatScratch = { param($n) $w.Formatted++; $w.Volume = @{ FileSystem = 'NTFS'; DriveType = 'Fixed'; Boot = $false } }.GetNewClosure()
+            ScratchDisks = { $w.Disks }.GetNewClosure()
+            FormatScratch = { param($n) $w.Formatted++; $w.FormattedNumber = $n; $w.Volume = @{ FileSystem = 'NTFS'; DriveType = 'Fixed'; Boot = $false; Number = $n } }.GetNewClosure()
             StartLauncher = {
                 param($Ctx)
                 $w.LauncherStarts++
@@ -60,6 +61,7 @@ BeforeAll {
                     [IO.File]::WriteAllText((Join-Path $Ctx.StateDir 'launch.json'), '{"phase":"starting"}')
                     return
                 }
+                if ($w.Launcher -eq 'late') { $w.Now = [DateTime]::UtcNow.AddMinutes(5) }
                 if ($w.Launcher -eq 'fake-running') {
                     [IO.File]::WriteAllText((Join-Path $Ctx.StateDir 'launch.json'), '{"phase":"running","runner_pid":4242,"runner_start":99}')
                     return
@@ -171,6 +173,7 @@ Describe 'one job end to end' {
         (Send-Guest $w 'status').Reply.guest_state | Should -Be 'busy'
         $w.Worker = $false
         $w.ExitCode = 0
+        $w.Alive = $false
         Wait-AapGuestRunner -Ctx $w.Ctx -Started $w.Started
         $done = Send-Guest $w 'status'
         $done.Reply.guest_state | Should -Be 'job_done'
@@ -193,19 +196,41 @@ Describe 'one job end to end' {
     }
     It 'answers a later probe with ready without redoing the bootstrap' {
         $w = New-RunningGuest -NoDeliver
-        $w.Raw = @()
+        $w.Disks = @()
         $w.Volume = $null
         (Send-Guest $w 'probe').Reply.guest_state | Should -Be 'ready'
         $w.Formatted | Should -Be 1
     }
-    It 'merges only well-formed cache variables and drops any runner input variable the launcher inherited' -Tag 'runner-env-inputs', 'runner-env-cache' {
+    It 'drops runner inputs and Windows PowerShell''s own variables the launcher inherited, and restores the logon module path' -Tag 'runner-env-strip' {
+        $saved = $env:PSModulePath
         $env:ACTIONS_RUNNER_INPUT_URL = 'https://example.invalid'
-        try { $w = New-RunningGuest } finally { Remove-Item Env:\ACTIONS_RUNNER_INPUT_URL }
+        $env:PSExecutionPolicyPreference = 'Bypass'
+        try {
+            $env:PSModulePath = 'C:\launcher\rewritten;' + $saved
+            $w = New-RunningGuest
+        } finally { $env:PSModulePath = $saved; Remove-Item Env:\ACTIONS_RUNNER_INPUT_URL, Env:\PSExecutionPolicyPreference }
+        $w.Psi.Env.ContainsKey('ACTIONS_RUNNER_INPUT_URL') | Should -BeFalse
+        $w.Psi.Env.ContainsKey('PSEXECUTIONPOLICYPREFERENCE') | Should -BeFalse
+        $w.Psi.Env['PSMODULEPATH'] | Should -BeExactly $w.Machine.PSModulePath
+        @($w.Psi.Env.Keys | Where-Object { $_ -like 'ACTIONS_RUNNER_INPUT_*' }) | Should -Be @('ACTIONS_RUNNER_INPUT_JITCONFIG')
+        # A user module path, when the job user has one, wins as at a fresh logon.
+        $w = New-Guest
+        $w.User.PSModulePath = 'C:\Users\runneradmin\Modules'
+        $null = Send-Guest $w 'probe'; $null = Send-Guest $w 'deliver_registration' $script:JitBytes; $null = Send-Guest $w 'start_runner'
+        $w.Psi.Env['PSMODULEPATH'] | Should -BeExactly 'C:\Users\runneradmin\Modules'
+    }
+    It 'merges only the cache variables it knows, with printable values' -Tag 'runner-env-allow', 'runner-env-value' {
+        $w = New-Guest
+        $w.CacheEnv = "AAP_ZC_STATE=D:\aap-cache\state\config.json`nCMAKE_C_COMPILER_LAUNCHER=pwsh.exe;-File;zcshim.ps1`nCMAKE_CXX_COMPILER_LAUNCHER=a`tb`nPATH=C:\evil`nNODE_OPTIONS=--require=x`nACTIONS_RUNNER_INPUT_EVIL=1`nlower=1`nno equals sign`n"
+        $null = Send-Guest $w 'probe'; $null = Send-Guest $w 'deliver_registration' $script:JitBytes
+        (Send-Guest $w 'start_runner').Reply.guest_state | Should -Be 'listening'
         $w.Psi.Env['AAP_ZC_STATE'] | Should -BeExactly 'D:\aap-cache\state\config.json'
         $w.Psi.Env['CMAKE_C_COMPILER_LAUNCHER'] | Should -BeExactly 'pwsh.exe;-File;zcshim.ps1'
-        $w.Psi.Env.ContainsKey('ACTIONS_RUNNER_INPUT_URL') | Should -BeFalse
+        $w.Psi.Env.ContainsKey('CMAKE_CXX_COMPILER_LAUNCHER') | Should -BeFalse
+        $w.Psi.Env['PATH'] | Should -Not -Be 'C:\evil'
+        $w.Psi.Env.ContainsKey('NODE_OPTIONS') | Should -BeFalse
         $w.Psi.Env.ContainsKey('ACTIONS_RUNNER_INPUT_EVIL') | Should -BeFalse
-        @($w.Psi.Env.Keys | Where-Object { $_ -like 'ACTIONS_RUNNER_INPUT_*' }) | Should -Be @('ACTIONS_RUNNER_INPUT_JITCONFIG')
+        $w.Psi.Env.ContainsKey('LOWER') | Should -BeFalse
     }
     It 'starts the runner without a cache when the cache cannot start' {
         $w = New-Guest
@@ -233,6 +258,34 @@ Describe 'one job end to end' {
         $s.Kind | Should -Be 'error'
         $s.Reply.diag | Should -Match 'not started within 2 s'
     }
+    It 'leaves a cancel mark whenever start_runner does not end with a listening runner' -Tag 'start-cancel' {
+        $w = New-RunningGuest -NoStart
+        $w.Launcher = 'stuck'
+        (Send-Guest $w 'start_runner').Kind | Should -Be 'error'
+        Test-Path (Join-Path $w.Ctx.StateDir 'cancel') | Should -BeTrue
+        $ok = New-RunningGuest
+        Test-Path (Join-Path $ok.Ctx.StateDir 'cancel') | Should -BeFalse
+    }
+    It 'starts no runner once start_runner gave up: past its deadline, after its cancel mark, or never asked' -Tag 'launch-cancel' {
+        $w = New-RunningGuest -NoStart
+        $w.Launcher = 'late'
+        $s = Send-Guest $w 'start_runner'
+        $s.Kind | Should -Be 'error'
+        $w.Psi | Should -BeNullOrEmpty
+        Test-Path (Join-Path (Get-Root $w) '.aap-jit') | Should -BeFalse
+        $mod = Get-Module AapGuestAgent
+        foreach ($case in 'cancel', 'unasked') {
+            $w = New-RunningGuest -NoStart
+            if ($case -eq 'cancel') {
+                [IO.File]::WriteAllText((Join-Path $w.Ctx.StateDir 'launch.json'), ('{"phase":"requested","deadline":' + [DateTime]::UtcNow.AddMinutes(5).Ticks + '}'))
+                [IO.File]::WriteAllText((Join-Path $w.Ctx.StateDir 'cancel'), 'cancelled')
+            }
+            & $mod { param($c) Start-AapGuestRunner -Ctx $c } $w.Ctx | Should -BeNullOrEmpty
+            $w.Psi | Should -BeNullOrEmpty
+            [IO.File]::ReadAllText((Join-Path $w.Ctx.StateDir 'launch.json')) | Should -Match 'cancelled'
+            Test-Path (Join-Path (Get-Root $w) '.aap-jit') | Should -BeFalse
+        }
+    }
     It 'never answers listening while the JIT config is still on disk after the start' -Tag 'start-jit-gone', 'residue-jit' {
         $w = New-RunningGuest -NoStart
         $w.Launcher = 'fake-running'
@@ -248,6 +301,17 @@ Describe 'one job end to end' {
         $s.Kind | Should -Be 'error'
         $s.Reply.diag | Should -Match 'bootstrap file'
         $w.Psi | Should -BeNullOrEmpty
+    }
+    It 'does not believe an exit record while the recorded runner still runs' -Tag 'exited-alive' {
+        $w = New-RunningGuest
+        [IO.File]::WriteAllText((Join-Path $w.Ctx.StateDir 'launch.json'), '{"phase":"exited","runner_pid":4242,"runner_start":99,"exit_code":0}')
+        $st = Send-Guest $w 'status'
+        $st.Reply.guest_state | Should -Be 'listening'
+        $st.Reply.runner_exit_code | Should -BeNullOrEmpty
+        $w.Alive = $false
+        $done = Send-Guest $w 'status'
+        $done.Reply.guest_state | Should -Be 'job_done'
+        $done.Reply.runner_exit_code | Should -Be 0
     }
     It 'reports a runner that is not the recorded process as done, never as listening' -Tag 'runner-identity' {
         $w = New-RunningGuest
@@ -347,24 +411,87 @@ Describe 'bootstrap' {
         $w = New-Guest
         (Send-Guest $w 'probe').Reply.guest_state | Should -Be 'ready'
     }
-    It 'formats exactly one raw disk as D:, and refuses none or several' -Tag 'scratch-one' {
-        foreach ($raw in @(@(), @(1, 2))) {
+    It 'makes D: of exactly one disk besides the boot disk, and refuses none or several' -Tag 'scratch-one' {
+        foreach ($disks in @(@(), @(@{ Number = 1; Style = 'RAW'; Data = 0 }, @{ Number = 2; Style = 'RAW'; Data = 0 }), @(@{ Number = 1; Style = 'GPT'; Data = 2 }))) {
             $w = New-Guest
-            $w.Raw = $raw
+            $w.Disks = $disks
             $p = Send-Guest $w 'probe'
             $p.Kind | Should -Be 'error'
-            $p.Reply.diag | Should -Match 'raw scratch disk'
+            $p.Reply.diag | Should -Match 'one scratch disk'
             $w.Formatted | Should -Be 0
         }
+        # Initialized by a probe that was killed before it made the partition: picked up again.
+        $w = New-Guest
+        $w.Disks = @(@{ Number = 4; Style = 'GPT'; Data = 0 })
+        (Send-Guest $w 'probe').Reply.guest_state | Should -Be 'ready'
+        $w.FormattedNumber | Should -Be 4
+    }
+    It 'formats a D: left unformatted by a killed probe, and leaves the NTFS D: P10 made alone' -Tag 'scratch-resume' {
+        $w = New-Guest
+        $w.Volume = @{ FileSystem = ''; DriveType = 'Fixed'; Boot = $false; Number = 3 }
+        (Send-Guest $w 'probe').Reply.guest_state | Should -Be 'ready'
+        $w.FormattedNumber | Should -Be 3
+        $w = New-Guest
+        $w.Volume = @{ FileSystem = 'NTFS'; DriveType = 'Fixed'; Boot = $false; Number = 1 }
+        (Send-Guest $w 'probe').Reply.guest_state | Should -Be 'ready'
+        $w.Formatted | Should -Be 0
     }
     It 'refuses a D: that is not an NTFS fixed volume of a data disk' -Tag 'scratch-volume' {
-        foreach ($v in @{ FileSystem = 'FAT32'; DriveType = 'Fixed'; Boot = $false }, @{ FileSystem = 'NTFS'; DriveType = 'Removable'; Boot = $false }, @{ FileSystem = 'NTFS'; DriveType = 'Fixed'; Boot = $true }) {
+        foreach ($v in @{ FileSystem = 'FAT32'; DriveType = 'Fixed'; Boot = $false; Number = 1 }, @{ FileSystem = 'NTFS'; DriveType = 'Removable'; Boot = $false; Number = 1 }, @{ FileSystem = 'NTFS'; DriveType = 'Fixed'; Boot = $true; Number = 0 }, @{ FileSystem = ''; DriveType = 'Fixed'; Boot = $true; Number = 0 }) {
             $w = New-Guest
             $w.Volume = $v
             $p = Send-Guest $w 'probe'
             $p.Kind | Should -Be 'error'
             $p.Reply.diag | Should -Match 'scratch volume'
         }
+    }
+    It 'resumes a runner copy a killed probe left half-done' {
+        $w = New-Guest
+        $part = Join-Path $w.Ctx.Scratch 'actions-runner.partial'
+        [void][IO.Directory]::CreateDirectory((Join-Path $part 'bin'))
+        [IO.File]::WriteAllText((Join-Path $part 'config.cmd'), 'copied before')
+        [IO.File]::WriteAllText((Join-Path $part 'bin\Runner.Listener.exe.part'), 'cut short')
+        (Send-Guest $w 'probe').Reply.guest_state | Should -Be 'ready'
+        [IO.File]::ReadAllText((Join-Path (Get-Root $w) 'config.cmd')) | Should -BeExactly 'copied before'
+        [IO.File]::ReadAllText((Join-Path (Get-Root $w) 'bin\Runner.Listener.exe')) | Should -BeExactly 'listener'
+        @(Get-ChildItem -LiteralPath (Get-Root $w) -Recurse -Filter '*.part') | Should -HaveCount 0
+        Test-Path $part | Should -BeFalse
+    }
+    It 'answers booting while an earlier probe still runs the bootstrap' -Tag 'bootstrap-lock' {
+        $w = New-Guest
+        $w.Setup = $false
+        $null = Send-Guest $w 'probe'
+        $w.Setup = $true
+        $held = [IO.File]::Open((Join-Path $w.Ctx.StateDir 'bootstrap.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
+        try {
+            $p = Send-Guest $w 'probe'
+            $p.Kind | Should -Be 'ok'
+            $p.Reply.guest_state | Should -Be 'booting'
+            $p.Reply.diag | Should -Match 'bootstrap in progress'
+            $w.Formatted | Should -Be 0
+            Test-Path (Join-Path $w.Dirs['win\Panther'] 'unattend.xml') | Should -BeTrue
+        } finally { $held.Dispose() }
+        (Send-Guest $w 'probe').Reply.guest_state | Should -Be 'ready'
+    }
+    It 'answers without accepting anything while another agent holds the state' {
+        $w = New-Guest
+        $null = Send-Guest $w 'probe'
+        $before = [IO.File]::ReadAllText((Join-Path $w.Ctx.StateDir 'state.json'))
+        $held = [IO.File]::Open((Join-Path $w.Ctx.StateDir 'state.json'), 'Open', 'ReadWrite', 'None')
+        try {
+            $p = Send-Guest $w 'probe'
+            $p.Kind | Should -Be 'ok'
+            $p.Reply.guest_state | Should -Be 'booting'
+            $p.Reply.diag | Should -Match 'agent busy'
+            (Send-Guest $w 'status').Kind | Should -Be 'error'
+        } finally { $held.Dispose() }
+        [IO.File]::ReadAllText((Join-Path $w.Ctx.StateDir 'state.json')) | Should -BeExactly $before
+    }
+    It 'reads past a PATH entry on a drive the guest does not have' {
+        $free = @([char[]](90..68) | Where-Object { -not (Test-Path -LiteralPath "${_}:\") })[0]
+        $w = New-Guest
+        $w.Machine.Path = "${free}:\no\such\dir;" + $w.Machine.Path
+        (Send-Guest $w 'probe').Reply.guest_state | Should -Be 'ready'
     }
     It 'refuses an image without the actions-runner overlay' -Tag 'runner-overlay' {
         $w = New-Guest
@@ -393,7 +520,17 @@ Describe 'the wire' {
         $x.Code | Should -Be 2
         $x.Text | Should -BeNullOrEmpty
     }
-    It 'writes nothing for framing it cannot read' -Tag 'line-bytes' {
+    It 'stops reading at the first byte that is not printable, or at byte 1025 of a line' -Tag 'line-bytes' {
+        $w = New-Guest
+        foreach ($case in @(@{ Bytes = ([byte[]](@(65) * 20 + 9 + @(65) * 100 + 10)); Stop = 21 }, @{ Bytes = ([byte[]](@(65) * 2000 + 10)); Stop = 1025 }, @{ Bytes = ([byte[]](@(65) * 1024 + 10)); Stop = 1025 })) {
+            $in = New-Object IO.MemoryStream (, $case.Bytes)
+            $out = New-Object IO.MemoryStream
+            Invoke-AapGuestAgent -Ctx $w.Ctx -In $in -Out $out | Should -Be 2
+            $in.Position | Should -Be $case.Stop
+            $out.Length | Should -Be 0
+        }
+    }
+    It 'writes nothing for framing it cannot read' {
         $w = New-Guest
         $ok = ConvertTo-Json -Compress -InputObject ([ordered]@{ schema = 1; kind = 'host_cmd'; vm_id = $script:VmId; reservation_id = 'r-00000000000000a1'; lease_generation = 1; seq = 1
                 nonce = (New-Hex 16); cmd = 'probe'; payload_bytes = 0; expires_at = (Format-Time ([DateTime]::UtcNow.AddSeconds(60)))
@@ -472,6 +609,21 @@ Describe 'refusals (guest-transport.md, Envelope)' {
         (Send-Guest $w 'probe' -Over @{ lease_generation = 2 }).Kind | Should -Be 'refused'
         (Send-Guest $w 'probe').Kind | Should -Be 'ok'
     }
+    It 'refuses a reservation_id other than the first of the boot' -Tag 'refuse-reservation' {
+        $w = New-Guest
+        (Send-Guest $w 'probe').Kind | Should -Be 'ok'
+        $x = Send-Guest $w 'probe' -Over @{ reservation_id = 'r-00000000000000b2' }
+        $x.Kind | Should -Be 'refused'
+        $x.Reply.diag | Should -Match 'reservation_id'
+        (Get-State $w).reservation_id | Should -BeExactly 'r-00000000000000a1'
+    }
+    It 'refuses an expiry further ahead than the contract allows (120 s, plus 5 s of slack)' -Tag 'refuse-expiry-ahead' {
+        $w = New-Guest
+        $x = Send-Guest $w 'probe' -Over @{ expires_at = (Format-Time ([DateTime]::UtcNow.AddSeconds(600))) }
+        $x.Kind | Should -Be 'refused'
+        $x.Reply.diag | Should -Match 'too far ahead'
+        (Send-Guest $w 'probe' -Over @{ expires_at = (Format-Time ([DateTime]::UtcNow.AddSeconds(118))) }).Kind | Should -Be 'ok'
+    }
     It 'refuses a seq equal to or below the last accepted one, and accepts a gap' -Tag 'refuse-seq' {
         $w = New-Guest
         (Send-Guest $w 'probe' -Over @{ seq = 5 }).Kind | Should -Be 'ok'
@@ -491,7 +643,7 @@ Describe 'refusals (guest-transport.md, Envelope)' {
     }
     It 'refuses once the nonce store is full' -Tag 'refuse-nonce-full' {
         $w = New-Guest
-        $doc = [ordered]@{ schema = 1; lease_generation = 1; seq = 1; nonces = @(1..8192 | ForEach-Object { '{0:x32}' -f $_ }); shots = @(); phase = 'ready'; detail = '' }
+        $doc = [ordered]@{ schema = 1; reservation_id = 'r-00000000000000a1'; lease_generation = 1; seq = 1; nonces = @(1..8192 | ForEach-Object { '{0:x32}' -f $_ }); shots = @(); phase = 'ready'; detail = '' }
         [IO.File]::WriteAllText((Join-Path $w.Ctx.StateDir 'state.json'), (ConvertTo-Json -InputObject $doc -Compress))
         $x = Send-Guest $w 'probe' -Over @{ seq = 2 }
         $x.Kind | Should -Be 'refused'
@@ -517,7 +669,7 @@ Describe 'refusals (guest-transport.md, Envelope)' {
     }
     It 'answers an error and accepts nothing while its state file is unreadable' -Tag 'state-bad', 'state-shape' {
         $w = New-Guest
-        foreach ($bad in 'not json', '{"schema":1,"lease_generation":0,"seq":0,"nonces":[],"shots":[],"phase":"bogus","detail":""}', '{"schema":1,"lease_generation":0,"seq":"0","nonces":[],"shots":[],"phase":"booting","detail":""}') {
+        foreach ($bad in 'not json', '{"schema":1,"reservation_id":"","lease_generation":0,"seq":0,"nonces":[],"shots":[],"phase":"bogus","detail":""}', '{"schema":1,"reservation_id":"","lease_generation":0,"seq":"0","nonces":[],"shots":[],"phase":"booting","detail":""}', '{"schema":1,"reservation_id":7,"lease_generation":0,"seq":0,"nonces":[],"shots":[],"phase":"booting","detail":""}') {
             [IO.File]::WriteAllText((Join-Path $w.Ctx.StateDir 'state.json'), $bad)
             $x = Send-Guest $w 'probe'
             $x.Kind | Should -Be 'error'
@@ -525,9 +677,26 @@ Describe 'refusals (guest-transport.md, Envelope)' {
             [IO.File]::ReadAllText((Join-Path $w.Ctx.StateDir 'state.json')) | Should -BeExactly $bad
         }
     }
+    It 'answers an error for an empty state file, which only a torn save leaves' -Tag 'state-shape' {
+        $w = New-Guest
+        $null = Send-Guest $w 'probe'
+        [IO.File]::WriteAllText((Join-Path $w.Ctx.StateDir 'state.json'), '')
+        $x = Send-Guest $w 'probe'
+        $x.Kind | Should -Be 'error'
+        $x.Reply.diag | Should -Match 'state unreadable'
+    }
+    It 'saves over a longer state without leaving its tail' {
+        $w = New-Guest
+        $doc = [ordered]@{ schema = 1; reservation_id = ''; lease_generation = 0; seq = 0; nonces = @(); shots = @(); phase = 'booting'; detail = ('d' * 3000) }
+        [IO.File]::WriteAllText((Join-Path $w.Ctx.StateDir 'state.json'), (ConvertTo-Json -InputObject $doc -Compress))
+        (Send-Guest $w 'probe').Kind | Should -Be 'ok'
+        $t = [IO.File]::ReadAllText((Join-Path $w.Ctx.StateDir 'state.json'))
+        $t.Length | Should -BeLessThan 3000
+        (ConvertFrom-Json $t).seq | Should -Be 1
+    }
     It 'answers an error for an oversized state file' -Tag 'state-size' {
         $w = New-Guest
-        $doc = '{"schema":1,"lease_generation":0,"seq":0,"nonces":[],"shots":[],"phase":"booting","detail":""}' + (' ' * 600000)
+        $doc = '{"schema":1,"reservation_id":"","lease_generation":0,"seq":0,"nonces":[],"shots":[],"phase":"booting","detail":""}' + (' ' * 600000)
         [IO.File]::WriteAllText((Join-Path $w.Ctx.StateDir 'state.json'), $doc)
         (Send-Guest $w 'probe').Kind | Should -Be 'error'
     }

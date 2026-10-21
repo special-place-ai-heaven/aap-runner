@@ -20,7 +20,10 @@ $script:OneShot = @('deliver_registration', 'start_runner', 'shutdown')
 $script:EnvelopeKeys = @('schema', 'kind', 'vm_id', 'reservation_id', 'lease_generation', 'seq', 'nonce', 'cmd', 'payload_bytes', 'expires_at')
 $script:GuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 $script:ClockSlackSeconds = 5     # the guest clock follows the host through Hyper-V time sync
+$script:ExpiryMaxSeconds = 120    # guest-transport.md: expires_at at most 120 s ahead
 $script:NonceMax = 8192           # 68 h of 30 s heartbeats; a full store refuses (fail closed)
+# The only variables the cache may hand the runner (guests/cache/windows/AapZcCache.psm1, Initialize-AapZcJob).
+$script:CacheEnvNames = @('AAP_ZC_STATE', 'CMAKE_C_COMPILER_LAUNCHER', 'CMAKE_CXX_COMPILER_LAUNCHER')
 $script:StateMax = 524288
 $script:RecordMax = 65536
 # The host refuses a token- or key-shaped diag (AapWinBackend.psm1, SecretValue); guest-authored text is redacted first.
@@ -53,17 +56,28 @@ function New-AapGuestContext {
                 $v = Get-Volume -DriveLetter D -ErrorAction SilentlyContinue
                 if (-not $v) { return $null }
                 $d = Get-Partition -DriveLetter D | Get-Disk
-                @{ FileSystem = [string]$v.FileSystem; DriveType = [string]$v.DriveType; Boot = [bool]($d.IsBoot -or $d.IsSystem) }
+                @{ FileSystem = [string]$v.FileSystem; DriveType = [string]$v.DriveType; Boot = [bool]($d.IsBoot -or $d.IsSystem); Number = [int]$d.Number }
             }
-            RawDisks = { @(Get-Disk | Where-Object { [string]$_.PartitionStyle -eq 'RAW' } | ForEach-Object { [int]$_.Number }) }
+            # Every disk but the boot and system disk, with its partition style and data partitions (MSR not counted).
+            ScratchDisks = {
+                @(Get-Disk | Where-Object { -not $_.IsBoot -and -not $_.IsSystem } | ForEach-Object {
+                        @{ Number = [int]$_.Number; Style = [string]$_.PartitionStyle; Data = @(Get-Partition -DiskNumber $_.Number -ErrorAction SilentlyContinue | Where-Object { [string]$_.Type -ne 'Reserved' }).Count }
+                    })
+            }
+            # Each step only if not done yet, so a probe killed half-way is finished by the next: initialize a RAW disk,
+            # make or letter its one data partition D:, format it unless it is NTFS (P10 already formats it offline).
             FormatScratch = {
                 param([int]$Number)
-                Initialize-Disk -Number $Number -PartitionStyle GPT
-                $p = New-Partition -DiskNumber $Number -UseMaximumSize -DriveLetter D
-                $null = Format-Volume -Partition $p -FileSystem NTFS -NewFileSystemLabel 'Temporary Storage' -Confirm:$false
+                if ([string](Get-Disk -Number $Number).PartitionStyle -eq 'RAW') { Initialize-Disk -Number $Number -PartitionStyle GPT }
+                $p = @(Get-Partition -DiskNumber $Number -ErrorAction SilentlyContinue | Where-Object { [string]$_.Type -ne 'Reserved' })
+                if (-not $p.Count) { $p = @(New-Partition -DiskNumber $Number -UseMaximumSize -DriveLetter D) }
+                elseif ([string]$p[0].DriveLetter -ne 'D') { Set-Partition -InputObject $p[0] -NewDriveLetter D; $p = @(Get-Partition -DriveLetter D) }
+                if ([string](Get-Volume -Partition $p[0]).FileSystem -ne 'NTFS') { $null = Format-Volume -Partition $p[0] -FileSystem NTFS -NewFileSystemLabel 'Temporary Storage' -Confirm:$false }
             }
             # A task of the job user (S4U: no password stored) at highest privileges and normal priority (a task's default
             # 7 is below normal): the launcher gets a fresh logon environment and lives outside the PowerShell Direct session.
+            # What Windows PowerShell adds to its own environment (the execution policy preference, its PSModulePath) is
+            # taken out again before Runner.Listener starts (Start-AapGuestRunner).
             StartLauncher = {
                 param($Ctx)
                 $ps = Join-Path $Ctx.SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -157,10 +171,13 @@ function Read-AapGuestLine([IO.Stream]$Stream) {
     $b = New-Object Collections.Generic.List[byte]
     $c = $Stream.ReadByte()
     if ($c -eq 0xEF) {
-        if ($Stream.ReadByte() -ne 0xBB -or $Stream.ReadByte() -ne 0xBF) { return $null }   # check:bom
+        $b1 = $Stream.ReadByte(); $b2 = $Stream.ReadByte()
+        if ($b1 -ne 0xBB -or $b2 -ne 0xBF) { return $null }   # check:bom
         $c = $Stream.ReadByte()
     }
     while ($c -ne 10) {
+        if ($c -lt 0) { return $null }
+        # Reading stops at the first byte that is not printable or at byte 1025 of the line.
         if ($c -lt 0x20 -or $c -gt 0x7e -or $b.Count -ge $script:LineMax) { return $null }   # check:line-bytes
         $b.Add([byte]$c)
         $c = $Stream.ReadByte()
@@ -200,22 +217,32 @@ function Format-AapGuestReply($E, [string]$Status, [string]$State, $ExitCode, [s
     $E.vm_id, $E.reservation_id, $E.lease_generation, $E.seq, $E.nonce, $Status, $State, $exit, (Get-AapGuestText $Diag)
 }
 
-# ---- the agent's state: one Administrators-only file, held open (no sharing) for the whole command ----
+# ---- the agent's state: one Administrators-only file, held open (no sharing) while a command is accepted ----
 
+function New-AapGuestStateDoc { [ordered]@{ schema = 1; reservation_id = ''; lease_generation = 0; seq = 0; nonces = @(); shots = @(); phase = 'booting'; detail = '' } }
+
+# $null when another agent process holds the file for 2 s (the caller answers without accepting anything).
 function Open-AapGuestState($Ctx) {
     if (-not [IO.Directory]::Exists($Ctx.StateDir)) {
         [void][IO.Directory]::CreateDirectory($Ctx.StateDir)
         Set-AapGuestAcl $Ctx.StateDir -WithSelf
     }
     $path = Join-Path $Ctx.StateDir 'state.json'
-    $fs = $null
-    for ($i = 0; $null -eq $fs; $i++) {
-        try { $fs = [IO.File]::Open($path, 'OpenOrCreate', 'ReadWrite', 'None') } catch { if ($i -ge 20) { throw }; Start-Sleep -Milliseconds 100 }
+    if (-not [IO.File]::Exists($path)) {
+        # Born whole (written aside, then moved in), so an empty or cut file always means a torn save, never a new boot.
+        $tmp = $path + '.' + [guid]::NewGuid().ToString('n')
+        [IO.File]::WriteAllText($tmp, (ConvertTo-Json -InputObject (New-AapGuestStateDoc) -Compress), $script:Ascii)
+        try { [IO.File]::Move($tmp, $path) } catch { [IO.File]::Delete($tmp) }
     }
-    $doc = [ordered]@{ schema = 1; lease_generation = 0; seq = 0; nonces = @(); shots = @(); phase = 'booting'; detail = '' }
+    $fs = $null
+    for ($i = 0; $null -eq $fs -and $i -le 20; $i++) {
+        try { $fs = [IO.File]::Open($path, 'Open', 'ReadWrite', 'None') } catch [IO.IOException] { Start-Sleep -Milliseconds 100 }
+    }
+    if ($null -eq $fs) { return $null }
+    $doc = New-AapGuestStateDoc
     $bad = $false
     if ($fs.Length -gt $script:StateMax) { $bad = $true }   # check:state-size
-    elseif ($fs.Length -gt 0) {
+    else {
         $buf = New-Object byte[] $fs.Length
         $n = 0
         while ($n -lt $buf.Length) { $k = $fs.Read($buf, $n, $buf.Length - $n); if ($k -le 0) { break }; $n += $k }
@@ -223,28 +250,36 @@ function Open-AapGuestState($Ctx) {
             $j = ConvertFrom-Json ($script:Ascii.GetString($buf, 0, $n))
             foreach ($k in @($doc.Keys)) { $doc[$k] = Get-AapGuestProp $j $k }
             $doc.nonces = @($doc.nonces); $doc.shots = @($doc.shots)
-            if ($doc.schema -ne 1 -or -not ($doc.seq -is [int] -or $doc.seq -is [long]) -or -not ($doc.lease_generation -is [int] -or $doc.lease_generation -is [long]) -or   # check:state-shape
+            if ($doc.schema -ne 1 -or -not ($doc.reservation_id -is [string]) -or -not ($doc.seq -is [int] -or $doc.seq -is [long]) -or   # check:state-shape
+                -not ($doc.lease_generation -is [int] -or $doc.lease_generation -is [long]) -or
                 @('booting', 'ready', 'registered', 'started', 'failed', 'shutting_down') -cnotcontains $doc.phase -or
                 @($doc.nonces + $doc.shots | Where-Object { -not ($_ -is [string]) }).Count) { $bad = $true }
         } catch { $bad = $true }
     }
     @{ Stream = $fs; Doc = $doc; Bad = $bad }
 }
+# Writes over the old bytes, then cuts the file to the new length: a save that dies half-way leaves a file that does not
+# parse (Bad), never an empty one that would read as a fresh boot.
 function Save-AapGuestState($S) {
     $b = $script:Ascii.GetBytes((ConvertTo-Json -InputObject $S.Doc -Compress))
-    $S.Stream.SetLength(0)
+    $S.Stream.Position = 0
     $S.Stream.Write($b, 0, $b.Length)
+    $S.Stream.SetLength($b.Length)
     $S.Stream.Flush($true)
 }
 
-# Why a well-formed command is refused (guest-transport.md, Envelope), or $null.
+# Why a well-formed command is refused (guest-transport.md, Envelope), or $null. Who may send at all is the transport's
+# boundary (the per-clone PowerShell Direct credential); these rules keep one sender's commands in order.
 function Get-AapGuestRefusal($Ctx, $Doc, $E) {
+    if ($Doc.reservation_id -cne '' -and $Doc.reservation_id -cne $E.reservation_id) { return 'reservation_id is not the first one of this boot' }   # check:refuse-reservation
     if ($Doc.lease_generation -ne 0 -and $Doc.lease_generation -ne $E.lease_generation) { return 'lease_generation is not the first one of this boot' }   # check:refuse-generation
     if ($E.seq -le $Doc.seq) { return 'seq is not greater than the last accepted one' }   # check:refuse-seq
     if (@($Doc.nonces) -ccontains $E.nonce) { return 'nonce already seen' }   # check:refuse-nonce
     if (@($Doc.nonces).Count -ge $script:NonceMax) { return 'nonce store full' }   # check:refuse-nonce-full
     if ($script:OneShot -ccontains $E.cmd -and @($Doc.shots) -ccontains $E.cmd) { return "$($E.cmd) already ran this boot" }   # check:refuse-oneshot
-    if ($E.Expires.AddSeconds($script:ClockSlackSeconds) -lt (& $Ctx.Ops.Now)) { return 'expired' }   # check:refuse-expired
+    $now = & $Ctx.Ops.Now
+    if ($E.Expires.AddSeconds($script:ClockSlackSeconds) -lt $now) { return 'expired' }   # check:refuse-expired
+    if ($E.Expires -gt $now.AddSeconds($script:ExpiryMaxSeconds + $script:ClockSlackSeconds)) { return 'expires_at too far ahead' }   # check:refuse-expiry-ahead
     if (($E.cmd -ceq 'deliver_registration') -ne ($E.payload_bytes -gt 0)) { return 'a payload comes only with deliver_registration' }   # check:refuse-payload
     $null
 }
@@ -259,8 +294,10 @@ function Get-AapGuestBootstrapFiles($Ctx) {
     if ([IO.Directory]::Exists($panther)) { $walk.Push($panther) }
     while ($walk.Count) {
         foreach ($p in [IO.Directory]::GetFileSystemEntries($walk.Pop())) {
-            # A link is reported as a file to delete (the entry), never entered.
-            if ([IO.Directory]::Exists($p) -and -not (Test-AapGuestLink $p)) { $walk.Push($p) }   # check:walk-link
+            $enter = [IO.Directory]::Exists($p)
+            # A link is an entry (deleted as such when its name matches), never entered.
+            if ($enter -and (Test-AapGuestLink $p)) { $enter = $false }   # check:walk-link
+            if ($enter) { $walk.Push($p) }
             elseif ((Split-Path -Leaf $p) -like '*unattend*') { $found.Add($p) }
         }
     }
@@ -291,52 +328,74 @@ function Get-AapGuestEnvProblems($Ctx) {
     if ($tc -and -not [IO.Directory]::Exists($tc)) { $p.Add('tool cache folder missing') }   # check:env-toolcache
     foreach ($d in @(([string]$m['Path'] + ';' + [string]$u['Path']).Split(';') | Where-Object { $_ })) {
         $x = [Environment]::ExpandEnvironmentVariables($d)
-        if ([IO.File]::Exists((Join-Path $x 'cl.exe'))) { $p.Add("cl.exe on the default PATH: $x") }   # check:env-compiler
+        # A string join, not Join-Path: a PATH entry may name a drive this guest does not have.
+        $cl = $(try { [IO.Path]::Combine($x, 'cl.exe') } catch { $null })
+        if ($cl -and [IO.File]::Exists($cl)) { $p.Add("cl.exe on the default PATH: $x") }   # check:env-compiler
     }
     $p.ToArray()
 }
 
-# D: is the scratch disk P10 attaches empty: one RAW disk, initialized and formatted here once.
+# D: is the scratch disk. P10 creates it new for each reservation and formats it NTFS offline (no drive letter), so
+# normally Windows has mounted it as D: and nothing is done here; that D: is trusted only because the disk is new per
+# reservation. Otherwise exactly one disk besides the boot disk, with at most one data partition, is (re)made D: and
+# formatted unless already NTFS; every step resumes where a killed probe stopped.
 function Initialize-AapGuestScratch($Ctx) {
     $v = & $Ctx.Ops.ScratchVolume
+    if ($null -ne $v -and -not $v.Boot -and @('', 'RAW') -ccontains $v.FileSystem) { & $Ctx.Ops.FormatScratch $v.Number; $v = & $Ctx.Ops.ScratchVolume }   # check:scratch-resume
     if ($null -eq $v) {
-        $raw = @(& $Ctx.Ops.RawDisks)
-        if ($raw.Count -ne 1) { return "expected one raw scratch disk, found $($raw.Count)" }   # check:scratch-one
-        & $Ctx.Ops.FormatScratch $raw[0]
+        $c = @(& $Ctx.Ops.ScratchDisks | Where-Object { $_.Style -ceq 'RAW' -or $_.Data -le 1 })
+        if ($c.Count -ne 1) { return "expected one scratch disk, found $($c.Count)" }   # check:scratch-one
+        & $Ctx.Ops.FormatScratch $c[0].Number
         $v = & $Ctx.Ops.ScratchVolume
     }
     if ($null -eq $v -or $v.FileSystem -cne 'NTFS' -or $v.DriveType -cne 'Fixed' -or $v.Boot) { return 'D: is not an NTFS scratch volume' }   # check:scratch-volume
     $null
 }
 
-# Returns @{ State = booting|ready|failed; Detail }. Every step is idempotent: a probe that timed out half-way is
-# finished by the next one.
+# Copies the overlay file by file; a file appears under its own name only once complete, so a copy cut short by a
+# killed probe resumes with the next file instead of starting over.
+function Copy-AapGuestTree([string]$From, [string]$To) {
+    [void][IO.Directory]::CreateDirectory($To)
+    foreach ($d in [IO.Directory]::GetDirectories($From)) { Copy-AapGuestTree $d (Join-Path $To (Split-Path -Leaf $d)) }
+    foreach ($f in [IO.Directory]::GetFiles($From)) {
+        $t = Join-Path $To (Split-Path -Leaf $f)
+        if ([IO.File]::Exists($t)) { continue }
+        [IO.File]::Copy($f, $t + '.part', $true)
+        [IO.File]::Move($t + '.part', $t)
+    }
+}
+
+# Returns @{ State = booting|ready|failed; Detail }. Runs outside the state lock, under its own (bootstrap.lock): a probe
+# that finds a bootstrap still running (an earlier probe the host gave up on) answers booting. Every step is idempotent.
 function Invoke-AapGuestBootstrap($Ctx) {
     if (-not (& $Ctx.Ops.SetupComplete)) { return @{ State = 'booting'; Detail = 'windows setup still running' } }   # check:setup-complete
-    $id = & $Ctx.Ops.Identity
-    if (-not $id.IsAdmin -or [string]$id.Name -notmatch ('\\' + [regex]::Escape($Ctx.JobUser) + '\z')) { return @{ State = 'failed'; Detail = 'the agent does not run as the job user' } }   # check:identity
-    foreach ($f in Get-AapGuestBootstrapFiles $Ctx) { if ([IO.Directory]::Exists($f)) { [IO.Directory]::Delete($f) } else { [IO.File]::Delete($f) } }
-    $envp = @(Get-AapGuestEnvProblems $Ctx)
-    if ($envp.Count) { return @{ State = 'failed'; Detail = $envp[0] } }   # check:env
-    $s = Initialize-AapGuestScratch $Ctx
-    if ($s) { return @{ State = 'failed'; Detail = $s } }
-    # The runner works on the scratch disk (its root, _work and _diag), never on the clone disk the host caps.
-    $root = Get-AapGuestRunnerRoot $Ctx
-    if (-not [IO.File]::Exists((Get-AapGuestListener $Ctx))) {
-        $src = Join-Path $Ctx.InstallDir 'runner'
-        if (-not [IO.File]::Exists((Join-Path $src 'bin\Runner.Listener.exe'))) { return @{ State = 'failed'; Detail = 'actions-runner overlay missing' } }   # check:runner-overlay
-        $part = $root + '.partial'
-        if ([IO.Directory]::Exists($part)) { [IO.Directory]::Delete($part, $true) }
-        [void][IO.Directory]::CreateDirectory($part)
-        Set-AapGuestAcl $part -WithSelf
-        Copy-Item -Path (Join-Path $src '*') -Destination $part -Recurse -Force
-        if ([IO.Directory]::Exists($root)) { [IO.Directory]::Delete($root, $true) }
-        [IO.Directory]::Move($part, $root)
-    }
-    # The cache job root: SYSTEM, Administrators and the job user only (guests/cache/INTEGRATION.md, P14 2).
-    $cache = Get-AapGuestCacheRoot $Ctx
-    if (-not [IO.Directory]::Exists($cache)) { [void][IO.Directory]::CreateDirectory($cache); Set-AapGuestAcl $cache -WithSelf }
-    @{ State = 'ready'; Detail = 'bootstrap material removed; scratch, runner and cache root ready' }
+    $lock = $null
+    try { $lock = [IO.File]::Open((Join-Path $Ctx.StateDir 'bootstrap.lock'), 'OpenOrCreate', 'ReadWrite', 'None') } catch [IO.IOException] { $lock = $null }
+    if ($null -eq $lock) { return @{ State = 'booting'; Detail = 'bootstrap in progress' } }   # check:bootstrap-lock
+    try {
+        $id = & $Ctx.Ops.Identity
+        if (-not $id.IsAdmin -or [string]$id.Name -notmatch ('\\' + [regex]::Escape($Ctx.JobUser) + '\z')) { return @{ State = 'failed'; Detail = 'the agent does not run as the job user' } }   # check:identity
+        foreach ($f in Get-AapGuestBootstrapFiles $Ctx) { if ([IO.Directory]::Exists($f)) { [IO.Directory]::Delete($f) } else { [IO.File]::Delete($f) } }
+        $envp = @(Get-AapGuestEnvProblems $Ctx)
+        if ($envp.Count) { return @{ State = 'failed'; Detail = $envp[0] } }   # check:env
+        $s = Initialize-AapGuestScratch $Ctx
+        if ($s) { return @{ State = 'failed'; Detail = $s } }
+        # The runner works on the scratch disk (its root, _work and _diag), never on the clone disk the host caps.
+        $root = Get-AapGuestRunnerRoot $Ctx
+        if (-not [IO.File]::Exists((Get-AapGuestListener $Ctx))) {
+            $src = Join-Path $Ctx.InstallDir 'runner'
+            if (-not [IO.File]::Exists((Join-Path $src 'bin\Runner.Listener.exe'))) { return @{ State = 'failed'; Detail = 'actions-runner overlay missing' } }   # check:runner-overlay
+            $part = $root + '.partial'
+            if (-not [IO.Directory]::Exists($part)) { [void][IO.Directory]::CreateDirectory($part); Set-AapGuestAcl $part -WithSelf }
+            Copy-AapGuestTree $src $part
+            if ([IO.Directory]::Exists($root)) { [IO.Directory]::Delete($root, $true) }
+            [IO.Directory]::Move($part, $root)
+        }
+        # The cache job root: SYSTEM, Administrators and the job user only (guests/cache/INTEGRATION.md, P14 2).
+        $cache = Get-AapGuestCacheRoot $Ctx
+        if (-not [IO.Directory]::Exists($cache)) { [void][IO.Directory]::CreateDirectory($cache); Set-AapGuestAcl $cache -WithSelf }
+        @{ State = 'ready'; Detail = 'bootstrap material removed; scratch, runner and cache root ready' }
+    } finally { $lock.Dispose() }
 }
 
 # ---- the runner (launch.ps1, then status and collect) ----
@@ -345,9 +404,16 @@ function Get-AapGuestLaunchPath($Ctx) { Join-Path $Ctx.StateDir 'launch.json' }
 
 function Start-AapGuestRunner {
     <# launch.ps1, first half: cache, then the JIT config out of the runner root and into Runner.Listener's environment.
-       Records launch.json (phase starting, running or failed) and returns the started runner, or $null. #>
+       Records launch.json (phase starting, running or failed) and returns the started runner, or $null. Starts nothing
+       unless start_runner asked (its 'requested' record) and is still waiting: after its deadline or its cancel mark the
+       host has given up on this VM. #>
     param($Ctx = (New-AapGuestContext))
     $rec = Get-AapGuestLaunchPath $Ctx
+    $deadline = 0L
+    try {
+        $req = Read-AapGuestRecord $rec
+        if ([string](Get-AapGuestProp $req 'phase') -ceq 'requested') { $deadline = [long](Get-AapGuestProp $req 'deadline') }
+    } catch { $deadline = 0L }
     Write-AapGuestRecord $rec ([ordered]@{ phase = 'starting'; launcher_pid = $PID })
     $jit = $null; $jitText = $null
     try {
@@ -371,6 +437,7 @@ function Start-AapGuestRunner {
             $fs.Flush($true)
         } finally { $fs.Dispose() }
         [IO.File]::Delete($file)
+        if ([IO.File]::Exists((Join-Path $Ctx.StateDir 'cancel')) -or (& $Ctx.Ops.Now).Ticks -gt $deadline) { throw 'start cancelled: start_runner gave up' }   # check:launch-cancel
 
         $psi = New-Object Diagnostics.ProcessStartInfo
         $psi.FileName = Get-AapGuestListener $Ctx
@@ -378,9 +445,21 @@ function Start-AapGuestRunner {
         $psi.WorkingDirectory = Get-AapGuestRunnerRoot $Ctx
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
-        foreach ($k in @($psi.EnvironmentVariables.Keys)) { if ($k -like 'ACTIONS_RUNNER_INPUT_*') { $psi.EnvironmentVariables.Remove($k) } }   # check:runner-env-inputs
+        # Runner inputs, and what Windows PowerShell put into its own environment (its execution policy preference, its
+        # module path), are not the job's: job steps see what a fresh logon sees, as on hosted runners.
+        foreach ($k in @($psi.EnvironmentVariables.Keys)) {
+            if ($k -like 'ACTIONS_RUNNER_INPUT_*' -or $k -eq 'PSExecutionPolicyPreference') { $psi.EnvironmentVariables.Remove($k) }   # check:runner-env-strip
+        }
+        $u = & $Ctx.Ops.Env 'User'
+        $pm = $(if ([string]$u['PSModulePath']) { [string]$u['PSModulePath'] } else { [string](& $Ctx.Ops.Env 'Machine')['PSModulePath'] })
+        if ($pm) { $psi.EnvironmentVariables['PSModulePath'] = $pm } else { $psi.EnvironmentVariables.Remove('PSModulePath') }
         foreach ($l in $cacheEnv) {
-            if ($l -cmatch '^([A-Z][A-Z0-9_]{0,63})=([ -~]*)\z' -and $Matches[1] -notlike 'ACTIONS_RUNNER_INPUT_*') { $psi.EnvironmentVariables[$Matches[1]] = $Matches[2] }   # check:runner-env-cache
+            $i = $l.IndexOf('=')
+            if ($i -lt 1) { continue }
+            $name = $l.Substring(0, $i); $value = $l.Substring($i + 1)
+            if ($script:CacheEnvNames -cnotcontains $name) { continue }   # check:runner-env-allow
+            if ($value -cnotmatch '^[ -~]*\z') { continue }   # check:runner-env-value
+            $psi.EnvironmentVariables[$name] = $value
         }
         $jitText = $script:Ascii.GetString($jit)
         $psi.EnvironmentVariables['ACTIONS_RUNNER_INPUT_JITCONFIG'] = $jitText
@@ -404,24 +483,29 @@ function Wait-AapGuestRunner {
     Write-AapGuestRecord (Get-AapGuestLaunchPath $Ctx) ([ordered]@{ phase = 'exited'; launcher_pid = $PID; runner_pid = [int]$Started.Pid; runner_start = [long]$Started.StartTicks; exit_code = [int]$code })
 }
 
+# Whether the runner a launch record names (pid, start time, path) is running now.
+function Test-AapGuestRunnerAlive($Ctx, $Record) {
+    try {
+        $p = & $Ctx.Ops.Process ([int](Get-AapGuestProp $Record 'runner_pid'))
+        $null -ne $p -and [long]$p.StartTicks -eq [long](Get-AapGuestProp $Record 'runner_start') -and [string]$p.Path -eq (Get-AapGuestListener $Ctx)
+    } catch { $false }
+}
+
 # The runner as status/collect see it: @{ Phase; State; Exit; Detail }. launch.json is job-writable once the job runs,
-# so every field is checked and only its own fixed words reach the reply.
+# so every field is checked and only its own fixed words reach the reply. Even so these are hints (README, Trust).
 function Get-AapGuestRunnerState($Ctx) {
     $l = Read-AapGuestRecord (Get-AapGuestLaunchPath $Ctx)
     $phase = [string](Get-AapGuestProp $l 'phase')
+    $live = { if (& $Ctx.Ops.WorkerRunning (Get-AapGuestRunnerRoot $Ctx)) { @{ Phase = $phase; State = 'busy'; Exit = $null; Detail = 'job running' } } else { @{ Phase = $phase; State = 'listening'; Exit = $null; Detail = 'runner listening' } } }
     switch -CaseSensitive ($phase) {
-        'starting' { return @{ Phase = $phase; State = 'listening'; Exit = $null; Detail = 'runner starting' } }
+        { $_ -ceq 'requested' -or $_ -ceq 'starting' } { return @{ Phase = $phase; State = 'listening'; Exit = $null; Detail = 'runner starting' } }
         'running' {
-            $mine = $false
-            try {
-                $p = & $Ctx.Ops.Process ([int](Get-AapGuestProp $l 'runner_pid'))
-                $mine = $null -ne $p -and [long]$p.StartTicks -eq [long](Get-AapGuestProp $l 'runner_start') -and [string]$p.Path -eq (Get-AapGuestListener $Ctx)
-            } catch { $mine = $false }
-            if (-not $mine) { return @{ Phase = $phase; State = 'job_done'; Exit = $null; Detail = 'runner gone; exit code not recorded' } }   # check:runner-identity
-            if (& $Ctx.Ops.WorkerRunning (Get-AapGuestRunnerRoot $Ctx)) { return @{ Phase = $phase; State = 'busy'; Exit = $null; Detail = 'job running' } }
-            return @{ Phase = $phase; State = 'listening'; Exit = $null; Detail = 'runner listening' }
+            if (-not (Test-AapGuestRunnerAlive $Ctx $l)) { return @{ Phase = $phase; State = 'job_done'; Exit = $null; Detail = 'runner gone; exit code not recorded' } }   # check:runner-identity
+            return (& $live)
         }
         'exited' {
+            # An exit record for a runner that still runs is not believed.
+            if (Test-AapGuestRunnerAlive $Ctx $l) { return (& $live) }   # check:exited-alive
             $code = Get-AapGuestProp $l 'exit_code'
             if (-not ($code -is [int] -or $code -is [long]) -or $code -lt [int]::MinValue -or $code -gt [int]::MaxValue) { $code = $null }
             return @{ Phase = $phase; State = 'job_done'; Exit = $code; Detail = 'runner exited' }
@@ -452,8 +536,11 @@ function Invoke-AapGuestAgent {
             $own = $(if ($own -match '^\{?([0-9a-fA-F-]{36})\}?\z') { $Matches[1].ToLowerInvariant() } else { '' })
             if ($own -cnotmatch $script:GuidRe) { $status = 'refused'; $diag = 'own vm id unavailable from the hypervisor' }   # check:vmid-source
             elseif ($own -cne $e.vm_id) { $status = 'refused'; $diag = 'vm_id is not this VM' }   # check:vmid
-            else {
-                $s = Open-AapGuestState $Ctx
+            elseif ($null -eq ($s = Open-AapGuestState $Ctx)) {
+                # Another agent process holds the state: nothing is accepted; a probe just hears booting.
+                $diag = 'agent busy'
+                if ($e.cmd -ceq 'probe') { $status = 'ok'; $state = 'booting' }
+            } else {
                 $d = $s.Doc
                 $state = $(if ($d.phase -ceq 'started') { 'listening' } else { @{ booting = 'booting'; ready = 'ready'; registered = 'registered'; failed = 'failed'; shutting_down = 'shutting_down' }[[string]$d.phase] })
                 $why = $(if ($s.Bad) { 'agent state unreadable' } else { Get-AapGuestRefusal $Ctx $d $e })
@@ -461,14 +548,19 @@ function Invoke-AapGuestAgent {
                 elseif ($why) { $status = 'refused'; $diag = $why }
                 else {
                     # Accepted: recorded before anything runs, so a command that crashes half-way is never accepted twice.
-                    $d.lease_generation = $e.lease_generation; $d.seq = $e.seq; $d.nonces = @($d.nonces) + $e.nonce
+                    $d.reservation_id = $e.reservation_id; $d.lease_generation = $e.lease_generation; $d.seq = $e.seq; $d.nonces = @($d.nonces) + $e.nonce
                     if ($script:OneShot -ccontains $e.cmd) { $d.shots = @($d.shots) + $e.cmd }
                     Save-AapGuestState $s
                     switch -CaseSensitive ($e.cmd) {
                         'probe' {
                             if ($d.phase -ceq 'booting') {
+                                # The bootstrap may outlast one probe: it runs with the state file released.
+                                $s.Stream.Dispose(); $s = $null
                                 $b = Invoke-AapGuestBootstrap $Ctx
-                                if ($b.State -cne 'booting') { $d.phase = $b.State; $d.detail = $b.Detail }
+                                $s = Open-AapGuestState $Ctx
+                                if ($null -eq $s -or $s.Bad) { throw 'agent state unavailable after the bootstrap' }
+                                $d = $s.Doc
+                                if ($b.State -cne 'booting' -and $d.phase -ceq 'booting') { $d.phase = $b.State; $d.detail = $b.Detail }
                                 $state = $b.State; $diag = $b.Detail
                                 if ($b.State -ceq 'failed') { $status = 'error' } else { $status = 'ok' }
                             } elseif ($d.phase -ceq 'ready') { $status = 'ok'; $state = 'ready'; $diag = 'ready' }
@@ -493,11 +585,11 @@ function Invoke-AapGuestAgent {
                             if ($d.phase -cne 'registered') { $diag = "start_runner in phase $($d.phase)" }   # check:start-phase
                             elseif ($left.Count) { $d.phase = 'failed'; $diag = $left[0] }   # check:start-residue
                             else {
-                                $null = Remove-Item -LiteralPath (Get-AapGuestLaunchPath $Ctx) -Force -ErrorAction SilentlyContinue
+                                $until = (& $Ctx.Ops.Now).AddSeconds($Ctx.StartWaitSeconds)
+                                Write-AapGuestRecord (Get-AapGuestLaunchPath $Ctx) ([ordered]@{ phase = 'requested'; deadline = $until.Ticks })
                                 & $Ctx.Ops.StartLauncher $Ctx
                                 $d.phase = 'started'
                                 Save-AapGuestState $s
-                                $until = (& $Ctx.Ops.Now).AddSeconds($Ctx.StartWaitSeconds)
                                 $rs = Get-AapGuestRunnerState $Ctx
                                 while (@('running', 'exited', 'failed') -cnotcontains $rs.Phase -and (& $Ctx.Ops.Now) -lt $until) {
                                     Start-Sleep -Milliseconds $Ctx.PollMilliseconds
@@ -508,6 +600,8 @@ function Invoke-AapGuestAgent {
                                 if ($left.Count) { $state = 'failed'; $diag = $left[0] }   # check:start-jit-gone
                                 elseif ($rs.Phase -ceq 'running' -and @('listening', 'busy') -ccontains $rs.State) { $status = 'ok' }
                                 elseif ($rs.Phase -cne 'exited' -and $rs.Phase -cne 'failed') { $state = 'failed'; $diag = "runner not started within $($Ctx.StartWaitSeconds) s" }
+                                # Anything but a listening runner: the launcher must not start one later on a VM the host gives up.
+                                if ($status -cne 'ok') { [IO.File]::WriteAllText((Join-Path $Ctx.StateDir 'cancel'), 'cancelled') }   # check:start-cancel
                             }
                         }
                         { $_ -ceq 'status' -or $_ -ceq 'collect' } {

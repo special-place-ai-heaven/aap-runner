@@ -2,7 +2,8 @@
 # '# check:<name>' on the line where its condition starts. For each name this copies guests\windows to a temp folder,
 # replaces every condition tagged with that name (an if or elseif clause, found with the PowerShell parser) by $false,
 # and runs the tests tagged <name> against the copy in a child process (AAP_GUEST_SRC). A check is covered only if at
-# least one of its tests then fails. Exit 0 when every check is covered.
+# least one of its tests then fails on an assertion; a test that dies of an exception, or a failed setup, is a harness
+# error (ERROR), which fails the run like a surviving mutant. Exit 0 when every check is covered.
 #   pwsh -File tests/guests/windows/Invoke-AapGuestMutations.ps1 [-Name <check>...]
 param([string[]]$Name, [string]$One, [string]$Src)
 Set-StrictMode -Version 2.0
@@ -20,7 +21,13 @@ if ($One) {
     $c.Filter.Tag = $One
     $c.Output.Verbosity = 'None'
     $r = Invoke-Pester -Configuration $c
-    "MUTANT $One tests=$($r.TotalCount - $r.NotRunCount - $r.SkippedCount) failed=$($r.FailedCount)"
+    # A kill is a failed Should; any other failure (an exception, a failed BeforeAll) is a harness error, never a kill.
+    $assert = 0; $errors = $r.FailedContainersCount + $r.FailedBlocksCount
+    foreach ($t in $r.Failed) {
+        $ids = @($t.ErrorRecord | ForEach-Object { [string]$_.FullyQualifiedErrorId })
+        if ($ids.Count -and @($ids | Where-Object { $_ -notlike 'PesterAssertionFailed*' }).Count -eq 0) { $assert++ } else { $errors++ }
+    }
+    "MUTANT $One tests=$($r.TotalCount - $r.NotRunCount - $r.SkippedCount) asserted=$assert errors=$errors"
     exit 0
 }
 
@@ -48,10 +55,11 @@ try {
         Copy-Item -LiteralPath (Join-Path $repo 'guests\windows') -Destination $dir -Recurse
         [IO.File]::WriteAllText((Join-Path $dir 'AapGuestAgent.psm1'), $mutated, (New-Object Text.UTF8Encoding($false)))
         $out = & $exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath -One $tag -Src $dir 2>&1
-        $m = [regex]::Match(($out -join "`n"), 'MUTANT \S+ tests=(\d+) failed=(\d+)')
-        $count = $(if ($m.Success) { [int]$m.Groups[1].Value } else { 0 }); $failed = $(if ($m.Success) { [int]$m.Groups[2].Value } else { 0 })
-        $verdict = $(if ($count -eq 0) { 'NO-TESTS' } elseif ($failed -gt 0) { 'KILLED' } else { 'SURVIVED' })
-        $rows.Add([pscustomobject]@{ Check = $tag; Lines = ($lineNos -join ','); Tests = $count; Failed = $failed; Verdict = $verdict })
+        $m = [regex]::Match(($out -join "`n"), 'MUTANT \S+ tests=(\d+) asserted=(\d+) errors=(\d+)')
+        $count = $(if ($m.Success) { [int]$m.Groups[1].Value } else { 0 }); $asserted = $(if ($m.Success) { [int]$m.Groups[2].Value } else { 0 })
+        $errors = $(if ($m.Success) { [int]$m.Groups[3].Value } else { 1 })
+        $verdict = $(if ($errors -gt 0) { 'ERROR' } elseif ($count -eq 0) { 'NO-TESTS' } elseif ($asserted -gt 0) { 'KILLED' } else { 'SURVIVED' })
+        $rows.Add([pscustomobject]@{ Check = $tag; Lines = ($lineNos -join ','); Tests = $count; Asserted = $asserted; Errors = $errors; Verdict = $verdict })
     }
 } finally {
     if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
