@@ -413,6 +413,49 @@ Describe 'zcshim: decisions and results (real processes, fake zccache)' {
     }
 }
 
+Describe 'zcshim: the zccache client never gets the caller''s open stdin (P04.1)' {
+    BeforeAll {
+        Mock Get-AapZcProcessList -ModuleName AapZcCache { Get-FakeProcessList }
+        $script:Pkg = New-Package
+        # Every fake zccache call this Describe makes (the daemon-starting session-start of Initialize-AapZcJob
+        # included) records eof and carries on only when its stdin is at EOF; an open stdin fails it with exit 7.
+        $env:FAKE_ZC_STDIN = '1'
+        $null = Initialize-Package $script:Pkg
+        $script:Expected = Get-Direct $script:Pkg (Join-Path $script:Pkg.Src 'a.c')
+    }
+    AfterAll { Remove-Item Env:\FAKE_ZC_STDIN -ErrorAction SilentlyContinue }
+
+    It 'a wrapped call starts its client with an empty stdin while the caller holds its own open' {
+        $out = Join-Path $script:Pkg.Tree 'stdin.o'
+        $l = @(Get-Launcher $script:Pkg)
+        # The shim runs with a stdin pipe this test holds open for the whole call, as a job step would.
+        $saved = $env:AAP_ZC_STATE; $env:AAP_ZC_STATE = $script:Pkg.Config
+        $si = New-Object System.Diagnostics.ProcessStartInfo
+        $si.FileName = $l[0]
+        $si.Arguments = (@($l | Select-Object -Skip 1) + @($script:Pkg.Cc, '-c', (Join-Path $script:Pkg.Src 'a.c'), '-o', $out) | ForEach-Object { ConvertTo-AapZcArg $_ }) -join ' '
+        $si.UseShellExecute = $false
+        $si.RedirectStandardInput = $true
+        $p = [System.Diagnostics.Process]::Start($si)
+        $null = $p.Handle  # Windows PowerShell 5.1 reports no ExitCode unless the handle was opened while running
+        try { $p.WaitForExit() } finally { $p.StandardInput.Close() }
+        $env:AAP_ZC_STATE = $saved
+        $code = $p.ExitCode
+        $p.Dispose()
+        $code | Should -Be 0
+        [IO.File]::ReadAllBytes($out) | Should -Be $script:Expected
+        @(Get-Journal $script:Pkg)[-1] | Should -Be 'miss'  # the wrapped path really ran
+        $stdin = @(Get-Content -LiteralPath (Join-Path $script:Pkg.Job 'roots\private\fake-stdin.log'))
+        $stdin | Should -Not -Contain 'open'
+        $stdin[-1] | Should -Be 'eof'
+    }
+
+    It 'the daemon-starting client (session-start during Initialize-AapZcJob) got an empty stdin too' {
+        $stdin = @(Get-Content -LiteralPath (Join-Path $script:Pkg.Job 'roots\private\fake-stdin.log'))
+        $stdin.Count | Should -BeGreaterThan 0
+        $stdin | Should -Not -Contain 'open'
+    }
+}
+
 Describe 'zcshim.ps1: arguments reach zccache and the compiler unchanged (the real launcher)' {
     BeforeAll {
         Mock Get-AapZcProcessList -ModuleName AapZcCache { Get-FakeProcessList }

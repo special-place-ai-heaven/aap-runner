@@ -1531,7 +1531,7 @@
         "tests/guests/cache/**"
       ],
       "lane": "Sol medium",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "IN_PROGRESS",
       "deliverable": "Run the zccache client with an empty/closed stdin from the cache shim on both platforms (Linux guests/cache/linux/aap-zccache.sh, Windows guests/cache/windows/AapZcCache.psm1) so an open stdin cannot hang the zccache client.",
       "acceptance": "Each shim invocation proves an empty stdin on both platforms; a hung-stdin mutation is caught by tests/guests/cache on both PowerShell hosts and real Linux.",
       "merge_proof": null,

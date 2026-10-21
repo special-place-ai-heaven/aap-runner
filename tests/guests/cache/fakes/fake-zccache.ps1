@@ -15,6 +15,8 @@
 # FAKE_ZC_NODELIVER=1 writes nothing, FAKE_ZC_EMPTY=1 an empty object, FAKE_ZC_LINK=1 a symbolic link to the entry
 # (zccache.cmd runs this under PowerShell 7 then, which can make one in developer mode). FAKE_ZC_PROGRESS=N first prints N of zccache's
 # progress lines to stderr.
+# FAKE_ZC_STDIN=1 (P04.1) appends eof to fake-stdin.log and carries on when this call's stdin is at EOF; an open or
+# feeding stdin is appended as open and fails the call with exit 7, as a client handed the caller's stdin would hang.
 $ErrorActionPreference = 'Stop'
 $all = [Environment]::GetCommandLineArgs()
 $i = 1
@@ -35,6 +37,13 @@ if (-not $root) { [Console]::Error.WriteLine('fake-zccache: no ZCCACHE_CACHE_DIR
 $null = New-Item -ItemType Directory -Force -Path (Join-Path $root 'artifacts')
 $names = @(Get-ChildItem Env: | ForEach-Object { $_.Name } | Sort-Object)
 Add-Line (Join-Path $root 'fake-env.log') (($names -join ' ') + ' MODE=' + $env:ZCCACHE_MODE + ' SIZE=' + $env:ZCCACHE_CACHE_SIZE_BYTES)
+if ($env:FAKE_ZC_STDIN -eq '1') {
+    $buf = New-Object byte[] 1
+    $t = [Console]::OpenStandardInput().ReadAsync($buf, 0, 1)
+    if (-not $t.Wait(2000)) { Add-Line (Join-Path $root 'fake-stdin.log') 'open'; exit 7 }
+    if ($t.Result -gt 0) { Add-Line (Join-Path $root 'fake-stdin.log') 'open'; exit 7 }
+    Add-Line (Join-Path $root 'fake-stdin.log') 'eof'
+}
 if ($env:FAKE_ZC_CRASH -eq '1') { exit 139 }
 if ($argv[0] -eq 'session-start') {
     $pidFile = Join-Path $root 'fake-daemon.pid'

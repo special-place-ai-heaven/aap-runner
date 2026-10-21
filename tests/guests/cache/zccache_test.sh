@@ -431,6 +431,22 @@ t_shim_crash() {
   check "shim: a hit zccache cannot deliver is rebuilt directly" same_as_direct "${OUT}"
   check "shim: as a wrapper failure, not a success without output" [ "$(flag)" == wrapper-failure ]
 }
+# ---- stdin (P04.1): the zccache client never gets the caller's open stdin ----
+t_shim_stdin() {
+  new_pkg
+  init_pkg > /dev/null 2>&1
+  # The caller's stdin is a pipe nobody closes; a client handed it would hang (FAKE_ZC_STDIN fails such a call).
+  FAKE_ZC_STDIN=1 compile_to "${P}/out.o" a.c < <(sleep 30)
+  check "shim: zccache gets an empty stdin while the caller's stays open" [ "$(cat "${P}/job/roots/private/fake-stdin.log" 2> /dev/null)" == eof ]
+  check "shim: the call still builds the direct result" same_as_direct "${P}/out.o"
+}
+t_init_stdin() {
+  new_pkg
+  install_pkg > /dev/null 2>&1 && : > "${P}/install/bin/stdin-probe"  # a file: init starts the daemon under env -i
+  bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 < <(sleep 30) > /dev/null 2>&1
+  check "init: the daemon-starting client gets an empty stdin too" [ "$(cat "${P}/job/roots/private/fake-stdin.log" 2> /dev/null)" == eof ]
+  check "init: a stdin-safe start still qualifies the root" [ "$(jq -r .state "${CFG}")" == qualified ]
+}
 # ---- delivery: zccache's exit 0 counts only with every declared output in place ----
 stale() { printf 'STALE\n' > "$1"; }
 delivery_failed() { # NAME: the call was answered by the direct compiler after a delivery failure
@@ -791,6 +807,8 @@ run t_shim_concurrent
 run t_shim_daemon_down LNX-SHIM-DAEMON LNX-DAEMON-ALIVE
 run t_shim_crash LNX-SHIM-FALLBACK
 run t_shim_delivery_object LNX-OUT-CHECK LNX-OUT-STALE LNX-OUT-DAEMON
+run t_shim_stdin
+run t_init_stdin
 run t_shim_delivery_depfile LNX-OUT-CHECK LNX-OUT-STALE
 run t_shim_delivery_shape LNX-OUT-CHECK LNX-OUT-CLEAR LNX-OUT-NLINK LNX-OUT-DAEMON
 run t_shim_delivery_ok

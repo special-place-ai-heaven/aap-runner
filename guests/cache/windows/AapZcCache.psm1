@@ -115,9 +115,10 @@ function ConvertTo-AapZcArg([string]$Arg) {
     return $sb.ToString()
 }
 
-# Runs a program. -Capture: hidden, output captured as bytes, and with -TimeoutSeconds killed (TimedOut) when it runs
-# longer. Otherwise the program shares this process's console and standard handles, as a direct compiler must (the
-# shim always runs in a console, so no window appears).
+# Runs a program. -Capture: hidden, output captured as bytes, standard input closed at once (an open stdin hangs the
+# zccache client, P04.1) and with -TimeoutSeconds killed (TimedOut) when it runs longer. Otherwise the program shares
+# this process's console and standard handles, as a direct compiler must (the shim always runs in a console, so no
+# window appears).
 # Stops a process and every descendant it still has: a timed-out client and what it started, or a root's daemon and the
 # compiles it runs. PowerShell 7 kills the tree itself; Windows PowerShell 5.1 has no tree kill, taskkill /T does it.
 function Stop-AapZcTree([int]$Id) {
@@ -134,12 +135,14 @@ function Invoke-AapZcProcess {
     $si.UseShellExecute = $false
     $si.CreateNoWindow = [bool]$Capture
     $si.RedirectStandardOutput = [bool]$Capture
+    $si.RedirectStandardInput = [bool]$Capture
     $si.RedirectStandardError = [bool]$Capture
     if ($null -ne $Environment) {
         $si.EnvironmentVariables.Clear()
         foreach ($k in $Environment.Keys) { $si.EnvironmentVariables[[string]$k] = [string]$Environment[$k] }
     }
     $p = [System.Diagnostics.Process]::Start($si)
+    if ($Capture) { $p.StandardInput.Close() }  # the zccache client starts with an empty stdin, never the caller's open one (P04.1)
     try {
         $r = [pscustomobject]@{ ExitCode = $null; TimedOut = $false; Stdout = $null; Stderr = $null }
         if (-not $Capture) { $p.WaitForExit(); $r.ExitCode = $p.ExitCode; return $r }
