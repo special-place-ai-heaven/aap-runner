@@ -109,9 +109,22 @@ Describe 'build plan mirrors the pinned upstream template' {
         $script:Plan.verify.gate_sections | Should -Not -Contain 'tool_cache.defaults'
     }
     It 'fails on missing-required only in the sections the image owns, never in the runner, job identity or Azure fabric ones' {
-        @($script:Plan.verify.required_sections) | Should -Be @('tools', 'shells', 'docker', 'docker.images', 'env', 'limits', 'limits.sysctl', 'hardware', 'tool_cache',
+        @($script:Plan.verify.required_sections) | Should -Be @('tools', 'shells', 'docker', 'env', 'limits', 'limits.sysctl', 'hardware', 'tool_cache',
             'action_archive_cache', 'services', 'path.process', 'path.machine')
         foreach ($s in 'image', 'infra', 'run_identity', 'credential_env') { @($script:Plan.verify.required_sections) + @($script:Plan.verify.gate_sections) | Should -Not -Contain $s }
+    }
+    It 'records the cached Docker images and never gates them: no pinned input names what install-docker.sh pulls' {
+        # The six images are :latest pulls of install-docker.sh (P03's unpinned floating-container blocker); the pinned
+        # toolset lists none. Until a pin names them, a missing one is P24's to decide, not a build failure.
+        @($script:Plan.verify.required_sections) + @($script:Plan.verify.gate_sections) | Should -Not -Contain 'docker.images'
+        $ref = Get-Content -Raw (Join-Path $script:Repo 'images\ubuntu-24.04\reference-inventory.json') | ConvertFrom-Json
+        @($ref.docker.images | Where-Object { $_ -notlike '*:latest' }).Count | Should -Be 0
+        $toolset = Get-Content -Raw (Join-Path $script:Repo ($script:Plan.baseline.toolset_path -replace '/', '\')) | ConvertFrom-Json
+        @($toolset.docker.PSObject.Properties | Where-Object { $_.Name -eq 'images' } | ForEach-Object { @($_.Value) }).Count | Should -Be 0
+        $m = Get-Content -Raw (Join-Path $script:Repo 'images\common\artifacts.manifest.json') | ConvertFrom-Json
+        $b = @($m.not_reproducible | Where-Object { $_.id -eq 'ubuntu-floating-container-images' })
+        $b.Count | Should -Be 1
+        @($b[0].scripts) | Should -Be @('install-docker.sh')
     }
     It 'refuses a plan whose required sections are <Case>' -Tag 'plan-required' -TestCases @(
         @{ Case = 'absent'; Edit = { param($p) $p.verify.PSObject.Properties.Remove('required_sections') } },
@@ -949,7 +962,7 @@ Describe 'failures roll back' {
         Assert-CleanedUp
     }
     It 'fails when the image lacks what the hosted reference requires in <Section>, a section the image owns' -Tag 'inventory-required' -TestCases @(
-        @{ Section = 'tools'; Key = 'gradle' }, @{ Section = 'shells'; Key = 'zsh' }, @{ Section = 'docker'; Key = 'server' }, @{ Section = 'docker.images'; Key = 'alpine:3.22' },
+        @{ Section = 'tools'; Key = 'gradle' }, @{ Section = 'shells'; Key = 'zsh' }, @{ Section = 'docker'; Key = 'server' },
         @{ Section = 'env'; Key = 'JAVA_HOME' }, @{ Section = 'limits'; Key = 'nofile' }, @{ Section = 'limits.sysctl'; Key = 'vm.max_map_count' },
         @{ Section = 'hardware'; Key = 'logical_processors' }) {
         $w.CompareReport.inventory.differences += [ordered]@{ class = 'missing-required'; section = $Section; key = $Key; reference = 'r'; candidate = $null }
@@ -960,7 +973,7 @@ Describe 'failures roll back' {
     }
     It 'records, and does not fail on, missing-required in <Section>, which the image does not own' -TestCases @(
         @{ Section = 'image'; Key = 'label' }, @{ Section = 'infra'; Key = 'provisioner_version' }, @{ Section = 'run_identity'; Key = 'source_sha' },
-        @{ Section = 'credential_env'; Key = 'GITHUB_TOKEN' }) {
+        @{ Section = 'credential_env'; Key = 'GITHUB_TOKEN' }, @{ Section = 'docker.images'; Key = 'ghcr.io/github/github-mcp-server:latest' }) {
         $w.CompareReport.inventory.differences += [ordered]@{ class = 'missing-required'; section = $Section; key = $Key; reference = 'r'; candidate = $null }
         (Invoke-Build).Status | Should -Be 'built'
         $ev = Get-Content -Raw (Join-Path (Get-EvidenceDir) 'build.json') | ConvertFrom-Json

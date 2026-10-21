@@ -233,8 +233,9 @@ it, its registration window (P19) and the rule that no clone image may contain i
 4. **Inventory gate**: the build fails on differences in cached tool versions, services, PATH order, the action archive
    cache, the job user and probe coverage, and on anything the reference requires that the image lacks in a section the
    image owns (the plan's explicit `verify.required_sections`; never `image`, `infra`, `run_identity` or `credential_env`,
-   which describe the runner, the job and the Azure fabric a verification guest does not have); it records the rest,
-   extras included, for P24. P05's shared allowlist is unchanged.
+   which describe the runner, the job and the Azure fabric a verification guest does not have, and not `docker.images`,
+   whose six `:latest` pulls no pinned input names); it records the rest, extras included, for P24. P05's shared
+   allowlist is unchanged.
 5. **Verification network**: none, as in P06.
 6. **Inputs are pinned in the plan, not passed in config**: the source archive and the ISO by P03 entry and SHA-256.
 7. **Scanner boots without a disk**; the sealed disk is hot-added after the live system answers.

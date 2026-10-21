@@ -161,10 +161,12 @@ everything it made (VMs, build disks, a partly published generation, the evidenc
    `allowlist.json`: **any difference in a gate section** (`coverage`, `tool_cache`, `services`, `path.process`,
    `path.machine`, `action_archive_cache`, `user`) and **anything the reference requires that the image lacks in a section
    the image owns** (`missing-required` in the plan's explicit `verify.required_sections`: `tools`, `shells`, `docker`,
-   `docker.images`, `env`, `limits`, `limits.sysctl`, `hardware`, `tool_cache`, `action_archive_cache`, `services`,
-   `path.process`, `path.machine`) fail the build. `image`, `infra`, `run_identity` and `credential_env` are not the
-   image's: they describe the runner (a verification guest has none, so `image.runner_version`, `runner_os` and
-   `runner_arch` are null), the job's identity and the Azure fabric, and the plan is refused if it names them. Their
+   `env`, `limits`, `limits.sysctl`, `hardware`, `tool_cache`, `action_archive_cache`, `services`, `path.process`,
+   `path.machine`) fail the build. `image`, `infra`, `run_identity` and `credential_env` are not the image's: they describe
+   the runner (a verification guest has none, so `image.runner_version`, `runner_os` and `runner_arch` are null), the job's
+   identity and the Azure fabric, and the plan is refused if it names them. `docker.images` is not gated either: the six
+   cached images are `:latest` pulls inside `install-docker.sh` (P03 blocker `ubuntu-floating-container-images`; the
+   pinned toolset lists none), so no pinned input says which names a build gets; P24 decides them. Their
    differences and every other one (kernel build, read-ahead, mount options, tool versions from floating feeds, hardware)
    are recorded in `build.json` for P24, and so are the count and the first 200 of what the image has beyond the reference
    (`extra`). `tool_cache.defaults` is not gated: the hosted capture records no defaults. Before the agent answers, the
