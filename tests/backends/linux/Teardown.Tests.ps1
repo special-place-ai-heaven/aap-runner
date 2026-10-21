@@ -123,12 +123,13 @@ Describe 'no slot reuse before the teardown is observed' {
                 [void][IO.Directory]::CreateDirectory((Join-Path $x.W.Scratch $x.Id))
                 $h = [IO.File]::Open((Join-Path $x.W.Scratch "$($x.Id)\held.bin"), 'Create', 'ReadWrite', 'None')
             }
-            if ($case -eq 'detach') { Set-LinKnob $w @{ DetachFails = $true } }
+            if ($case -eq 'detach') { Set-AapFakeHostNetworkKnob -Root $w.Net -Fail Detach }
             if ($case -eq 'volume') { Set-LinKnob $w @{ WrongVolume = 'scratch' } }
             try { $s = Step-Lin $x } finally { if ($h) { $h.Dispose() } }
             $s.Code | Should -Be 'teardown_failed' -Because $case
             (Get-LinRes $x.W $x.Id).state | Should -Be 'quarantined'
-            Set-LinKnob $w @{ DetachFails = $false; WrongVolume = '' }
+            Set-LinKnob $w @{ WrongVolume = '' }
+            Set-AapFakeHostNetworkKnob -Root $w.Net
             $x.B.Now = { [DateTime]::UtcNow.AddSeconds(60) }
             [void](Step-Lin $x)
             (Get-LinRes $x.W $x.Id).state | Should -Be 'reconciled' -Because $case

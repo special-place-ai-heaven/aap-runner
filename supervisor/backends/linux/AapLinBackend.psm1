@@ -22,7 +22,8 @@
 # only a hostile guest, the clone cap or a paused VM (backend-lifecycle.md) end a running VM.
 #
 # Hyper-V, disk, seed, key, volume and hash calls go through $Backend.Provider (AapLinBackend.HyperV.psm1 in production,
-# fakes in tests), the guest network through $Backend.Network (the P10.0 interface: Attach, Detach, Verify), the guest
+# fakes in tests), the guest network through $Backend.Network (the P10.0 module, host-network-module.md: Attach, Detach,
+# Verify; its consumer obligations are met in create, boot, the limits and destroy), the guest
 # channel through $Backend.Transport (one capped ssh.exe child by default) and the clock through $Backend.Now. Allocator
 # and broker calls go to AapCapacity.psm1 and aap-broker.psm1 beside this folder.
 # Lines tagged '# check:<name>' are the safety checks tests/backends/linux/Invoke-AapLinMutations.ps1 disables one at a
@@ -36,9 +37,11 @@ $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot '..\..\capacity\AapCapacity.psm1')
 Import-Module (Join-Path $PSScriptRoot '..\..\broker\aap-broker.psm1')
+# The shared check of the P10.0 module's work (host-network-module.md, Shared check): the declaration Attach returns and
+# Hyper-V's read-back of the VM's adapter. The switch, the guards and the port ACLs are judged there, nowhere else here.
+Import-Module (Join-Path $PSScriptRoot '..\..\network\AapHostNetworkCheck.psm1')
 
 $script:ImageProfile = 'ubuntu-24.04-x64'
-$script:SwitchName = 'aap-guests-linux' # P10.0's internal switch (guest-transport.md); never External, never Default Switch
 $script:SshExe = 'C:\Windows\System32\OpenSSH\ssh.exe'
 $script:ChildExe = $script:SshExe       # tests point these two at a stand-in; the command line holds the config path only
 $script:ChildArgs = '-F "{0}" -T aap-guest'
@@ -82,7 +85,7 @@ $script:VmNameRe = '^aap-l-[1-5]-[0-9]{1,9}-[0-9a-f]{8}\z'
 $script:Ed25519Re = '^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}\z'
 $script:Reserved = '^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]) *(\..*)?$'
 $script:ProviderOps = @('GetVolumeGuid', 'GetHostSecurity', 'HashFile', 'NewDiffDisk', 'GetVhdParent', 'NewKeyPair', 'NewSeedImage', 'NewVm',
-    'GetVmConfig', 'GetHostKey', 'EjectSeed', 'StartVm', 'StopVm', 'RemoveVm', 'ListVms', 'MeasureBytes')
+    'SetSeed', 'GetVmConfig', 'GetHostKey', 'EjectSeed', 'StartVm', 'StopVm', 'RemoveVm', 'ListVms', 'MeasureBytes')
 $script:VmGroupSid = 'S-1-5-83-0'      # NT VIRTUAL MACHINE\Virtual Machines: may read a sealed base (P07), nothing more
 # Facts journaled as repeated `ready` `done` records (`op` has no lease field and no field for these): the broker's answer
 # right after the lease call, so a restarted supervisor never takes a broker that lost an issued lease for one that never
@@ -548,9 +551,37 @@ function New-AapLinSeed {
        key. The job user is runner (uid 1001, as on the hosted image); no account gets uid 1000 (the image's removed
        install user had it) and cloud-init's default user is not created. Root may log in with the forced command only
        (sshd PermitRootLogin forced-commands-only, the image's part, P15). The seed is ejected and deleted once the guest
-       answers its first probe. #>
-    param([Parameter(Mandatory)][string]$VmName, [Parameter(Mandatory)][string]$InstanceId, [Parameter(Mandatory)][string]$PublicKey)
+       answers its first probe.
+       network-config: the guest's static addressing, from the declaration the P10.0 module's Attach returned for this VM
+       (host-network-module.md, Consumer obligations 1): its address with the subnet's prefix length, the gateway as the
+       default route, the resolvers as its DNS servers, no DHCP and no router advertisements, on the one hv_netvsc
+       interface (matched by driver: Hyper-V may assign the MAC address at first start). Nothing on the host serves DHCP. #>
+    param([Parameter(Mandatory)][string]$VmName, [Parameter(Mandatory)][string]$InstanceId, [Parameter(Mandatory)][string]$PublicKey,
+        [Parameter(Mandatory)]$Network)
     if ($VmName -cnotmatch $script:VmNameRe -or $InstanceId -cnotmatch '^[a-z0-9-]{1,64}\z' -or $PublicKey -cnotmatch $script:Ed25519Re) { throw 'AAP_SeedInvalid: the VM name, instance id or public key' }   # check:seed-values
+    # Only a declaration the shared check accepts for this VM name becomes YAML: every value is then a canonical address.
+    $req = @{ VmId = [string](Get-AapLinField $Network 'vm_id'); VmName = $VmName; Profile = 'linux' }
+    $bad = @(Get-AapHostNetworkDeclarationProblems -Request $req -Declaration $Network)
+    if ($bad.Count) { throw "AAP_SeedInvalid: the network declaration: $(Get-AapLinLine ($bad -join '; ') 160)" }   # check:seed-network
+    $bits = ([string](Get-AapLinField $Network 'subnet')).Split('/')[1]
+    $dns = Get-AapLinField $Network 'resolvers'
+    $networkConfig = (@(
+            'version: 2'
+            'ethernets:'
+            '  aap0:'
+            '    match:'
+            '      driver: hv_netvsc'
+            '    dhcp4: false'
+            '    dhcp6: false'
+            '    accept-ra: false'
+            '    link-local: []'
+            "    addresses: [$([string](Get-AapLinField $Network 'address'))/$bits]"
+            '    routes:'
+            '      - to: default'
+            "        via: $([string](Get-AapLinField $Network 'gateway'))"
+            '    nameservers:'
+            "      addresses: [$(@($dns | ForEach-Object { [string]$_ }) -join ', ')]"
+        ) -join "`n") + "`n"
     $userData = @"
 #cloud-config
 hostname: $VmName
@@ -574,7 +605,7 @@ write_files:
       restrict,command="$($script:Agent)" $PublicKey aap-management
 
 "@
-    [ordered]@{ 'user-data' = $userData.Replace("`r`n", "`n"); 'meta-data' = "instance-id: $InstanceId`nlocal-hostname: $VmName`n" }
+    [ordered]@{ 'user-data' = $userData.Replace("`r`n", "`n"); 'meta-data' = "instance-id: $InstanceId`nlocal-hostname: $VmName`n"; 'network-config' = $networkConfig }
 }
 
 # ---- the guest channel: OpenSSH over a Hyper-V socket (guest-transport.md, Linux candidate) --------------------------------
@@ -966,22 +997,44 @@ function Assert-AapLinVmConfig($B, $r, [string]$VmId, [string]$Clone, [string]$O
     if ($bad.Count) { throw "AAP_VmUntrusted: $($bad -join '; ')" }
 }
 
-# The guest network after P10.0's Attach: the module's own verification (its port ACLs, guards and NAT) and, from the
-# VM's own settings, at least one adapter and every adapter on the internal switch aap-guests-linux with DHCP guard and
-# router guard on and MAC spoofing off. Anything the backend cannot verify is AAP_NetworkUntrusted.
-function Assert-AapLinNetwork($B, [string]$VmId, $Net) {
+# The P10.0 module's request for this clone, and Attach (host-network-module.md, Consumer obligations 1 and 2): the VM
+# must be Off; a repeated Attach returns the same declaration from the module's own journal, so the backend keeps no copy
+# of it anywhere and asks again before every start. The declaration check is the shared one (AAP_NetworkInvalid).
+function Get-AapLinNetRequest($r, [string]$VmId) { @{ VmId = $VmId; VmName = (Get-AapLinVmName $r); Profile = 'linux' } }
+function Connect-AapLinNetwork($B, $Net) {
+    $decl = $null
+    try { $decl = & $B.Network.Attach $Net } catch { throw "AAP_NetworkUntrusted: Attach failed: $(Get-AapLinError $_)" }
+    $bad = @(Get-AapHostNetworkDeclarationProblems -Request $Net -Declaration $decl)
+    if ($bad.Count) { throw "AAP_NetworkInvalid: $(@($bad | ForEach-Object { Get-AapLinLine ([string]$_) 100 }) -join '; ')" }   # check:network-declaration
+    , $decl
+}
+
+# The guest network before a start: the module's Verify, every object it writes a problem (nothing is dropped, an empty or
+# $null item included), and Hyper-V's own read-back of the VM's adapters through this backend's provider, never through
+# the module, judged by the shared check against the declaration (one adapter on aap-guests-linux, Internal, its guards,
+# mirroring, VLAN, storm limit, no legacy ACL, its peers, and every port ACL: the fixed denies both ways, the source pin,
+# no other Allow). Anything else is AAP_NetworkUntrusted.
+function Assert-AapLinNetwork($B, $Net, $Decl) {
     $problems = $null
-    try { $problems = @(& $B.Network.Verify $Net | Where-Object { $_ }) } catch { throw "AAP_NetworkUntrusted: the guest network cannot be verified: $(Get-AapLinError $_)" }
+    try { $problems = @(& $B.Network.Verify $Net) } catch { throw "AAP_NetworkUntrusted: the guest network cannot be verified: $(Get-AapLinError $_)" }
     if ($problems.Count) { throw "AAP_NetworkUntrusted: $(@($problems | ForEach-Object { Get-AapLinLine ([string]$_) 100 }) -join '; ')" }   # check:network-verify
-    $bad = New-Object Collections.Generic.List[string]
-    $nics = Get-AapLinField (& $B.Provider.GetVmConfig @{ VmId = $VmId }) 'Adapters'
-    $nics = @($nics | Where-Object { $null -ne $_ })
-    if (-not $nics.Count) { $bad.Add('no network adapter after attach') }   # check:switch
-    foreach ($a in $nics) {
-        if ([string](Get-AapLinField $a 'SwitchName') -cne $script:SwitchName -or [string](Get-AapLinField $a 'SwitchType') -cne 'Internal') { $bad.Add("an adapter is not on the internal switch $($script:SwitchName)") }   # check:switch
-        if ((Get-AapLinField $a 'DhcpGuard') -ne $true -or (Get-AapLinField $a 'RouterGuard') -ne $true -or (Get-AapLinField $a 'MacAddressSpoofing') -ne $false) { $bad.Add('an adapter lacks DHCP guard or router guard, or has MAC spoofing on') }   # check:switch
-    }
-    if ($bad.Count) { throw "AAP_NetworkUntrusted: $($bad -join '; ')" }
+    $nics = Get-AapLinField (& $B.Provider.GetVmConfig @{ VmId = $Net.VmId }) 'Adapters'
+    $bad = @(Get-AapHostNetworkAdapterProblems -Declaration $Decl -Adapters @($nics))
+    if ($bad.Count) { throw "AAP_NetworkUntrusted: $(@($bad | ForEach-Object { Get-AapLinLine ([string]$_) 100 }) -join '; ')" }   # check:network-readback
+}
+
+# A running clone's network, again (Consumer obligations 3): Verify alone (the read-back needs the declaration, and only
+# Attach of an Off VM gives it), at most every StatusSeconds per reservation, so a host address change is seen within
+# that time. Returns the reason to stop the clone, or $null.
+function Get-AapLinRunningNetworkProblem($B, $r, [string]$VmId) {
+    $rid = [string]$r.reservation_id
+    $now = Get-AapLinNow $B
+    if ($B.NetAt.ContainsKey($rid) -and ($now - $B.NetAt[$rid]).TotalSeconds -lt $B.StatusSeconds) { return $null }
+    $B.NetAt[$rid] = $now
+    $problems = $null
+    try { $problems = @(& $B.Network.Verify (Get-AapLinNetRequest $r $VmId)) } catch { return 'network not verifiable' }
+    if ($problems.Count) { return 'network not verified' }
+    $null
 }
 
 # ---- lifecycle ops ------------------------------------------------------------------------------------------------------
@@ -993,7 +1046,10 @@ function New-AapLinResult($r, [string]$Action, $Code = $null, $Summary = $null) 
 # create (backend-lifecycle.md): idempotent. Re-run after a crash it reuses only the VM whose id the journal recorded
 # right after New-VM (a VM found only by its name is never adopted: create fails and destroy removes it), keeps the
 # differencing disk it made (a reused os.avhdx must still be a child of the pinned base), and makes a fresh key pair and a
-# fresh seed, which is safe only because the clone never booted (boot follows create's done record).
+# fresh seed, which is safe only because the clone never booted (boot follows create's done record). Order
+# (host-network-module.md, Consumer obligations 1): the VM with no adapter, Attach and the declaration check, the seed with
+# the declaration's static addressing into the VM's DVD drive, the VM's settings, Verify and the read-back, then done. The
+# declaration is never journaled or kept: a re-run attaches again and gets the same one.
 function Invoke-AapLinCreate($B, $r, [string]$BaseSha256, $j) {
     $rid = [string]$r.reservation_id
     $name = Get-AapLinVmName $r
@@ -1052,9 +1108,25 @@ function Invoke-AapLinCreate($B, $r, [string]$BaseSha256, $j) {
     if ((Get-AapLinPathKind (Join-Path $dir 'id_ed25519')) -cne 'file') { throw 'AAP_KeyInvalid: no private key file' }
     Write-AapLinFile (Join-Path $dir 'seq') ([Text.Encoding]::ASCII.GetBytes('0'))   # the channel's seq mark: nothing sent yet
     Invoke-AapLinFault 'create:after-key'
+    if (-not $id) {
+        # No network adapter and an empty DVD drive: the seed carries the declaration's addressing, so it can only be
+        # made after Attach, which needs the VM.
+        $id = ([string](Get-AapLinField (& $B.Provider.NewVm @{ Name = $name; Path = $clone; Cpus = [int]$r.cpus; MemGib = [int]$r.mem_gib; OsDisk = $os }) 'Id')).ToLowerInvariant()
+        if ($id -cnotmatch $script:GuidRe) { throw 'AAP_Unexpected: the new VM has no id' }
+        Invoke-AapLinFault 'create:after-newvm'
+        # The VM's id, before anything else touches it: the only VM a re-run may reuse.
+        Write-AapLinJournal $B $r 'create' 'intent' -VmId $id -Disks $disks
+    }
+    Write-AapLinSshConfig $dir $id
+    $B.Guests[$rid] = @{ VmId = $id; Dir = $dir; Seq = [long]0; Ceiling = [long]0; Started = $false; Hostile = $null }
+    Invoke-AapLinFault 'create:after-vm'
+    # Attach while the VM is Off (a re-run attaches again and gets the same declaration), then the seed from it.
+    $net = Get-AapLinNetRequest $r $id
+    $decl = Connect-AapLinNetwork $B $net
+    Invoke-AapLinFault 'create:after-attach'
     $seed = Join-Path $clone 'seed.iso'
     Remove-AapLinTree $seed $clone
-    $files = New-AapLinSeed -VmName $name -InstanceId ('aap-' + $rid.Substring(2) + '-' + [long]$r.lease_generation + '-' + (New-AapLinHex 4)) -PublicKey $public
+    $files = New-AapLinSeed -VmName $name -InstanceId ('aap-' + $rid.Substring(2) + '-' + [long]$r.lease_generation + '-' + (New-AapLinHex 4)) -PublicKey $public -Network $decl
     $made = & $B.Provider.NewSeedImage @{ Path = $seed; Label = 'CIDATA'; Files = $files }
     if ((Get-AapLinPathKind $seed) -cne 'file') { throw 'AAP_SeedInvalid: no seed image was written' }
     # The image on disk read back against what the writer produced, its size and SHA-256, through a handle that shares
@@ -1067,21 +1139,10 @@ function Invoke-AapLinCreate($B, $r, [string]$BaseSha256, $j) {
         }
     } finally { $hold.Dispose() }
     Invoke-AapLinFault 'create:after-seed'
-    if (-not $id) {
-        $id = ([string](Get-AapLinField (& $B.Provider.NewVm @{ Name = $name; Path = $clone; Cpus = [int]$r.cpus; MemGib = [int]$r.mem_gib; OsDisk = $os; Seed = $seed }) 'Id')).ToLowerInvariant()
-        if ($id -cnotmatch $script:GuidRe) { throw 'AAP_Unexpected: the new VM has no id' }
-        Invoke-AapLinFault 'create:after-newvm'
-        # The VM's id, before anything else touches it: the only VM a re-run may reuse.
-        Write-AapLinJournal $B $r 'create' 'intent' -VmId $id -Disks $disks
-    }
-    Write-AapLinSshConfig $dir $id
-    $B.Guests[$rid] = @{ VmId = $id; Dir = $dir; Seq = [long]0; Ceiling = [long]0; Started = $false; Hostile = $null }
-    Invoke-AapLinFault 'create:after-vm'
+    & $B.Provider.SetSeed @{ VmId = $id; Seed = $seed }   # the one DVD drive; setting the same path again is idempotent
     Assert-AapLinVmConfig $B $r $id $clone $os $seed
-    $net = @{ VmId = $id; VmName = $name; Profile = 'linux' }
-    & $B.Network.Attach $net
-    Assert-AapLinNetwork $B $id $net
-    Write-AapLinJournal $B $r 'create' 'done' -VmId $id -Disks $disks -Code 'ok' -Detail 'differencing disk, key pair, seed and VM created; network verified'
+    Assert-AapLinNetwork $B $net $decl
+    Write-AapLinJournal $B $r 'create' 'done' -VmId $id -Disks $disks -Code 'ok' -Detail 'differencing disk, key pair, VM, network and seed created; network verified'
     Invoke-AapLinFault 'create:after-done'
     $id
 }
@@ -1266,12 +1327,17 @@ function Invoke-AapLinHostile($B, $r, $j, [string]$Op, [string]$Code) {
 # VM, with or without a guest channel (a guest that silences its agent is measured all the same): a paused VM, and a
 # clone folder over clone_gib or one that cannot be measured (fail closed: a step that threw every tick would leave the
 # VM unwatched). The Linux guest writes its job to its root file system, which is the clone's differencing disk, so the
-# clone cap is the job's disk cap. Returns the reason, or $null.
+# clone cap is the job's disk cap. A running clone's network that the P10.0 module no longer verifies stops it too
+# (host-network-module.md, Consumer obligations 3). Returns the reason, or $null.
 function Get-AapLinLimitBreach($B, $r, $j) {
     if (-not $j.VmId) { return $null }
     $vm = @(Get-AapLinVms $B | Where-Object { $_.Id -ceq [string]$j.VmId })
     if (-not $vm.Count) { return $null }
     if ($vm[0].State -like 'Paused*') { return 'vm paused' }   # check:vm-paused
+    if ($vm[0].State -ceq 'Running' -and $j.Has['create/done']) {   # check:network-running
+        $why = Get-AapLinRunningNetworkProblem $B $r ([string]$j.VmId)
+        if ($why) { return $why }
+    }
     try { $bytes = [double](& $B.Provider.MeasureBytes @{ Path = (Get-AapLinCloneDir $B $r) }) } catch { return 'clone not measurable' }
     if ($bytes -gt [double]$r.clone_gib * $script:GiB) { return 'clone over cap' }   # check:clone-cap
     $null
@@ -1332,8 +1398,21 @@ function Step-AapLinCreating($B, $r, $j, $g, [string]$BaseSha256) {
     if (-not $j.Has['boot/done']) {
         Write-AapLinJournal $B $r 'boot' 'intent' -VmId $j.VmId
         Invoke-AapLinFault 'boot:after-intent'
-        try { & $B.Provider.StartVm @{ VmId = $j.VmId } }   # running already counts as done
-        catch { return (Invoke-AapLinAbandon $B $r $j 'boot' 'fatal' (Get-AapLinError $_)) }
+        # Before the power-on, with the VM Off (host-network-module.md, Consumer obligations 2): Attach again (the same
+        # declaration, from the module's journal), the declaration check, Verify and the read-back; a failure stops the
+        # start. A VM already running was started after those checks by a step that died before its done record: Verify.
+        try {
+            $vm = @(Get-AapLinVms $B | Where-Object { $_.Id -ceq [string]$j.VmId })
+            $net = Get-AapLinNetRequest $r ([string]$j.VmId)
+            if ($vm.Count -eq 1 -and $vm[0].State -ceq 'Running') {
+                $problems = @(& $B.Network.Verify $net)
+                if ($problems.Count) { throw "AAP_NetworkUntrusted: $(@($problems | ForEach-Object { Get-AapLinLine ([string]$_) 100 }) -join '; ')" }   # check:boot-verify
+            } else {
+                Assert-AapLinNetwork $B $net (Connect-AapLinNetwork $B $net)
+                Invoke-AapLinFault 'boot:after-checks'
+                & $B.Provider.StartVm @{ VmId = $j.VmId }
+            }
+        } catch { return (Invoke-AapLinAbandon $B $r $j 'boot' 'fatal' (Get-AapLinError $_)) }
         Write-AapLinJournal $B $r 'boot' 'done' -VmId $j.VmId -Code 'ok' -Detail 'VM started'
         Invoke-AapLinFault 'boot:after-done'
         return (New-AapLinResult $r 'booted')
@@ -1537,7 +1616,7 @@ function New-AapLinBackend {
         AllocArgs = @{ LockTimeoutSeconds = $LockTimeoutSeconds; RelaxedTrustForTests = [bool]$RelaxedTrustForTests }
         BrokerArgs = $broker; Relaxed = [bool]$RelaxedTrustForTests; TrustedSids = $trusted
         Transport = $Transport; Now = $Clock; Sleep = $Sleep; StatusSeconds = $script:StatusSeconds
-        Guests = @{}; Leases = @{}; Tried = @{}; StatusAt = @{}; StatusBusy = @{}; Breached = @{}
+        Guests = @{}; Leases = @{}; Tried = @{}; StatusAt = @{}; StatusBusy = @{}; Breached = @{}; NetAt = @{}
     }
     if ($null -eq $B.Transport) { $B.Transport = { param($Call) Invoke-AapLinGuestChild $Call } }
     if ($null -eq $B.Now) { $B.Now = { [DateTime]::UtcNow } }

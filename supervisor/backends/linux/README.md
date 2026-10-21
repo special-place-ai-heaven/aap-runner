@@ -11,7 +11,8 @@ of P10's reviews, and differs only where a Linux guest differs. What other items
 [INTEGRATION.md](INTEGRATION.md).
 
 **Status: authored against fakes only.** No VM, switch, disk, seed ISO, key pair or SSH session was created. The guest
-transport is CANDIDATE (D2) until the lab proof P02.1 passes; the guest network is the P10.0 module, not built yet.
+transport is CANDIDATE (D2) until the lab proof P02.1 passes; the guest network is the P10.0 module, not built yet; this backend conforms to its contract,
+[host-network-module.md](../../../parity/contracts/host-network-module.md) (P11.2).
 
 | File | What it is |
 |---|---|
@@ -38,10 +39,10 @@ allocator state and the reservation's journal. The supervisor calls it for every
 
 | Allocator state | Step |
 |---|---|
-| `creating` | **create**: trust-check the roots and the host (Enhanced Session Mode off, nobody but SYSTEM and Administrators in Hyper-V Administrators), check that the generation folder and `base.vhdx` are sealed read-only, re-hash the base against the pin through a read handle held until the differencing disk exists and its parent is checked, the clone folder, `os.avhdx`, a fresh key pair, the seed ISO, `New-VM` and its id journaled at once (or the VM whose id the journal already recorded), the per-clone `ssh_config`, read back and verify every VM setting, its disk and its DVD, attach the guest network and verify it. Then **boot**, then **ready**: wait for the host key in KVP and pin it, `probe` until `ready` (at most 15 minutes after boot), eject and delete the seed, check no medium is left, `Set-AapSlotState ready` |
+| `creating` | **create**: trust-check the roots and the host (Enhanced Session Mode off, nobody but SYSTEM and Administrators in Hyper-V Administrators), check that the generation folder and `base.vhdx` are sealed read-only, re-hash the base against the pin through a read handle held until the differencing disk exists and its parent is checked, the clone folder, `os.avhdx`, a fresh key pair, `New-VM` with no network adapter and an empty DVD drive and its id journaled at once (or the VM whose id the journal already recorded), the per-clone `ssh_config`, P10.0's `Attach` (VM Off) and the shared declaration check, the seed ISO with the declaration's static addressing (`SetSeed` puts it in the DVD drive), read back and verify every VM setting, its disk and its DVD, then `Verify` and the read-back. Then **boot**: `Attach` again (VM Off; the same declaration), the declaration check, `Verify` and the read-back, then `Start-VM` (a VM found already running is verified instead), then **ready**: then **ready**: wait for the host key in KVP and pin it, `probe` until `ready` (at most 15 minutes after boot), eject and delete the seed, check no medium is left, `Set-AapSlotState ready` |
 | `ready` | **run_one**: `Invoke-AapBrokerLease`, `deliver_registration` with the JIT config on the ssh child's stdin, `start_runner` (its success journaled) |
 | `ready`, `busy`, `draining` | **heartbeat**, at most every 30 s per reservation: guest `status` over this VM's own channel, broker status for `JobRunning`, `Update-AapHeartbeat`. A runner that GitHub reports gone ends the job (`collecting`); a draining runner that is idle is stopped; a busy one is never touched |
-| every state with a VM | **limits**, from the host, before anything else on every step, with or without a guest channel: `creating` while it probes, `ready`, `busy`, `draining`, `collecting`, every quarantine, and `deleting` (a drained VM kept for its pending release) before the once-a-minute retry gate; after a restart too. A paused VM or a clone folder over `clone_gib` (or one that cannot be measured) destroys the VM (`fatal`), the slot held until the teardown proof |
+| every state with a VM | **limits**, from the host, before anything else on every step, with or without a guest channel: `creating` while it probes, `ready`, `busy`, `draining`, `collecting`, every quarantine, and `deleting` (a drained VM kept for its pending release) before the once-a-minute retry gate; after a restart too. A paused VM, a clone folder over `clone_gib` (or one that cannot be measured), or a running VM whose network P10.0's `Verify` no longer accepts or cannot look at (at most every 30 s per reservation) destroys the VM (`fatal`), the slot held until the teardown proof |
 | `collecting` | **collect**: the agent's bounded summary (returned as `Summary`, never written), then `deleting` |
 | `deleting` | **destroy**: `Invoke-AapBrokerRelease` if a lease was ever asked for, `Stop-VM -TurnOff`, `Remove-VM`, P10.0 detach, delete the clone folder (disk, seed, VM files, key) and any scratch folder without following links, observe absence, `Complete-AapTeardown` |
 | `quarantined` | `heartbeat`: a validated reply plus a broker answer returns it; `hostile_guest`, `teardown_failed`, or a destroy already journaled: destroy again; `crash`, `unknown_vm`: held |
@@ -88,6 +89,12 @@ The seed (`New-AapLinSeed`, written by the provider's `NewSeedImage` as ISO 9660
   created, and no account gets uid 1000), and root's `authorized_keys` with exactly one line:
   `restrict,command="/usr/local/libexec/aap-guest/agent" ssh-ed25519 <public> aap-management`.
 - `meta-data`: a fresh `instance-id` (`aap-<rid hex>-<lease generation>-<random>`) and `local-hostname`.
+- `network-config` (version 2): the static addressing from the declaration P10.0's `Attach` returned, once the shared
+  check accepted it for this VM: the `address` with the subnet's prefix length, the `gateway` as default route, the
+  `resolvers` as DNS servers, `dhcp4`, `dhcp6` and `accept-ra` off, no link-local addressing, on the one interface matched
+  by driver `hv_netvsc`. Nothing on the host serves DHCP or DNS to guests (host-network-module.md, Attach). The
+  declaration itself is never journaled or kept: every create run and every boot attaches again and gets the same one
+  from the module's journal.
 
 The writer takes only full blocks from IMAPI2's image stream (a short read fails the image instead of leaving stale bytes
 in it) and reports the size and SHA-256 of what it wrote; create reads the file back through a read-only handle against
@@ -179,7 +186,9 @@ reports Enhanced Session Mode not off (`AAP_EnhancedSession`) and any Hyper-V Ad
 2. **Root receives the forced command** (`PermitRootLogin forced-commands-only`, P15's image part): the agent runs as root
    and starts the runner as `runner`; no separate management account, so no account but `runner` (uid 1001) is created.
 3. **KVP is on** for Linux clones, for host-key pinning only (guest-transport.md, Linux candidate). If P02.1 picks another
-   pinning path, `KeyValuePairExchange` and `GetHostKey` change together.
+   pinning path, `KeyValuePairExchange` and `GetHostKey` change together. host-network-module.md ("Not the module's")
+   says the consumers' `NewVm` turns Key-Value Pair Exchange off; for Linux clones that contradicts guest-transport.md's
+   Linux candidate, and this backend keeps it on (reported to the coordinator as a contract wording defect, P11.2).
 4. **The channel survives a supervisor restart** (key, pin and seq mark on disk, as guest-transport.md keeps the Linux key
    in a per-reservation file); P10 request 3 asks the same for Windows.
 5. **Mount options and read-ahead** (image-catalog.md, Acceptance input for P07 and P11): the backend attaches one SCSI
@@ -199,11 +208,11 @@ guest's first boot and its agent, the broker and the network (no Hyper-V, ssh, W
 | `Lifecycle.Tests.ps1` | one job end to end; boot and host-key deadline; lost replies; drain; heartbeat binding; the limits in every state and after a restart; two consecutive jobs on one slot observe nothing of each other |
 | `Transport.Tests.ps1` | every reply check; ssh failures are failed guests; every hostile case end to end; bad host key; changed host key; pin first; the ssh_config hardening; the real capped child (overflow, stderr flood, hang, memory flood, grandchild, exit codes, stdin only, BOM-free stdin under three code pages, the payload unbuffered); the relay's arguments and address; its job guard (the call child's job named for it: inside, on to its socket; another job, another name for the same job, no name, a job it is not in: exit 4 and no socket; no handle kept on the job) |
 | `Teardown.Tests.ps1` | release outcomes; a VM, key or folder that will not go; no slot reuse before the proof; links in clone folders |
-| `Create.Tests.ps1` | untrusted roots; the base pin and seal; host settings; the seed's content; key and seed failures; the ISO writer's full blocks and short reads; the seed read back (lost or stale bytes); re-run create; VM settings; switch, guards and network verification; eject; the pin file; the storage document and context |
+| `Create.Tests.ps1` | untrusted roots; the base pin and seal; host settings; the seed's content and its network-config from the declaration; key and seed failures; the ISO writer's full blocks and short reads; the seed read back (lost or stale bytes); re-run create; VM settings; the network against the shared strict fake (`tests/common/AapHostNetworkFake.psm1`): the create order (no seed at `NewVm`, `Attach`, seed, `SetSeed`, `Verify`), no copy of the declaration, every tamper and fault refused at create and before the start, a `$null` from `Verify`, the provider read-back, a refused declaration, a crash between `Attach` and the seed, the re-`Attach` before `Start-VM`, a running clone verified again; the provider's adapter-name rule; eject; the pin file; the storage document and context |
 | `Recovery.Tests.ps1` | unreadable journals; hostile records; restart keeps the channel (probe, heartbeats, collect); a fresh channel's initial mark; missing or damaged seq mark and lost key folder; restart between delivery and start; JIT delivery rule; inventory and reconcile callbacks; orphans |
-| `Crash.Tests.ps1` | a real process killed at every lifecycle boundary (22 points, plus a drain and a running job) and recovered: never a second VM or lease, no refused `seq`, no secret left |
+| `Crash.Tests.ps1` | a real process killed at every lifecycle boundary (24 points, plus a drain and a running job) and recovered: never a second VM or lease, no refused `seq`, no secret left |
 | `Hygiene.Tests.ps1` | no JIT config or private key in any file; the private key never read; the JIT object never a command's parameter; antivirus patterns; AMSI compile; hidden children with no data on their command line; one `Add-Type`, under the admin-only `%TMP%` |
-| `Invoke-AapLinMutations.ps1` | a control run, then disables each `# check:` (in `AapLinBackend.psm1` and `hvsock-relay.ps1`) in turn; every check must make a test fail |
+| `Invoke-AapLinMutations.ps1` | a control run, then disables each `# check:` (in `AapLinBackend.psm1`, `hvsock-relay.ps1` and `AapLinBackend.HyperV.psm1`) in turn; every check must make a test fail |
 
 ```powershell
 Invoke-Pester -Path tests/backends/linux             # both hosts
@@ -217,6 +226,9 @@ pwsh -File tests/backends/linux/Invoke-AapLinMutations.ps1
   to its ProxyCommand is one of them: if it did not, every relay would refuse and no clone would get past its first probe
   (fail closed, seen at once).
 - The guest network module (P10.0) does not exist; without it every create fails closed (`AAP_NetworkUnavailable`).
+  Against it the backend follows the contract's consumer obligations; that cloud-init NoCloud takes the address from
+  `network-config` on `hv_netvsc` with no DHCP client asking, and the provider's adapter read-back as Hyper-V really
+  shows it, are lab points (P02.1).
 - The guest agent, the sshd vsock socket and the KVP host-key publisher (P15) do not exist; the fake guest follows
   guest-transport.md and INTEGRATION.md, P15.
 - `shutdown` is never sent: destroy turns the VM off.

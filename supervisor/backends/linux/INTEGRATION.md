@@ -93,12 +93,29 @@ backend's reply checks are the same table).
 
 ## P10.0: the guest network module
 
-The same interface as for Windows (its INTEGRATION.md, P10.0), with `Profile = 'linux'` and the internal switch
-**`aap-guests-linux`**. The backend checks, from the VM's own settings after `Attach`, at least one adapter, every adapter
-on `aap-guests-linux` of type Internal with DHCP guard and router guard on and MAC spoofing off, and refuses
-`AAP_NetworkUntrusted` when that or the module's `Verify` (a non-empty list, or a throw: it cannot look) fails. The
-extended port ACLs and the host firewall rules are the module's and P19's; the backend relies on `Verify` for them. Linux
-clones need DHCP and DNS on the switch (cloud-init's default network config on `hv_netvsc`).
+The contract is [host-network-module.md](../../../parity/contracts/host-network-module.md) (version 1); this backend is
+its P11.2 consumer. Requests are `@{ VmId; VmName; Profile = 'linux' }`; the clone's switch is `aap-guests-linux`, which
+only the shared check names (`supervisor/network/AapHostNetworkCheck.psm1`, imported beside capacity and broker; the
+backend keeps no switch name or deny list of its own). What the backend does:
+
+- create: `NewVm` with no adapter and an empty DVD drive, `Attach` (VM Off), the shared declaration check
+  (`AAP_NetworkInvalid`), the seed with the declaration's static addressing (`network-config`), `SetSeed`, the VM's
+  settings, then `Verify` (every object it writes is a problem; a throw is `AAP_NetworkUntrusted`) and the read-back:
+  the provider's `GetVmConfig.Adapters` in the contract's provider shape, judged by `Get-AapHostNetworkAdapterProblems`
+  (the guards, mirroring, VLAN, storm limit, legacy ACLs, peers and every extended port ACL: the fixed denies both ways,
+  the source pin, no other Allow). The backend no longer relies on `Verify` alone for the port ACLs.
+- boot: `Attach` again with the VM Off (the same declaration; none is journaled or kept), the declaration check, `Verify`
+  and the read-back, then `Start-VM`; any failure tears the clone down. A VM found already running (a crash after its
+  start) is verified instead.
+- a running clone: `Verify` at most every 30 s per reservation on every step (Consumer obligations 3, by polling); a
+  problem or a throw destroys the clone.
+- destroy: `Remove-VM`, then `Detach`, on every attempt; a `Detach` that throws holds the slot (`teardown_failed`).
+- the provider refuses to read adapters back when an `aap-guest-<id>` adapter sits on a VM other than the one it names,
+  when such a name appears twice on the host, or when the clone's adapter has another name (net-sec round 7; the
+  module's `Verify` throws on the same).
+
+Guests get no DHCP or DNS service on the switch: the "Linux clones need DHCP and DNS" request is withdrawn (the
+declaration's static addressing replaces it).
 
 ## P02.1: what the lab must show for this backend
 
@@ -115,6 +132,11 @@ clones need DHCP and DNS on the switch (cloud-init's default network config on `
 - **Host key**: the KVP guest-to-host item appears in `Msvm_KvpExchangeComponent.GuestExchangeItems` as the provider reads
   it; a changed host key is refused by ssh.exe (exit 255, a failed guest); the key published before any job ran is the
   one sshd presents.
+- **Network**: cloud-init NoCloud on the P07 image applies `network-config` version 2 (static address, default route
+  and resolvers, matched by driver `hv_netvsc`, `link-local: []`) and no DHCP client keeps asking; `Set-VMDvdDrive`
+  on the empty drive of an Off VM (`SetSeed`) is what the first boot reads; the provider's adapter read-back
+  (`VlanSetting.OperationMode`, `StormLimit`, the extended ACL fields as text, `Get-VMNetworkAdapter -All` with
+  stopped VMs) is what Hyper-V shows; the adapter the module creates is named `aap-guest-<vm id>`.
 - **Seed**: IMAPI2's result stream fills every block `AapLinIsoWriter` asks for (it reports each read's count, and the
   writer fails the image on a short one), and `BlockSize * TotalBlocks` is the file's size; the image labelled `CIDATA`
   is read by cloud-init NoCloud on the P07 image; `users` with only `runner` creates no uid 1000; root's

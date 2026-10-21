@@ -36,6 +36,27 @@ BeforeAll {
         @(Get-ChildItem -LiteralPath $x.W.Clones).Count | Should -Be 0
     }
     function Grant-LinAce([string]$Path, [string]$Grant) { $o = & icacls.exe $Path /grant $Grant 2>&1; if ($LASTEXITCODE) { throw "icacls: $o" } }
+    # A declaration as the P10.0 module returns it for a Linux clone (the shared fake's host), with $Change applied.
+    function New-LinDecl([string]$Name, [hashtable]$Change = @{}) {
+        $d = [ordered]@{ schema = 1; kind = 'host_network_attach'; vm_id = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'; vm_name = $Name; profile = 'linux'
+            subnet = '172.31.251.0/24'; gateway = '172.31.251.1'; address = '172.31.251.7'; resolvers = @('192.0.2.53', '198.51.100.53'); endpoints = @()
+        }
+        foreach ($k in $Change.Keys) { $d[$k] = $Change[$k] }
+        $d
+    }
+    # The step that follows create (boot), with the guest network's fake host tampered or failing before it.
+    function Invoke-LinBoot([string[]]$Tamper = @(), [string[]]$Fail = @()) {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $r = New-LinReservation $w
+        (Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        Set-AapFakeHostNetworkKnob -Root $w.Net -Tamper $Tamper -Fail $Fail
+        $s = Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $r.reservation_id) -BaseSha256 $w.BaseSha
+        Set-AapFakeHostNetworkKnob -Root $w.Net
+        [pscustomobject]@{ Step = $s; W = $w; B = $B; Id = $r.reservation_id
+            Detail = @(@(Get-LinJournal $w $r.reservation_id | Where-Object { $_.op -eq 'boot' -and $_.phase -eq 'failed' }) | ForEach-Object { $_.result.detail }) -join ' | '
+        }
+    }
 }
 
 Describe 'trusted roots only' {
@@ -206,7 +227,7 @@ Describe 'the per-clone key and seed' {
         [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
         $seed = Read-LinSeed (Join-Path $w.Clones "$rid\seed.iso")
         $seed.label | Should -BeExactly 'CIDATA'
-        @($seed.files.PSObject.Properties.Name) -join ',' | Should -Be 'user-data,meta-data'
+        @($seed.files.PSObject.Properties.Name) -join ',' | Should -Be 'user-data,meta-data,network-config'
         $ud = [string]$seed.files.'user-data'
         $pub = ([IO.File]::ReadAllText((Join-Path $w.Clones "$rid\ssh\id_ed25519.pub")) -split ' ')[0..1] -join ' '
         $name = Get-AapVmName -Profile linux -Slot $r.slot -LeaseGeneration $r.lease_generation -ReservationId $rid
@@ -227,11 +248,32 @@ Describe 'the per-clone key and seed' {
 
     It 'New-AapLinSeed refuses a value it cannot vouch for' -Tag 'seed-values' {
         $pub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI' + ('A' * 43)
-        (New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub).Keys -join ',' | Should -Be 'user-data,meta-data'
+        $decl = New-LinDecl 'aap-l-1-1-0123abcd'
+        (New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network $decl).Keys -join ',' | Should -Be 'user-data,meta-data,network-config'
         foreach ($bad in @(@('aap-w-1-1-0123abcd', 'aap-x', $pub), @('aap-l-1-1-0123abcd', 'AAP X', $pub), @('aap-l-1-1-0123abcd', 'aap-x', ($pub + "`nruncmd: [reboot]")),
                 @('aap-l-1-1-0123abcd', 'aap-x', 'ssh-rsa AAAAB3NzaC1yc2E'), @("aap-l-1-1-0123abcd`nruncmd", 'aap-x', $pub))) {
-            { New-AapLinSeed -VmName $bad[0] -InstanceId $bad[1] -PublicKey $bad[2] } | Should -Throw '*AAP_SeedInvalid*'
+            { New-AapLinSeed -VmName $bad[0] -InstanceId $bad[1] -PublicKey $bad[2] -Network $decl } | Should -Throw '*AAP_SeedInvalid*'
         }
+    }
+
+    It 'the network-config is the declaration''s static addressing, DHCP off, on the hv_netvsc interface' {
+        $pub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI' + ('A' * 43)
+        $nc = (New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd'))['network-config']
+        $nc | Should -BeExactly ((@('version: 2', 'ethernets:', '  aap0:', '    match:', '      driver: hv_netvsc', '    dhcp4: false', '    dhcp6: false', '    accept-ra: false',
+                    '    link-local: []', '    addresses: [172.31.251.7/24]', '    routes:', '      - to: default', '        via: 172.31.251.1', '    nameservers:',
+                    '      addresses: [192.0.2.53, 198.51.100.53]') -join "`n") + "`n")
+    }
+
+    It 'New-AapLinSeed writes no network-config from a declaration the shared check refuses (<Case>)' -Tag 'seed-network' -ForEach @(
+        @{ Case = 'another VM name'; Change = @{ vm_name = 'aap-l-2-1-0123abcd' } }
+        @{ Case = 'the Windows profile'; Change = @{ profile = 'windows' } }
+        @{ Case = 'an address outside the subnet'; Change = @{ address = '172.31.252.7' } }
+        @{ Case = 'the gateway as address'; Change = @{ address = '172.31.251.1' } }
+        @{ Case = 'a YAML line in a resolver'; Change = @{ resolvers = @("192.0.2.53`n    dhcp4: true") } }
+        @{ Case = 'a key too many'; Change = @{ dhcp = $true } }
+    ) {
+        $pub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI' + ('A' * 43)
+        { New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd' $Change) } | Should -Throw '*AAP_SeedInvalid: the network declaration*'
     }
 
     It 'a key pair ssh-keygen did not make, or a public key of another shape, is refused' -Tag 'key-shape' {
@@ -240,12 +282,12 @@ Describe 'the per-clone key and seed' {
         Assert-LinRefused (Invoke-LinCreate -Knobs @{ SeedFails = $true }) '*IMAPI2 failed*'
     }
 
-    It 'a seed image whose bytes on disk are not the ones written (<How>) is refused before any VM exists' -Tag 'seed-written' -ForEach @(
+    It 'a seed image whose bytes on disk are not the ones written (<How>) is refused before the VM gets it' -Tag 'seed-written' -ForEach @(
         @{ How = 'short'; Hashed = 0 }, @{ How = 'stale'; Hashed = 1 }   # the size is checked first, then the re-read hash
     ) {
         $x = Invoke-LinCreate -Knobs @{ SeedLost = $How }
         Assert-LinRefused $x '*AAP_SeedInvalid: the seed image on disk is not the image that was written*'
-        @(Get-LinCalls $x.W 'NewVm *').Count | Should -Be 0
+        @(Get-LinCalls $x.W 'SetSeed *').Count | Should -Be 0
         @(Get-LinCalls $x.W 'HashFile *seed.iso').Count | Should -Be $Hashed
     }
 
@@ -376,18 +418,90 @@ Describe 'the VM and its network' {
         Assert-LinRefused (Invoke-LinCreate -Knobs @{ ExtraDisk = $true }) '*AAP_VmUntrusted*not exactly os.avhdx*'
     }
 
-    It 'refuses a guest adapter with <Case>' -Tag 'switch' -ForEach @(
-        @{ Case = 'the Default Switch'; K = @{ NetSwitch = 'Default Switch' } }, @{ Case = 'an External switch'; K = @{ NetSwitchType = 'External' } }
-        @{ Case = 'the Windows switch'; K = @{ NetSwitch = 'aap-guests-win' } }, @{ Case = 'no DHCP guard'; K = @{ NetDhcpGuard = $false } }
-        @{ Case = 'no router guard'; K = @{ NetRouterGuard = $false } }, @{ Case = 'MAC spoofing'; K = @{ NetMacSpoofing = $true } }, @{ Case = 'no adapter at all'; K = @{ NetNoAdapter = $true } }
-    ) {
-        $x = Invoke-LinCreate -Knobs $K
-        Assert-LinRefused $x '*AAP_NetworkUntrusted*'
+    It 'create runs NewVm with no seed, Attach, the seed from the declaration into the DVD drive, then Verify; it keeps no copy' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $r = New-LinReservation $w
+        $rid = $r.reservation_id
+        (Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        $vm = @(Get-LinVms $w)[0]
+        $order = @(Get-LinCalls $w | Where-Object { $_ -match '^(NewVm|NetAttach|NewSeedImage|SetSeed|NetVerify|StartVm) ' } | ForEach-Object { ($_ -split ' ')[0] })
+        $order -join ',' | Should -Be 'NewVm,NetAttach,NewSeedImage,SetSeed,NetVerify'
+        $decl = @(Get-AapFakeHostNetworkRecord -Root $w.Net -VmId $vm.Id)[0].declaration
+        $nc = [string](Read-LinSeed (Join-Path $w.Clones "$rid\seed.iso")).files.'network-config'
+        $nc | Should -Match "(?m)^    addresses: \[$([regex]::Escape($decl.address))/24\]$"
+        $nc | Should -Match "(?m)^        via: $([regex]::Escape($decl.gateway))$"
+        $nc | Should -Match "(?m)^      addresses: \[$([regex]::Escape(@($decl.resolvers) -join ', '))\]$"
+        $nc | Should -Match '(?m)^    dhcp4: false$'
+        $nc | Should -Not -Match 'dhcp4: true'
+        @($vm.Dvds) | Should -Be @((Join-Path $w.Clones "$rid\seed.iso"))
+        # The declaration lives in the module's journal only: never in the reservation's journal or the backend context.
+        (@(Get-LinJournalLines $w $rid) -join "`n") | Should -Not -Match ([regex]::Escape($decl.address))
+        # The guest boots with that address and nothing else: no DHCP serves it.
+        @(Invoke-LinSteps $B $w $rid -Max 3 -Until { param($x) $x.state -eq 'ready' } | ForEach-Object { $_.Action }) -join ',' | Should -Be 'booted,ready'
+        @(Get-LinVms $w)[0].Address | Should -BeExactly $decl.address
     }
 
-    It 'refuses when the network module''s own verification fails, or cannot look' -Tag 'network-verify' {
-        Assert-LinRefused (Invoke-LinCreate -Knobs @{ NetProblems = @('port ACL missing: 169.254.0.0/16') }) '*AAP_NetworkUntrusted*port ACL missing*'
-        Assert-LinRefused (Invoke-LinCreate -Knobs @{ VerifyThrows = $true }) '*AAP_NetworkUntrusted: the guest network cannot be verified*'
+    It 'refuses a create whose network the module''s Verify reports: <Tamper>' -Tag 'network-verify' -ForEach @(
+        'no-adapter', 'second-adapter', 'external-switch', 'other-switch', 'dhcp-guard-off', 'router-guard-off', 'mac-spoofing-on', 'port-mirroring', 'vlan-trunk',
+        'storm-limit-off', 'legacy-acl', 'foreign-peer', 'drop-fixed-deny', 'drop-inbound-deny', 'scoped-deny', 'stateful-rule', 'isolated-rule', 'no-source-pin',
+        'pin-above-deny', 'extra-allow', 'public-host', 'host-empty', 'host-no-gateway', 'host-no-lan' | ForEach-Object { @{ Tamper = $_ } }
+    ) {
+        $x = Invoke-LinCreate -Prepare { param($w) Set-AapFakeHostNetworkKnob -Root $w.Net -Tamper $Tamper }.GetNewClosure()
+        Assert-LinRefused $x '*AAP_NetworkUntrusted*'
+        @(Get-AapFakeHostNetworkRecord -Root $x.W.Net).Count | Should -Be 0   # torn down: removed, then detached
+    }
+
+    It 'refuses a create when the module fails: <Fail>' -Tag 'network-verify' -ForEach @(
+        @{ Fail = 'Attach'; Like = '*AAP_NetworkUntrusted: Attach failed*' }, @{ Fail = 'AttachAfterIntent'; Like = '*AAP_NetworkUntrusted: Attach failed*' }
+        @{ Fail = 'AttachAfterAct'; Like = '*AAP_NetworkUntrusted: Attach failed*' }, @{ Fail = 'Verify'; Like = '*AAP_NetworkUntrusted: the guest network cannot be verified*' }
+    ) {
+        $x = Invoke-LinCreate -Prepare { param($w) Set-AapFakeHostNetworkKnob -Root $w.Net -Fail $Fail }.GetNewClosure()
+        Assert-LinRefused $x $Like
+        @(Get-AapFakeHostNetworkRecord -Root $x.W.Net).Count | Should -Be 0
+    }
+
+    It 'every object Verify writes is a problem: a $null after an empty problem list refuses the create' -Tag 'network-verify' {
+        Assert-LinRefused (Invoke-LinCreate -Knobs @{ VerifyWritesNull = $true }) '*AAP_NetworkUntrusted*'
+    }
+
+    It 'the read-back is Hyper-V''s, through the provider, even when the module''s Verify passes: <Case>' -Tag 'network-readback' -ForEach @(
+        @{ Case = 'no adapter'; Adapters = @() }
+        @{ Case = 'an adapter with no fields'; Adapters = @(@{ SwitchName = 'aap-guests-linux' }) }
+    ) {
+        $x = Invoke-LinCreate -Knobs @{ VmOverride = @{ Adapters = $Adapters } }
+        Assert-LinRefused $x '*AAP_NetworkUntrusted*'
+        @(Get-LinCalls $x.W 'NetVerify *').Count | Should -BeGreaterThan 0
+    }
+
+    It 'refuses a declaration the shared check refuses: AAP_NetworkInvalid, nothing seeded' -Tag 'network-declaration' {
+        $x = Invoke-LinCreate -Knobs @{ AttachDeclares = 'public-subnet' }
+        Assert-LinRefused $x '*AAP_NetworkInvalid*'
+        @(Get-LinCalls $x.W 'NewSeedImage *').Count | Should -Be 0
+    }
+
+    It 'a crash between Attach and the seed re-runs to one VM, one seed and the same declaration' {
+        $w = New-LinWorld
+        $r = New-LinReservation $w
+        $rid = $r.reservation_id
+        $c = Start-LinChild $w 'create:after-attach' $rid 1
+        $c.ExitCode | Should -Be -1 -Because "stdout: $($c.Out) stderr: $($c.Err)"
+        $vm = @(Get-LinVms $w)
+        $vm.Count | Should -Be 1
+        @($vm[0].Dvds).Count | Should -Be 0
+        $first = @(Get-AapFakeHostNetworkRecord -Root $w.Net)[0].declaration.address
+        $B = New-LinBackend $w
+        (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        @(Get-LinCalls $w 'NewVm *').Count | Should -Be 1
+        @(Get-LinCalls $w 'NewSeedImage *').Count | Should -Be 1
+        @(Get-AapFakeHostNetworkRecord -Root $w.Net).Count | Should -Be 1
+        @(Get-AapFakeHostNetworkRecord -Root $w.Net)[0].declaration.address | Should -BeExactly $first
+        [string](Read-LinSeed (Join-Path $w.Clones "$rid\seed.iso")).files.'network-config' | Should -Match "(?m)^    addresses: \[$([regex]::Escape($first))/24\]$"
+        @(@(Get-LinVms $w)[0].Dvds) | Should -Be @((Join-Path $w.Clones "$rid\seed.iso"))
+    }
+
+    It 'a seed the provider cannot put in the VM''s one DVD drive refuses the create' {
+        Assert-LinRefused (Invoke-LinCreate -Knobs @{ SetSeedFails = $true }) '*Set-VMDvdDrive failed*'
     }
 
     It 'without the P10.0 module every create fails closed' {
@@ -440,6 +554,90 @@ Describe 'the VM and its network' {
         (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid)).Action | Should -Be 'destroyed'
         @(Get-LinJournal $w $rid | Where-Object { $_.op -eq 'ready' -and $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_UnsafePath: a dir where a channel file goes*'
         @(Get-LinCalls $w 'Guest*').Count | Should -Be 0
+    }
+}
+
+Describe 'the guest network before every start and while it runs' {
+    It 'boot attaches again (the same declaration), checks it, verifies and reads back before StartVm' {
+        $x = Invoke-LinBoot
+        $x.Step.Action | Should -Be 'booted'
+        $order = @(Get-LinCalls $x.W | Where-Object { $_ -match '^(NetAttach|NetVerify|StartVm) ' } | ForEach-Object { ($_ -split ' ')[0] })
+        $order -join ',' | Should -Be 'NetAttach,NetVerify,NetAttach,NetVerify,StartVm'
+        @(Get-AapFakeHostNetworkRecord -Root $x.W.Net).Count | Should -Be 1
+    }
+
+    It 'a start the network does not allow is refused (<Tamper><Fail>): StartVm never runs, the clone is torn down' -Tag 'network-verify' -ForEach @(
+        @(@('no-adapter', 'second-adapter', 'external-switch', 'other-switch', 'dhcp-guard-off', 'router-guard-off', 'mac-spoofing-on', 'port-mirroring', 'vlan-trunk',
+                'storm-limit-off', 'legacy-acl', 'foreign-peer', 'drop-fixed-deny', 'drop-inbound-deny', 'scoped-deny', 'stateful-rule', 'isolated-rule', 'no-source-pin',
+                'pin-above-deny', 'extra-allow', 'public-host', 'host-empty', 'host-no-gateway', 'host-no-lan') | ForEach-Object { @{ Tamper = $_; Fail = '' } }) +
+        @(@('Attach', 'AttachAfterIntent', 'AttachAfterAct', 'Verify') | ForEach-Object { @{ Tamper = ''; Fail = $_ } })
+    ) {
+        $x = Invoke-LinBoot -Tamper @($Tamper | Where-Object { $_ }) -Fail @($Fail | Where-Object { $_ })
+        $x.Step.Action | Should -Be 'destroyed'
+        $x.Detail | Should -BeLike '*AAP_Network*'
+        @(Get-LinCalls $x.W 'StartVm *').Count | Should -Be 0
+        @(Get-LinVms $x.W).Count | Should -Be 0
+    }
+
+    It 'a boot step that finds its VM running (started before a crash) verifies it, and stops it when Verify fails' -Tag 'boot-verify' {
+        foreach ($t in @(@(), @('dhcp-guard-off'))) {
+            $w = New-LinWorld
+            $B = New-LinBackend $w
+            $r = New-LinReservation $w
+            [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+            $vms = @(Get-LinVms $w); $vms[0].State = 'Running'; Save-LinVms $w $vms
+            $B.StatusSeconds = 3600; $B.NetAt[$r.reservation_id] = [DateTime]::UtcNow   # the running check is not due: only boot's
+            Set-AapFakeHostNetworkKnob -Root $w.Net -Tamper $t
+            $s = Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $r.reservation_id) -BaseSha256 $w.BaseSha
+            @(Get-LinCalls $w 'NetAttach *').Count | Should -Be 1 -Because 'a running VM is never attached again'
+            if ($t.Count) { $s.Action | Should -Be 'destroyed' } else { $s.Action | Should -Be 'booted' }
+            @(Get-LinCalls $w 'StartVm *').Count | Should -Be 0
+        }
+    }
+
+    It 'a running clone whose network Verify no longer accepts is stopped and torn down (<State>)' -Tag 'network-running' -ForEach @(
+        @{ State = 'ready' }, @{ State = 'busy' }
+    ) {
+        $w = New-LinWorld
+        Set-LinKnob $w @{ RunnerBusy = $true }
+        $B = New-LinBackend $w
+        $r = New-LinReservation $w
+        $rid = $r.reservation_id
+        [void](Invoke-LinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+        if ($State -eq 'busy') { (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid)).Action | Should -Be 'running'; [void](Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid)) }
+        (Get-LinRes $w $rid).state | Should -Be $State
+        Set-AapFakeHostNetworkKnob -Root $w.Net -Tamper 'public-host'   # the host gained a public address: not certified
+        $s = Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid)
+        $s.Action | Should -Be 'destroyed'
+        @(Get-LinJournal $w $rid | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -Be 'network not verified'
+        @(Get-LinVms $w).Count | Should -Be 0
+    }
+}
+
+Describe 'the provider''s adapter names' {
+    BeforeAll {
+        Import-Module (Join-Path (Split-Path -Parent $script:BackendModule) 'AapLinBackend.HyperV.psm1') -Force
+        $script:Me = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'
+        $script:Other = '00000000-0000-4000-8000-0000000000aa'
+        function Get-LinNameProblem([object[]]$Adapters) { & (Get-Module AapLinBackend.HyperV) { param($v, $a) Get-AapLinAdapterNameProblem $v $a } $script:Me $Adapters }
+    }
+
+    It 'accepts the module''s adapter on its own VM beside other VMs'' adapters' {
+        Get-LinNameProblem @(@{ Name = "aap-guest-$($script:Me)"; VmId = $script:Me }, @{ Name = "aap-guest-$($script:Other)"; VmId = $script:Other }, @{ Name = 'Network Adapter'; VmId = $script:Other }) |
+            Should -BeNullOrEmpty
+    }
+
+    It 'an aap-guest-(vm id) adapter on another VM than the one it names' -Tag 'adapter-name-vm' {
+        Get-LinNameProblem @(@{ Name = "aap-guest-$($script:Me)"; VmId = $script:Me }, @{ Name = "aap-guest-$($script:Me)" + [char]::ConvertFromUtf32(0x00AD); VmId = $script:Other }) |
+            Should -BeLike '*sits on VM*'
+    }
+
+    It 'an aap-guest-(vm id) name that appears twice' -Tag 'adapter-name-dup' {
+        @(Get-LinNameProblem @(@{ Name = "aap-guest-$($script:Me)"; VmId = $script:Me }, @{ Name = "aap-guest-$($script:Me)"; VmId = $script:Me })) | Should -Contain "the adapter name aap-guest-$($script:Me) appears more than once"
+    }
+
+    It 'an adapter of this VM under another name' -Tag 'adapter-name-own' {
+        Get-LinNameProblem @(@{ Name = 'Network Adapter'; VmId = $script:Me }) | Should -BeLike "*is not aap-guest-$($script:Me)*"
     }
 }
 

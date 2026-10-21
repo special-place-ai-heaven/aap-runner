@@ -1,7 +1,8 @@
 # Fake world for the P11 Linux backend tests. Pester 5, Windows PowerShell 5.1 and PowerShell 7.5+.
 # Real folders under the test drive for the storage roots, the journal and the allocator (the real AapCapacity.psm1 in
 # relaxed trust), and file-backed fakes for Hyper-V (vms.json), ssh-keygen, the seed ISO writer, the guest's first boot and
-# its agent behind sshd (guests\<vm id>.json), the broker (its -Invoker, leases.json) and the P10.0 network module, so a
+# its agent behind sshd (guests\<vm id>.json), the broker (its -Invoker, leases.json) and the P10.0 network module (the
+# shared strict fake, tests/common/AapHostNetworkFake.psm1, under fake\net), so a
 # child process killed mid-step leaves the very world the parent then recovers from. Nothing here calls Hyper-V, ssh,
 # wsl.exe or the network.
 # The fakes resolve $w (the world) at call time from the calling scope, as P10's do: a test names its world $w.
@@ -14,6 +15,7 @@ $script:BackendModule = $(if ($env:AAP_LINBACKEND_MODULE) { $env:AAP_LINBACKEND_
 $script:SupervisorDir = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $script:BackendModule))
 $script:CapModule = Join-Path $script:SupervisorDir 'capacity\AapCapacity.psm1'
 $script:Validator = Join-Path $script:Repo 'parity\contracts\validate.py'
+Import-Module (Join-Path $script:Repo 'tests\common\AapHostNetworkFake.psm1')   # the shared strict fake of the P10.0 module
 $script:LinGen = 'ubuntu-24.04-x64/20261012.334.1-aap.1'
 $script:VolGuid = '00000000-0000-4000-8000-0000000000e1'
 $script:OtherGuid = '00000000-0000-4000-8000-0000000000f2'
@@ -62,11 +64,12 @@ function New-LinWorld {
     $w = [pscustomobject]@{
         Root = $root; Base = (Join-Path $root 'roots\base'); Clones = (Join-Path $root 'roots\clones'); Scratch = (Join-Path $root 'roots\scratch')
         Cap = (Join-Path $root 'cap'); Journal = (Join-Path $root 'cap\journal'); Fake = (Join-Path $root 'fake'); StoragePath = (Join-Path $root 'storage.json')
+        Net = (Join-Path $root 'fake\net')
         BaseFile = $null; BaseSha = $null; File = (Join-Path $root 'world.json')
     }
     [void][IO.Directory]::CreateDirectory((Join-Path $root 'roots'))
     foreach ($d in $w.Base, $w.Clones, $w.Scratch, $w.Cap) { New-LinAclDir $d }
-    foreach ($d in $w.Fake, (Join-Path $w.Fake 'guests'), (Join-Path $w.Fake 'exchanges')) { [void][IO.Directory]::CreateDirectory($d) }
+    foreach ($d in $w.Fake, (Join-Path $w.Fake 'guests'), (Join-Path $w.Fake 'exchanges'), $w.Net) { [void][IO.Directory]::CreateDirectory($d) }
     $genDir = Join-Path $w.Base ($script:LinGen -replace '/', '\')
     [void][IO.Directory]::CreateDirectory($genDir)
     $w.BaseFile = Join-Path $genDir 'base.vhdx'
@@ -174,6 +177,7 @@ function New-LinProvider {
     $p.NewVm = { param($a)
         Add-LinCall $w "NewVm $($a.Name)"
         if (Get-LinKnob $w 'NewVmFails' $false) { throw 'fake: New-VM failed' }
+        if ($a.ContainsKey('Seed')) { throw 'fake: NewVm takes no seed: the seed carries the declaration, so it comes after Attach' }
         $id = [guid]::NewGuid().ToString()
         $cfg = Join-Path $a.Path 'Virtual Machines'
         [void][IO.Directory]::CreateDirectory($cfg)
@@ -181,15 +185,38 @@ function New-LinProvider {
         $vm = [ordered]@{ Id = $id; Name = $a.Name; State = 'Off'; Cpus = $a.Cpus; MemGib = $a.MemGib; Generation = 2; SecureBoot = $true; SecureBootTemplate = 'MicrosoftUEFICertificateAuthority'
             CheckpointType = 'Disabled'; AutomaticStopAction = 'TurnOff'; AutomaticStartAction = 'Nothing'; DynamicMemory = $false; NestedVirtualization = $true
             GuestServiceInterface = $false; KeyValuePairExchange = $true; ConfigurationLocation = $a.Path; SnapshotFileLocation = $a.Path; SmartPagingFilePath = $a.Path
-            Disks = @($a.OsDisk); Dvds = @($a.Seed); Adapters = @(); ComPorts = 0; GpuPartitions = 0; AssignedDevices = 0; Booted = $false; HostKey = ''; AuthKey = ''; OsDisk = $a.OsDisk
+            Disks = @($a.OsDisk); Dvds = @(); DvdDrives = 1; ComPorts = 0; GpuPartitions = 0; AssignedDevices = 0; Booted = $false; HostKey = ''; AuthKey = ''; OsDisk = $a.OsDisk
+            Address = ''
         }
         if (Get-LinKnob $w 'ExtraDisk' $false) { $vm.Disks = @($vm.Disks) + (Join-Path $a.Path 'extra.vhdx') }
-        $o = Get-LinKnob $w 'VmOverride' $null
-        if ($null -ne $o) { foreach ($q in $o.PSObject.Properties) { $vm[$q.Name] = $q.Value } }
         Save-LinVms $w (@(Get-LinVms $w) + [pscustomobject]$vm)
         @{ Id = $id.ToUpperInvariant() }
     }
-    $p.GetVmConfig = { param($a) @(Get-LinVms $w | Where-Object { $_.Id -eq $a.VmId })[0] }
+    # The seed into the VM's one DVD drive (knob SetSeedFails), refused for a VM that is not Off or has another number of
+    # DVD drives, as the production op.
+    $p.SetSeed = { param($a)
+        Add-LinCall $w "SetSeed $($a.VmId) $($a.Seed)"
+        if (Get-LinKnob $w 'SetSeedFails' $false) { throw 'fake: Set-VMDvdDrive failed' }
+        $vms = @(Get-LinVms $w)
+        foreach ($v in $vms) {
+            if ($v.Id -ne $a.VmId) { continue }
+            if ($v.State -ne 'Off' -or $v.DvdDrives -ne 1) { throw "AAP_SeedInvalid: fake: the VM is $($v.State) with $($v.DvdDrives) DVD drives" }
+            $v.Dvds = @($a.Seed)
+        }
+        Save-LinVms $w $vms
+    }
+    # The VM as Hyper-V reads back: its adapters are what the shared fake module made (the provider shape); knob VmOverride
+    # changes any field of the read-back.
+    $p.GetVmConfig = { param($a)
+        $v = @(Get-LinVms $w | Where-Object { $_.Id -eq $a.VmId })
+        if (-not $v.Count) { return $null }
+        $c = @{}
+        foreach ($q in $v[0].PSObject.Properties) { $c[$q.Name] = $q.Value }
+        $c.Adapters = @(Get-AapFakeHostNetworkAdapter -Root $w.Net -VmId $a.VmId)
+        $o = Get-LinKnob $w 'VmOverride' $null
+        if ($null -ne $o) { foreach ($q in $o.PSObject.Properties) { $c[$q.Name] = $q.Value } }
+        $c
+    }
     # The guest's first boot: cloud-init reads the seed in the VM's DVD (its authorized key), sshd makes a host key and the
     # guest publishes it through Key-Value Pair Exchange (knob KvpDelay: that many reads find nothing yet).
     $p.StartVm = { param($a)
@@ -207,6 +234,9 @@ function New-LinProvider {
                     $s = Read-LinSeed $seed[0]
                     $m = [regex]::Match([string]$s.files.'user-data', 'restrict,command="[^"]+" (ssh-ed25519 [A-Za-z0-9+/]+)')
                     if ($m.Success) { $v.AuthKey = $m.Groups[1].Value }
+                    # No DHCP: the guest's address is the one its seed's network-config gives it, or none.
+                    $nm = [regex]::Match([string]$s.files.'network-config', '(?m)^    addresses: \[([0-9.]+)/[0-9]+\]$')
+                    if ($nm.Success) { $v.Address = $nm.Groups[1].Value }
                 }
             }
         }
@@ -244,21 +274,30 @@ function New-LinProvider {
     $p
 }
 
+# The P10.0 module: the shared strict fake (tests/common/AapHostNetworkFake.psm1) over the world's own folder $w.Net, its
+# tampers and faults set with Set-AapFakeHostNetworkKnob -Root $w.Net. It asks the fake Hyper-V above whether a VM exists
+# and in what state. Each call is logged (NetAttach, NetVerify, NetDetach) so tests can check the order; knob
+# VerifyWritesNull makes Verify write one $null item after its problems (a module that writes anything on success).
+$script:LinNetVm = { param($id) $v = @(Get-LinVms $w | Where-Object { $_.Id -eq $id }); if ($v.Count) { @{ State = [string]$v[0].State; Adapters = 0 } } }
 function New-LinNetwork {
     @{
         Attach = { param($a)
-            Add-LinCall $w "NetAttach $($a.VmId) $($a.Profile)"
-            $vms = @(Get-LinVms $w)
-            foreach ($v in $vms) {
-                if ($v.Id -ne $a.VmId) { continue }
-                $v.Adapters = @([ordered]@{ SwitchName = (Get-LinKnob $w 'NetSwitch' 'aap-guests-linux'); SwitchType = (Get-LinKnob $w 'NetSwitchType' 'Internal')
-                        DhcpGuard = (Get-LinKnob $w 'NetDhcpGuard' $true); RouterGuard = (Get-LinKnob $w 'NetRouterGuard' $true); MacAddressSpoofing = (Get-LinKnob $w 'NetMacSpoofing' $false) })
-                if (Get-LinKnob $w 'NetNoAdapter' $false) { $v.Adapters = @() }
+            Add-LinCall $w "NetAttach $($a.VmId)"
+            $d = & (New-AapFakeHostNetwork -Root $w.Net -Vm $script:LinNetVm).Attach $a
+            # Knob AttachDeclares 'public-subnet': a module that declares a subnet outside every private range.
+            if ((Get-LinKnob $w 'AttachDeclares' '') -ceq 'public-subnet') {
+                $h = [ordered]@{}; foreach ($q in $d.PSObject.Properties) { $h[$q.Name] = $q.Value }
+                $h.subnet = '203.0.113.0/24'
+                return $h
             }
-            Save-LinVms $w $vms
+            $d
         }
-        Detach = { param($a) Add-LinCall $w "NetDetach $($a.VmId)"; if (Get-LinKnob $w 'DetachFails' $false) { throw 'fake: detach failed' } }
-        Verify = { param($a) if (Get-LinKnob $w 'VerifyThrows' $false) { throw 'fake: cannot read the port ACLs' }; @(Get-LinKnob $w 'NetProblems' @()) }
+        Detach = { param($a) Add-LinCall $w "NetDetach $($a.VmId)"; & (New-AapFakeHostNetwork -Root $w.Net -Vm $script:LinNetVm).Detach $a }
+        Verify = { param($a)
+            Add-LinCall $w "NetVerify $($a.VmId)"
+            & (New-AapFakeHostNetwork -Root $w.Net -Vm $script:LinNetVm).Verify $a
+            if (Get-LinKnob $w 'VerifyWritesNull' $false) { $null }
+        }
     }
 }
 

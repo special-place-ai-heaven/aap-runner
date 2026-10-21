@@ -25,6 +25,21 @@ function Get-AapLinHvVm([string]$Id) {
     $vm[0]
 }
 
+# The guest adapters' names against the VMs they sit on (net-sec round 7; the module names each adapter aap-guest-<vm id>,
+# host-network-module.md, Detach): $Adapters is every VM adapter on the host as @{ Name; VmId }. An adapter called
+# aap-guest-<x> must sit on VM <x>, no such name appears twice, and every adapter of VM $VmId is called aap-guest-<$VmId>.
+# Compared ordinally (never a culture's comparison, which ignores a soft hyphen). Pure: returns problem lines.
+function Get-AapLinAdapterNameProblem([string]$VmId, [object[]]$Adapters) {
+    $seen = New-Object Collections.Generic.List[string]
+    foreach ($a in @($Adapters)) {
+        $name = [string]$a.Name; $on = [string]$a.VmId
+        if ($name.StartsWith('aap-guest-', [StringComparison]::Ordinal) -and -not [string]::Equals($name, "aap-guest-$on", [StringComparison]::Ordinal)) { "the adapter $name sits on VM $on, not the VM its name names" }   # check:adapter-name-vm
+        if ($name.StartsWith('aap-guest-', [StringComparison]::Ordinal) -and $seen.Contains($name)) { "the adapter name $name appears more than once" }   # check:adapter-name-dup
+        $seen.Add($name)
+        if ([string]::Equals($on, $VmId, [StringComparison]::Ordinal) -and -not [string]::Equals($name, "aap-guest-$VmId", [StringComparison]::Ordinal)) { "the VM's adapter $name is not aap-guest-$VmId" }   # check:adapter-name-own
+    }
+}
+
 # Bytes under a folder without following reparse points; an unreadable entry throws.
 function Get-AapLinTreeBytes([string]$Path) {
     $sum = [double]0
@@ -128,14 +143,15 @@ function New-AapLinHyperVProvider {
     $p.NewVm = { param($a)
         # Every VM file inside the reservation's clone folder (no Hyper-V default host folder); checkpoints off, TurnOff,
         # Nothing; the image's needs (images/ubuntu-24.04/INTEGRATION.md, P11 item 1): generation 2, Secure Boot with the
-        # Microsoft UEFI CA (Ubuntu's shim), static memory, one SCSI disk, the seed as the one DVD, booting from the disk.
+        # Microsoft UEFI CA (Ubuntu's shim), static memory, one SCSI disk, one DVD drive left empty (SetSeed fills it once the
+        # network is attached: the seed carries the declaration's addressing), booting from the disk.
         # Nested virtualization exposed (hosted Ubuntu runners offer /dev/kvm). No file copy; Key-Value Pair Exchange on, for
         # the guest's host key only (guest-transport.md, Linux candidate). No network adapter: P10.0's Attach adds it.
         $vm = Hyper-V\New-VM -Name $a.Name -Path $a.Path -Generation 2 -MemoryStartupBytes ([int64]$a.MemGib * 1GB) -VHDPath $a.OsDisk
         Hyper-V\Set-VM -VM $vm -ProcessorCount $a.Cpus -StaticMemory -CheckpointType Disabled -AutomaticStopAction TurnOff -AutomaticStartAction Nothing -SmartPagingFilePath $a.Path -SnapshotFileLocation $a.Path
         Hyper-V\Set-VMProcessor -VM $vm -ExposeVirtualizationExtensions $true
         Hyper-V\Set-VMFirmware -VM $vm -EnableSecureBoot On -SecureBootTemplate 'MicrosoftUEFICertificateAuthority'
-        Hyper-V\Add-VMDvdDrive -VM $vm -Path $a.Seed
+        Hyper-V\Add-VMDvdDrive -VM $vm
         Hyper-V\Set-VMFirmware -VM $vm -FirstBootDevice (@(Hyper-V\Get-VMHardDiskDrive -VM $vm)[0])
         foreach ($svc in @(Hyper-V\Get-VMIntegrationService -VM $vm)) {
             if ($svc.Id -like "*\$($script:GuestServiceId)") { Hyper-V\Disable-VMIntegrationService -VMIntegrationService $svc }
@@ -149,10 +165,28 @@ function New-AapLinHyperVProvider {
         $svc = @(Hyper-V\Get-VMIntegrationService -VM $vm)
         $on = { param($id) [bool](@($svc | Where-Object { $_.Id -like "*\$id" -and $_.Enabled }).Count) }
         $fw = Hyper-V\Get-VMFirmware -VM $vm
+        # The adapters in the provider shape of host-network-module.md (Consumer obligations, Read-back), as Hyper-V shows
+        # them, every value as its text so the shared check compares exactly; under strict mode a misspelt property throws.
+        # First the names (net-sec round 7): an adapter called aap-guest-<id> must sit on the VM whose id it names, no such
+        # name may appear twice on the host, and this VM's adapters carry its own name; else nothing is read back.
+        $id = ([string]$vm.Id).ToLowerInvariant()
+        $all = @(Hyper-V\Get-VMNetworkAdapter -All -ErrorAction Stop | Where-Object { -not $_.IsManagementOs })
+        $why = @(Get-AapLinAdapterNameProblem -VmId $id -Adapters @($all | ForEach-Object { @{ Name = [string]$_.Name; VmId = ([string]$_.VMId).ToLowerInvariant() } }))
+        if ($why.Count) { throw "AAP_NetworkUntrusted: $($why -join '; ')" }
         $nics = foreach ($n in @(Hyper-V\Get-VMNetworkAdapter -VM $vm)) {
             $name = ''; $type = ''
             if ($n.SwitchId) { $sw = Hyper-V\Get-VMSwitch -Id $n.SwitchId -ErrorAction Stop; $name = [string]$sw.Name; $type = [string]$sw.SwitchType }
-            @{ SwitchName = $name; SwitchType = $type; DhcpGuard = ([string]$n.DhcpGuard -eq 'On'); RouterGuard = ([string]$n.RouterGuard -eq 'On'); MacAddressSpoofing = ([string]$n.MacAddressSpoofing -eq 'On') }
+            @{  SwitchName = $name; SwitchType = $type
+                DhcpGuard = [string]$n.DhcpGuard; RouterGuard = [string]$n.RouterGuard; MacAddressSpoofing = [string]$n.MacAddressSpoofing
+                PortMirroringMode = [string]$n.PortMirroringMode; VlanMode = [string]$n.VlanSetting.OperationMode; StormLimit = [string]$n.StormLimit
+                LegacyAcls = @(Hyper-V\Get-VMNetworkAdapterAcl -VMNetworkAdapter $n).Count
+                # the other VMs with an adapter on the same switch; the host's own adapters are not VMs
+                Peers = @($all | Where-Object { $name -and $_.SwitchName -ceq $name -and $_.VMId -ne $vm.Id } | ForEach-Object { [string]$_.VMName })
+                Acls = @(Hyper-V\Get-VMNetworkAdapterExtendedAcl -VMNetworkAdapter $n | ForEach-Object {
+                        @{ Action = [string]$_.Action; Direction = [string]$_.Direction; RemoteAddress = [string]$_.RemoteIPAddress
+                            LocalAddress = [string]$_.LocalIPAddress; Protocol = [string]$_.Protocol; RemotePort = [string]$_.RemotePort
+                            LocalPort = [string]$_.LocalPort; Weight = $_.Weight; Stateful = [string]$_.Stateful; IsolationId = [string]$_.IsolationID } })
+            }
         }
         @{
             Generation = [int]$vm.Generation; CheckpointType = [string]$vm.CheckpointType
@@ -176,6 +210,15 @@ function New-AapLinHyperVProvider {
         $kvp = @(Get-CimAssociatedInstance -InputObject $cs[0] -ResultClassName Msvm_KvpExchangeComponent -ErrorAction Stop)
         if ($kvp.Count -ne 1) { return $null }
         Get-AapLinKvpItem $kvp[0].GuestExchangeItems $script:HostKeyItem
+    }
+    # The seed into the VM's one DVD drive, after Attach (the seed carries the declaration's addressing): only while the VM
+    # is Off and has exactly one DVD drive. Setting the same path again (a re-run of create) is idempotent.
+    $p.SetSeed = { param($a)
+        $vm = Get-AapLinHvVm $a.VmId
+        if ([string]$vm.State -cne 'Off') { throw "AAP_SeedInvalid: the VM is $($vm.State), not Off" }
+        $drives = @(Hyper-V\Get-VMDvdDrive -VM $vm -ErrorAction Stop)
+        if ($drives.Count -ne 1) { throw "AAP_SeedInvalid: the VM has $($drives.Count) DVD drives, not 1" }
+        Hyper-V\Set-VMDvdDrive -VMDvdDrive $drives[0] -Path $a.Seed
     }
     # Ejects the seed from every DVD drive of the running VM; an empty drive stays empty.
     $p.EjectSeed = { param($a) foreach ($d in @(Hyper-V\Get-VMDvdDrive -VM (Get-AapLinHvVm $a.VmId) | Where-Object { $_.Path })) { Hyper-V\Set-VMDvdDrive -VMDvdDrive $d -Path $null } }
