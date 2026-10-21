@@ -9,13 +9,14 @@ only the test named for it against the copy. The mutation must make that test fa
 (SURVIVED) or does not run (NO-TEST) means the rule is not proven. Each selected test first runs on an unmutated copy
 and must pass there. Exit 0 only when every selected mutation is KILLED.
 
-Pester runs in a child --shell (Pester 5 must be importable). The bash suite needs real Linux: on Windows it runs in
-WSL Ubuntu-24.04 from a copy below the WSL user's home (harness_test.sh's own clean-lab tests fail on WSL by design,
-so only the named tests count).
+Pester runs in a child --shell through a runner .ps1 written under the copy and run with -File
+and arguments, never an encoded command line (the owner rejected those; Malwarebytes quarantines
+them as obfuscated PowerShell; Pester 5 must be importable). The bash suite needs real Linux: on
+Windows it runs in WSL Ubuntu-24.04 from a copy below the WSL user's home (harness_test.sh's own
+clean-lab tests fail on WSL by design, so only the named tests count).
 """
 
 import argparse
-import base64
 import os
 import shutil
 import subprocess
@@ -45,13 +46,21 @@ MUTATIONS = {
     "LNX-POISON-STORE": ("bash", "poisons zccache's store in the v1.15.6 state folder",
                          [(SH, 'zq_corrupt "$2/${ZQ_STATE}/artifacts"', 'zq_corrupt "$2/artifacts"')]),
     "LNX-POISON-RESTART": ("bash", "poisons zccache's store in the v1.15.6 state folder",
-                           [(SH, '  zq_stop_daemons "${ZQ_WORK}" > /dev/null\n  p=$(zq_phase', '  p=$(zq_phase')]),
+                           [(SH, '  stop=$(zq_stop_daemons "${ZQ_WORK}") || return 1\n  n=$(zq_corrupt', '  n=$(zq_corrupt')]),
+    "LNX-CONTROL-STOP": ("bash", "the control phase primes, stops the daemon and rebuilds without corruption",
+                         [(SH, '  stop=$(zq_stop_daemons "${ZQ_WORK}") || return 1\n  p=$(zq_phase "$1" ok "$2" ok-control) || return 1',
+                           '  p=$(zq_phase "$1" ok "$2" ok-control) || return 1')]),
     "LNX-STDIN": ("bash", "builds and zccache calls read /dev/null",
                   [(SH, 'env -i "${keep[@]}" "$@" < /dev/null', 'env -i "${keep[@]}" "$@"')]),
     "JQ-DAEMON-ROOT": ("bash", 'fails daemons_pinned for: .meta.daemons[0] |= (.in_private_bin = false | .in_cache_root = "true")',
                        [(JQ, "(.in_private_bin == true or .in_cache_root == true)", "(.in_private_bin == true or .in_cache_root)")]),
     "JQ-DAEMON-OWNED": ("bash", "fails daemons_pinned for: .meta.daemons[0] |= (.in_private_bin = false | .in_cache_root = false)",
                         [(JQ, "(.in_private_bin == true or .in_cache_root == true)", "true")]),
+    "JQ-REJECTED-CONTROL": ("bash", "fails poisoned_artifact_rejected for: .runs.control.journal.hit = 0",
+                            [(JQ, "def rejected($r; $u; $c):\n  control_ok($c; $u) and ($r.daemon_stopped == true)\n",
+                              "def rejected($r; $u; $c):\n  true and ($r.daemon_stopped == true)\n")]),
+    "JQ-REJECTED-STOP": ("bash", "fails poisoned_artifact_rejected for: .runs.poisoned_artifact.daemon_stopped = false",
+                         [(JQ, "($r.daemon_stopped == true)\n", "true\n")]),
     "WIN-DAEMON-ROOT": ("pester", "*owns only the private copy and the daemon copy*",
                         [(PS, "{ return 'root' }", "{ return '' }"),
                          (PS, "'\\\\zccache-daemon\\.exe$'", "'\\\\zccache-daemon\\.exe'")]),
@@ -60,10 +69,12 @@ MUTATIONS = {
     "WIN-CRASH-STATE": ("pester", "*counts crash dumps and filled crash-spool records*",
                         [(PS, " -or ($rel -match '\\\\crash-spool\\\\' -and $_.Length -gt 0)", ""),
                          (PS, " -and $_.Length -gt 0)", ")")]),
-    "WIN-POISON-STORE": ("pester", "*poisons zccache''s store*",
+    "WIN-POISON-STORE": ("pester", "*poisons zccache?s store*",
                          [(PS, "Invoke-ZqCorrupt (Join-Path (Join-Path $Root $ZqState) 'artifacts')", "Invoke-ZqCorrupt (Join-Path $Root 'artifacts')")]),
-    "WIN-POISON-RESTART": ("pester", "*poisons zccache''s store*",
-                           [(PS, "    $null = Stop-ZqDaemon $Work\n    $p = Invoke-ZqPhase", "    $p = Invoke-ZqPhase")]),
+    "WIN-POISON-RESTART": ("pester", "*poisons zccache?s store*",
+                           [(PS, "    $stopped = Stop-ZqDaemon $Work\n    $n = Invoke-ZqCorrupt", "    $n = Invoke-ZqCorrupt")]),
+    "WIN-CONTROL-STOP": ("pester", "*primes the control root*",
+                         [(PS, "    $stopped = Stop-ZqDaemon $Work\n    $p = Invoke-ZqPhase", "    $p = Invoke-ZqPhase")]),
     "WIN-STDIN": ("pester", "*gives every run an empty stdin*",
                   [(PS, "try { @() | & $Exe @Argv", "try { & $Exe @Argv")]),
 }
@@ -109,13 +120,26 @@ def run_bash(root, test):
 
 
 def run_pester(root, test, shell, pester):
-    ps = (f"Import-Module '{pester}' -MinimumVersion 5.0; $c = New-PesterConfiguration; "
-          f"$c.Run.Path = '{root / 'tests/parity/cache/qualification'}'; $c.Run.PassThru = $true; "
-          f"$c.Output.Verbosity = 'None'; $c.Filter.FullName = '{test}'; $r = Invoke-Pester -Configuration $c; "
-          "\"RESULT $($r.PassedCount) $($r.FailedCount)\"")
-    enc = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
-    out = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", enc],
-                         capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL).stdout
+    """Status of one named test in Harness.Tests.ps1: ok, FAIL or missing."""
+    # The child shell runs a plain runner script with -File and arguments, never an encoded
+    # command line (the owner rejected those; Malwarebytes quarantines them as obfuscated PowerShell).
+    runner = root / "run-pester.ps1"
+    runner.write_text(
+        "param([Parameter(Mandatory)][string]$Pester, [Parameter(Mandatory)][string]$Path,\n"
+        "  [Parameter(Mandatory)][string]$Filter)\n"
+        "Import-Module $Pester -MinimumVersion 5.0\n"
+        "$c = New-PesterConfiguration\n"
+        "$c.Run.Path = $Path\n"
+        "$c.Run.PassThru = $true\n"
+        "$c.Output.Verbosity = 'None'\n"
+        "$c.Filter.FullName = $Filter\n"
+        "$r = Invoke-Pester -Configuration $c\n"
+        "Write-Output \"RESULT $($r.PassedCount) $($r.FailedCount)\"\n",
+        encoding="utf-8", newline="\n")
+    out = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(runner),
+         str(pester), str(root / "tests/parity/cache/qualification"), test],
+        capture_output=True, text=True, timeout=600, stdin=subprocess.DEVNULL).stdout
     res = [ln.split() for ln in out.splitlines() if ln.startswith("RESULT ")]
     if not res:
         return "missing"

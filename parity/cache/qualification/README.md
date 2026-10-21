@@ -125,8 +125,8 @@ Before any build, the harness does the following:
 - For non-MSVC compilers, it checks that the `--version` banner names the matrix version (exit 2
   otherwise). It records the compiler's path and SHA-256.
 - It gives every case its own fresh cache root: `cache-ok` for cold, warm and relocated builds,
-  `cache-error`, `cache-poison-artifact`, `cache-poison-same-size` and `cache-poison-marker`. It
-  never deletes a cache root.
+  `cache-control` for the control build, `cache-error`, `cache-poison-artifact`,
+  `cache-poison-same-size` and `cache-poison-marker`. It never deletes a cache root.
 - It runs every build with the working directory at the fixture tree.
 
 zccache keeps its state one level below the root that `ZCCACHE_CACHE_DIR` names, in `v1.15.6/`
@@ -137,12 +137,14 @@ README's root layout (README 433-436) leaves the version folder out.
 
 After the builds, the harness lists every visible `zccache*` process with its executable path and
 SHA-256. It marks whether each runs from the private copy or from a deployed daemon copy at exactly
-`<work>/cache-<case>/v1.15.6/zccache-daemon`. It counts every file in a `crashes/` folder below each
-root (README 433-434) and every non-empty file in a `crash-spool/` folder. Each live zccache process
-keeps an empty `pending-*.rpcrash` there, which a crash fills (`crash.rs` 24-34; seen on Linux, to
-confirm on Windows). Then it stops every process running from the private copy or a deployed copy,
-also after a failure. The dumps themselves never leave the VM. They can hold process memory and
-environment.
+`<work>/cache-<case>/v1.15.6/zccache-daemon`. Then it stops every process running from the private
+copy or a deployed copy, also after a failure, gracefully first (on Linux a `TERM`, then a kill; on
+Windows a window close that a console daemon without a window ignores, then a kill) and records the
+stop's result. Crash dumps are counted after the stop, so a daemon that dumps while being stopped is
+not missed: every file in a `crashes/` folder below each root (README 433-434) and every non-empty
+file in a `crash-spool/` folder. Each live zccache process keeps an empty `pending-*.rpcrash`
+there, which a crash fills (`crash.rs` 24-34; seen on Linux, to confirm on Windows). The dumps
+themselves never leave the VM. They can hold process memory and environment.
 
 1. **Uncached.** Build the fixture with the compiler directly, with no wrapper. Record the exit code
    and the SHA-256 of every file in the output directory. Every success-case build must produce
@@ -157,13 +159,18 @@ environment.
    as hits (README 1240-1252). The harness keeps `zccache session-end <id> --json` output
    (README 1224-1229), but its layout is undocumented, so it is **to confirm in lab** and not used
    for the verdict. Without a session id, the journal is `null` and the row cannot pass.
-4. **Poisoned cache, three variants.** Upstream does not claim to prove cache integrity
-   (README 1123), so corruption handling needs its own evidence. Each variant gets its own root.
-   The harness primes the root with one build through zccache and corrupts regular files under
-   `<root>/v1.15.6/artifacts/`. It never follows a link or junction. Then it stops the daemons and
-   builds again in a journaled session, so a fresh daemon reads the store from disk. In WSL the
-   daemon alive since priming served a hit with correct bytes after every store file was replaced,
-   which says nothing about the store.
+4. **Control, then three poisoned-cache variants.** Upstream does not claim to prove cache
+   integrity (README 1123), so corruption handling needs its own evidence. First a control root
+   proves the restart itself is neutral: the harness primes it with one build through zccache,
+   stops the daemons and builds again with nothing corrupted, and that rebuild must hit with
+   artifacts equal to the uncached build. A daemon restart that alone loses the store would make
+   every poisoned build miss for the restart's sake, and all three poison checks would pass without
+   exercising corruption detection, so `record.jq`'s `rejected()` requires the control build. Each
+   poison variant then gets its own root. The harness primes the root with one build through
+   zccache, stops the daemons, corrupts regular files under `<root>/v1.15.6/artifacts/` (never
+   following a link or junction) and builds again in a journaled session, so a fresh daemon reads
+   the poisoned store from disk. In WSL the daemon alive since priming served a hit with correct
+   bytes after every store file was replaced, which says nothing about the store.
    - `artifact` flips one byte in the middle of each store file whose SHA-256 equals an uncached
      artifact, in place. The file keeps its length and modification time, and nothing else in the
      store changes, so this variant asks whether zccache checks the content it serves. Upstream
@@ -178,6 +185,9 @@ environment.
 
    A variant passes when it meets all of these conditions:
    - at least one file was corrupted;
+   - the daemons were stopped before the corruption, and the stop succeeded (the result is
+     recorded in the run);
+   - the control build hit after its own daemon stop, with artifacts equal to the uncached build;
    - the priming build's exit equals the uncached build's exit;
    - the build's exit code and artifacts equal the uncached build;
    - the journal shows the invocation was looked up, with at least one `miss`, `error` or
@@ -255,7 +265,8 @@ holds these fields:
   sets them.
 - `env`: the variables the harness set and the `ZCCACHE_*` names it removed.
 - `runs` and `error_runs`: each with exit code, artifact hashes, argv, cache root name,
-  `ZCCACHE_*` names in effect and journal counts.
+  `ZCCACHE_*` names in effect and journal counts. The control and poison runs also carry the
+  priming build's exit and the daemon-stop result; poison runs add the corrupted-file count.
 - `daemons` (each with `in_private_bin` and `in_cache_root`), `daemons_stopped` and `crash_dumps`.
 - `checks`, `harness_pass` and `lab_gates`.
 - `row`: always `direct`.

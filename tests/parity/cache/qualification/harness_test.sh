@@ -152,10 +152,17 @@ mkdir -p "${tmp}/w/cache-ok/v1.15.6/crashes" "${tmp}/w/cache-ok/v1.15.6/artifact
 out=$(export ZQ_WORK=/w; zq_phase() { echo "phase $4" >> "${tmp}/poison-steps"; echo '{"exit":0}'; }
   zq_corrupt() { echo "corrupt $1" >> "${tmp}/poison-steps"; echo 1; }; zq_stop_daemons() { echo "stop $1" >> "${tmp}/poison-steps"; echo true; }
   zq_poison /s /w/cache-poison-artifact artifact h)
-[[ "$(cat "${tmp}/poison-steps")" == $'phase ok-prime-artifact\ncorrupt /w/cache-poison-artifact/v1.15.6/artifacts\nstop /w\nphase ok-poisoned-artifact' &&
-  "$(jq -c . <<<"${out}")" == '{"exit":0,"prime_exit":0,"corrupted_files":1}' ]] &&
-  ok "poisons zccache's store in the v1.15.6 state folder, then stops the daemons before the poisoned build" ||
+[[ "$(cat "${tmp}/poison-steps")" == $'phase ok-prime-artifact\nstop /w\ncorrupt /w/cache-poison-artifact/v1.15.6/artifacts\nphase ok-poisoned-artifact' &&
+  "$(jq -c . <<<"${out}")" == '{"exit":0,"prime_exit":0,"daemon_stopped":true,"corrupted_files":1}' ]] &&
+  ok "poisons zccache's store in the v1.15.6 state folder after stopping the daemons" ||
   no "poisons zccache's store in the v1.15.6 state folder: $(cat "${tmp}/poison-steps") ${out}"
+out=$(export ZQ_WORK=/w; zq_phase() { echo "phase $4" >> "${tmp}/control-steps"; echo '{"exit":0}'; }
+  zq_stop_daemons() { echo "stop $1" >> "${tmp}/control-steps"; echo true; }
+  zq_control /s /w/cache-control)
+[[ "$(cat "${tmp}/control-steps")" == $'phase ok-control-prime\nstop /w\nphase ok-control' &&
+  "$(jq -c . <<<"${out}")" == '{"exit":0,"prime_exit":0,"daemon_stopped":true}' ]] &&
+  ok "the control phase primes, stops the daemon and rebuilds without corruption" ||
+  no "the control phase primes, stops the daemon and rebuilds without corruption: $(cat "${tmp}/control-steps") ${out}"
 mkdir -p "${tmp}/run/src" "${tmp}/run/logs"; printf '#!/bin/sh\n: > out/hello.o\n' > "${tmp}/run/cc"; chmod +x "${tmp}/run/cc"
 out=$(export ZQ_COMPILER=gcc ZQ_INVOCATION=debug-pdb ZQ_CC="${tmp}/run/cc" ZQ_LOGS="${tmp}/run/logs" ZQ_RSP="${tmp}/run/a.rsp"; zq_phase "${tmp}/run/src" ok "" direct)
 [[ "$(jq -c '[.exit, .argv, .primary_present, .cache_dir, .journal]' <<<"${out}" 2> /dev/null)" == '[0,["-g","-c","hello.c","-o","out/hello.o"],true,null,null]' ]] &&
@@ -217,9 +224,10 @@ input=$(jq -c -n --argjson j "${J}" --argjson h "${H}" --argjson a "${A}" --arg 
           compiler: "clang", compiler_version: "18.1.3", invocation: "compile-object",
           evidence_ref: "parity/cache/qualification/evidence/linux-x86_64/clang-18.1.3-compile-object.json"},
    runs: {uncached: e(0; $a; null), cold: e(0; $a; $j), warm: e(0; $a; $h),
-          poisoned_artifact: (e(0; $a; $j) + {prime_exit: 0, corrupted_files: 1}),
-          poisoned_same_size: (e(0; $a; $j) + {prime_exit: 0, corrupted_files: 2}),
-          poisoned_marker: (e(0; $a; $j) + {prime_exit: 0, corrupted_files: 2})},
+          control: (e(0; $a; $h) + {prime_exit: 0, daemon_stopped: true}),
+          poisoned_artifact: (e(0; $a; $j) + {prime_exit: 0, daemon_stopped: true, corrupted_files: 1}),
+          poisoned_same_size: (e(0; $a; $j) + {prime_exit: 0, daemon_stopped: true, corrupted_files: 2}),
+          poisoned_marker: (e(0; $a; $j) + {prime_exit: 0, daemon_stopped: true, corrupted_files: 2})},
    errors: {uncached: e(1; {}; null), cold: e(1; {}; $j), warm: e(1; {}; $j)}}')
 verdict() { jq -c -f "${ZQ_HERE}/record.jq" <<<"$1"; }
 r=$(verdict "${input}")
@@ -237,6 +245,12 @@ for c in 'warm_has_hits#.runs.warm.journal.hit = 0' 'cold_has_no_hits#.runs.cold
   'poisoned_marker_rejected#.runs.poisoned_marker.journal.other = 1' \
   'poisoned_marker_rejected#.runs.poisoned_marker.journal.miss = 0' 'poisoned_marker_rejected#del(.runs.poisoned_marker)' \
   'poisoned_same_size_rejected#.runs.poisoned_same_size.corrupted_files = 0' \
+  'poisoned_artifact_rejected#.runs.poisoned_artifact.daemon_stopped = false' \
+  'poisoned_artifact_rejected#.runs.control.journal.hit = 0' \
+  'poisoned_artifact_rejected#.runs.control.daemon_stopped = false' \
+  'poisoned_artifact_rejected#.runs.control.artifacts = {"hello.o": "b"}' \
+  'poisoned_artifact_rejected#.runs.control.exit = 1' \
+  'poisoned_artifact_rejected#del(.runs.control)' \
   'zccache_env_clean#.runs.warm.zccache_env = ["ZCCACHE_ENDPOINT", "ZCCACHE_MODE"]' 'zccache_env_clean#del(.runs.warm.zccache_env)' \
   'zccache_env_clean#.runs.warm.zccache_env = "ZCCACHE_MODE"' \
   'daemons_pinned#.meta.daemons = []' 'daemons_pinned#.meta.daemons[0].in_private_bin = false' 'daemons_pinned#.meta.daemons[0].sha256 = "0"' \

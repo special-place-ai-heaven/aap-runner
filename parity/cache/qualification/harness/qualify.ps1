@@ -1,7 +1,8 @@
 # zccache 1.15.6 qualification harness, Windows x86_64. LAB ONLY (P13/P22), see ../README.md.
 #
 # Runs one (compiler, invocation) pair through method steps 1-6: uncached, cold and warm builds,
-# a relocated build for debug-pdb, three poisoned-cache builds and the deliberate-error case. Every
+# a relocated build for debug-pdb, a control build (prime, stop the daemon, rebuild with nothing
+# corrupted), three poisoned-cache builds and the deliberate-error case. Every
 # case uses its own fresh cache root. It compares exit codes and artifact hashes, counts journal
 # outcomes and writes one evidence record via record.jq. It never emits "qualified": the record's
 # row stays "direct" and `harness_pass` says whether steps 1-6 held. Lab steps 7-9 decide the rest.
@@ -309,9 +310,15 @@ function Get-ZqDaemon([string]$Work) {
         })
 }
 
-# Stops every process running the private copy or a deployed daemon copy; $true when none is left.
+# Stops every process running the private copy or a deployed daemon copy, gracefully first as on
+# Linux (TERM, then a kill): CloseMainWindow posts WM_CLOSE, which a console daemon without a
+# window ignores, so a daemon that must flush gets its moment before the hard kill anyway.
+# $true when nothing the harness owns is left.
 function Stop-ZqDaemon([string]$Work) {
-    foreach ($p in (Get-ZqOwnProcess $Work)) { try { $p.Kill(); $null = $p.WaitForExit(5000) } catch { } }
+    $ps = @(Get-ZqOwnProcess $Work)
+    foreach ($p in $ps) { try { $null = $p.CloseMainWindow() } catch { } }
+    foreach ($p in $ps) { try { $null = $p.WaitForExit(500) } catch { } }
+    foreach ($p in $ps) { try { if (-not $p.HasExited) { $p.Kill(); $null = $p.WaitForExit(5000) } } catch { } }
     (Get-ZqOwnProcess $Work).Count -eq 0
 }
 
@@ -401,17 +408,33 @@ function Invoke-ZqPhase($Ctx, [string]$Src, [string]$Case, [string]$Root, [strin
     }
 }
 
-# One poison variant on its own root: prime it, corrupt zccache's store, stop the daemons and build
-# again. The poisoned build gets a fresh daemon, so its hit or miss is about the store on disk: the
-# daemon alive since priming served a hit with correct bytes after every store file was replaced
-# (seen on Linux in WSL, P04.1), which says nothing about the store.
+# One poison variant on its own root: prime it, stop the daemons, corrupt zccache's store and
+# build again. The daemon alive since priming must not watch the store change (in WSL it served
+# a hit with correct bytes after every store file was replaced, which says nothing about the
+# store), and the poisoned build must start a fresh daemon that reads the store from disk. The
+# stop's result is recorded; record.jq's rejected() requires it.
 function Invoke-ZqPoison($Ctx, [string]$Src, [string]$Root, [string]$Variant, [string[]]$ArtifactHash, [string]$Work) {
     $prime = Invoke-ZqPhase $Ctx $Src 'ok' $Root "ok-prime-$Variant"
+    $stopped = Stop-ZqDaemon $Work
     $n = Invoke-ZqCorrupt (Join-Path (Join-Path $Root $ZqState) 'artifacts') $Variant $ArtifactHash
-    $null = Stop-ZqDaemon $Work
     $p = Invoke-ZqPhase $Ctx $Src 'ok' $Root "ok-poisoned-$Variant"
     $p.prime_exit = $prime.exit
+    $p.daemon_stopped = $stopped
     $p.corrupted_files = $n
+    $p
+}
+
+# The control phase: prime a fresh root, stop the daemon, rebuild with nothing corrupted. The
+# rebuild must hit and equal uncached, proving a daemon restart alone keeps serving the store.
+# Without it every poisoned build's miss could be the restart's doing, not the corruption's
+# (M1), and all three poison checks would pass without exercising corruption detection.
+# record.jq's rejected() requires this run.
+function Invoke-ZqControl($Ctx, [string]$Src, [string]$Root, [string]$Work) {
+    $prime = Invoke-ZqPhase $Ctx $Src 'ok' $Root 'ok-control-prime'
+    $stopped = Stop-ZqDaemon $Work
+    $p = Invoke-ZqPhase $Ctx $Src 'ok' $Root 'ok-control'
+    $p.prime_exit = $prime.exit
+    $p.daemon_stopped = $stopped
     $p
 }
 
@@ -489,6 +512,7 @@ function Invoke-ZqMain {
             $runs.relocated_direct = Invoke-ZqPhase $ctx $moved 'ok' '' 'ok-relocated-direct'
             $runs.relocated = Invoke-ZqPhase $ctx $moved 'ok' (Join-Path $w 'cache-ok') 'ok-relocated'
         }
+        $runs.control = Invoke-ZqControl $ctx $src (Join-Path $w 'cache-control') $w
         foreach ($v in @('artifact', 'same_size', 'marker')) {
             $runs["poisoned_$v"] = Invoke-ZqPoison $ctx $src (Join-Path $w ('cache-poison-' + $v.Replace('_', '-'))) $v @($runs.uncached.artifacts.Values) $w
         }
@@ -498,8 +522,10 @@ function Invoke-ZqMain {
         $errs.warm = Invoke-ZqPhase $ctx $src 'error' (Join-Path $w 'cache-error') 'error-warm'
 
         $daemons = Get-ZqDaemon $w
-        $crashes = Get-ZqCrashDump $w
+        # The final stop before the record. Crash dumps are counted after it, so a daemon that
+        # dumps while being stopped (its pending crash-spool record fills) is not missed.
         $stopped = Stop-ZqDaemon $w
+        $crashes = Get-ZqCrashDump $w
         $meta = [ordered]@{
             platform = 'windows-x86_64'
             command = "qualify.ps1 -Compiler $Compiler -CompilerVersion '$CompilerVersion' -Invocation $Invocation -EvidenceRef $EvidenceRef"

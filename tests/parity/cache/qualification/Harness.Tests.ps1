@@ -37,7 +37,9 @@ BeforeAll {
         $names = @(if ($null -ne $Journal) { 'ZCCACHE_CACHE_DIR', 'ZCCACHE_MODE', 'ZCCACHE_SESSION_ID' } else { 'ZCCACHE_MODE' })
         [ordered]@{ exit = $Exit; artifacts = $Artifacts; primary_present = ($Exit -eq 0); argv = @('x'); cache_dir = $null; zccache_env = $names; journal = $Journal }
     }
-    function New-Poisoned($Artifacts) { $p = New-Entry 0 $Artifacts (New-Journal 0 1); $p.prime_exit = 0; $p.corrupted_files = 2; $p }
+    function New-Poisoned($Artifacts) { $p = New-Entry 0 $Artifacts (New-Journal 0 1); $p.prime_exit = 0; $p.daemon_stopped = $true; $p.corrupted_files = 2; $p }
+    # The control run: primed, daemon stopped, rebuilt with nothing corrupted, and it hit.
+    function New-Control($Artifacts) { $p = New-Entry 0 $Artifacts (New-Journal 1 0); $p.prime_exit = 0; $p.daemon_stopped = $true; $p }
     # A record.jq input in which every harness check holds.
     function New-PassingInput([string]$Invocation = 'compile-object', [string]$Compiler = 'clang-cl') {
         $a = [ordered]@{ 'hello.obj' = ('a' * 64) }
@@ -47,6 +49,7 @@ BeforeAll {
             $runs.relocated_direct = New-Entry 0 $b $null
             $runs.relocated = New-Entry 0 $b (New-Journal 0 1)
         }
+        $runs.control = New-Control $a
         $runs.poisoned_artifact = New-Poisoned $a
         $runs.poisoned_same_size = New-Poisoned $a
         $runs.poisoned_marker = New-Poisoned $a
@@ -414,22 +417,36 @@ Describe 'Journal, files, environment and corruption' {
             $c['cache-error'] | Should -Be 1
         } finally { Remove-Item -LiteralPath $w -Recurse -Force }
     }
-    It 'poisons zccache''s store in the v1.15.6 state folder, then stops the daemons before the poisoned build' {
+    It 'poisons zccache''s store in the v1.15.6 state folder after stopping the daemons' {
         $script:Steps = [Collections.Generic.List[string]]::new()
         Mock Invoke-ZqPhase { $script:Steps.Add("phase $Name"); [ordered]@{ exit = 0 } }
         Mock Invoke-ZqCorrupt { $script:Steps.Add("corrupt $Store $Variant"); 1 }
         Mock Stop-ZqDaemon { $script:Steps.Add("stop $Work"); $true }
         $p = Invoke-ZqPoison @{} 'C:\w\src' 'C:\w\cache-poison-artifact' 'artifact' @('h') 'C:\w'
-        $script:Steps -join '|' | Should -Be 'phase ok-prime-artifact|corrupt C:\w\cache-poison-artifact\v1.15.6\artifacts artifact|stop C:\w|phase ok-poisoned-artifact'
+        $script:Steps -join '|' | Should -Be 'phase ok-prime-artifact|stop C:\w|corrupt C:\w\cache-poison-artifact\v1.15.6\artifacts artifact|phase ok-poisoned-artifact'
         $p.prime_exit | Should -Be 0
+        $p.daemon_stopped | Should -BeTrue
         $p.corrupted_files | Should -Be 1
+    }
+    It 'primes the control root, stops the daemon and rebuilds with nothing corrupted' {
+        $script:Steps = [Collections.Generic.List[string]]::new()
+        Mock Invoke-ZqPhase { $script:Steps.Add("phase $Name"); [ordered]@{ exit = 0 } }
+        Mock Stop-ZqDaemon { $script:Steps.Add("stop $Work"); $true }
+        $c = Invoke-ZqControl @{} 'C:\w\src' 'C:\w\cache-control' 'C:\w'
+        $script:Steps -join '|' | Should -Be 'phase ok-control-prime|stop C:\w|phase ok-control'
+        $c.prime_exit | Should -Be 0
+        $c.daemon_stopped | Should -BeTrue
     }
     It 'gives every run an empty stdin, so a zccache client never waits on the shell''s open stdin' {
         $py = @(Get-Command python -CommandType Application -ErrorAction Stop)[0].Source
         $d = New-TempDir
         try {
+            # The child shell runs a plain script file with -File, never an encoded command line
+            # (the owner rejected those; Malwarebytes quarantines them as obfuscated PowerShell).
             $cmd = ". '$($script:Harness)'; `$null = Invoke-ZqRun '$py' @('-c', 'import sys; print(len(sys.stdin.read()))') '$d\r' '$d'; [IO.File]::ReadAllText('$d\r.out')"
-            $psi = New-Object Diagnostics.ProcessStartInfo $script:Shell, ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd)))
+            $runner = Join-Path $d 'stdin-runner.ps1'
+            [IO.File]::WriteAllText($runner, $cmd)
+            $psi = New-Object Diagnostics.ProcessStartInfo $script:Shell, ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $runner + '"')
             $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true
             $p = [Diagnostics.Process]::Start($psi)
             try {
@@ -543,6 +560,12 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         @{ Name = 'nothing in the store was corrupted'; Check = 'poisoned_same_size_rejected'; Break = { param($i) $i.runs.poisoned_same_size.corrupted_files = 0 } }
         @{ Name = 'the priming build failed'; Check = 'poisoned_same_size_rejected'; Break = { param($i) $i.runs.poisoned_same_size.prime_exit = 1 } }
         @{ Name = 'the poison step did not run'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.Remove('poisoned_marker') } }
+        @{ Name = 'a poisoned build ran with its daemon still alive'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.poisoned_marker.daemon_stopped = $false } }
+        @{ Name = 'the control build never hit'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.control.journal.hit = 0 } }
+        @{ Name = 'the control daemon stop failed'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.control.daemon_stopped = $false } }
+        @{ Name = 'the control build differs from uncached'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.control.artifacts = [ordered]@{ 'hello.obj' = ('b' * 64) } } }
+        @{ Name = 'the control build exits non-zero'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.control.exit = 1 } }
+        @{ Name = 'the control run is missing'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.Remove('control') } }
         @{ Name = 'a lab-shell ZCCACHE_ variable reached a build'; Check = 'zccache_env_clean'; Break = { param($i) $i.runs.warm.zccache_env = @('ZCCACHE_ENDPOINT', 'ZCCACHE_MODE') } }
         @{ Name = 'a run does not record its ZCCACHE_ names'; Check = 'zccache_env_clean'; Break = { param($i) $i.runs.warm.Remove('zccache_env') } }
         @{ Name = 'a run records its ZCCACHE_ names as text'; Check = 'zccache_env_clean'; Break = { param($i) $i.runs.warm.zccache_env = 'ZCCACHE_MODE' } }

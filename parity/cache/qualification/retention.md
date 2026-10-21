@@ -45,12 +45,13 @@ P16 removes it. No zccache root is ever trimmed by the manager or by any script 
    a repository alone is not a namespace, and neither is a ref. The host takes the class from
    GitHub's record of the job assigned to the runner, never from the guest. A job is trusted only
    when its event is `push` or `schedule`, its `head_branch` is the default branch, its head
-   repository is the repository itself, its `head_sha` is the default branch's head when the host
-   binds the class, and the owner enabled the repository. Every other job is untrusted, including
-   `workflow_dispatch`, `pull_request_target`, `workflow_run`, and tag pushes and re-runs at any
-   commit other than the default branch's current head. An untrusted job gets only a private per-job root that goes with its VM. There is no
-   shared untrusted root. A root may be shared only among jobs whose writers are at least as
-   trusted as every reader, so an untrusted job never writes a root that a trusted job reads. The
+   repository is the repository itself, and its `head_sha` is the default branch's head when the
+   host binds the class. Every other job is untrusted, including `workflow_dispatch`,
+   `pull_request_target`, `workflow_run`, and tag pushes and re-runs at any commit other than
+   the default branch's current head. An untrusted job gets only a private per-job root that goes
+   with its VM. There is no shared untrusted root. A root may be shared only among jobs whose
+   writers are at least as trusted as every reader, so an untrusted job never writes a root that
+   a trusted job reads. The
    namespace key is the repository id, the trust class, the zccache version and the toolchain
    digest. Each root has its own daemon, endpoint, artifacts and indexes,
    because `ZCCACHE_CACHE_DIR` isolates all of them (R 422-437). `ZCCACHE_ENDPOINT` must not be

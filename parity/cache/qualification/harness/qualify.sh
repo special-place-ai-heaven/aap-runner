@@ -2,7 +2,8 @@
 # zccache 1.15.6 qualification harness, Linux x86_64. LAB ONLY (P13/P22), see ../README.md.
 #
 # Runs one (compiler, invocation) pair through method steps 1-6: uncached, cold and warm builds,
-# a relocated build for debug-pdb, three poisoned-cache builds and the deliberate-error case. Every
+# a relocated build for debug-pdb, a control build (prime, stop the daemon, rebuild with nothing
+# corrupted), three poisoned-cache builds and the deliberate-error case. Every
 # case uses its own fresh cache root. It compares exit codes and artifact hashes, counts journal
 # outcomes and writes one evidence record via record.jq. It never emits "qualified": the record's
 # row stays "direct" and `harness_pass` says whether steps 1-6 held. Lab steps 7-9 decide the rest.
@@ -329,15 +330,30 @@ zq_phase() { # SRC CASE ROOT NAME
 }
 
 zq_poison() { # SRC ROOT artifact|same-size|marker [HASHES]
-  local prime n p
+  local prime stop n p
   prime=$(zq_phase "$1" ok "$2" "ok-prime-$3") || return 1
+  # Stop the daemon before corrupting: the daemon alive since priming must not watch the store
+  # change (in WSL it served a hit with correct bytes after every store file was replaced, which
+  # says nothing about the store), and the poisoned build must start a fresh daemon that reads
+  # the store from disk. The stop result is recorded; record.jq's rejected() requires it.
+  stop=$(zq_stop_daemons "${ZQ_WORK}") || return 1
   n=$(zq_corrupt "$2/${ZQ_STATE}/artifacts" "$3" "${4:-}")
-  # The poisoned build gets a fresh daemon, so its hit or miss is about the store on disk: the
-  # daemon alive since priming served a hit with correct bytes after every store file was replaced
-  # (seen in WSL, P04.1), which says nothing about the store. The next call starts a new one.
-  zq_stop_daemons "${ZQ_WORK}" > /dev/null
   p=$(zq_phase "$1" ok "$2" "ok-poisoned-$3") || return 1
-  jq -c --argjson e "$(jq .exit <<<"${prime}")" --argjson n "${n}" '.prime_exit = $e | .corrupted_files = $n' <<<"${p}"
+  jq -c --argjson e "$(jq .exit <<<"${prime}")" --argjson s "${stop}" --argjson n "${n}" \
+    '.prime_exit = $e | .daemon_stopped = $s | .corrupted_files = $n' <<<"${p}"
+}
+
+# The control phase: prime a fresh root, stop the daemon, rebuild with nothing corrupted. The
+# rebuild must hit and equal uncached, proving a daemon restart alone keeps serving the store.
+# Without it every poisoned build's miss could be the restart's doing, not the corruption's
+# (M1), and all three poison checks would pass without exercising corruption detection.
+# record.jq's rejected() requires this run.
+zq_control() { # SRC ROOT
+  local prime stop p
+  prime=$(zq_phase "$1" ok "$2" ok-control-prime) || return 1
+  stop=$(zq_stop_daemons "${ZQ_WORK}") || return 1
+  p=$(zq_phase "$1" ok "$2" ok-control) || return 1
+  jq -c --argjson e "$(jq .exit <<<"${prime}")" --argjson s "${stop}" '.prime_exit = $e | .daemon_stopped = $s' <<<"${p}"
 }
 
 zq_tree() { # WORK NAME -> a fresh copy of the fixtures
@@ -385,7 +401,7 @@ zq_main() {
   if [[ "${ZQ_INVOCATION}" == path-with-spaces ]]; then src=$(zq_tree "${work}" "src with spaces"); else src=$(zq_tree "${work}" src); fi || return 1
 
   # Fresh cache root per case; no cache root is ever deleted (its daemon may still be alive).
-  local u c w rd=null r=null pa ps pm eu ec ew
+  local u c w rd=null r=null ctl pa ps pm eu ec ew
   u=$(zq_phase "${src}" ok "" ok-uncached) || return 1
   c=$(zq_phase "${src}" ok "${work}/cache-ok" ok-cold) || return 1
   w=$(zq_phase "${src}" ok "${work}/cache-ok" ok-warm) || return 1
@@ -394,6 +410,7 @@ zq_main() {
     rd=$(zq_phase "${moved}" ok "" ok-relocated-direct) || return 1
     r=$(zq_phase "${moved}" ok "${work}/cache-ok" ok-relocated) || return 1
   fi
+  ctl=$(zq_control "${src}" "${work}/cache-control") || return 1
   pa=$(zq_poison "${src}" "${work}/cache-poison-artifact" artifact "$(jq -r '.artifacts[]' <<<"${u}" | tr '\n' ' ')") || return 1
   ps=$(zq_poison "${src}" "${work}/cache-poison-same-size" same-size) || return 1
   pm=$(zq_poison "${src}" "${work}/cache-poison-marker" marker) || return 1
@@ -401,15 +418,17 @@ zq_main() {
   ec=$(zq_phase "${src}" error "${work}/cache-error" error-cold) || return 1
   ew=$(zq_phase "${src}" error "${work}/cache-error" error-warm) || return 1
 
-  local daemons crashes stopped tools meta
+  local daemons stopped crashes tools meta
   daemons=$(zq_daemons "${work}")
-  crashes=$(zq_crash_dumps "${work}")
-  stopped=$(zq_stop_daemons "${work}")
   tools=$(jq -c -n --arg b "$(head -n 1 <<<"${banner}" | zq_printable)" --arg p "$(zq_printable <<<"${ZQ_CC}")" \
     --arg s "$(sha256sum "${ZQ_CC}" | cut -d' ' -f1)" --arg z "$(zq_run "${ZQ_ZC}" --version 2>&1 | head -n 1 | zq_printable)" \
     --arg zs "${zsha}" --arg fs "${fpsha}" --arg jv "$(jq --version 2>&1 | head -n 1 | zq_printable)" \
     '{compiler: $b, compiler_path: $p, compiler_sha256: $s, zccache: $z, zccache_sha256: $zs, "zccache-fp_sha256": $fs, jq: $jv}')
-  zq_stop_daemons "${work}" > /dev/null  # `zccache --version` may have started nothing; make sure
+  # The final stop before the record: `zccache --version` above may have started a daemon, so the
+  # recorded stop covers it too. Crash dumps are counted after the stop, so a daemon that dumps
+  # while being stopped (its pending crash-spool record fills) is not missed.
+  stopped=$(zq_stop_daemons "${work}")
+  crashes=$(zq_crash_dumps "${work}")
   meta=$(jq -c -n --argjson t "${tools}" --argjson os "$(zq_os)" --argjson d "${daemons}" --argjson cd "${crashes}" \
     --argjson ds "${stopped}" --arg cmd "qualify.sh ${ZQ_COMPILER} ${cver} ${ZQ_INVOCATION} ${eref}" \
     --arg st "${started}" --arg en "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg c "${ZQ_COMPILER}" --arg v "${cver}" \
@@ -421,10 +440,10 @@ zq_main() {
       started_at: $st, ended_at: $en, compiler: $c, compiler_version: $v, invocation: $i, evidence_ref: $e}' \
     --args ${ZQ_REMOVED[@]+"${ZQ_REMOVED[@]}"})
   jq -n --argjson m "${meta}" --argjson u "${u}" --argjson c "${c}" --argjson w "${w}" --argjson rd "${rd}" \
-    --argjson r "${r}" --argjson pa "${pa}" --argjson ps "${ps}" --argjson pm "${pm}" \
+    --argjson r "${r}" --argjson ctl "${ctl}" --argjson pa "${pa}" --argjson ps "${ps}" --argjson pm "${pm}" \
     --argjson eu "${eu}" --argjson ec "${ec}" --argjson ew "${ew}" \
     '{meta: $m, errors: {uncached: $eu, cold: $ec, warm: $ew},
-      runs: ({uncached: $u, cold: $c, warm: $w, relocated_direct: $rd, relocated: $r,
+      runs: ({uncached: $u, cold: $c, warm: $w, control: $ctl, relocated_direct: $rd, relocated: $r,
               poisoned_artifact: $pa, poisoned_same_size: $ps, poisoned_marker: $pm} | with_entries(select(.value != null)))}' \
     > "${work}/record-input.json" || return 1
   jq -a -f "${ZQ_HERE}/record.jq" "${work}/record-input.json" > "${out}" || return 1
