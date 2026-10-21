@@ -62,6 +62,18 @@ cleanup() { # stops every process started from TMPROOT and removes it; fails whe
   [[ -z "$(run_pids)" && ! -e "${TMPROOT}" ]]
 }
 trap cleanup EXIT
+# The fake daemon is a copy of sleep that runs under the name zccache-daemon. A multi-call coreutils (uutils, Ubuntu
+# 25.10 and later) picks the program by its own file name, so prefer GNU's single sleep, and prove the copy stays alive
+# under that name before any case relies on it.
+SLEEP_BIN=$(command -v gnusleep || command -v sleep)
+mkdir -p "${TMPROOT}/probe" && cp -- "${SLEEP_BIN}" "${TMPROOT}/probe/zccache-daemon"
+"${TMPROOT}/probe/zccache-daemon" 5 > /dev/null 2>&1 &
+sleep 1
+if ! kill -0 $! 2> /dev/null; then
+  echo "SKIP: ${SLEEP_BIN} does not run as zccache-daemon (a multi-call coreutils?); install GNU sleep (gnusleep) to run this suite"
+  exit 77
+fi
+kill $! 2> /dev/null
 # Strip the secrets of whatever CI shell runs this suite; the cases add synthetic ones on purpose.
 for n in $(compgen -e); do grep -Eiq -- "${ZC_SECRET_NAME_RE}" <<< "${n}" && unset "${n}"; done
 unset AAP_ZC_STATE
@@ -106,9 +118,8 @@ new_pkg() { # [QUALIFIED_JSON] [EXTRA_STAGE_SETUP_FUNCTION] -> P, the package tr
   printf '#error deliberate\n' > "${P}/src/bad.c"
   CFG="${P}/job/state/config.json"
 }
-# The fake daemon is a copy of sleep in the install's bin folder, so discovery finds it by its path. A multi-call
-# coreutils (uutils, Ubuntu 25.10 and later) picks the program by its own file name, so prefer GNU's single sleep.
-SLEEP_BIN=$(command -v gnusleep || command -v sleep)
+# The fake daemon starts as a copy of sleep (proved above) in the install's bin folder; the fake zccache deploys it
+# into the root as zccache 1.15.6 does, and discovery finds it there by its path and its environment.
 install_pkg() {
   bash "${SCRIPT}" install "${P}/test.tar.gz" "${P}/test.tar.gz.provenance.json" "${P}/install" "${P}/toolchains.json" "${P}/wrappers.json" &&
     cp -- "${SLEEP_BIN}" "${P}/install/bin/zccache-daemon"
@@ -116,10 +127,13 @@ install_pkg() {
 init_pkg() { install_pkg > /dev/null 2>&1 && bash "${SCRIPT}" init "${P}/install" "${P}/job" "${1:-104857600}" "${@:2}" > /dev/null; }
 shim() { AAP_ZC_STATE="${CFG}" "${P}/install/zcshim" "$@"; }
 compile() { # SOURCE [EXTRA ARGS...] -> OUT, RC, ERR (environment: whatever the caller exported)
-  local src=$1
-  shift
   OUT=$(mktemp -u "${P}/out.XXXXXX").o
-  ERR=$(shim "${P}/tc/fake-cc" -c "${P}/src/${src}" "$@" -o "${OUT}" 2>&1 > /dev/null)
+  compile_to "${OUT}" "$@"
+}
+compile_to() { # OUT SOURCE [EXTRA ARGS...] -> RC, ERR
+  local o=$1 src=$2
+  shift 2
+  ERR=$(shim "${P}/tc/fake-cc" -c "${P}/src/${src}" "$@" -o "${o}" 2>&1 > /dev/null)
   RC=$?
 }
 direct() { local o="${P}/direct.$$.o"; "${P}/tc/fake-cc" -c "${P}/src/a.c" -o "${o}" && cat -- "${o}"; }
@@ -230,6 +244,17 @@ t_init_qualified() {
   check "init: no RUSTC_WRAPPER without a qualified rustc pair, no ZCCACHE_* for jobs" \
     bash -c '! grep -Eq "RUSTC_WRAPPER|ZCCACHE_" "$1"' _ "${P}/job/state/runner.env"
   check "init: daemon started in COPY mode with the explicit budget" grep -q "MODE=COPY SIZE=78643200$" "${P}/job/roots/private/fake-env.log"
+  check "init: the daemon found runs from the copy zccache deploys into the root" \
+    [ "$(tr '\0' ' ' < "/proc/$(jq -r .roots.private.daemon.pid "${CFG}")/cmdline")" == "${P}/job/roots/private/v1.15.6/zccache-daemon 600 " ]
+}
+t_init_daemon_in_bin() {
+  new_pkg
+  install_pkg > /dev/null 2>&1 && : > "${P}/install/bin/daemon-in-bin"
+  bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 > /dev/null
+  check "init: a daemon zccache runs in place from bin is found too" [ "$(jq -r .state "${CFG}")" == qualified ]
+  check "init: and it is that one" [ "$(jq -r .roots.private.daemon.pid "${CFG}")" == "$(cat "${P}/job/roots/private/fake-daemon.pid")" ]
+  check "init: running from bin, not from a copy in the root" \
+    [ "$(tr '\0' ' ' < "/proc/$(jq -r .roots.private.daemon.pid "${CFG}")/cmdline")" == "${P}/install/bin/zccache-daemon 600 " ]
 }
 t_init_rustc() {
   new_pkg '[{"compiler":"rustc","compiler_version":"1.99.0","invocation":"rustc-wrapper","evidence_ref":"parity/cache/qualification/evidence/r.json"}]'
@@ -339,6 +364,7 @@ t_shim_hardlink() {
   printf 'APPENDED BY A BUILD STEP\n' >> "${OUT}"
   compile a.c
   check "shim: writing into a delivered output does not poison the next hit" same_as_direct "${OUT}"
+  check "shim: and the hits stayed on zccache" [ -z "$(flag)" ]
 }
 t_shim_concurrent() {
   new_pkg
@@ -394,12 +420,117 @@ t_shim_crash() {
   new_pkg
   init_pkg
   compile a.c
+  check "shim: the first call went through zccache" [ "$(paste -sd, "${P}/job/roots/private/fake-journal.log")" == miss ]
   store=$(find "${P}/job/roots/private/artifacts" -type f ! -name '*.sha' | head -n 1)
+  check "shim: and stored an entry" test -s "${store}"
+  compile a.c
+  check "shim: the second call was a hit, on a healthy root" [ "$(paste -sd, "${P}/job/roots/private/fake-journal.log")" == miss,hit -a -z "$(flag)" ]
   chmod 000 -- "${store}"
   [[ -r "${store}" ]] && return 0  # root reads it anyway
   compile a.c
   check "shim: a hit zccache cannot deliver is rebuilt directly" same_as_direct "${OUT}"
   check "shim: as a wrapper failure, not a success without output" [ "$(flag)" == wrapper-failure ]
+}
+# ---- delivery: zccache's exit 0 counts only with every declared output in place ----
+stale() { printf 'STALE\n' > "$1"; }
+delivery_failed() { # NAME: the call was answered by the direct compiler after a delivery failure
+  check "${1}: exits 0" [ "${RC}" == 0 ]
+  check "${1}: marks the root degraded (delivery)" [ "$(flag)" == delivery ]
+  check "${1}: and logs it" grep -q " fallback fake-cc zccache-exit 0 delivery direct-exit 0$" "${P}/job/shim/shim.log"
+  check "${1}: and stops the root's daemon, which may still be copying that output" \
+    bash -c '! kill -0 "$1" 2> /dev/null' _ "$(jq -r .roots.private.daemon.pid "${CFG}")"
+}
+t_shim_delivery_object() {
+  local s
+  for s in none stale; do
+    new_pkg; init_pkg
+    OUT="${P}/obj.o"; [[ ${s} == stale ]] && stale "${OUT}"
+    FAKE_CC_OMIT=obj compile_to "${OUT}" a.c
+    check "delivery: a miss that exits 0 without its object (${s}) is rebuilt directly" same_as_direct "${OUT}"
+    delivery_failed "delivery: object, ${s}"
+    new_pkg; init_pkg
+    compile a.c
+    OUT="${P}/obj2.o"; [[ ${s} == stale ]] && stale "${OUT}"
+    FAKE_ZC_NODELIVER=1 compile_to "${OUT}" a.c
+    check "delivery: a hit that exits 0 without delivering (${s}) is rebuilt directly" same_as_direct "${OUT}"
+    delivery_failed "delivery: hit, ${s}"
+  done
+}
+t_shim_delivery_depfile() {
+  local s
+  for s in none stale; do
+    new_pkg; init_pkg
+    OUT="${P}/dep.o"; [[ ${s} == stale ]] && stale "${P}/dep.d"
+    FAKE_CC_OMIT=dep compile_to "${OUT}" a.c -MD
+    check "delivery: a call that exits 0 without its depfile (${s}) is rebuilt directly" [ "$(cat "${P}/dep.d")" == "DEP a.c" ]
+    delivery_failed "delivery: depfile, ${s}"
+    new_pkg; init_pkg
+    OUT="${P}/mf.o"; [[ ${s} == stale ]] && stale "${P}/mf.dep"
+    FAKE_CC_OMIT=dep compile_to "${OUT}" a.c -MMD -MF "${P}/mf.dep"
+    check "delivery: the same for an -MF depfile (${s})" [ "$(cat "${P}/mf.dep")" == "DEP a.c" ]
+    delivery_failed "delivery: -MF depfile, ${s}"
+  done
+}
+t_shim_delivery_shape() {
+  new_pkg; init_pkg
+  compile a.c
+  FAKE_ZC_EMPTY=1 compile a.c
+  check "delivery: an empty object is rebuilt directly" same_as_direct "${OUT}"
+  delivery_failed "delivery: empty"
+  [[ ${MSYS} == 1 ]] && return 0  # Git Bash makes no real symbolic links
+  new_pkg; init_pkg
+  compile a.c
+  FAKE_ZC_LINK=1 compile a.c
+  check "delivery: a symbolic link at the output path is rebuilt directly" same_as_direct "${OUT}"
+  check "delivery: as a regular file" [ ! -L "${OUT}" ]
+  delivery_failed "delivery: link"
+  new_pkg; init_pkg
+  compile a.c
+  FAKE_ZC_HARDLINK=1 compile a.c
+  check "delivery: a hard link to the entry is rebuilt directly" same_as_direct "${OUT}"
+  check "delivery: as a file of its own" [ "$(stat -c %h -- "${OUT}")" == 1 ]
+  delivery_failed "delivery: hard link"
+}
+t_shim_delivery_ok() {
+  new_pkg; init_pkg
+  stale "${P}/ok.o"; stale "${P}/ok.d"
+  compile_to "${P}/ok.o" a.c -MD
+  compile_to "${P}/ok2.o" a.c -MD
+  check "delivery: a whole miss and hit with a depfile stay on zccache" [ "$(paste -sd, "${P}/job/roots/private/fake-journal.log")" == miss,hit -a -z "$(flag)" ]
+  check "delivery: the miss replaced the stale object" same_as_direct "${P}/ok.o"
+  check "delivery: and the stale depfile" [ "$(cat "${P}/ok.d")" == "DEP a.c" ]
+  check "delivery: the hit delivered the object" same_as_direct "${P}/ok2.o"
+  check "delivery: and the depfile" [ "$(cat "${P}/ok2.d")" == "DEP a.c" ]
+}
+t_shim_outputs_unknown() {
+  new_pkg; init_pkg
+  shim "${P}/tc/fake-cc" -c "${P}/src/a.c" > /dev/null 2>&1
+  check "outputs: a call without -o builds directly" [ "$(journal)" == 0 ]
+  compile_to "${P}/two.o" a.c -o "${P}/one.o"
+  check "outputs: so does one with two -o" [ "$(journal)" == 0 ]
+  check "outputs: logged as such" grep -q " direct fake-cc outputs-unknown$" "${P}/job/shim/shim.log"
+  check "outputs: without marking the root degraded" [ -z "$(flag)" ]
+}
+t_shim_progress() {
+  new_pkg; init_pkg
+  FAKE_ZC_PROGRESS=3 FAKE_CC_STDERR="zccache[info][Q]: daemon under load: compiling, 9 compiles in flight, says the compiler" compile a.c
+  check "progress: zccache's own progress lines are not passed on" [ "${ERR}" == "zccache[info][Q]: daemon under load: compiling, 9 compiles in flight, says the compiler" ]
+  FAKE_ZC_PROGRESS=1 FAKE_CC_STDERR=$'warning: first\nzccache[info][Q]: daemon under load: compiling, 3 compiles in flight' compile_to "${P}/p2.o" a.c -DX
+  check "progress: a compiler line after its first one is kept, even one that looks like zccache's" \
+    [ "${ERR}" == $'warning: first\nzccache[info][Q]: daemon under load: compiling, 3 compiles in flight' ]
+}
+t_outputs() {
+  local v compiler want got args=() a
+  while IFS= read -r v; do
+    compiler=$(jq -r .compiler <<< "${v}")
+    want=$(jq -r 'if .outputs == null then "NULL" else .outputs | join(",") end' <<< "${v}")
+    args=()
+    while IFS= read -r a; do
+      if [[ "${a}" == @RSP ]]; then jq -j .rsp <<< "${v}" > "${TMPROOT}/out.rsp"; args+=("@${TMPROOT}/out.rsp"); else args+=("${a}"); fi
+    done < <(jq -r '.args[]' <<< "${v}")
+    if got=$(zc_outputs "${compiler}" "${args[@]}"); then got=$(paste -sd, <<< "${got}"); else got=NULL; fi
+    check "outputs: ${compiler} $(jq -r '.args | join(" ")' <<< "${v}") -> ${want}" [ "${got}" == "${want}" ]
+  done < <(jq -c '.vectors[] | select(.platforms | index("linux"))' "${HERE}/fixtures/outputs.json")
 }
 t_shim_toolchain_changed() {
   new_pkg
@@ -644,6 +775,7 @@ run t_install_tar_members LNX-TAR-MEMBER LNX-TAR-TYPE
 run t_install_dir_link LNX-DIR-LINK
 run t_init_direct
 run t_init_qualified LNX-COPY-MODE LNX-BUDGET-SET
+run t_init_daemon_in_bin LNX-DAEMON-BIN
 run t_init_rustc
 run t_init_env LNX-ENV-SECRET LNX-ENV-ZCCACHE
 run t_init_daemon_env LNX-DAEMON-ENV
@@ -658,6 +790,13 @@ run t_shim_hardlink LNX-COPY-MODE
 run t_shim_concurrent
 run t_shim_daemon_down LNX-SHIM-DAEMON LNX-DAEMON-ALIVE
 run t_shim_crash LNX-SHIM-FALLBACK
+run t_shim_delivery_object LNX-OUT-CHECK LNX-OUT-STALE LNX-OUT-DAEMON
+run t_shim_delivery_depfile LNX-OUT-CHECK LNX-OUT-STALE
+run t_shim_delivery_shape LNX-OUT-CHECK LNX-OUT-CLEAR LNX-OUT-NLINK LNX-OUT-DAEMON
+run t_shim_delivery_ok
+run t_shim_outputs_unknown LNX-OUT-UNKNOWN
+run t_shim_progress
+run t_outputs LNX-OUT-DEPFLAG LNX-OUT-SIDECAR
 run t_shim_toolchain_changed LNX-SHIM-TOOLCHAIN
 run t_shim_over_budget LNX-OVER-BUDGET
 run t_shim_over_budget_total LNX-OVER-BUDGET

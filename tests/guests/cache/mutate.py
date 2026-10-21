@@ -15,7 +15,10 @@ its own temp folder (TMPDIR; TEMP and TMP too, except for Git Bash), and whateve
 the folder removed after the run.
 
 Bash runs through Git Bash on Windows (never System32\\bash.exe, which is WSL); cases that need symbolic links are
-skipped there, so LNX-DIR-LINK and LNX-BIND-LINK are proven only on real Linux.
+skipped there, so LNX-DIR-LINK, LNX-BIND-LINK, LNX-OUT-CHECK#2 and LNX-OUT-CLEAR are proven only on real Linux.
+WIN-OUT-CLEAR needs a symbolic link from PowerShell 7: an elevated session (GitHub's hosted Windows runners run
+elevated) or developer mode; without one its test is skipped and it reports NO-TEST. A symbolic link reports length 0
+on both editions, so the mutation that drops only WIN-OUT-CHECK's reparse-point test is killed by a stand-in FileInfo.
 """
 
 import argparse
@@ -73,9 +76,19 @@ MUTATIONS = {
     "WIN-SHIM-DAEMON": (W, "if (-not (Test-AapZcDaemonAlive $d.Root.daemon)) {", "if ($false) {"),
     "WIN-SHIM-TIMEOUT": (W, "-Capture -TimeoutSeconds $timeout  # SAFETY:WIN-SHIM-TIMEOUT", "-Capture"),
     "WIN-KILL-TREE": (W, "Stop-AapZcTree $p.Id  # SAFETY:WIN-KILL-TREE", "try { $p.Kill() } catch { $null = $_ }  #"),
-    "WIN-TIMEOUT-DAEMON": (W, "if (Test-AapZcDaemonAlive $d.Root.daemon) { Stop-AapZcTree", "if ($false) { Stop-AapZcTree"),
+    "WIN-TIMEOUT-DAEMON": (W, "{ Stop-AapZcTree ([int]$d.Root.daemon.pid) }  # SAFETY:WIN-TIMEOUT-DAEMON", "{ }"),
+    "WIN-OUT-DAEMON": (W, "{ Stop-AapZcTree ([int]$d.Root.daemon.pid) }  # SAFETY:WIN-OUT-DAEMON", "{ }"),
+    "WIN-OUT-DEPFLAG": (W, "}).Count) { return $null }  # SAFETY:WIN-OUT-DEPFLAG", "}).Count -and $false) { return $null }"),
+    "WIN-OUT-SIDECAR": (W, "}).Count) { return $null }  # SAFETY:WIN-OUT-SIDECAR", "}).Count -and $false) { return $null }"),
+    "WIN-OUT-DEVICE": (W, "if (@($outs | Where-Object { Test-AapZcDevice $_ }).Count) { return $null }", "if ($false) { return $null }"),
     "WIN-TIMEOUT-CLASS": (W, "if ($Classes -contains 'compile-object') {", "if ($true) {"),
     "WIN-SHIM-FALLBACK": (W, "$code = (Invoke-AapZcProcess -FilePath $exe -Arguments $rest).ExitCode  # SAFETY:WIN-SHIM-FALLBACK", "$code = $(if ($r) { $r.ExitCode } else { 1 })"),
+    "WIN-OUT-UNKNOWN": (W, "if ($null -eq $outs) { $d.Reason = 'outputs-unknown'; return $d }", "if ($null -eq $outs) { $outs = @() }"),
+    "WIN-OUT-STALE": (W, "try { [IO.File]::Delete($f) }  # SAFETY:WIN-OUT-STALE", "try { }  #"),
+    "WIN-OUT-CHECK": [(W, "return ($File.Exists -and -not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $File.Length -gt 0)", "return $true"),
+                      (W, "return ($File.Exists -and -not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $File.Length -gt 0)", "return ($File.Exists -and -not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint))"),
+                      (W, "return ($File.Exists -and -not ($File.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $File.Length -gt 0)", "return ($File.Exists -and $File.Length -gt 0)")],
+    "WIN-OUT-CLEAR": (W, "foreach ($f in $d.Outputs) { try { [IO.File]::Delete($f) } catch { $null = $_ } }  # SAFETY:WIN-OUT-CLEAR", "#"),
     "TRUST-JOB-MATCH": (T, "if ($m.Count -ne 1) { return $null }", "if ($false) { return $null }"),
     "TRUST-SAME-REPO": (T, "if ($runRepo -ne $repoId) { return $null }", "if ($false) { return $null }"),
     "TRUST-EVENT": (T, "if (@('push', 'schedule') -cnotcontains $ev) {", "if ($false) {"),
@@ -132,9 +145,20 @@ MUTATIONS = {
     "LNX-SHIM-DAEMON": (L, '! zc_daemon_alive "${pid}" "${start}"; then', "false; then"),
     "LNX-SHIM-TIMEOUT": [(L, 'timeout -k 5 "${tmo}" "${self}/bin/${zcname}"', '"${self}/bin/${zcname}"'),
                          (L, 'timeout -k 5 "${tmo}" "${self}/bin/${zcname}"', 'timeout --foreground -k 5 "${tmo}" "${self}/bin/${zcname}"')],
-    "LNX-TIMEOUT-DAEMON": (L, 'zc_daemon_alive "${pid}" "${start}" && zc_kill_tree "${pid}"', 'true'),
+    "LNX-TIMEOUT-DAEMON": (L, '&& zc_kill_tree "${pid}"  # SAFETY:LNX-TIMEOUT-DAEMON', '&& true'),
+    "LNX-OUT-DAEMON": (L, '&& zc_kill_tree "${pid}"  # SAFETY:LNX-OUT-DAEMON', '&& true'),
+    "LNX-OUT-DEPFLAG": (L, '-Wp,*-M* | -Xpreprocessor | --*dependencies) return 1 ;;', '-Wp,NONE) return 1 ;;'),
+    "LNX-OUT-SIDECAR": (L, '-MJ* | -save-temps | -save-temps=* | --coverage | -ftest-coverage | -fprofile-arcs | -fprofile-generate* | -gsplit-dwarf) return 1 ;;', '-MJNONE) return 1 ;;'),
+    "LNX-OUT-NLINK": (L, '[[ "$(stat -c %h -- "${o}")" == 1 ]] ||', 'true ||'),
+    "LNX-DAEMON-BIN": (L, '[[ "${exe}" == "${deployed}" || "${exe}" == "${bin}/"* ]] || continue', '[[ "${exe}" == "${deployed}" ]] || continue'),
     "LNX-TIMEOUT-CLASS": (L, 'if [[ " $1 " == *" compile-object "* ]]; then', 'if true; then'),
     "LNX-SHIM-FALLBACK": (L, '"${path}" "$@"  # SAFETY:LNX-SHIM-FALLBACK', "false"),
+    "LNX-OUT-UNKNOWN": (L, 'then reason="outputs-unknown"; fi', 'then reason=""; fi'),
+    "LNX-OUT-STALE": (L, 'rm -f -- "${o}" 2> /dev/null ||', "true ||"),
+    "LNX-OUT-CLEAR": (L, '[[ -n "${o}" ]] && rm -f -- "${o}" 2> /dev/null; done', '[[ -n "${o}" ]] && true; done'),
+    "LNX-OUT-CHECK": [(L, '[[ -f "${o}" && ! -L "${o}" && -s "${o}" ]]', "true"),
+                      (L, '[[ -f "${o}" && ! -L "${o}" && -s "${o}" ]]', '[[ -f "${o}" && -s "${o}" ]]'),
+                      (L, '[[ -f "${o}" && ! -L "${o}" && -s "${o}" ]]', '[[ -f "${o}" && ! -L "${o}" ]]')],
     "GEN-VALIDATE": (G, "if r.returncode != 0:", "if False:"),
     "GEN-BINARY-PIN": (G, 'if z["binary_sha256"] != pins["members"][0]["sha256"]:', "if False:"),
     "GEN-ACQUIRE": (G, "if (acq is None or", "if False and (acq is None or"),
@@ -169,17 +193,18 @@ def pwsh():
 
 
 def run_pids(marker):
-    """Processes whose command line or program names marker (a suite's fakes run from inside its temp folder)."""
+    """Processes whose command line or program (Linux: or environment) names marker (a suite's fakes run from inside
+    its temp folder)."""
     if os.name == "nt":
         ps = ("Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and ([string]$_.CommandLine + "
               "[string]$_.ExecutablePath).Contains('" + marker + "') } | ForEach-Object { $_.ProcessId }")
         r = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True)
         return [int(x) for x in r.stdout.split()]
     pids = []
-    for f in Path("/proc").glob("[0-9]*/cmdline"):
-        try:
-            if marker.encode() in f.read_bytes():
-                pids.append(int(f.parent.name))
+    for d in Path("/proc").glob("[0-9]*"):
+        try:  # environ too: a daemon started with a relative path names the folder only in its TMPDIR
+            if any(marker.encode() in (d / n).read_bytes() for n in ("cmdline", "environ")):
+                pids.append(int(d.name))
         except OSError:
             pass
     return pids

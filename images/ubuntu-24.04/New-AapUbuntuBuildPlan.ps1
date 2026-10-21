@@ -191,8 +191,10 @@ $plan = [ordered]@{
         gate_sections    = @('coverage', 'tool_cache', 'services', 'path.process', 'path.machine', 'action_archive_cache', 'user')
         # Missing-required (the reference has it, the image lacks it) fails only in the sections the image owns. Not image,
         # infra, run_identity or credential_env: the runner (a verification guest has none, so image.runner_version,
-        # runner_os and runner_arch are null), the job's identity and the Azure fabric.
-        required_sections = @('tools', 'shells', 'docker', 'docker.images', 'env', 'limits', 'limits.sysctl', 'hardware', 'tool_cache', 'action_archive_cache', 'services', 'path.process', 'path.machine')
+        # runner_os and runner_arch are null), the job's identity and the Azure fabric. Not docker.images either: the six cached
+        # images are :latest pulls inside install-docker.sh (P03 blocker ubuntu-floating-container-images; the toolset's list
+        # is empty), so no pinned input says which names a build gets; they are recorded for P24 until a pin names them.
+        required_sections = @('tools', 'shells', 'docker', 'env', 'limits', 'limits.sysctl', 'hardware', 'tool_cache', 'action_archive_cache', 'services', 'path.process', 'path.machine')
     }
     inputs            = [ordered]@{
         source = [ordered]@{ entry = $(if ($SourceEntry) { $SourceEntry } else { $null }); sha256 = $(if ($SourceSha256) { $SourceSha256.ToLowerInvariant() } else { $null }) }

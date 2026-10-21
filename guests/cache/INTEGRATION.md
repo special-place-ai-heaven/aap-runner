@@ -205,6 +205,10 @@ says. The guest code here does not run in the legacy distro.
 - P04 / P22: when a matrix row becomes `qualified`, bump `matrix_revision` and run
   `python -B -I guests/cache/gen_wrappers.py`; `--check` fails until `wrappers.json` is regenerated. The lab items in
   README.md "To confirm in the lab" gate the first qualified row; the shared-root proof gates `-SharedRoots`.
+- P22, before any shared root (MEDIUM): zccache runs its daemon from a copy it deploys into the root,
+  `<root>/v1.15.6/zccache-daemon[.exe]`, and nothing hashes that copy today. Verify its SHA-256 against the pinned
+  zccache member before priming a root, and delete it or refuse the root when it differs (README.md "Daemon
+  discovery").
 
 ## Coordinator (CI)
 

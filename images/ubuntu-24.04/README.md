@@ -16,7 +16,7 @@ INTEGRATION.md, Dependency on P06), and it follows P06's rules; what differs is 
 | File | Role |
 |---|---|
 | `AapUbuntuImage.psm1` | The builder: storage and trust checks, plan, blockers and waivers, seed images and guest requests, the install, the phase loop, the in-guest secret scan, fresh-guest verification and the inventory comparison, publication, generation and budget records. Calls nothing on the host except through the provider |
-| `AapUbuntuImage.HyperV.psm1` | The production provider (`New-AapUbuntuHyperVProvider -PythonPath <python.exe> -GuestNetwork <P10.0 adapter step>`): every Hyper-V, IMAPI (seed ISO), synthetic-keyboard, hvsocket, ACL and comparison call. Not run by P07 |
+| `AapUbuntuImage.HyperV.psm1` | The production provider (`New-AapUbuntuHyperVProvider -PythonPath <python.exe>`): every Hyper-V, IMAPI (seed ISO), synthetic-keyboard, hvsocket, ACL and comparison call. Not run by P07 |
 | `New-AapUbuntuBuildPlan.ps1` | Generates `build-plan.json` from the pinned template; reads files only; pwsh 7 for the committed plan |
 | `build-plan.json` | The phase table (one phase per upstream provisioner, in template order), the base install settings, the guest channel, the job user and the verification gate |
 | `reference-inventory.json` | The hosted reference job inventory: P05's `certify.py parse-hosted-log` of the pinned hosted capture (run 39305649952); a test regenerates it |
@@ -61,21 +61,27 @@ The build guest runs internet-sourced installers, so nothing a guest says or wri
   (that folder must still be a plain folder: each clone mounts the EFI partition on it, and mount follows links).
   **Accepted residual**: a crafted ext4 or FAT image could attack the scanner's file system drivers; that is contained in a
   guest with no network and no host channel but the capped reply, and the sealed disk's hash is checked again afterwards.
-- No guest gets a password, an SSH key, a host share, Guest Service Interface or Key-Value Pair Exchange. Only the build VM
-  has a network adapter, on the internal switch `aap-guests-linux`, with guest-transport.md's per-adapter controls: DHCP
-  guard and router guard on, MAC spoofing off, and the extended port ACL set added by the P10.0 guest network module
-  (`-GuestNetwork`). `NewVm` reads the adapter back from Hyper-V before the VM can start and refuses
-  (`AAP_NetworkUntrusted`) unless it has exactly that state and an outbound Deny entry for each fixed range (RFC 1918,
-  169.254.0.0/16, 100.64.0.0/10, 224.0.0.0/4, fe80::/10, fc00::/7, ff00::/8); the scanner and verification VMs must read
-  back with no adapter at all. The host-specific entries (the host's vEthernet addresses, the LAN's IPv6 prefix, the guest
-  subnet except its gateway) are P10.0's to add and prove.
+- No guest gets a password, an SSH key, a host share, Guest Service Interface or Key-Value Pair Exchange. `NewVm` makes
+  every VM with no network adapter, no automatic start and no checkpoints (read back). Only the build VM gets one, from the
+  P10.0 host network module (`parity/contracts/host-network-module.md`, taken as `-Network`): on its own switch
+  `aap-build-linux`, never beside another VM, statically addressed from the module's declaration (no DHCP). The builder
+  follows the contract's consumer obligations: `Attach` while the VM is Off and the shared declaration check
+  (`AAP_NetworkInvalid`), the declaration written into the build seed's autoinstall `network` section, then before every
+  start `Attach` again, `Verify` (every object and every error it writes is a problem, `AAP_NetworkUntrusted`) and the builder's own
+  read-back of Hyper-V through the shared check (`supervisor/network/AapHostNetworkCheck.psm1`: guards, mirroring, VLAN,
+  storm limit, legacy ACLs, peers, both directions of every fixed deny, the source pin, weights, stateless rules); `Verify`
+  again before a phase while the VM runs, once a minute has passed since the last check; after the VM is removed,
+  `Detach`. The scanner and verification VMs are never attached and read back with no adapter before they start. The seal
+  removes the build address (the installer's netplan file and network configuration; seal rule `no-build-network`), so a
+  clone takes its addressing only from its own seed.
 
 ## Trust in the builder's own files
 
 The builder runs elevated. Before anything else it asks the provider's `TestRootTrust` (P03's ProgramData rules plus the
 admin-only rule) about every folder it loads code from or sends files from: its own folder, `guest`, `images/windows` (the
-P06 helpers it imports), `images/common`, `tools/parity-certify` with `probe` and `workloads/fixtures`, and the folders whose
-code the provider runs (`ExecFolders`: python's install folder). Any finding is `AAP_BuilderUntrusted`. What this protects:
+P06 helpers it imports), `images/common`, `tools/parity-certify` with `probe` and `workloads/fixtures`, `supervisor/network`
+(the shared network check, imported only after this check passed), and the folders whose code the provider runs
+(`ExecFolders`: python's install folder). Any finding is `AAP_BuilderUntrusted`. What this protects:
 a deployment that anyone but the administrators can change is refused before it touches a disk or a VM, so a later change by
 an unprivileged process cannot reach an elevated build. What it does not protect: the check runs after `AapUbuntuImage.psm1`,
 `images/windows/AapWinImage.psm1` and (inside the provider's check) `images/common/AapArtifact.psm1` were loaded, so code that
@@ -87,16 +93,19 @@ its C# types with `TEMP` and `TMP` pointing into the admin-only build folder.
 
 ## Build flow
 
-`Invoke-AapUbuntuImageBuild -Config <hashtable> -Provider <hashtable>` returns `Ok`, `Status` (`built`, `unchanged`, `refused`,
+`Invoke-AapUbuntuImageBuild -Config <hashtable> -Provider <hashtable> -Network <the P10.0 host network module>` returns `Ok`, `Status` (`built`, `unchanged`, `refused`,
 `failed`), `Reason`, `Detail`, `GenerationId` and the record paths. A `refused` run changed nothing. A `failed` run removed
 everything it made (VMs, build disks, a partly published generation, the evidence files it wrote) and kept only
 `secret-scan.json` when the scan ran, as the record of why it failed.
 
-1. **Preflight** (refusals, nothing written): provider completeness; the builder's own folder, `guest`, the P06 helpers it
-   loads (`images/windows`), `images/common` and `tools/parity-certify` (the probe, the comparison and its allowlist) must pass
+1. **Preflight** (refusals, nothing written): provider completeness; the host network module (`Attach`, `Detach`, `Verify`;
+   none is `AAP_NetworkUnavailable`, an incomplete one `AAP_NetworkInvalid`); the builder's own folder, `guest`, the P06
+   helpers it loads (`images/windows`), `images/common`, `supervisor/network` and `tools/parity-certify` (the probe, the
+   comparison and its allowlist) must pass
    the admin-only trust check, and so must python's install folder; config, with the owner's lab ceilings (at most 4 vCPU,
    10 GiB, `BaseGibMax` 186, `JobDiskGibMax` 55); the storage document; trust of the storage document's folder, `base_root`,
-   the staging root and the evidence root; the internal switch `aap-guests-linux`; the plan (every script hash pinned, every
+   the staging root and the evidence root; the build switch `aap-build-linux`, Internal (P19 creates it; never a fallback
+   to a guest switch); the plan (every script hash pinned, every
    variable in `[A-Za-z0-9_./:+-]`, the comparison reference matching its pin, the source archive and the media each pinned by
    P03 entry and SHA-256 or blocked unwaivably); input blockers (each resolved, or waived by a chair approval record for this
    plan; the source and media blockers cannot be waived); no reparse point on the way to the evidence, build and generation
@@ -105,12 +114,16 @@ everything it made (VMs, build disks, a partly published generation, the evidenc
    source archive, the media and any other input, then each staged file's SHA-256 against the plan and the ISO's name (Ubuntu
    24.04 live-server amd64 only).
 2. **Install**: an empty dynamic `os.vhdx` of 150 GiB (the hosted job sees a 150G `sda`; upstream builds on 75 GB and Azure
-   grows it), the build seed, and a generation 2 VM with Secure Boot (Microsoft UEFI CA template), static memory, checkpoints
-   off, the ISO and the seed as DVDs (first boot from DVD) and one adapter on `aap-guests-linux`. The host types Packer's
+   grows it), a generation 2 VM with Secure Boot (Microsoft UEFI CA template), static memory, checkpoints off, no automatic
+   start, no network adapter, the ISO and an empty seed drive (first boot from DVD); then `Attach` and the declaration
+   check, the build seed with the declaration's static address, prefix length, gateway and resolvers (`dhcp4: false`, the
+   `hv_netvsc` adapter matched by driver) put into the seed drive while the VM is Off, and `Attach` again, `Verify` and the
+   read-back before the VM starts. The host types Packer's
    boot command (`linux /casper/vmlinuz --- autoinstall ds=nocloud`, `initrd`, `boot`) into GRUB through the synthetic
    keyboard; the installer partitions the disk (GPT: EFI 512M, ext4 root), installs `linux-azure` and `walinuxagent` (masked),
-   OpenSSH without passwords and no swap file, and powers off. The host removes both DVDs, deletes the seed, boots from disk
-   and waits for the agent, then sends the P03-verified `runner-images.tar.gz`.
+   OpenSSH without passwords and no swap file, and powers off. The host removes both DVDs, deletes the seed, attaches again
+   (the same declaration from the module's journal), verifies and reads back, boots from disk and waits for the agent, then
+   sends the P03-verified `runner-images.tar.gz`.
 3. **Phases** p01-p30 in upstream order (below). Scripts run the way Packer's `execute_command` ran them:
    `sudo sh -c "VAR='value' ... <script>"`, the same through `pwsh -f`, or as the unprivileged build user for Homebrew. Packer
    ran them over SSH as the build user; the agent runs as root under systemd, so it puts back what a provisioner saw: the
@@ -120,16 +133,21 @@ everything it made (VMs, build disks, a partly published generation, the evidenc
    (`XDG_RUNTIME_DIR`), `SUDO_COMMAND` names `sh` rather than Packer's command line, and the umask is the agent's 022. The
    agent copies each script from the unpacked archive, checks its SHA-256 against the pin before it runs it, stops at the
    first non-zero exit and keeps output in log files, never in the reply. The one reboot is upstream's own (`sudo reboot`
-   from inside the guest); it counts only when the guest answers again with another boot id. After each phase the build
-   folder is measured against `StagingGibMax`.
+   from inside the guest); it counts only when the guest answers again with another boot id. Before a phase, once a minute
+   has passed since the last check, the running build VM's network is verified again (`Verify`: a host whose addresses
+   changed stops the build); after each phase the build folder is measured against `StagingGibMax`.
 4. **Seal**: the last phase runs `waagent -force -deprovision`, removes the install user, the agent with its units and
    enablement link and its token (overwritten, then deleted), cloud-init and installer state (`/var/log/installer` holds a
-   copy of the autoinstall answers), host keys, the snakeoil TLS key and certificate, `/var/lib/systemd/random-seed` and
+   copy of the autoinstall answers), the build VM's static network configuration (`/etc/netplan/*.yaml`, the installer's
+   `90-installer-network.cfg`), host keys, the snakeoil TLS key and certificate, `/var/lib/systemd/random-seed` and
    root's history, rotates and vacuums the journal, points cloud-init at the NoCloud seed each clone will get
    (`datasource_list: [ NoCloud, None ]`), trims free space and runs the **seal check** as root (`no-agent` covers the
    agent's state folder, program, both units and the `sockets.target.wants` link, a dangling one included): `install-user-absent`, `no-password-hash`, `no-authorized-keys`,
-   `no-ssh-host-keys`, `no-agent`, `no-cloud-state`, `no-build-sudoers`. A finding is `AAP_SecretFound`, a rule not checked
-   `AAP_ScanIncomplete`. The host shuts the VM down, removes it, compacts and hashes `os.vhdx`.
+   `no-ssh-host-keys`, `no-agent`, `no-cloud-state`, `no-build-sudoers`, `no-build-network`. A finding is `AAP_SecretFound`,
+   a rule not checked `AAP_ScanIncomplete`. The host shuts the VM down, removes it, then detaches its network (`Detach`; one
+   that throws fails the build once the rest of the cleanup is done: the network is not proven detached, and the module's
+   reconcile removes the record), compacts and hashes `os.vhdx`. `Remove-AapUbuntuBuild` refuses
+   (`AAP_NetworkUnavailable`) a build folder whose `state.json` names a build VM unless it is given the module (`-Network`).
 5. **Secret scan** in the scanner guest (rules below). Anything but `clean` fails the build.
 6. **Fresh-guest verification**: a differencing child of the sealed disk, a seed that creates the job user `runner` (uid
    1001; `adm`, `users`, `docker`, `systemd-journal`; passwordless sudo, as on the hosted image), **no network adapter** and no
@@ -138,38 +156,45 @@ everything it made (VMs, build disks, a partly published generation, the evidenc
    `runner` with `/etc/environment` loaded as the Actions runner loads it: the pinned upstream Pester tests
    (`RunAll-Tests.ps1`), the full P05 inventory probe (`job-inventory.json`, Docker and sudo included) and discovery (gcc, g++,
    clang, cmake, ninja, make, pkg-config, a C program built and run with gcc and clang, pwsh, python3, the Docker daemon,
-   passwordless sudo, systemd as PID 1, the Azure kernel flavour, the job user, the post-generation scripts). It passes only
-   with at least one upstream test, no failed test, every discovery item and an inventory whose hash matches what the guest
-   reported. Then P05's `certify.py compare` runs on the host against `reference-inventory.json` with P05's
+   passwordless sudo, systemd as PID 1, the Azure kernel flavour, the job user, the post-generation scripts, the first
+   boot's snakeoil TLS pair). It passes only with at least one upstream test, no failed test, every discovery item and an
+   inventory whose hash matches what the guest reported. Then P05's `certify.py compare` runs on the host against `reference-inventory.json` with P05's
    `allowlist.json`: **any difference in a gate section** (`coverage`, `tool_cache`, `services`, `path.process`,
    `path.machine`, `action_archive_cache`, `user`) and **anything the reference requires that the image lacks in a section
    the image owns** (`missing-required` in the plan's explicit `verify.required_sections`: `tools`, `shells`, `docker`,
-   `docker.images`, `env`, `limits`, `limits.sysctl`, `hardware`, `tool_cache`, `action_archive_cache`, `services`,
-   `path.process`, `path.machine`) fail the build. `image`, `infra`, `run_identity` and `credential_env` are not the
-   image's: they describe the runner (a verification guest has none, so `image.runner_version`, `runner_os` and
-   `runner_arch` are null), the job's identity and the Azure fabric, and the plan is refused if it names them. Their
+   `env`, `limits`, `limits.sysctl`, `hardware`, `tool_cache`, `action_archive_cache`, `services`, `path.process`,
+   `path.machine`) fail the build. `image`, `infra`, `run_identity` and `credential_env` are not the image's: they describe
+   the runner (a verification guest has none, so `image.runner_version`, `runner_os` and `runner_arch` are null), the job's
+   identity and the Azure fabric, and the plan is refused if it names them, or names a section P05's comparison never
+   reports (`certify.py`'s own section names: a misspelt one would gate nothing). `docker.images` is not gated either:
+   the six cached images are `:latest` pulls inside `install-docker.sh` (P03 blocker `ubuntu-floating-container-images`;
+   the pinned toolset lists none), so no pinned input says which names a build gets; P24 decides them. Their
    differences and every other one (kernel build, read-ahead, mount options, tool versions from floating feeds, hardware)
    are recorded in `build.json` for P24, and so are the count and the first 200 of what the image has beyond the reference
    (`extra`). `tool_cache.defaults` is not gated: the hosted capture records no defaults. Before the agent answers, the
    verification seed runs the first-boot step every clone gets (P15): `make-ssl-cert generate-default-snakeoil
    --force-overwrite`, because the seal deleted the image's snakeoil TLS pair and PostgreSQL (`ssl = on` with that pair) does
-   not start without it; the upstream tests start PostgreSQL. The clone peak and the VM memory overhead are measured here (an
-   overhead outside 1 to 1024 MiB is refused, not recorded: the worker grows with what the guest does); the sealed disk is
-   hashed again and must be unchanged.
+   not start without it; the upstream tests start PostgreSQL. cloud-init does not stop on a failed `runcmd`, so the agent
+   checks the pair as root and a missing one fails the discovery item `tls_snakeoil` by name. The clone peak and the VM
+   memory overhead are measured here (an overhead outside 1 to 1024 MiB is refused, not recorded: the worker grows with
+   what the guest does); the sealed disk is hashed again and must be unchanged.
 7. **Publish**: as P06. The generation folder is created new, `base.vhdx` copied in, re-hashed, made read-only (owner
    Administrators; SYSTEM, Administrators and `NT VIRTUAL MACHINE\Virtual Machines` read; protected DACL; ReadOnly
    attribute). An id is never reused: other bytes or no record is `AAP_GenerationExists`; a rebuild takes `aap.<n+1>`.
 8. **Records** under `<EvidenceRoot>\P07\<build id>\`, created new by this run: `generation.json` (image-catalog schema 2,
    state `candidate`, `built_by_item` `P07`), `budget.json` (backend-lifecycle schema 2), `build.json` (`plan_sha256`,
    `inputs_manifest_sha256`, `builder_commit`, waiver records, media hash, the base deviation, phases with their exec mode,
-   script hashes and exit codes, the seal check, verification counts and facts, the inventory comparison, measurements),
-   `secret-scan.json`, and the guest-authored `software-report.md/.json` and `job-inventory.json`.
+   script hashes and exit codes, the seal check, verification counts and facts, the inventory comparison, measurements,
+   the build VM's network declaration), `secret-scan.json`, and the guest-authored `software-report.md/.json` and
+   `job-inventory.json`. The declaration holds no secret but names the private build subnet, the resolvers and the VM's
+   GUID: `build.json` stays out of the public repository.
 
 ## Configuration
 
 Passed by the caller (P19 or P25), never read from the user-writable inbox. All keys are required unless marked. The plan,
 the P03 manifest, the allowlist, the guest scripts, the probe and the comparison reference are files in the repository; no
-key redirects them.
+key redirects them. The network is not configuration either: the caller passes the P10.0 host network module itself as
+`-Network` (P12 builds it once), and the build VM's switch follows from its name (`aap-build-linux`, P19 creates it).
 
 | Key | Meaning |
 |---|---|
@@ -180,7 +205,6 @@ key redirects them.
 | `StagingGibMax` | Cap on the build folder; also the free space the staging volume must have above its floor |
 | `BaseGibMax`, `JobDiskGibMax` | The approved budget the measured one must fit; at most the owner's ceilings (2026-10-20: base at most 200 GB, about 186 GiB; clone plus scratch at most 60 GB per runner, about 55 GiB) |
 | `BuilderCommit` | 40-hex commit of this builder, recorded in provenance |
-| `SwitchName` | Must be `aap-guests-linux`, the P10.0 internal switch; anything else is `AAP_NetworkUntrusted`. P07 creates no switch, NAT or network rule |
 | `Inputs` (optional) | Further P03 entries to verify offline before the build |
 | `Waivers` (optional) | Chair approval records, one per waived blocker: exactly `id`, `rationale`, `plan_sha256` and `approver`. A bare id, a missing field, another plan's hash or a blocker the plan marks unwaivable is `AAP_ConfigInvalid`. Recorded in `build.json`; P21 takes them only from a committed, reviewed file |
 
@@ -235,7 +259,7 @@ nowhere; a test fails if it does. The measured budget must fit `BaseGibMax` and 
 ## Refusals and failures
 
 `AAP_ProviderInvalid`, `AAP_BuilderUntrusted`, `AAP_ConfigInvalid`, `AAP_StorageMissing`, `AAP_StorageInvalid`,
-`AAP_StorageUntrusted`, `AAP_StorageVolumeMismatch`, `AAP_NetworkUntrusted`, `AAP_PlanInvalid`, `AAP_ScriptUnpinned`,
+`AAP_StorageUntrusted`, `AAP_StorageVolumeMismatch`, `AAP_NetworkUnavailable`, `AAP_NetworkInvalid`, `AAP_NetworkUntrusted`, `AAP_PlanInvalid`, `AAP_ScriptUnpinned`,
 `AAP_SeedInvalid`, `AAP_Blocked`, `AAP_BuildBusy`, `AAP_GenerationExists`, `AAP_DiskLow`, `AAP_InputsUnverified`, `AAP_InstallTimeout`, `AAP_HostileGuest`, `AAP_GuestTimeout`, `AAP_GuestUnreachable`,
 `AAP_PhaseFailed`, `AAP_ScriptHashMismatch`, `AAP_RebootTimeout`, `AAP_BudgetExceeded`, `AAP_BudgetUnmeasured`,
 `AAP_SecretFound`, `AAP_ScanIncomplete`, `AAP_AllowlistInvalid`, `AAP_VerifyFailed`, `AAP_BaseChanged`, `AAP_PublishMismatch`,
@@ -263,9 +287,11 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
 - **Unreadable**: any path the scanner could not read is listed and makes the result `incomplete` (`AAP_ScanIncomplete`).
   As root on a read-only mount there should be none. A `.gz` counts as read only when `grep` read its whole decompressed
   stream and `zcat` ended cleanly: a truncated or corrupt stream, or a `grep` that fails (a single line too long for its
-  memory: a gzip bomb), is unreadable, never clean. A match stands whatever `zcat` reports after `grep` stopped reading: a
-  broken pipe, which under systemd's default `IgnoreSIGPIPE=yes` (the agent's unit keeps it) is an error message, not a
-  signal.
+  memory: a gzip bomb), is never clean: it is reported as an `unreadable-stream` finding with the file's SHA-256, and
+  makes the result `incomplete` unless an allowlist entry covers exactly that rule, path and bytes (the route for a file
+  the image legitimately ships damaged, a test fixture for example, after review). A match stands whatever `zcat` reports
+  after `grep` stopped reading: a broken pipe, which under systemd's default `IgnoreSIGPIPE=yes` (the agent's unit keeps
+  it) is an error message, not a signal.
 - **What the scan does not read**: only `.gz` is decompressed. `.xz`, `.zst`, `.bz2`, `zip`, `jar`, `whl`, squashfs images
   (snaps) and journald's zstd-compressed fields are scanned as stored bytes, so a secret inside them is not found; the
   freed blocks of either file system are not read at all.
@@ -275,10 +301,11 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
   The only secret the build guest ever holds is its own per-build channel token, which dies with the build and which the
   scan looks for. The scan detects leaks; it is not an integrity or backdoor control: a hostile installer that wants to
   leave something behind is not stopped by it.
-- **Allowlist**: `secret-allowlist.json` (`schema` 1, `entries` of exactly `path` (relative, `/`-separated, no wildcard),
-  `sha256` and `justification`), each path at most once. An entry suppresses a finding only for that exact path with those
-  exact bytes, never a `build-credential` or `build-agent` finding; an entry that matches no finding exactly is itself a
-  finding (`allowlist-mismatch`). It is empty. Per-machine material is deleted at seal rather than allowlisted (the snakeoil
+- **Allowlist**: `secret-allowlist.json` (`schema` 1, `entries` of exactly `rule` (one of the scan rules), `path`
+  (relative, `/`-separated, no wildcard), `sha256` and `justification`), each rule and path at most once. An entry
+  suppresses only a finding of its rule (an `unreadable-stream` included) for that exact path with those exact bytes, never
+  a `build-credential` or `build-agent` finding: an entry for a damaged `.gz` does not cover a key or token found in the
+  same bytes. An entry that matches no finding exactly is itself a finding (`allowlist-mismatch`). It is empty. Per-machine material is deleted at seal rather than allowlisted (the snakeoil
   TLS key, the random seed; each clone makes its own, P15). Expect the first real build to name other files the upstream
   image legitimately carries; each needs a reviewed decision, not a rule change.
 
@@ -306,6 +333,13 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
 
 ## What is not done
 
+- **The build VM's network is authored against the shared fake** (`tests/common/AapHostNetworkFake.psm1`). The D2 lab
+  proves that the live installer and the installed system take their address, gateway and resolvers from the autoinstall
+  `network` section with no DHCP server on `aap-build-linux` (the live environment's own DHCP attempt only times out), that
+  the installer's netplan file and `90-installer-network.cfg` are what the seal removes, and the contract's own lab points.
+  A running build VM is verified again before the next phase once a minute has passed; a phase runs up to hours, so a host
+  address change inside one is seen at the next phase (Consumer obligations 3 asks for at most 60 seconds: a watcher
+  beside the guest call is P12's or the lab's to add).
 - **Disk-only scan paths are unproven.** `guest_test.sh` scans folders (`--target`, `--esp-target`); what only a real
   disk exercises waits for the D2 lab: the hot-added disk appears as `/dev/sda` within 120 s, the live system's
   `multipathd`, `probert` and `os-prober` neither claim nor mount it, `dumpe2fs` and `grep -P` are present on the pinned

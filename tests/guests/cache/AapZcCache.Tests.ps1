@@ -93,14 +93,17 @@ BeforeAll {
             }
         }
     }
-    # Stands in for Get-AapZcProcessList: the fakes run as powershell.exe, so each is listed as if it ran from its tree's
-    # installed bin folder, with its real command line. A hung client is listed as just started, the worst case.
+    # Stands in for Get-AapZcProcessList: the fakes run as powershell.exe, so each is listed as if it ran where zccache
+    # 1.15.6 runs it, with its real command line: a daemon from the copy zccache deploys into its root
+    # (ROOT\v1.15.6\zccache-daemon.exe), a client, or a stray daemon zccache ran in place, from its tree's installed
+    # bin folder. A hung client is listed as just started, the worst case.
     function Get-FakeProcessList {
         foreach ($x in @(Get-FakePidFile)) {
             $p = Get-Process -Id $x.Id -ErrorAction SilentlyContinue
             if (-not $p) { continue }
             $cim = Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId=' + $x.Id) -ErrorAction SilentlyContinue
-            [pscustomobject]@{ Id = $x.Id; Path = Join-Path $x.Tree 'install\bin\zccache.cmd'; CommandLine = [string]$(if ($cim) { $cim.CommandLine })
+            $path = $(if ($x.File.Name -eq 'fake-daemon.pid' -and $x.File.Directory.Name -ne 'stray') { Join-Path $x.File.DirectoryName 'v1.15.6\zccache-daemon.exe' } else { Join-Path $x.Tree 'install\bin\zccache.cmd' })
+            [pscustomobject]@{ Id = $x.Id; Path = $path; CommandLine = [string]$(if ($cim) { $cim.CommandLine })
                 Start = $(if ($x.File.Name -eq 'fake-client.pid') { [DateTime]::Now } else { $p.StartTime }) }
         }
     }
@@ -420,7 +423,7 @@ Describe 'zcshim.ps1: arguments reach zccache and the compiler unchanged (the re
         $rsp = Join-Path $script:Pkg.Tree 'args file.rsp'
         [IO.File]::WriteAllText($rsp, '-c "src dir\a.c"')
         $script:Tricky = @('-c', (Join-Path $script:Pkg.Src 'a.c'), '-std:c++17', '-x:y', '-Fo:C:\x y\a.obj', '--%', '-a:',
-            'ünï中', 'a"b', 'q "x" y', '', 'C:\out dir\', 'a\\"b', ('@' + $rsp))
+            'ünï中', 'a"b', 'q "x" y', '', 'C:\out dir\', 'a\\"b', ('@' + $rsp), '-o', (Join-Path $script:Pkg.Tree 'out dir.o'))
         # NUL-joined, so empty and quoted arguments compare exactly in both editions.
         function Get-Argv([string]$Path) { $j = [IO.File]::ReadAllText($Path) | ConvertFrom-Json; @(foreach ($a in $j) { [string]$a }) -join [char]0 }
         function Format-Argv([string[]]$Argv) { $Argv -join [char]0 }
@@ -552,6 +555,137 @@ Describe 'zcshim: faults' {
         $null = Compile $script:Pkg
         (Get-Item -LiteralPath $log).Length | Should -BeLessThan 4KB
         (Get-Item -LiteralPath ($log + '.1')).Length | Should -Be (1MB + 10)
+    }
+}
+
+Describe 'zcshim: delivery (zccache''s exit 0 counts only with every declared output in place)' {
+    BeforeAll {
+        Mock Get-AapZcProcessList -ModuleName AapZcCache { Get-FakeProcessList }
+        function Invoke-To($Pkg, [string]$Out, [hashtable]$Env = @{}, [string[]]$Extra = @()) {
+            Invoke-Shim $Pkg (@($Pkg.Cc, '-c', (Join-Path $Pkg.Src 'a.c')) + $Extra + @('-o', $Out)) $Env
+        }
+        function Assert-DeliveryFallback($Pkg, $Result) {
+            $Result.Code | Should -Be 0
+            Get-Flag $Pkg | Should -Be 'delivery'
+            @(Get-Content -LiteralPath (Join-Path $Pkg.Job 'shim\shim.log'))[-1] | Should -Match ' fallback fake-cc\.cmd zccache-exit 0 delivery direct-exit 0$'
+            $cfg = Get-Content -Raw -LiteralPath $Pkg.Config | ConvertFrom-Json
+            Get-Process -Id $cfg.roots.private.daemon.pid -ErrorAction SilentlyContinue | Should -BeNullOrEmpty -Because 'the daemon may still be copying that output'
+        }
+        # Whether zccache's fake (run by PowerShell 7 for this) can make a symbolic link here: developer mode or elevation.
+        $probe = Join-Path $script:RunRoot ('symprobe-' + [guid]::NewGuid().ToString('N'))
+        & $script:Pwsh -NoProfile -NonInteractive -Command "New-Item -ItemType SymbolicLink -Path '$probe' -Value '$($script:RunRoot)' -ErrorAction Stop | Out-Null" 2>$null
+        $script:CanLink = Test-Path -LiteralPath $probe
+        if ($script:CanLink) { [IO.Directory]::Delete($probe) }
+    }
+    BeforeEach {
+        $script:Pkg = New-Package
+        $null = Initialize-Package $script:Pkg
+        $script:Expected = Get-Direct $script:Pkg (Join-Path $script:Pkg.Src 'a.c')
+    }
+
+    It 'a miss that exits 0 without its object (<Case>) is rebuilt directly' -Tag 'WIN-OUT-CHECK', 'WIN-OUT-STALE' -TestCases @(
+        @{ Case = 'nothing there before'; Stale = $false }
+        @{ Case = 'a stale object there'; Stale = $true }
+    ) {
+        $out = Join-Path $script:Pkg.Tree 'obj.o'
+        if ($Stale) { [IO.File]::WriteAllText($out, 'STALE') }
+        $r = Invoke-To $script:Pkg $out @{ FAKE_CC_OMIT = 'obj' }
+        [IO.File]::ReadAllBytes($out) | Should -Be $script:Expected
+        Assert-DeliveryFallback $script:Pkg $r
+    }
+    It 'a hit that exits 0 without delivering (<Case>) is rebuilt directly' -Tag 'WIN-OUT-CHECK', 'WIN-OUT-STALE' -TestCases @(
+        @{ Case = 'nothing there before'; Stale = $false }
+        @{ Case = 'a stale object there'; Stale = $true }
+    ) {
+        $null = Compile $script:Pkg
+        $out = Join-Path $script:Pkg.Tree 'hit.o'
+        if ($Stale) { [IO.File]::WriteAllText($out, 'STALE') }
+        $r = Invoke-To $script:Pkg $out @{ FAKE_ZC_NODELIVER = '1' }
+        @(Get-Journal $script:Pkg)[-1] | Should -Be 'hit'
+        [IO.File]::ReadAllBytes($out) | Should -Be $script:Expected
+        Assert-DeliveryFallback $script:Pkg $r
+    }
+    It 'a call that exits 0 without its <Kind> depfile (<Case>) is rebuilt directly' -Tag 'WIN-OUT-CHECK', 'WIN-OUT-STALE' -TestCases @(
+        @{ Kind = '-MD'; Case = 'nothing there before'; Stale = $false; Extra = @('-MD'); Dep = 'dep.d' }
+        @{ Kind = '-MD'; Case = 'a stale depfile there'; Stale = $true; Extra = @('-MD'); Dep = 'dep.d' }
+        @{ Kind = '-MF'; Case = 'a stale depfile there'; Stale = $true; Extra = @('-MMD', '-MF', 'MFPATH'); Dep = 'mf.dep' }
+    ) {
+        $dep = Join-Path $script:Pkg.Tree $Dep
+        if ($Stale) { [IO.File]::WriteAllText($dep, 'STALE') }
+        $r = Invoke-To $script:Pkg (Join-Path $script:Pkg.Tree 'dep.o') @{ FAKE_CC_OMIT = 'dep' } @($Extra | ForEach-Object { if ($_ -eq 'MFPATH') { $dep } else { $_ } })
+        [IO.File]::ReadAllText($dep).Trim() | Should -Be 'DEP a.c'
+        Assert-DeliveryFallback $script:Pkg $r
+    }
+    It 'a reparse point is not a delivery, whatever length it reports' -Tag 'WIN-OUT-CHECK' {
+        # A symbolic link reports length 0 on both editions, so this stand-in is the only way a test reaches the
+        # reparse-point test alone.
+        InModuleScope AapZcCache { Test-AapZcDelivered ([pscustomobject]@{ Exists = $true; Attributes = [IO.FileAttributes]'Archive, ReparsePoint'; Length = 6 }) } | Should -BeFalse
+        InModuleScope AapZcCache { Test-AapZcDelivered ([pscustomobject]@{ Exists = $true; Attributes = [IO.FileAttributes]'Archive'; Length = 6 }) } | Should -BeTrue
+    }
+    It 'an empty object is rebuilt directly' -Tag 'WIN-OUT-CHECK', 'WIN-OUT-DAEMON' {
+        $null = Compile $script:Pkg
+        $r = Compile $script:Pkg 'a.c' @{ FAKE_ZC_EMPTY = '1' }
+        [IO.File]::ReadAllBytes($r.Output) | Should -Be $script:Expected
+        Assert-DeliveryFallback $script:Pkg $r
+    }
+    It 'a symbolic link at the output path is rebuilt directly, as a regular file' -Tag 'WIN-OUT-CHECK', 'WIN-OUT-CLEAR' {
+        if (-not $script:CanLink) { Set-ItResult -Skipped -Because 'no symbolic links without developer mode or elevation'; return }
+        $null = Compile $script:Pkg
+        $r = Compile $script:Pkg 'a.c' @{ FAKE_ZC_LINK = '1' }
+        ((Get-Item -LiteralPath $r.Output -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) | Should -Be 0
+        [IO.File]::ReadAllBytes($r.Output) | Should -Be $script:Expected
+        Assert-DeliveryFallback $script:Pkg $r
+    }
+    It 'a whole miss and hit with a depfile stay on zccache and replace stale files' {
+        foreach ($f in 'ok.o', 'ok.d') { [IO.File]::WriteAllText((Join-Path $script:Pkg.Tree $f), 'STALE') }
+        $a = Invoke-To $script:Pkg (Join-Path $script:Pkg.Tree 'ok.o') @{} @('-MD')
+        $b = Invoke-To $script:Pkg (Join-Path $script:Pkg.Tree 'ok2.o') @{} @('-MD')
+        $a.Code | Should -Be 0; $b.Code | Should -Be 0
+        @(Get-Journal $script:Pkg) -join ',' | Should -Be 'miss,hit'
+        Get-Flag $script:Pkg | Should -BeNullOrEmpty
+        foreach ($n in 'ok', 'ok2') {
+            [IO.File]::ReadAllBytes((Join-Path $script:Pkg.Tree ($n + '.o'))) | Should -Be $script:Expected
+            [IO.File]::ReadAllText((Join-Path $script:Pkg.Tree ($n + '.d'))).Trim() | Should -Be 'DEP a.c'
+        }
+    }
+    It 'a call whose outputs cannot be named builds directly without marking the root' -Tag 'WIN-OUT-UNKNOWN' {
+        $r = Invoke-Shim $script:Pkg @($script:Pkg.Cc, '-c', (Join-Path $script:Pkg.Src 'a.c'))
+        $r.Code | Should -Be 0
+        $r = Invoke-Shim $script:Pkg @($script:Pkg.Cc, '-c', (Join-Path $script:Pkg.Src 'a.c'), '-o', (Join-Path $script:Pkg.Tree 'x.o'), '-o', (Join-Path $script:Pkg.Tree 'y.o'))
+        @(Get-Journal $script:Pkg).Count | Should -Be 0
+        @(Get-Content -LiteralPath (Join-Path $script:Pkg.Job 'shim\shim.log'))[-1] | Should -Match ' direct fake-cc\.cmd outputs-unknown exit \d+$'
+        Get-Flag $script:Pkg | Should -BeNullOrEmpty
+    }
+    It 'a call that writes to a device (<Out>) builds directly without marking the root' -Tag 'WIN-OUT-DEVICE' -TestCases @(
+        @{ Out = 'NUL' }, @{ Out = 'nul.o' }
+    ) {
+        # nul.o goes in the test's tree: Windows 11 may treat a device name with an extension as an ordinary file.
+        $o = $(if ($Out -eq 'NUL') { $Out } else { Join-Path $script:Pkg.Tree $Out })
+        $r = Invoke-Shim $script:Pkg @($script:Pkg.Cc, '-c', (Join-Path $script:Pkg.Src 'a.c'), '-o', $o)
+        $r.Code | Should -Be 0
+        @(Get-Journal $script:Pkg).Count | Should -Be 0
+        @(Get-Content -LiteralPath (Join-Path $script:Pkg.Job 'shim\shim.log'))[-1] | Should -Match ' direct fake-cc\.cmd outputs-unknown exit 0$'
+        Get-Flag $script:Pkg | Should -BeNullOrEmpty
+    }
+    It 'passes on the compiler''s stderr without zccache''s leading progress lines' {
+        $line = 'zccache[info][Q]: daemon under load: compiling, 9 compiles in flight, says the compiler'
+        $r = Compile $script:Pkg 'a.c' @{ FAKE_ZC_PROGRESS = '3'; FAKE_CC_STDERR = $line }
+        $r.Code | Should -Be 0
+        @(Get-Journal $script:Pkg)[-1] | Should -Be 'miss'
+        $r.Err.TrimEnd() | Should -BeExactly $line
+    }
+}
+
+Describe 'Get-AapZcOutputs (shared vectors)' {
+    It '<Name>' -Tag 'WIN-OUT-DEPFLAG', 'WIN-OUT-SIDECAR', 'WIN-OUT-DEVICE' -TestCases @(
+        $fx = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'fixtures\outputs.json') | ConvertFrom-Json
+        foreach ($v in $fx.vectors) { if ($v.platforms -contains 'windows') { @{ Name = ($v.compiler + ' ' + ($v.args -join ' ')); V = $v } } }
+    ) {
+        $tmp = New-Tree
+        $argv = @(foreach ($a in $V.args) { if ($a -eq '@RSP') { $f = Join-Path $tmp 'args.rsp'; [IO.File]::WriteAllText($f, $V.rsp); '@' + $f } else { $a } })
+        $got = Get-AapZcOutputs -Compiler $V.compiler -Arguments $argv
+        if ($null -eq $V.outputs) { $got | Should -BeNullOrEmpty; ($null -eq $got) | Should -BeTrue }
+        else { ($null -eq $got) | Should -BeFalse; @($got) | Should -Be @($V.outputs) }
     }
 }
 
