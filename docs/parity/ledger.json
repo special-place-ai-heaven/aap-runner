@@ -14,16 +14,15 @@
   "max_compile_heavy": 2,
   "max_full_test_suites": 1,
   "cleanup_barrier": "GLOBAL_NO_NEW_ITEM_WHILE_MERGED_UNCLEAN",
-  "as_of": "2026-10-20",
-  "origin_main": "7ff6052b04f496b9e67dbc9c296f624a788d7c49",
-  "current_wave": 5,
+  "as_of": "2026-10-21",
+  "origin_main": "1814b7ae9114b1e0d65a0db245737307a69051a6",
+  "current_wave": 6,
   "in_flight": [
-    "P07",
-    "P06.1",
-    "P11",
-    "P13.1"
+    "P06.2",
+    "P11.2",
+    "P13.4"
   ],
-  "cleanup_barrier_state": "OPEN: no merged item awaits cleanup verification (P10, P13 and the coordinator PRs are verified CLEAN; in-flight P07, P06.1, P11 and P13.1 are not merged)",
+  "cleanup_barrier_state": "CLOSED: P06.2 cleanup is running and P11.2 verifier is pending; no new item dispatch until both merged items have independently verified CLEAN receipts",
   "tasks": [
     {
       "id": "P00",
@@ -428,14 +427,19 @@
         "tests/images/windows/**"
       ],
       "lane": "Sol medium (Claude: Opus medium)",
-      "delivery_state": "IN_PROGRESS",
+      "delivery_state": "COMPLETE",
       "deliverable": "Per-adapter network controls and elevated-context hardening in the Windows image builder, found by the P07 reviews. Also (carried from the original P06.1 scope): the verify phase needs failed-test names in the verify reply to apply per-test waivers, and the reviewed secret-scan skip list is extended from D2 evidence (currently only System Volume Information).",
       "acceptance": "Each hardening finding has a test that fails without its fix; Pester green on both hosts and in hosted CI; waivers apply only to named failed tests bound to the workload; every skip-list entry cites observed lab evidence. The skip-list extension needs a real build from the D2 lab, so that part is gated on P02.1/D2.",
-      "merge_proof": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/52",
+        "method": "merge-commit",
+        "merge_sha": "a6bf1a710df32bdc5a90b1f6079b601ea24ea1a4"
+      },
       "cleanup_receipt": null,
       "branch": "parity/p06-1-nic-controls",
       "base_sha": "f40a45478da18b456ffa18f890b6df563425e59f",
-      "evidence": "attempt-1 worktree on parity/p06-1-nic-controls (base f40a454); not yet pushed"
+      "evidence": "PR #52 merged; Windows image hardening; cleanup verified CLEAN. Windows image suite 347/347 on pwsh 7 and Windows PowerShell 5.1; hosted CI 4/4.",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/52"
     },
     {
       "id": "P07",
@@ -449,14 +453,18 @@
         "tests/images/ubuntu-24.04/**"
       ],
       "lane": "Luna high",
-      "delivery_state": "IN_PROGRESS",
+      "delivery_state": "COMPLETE",
       "deliverable": "Build the full pinned Ubuntu 24.04 VM environment using upstream install/config/tool-cache/test/post-generation logic, with guest-only passwordless sudo, systemd and baseline container capabilities.",
       "acceptance": "All inventory categories and cached versions verified; fresh job shell/environment and baseline services work. No Ubuntu 26.04; Sysbox compatibility is not certified as full VM equivalence.",
-      "merge_proof": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/49",
+        "method": "merge-commit",
+        "merge_sha": "19ac900061e0dc3e3d063ec5b70edd923f3c0e06"
+      },
       "cleanup_receipt": null,
       "branch": "parity/p07-ubuntu-image",
       "base_sha": "4637f84bdafbe7fab78a11d490626f67c9251b0d",
-      "evidence": "PR #49 draft at 354d216 (authoring, fakes only; never run against a real VM): host-built NoCloud seed ISOs, results only through a capped vsock agent, secret scan in a disposable scanner VM, build plan from the pinned template (hashes null so real builds are refused), verification as the job user with P05 certify compare; 219 Pester tests, 51 builder mutations, guest bash tests; review round FIX-FIRST in progress",
+      "evidence": "PR #49 merged at 19ac900; cleanup verified CLEAN; authored with fakes only, no real VM build. Builder mutation sweep 59/59; Ubuntu image suite 338/338 on pwsh 7 and Windows PowerShell 5.1; hosted CI 4/4.",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/49"
     },
     {
@@ -563,11 +571,17 @@
         "tests/backends/network/**"
       ],
       "lane": "Sol high (Claude: Opus high)",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "IN_PROGRESS",
       "deliverable": "One PowerShell module that creates the per-profile internal switch + NAT (or the per-guest private switch chosen in P02.1), applies DHCP guard, router guard, MAC-spoofing off, extended port ACLs (deny host vEthernet except DHCP/DNS, RFC1918, 169.254/16, 100.64/10, multicast, fe80::/10, fc00::/7, LAN IPv6 prefix, clone subnet except gateway), disables enhanced session and Guest Service Interface, and exposes attach/detach/verify for P10 and P11.",
       "acceptance": "Pester with fakes for the Hyper-V cmdlets; the lab negative matrix from guest-transport.md passes on a disposable guest; External/Default switch attachment refused.",
-      "merge_proof": null,
-      "cleanup_receipt": null
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/58",
+        "method": "merge-commit",
+        "merge_sha": "b7b06f698a5f38e158f5847337b994ac4d678dd4"
+      },
+      "cleanup_receipt": null,
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/58",
+      "evidence": "Contract, shared pure check (supervisor/network/AapHostNetworkCheck.psm1), shared fake (tests/common/AapHostNetworkFake.psm1), and four consumer conformance items merged in PR #58 (b7b06f6) and PR #60 (15eb4d9); rounds 1-7; cleanup verified CLEAN; suites 420/420 on pwsh 7 and Windows PowerShell 5.1; mutations 87/87. The Hyper-V module itself (switch + NAT creation, port ACL application, real Attach/Detach/Verify, lab negative matrix) is NOT_STARTED, gated on P02.1. P10.0 still needs P02.1 and P09."
     },
     {
       "id": "P10",
@@ -641,14 +655,19 @@
         "tests/backends/linux/**"
       ],
       "lane": "Sol high",
-      "delivery_state": "IN_PROGRESS",
+      "delivery_state": "COMPLETE",
       "deliverable": "Implement the same lifecycle for Ubuntu VM guests, isolated management access, ephemeral runner and deterministic workspace/service/process/network cleanup.",
       "acceptance": "Restart and cancellation recover without duplicate registration. Guest root stays inside guest boundary. A subsequent job cannot observe prior system/HOME/workspace/listener changes.",
-      "merge_proof": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/53",
+        "method": "merge-commit",
+        "merge_sha": "01d159f14bb2ddff38ed56502f6714339b293ca3"
+      },
       "cleanup_receipt": null,
       "branch": "parity/p11-linux-backend",
       "base_sha": "cec295b9fbe976964c74764c05e5491cbf6b84eb",
-      "evidence": "attempt-1 worktree authoring with fakes only (mirror of the merged P10 with all its review lessons); no PR yet"
+      "evidence": "PR #53 merged, authored against fakes; cleanup verified CLEAN; Linux backend 334/334; hosted CI 4/4.",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/53"
     },
     {
       "id": "P12",
@@ -725,15 +744,20 @@
         "tests/guests/cache/**"
       ],
       "lane": "Sol high (Claude: Opus high)",
-      "delivery_state": "IN_PROGRESS",
+      "delivery_state": "COMPLETE",
       "deliverable": "Root-cause the intermittent 'and all equal direct' failure of tests/guests/cache/zccache_test.sh t_shim_concurrent seen on hosted push CI run 39496833364; fix the shim or the test.",
       "acceptance": "Root cause recorded; stress-loop proof in WSL Ubuntu-24.04 (and a hosted CI rerun series) without a failure; no weakening of the 'equal direct' assertion unless the cause is shown to be the test.",
-      "merge_proof": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/55",
+        "method": "merge-commit",
+        "merge_sha": "f2a4d1b01af6ecaba0f626f06b60a087056c9628"
+      },
       "cleanup_receipt": null,
       "branch": "parity/p13-1-shim-concurrency",
       "base_sha": "7ff6052b04f496b9e67dbc9c296f624a788d7c49",
-      "evidence": "attempt-1 worktree on parity/p13-1-shim-concurrency (base 7ff6052); root cause pending",
-      "why": "t_shim_concurrent flaked on the first push CI run after P13 merged, so the guarantee that concurrent shim calls equal direct builds is not yet trustworthy."
+      "evidence": "PR #55 merged; flaky shim test fixed as test-double bug; cleanup verified CLEAN; cache tests 170+ / 226 pass; hosted CI 4/4.",
+      "why": "t_shim_concurrent flaked on the first push CI run after P13 merged, so the guarantee that concurrent shim calls equal direct builds is not yet trustworthy.",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/55"
     },
     {
       "id": "P14",
@@ -1123,6 +1147,332 @@
       "acceptance": "Every required task accepted, agent-merged where applicable and CLEANUP_VERIFIED; no orphan worktree/target/process/temp artifact. Explicit product images/cache/evidence remain accounted. No deferred mandatory parity gate or unsupported claim.",
       "merge_proof": null,
       "cleanup_receipt": null
+    },
+    {
+      "id": "P07.1",
+      "title": "Conform Ubuntu image builder to network contract and close builder follow-ups",
+      "earliest_wave": 6,
+      "needs": [
+        "P07",
+        "P10.0"
+      ],
+      "owns": [
+        "images/ubuntu-24.04/**",
+        "tests/images/ubuntu-24.04/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "COMPLETE",
+      "deliverable": "Allowlist gzip route; remove docker.images requirement; validate plan section names against certify.py; fail verification by name when make-ssl-cert fails.",
+      "acceptance": "Cleanup verified CLEAN; hosted CI 4/4.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/62",
+        "method": "merge-commit",
+        "merge_sha": "e4cca67be94929d7d2cc1423e62afb1b7691f7ac"
+      },
+      "cleanup_receipt": null,
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/62",
+      "evidence": "PR #62 merged; cleanup verified CLEAN; mutation sweep 59/59; partial conformance: host network re-verification while running must be at most every 60 seconds."
+    },
+    {
+      "id": "P11.1",
+      "title": "Harden the Linux backend after implementation review",
+      "earliest_wave": 6,
+      "needs": [
+        "P11"
+      ],
+      "owns": [
+        "supervisor/backends/linux/**",
+        "tests/backends/linux/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "COMPLETE",
+      "deliverable": "Relay containment via named job and AAP_RELAY_JOB guard; absent sequence mark fails closed; ISO real read count and re-hash; unbuffered JIT payload write.",
+      "acceptance": "Cleanup verified CLEAN; hosted CI 4/4.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/57",
+        "method": "merge-commit",
+        "merge_sha": "8752c0fa3f1bb1dbc4eb1c48f5e184867387de34"
+      },
+      "cleanup_receipt": null,
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/57",
+      "evidence": "PR #57 merged; cleanup verified CLEAN."
+    },
+    {
+      "id": "P13.2",
+      "title": "Bind cache trust to default branch ref",
+      "earliest_wave": 6,
+      "needs": [
+        "P13"
+      ],
+      "owns": [
+        "guests/cache/**",
+        "tests/guests/cache/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "COMPLETE",
+      "deliverable": "Default branch ref binding; branch-only endpoint; per-repository activation gate; exact-string id comparison.",
+      "acceptance": "Cleanup verified CLEAN; hosted CI 4/4.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/56",
+        "method": "merge-commit",
+        "merge_sha": "c27bb3ed900e8e9c3103e806d5901b531879d265"
+      },
+      "cleanup_receipt": null,
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/56",
+      "evidence": "PR #56 merged; cleanup verified CLEAN."
+    },
+    {
+      "id": "P13.3",
+      "title": "Verify zccache shim delivery before success",
+      "earliest_wave": 6,
+      "needs": [
+        "P13"
+      ],
+      "owns": [
+        "guests/cache/**",
+        "tests/guests/cache/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "COMPLETE",
+      "deliverable": "Verify delivery before zero return on Linux and Windows; daemon discovery at <root>/v1.15.6/zccache-daemon; build sidecar flags and Windows device names directly.",
+      "acceptance": "Cleanup verified CLEAN; hosted CI 4/4.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/59",
+        "method": "merge-commit",
+        "merge_sha": "3b06440c54e1f0f993cc9b822cfe880a52c47f4a"
+      },
+      "cleanup_receipt": null,
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/59",
+      "evidence": "PR #59 merged; cleanup verified CLEAN; real 1.15.6 stress evidence 9200+ calls, 0 bad outputs; evidence/P13.3-*.log."
+    },
+    {
+      "id": "P10.2",
+      "title": "Conform Windows backend to network contract",
+      "earliest_wave": 6,
+      "needs": [
+        "P10",
+        "P10.0"
+      ],
+      "owns": [
+        "supervisor/backends/windows/**",
+        "tests/backends/windows/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "COMPLETE",
+      "deliverable": "Conform Windows backend to network contract.",
+      "acceptance": "Cleanup verified CLEAN; hosted CI 4/4.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/61",
+        "method": "merge-commit",
+        "merge_sha": "4305fc213dd131311d08af94ad398b4bf755a7ac"
+      },
+      "cleanup_receipt": null,
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/61",
+      "evidence": "PR #61 merged; cleanup verified CLEAN; Pester 264/264."
+    },
+    {
+      "id": "P10.3",
+      "title": "Write password and JIT payloads unbuffered",
+      "earliest_wave": 6,
+      "needs": [
+        "P10"
+      ],
+      "owns": [
+        "supervisor/backends/windows/**",
+        "tests/backends/windows/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "COMPLETE",
+      "deliverable": "Write password and JIT payloads unbuffered.",
+      "acceptance": "Cleanup verified CLEAN; hosted CI 4/4.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/61",
+        "method": "merge-commit",
+        "merge_sha": "4305fc213dd131311d08af94ad398b4bf755a7ac"
+      },
+      "cleanup_receipt": null,
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/61",
+      "evidence": "PR #61 merged; cleanup verified CLEAN; Pester 264/264."
+    },
+    {
+      "id": "P11.2",
+      "title": "Conform Linux backend to network contract",
+      "earliest_wave": 6,
+      "needs": [
+        "P11",
+        "P10.0"
+      ],
+      "owns": [
+        "supervisor/backends/linux/**",
+        "tests/backends/linux/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "MERGED_CLEANUP_REQUIRED",
+      "deliverable": "Conform the Linux backend to the network contract.",
+      "acceptance": "PR #63 merged; verifier pending.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/5b8ca03",
+        "method": "merge-commit",
+        "merge_sha": "Cleanup verifier pending."
+      },
+      "cleanup_receipt": null,
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/5b8ca03",
+      "evidence": null
+    },
+    {
+      "id": "P06.2",
+      "title": "Conform Windows image builder to network contract",
+      "earliest_wave": 6,
+      "needs": [
+        "P06.1",
+        "P10.0"
+      ],
+      "owns": [
+        "images/windows/**",
+        "tests/images/windows/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "MERGED_CLEANUP_REQUIRED",
+      "deliverable": "Conform the Windows image builder to the network contract; guest seal resets only the build adapter.",
+      "acceptance": "PR #64 merged; cleanup running. Partial conformance: host network re-verification while running must occur at most every 60 seconds.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/1814b7a",
+        "method": "merge-commit",
+        "merge_sha": "Cleanup running; partial conformance: host network re-verification at most every 60 seconds."
+      },
+      "cleanup_receipt": null,
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/1814b7a",
+      "evidence": "PR #64 merged at 1814b7a; guest seal resets only the build adapter; cleanup running. Windows image suite 347/347 on pwsh 7 and Windows PowerShell 5.1; hosted CI 4/4. Partial conformance: host network re-verification while running must be at most every 60 seconds."
+    },
+    {
+      "id": "P13.4",
+      "title": "Compare activation list ordinally",
+      "earliest_wave": 6,
+      "needs": [
+        "P13.2"
+      ],
+      "owns": [
+        "guests/cache/**",
+        "tests/guests/cache/**"
+      ],
+      "lane": "Sol medium",
+      "delivery_state": "PR_OPEN",
+      "deliverable": "Compare activation list ordinally.",
+      "acceptance": "Reviewed PASS; hosted CI running; not merged.",
+      "merge_proof": null,
+      "cleanup_receipt": null,
+      "evidence": "PR #66 on parity/p13-4-activation-compare; hosted CI running.",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/66",
+      "branch": "parity/p13-4-activation-compare"
+    },
+    {
+      "id": "P22.1",
+      "title": "Verify deployed zccache daemon before priming",
+      "earliest_wave": 10,
+      "needs": [
+        "P13.3"
+      ],
+      "owns": [
+        "supervisor/**",
+        "tests/**"
+      ],
+      "lane": "Sol medium",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Verify SHA-256 of deployed daemon (<root>/v1.15.6/zccache-daemon[.exe]) before priming; refuse/delete otherwise.",
+      "acceptance": "Unexpected SHA-256 is refused or deleted before any shared cache root is primed.",
+      "merge_proof": null,
+      "cleanup_receipt": null
+    },
+    {
+      "id": "P12.1",
+      "title": "Watch host network during long-running build phases",
+      "earliest_wave": 6,
+      "needs": [
+        "P10.0"
+      ],
+      "owns": [
+        "supervisor/**",
+        "tests/**"
+      ],
+      "lane": "Sol medium",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Re-verify host network state at most every 60 seconds while a build phase runs.",
+      "acceptance": "Covers P07.1/P06.2 partial conformance.",
+      "merge_proof": null,
+      "cleanup_receipt": null
+    },
+    {
+      "id": "P12.2",
+      "title": "Reconcile orphan build VMs after builder crash",
+      "earliest_wave": 6,
+      "needs": [
+        "P09"
+      ],
+      "owns": [
+        "supervisor/**",
+        "tests/**"
+      ],
+      "lane": "Sol medium",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Reconcile orphan aap-wbuild-* build VMs whose build lock is not held.",
+      "acceptance": "A crashed builder does not leave an orphan build VM attached.",
+      "merge_proof": null,
+      "cleanup_receipt": null
+    },
+    {
+      "id": "P10.4",
+      "title": "Tie guest network adapters to VM identity",
+      "earliest_wave": 6,
+      "needs": [
+        "P10.0"
+      ],
+      "owns": [
+        "supervisor/network/**",
+        "supervisor/backends/**",
+        "tests/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Tie each aap-guest-<id> adapter to the VM with that id.",
+      "acceptance": "Close remaining gap in P10.2, P06.2, P07.1 providers and module Verify.",
+      "merge_proof": null,
+      "cleanup_receipt": null
+    },
+    {
+      "id": "P10.5",
+      "title": "Close P10 network security follow-ups",
+      "earliest_wave": 6,
+      "needs": [
+        "P10.0"
+      ],
+      "owns": [
+        "supervisor/network/**",
+        "tests/**"
+      ],
+      "lane": "Sol medium",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Run P10.0 Verify with ErrorActionPreference Stop; confirm answer-file interface name Ethernet in lab.",
+      "acceptance": "Verify stops on errors and lab confirms the interface name.",
+      "merge_proof": null,
+      "cleanup_receipt": null
+    },
+    {
+      "id": "P02.4",
+      "title": "Test clone-to-clone ARP poisoning on shared guest switch",
+      "earliest_wave": 4,
+      "needs": [
+        "P02.1"
+      ],
+      "owns": [
+        "parity/contracts/lab/**",
+        "docs/parity/evidence/lab/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Test clone-to-clone ARP poisoning; Windows profile must not serve public repositories until clone isolation is required and proven.",
+      "acceptance": "Authorized lab proves clone isolation before public-repository service.",
+      "merge_proof": null,
+      "cleanup_receipt": null
     }
   ],
   "authorization": {
@@ -1214,6 +1564,34 @@
       "merge_sha": "7ff6052b04f496b9e67dbc9c296f624a788d7c49",
       "what": "CI Pester split into pester and pester-backends; P10 and P13 suites wired; P10 owner and SDDL checks no longer assume a non-elevated, non-RID-500 user",
       "cleanup": "verified"
+    },
+    {
+      "item": "coord-ci-wiring-4",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/54",
+      "merge_sha": "ac34ca404d3dba95d233c4fa21cb305b1463aa35",
+      "what": "Linux backend suite wired; 3 elevated-account test fixes",
+      "cleanup": "verified CLEAN"
+    },
+    {
+      "item": "coord-net-contract",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/58",
+      "merge_sha": "b7b06f698a5f38e158f5847337b994ac4d678dd4",
+      "what": "P10.0 host network module contract and shared pure check",
+      "cleanup": "verified CLEAN"
+    },
+    {
+      "item": "coord-net-contract",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/60",
+      "merge_sha": "15eb4d97cd4986444553584e3824cd8d78023284",
+      "what": "P10.0 host network module contract follow-up; rounds 1-7",
+      "cleanup": "verified CLEAN"
+    },
+    {
+      "item": "coord-ci-wiring-5",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/65",
+      "merge_sha": "b51580a5356ab303eed65534c65ac14adb7ab92b",
+      "what": "Ubuntu image suites wired: guest_test.sh, shellcheck globs and Pester",
+      "cleanup": "verified CLEAN"
     }
   ],
   "owner_decisions_queued": [
