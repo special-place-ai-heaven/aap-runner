@@ -571,7 +571,7 @@
         "tests/backends/network/**"
       ],
       "lane": "Sol high (Claude: Opus high)",
-      "delivery_state": "COMPLETE",
+      "delivery_state": "IN_PROGRESS",
       "deliverable": "One PowerShell module that creates the per-profile internal switch + NAT (or the per-guest private switch chosen in P02.1), applies DHCP guard, router guard, MAC-spoofing off, extended port ACLs (deny host vEthernet except DHCP/DNS, RFC1918, 169.254/16, 100.64/10, multicast, fe80::/10, fc00::/7, LAN IPv6 prefix, clone subnet except gateway), disables enhanced session and Guest Service Interface, and exposes attach/detach/verify for P10 and P11.",
       "acceptance": "Pester with fakes for the Hyper-V cmdlets; the lab negative matrix from guest-transport.md passes on a disposable guest; External/Default switch attachment refused.",
       "merge_proof": {
@@ -581,7 +581,7 @@
       },
       "cleanup_receipt": null,
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/58",
-      "evidence": "PR #58 merged; P10.0 host network module contract and shared pure check. PR #60 follow-up merged at 15eb4d9. Rounds 1-7; rounds 5-7 reviewed by net-review, net-sec and Sol. Suites 420/420 on pwsh 7 and Windows PowerShell 5.1; mutations 87/87; cleanup verified CLEAN. Receipt evidence/coord-net-contract-attempt-1.receipt.json."
+      "evidence": "Contract, shared pure check (supervisor/network/AapHostNetworkCheck.psm1), shared fake (tests/common/AapHostNetworkFake.psm1), and four consumer conformance items merged in PR #58 (b7b06f6) and PR #60 (15eb4d9); rounds 1-7; cleanup verified CLEAN; suites 420/420 on pwsh 7 and Windows PowerShell 5.1; mutations 87/87. The Hyper-V module itself (switch + NAT creation, port ACL application, real Attach/Detach/Verify, lab negative matrix) is NOT_STARTED, gated on P02.1. P10.0 still needs P02.1 and P09."
     },
     {
       "id": "P10",
