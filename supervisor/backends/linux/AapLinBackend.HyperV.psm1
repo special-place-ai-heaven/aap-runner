@@ -100,7 +100,9 @@ function New-AapLinHyperVProvider {
     }
     # The seed: an ISO 9660 + Joliet image labelled CIDATA (cloud-init NoCloud; Joliet keeps the lower-case names cloud-init
     # looks for), built from the backend's text in a folder of its own beside the ISO and written by AapLinIsoWriter (compiled
-    # by New-AapLinBackend with an admin-only %TMP%). The folder goes as soon as the image is written.
+    # by New-AapLinBackend with an admin-only %TMP%), which refuses a short read. The folder goes as soon as the image is
+    # written. Returns what was produced: the size IMAPI2 announced and the SHA-256 of the bytes written, which the backend
+    # reads the file back against.
     $p.NewSeedImage = { param($a)
         if (-not ('AapLinIsoWriter' -as [type])) { throw 'AAP_SeedInvalid: the ISO writer is compiled by New-AapLinBackend' }
         $dir = "$($a.Path).files"
@@ -116,7 +118,8 @@ function New-AapLinHyperVProvider {
             $img.VolumeName = $a.Label
             $img.Root.AddTree($dir, $false)
             $res = $img.CreateResultImage()
-            [AapLinIsoWriter]::Save($res.ImageStream, $a.Path, [int]$res.BlockSize, [int]$res.TotalBlocks)
+            $sha = [AapLinIsoWriter]::Save($res.ImageStream, $a.Path, [int]$res.BlockSize, [int]$res.TotalBlocks)
+            @{ Bytes = [long]$res.BlockSize * [long]$res.TotalBlocks; Sha256 = $sha }
         } finally {
             foreach ($f in [IO.Directory]::GetFiles($dir)) { [IO.File]::Delete($f) }
             [IO.Directory]::Delete($dir)

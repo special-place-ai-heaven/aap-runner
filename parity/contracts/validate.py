@@ -19,6 +19,7 @@ A pattern's `$` means end of input, as in ECMA-262: Python's `$` would also matc
 newline, so check() anchors at the end of the string instead. Documents are bounded to 256 KiB.
 Exit 0 when everything holds, 1 otherwise.
 """
+import ipaddress
 import json
 import math
 import re
@@ -630,6 +631,74 @@ def sem_cleanup_receipt(doc):
             raise Invalid(f"disposed {d.get('id', d.get('resource'))}: absence not observed")
 
 
+def _host_net_ranges(name):
+    """A list of ranges read from its one copy, the shared check (host-network-module.md, Rules and weights): FixedDeny, the
+    fixed deny ranges, or PrivateRanges, the fixed ranges a NAT routes unicast in."""
+    path = HERE.parent.parent / "supervisor" / "network" / "AapHostNetworkCheck.psm1"
+    m = re.search(r"^\$script:" + name + r" = @\(([^)]*)\)", path.read_text(encoding="utf-8"), re.M)
+    if not m:
+        raise Invalid(f"no $script:{name} list in {path.name}")
+    return [ipaddress.ip_network(s) for s in re.findall(r"'([^']+)'", m.group(1))]
+
+
+def _host_net_private(net):
+    """IPv4 and inside a range a NAT routes unicast in (the shared check's Test-AapNetPrivate)."""
+    return net.version == 4 and any(net.subnet_of(f) for f in _host_net_ranges("PrivateRanges"))
+
+
+def _host_net_declaration(d):
+    """host-network-module.md, Attach: the name's letter is the profile's; a private subnet holding the gateway and the
+    VM's static address; the endpoints one private resolver outside the subnet (UDP and TCP 53, the schema's part) that is
+    one of the resolvers; every other resolver public (outside every fixed range). The shared check's
+    Get-AapHostNetworkDeclarationProblems applies the same rules."""
+    if d["vm_name"][4] != d["profile"][0]:
+        raise Invalid(f"vm_name {d['vm_name']} does not match profile {d['profile']}")
+    fixed = _host_net_ranges("FixedDeny")
+    try:
+        net = ipaddress.ip_network(d["subnet"])
+    except ValueError:
+        raise Invalid(f"subnet {d['subnet']} is not a network address")
+    if not _host_net_private(net):
+        raise Invalid(f"subnet {d['subnet']} is not inside a private fixed range")
+    def host(a):
+        ip = ipaddress.ip_address(a)
+        return ip in net and ip not in (net.network_address, net.broadcast_address)
+
+    if not host(d["gateway"]):
+        raise Invalid(f"gateway {d['gateway']} is not a host address of {d['subnet']}")
+    if not host(d["address"]) or d["address"] == d["gateway"]:
+        raise Invalid(f"address {d['address']} is not a host address of {d['subnet']} other than the gateway")
+    on53 = set()
+    for e in d["endpoints"]:
+        ip = ipaddress.ip_network(e["address"])
+        if not _host_net_private(ip) or ip.subnet_of(net):
+            raise Invalid(f"endpoint {e['address']} is not one private IPv4 address outside {d['subnet']}")
+        on53.add(e["address"])
+    if len(on53) > 1:
+        raise Invalid(f"endpoints name {len(on53)} addresses, not one resolver")
+    for r in d["resolvers"]:
+        if any(f.version == 4 and ipaddress.ip_network(r).subnet_of(f) for f in fixed) and r not in on53:
+            raise Invalid(f"resolver {r} is neither public nor a declared endpoint on port 53")
+    for a in sorted(on53 - set(d["resolvers"])):
+        raise Invalid(f"endpoint {a} is not one of the resolvers")
+
+
+def sem_host_network_module(doc):
+    if isinstance(doc, list):
+        return  # Verify's problem list: the schema is the whole rule
+    if doc["kind"] == "host_network_attach":
+        _host_net_declaration(doc)
+    else:
+        _host_net_declaration(doc["declaration"])
+        if [c["kind"] for c in doc["created"]].count("adapter") != 1:
+            raise Invalid("a record names exactly one adapter")
+        for c in doc["created"]:
+            if not c["name"].endswith("-" + doc["declaration"]["vm_id"]):
+                raise Invalid(f"a record names {c['name']}, not one of VM {doc['declaration']['vm_id']}")
+            if c["name"].startswith(("aap-guests-", "aap-build-")):
+                raise Invalid(f"a record names {c['name']}, a switch P19 owns")
+
+
 SEMANTIC = {
     "allocator": sem_allocator,
     "backend-lifecycle": sem_backend_lifecycle,
@@ -642,6 +711,7 @@ SEMANTIC = {
     "tray-windows-choice": None,
     "evidence-bundle": sem_evidence_bundle,
     "cleanup-receipt": sem_cleanup_receipt,
+    "host-network-module": sem_host_network_module,
 }
 
 

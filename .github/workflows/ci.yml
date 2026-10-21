@@ -50,7 +50,7 @@ jobs:
           Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
           Import-Module Pester -RequiredVersion 5.7.1
           $c = New-PesterConfiguration
-          $c.Run.Path = @('supervisor', 'tests/parity-work', 'tests/capacity', 'tests/broker', 'tests/images/common', 'tests/parity-certify')
+          $c.Run.Path = @('supervisor', 'tests/parity-work', 'tests/capacity', 'tests/broker', 'tests/images/common', 'tests/parity-certify', 'tests/network', 'tests/common')
           $c.Filter.ExcludeTag = @('Network')
           $c.Run.Exit = $true
           Invoke-Pester -Configuration $c

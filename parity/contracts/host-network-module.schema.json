@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/host-network-module.schema.json",
+  "title": "Host network module (P10.0): Attach's declaration, Verify's problem list and the module's journal record",
+  "x-contract-version": 1,
+  "x-owner": "P10.0 (module); consumers P06, P07, P10, P11 (their read-back through supervisor/network/AapHostNetworkCheck.psm1); P12 builds it; P19 the journal folder, switches and host rules",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/attach"
+    },
+    {
+      "$ref": "#/$defs/problems"
+    },
+    {
+      "$ref": "#/$defs/record"
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "vm_name": {
+      "type": "string",
+      "pattern": "^aap-([wl]-[1-5]-[0-9]{1,9}-[0-9a-f]{8}|[wl]build-[0-9a-f]{8})$"
+    },
+    "ipv4": {
+      "type": "string",
+      "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$"
+    },
+    "subnet": {
+      "type": "string",
+      "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/(1[6-9]|2[0-9]|30)$"
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "protocol",
+        "port"
+      ],
+      "properties": {
+        "address": {
+          "$ref": "#/$defs/ipv4"
+        },
+        "protocol": {
+          "enum": [
+            "TCP",
+            "UDP"
+          ]
+        },
+        "port": {
+          "const": 53
+        }
+      }
+    },
+    "attach": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "vm_id",
+        "vm_name",
+        "profile",
+        "subnet",
+        "gateway",
+        "address",
+        "resolvers",
+        "endpoints"
+      ],
+      "properties": {
+        "schema": {
+          "const": 1
+        },
+        "kind": {
+          "const": "host_network_attach"
+        },
+        "vm_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "vm_name": {
+          "$ref": "#/$defs/vm_name"
+        },
+        "profile": {
+          "enum": [
+            "windows",
+            "linux"
+          ]
+        },
+        "subnet": {
+          "$ref": "#/$defs/subnet"
+        },
+        "gateway": {
+          "$ref": "#/$defs/ipv4"
+        },
+        "address": {
+          "$ref": "#/$defs/ipv4"
+        },
+        "resolvers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ipv4"
+          }
+        },
+        "endpoints": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/endpoint"
+          }
+        }
+      }
+    },
+    "problems": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "pattern": "^[ -~]{1,200}$"
+      }
+    },
+    "created": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "adapter",
+            "switch",
+            "nat",
+            "firewall_rule"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^aap-[a-z]+(-[a-z]+)*-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      }
+    },
+    "record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "kind",
+        "state",
+        "declaration",
+        "created"
+      ],
+      "properties": {
+        "schema": {
+          "const": 1
+        },
+        "kind": {
+          "const": "host_network_record"
+        },
+        "state": {
+          "enum": [
+            "attaching",
+            "attached"
+          ]
+        },
+        "declaration": {
+          "$ref": "#/$defs/attach"
+        },
+        "created": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/created"
+          }
+        }
+      }
+    }
+  }
+}
