@@ -24,7 +24,9 @@ it.** The only reason is that WSL sessions belong to the logon session
   and other interactive apps win CPU contention against CI jobs.
 - **Off:** runs `aap-runner-manager --drain`, waits up to 6 h for the manager
   to exit after its job, then `wsl.exe --terminate aap-runner`. Flipping back to
-  on while draining undrains instead.
+  on while draining undrains instead. A job still running after the 6 h is
+  never ended: the distro stays up, the status stays `draining`, and the next
+  tick drains and waits again.
 - **While Off** it makes no `wsl.exe` call, so Vmmem can exit. Desired off is
   the only case: Linux + Windows is at least 1, and while On the distro runs
   even with Linux at 0, because the broker (and the App key) live there.
@@ -114,9 +116,13 @@ With `capacity\AapCapacity.psm1` beside the script (P19 deploys `capacity\`,
 `broker\`, `backends\` and `network\` there, admin-only), the P09 allocator
 (`C:\ProgramData\aap-runner\capacity`, [`allocator.md`](../parity/contracts/allocator.md))
 holds every slot of every backend. The supervisor imports the module only when
-its folder and files are owned by SYSTEM, Administrators or TrustedInstaller,
-are no reparse point and give nobody else write, delete, re-permission or
-take-ownership rights; otherwise, and without the module (today's install,
+its own folder and everything below it (the modules import each other by
+relative path) are owned by SYSTEM, Administrators or TrustedInstaller, are no
+reparse point and give nobody else write, delete, re-permission or
+take-ownership rights, and every folder above it, up to the drive root, is no
+reparse point, has an admin owner and lets nobody else delete, re-permission
+or take it over (install-supervisor.ps1's ancestor rule); otherwise, and
+without the module (today's install,
 which copies only the script), it is the schema 2 supervisor described above:
 legacy pool only, settings 1 and 2, and `status.v5.json` with the Windows
 profile `none`.
@@ -130,7 +136,9 @@ profile `none`.
 - **Every 5 s:** the two counts, the shares, the reserve, the Linux backend
   and the active generations go to the allocator; `resize_waits` and
   `pool_over_live` keep the last applied settings and lead the `detail`.
-  Lowering a count never cancels a job: the excess drains.
+  Lowering a count never cancels a job: the excess drains. While a legacy
+  drain waits (limits, Pause, Linux 0, Off), the counts still go to the
+  allocator and a Pause still drains the VM slots; nothing is admitted.
 - **Legacy pool:** adopted once from the manager's fresh `status.json` sample
   (one reservation per running slot). A pool too big for the Linux profile is
   first shrunk to the allocator's target through `limits.conf`. After that a
@@ -141,7 +149,9 @@ profile `none`.
   stopped; no `limits.conf` with 0 is written, the distro, sysbox and the
   keep-alive stay up, and the status is `idle` with `legacy pool stopped` in
   the `detail`. In `even` mode a count increase lowers every share, so the
-  legacy pool is stopped and started again with the new grants.
+  legacy pool is stopped and started again with the new grants. Raised
+  `job_cpus` or `job_memory_gib` reach a granted legacy slot only with its next
+  grant; until then the `detail` starts with `grant_waits`.
 - **Heartbeats:** each health tick's manager sample is the legacy heartbeat.
 - **VM profiles:** a profile on `hyperv-vm` admits a slot (one per tick, on
   the active generation's measured budget) only while its backend context,
@@ -155,7 +165,11 @@ profile `none`.
   `draining`; a busy one keeps its job, the backend tears it down after. Off
   waits for the VM slots (and the manager) before `wsl.exe --terminate`,
   because the broker that releases their runners lives in the distro; desired
-  on again during that wait undoes the drain.
+  on again during that wait undoes the drain. A slot whose backend is not
+  loaded counts while it may hold a job (`busy`, `draining`, `quarantined`).
+  After 6 h with a VM slot still live, or while the allocator state cannot be
+  read, Off never terminates: the distro stays up, the status stays
+  `draining`, and the next tick tries again.
 
 The GitHub App id, the key and the runner labels are not read from the
 inbox by the supervisor. They live in `/etc/aap-runner/manager.conf` and

@@ -561,13 +561,19 @@ Describe 'aap-runner host supervisor' {
             (Get-AapStatusFile).state | Should -Be 'off'
         }
 
-        It 'terminates anyway after the drain timeout' {
+        It 'keeps the distro and the job after the drain timeout and tries again' -Tag 'off-manager-busy' {
             $AapCfg.DrainTimeoutSeconds = 30
             $script:activeLeft = 1000
             Invoke-AapCycle
             @($script:calls | Where-Object { $_ -eq 'sleep 10' }).Count | Should -Be 3
-            $script:calls[-1] | Should -Be 'wsl --terminate aap-runner'
+            $script:calls | Should -Not -Contain 'wsl --terminate aap-runner'
             Get-AapLogText | Should -Match 'drain timeout after 30 s'
+            $AapRt.Mode | Should -Be 'on'
+            $script:keep.Killed | Should -BeFalse
+            (Get-AapStatusFile).state | Should -Be 'draining'
+            $script:activeLeft = 0
+            Invoke-AapCycle
+            $script:calls[-1] | Should -Be 'wsl --terminate aap-runner'
             (Get-AapStatusFile).state | Should -Be 'off'
         }
 
@@ -1216,6 +1222,15 @@ Describe 'aap-runner host supervisor' {
             (Read-AapSettingsFile).Profiles.LinuxBackend | Should -BeExactly 'hyperv-vm'
         }
 
+        It 'drops the newer-schema reason once a later file is not newer' {
+            Write-AapSettingsFile '{"schema":4,"runner_count":3}'
+            [void](Read-AapSettingsFile)
+            Get-AapDetail | Should -Match 'newer than this supervisor accepts'
+            Write-AapSettingsFile '{"schema":2,"runner_count":0,"job_cpus":12,"job_memory_gib":48,"paused":false}'
+            [void](Read-AapSettingsFile)
+            Get-AapDetail | Should -Not -Match 'newer'
+        }
+
         It 'puts an allocator hold-back first in the detail' {
             $AapRt.RefusedWhy = 'limits refused'
             $AapRt.CapWhy = 'resize_waits: slot 5 must leave first'
@@ -1385,20 +1400,35 @@ Describe 'aap-runner host supervisor' {
         It 'caps the legacy pool to the Linux share and keeps the reserve (owner example)' -Tag 'adopt-target', 'settings-max' {
             Write-AapSettingsFile (Get-AapFixture 'settings-v3\valid\owner-example-per-profile.json')
             Invoke-AapCycle
-            # 32 CPUs and 96 GiB: Linux 60 % = 19 CPUs and 57 GiB, 6 CPUs and 19 GiB each.
-            $script:stdin | Should -Contain "AAP_RUNNER_COUNT=3`nAAP_JOB_CPUS=18`nAAP_JOB_MEMORY=57g`nAAP_JOB_IO_PERCENT=90`nAAP_POOL_SHARING=slice`n"
+            # 32 CPUs and 96 GiB: Linux 60 % = 19 CPUs and 56 GiB (60/90 of the 84 GiB memory pool), 6 CPUs and 18 GiB each.
+            $script:stdin | Should -Contain "AAP_RUNNER_COUNT=3`nAAP_JOB_CPUS=18`nAAP_JOB_MEMORY=54g`nAAP_JOB_IO_PERCENT=90`nAAP_POOL_SHARING=slice`n"
             Invoke-AapMinute 2
             (Get-AapCapDoc).legacy_adopted | Should -BeTrue
             $v = Get-AapV5File
             $v.capacity.share_mode | Should -BeExactly 'per_profile'
             $v.profiles[0].share_percent | Should -Be 60
             $v.profiles[0].profile_cap.cpus | Should -Be 19
-            $v.profiles[0].per_runner.mem_gib | Should -Be 19
+            $v.profiles[0].per_runner.mem_gib | Should -Be 18
             $v.profiles[1].share_percent | Should -Be 30
             $v.profiles[1].profile_cap.mem_gib | Should -Be 28
             $v.profiles[1].count | Should -Be 2
             $v.profiles[1].available | Should -BeFalse
             ($v.profiles[0].profile_cap.cpus + $v.profiles[1].profile_cap.cpus) | Should -BeLessOrEqual ([Math]::Floor(32 * 0.9))
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'admits the owner example in full: 3 Linux and 2 Windows VMs on 32 CPUs and 96 GiB, the reserve kept' {
+            Enable-AapFakeVm
+            Write-AapSettingsFile (Get-AapFixture 'settings-v3\valid\owner-example-per-profile.json')
+            Invoke-AapCycle
+            Invoke-AapMinute 4
+            $live = @(Get-AapCapLive)
+            @($live | Where-Object { $_.backend -ceq 'wsl-legacy' }).Count | Should -Be 3
+            @($live | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 2
+            $cpus = ($live | Measure-Object -Property cpus -Sum).Sum
+            $gib = ($live | ForEach-Object { $_.mem_gib + [Math]::Ceiling($_.mem_overhead_mib / 1024) } | Measure-Object -Sum).Sum
+            $cpus | Should -BeLessOrEqual 28
+            ($gib + $AapCfg.ControlDistroMemGib) | Should -BeLessOrEqual 86
             Test-AapV5Contract | Should -Be 'ok'
         }
 
@@ -1411,6 +1441,19 @@ Describe 'aap-runner host supervisor' {
             Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":12,"job_memory_gib":36,"paused":false}'
             Invoke-AapMinute
             $script:stdin[-1] | Should -BeExactly "AAP_RUNNER_COUNT=3`nAAP_JOB_CPUS=12`nAAP_JOB_MEMORY=36g`n"
+        }
+
+        It 'says grant_waits while raised totals wait for the next legacy grant' {
+            Reset-AapFakeDistro 3 12 36
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":12,"job_memory_gib":36,"paused":false}'
+            Invoke-AapCycle
+            Invoke-AapMinute
+            (Get-AapCapDoc).legacy_adopted | Should -BeTrue
+            Get-AapDetail | Should -Not -Match 'grant_waits'
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":27,"job_memory_gib":72,"paused":false}'
+            Invoke-AapMinute
+            Get-AapDetail | Should -Match '^grant_waits: the legacy slots keep 12 CPUs and 36 GiB'
+            $script:mgr.Cpus | Should -Be 12
         }
 
         It 'keeps the limits the manager runs while there is no settings.json' -Tag 'keep-manager-limits' {
@@ -1596,6 +1639,34 @@ Describe 'aap-runner host supervisor' {
                 Test-AapV5Contract | Should -Be 'ok'
             }
 
+            It 'admits nothing while paused' -Tag 'admit-after-adoption' {
+                # Adopted while the Windows profile has no backend, then paused, then the backend comes.
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 2
+                (Get-AapCapDoc).legacy_adopted | Should -BeTrue
+                Write-AapSettingsFile ('{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}' -replace '"paused":false', '"paused":true')
+                Invoke-AapMinute
+                $AapRt.Paused | Should -BeTrue
+                Enable-AapFakeVm
+                Invoke-AapMinute 3
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 0
+            }
+
+            It 'forgets the step line of a slot that is gone' {
+                Enable-AapFakeVm
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                $AapRt.Steps.Count | Should -Be 2
+                Write-AapSettingsFile ('{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}' -replace '"windows_runner_count":2', '"windows_runner_count":1')
+                Invoke-AapMinute 2
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 1
+                $AapRt.Steps.Count | Should -Be 1
+            }
+
             It 'pause drains ready and busy VM slots and never ends a running job' -Tag 'vm-drain' {
                 Enable-AapFakeVm
                 $script:holdVms = $true
@@ -1655,6 +1726,108 @@ Describe 'aap-runner host supervisor' {
                 @($script:calls)[0..$i] | Should -Contain 'sleep 10'
                 @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 0
                 $AapRt.Mode | Should -BeExactly 'off'
+            }
+
+            It 'Off keeps the distro and the VM job when the wait ends, and stops once the slots are gone' -Tag 'off-vm-busy', 'off-vm-job' {
+                Enable-AapFakeVm
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                $vms = @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' })
+                [void](Set-AapSlotState -Root $AapRt.CapRoot -ReservationId $vms[0].reservation_id -LeaseGeneration $vms[0].lease_generation -State busy -RelaxedTrustForTests -WarningAction SilentlyContinue)
+                $script:holdVms = $true
+                $AapCfg.DrainTimeoutSeconds = 30
+                Write-AapStateFile '{"desired":"off"}'
+                Invoke-AapCycle
+                $script:calls | Should -Not -Contain 'wsl --terminate aap-runner'
+                $AapRt.Mode | Should -BeExactly 'on'
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 2
+                (Get-AapStatusFile).state | Should -BeExactly 'draining'
+                Get-AapLogText | Should -Match 'VM drain timeout after 30 s'
+                $script:holdVms = $false
+                Invoke-AapCycle
+                $script:calls | Should -Contain 'wsl --terminate aap-runner'
+                $AapRt.Mode | Should -BeExactly 'off'
+            }
+
+            It 'Off keeps the distro while the allocator state is unreadable' -Tag 'off-cap-ready' {
+                Enable-AapFakeVm
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                [IO.File]::WriteAllText((Join-Path $AapRt.CapRoot 'allocator.json'), '{')
+                Write-AapStateFile '{"desired":"off"}'
+                Invoke-AapCycle
+                $script:calls | Should -Not -Contain 'wsl --terminate aap-runner'
+                $AapRt.Mode | Should -BeExactly 'on'
+                (Get-AapStatusFile).state | Should -BeExactly 'draining'
+            }
+
+            It 'Off waits for a busy slot whose backend is not loaded, never for an idle one' -Tag 'off-vm-job' {
+                Enable-AapFakeVm
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                $vms = @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' })
+                $cap = @{ Root = $AapRt.CapRoot; ReservationId = $vms[0].reservation_id; LeaseGeneration = $vms[0].lease_generation; RelaxedTrustForTests = $true; WarningAction = 'SilentlyContinue' }
+                [void](Set-AapSlotState @cap -State busy)
+                $AapRt.Vm.windows = $null
+                $AapCfg.DrainTimeoutSeconds = 30
+                Write-AapStateFile '{"desired":"off"}'
+                Invoke-AapCycle
+                $script:calls | Should -Not -Contain 'wsl --terminate aap-runner'
+                @(Get-AapCapLive | ForEach-Object { $_.state }) -join ',' | Should -Match 'busy'
+                @(Get-AapCapLive | Where-Object { $_.reservation_id -ceq $vms[1].reservation_id })[0].state | Should -BeExactly 'ready'
+                # The job ends: the slot leaves busy. The idle one, which nothing here can tear down, does not hold Off.
+                [void](Set-AapSlotState @cap -State collecting)
+                Invoke-AapCycle
+                $script:calls | Should -Contain 'wsl --terminate aap-runner'
+            }
+
+            It 'a Pause during a legacy drain reaches the VM slots' -Tag 'wait-pause' {
+                Enable-AapFakeVm
+                $script:holdVms = $true
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' -and $_.state -ceq 'ready' }).Count | Should -Be 2
+                # Linux 0 stops the legacy pool; its job holds the drain while Pause arrives.
+                $script:holdJobs = $true
+                $AapCfg.DrainTimeoutSeconds = 30
+                $zero = '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}' -replace '"runner_count":1', '"runner_count":0'
+                Write-AapSettingsFile $zero
+                Mock Wait-AapInterval {
+                    $script:calls.Add("sleep $Seconds")
+                    $script:clock.Now = $script:clock.Now.AddSeconds($Seconds)
+                    Write-AapSettingsFile ($zero -replace '"paused":false', '"paused":true')
+                }
+                Invoke-AapMinute
+                $AapRt.Paused | Should -BeFalse -Because 'the pause itself is taken at the next tick'
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' } | ForEach-Object { $_.state }) -join ',' | Should -Be 'draining,draining'
+            }
+
+            It 'a lower count during a legacy drain reaches the VM slots' {
+                Enable-AapFakeVm
+                $script:holdVms = $true
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                $script:holdJobs = $true
+                $AapCfg.DrainTimeoutSeconds = 30
+                $zero = '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}' -replace '"runner_count":1', '"runner_count":0'
+                Write-AapSettingsFile $zero
+                Mock Wait-AapInterval {
+                    $script:calls.Add("sleep $Seconds")
+                    $script:clock.Now = $script:clock.Now.AddSeconds($Seconds)
+                    Write-AapSettingsFile ($zero -replace '"windows_runner_count":2', '"windows_runner_count":1')
+                }
+                Invoke-AapMinute
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' } | ForEach-Object { $_.state }) -join ',' | Should -Be 'ready,draining'
             }
 
             It 'Off turned back on while VM slots drain keeps the distro' {
@@ -1751,7 +1924,19 @@ Describe 'aap-runner host supervisor' {
         }
 
         It 'refuses a folder owned by someone else' -Tag 'code-owner' {
-            @(Get-AapCodeProblem $script:dir) -join '; ' | Should -Match 'is not an admin'
+            @(Get-AapCodeProblem $script:dir) -join '; ' | Should -Match ([regex]::Escape("is not an admin: $script:dir"))
+        }
+
+        It 'refuses a module anywhere below the folder' -Tag 'code-tree' {
+            $sub = Join-Path $script:dir 'backends\windows'
+            [void](New-Item -ItemType Directory -Path $sub)
+            $file = Join-Path $sub 'AapWinBackend.psm1'
+            [IO.File]::WriteAllText($file, '')
+            @(Get-AapCodeProblem $script:dir) -join '; ' | Should -Match ([regex]::Escape("is not an admin: $file"))
+        }
+
+        It 'refuses a folder under an ancestor someone else owns' -Tag 'code-ancestor' {
+            @(Get-AapCodeProblem $script:dir) -join '; ' | Should -Match 'ancestor [^;]+: owner S-1-5-21-[-0-9]+ is not an admin'
         }
 
         It 'refuses a folder anyone else may write' -Tag 'code-write' {
@@ -1780,7 +1965,7 @@ Describe 'aap-runner host supervisor' {
             $AapCfg.ModuleDir = $script:dir
             try { Initialize-AapProviders } finally { $AapCfg.ModuleDir = $PSScriptRoot }
             $AapRt.Cap | Should -BeFalse
-            Get-AapLogText | Should -Match 'capacity module not loaded, it is not admin-only'
+            Get-AapLogText | Should -Match 'capacity module not loaded, the supervisor folder is not admin-only'
         }
 
         It 'stays the schema 2 supervisor without the capacity module' {

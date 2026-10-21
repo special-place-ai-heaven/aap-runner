@@ -149,8 +149,11 @@ function Initialize-AapRuntime {
     $AapRt.CapReady = $false
     $AapRt.CapError = $null
     $AapRt.CapWhy = $null
+    # grant_waits: raised legacy totals wait for the slots' next grant.
+    $AapRt.HoldWhy = $null
     $AapRt.CapFlags = @()
-    $AapRt.CapLogged = $null
+    # The last refusal or error logged, per allocator call.
+    $AapRt.CapLogged = @{}
     $AapRt.ReconcileAt = [DateTimeOffset]::MinValue
     $AapRt.HostInfo = $null
     $AapRt.StatusDoc = $null
@@ -348,9 +351,9 @@ function Read-AapDesired {
 function Read-AapSettingsFile {
     $obj = Read-AapJsonFile 'settings.json'
     $warn = $null
+    $newer = $null
     if ($null -eq $obj) {
         $AapRt.Settings = @{ Limits = $null; Paused = $false; Profiles = $null; Schema = $null }
-        $AapRt.SettingsWhy = $null
     } elseif ($obj -is [string]) {
         $warn = $obj
     } else {
@@ -364,12 +367,11 @@ function Read-AapSettingsFile {
         $whole = ($schema -is [int] -or $schema -is [long])
         if ($whole -and $schema -gt $max) {   # check:settings-newer
             $warn = "settings.json schema $schema is newer than this supervisor accepts ($((1..$max) -join ', '))"
-            $AapRt.SettingsWhy = $warn
+            $newer = $warn
         } elseif ($whole -and $schema -eq 3) {
             $warn = ConvertFrom-AapSettingsV3 $obj
             if ($warn -isnot [string]) {
                 $AapRt.Settings = $warn
-                $AapRt.SettingsWhy = $null
                 $warn = $null
             }
         } elseif (@($want | Where-Object { $names -cnotcontains $_ }).Count -gt 0 -or
@@ -408,10 +410,10 @@ function Read-AapSettingsFile {
                     Profiles = @{ Linux = [int]$obj.runner_count; Windows = 0; ShareMode = 'even'; LinuxShare = $null; WindowsShare = $null; Reserve = 10; LinuxBackend = 'wsl-legacy'; LeaseHours = 6 }
                     Schema   = $(if ($names -ccontains 'schema') { 2 } else { 1 })
                 }
-                $AapRt.SettingsWhy = $null
             }
         }
     }
+    $AapRt.SettingsWhy = $newer
     if ($warn -and $warn -ne $AapRt.LastSettingsWarn) { Write-AapLog "WARN $warn; keeping the last valid settings" }
     $AapRt.LastSettingsWarn = $warn
     return $AapRt.Settings
@@ -961,7 +963,13 @@ function Wait-AapManagerInactive([string]$AbortWhen, [string]$Detail) {
         }
         if ((Read-AapDesired) -eq $AbortWhen) { return 'aborted' }
         Write-AapStatus 'draining' '' "${Detail}: waiting for manager to exit ($state)"
-        # A drain can take hours; the VM slots keep their heartbeats meanwhile.
+        # A drain can take hours; the VM slots keep their heartbeats, and a
+        # Pause or a lower count reaches them meanwhile (nothing is admitted).
+        if ($AapRt.CapReady) {
+            $s = Read-AapSettingsFile
+            if ($s.Paused) { Invoke-AapVmDrain }   # check:wait-pause
+            [void](Set-AapCounts $s)
+        }
         Invoke-AapVmSteps
         Wait-AapInterval $AapCfg.DrainPollSeconds
     }
@@ -1207,14 +1215,23 @@ function Set-AapLimits($Limits) {
 # Code the elevated supervisor imports must be admin-only: owned by SYSTEM,
 # Administrators or TrustedInstaller, no reparse point, and no ACE that lets
 # anyone else write, delete, re-permission or take ownership (the folder and
-# its files). Returns the problems, empty = trusted.
+# everything below it: the modules import each other by relative path). The
+# folders above it, up to the drive root, follow install-supervisor.ps1's
+# Get-AapAncestorProblem: no reparse point, an admin owner, and nobody else
+# may delete, delete children, re-permission or take ownership (creating
+# folders is allowed, as C:\ grants it). Returns the problems, empty = trusted.
 function Get-AapCodeProblem([string]$Dir) {
     $admins = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
     # write data, append, write EA, delete child, write attributes, delete,
     # change permissions, take ownership, generic all, generic write
     $writes = 0x2 -bor 0x4 -bor 0x10 -bor 0x40 -bor 0x100 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000 -bor 0x40000000
+    # delete child, delete, change permissions, take ownership, generic all
+    $moves = 0x40 -bor 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x10000000
     $out = New-Object System.Collections.Generic.List[string]
-    foreach ($p in @(@($Dir) + @([IO.Directory]::GetFiles($Dir)))) {
+    $todo = New-Object System.Collections.Generic.List[string]
+    $todo.Add($Dir)
+    for ($i = 0; $i -lt $todo.Count; $i++) {
+        $p = $todo[$i]
         $item = Get-Item -LiteralPath $p -Force
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { $out.Add("reparse point: $p"); continue }   # check:code-reparse
         $acl = Get-Acl -LiteralPath $p
@@ -1224,6 +1241,23 @@ function Get-AapCodeProblem([string]$Dir) {
             if ($ace.AccessControlType -ne 'Allow' -or ($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
             if ($admins -notcontains $ace.IdentityReference.Value -and ([long]$ace.FileSystemRights -band [long]$writes)) { $out.Add("$($ace.IdentityReference.Value) may write: $p") }   # check:code-write
         }
+        if ($item.PSIsContainer) { foreach ($c in [IO.Directory]::GetFileSystemEntries($p)) { $todo.Add($c) } }   # check:code-tree
+    }
+    $up = Split-Path -Parent $Dir
+    while ($up) {
+        $item = Get-Item -LiteralPath $up -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            $out.Add("ancestor ${up}: reparse point")
+        } else {
+            $acl = Get-Acl -LiteralPath $up
+            $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+            if ($admins -notcontains $owner) { $out.Add("ancestor ${up}: owner $owner is not an admin") }   # check:code-ancestor
+            foreach ($ace in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+                if ($ace.AccessControlType -ne 'Allow' -or ($ace.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
+                if ($admins -notcontains $ace.IdentityReference.Value -and ([long]$ace.FileSystemRights -band [long]$moves)) { $out.Add("ancestor ${up}: $($ace.IdentityReference.Value) may replace it") }
+            }
+        }
+        $up = Split-Path -Parent $up
     }
     return $out.ToArray()
 }
@@ -1243,9 +1277,9 @@ function Initialize-AapProviders {
         Write-AapLog 'capacity module not installed: legacy pool only, settings schema 1 and 2'
         return
     }
-    $problems = @(Get-AapCodeProblem $dir)
+    $problems = @(Get-AapCodeProblem $AapCfg.ModuleDir)
     if ($problems.Count) {   # check:code-trusted
-        Write-AapLog "WARN capacity module not loaded, it is not admin-only: $(Format-AapText ($problems -join '; ') 600)"
+        Write-AapLog "WARN capacity module not loaded, the supervisor folder is not admin-only: $(Format-AapText ($problems -join '; ') 600)"
         return
     }
     try {
@@ -1278,8 +1312,8 @@ function Invoke-AapCap([string]$Name, [hashtable]$Params = @{}) {
     }
     if (-not $r.Ok) {
         $line = "$Name $($r.Status) $($r.Reason): $(Format-AapText $r.Detail 300)"
-        if ($line -ne $AapRt.CapLogged) { Write-AapLog "allocator $line" }
-        $AapRt.CapLogged = $line
+        if ($line -cne $AapRt.CapLogged[$Name]) { Write-AapLog "allocator $line" }
+        $AapRt.CapLogged[$Name] = $line
     }
     if ($r.Status -ceq 'error') { $AapRt.CapError = "allocator $($r.Reason): $(Format-AapText $r.Detail 200)" }
     return $r
@@ -1471,7 +1505,7 @@ function Test-AapLegacyWanted {
 # status-settings.md), an allocator error, a refused limits file, a refused
 # settings file, VM slots past the lease wall clock, the stopped legacy pool.
 function Get-AapDetail {
-    $parts = @($AapRt.CapWhy, $AapRt.CapError, $AapRt.RefusedWhy, $AapRt.SettingsWhy) + @($AapRt.CapFlags)
+    $parts = @($AapRt.CapWhy, $AapRt.HoldWhy, $AapRt.CapError, $AapRt.RefusedWhy, $AapRt.SettingsWhy) + @($AapRt.CapFlags)
     if ($AapRt.ManagerStopped) { $parts += 'legacy pool stopped: no Linux slot is granted' }
     return (@($parts | Where-Object { $_ }) -join '; ')
 }
@@ -1546,27 +1580,34 @@ function Sync-AapCapacity($s) {
         $AapRt.ReconcileAt = $now.AddSeconds($AapCfg.ReconcileSeconds)
         Invoke-AapCapReconcile $s
     }
-    $why = $null
-    $p = $s.Profiles
-    if ($p) {
-        $r = Invoke-AapCap 'Set-AapProfileCounts' @{ Linux = $p.Linux; Windows = $p.Windows; ShareMode = $p.ShareMode; LinuxShare = $p.LinuxShare
-            WindowsShare = $p.WindowsShare; HostReservePercent = $p.Reserve; LinuxBackend = $p.LinuxBackend
-            LinuxGeneration = (Get-AapActiveId 'linux'); WindowsGeneration = (Get-AapActiveId 'windows')
-        }
-        # resize_waits and pool_over_live keep the last applied settings.
-        if ($r.Status -ceq 'refused') { $why = "$($r.Reason): $($r.Detail)" }
-        if ($r.Status -ceq 'ok' -and (@($r.Drained).Count -or @($r.Cancelled).Count)) { Write-AapLog "resize: draining [$(@($r.Drained) -join ',')] cancelled [$(@($r.Cancelled) -join ',')]" }
-    }
+    $why = Set-AapCounts $s
     $st = Invoke-AapCap 'Get-AapAllocatorState'
     if (-not $st.Ok) { return }
     if ($AapRt.Paused) { Invoke-AapVmDrain }
-    if (-not $AapRt.Paused -and $st.State.legacy_adopted) {   # check:admit-after-adoption
+    $admit = $true
+    if ($AapRt.Paused -or -not $st.State.legacy_adopted) { $admit = $false }   # check:admit-after-adoption
+    if ($admit) {
         $w = Grant-AapSlots $s $st
         if (-not $why) { $why = $w }
     }
     Sync-AapLegacyPool $s
     $AapRt.CapWhy = $why
     Invoke-AapVmSteps
+}
+
+# The two counts and the shares. A smaller count drains (never cancels a
+# job); resize_waits and pool_over_live keep the last applied settings and
+# are returned for the detail, else $null.
+function Set-AapCounts($s) {
+    $p = $s.Profiles
+    if (-not $p) { return $null }
+    $r = Invoke-AapCap 'Set-AapProfileCounts' @{ Linux = $p.Linux; Windows = $p.Windows; ShareMode = $p.ShareMode; LinuxShare = $p.LinuxShare
+        WindowsShare = $p.WindowsShare; HostReservePercent = $p.Reserve; LinuxBackend = $p.LinuxBackend
+        LinuxGeneration = (Get-AapActiveId 'linux'); WindowsGeneration = (Get-AapActiveId 'windows')
+    }
+    if ($r.Status -ceq 'ok' -and (@($r.Drained).Count -or @($r.Cancelled).Count)) { Write-AapLog "resize: draining [$(@($r.Drained) -join ',')] cancelled [$(@($r.Cancelled) -join ',')]" }
+    if ($r.Status -ceq 'refused') { return "$($r.Reason): $($r.Detail)" }
+    return $null
 }
 
 # Admission (allocator INTEGRATION.md, P12 item 5): legacy slots at the next
@@ -1616,6 +1657,7 @@ function Grant-AapSlots($s, $St) {
 # stay the maximum). No granted slot: drain and stop the manager, never a
 # limits.conf with 0, and release the slots that left.
 function Sync-AapLegacyPool($s) {
+    $AapRt.HoldWhy = $null
     $lim = $s.Limits
     $caps = Get-AapLegacyCaps $s
     $L = Invoke-AapCap 'Get-AapLegacyLimits' $caps
@@ -1649,6 +1691,10 @@ function Sync-AapLegacyPool($s) {
         $limits.Sharing = $lim.Sharing
     }
     if ($limits.RunnerCount -lt 1) { return }
+    # Raised totals reach a legacy slot only with its next grant.
+    if ($L.Adopted -and ($limits.JobCpus -lt $L.NextSlotCpus * $limits.RunnerCount -or $limits.JobMemoryGib -lt $L.NextSlotMemGib * $limits.RunnerCount)) {
+        $AapRt.HoldWhy = "grant_waits: the legacy slots keep $($limits.JobCpus) CPUs and $($limits.JobMemoryGib) GiB until they are granted again"
+    }
     Set-AapLimits $limits
     if ($AapRt.ManagerStopped -and -not $AapRt.Paused -and $AapRt.Applied -eq (Get-AapLimitsKey $limits)) { Start-AapManager }
 }
@@ -1693,21 +1739,24 @@ function Invoke-AapVmSteps {
     if (-not ($AapRt.Cap -and $AapRt.CapReady)) { return }
     $st = Invoke-AapCap 'Get-AapAllocatorState'
     if (-not $st.Ok) { return }
+    $seen = @{}
     foreach ($r in @($st.State.reservations | Where-Object { $_.backend -ceq 'hyperv-vm' -and $_.state -cne 'reconciled' })) {
         $vm = $AapRt.Vm[[string]$r.profile]
         if (-not $vm) { continue }
+        $seen[[string]$r.reservation_id] = $true
         $pin = ''
         $g = $AapRt.Generation[[string]$r.profile]
         if ($g -and $g.Id -ceq $r.image_generation) { $pin = [string]$g.BaseSha256 }
         try {
             $res = & "Invoke-Aap$($vm.Kind)Step" -Backend $vm.B -Reservation $r -BaseSha256 $pin
-            $line = "$($r.profile) slot $($r.slot) $($r.reservation_id): $($res.Action) $($res.Code)"
+            $line = "$($r.profile) slot $($r.slot) $($r.reservation_id): $(Format-AapText "$($res.Action) $($res.Code)" 200)"
         } catch {
             $line = "$($r.profile) slot $($r.slot) $($r.reservation_id): step failed: $(Format-AapText $_.Exception.Message 300)"
         }
         if ($AapRt.Steps[$r.reservation_id] -ne $line) { Write-AapLog "vm $line" }
         $AapRt.Steps[$r.reservation_id] = $line
     }
+    foreach ($k in @($AapRt.Steps.Keys)) { if (-not $seen[$k]) { $AapRt.Steps.Remove($k) } }
 }
 
 # Pause and Off (allocator INTEGRATION.md, P12 item 9): every ready or busy VM
@@ -1718,7 +1767,8 @@ function Invoke-AapVmDrain {
     if (-not ($AapRt.Cap -and $AapRt.CapReady)) { return }
     $st = Invoke-AapCap 'Get-AapAllocatorState'
     if (-not $st.Ok) { return }
-    foreach ($r in @($st.State.reservations | Where-Object { $_.backend -ceq 'hyperv-vm' })) {
+    # A slot whose backend is not loaded cannot be stepped: it keeps its state.
+    foreach ($r in @($st.State.reservations | Where-Object { $_.backend -ceq 'hyperv-vm' -and $AapRt.Vm[[string]$_.profile] })) {
         if ($r.state -ceq 'ready' -or $r.state -ceq 'busy') {   # check:vm-drain
             $d = Invoke-AapCap 'Set-AapSlotState' @{ ReservationId = [string]$r.reservation_id; LeaseGeneration = [long]$r.lease_generation; State = 'draining' }
             if ($d.Status -ceq 'ok') { Write-AapLog "vm $($r.profile) slot $($r.slot) $($r.reservation_id): $($r.state) -> draining" }
@@ -1727,21 +1777,27 @@ function Invoke-AapVmDrain {
 }
 
 # Off: the VM slots finish their jobs and are torn down before the distro,
-# where the broker releases their runners, stops. 'gone', 'timeout' (logged;
-# the slots stay held for the next On) or 'aborted' when state.json says
-# $AbortWhen, like Wait-AapManagerInactive.
+# where the broker releases their runners, stops. 'gone'; 'unknown' (the
+# allocator state is not readable) or 'timeout' (logged), and Off
+# keeps the distro; 'aborted' when state.json says $AbortWhen, like
+# Wait-AapManagerInactive. A slot whose backend is loaded counts until it is
+# reconciled; one whose backend is not loaded cannot be torn down here and
+# counts while its record may hold a job (busy, draining or quarantined).
 function Wait-AapVmGone([string]$AbortWhen) {
-    if (-not ($AapRt.Cap -and $AapRt.CapReady)) { return 'gone' }
+    if (-not $AapRt.Cap) { return 'gone' }
     $deadline = (Get-AapNow).AddSeconds($AapCfg.DrainTimeoutSeconds)
     while ($true) {
         Invoke-AapVmDrain
         Invoke-AapVmSteps
         $st = Invoke-AapCap 'Get-AapAllocatorState'
-        $n = -1
-        if ($st.Ok) { $n = @($st.State.reservations | Where-Object { $_.backend -ceq 'hyperv-vm' -and $_.state -cne 'reconciled' }).Count }
+        if (-not $st.Ok) { return 'unknown' }   # check:off-cap-ready
+        $n = 0
+        foreach ($r in @($st.State.reservations | Where-Object { $_.backend -ceq 'hyperv-vm' -and $_.state -cne 'reconciled' })) {
+            if ($AapRt.Vm[[string]$r.profile] -or @('busy', 'draining', 'quarantined') -ccontains $r.state) { $n++ }   # check:off-vm-job
+        }
         if ($n -eq 0) { return 'gone' }
         if ((Get-AapNow) -ge $deadline) {
-            Write-AapLog "VM drain timeout after $($AapCfg.DrainTimeoutSeconds) s ($n VM slots live); continuing, the slots stay held"
+            Write-AapLog "VM drain timeout after $($AapCfg.DrainTimeoutSeconds) s ($n VM slots live); the distro stays up, Off waits on"
             return 'timeout'
         }
         if ((Read-AapDesired) -eq $AbortWhen) { return 'aborted' }
@@ -1752,7 +1808,9 @@ function Wait-AapVmGone([string]$AbortWhen) {
 
 # On -> Off. Off wins over paused. Drain lets the running job finish. If the
 # tray flips back to On while draining, the drain is undone instead of
-# waiting up to 6 h.
+# waiting up to 6 h. A job still running at the end of a wait (legacy or VM),
+# or VM slots the allocator cannot account for, keep the distro and the
+# manager: Off stays draining and the next cycle tries again, never killing.
 function Invoke-AapOff {
     # The VM slots drain beside the manager; the broker that releases their
     # runners lives in the distro, so it stops after them.
@@ -1762,21 +1820,31 @@ function Invoke-AapOff {
         Write-AapStatus 'draining' '' 'drain requested'
         $r = Invoke-AapRoot @($AapManager, '--drain')
         if ($r.Code -ne 0) { Write-AapLog "drain exit $($r.Code): $(Format-AapText $r.Err)" }
-        if ((Wait-AapManagerInactive 'on' 'stopping') -eq 'aborted') {
+        $w = Wait-AapManagerInactive 'on' 'stopping'
+        if ($w -eq 'aborted') {
             Write-AapLog 'desired is on again during drain; undraining'
             [void](Invoke-AapRoot @($AapManager, '--undrain'))
             $AapRt.Paused = $false
             $AapRt.NextHealth = [DateTimeOffset]::MinValue
             return
         }
+        if ($w -ne 'inactive') {   # check:off-manager-busy
+            Write-AapStatus 'draining' '' 'stopping: the legacy pool still runs a job; Off waits on'
+            return
+        }
     } else {
         Write-AapLog "WARN no drain: $AapOldManager; terminating, which ends any running job"
     }
-    if ((Wait-AapVmGone 'on') -eq 'aborted') {
+    $g = Wait-AapVmGone 'on'
+    if ($g -eq 'aborted') {
         Write-AapLog 'desired is on again while VM slots drain; undraining'
         if ($AapRt.ManagerOk) { [void](Invoke-AapRoot @($AapManager, '--undrain')) }
         $AapRt.Paused = $false
         $AapRt.NextHealth = [DateTimeOffset]::MinValue
+        return
+    }
+    if ($g -ne 'gone') {   # check:off-vm-busy
+        Write-AapStatus 'draining' '' "stopping: VM slots may still run jobs ($g); Off waits on"
         return
     }
     $r = Invoke-AapWsl -Arguments @('--terminate', $AapCfg.Distro)
@@ -1795,6 +1863,7 @@ function Invoke-AapOff {
     # The next On initializes and reconciles again.
     $AapRt.CapReady = $false
     $AapRt.CapWhy = $null
+    $AapRt.HoldWhy = $null
     $AapRt.CapFlags = @()
     Write-AapStatus 'off' '' 'stopped'
 }
