@@ -418,10 +418,13 @@ Describe 'zcshim: the zccache client never gets the caller''s open stdin (P04.1)
         Mock Get-AapZcProcessList -ModuleName AapZcCache { Get-FakeProcessList }
         $script:Pkg = New-Package
         # Every fake zccache call this Describe makes (the daemon-starting session-start of Initialize-AapZcJob
-        # included) records eof and carries on only when its stdin is at EOF: the fake reads synchronously, so the
-        # kernel answers at once for a pipe the module closed, and an open stdin blocks the fake until the shim's
-        # timeout stops it, as a client handed the caller's stdin would hang (the log then stays empty and the
-        # count assertion fails). fake-stdin-facts.log records what each probe saw, in failure messages.
+        # included) records eof and carries on only when its stdin drains to EOF: the fake reads synchronously,
+        # so the kernel answers at once for a pipe the module closed (RedirectStandardInput, closed right after
+        # Start), while an open stdin never EOFs, blocks the fake until the shim's timeout stops it, as a client
+        # handed the caller's stdin would hang (the log then stays empty and the count assertion fails). Whatever
+        # a .NET Framework redirect writer put in the pipe first (a UTF-8 console's three-byte preamble) is
+        # drained and ignored: a byte-strict empty check fails on every CI host that runs one. fake-stdin-facts.log
+        # records what each probe saw, in failure messages.
         $env:FAKE_ZC_STDIN = '1'
         $null = Initialize-Package $script:Pkg
         $script:Expected = Get-Direct $script:Pkg (Join-Path $script:Pkg.Src 'a.c')

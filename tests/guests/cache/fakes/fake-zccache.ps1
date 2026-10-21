@@ -15,12 +15,15 @@
 # FAKE_ZC_NODELIVER=1 writes nothing, FAKE_ZC_EMPTY=1 an empty object, FAKE_ZC_LINK=1 a symbolic link to the entry
 # (zccache.cmd runs this under PowerShell 7 then, which can make one in developer mode). FAKE_ZC_PROGRESS=N first prints N of zccache's
 # progress lines to stderr.
-# FAKE_ZC_STDIN=1 (P04.1) appends eof to fake-stdin.log and carries on when this call's stdin is at EOF: the read is
-# synchronous, so the kernel answers at once for a pipe the module closed (RedirectStandardInput, closed right after
-# Start), while an open stdin blocks the fake until the shim's timeout stops it (the log then stays empty). A feeding
-# stdin is appended as open and fails the call with exit 7, as a client handed the caller's stdin would hang. ReadAsync
-# plus a wait budget cannot tell a loaded VM from an open stdin: the CI host delayed the continuation past the wait and
-# a closed stdin was recorded open (P13.5). fake-stdin-facts.log records what each probe saw, for failure messages.
+# FAKE_ZC_STDIN=1 (P04.1) appends eof to fake-stdin.log and carries on when this call's stdin drains to EOF: the
+# client must never be handed the caller's open stdin (that never EOFs and would hang it). The reads are synchronous,
+# so the kernel answers at once for a pipe the module closed (RedirectStandardInput, closed right after Start),
+# while an open stdin blocks the fake until the shim's timeout stops it, and the log then stays empty (the count
+# assertion fails). Whatever a .NET Framework redirect writer put in the pipe first is drained and ignored: on a
+# UTF-8 console its StandardInput StreamWriter emits the encoding's three-byte preamble into the pipe before close,
+# so a byte-strict empty check would fail on every CI host that runs one (the CI host's probe saw EF BB BF,
+# P13.5). ReadAsync plus a wait budget was also wrong: it cannot tell a loaded VM from an open stdin.
+# fake-stdin-facts.log records what each probe saw, for failure messages.
 $ErrorActionPreference = 'Stop'
 $all = [Environment]::GetCommandLineArgs()
 $i = 1
@@ -56,20 +59,16 @@ if ($env:FAKE_ZC_STDIN -eq '1') {
     $pe = $(if ($parent) { Get-Process -Id $parent -ErrorAction SilentlyContinue } else { $null })
     Add-Line $facts ("pid={0} parent={1}({2}) type={3} redirected={4}" -f $PID, $parent, $(if ($pe) { $pe.ProcessName } else { '?' }), $t, [Console]::IsInputRedirected)
     $s = [Console]::OpenStandardInput()
-    $buf = New-Object byte[] 64
-    $n = $s.Read($buf, 0, 1)
-    $hex = $(if ($n -gt 0) { '{0:x2}' -f $buf[0] } else { '' })
-    Add-Line $facts ("read1 n={0} byte=0x{1} ms={2}" -f $n, $hex, $sw.ElapsedMilliseconds)
-    if ($n -gt 0) {
-        # What is in the pipe decides: eof carries on, anything else is the caller's open stdin.
-        $n2 = $s.Read($buf, 1, 63)
-        Add-Line $facts ("read2 n={0}" -f $n2)
-        Add-Line $stdinLog 'open'
-        Add-Line $facts 'result=open'
-        exit 7
+    $buf = New-Object byte[] 256
+    $drained = 0
+    $n = $s.Read($buf, 0, $buf.Length)   # synchronous: data or EOF at once, an open stdin blocks
+    while ($n -gt 0) {
+        $drained += $n
+        if ($drained -le 16) { Add-Line $facts ("drained: {0}" -f ((($buf[0..([Math]::Min($n, 16) - 1)] | ForEach-Object { '{0:x2}' -f $_ }) -join ' '))) }
+        $n = $s.Read($buf, 0, $buf.Length)
     }
     Add-Line $stdinLog 'eof'
-    Add-Line $facts ("result=eof ms={0}" -f $sw.ElapsedMilliseconds)
+    Add-Line $facts ("result=eof drained={0} ms={1}" -f $drained, $sw.ElapsedMilliseconds)
 }
 if ($env:FAKE_ZC_CRASH -eq '1') { exit 139 }
 if ($argv[0] -eq 'session-start') {
