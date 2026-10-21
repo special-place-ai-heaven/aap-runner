@@ -372,11 +372,18 @@ CANDIDATE (D2):
   guest-transport.md, Wire framing.
 - Network: the enforcement shape is DECIDED (no External or Default switch; DHCP guard and router
   guard on, MAC spoofing off; extended port ACLs denying the host vEthernet addresses, private,
-  link-local, CGNAT, multicast and ULA ranges, the LAN IPv6 prefix and other clones; enhanced
+  link-local, CGNAT, multicast, limited broadcast, reserved and loopback ranges and all IPv6, other clones'
+  addresses included, and a source pin so a guest sends only from its own address; two clones on one shared
+  switch can still poison each other's ARP, so the Windows profile serves no public repository until a clone
+  isolation control is required by host-network-module.md and proven in the D2 lab; LAN targets on public
+  addresses and a router hairpin to the owner's public address are residuals, not blocked; enhanced
   session and Guest Service Interface off; host ports blocked on the guest vEthernet). The
   mechanism (internal switch per profile with NAT, or an internal switch per guest; a private switch has no host adapter and is not viable) is CANDIDATE D2,
   owned by the P10.0 guest network module. The lab proves internet egress works and every denied
-  path fails, over IPv4 and IPv6.
+  path fails, over IPv4 and IPv6. The module's interface for both backends and both image
+  builders (`Attach`, `Detach`, `Verify`; remove the VM, then detach; static guest addressing with
+  no DHCP and no Allow by default but the source pin; the consumers' read-back through one shared check; a build VM's
+  own switch; failure codes) is [host-network-module.md](../../parity/contracts/host-network-module.md).
 
 ```mermaid
 sequenceDiagram
@@ -519,6 +526,7 @@ flowchart LR
 | cache-qualification | P04 | P13, P14, P15, P16, P20, P22, P24 |
 | status-settings | P12 (supervisor and docs), P20 (tray) | P19, P22 |
 | evidence-cleanup | P05, P00 | every item, P24, P26, P28 |
+| host-network-module | P10.0; journal folder, switches and host rules P19 | P06, P07, P10, P11, P12 |
 
 ## 12. Hardening notes
 
