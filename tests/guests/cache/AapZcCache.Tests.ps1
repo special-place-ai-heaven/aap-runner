@@ -656,6 +656,17 @@ Describe 'zcshim: delivery (zccache''s exit 0 counts only with every declared ou
         @(Get-Content -LiteralPath (Join-Path $script:Pkg.Job 'shim\shim.log'))[-1] | Should -Match ' direct fake-cc\.cmd outputs-unknown exit \d+$'
         Get-Flag $script:Pkg | Should -BeNullOrEmpty
     }
+    It 'a call that writes to a device (<Out>) builds directly without marking the root' -Tag 'WIN-OUT-DEVICE' -TestCases @(
+        @{ Out = 'NUL' }, @{ Out = 'nul.o' }
+    ) {
+        # nul.o goes in the test's tree: Windows 11 may treat a device name with an extension as an ordinary file.
+        $o = $(if ($Out -eq 'NUL') { $Out } else { Join-Path $script:Pkg.Tree $Out })
+        $r = Invoke-Shim $script:Pkg @($script:Pkg.Cc, '-c', (Join-Path $script:Pkg.Src 'a.c'), '-o', $o)
+        $r.Code | Should -Be 0
+        @(Get-Journal $script:Pkg).Count | Should -Be 0
+        @(Get-Content -LiteralPath (Join-Path $script:Pkg.Job 'shim\shim.log'))[-1] | Should -Match ' direct fake-cc\.cmd outputs-unknown exit 0$'
+        Get-Flag $script:Pkg | Should -BeNullOrEmpty
+    }
     It 'passes on the compiler''s stderr without zccache''s leading progress lines' {
         $line = 'zccache[info][Q]: daemon under load: compiling, 9 compiles in flight, says the compiler'
         $r = Compile $script:Pkg 'a.c' @{ FAKE_ZC_PROGRESS = '3'; FAKE_CC_STDERR = $line }
@@ -666,7 +677,7 @@ Describe 'zcshim: delivery (zccache''s exit 0 counts only with every declared ou
 }
 
 Describe 'Get-AapZcOutputs (shared vectors)' {
-    It '<Name>' -Tag 'WIN-OUT-DEPFLAG' -TestCases @(
+    It '<Name>' -Tag 'WIN-OUT-DEPFLAG', 'WIN-OUT-SIDECAR', 'WIN-OUT-DEVICE' -TestCases @(
         $fx = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'fixtures\outputs.json') | ConvertFrom-Json
         foreach ($v in $fx.vectors) { if ($v.platforms -contains 'windows') { @{ Name = ($v.compiler + ' ' + ($v.args -join ' ')); V = $v } } }
     ) {

@@ -796,7 +796,7 @@ run t_shim_delivery_shape LNX-OUT-CHECK LNX-OUT-CLEAR LNX-OUT-NLINK LNX-OUT-DAEM
 run t_shim_delivery_ok
 run t_shim_outputs_unknown LNX-OUT-UNKNOWN
 run t_shim_progress
-run t_outputs LNX-OUT-DEPFLAG
+run t_outputs LNX-OUT-DEPFLAG LNX-OUT-SIDECAR
 run t_shim_toolchain_changed LNX-SHIM-TOOLCHAIN
 run t_shim_over_budget LNX-OVER-BUDGET
 run t_shim_over_budget_total LNX-OVER-BUDGET

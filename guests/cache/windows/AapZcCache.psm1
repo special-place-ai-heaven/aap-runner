@@ -534,14 +534,28 @@ function Get-AapZcInvocation {
     return @($classes | Sort-Object -Unique)
 }
 
+# Whether a name is a Windows device (NUL, CON, PRN, AUX, COM1-9, LPT1-9, with or without an extension, in any case)
+# or a \\.\ or //./ device path: a compile writes there, but nothing is delivered to check.
+function Test-AapZcDevice([string]$Name) {
+    if ($Name.StartsWith('\\.\') -or $Name.StartsWith('//./')) { return $true }
+    return ((($Name -split '[\\/]')[-1] -split '\.')[0] -match '^(NUL|CON|PRN|AUX|COM[1-9]|LPT[1-9])$')
+}
+
 # The files a call must have written when zccache exits 0: clang's -o file and, with -MD or -MMD, its depfile (-MF, or
 # the -o name with its last suffix replaced by .d); clang-cl's /Fo file. $null when they cannot be named (not exactly
-# one -o or /Fo file, /Fo naming a folder, -o to - or /dev, more than one -MF, a depfile name derived some other way):
-# that call builds directly. Empty for rustc and link: their outputs stay with zccache's own delivery (README,
-# residual). Not named: /Fd (clang-cl writes no PDB at compile time, and cl's shared PDB is never removed), .dwo and
-# other sidecars.
+# one -o or /Fo file, /Fo naming a folder, -o to - or /dev, more than one -MF, a depfile name derived some other way,
+# a Windows device, or a call that writes sidecars this does not check): that call builds directly. Empty for rustc and
+# link: their outputs stay with zccache's own delivery (README, residual). Not named: /Fd (clang-cl writes no PDB at
+# compile time, and cl's shared PDB is never removed).
 function Get-AapZcOutputs {
     param([Parameter(Mandatory)][string]$Compiler, [string[]]$Arguments = @())
+    $outs = Get-AapZcOutputNames $Compiler $Arguments
+    if ($null -eq $outs) { return $null }
+    if (@($outs | Where-Object { Test-AapZcDevice $_ }).Count) { return $null }  # SAFETY:WIN-OUT-DEVICE
+    return , [string[]]$outs
+}
+
+function Get-AapZcOutputNames([string]$Compiler, [string[]]$Arguments) {
     if ($Compiler -in @('rustc', 'link', 'lld-link')) { return , [string[]]@() }
     $x = Expand-AapZcArgs $Arguments
     if ($null -eq $x) { return $null }
@@ -549,6 +563,8 @@ function Get-AapZcOutputs {
     # A depfile asked for in another spelling cannot be named: -Wp,-MD,FILE, -Xpreprocessor, the long --*dependencies
     # forms, clang-cl's /clang:-M...
     if (@($t | Where-Object { $_ -cmatch '^(-Wp,.*-M|-Xpreprocessor$|--.*dependencies$|[/-]clang:-M)' }).Count) { return $null }  # SAFETY:WIN-OUT-DEPFLAG
+    # Sidecars this does not check: -MJ, -save-temps, coverage and profile files, split DWARF, /sourceDependencies.
+    if (@($t | Where-Object { $_ -cmatch '^(-MJ|-save-temps(=.*)?$|--coverage$|-ftest-coverage$|-fprofile-arcs$|-fprofile-generate|-gsplit-dwarf$|[/-]sourceDependencies)' }).Count) { return $null }  # SAFETY:WIN-OUT-SIDECAR
     if ($Compiler -in @('clang-cl', 'cl')) {
         # /FoNAME, /Fo:NAME or /Fo: NAME; a name without an extension gets .obj, as clang-cl writes it.
         $fo = @()

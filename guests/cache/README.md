@@ -83,14 +83,21 @@ use. P13 does not make that decision. P21 carries the constraint into the image 
    root would be written through) and the compiler runs directly. A call whose outputs cannot be named (no single
    `-o` or `/Fo` file, `-o -`, `/Fo` naming a folder or nothing, several `-MF`, or a depfile asked for in another
    spelling: `-Wp,-MD,FILE`, `-Xpreprocessor`, `--write-dependencies` and the other long `--*dependencies` forms,
-   clang-cl's `/clang:-M...`) builds directly (`outputs-unknown`) without marking the root. This proves delivery, not that the bytes are right: that stays with the trust rule and P04's evidence.
+   clang-cl's `/clang:-M...`; a call that writes sidecars the shim does not check: `-MJ`, `-save-temps`, `--coverage`,
+   `-ftest-coverage`, `-fprofile-arcs`, `-fprofile-generate`, `-gsplit-dwarf`, clang-cl's `/sourceDependencies`; on
+   Windows an output that is a device: `NUL`, `CON`, `PRN`, `AUX`, `COM1`-`COM9`, `LPT1`-`LPT9` with or without an
+   extension in any case, or a `\\.\` or `//./` path) builds directly (`outputs-unknown`) without marking the root. This proves delivery, not that the bytes are right: that stays with the trust rule and P04's evidence.
    **Residual:** rustc calls, whose outputs follow `--out-dir`, `--emit`, the crate name and `-C extra-filename`, and
-   sidecars other than the depfile (`/Fd` PDBs, `.dwo`, `.gcno`, `-save-temps` files) are not named, so they rely on
-   zccache's own delivery. At the pin that is the same COPY materialization as for objects (entries published by
+   clang-cl's `/Fd` PDB are not named, so they rely on zccache's own delivery. At the pin that is the same COPY materialization as for objects (entries published by
    temporary file and rename, a hit copied from one open into a new file that is removed on error, a failed delivery
    compiled instead: `persist/artifact_io.rs:63-95`, `zccache-core/src/config/materialization_mode.rs:137-151`,
    `handle_compile/pipeline/mod.rs:550-551`), and P04's qualification of each rustc pair (rule 4: equal outputs over
    cold and warm builds, kill and restart) is the evidence it holds. No pair is qualified at the pin.
+   **Accepted residuals** (P13.3 reviews): (a) two writers of the same output path inside one VM can interleave with
+   the shim's removal, check and fallback; that is a build-system bug and stays inside that VM; (b) Windows does not
+   check the link count, so a hard-linked output passes the check there; `ZCCACHE_MODE=COPY` on every call is the
+   control; (c) Windows `link` and `lld-link` outputs are not checked (declared outputs are empty, like rustc's);
+   (d) the daemon binary zccache deploys into a root is not hash-checked ("Daemon discovery" below; P22).
    **Progress lines.** zccache's client writes `zccache[info][Q]: daemon under load: ...` to stderr while a compile
    waits or runs (`cli/commands/wrap/ipc.rs:347-366`), before the compile's own stderr. On a zero exit the shim drops
    that leading run of exact progress lines and passes everything after it on byte for byte. The documented switch

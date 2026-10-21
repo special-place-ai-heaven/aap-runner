@@ -388,9 +388,10 @@ zc_classify() { # COMPILER ARGS...
 # depfile (-MF, or the -o name with its last suffix replaced by .d, as gcc and clang name it). Fails when they cannot be
 # named (not exactly one -o, -o to - or /dev, more than one -MF, a name whose depfile is not derived that way, or a
 # depfile asked for in another spelling: -Wp,-MD,FILE, -Xpreprocessor, --write-dependencies and the other long
-# --*dependencies forms): that call builds directly. rustc prints nothing: its outputs follow --out-dir, --emit, the crate name and
-# -C extra-filename, and stay with zccache's own delivery (README, residual). Other sidecars (.dwo, .gcno, -save-temps
-# files) are not named either.
+# --*dependencies forms, or a call that writes sidecars this does not check: -MJ, -save-temps, --coverage,
+# -ftest-coverage, -fprofile-arcs, -fprofile-generate, -gsplit-dwarf): that call builds directly. rustc prints nothing:
+# its outputs follow --out-dir, --emit, the crate name and -C extra-filename, and stay with zccache's own delivery
+# (README, residual).
 zc_outputs() { # COMPILER ARGS...
   local compiler=$1 i a o="" n=0 mf="" nmf=0 md=0 base
   shift
@@ -400,6 +401,7 @@ zc_outputs() { # COMPILER ARGS...
     a=${ZC_T[i]}
     case "${a}" in
       -Wp,*-M* | -Xpreprocessor | --*dependencies) return 1 ;;  # SAFETY:LNX-OUT-DEPFLAG
+      -MJ* | -save-temps | -save-temps=* | --coverage | -ftest-coverage | -fprofile-arcs | -fprofile-generate* | -gsplit-dwarf) return 1 ;;  # SAFETY:LNX-OUT-SIDECAR
       -o) o=${ZC_T[i + 1]:-}; n=$((n + 1)); i=$((i + 1)) ;;
       -MF) mf=${ZC_T[i + 1]:-}; nmf=$((nmf + 1)); i=$((i + 1)) ;;
       -MF?*) mf=${a:3}; nmf=$((nmf + 1)) ;;
