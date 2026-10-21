@@ -1,0 +1,10 @@
+# P15: the management channel (guest-transport.md, Linux candidate): one sshd -i per connection on vsock port 5222.
+[Unit]
+Description=aap-guest management sshd on vsock 5222
+
+[Socket]
+ListenStream=vsock::5222
+Accept=yes
+
+[Install]
+WantedBy=sockets.target
