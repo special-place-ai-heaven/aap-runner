@@ -6,7 +6,7 @@
 # while received, files received from the guest land in the build folder first, and no host path is ever resolved through
 # guest-authored file system metadata (reparse points refused).
 # Load AapWinImage.psm1 first: the ops call its exported helpers (Assert-AapPlainPath, Write-AapGuestFile,
-# Select-AapWindowsPartition, Receive-AapCappedJob, Set-AapReadOnlyAcl).
+# Select-AapWindowsPartition, Receive-AapCappedJob, Set-AapReadOnlyAcl, Wait-AapVmOff, Wait-AapGuestReady).
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -171,9 +171,10 @@ function New-AapWinHyperVProvider {
     }
     $p.StartVm = { param($a) $vm = Get-AapVm $a; if ($vm.State -ne 'Running') { Hyper-V\Start-VM -VM $vm } }
     $p.StopVm = { param($a)
-        Hyper-V\Stop-VM -VM (Get-AapVm $a) -Force
-        $until = (Get-Date).AddSeconds($a.TimeoutSeconds)
-        while ((Get-AapVm $a).State -ne 'Off') { if ((Get-Date) -gt $until) { throw 'AAP_RebootTimeout: guest did not shut down' }; Start-Sleep -Seconds 5 }
+        # As a job: Stop-VM itself waits for the guest to shut down, and the network re-check ($a.Tick) runs while it does.
+        $job = Hyper-V\Stop-VM -VM (Get-AapVm $a) -Force -AsJob
+        try { if (-not (Wait-AapVmOff -GetState { (Get-AapVm $a).State } -TimeoutSeconds $a.TimeoutSeconds -Tick $a.Tick)) { throw 'AAP_RebootTimeout: guest did not shut down' } }
+        finally { Remove-Job -Job $job -Force }
     }
     $p.RemoveVm = { param($a)
         $vm = @(Hyper-V\Get-VM -Name $a.Name -ErrorAction SilentlyContinue)
@@ -181,13 +182,8 @@ function New-AapWinHyperVProvider {
         if ($vm.Count) { if ($vm[0].State -ne 'Off') { Hyper-V\Stop-VM -VM $vm[0] -TurnOff -Force }; Hyper-V\Remove-VM -VM $vm[0] -Force }
     }
     $p.WaitGuestReady = { param($a)
-        $until = (Get-Date).AddSeconds($a.TimeoutSeconds)
-        while ((Get-Date) -lt $until) {
-            if ($null -ne $a.Tick) { & $a.Tick }   # outside the catch below: a failed network re-check ends the wait
-            try { if ((@(Invoke-AapGuestJob @{ VmId = $a.VmId; User = $a.User; Password = $a.Password } { 'ready' } -MaxBytes 64 -TimeoutSeconds 60) -join '') -ceq 'ready') { return $true } } catch { $null = $_ }
-            Start-Sleep -Seconds 15
-        }
-        return $false
+        Wait-AapGuestReady -TimeoutSeconds $a.TimeoutSeconds -Tick $a.Tick -Probe { param($t)
+            Invoke-AapGuestJob @{ VmId = $a.VmId; User = $a.User; Password = $a.Password; Tick = $t } { 'ready' } -MaxBytes 64 -TimeoutSeconds 60 }
     }
     $p.GetGuestBootTime = { param($a)
         # A guest that is going down or not yet up answers nothing ($null); the builder asks again until its timeout.

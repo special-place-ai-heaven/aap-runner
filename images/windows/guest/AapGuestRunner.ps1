@@ -160,15 +160,22 @@ function Remove-AnswerFiles {
     }
 }
 
-# The build's static network goes before sysprep (host-network-module.md, Consumer obligations 6): every adapter back to
-# DHCP with no address, route or DNS server of its own, so a clone's only addressing is its own answer file. The management
-# channel is PowerShell Direct, which needs no network.
-function Remove-BuildNetwork {
-    foreach ($i in @(Get-NetIPInterface -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike 'Loopback*' })) {
-        Remove-NetRoute -InterfaceIndex $i.ifIndex -Confirm:$false -ErrorAction SilentlyContinue
-        Remove-NetIPAddress -InterfaceIndex $i.ifIndex -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
-        Set-NetIPInterface -InterfaceIndex $i.ifIndex -Dhcp Enabled
-        Set-DnsClientServerAddress -InterfaceIndex $i.ifIndex -ResetServerAddresses
+# The build's static network goes before sysprep (host-network-module.md, Consumer obligations 6): the adapter that holds
+# the build address (the request's build_address) back to DHCP with no address, route or DNS server of its own, so a clone's
+# only addressing is its own answer file. Every other adapter is left as it is, and a step that fails is not fatal; the
+# one condition is that the build address is gone. The management channel is PowerShell Direct, which needs no network.
+function Remove-BuildNetwork([string]$Address) {
+    if ($Address -cnotmatch '^[0-9]{1,3}(\.[0-9]{1,3}){3}\z') { throw 'the request carries no build address' }
+    foreach ($ip in @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue)) {
+        if ([string]$ip.IPAddress -cne $Address) { continue }   # check:seal-build-nic
+        $i = $ip.InterfaceIndex
+        Remove-NetRoute -InterfaceIndex $i -Confirm:$false -ErrorAction SilentlyContinue
+        Remove-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -Confirm:$false -ErrorAction SilentlyContinue
+        Set-NetIPInterface -InterfaceIndex $i -Dhcp Enabled -ErrorAction SilentlyContinue
+        Set-DnsClientServerAddress -InterfaceIndex $i -ResetServerAddresses -ErrorAction SilentlyContinue
+    }
+    if (@(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { [string]$_.IPAddress -ceq $Address }).Count) {   # check:seal-no-address
+        throw "the build address $Address is still configured; sysprep not run"
     }
 }
 
@@ -300,7 +307,7 @@ try {
                 $ok = $false; $msg = 'the registry check before sysprep did not pass; sysprep not run'
             } else {
                 foreach ($d in 'src', 'runner-images.zip', 'logs', 'request.json', 'registry-check.json') { $x = Join-Path $WorkRoot $d; if (Test-Path -LiteralPath $x) { Remove-Item -LiteralPath $x -Recurse -Force } }
-                Remove-BuildNetwork
+                Remove-BuildNetwork ([string](Get-Prop $req 'build_address'))
                 & (Join-Path $env:SystemRoot 'System32\Sysprep\Sysprep.exe') /oobe /generalize /mode:vm /quiet /quit
                 $ok = Wait-Until { (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\State').ImageState -eq 'IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' } 3600 10
                 if (-not $ok) { $msg = 'sysprep did not reach IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE' }

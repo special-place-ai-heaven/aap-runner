@@ -83,10 +83,13 @@ only `secret-scan.json` when the scan ran, as the record of why it failed.
    provider's `GetVmNetwork`, in the contract's shape, must pass `Get-AapHostNetworkAdapterProblems` (guards, mirroring,
    VLAN, storm limit, legacy ACLs, peers, the fixed denies both ways, the source pin, weights). Anything else is
    `AAP_NetworkUntrusted`, and the build is torn down: the VM removed, then `Detach`. The builder keeps no switch name,
-   deny list or declaration of its own beyond the next start. While the VM runs, every provider call that waits on the
-   guest re-runs `Verify` and the read-back at most every 30 seconds; a problem ends the build (the cleanup turns the VM
-   off, removes it, then detaches). At the seal, and on every failed run, `Detach` follows `RemoveVm`; a `Detach` that
-   throws is reported as a cleanup that did not prove the network detached. Enhanced Session is never enabled by the
+   deny list or declaration of its own beyond the next start; a later `Attach` that declares other addressing than the
+   answer file carries is `AAP_NetworkInvalid` (declaration changed). While the VM runs, every provider call that waits on
+   the guest, the wait for a shutdown included, re-runs `Verify` and the read-back at most every 30 seconds; a problem ends
+   the build (the cleanup turns the VM off, removes it, then detaches). At the seal, and on every failed run, `Detach`
+   follows `RemoveVm`, by the VM id `state.json` records at `NewVm`, so the next run of a crashed build id detaches too; a
+   `Detach` that throws is reported as a cleanup that did not prove the network detached and keeps the build folder for
+   that retry. Enhanced Session is never enabled by the
    builder; it opens no console to the VM.
 4. **Phases** p01-p29 in upstream order (below). Each upstream script runs through Packer's wrapper
    (`& { $ProgressPreference='SilentlyContinue'; <env>; &'<script>'; exit $LastExitCode }`, written to a file and run with
@@ -99,7 +102,9 @@ only `secret-scan.json` when the scan ran, as the record of why it failed.
 5. **Seal**: the last phase deletes every answer file, gives the install user a fresh random password that never leaves the
    guest and disables it, runs the registry check as SYSTEM (Winlogon `DefaultPassword` and `AutoAdminLogon`, the LSA
    `DefaultPassword` secret; any finding or unreadable value stops here, before sysprep), removes `C:\aap-build`, sets
-   every adapter back to DHCP with no address, route or DNS server of its own (the base carries no build address), runs
+   the adapter that holds the build address (sent in the sysprep request) back to DHCP with no address, route or DNS
+   server of its own, leaving every other adapter as it is; sysprep does not run while the build address is still
+   configured (the base carries no build address). It then runs
    `Sysprep /oobe /generalize /mode:vm /quiet /quit` and waits for `IMAGE_STATE_GENERALIZE_RESEAL_TO_OOBE`, as upstream
    does. The host shuts the VM down, removes it, deletes the temp disk, compacts and hashes `os.vhdx`.
 6. **Secret scan** of the sealed disk, mounted read-only, files only (rules below). Anything but `clean` fails the build.

@@ -780,6 +780,36 @@ function Assert-AapStagingBudget($Ctx) {
 }
 
 # The guest's last boot time in ticks, or $null while the guest does not answer (going down, booting); anything else is hostile.
+# The provider's waits on a VM, here so they run against fakes too. $Tick is the builder's network re-check while its VM
+# runs (Test-AapBuildNetworkDue): it runs before every poll and outside any catch, so a failed re-check ends the wait.
+function Wait-AapVmOff {
+    <# Polls $GetState until it returns 'Off'; $false at the timeout. #>
+    param([Parameter(Mandatory)][scriptblock]$GetState, [Parameter(Mandatory)][int]$TimeoutSeconds, [scriptblock]$Tick, [int]$PollSeconds = 5)
+    $until = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ([string](& $GetState) -cne 'Off') {
+        if ($null -ne $Tick) { & $Tick }   # check:stop-tick
+        if ((Get-Date) -gt $until) { return $false }
+        Start-Sleep -Seconds $PollSeconds
+    }
+    return $true
+}
+function Wait-AapGuestReady {
+    <# Asks the guest until one call of $Probe answers 'ready'; $false at the timeout. $Probe gets $Tick for its own capped
+       call (Receive-AapCappedJob runs it every poll). A guest that does not answer yet is asked again; a failed network
+       re-check is not swallowed with it. #>
+    param([Parameter(Mandatory)][scriptblock]$Probe, [Parameter(Mandatory)][int]$TimeoutSeconds, [scriptblock]$Tick, [int]$PollSeconds = 15)
+    $until = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $until) {
+        if ($null -ne $Tick) { & $Tick }
+        try { if ((@(& $Probe $Tick) -join '') -ceq 'ready') { return $true } }
+        catch {
+            if ([string]$_.Exception.Message -match '^AAP_Network') { throw }   # check:ready-network
+        }
+        Start-Sleep -Seconds $PollSeconds
+    }
+    return $false
+}
+
 function Get-AapGuestBootTime($Guest) {
     $t = [string](Invoke-AapProvider $Guest.Provider 'GetGuestBootTime' @{ VmName = $Guest.Vm; VmId = $Guest.VmId; User = $Guest.User; Password = $Guest.Password; Tick = $Guest.Tick })
     if ($t -eq '') { return $null }
@@ -838,7 +868,7 @@ function Invoke-AapPhase($Ctx, $P) {
             if ($null -eq $before) { throw "AAP_GuestUnreachable: $($P.id) the guest did not report its boot time before the reboot" }
             # A host-initiated power-on: the VM goes Off, gets its network attached and checked again, then starts
             # (host-network-module.md, Consumer obligations 2). The boot time proves the reboot as before.
-            $null = Invoke-AapProvider $Ctx.Provider 'StopVm' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; TimeoutSeconds = [int]$P.timeout_seconds }
+            $null = Invoke-AapProvider $Ctx.Provider 'StopVm' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; Tick = $Ctx.Tick; TimeoutSeconds = [int]$P.timeout_seconds }
             Connect-AapBuildNetwork $Ctx
             $null = Invoke-AapProvider $Ctx.Provider 'StartVm' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId }
             $ok = Wait-AapReboot $Ctx $before ([int]$P.timeout_seconds)
@@ -859,6 +889,7 @@ function Invoke-AapPhase($Ctx, $P) {
                 default {
                     if ($P.action -eq 'upload-sources') { $null = Invoke-AapProvider $Ctx.Provider 'SendFile' @{ VmName = $Ctx.Vm; VmId = $Ctx.VmId; User = $Ctx.User; Password = $Ctx.Password; Tick = $Ctx.Tick; HostPath = $Ctx.SourceArchive; GuestPath = 'C:\aap-build\runner-images.zip' } }
                     $req = @{ phase = $P.id; kind = 'action'; action = $P.action; elevated = $elevated; vars = $vars }
+                    if ($P.action -ceq 'sysprep-generalize') { $req.build_address = [string](Get-AapProp $Ctx.Decl 'address') }   # the guest resets only the adapter that holds it
                     $r = Invoke-AapGuest $Ctx $req $script:ActionSeconds
                     if ($P.action -ceq 'sysprep-generalize') { $Ctx.Registry = Assert-AapRegistryReply $r }
                     if ($r.status -cne 'ok') { throw "AAP_PhaseFailed: $($P.id) $($P.action) $(Get-AapPrintable (Get-AapProp $r 'message'))" }   # check:action-failed
@@ -878,13 +909,19 @@ function Get-AapNetRequest($Ctx) { @{ VmId = $Ctx.VmId; VmName = $Ctx.Vm; Profil
 # The build VM's network before each power-on, with the VM Off (host-network-module.md, Consumer obligations 1 and 2):
 # Attach (the module returns the same declaration every time; it is kept only until the next start), the declaration
 # check, before the first start the answer file with the declaration's static addressing, then Verify and the read-back.
+# The guest keeps the addressing of its answer file, so a later Attach must declare the same.
 function Connect-AapBuildNetwork($Ctx, [switch]$First) {
     $req = Get-AapNetRequest $Ctx
     $decl = Invoke-AapNetwork $Ctx.Network 'Attach' $req
     $bad = @(Get-AapHostNetworkDeclarationProblems -Request $req -Declaration $decl)
     if ($bad.Count) { throw "AAP_NetworkInvalid: $(@($bad | Select-Object -First 3 | ForEach-Object { Get-AapPrintable ([string]$_) 200 }) -join '; ')" }   # check:net-declaration
+    $net = "$(Get-AapProp $decl 'address') in $(Get-AapProp $decl 'subnet') via $(Get-AapProp $decl 'gateway'), DNS $(@(Get-AapProp $decl 'resolvers') -join ',')"
+    if (-not $First -and $net -cne $Ctx.AnswerNet) {   # check:net-unchanged
+        throw "AAP_NetworkInvalid: declaration changed: Attach now declares $(Get-AapPrintable $net 200), the answer file carries $(Get-AapPrintable ([string]$Ctx.AnswerNet) 200)"
+    }
     $Ctx.Decl = $decl
     if ($First) {
+        $Ctx.AnswerNet = $net
         $null = Invoke-AapProvider $Ctx.Provider 'WriteOfflineFiles' @{ Vhdx = $Ctx.OsDisk; Files = @{ 'Windows\Panther\unattend.xml' = (New-AapWinUnattend -UserName $Ctx.User -Password $Ctx.Password -Network $decl) } }
     }
     Assert-AapBuildNetwork $Ctx
@@ -1010,14 +1047,23 @@ function New-AapWinBudgetRecord {
 function Remove-AapWinBuild {
     <# Removes a build's VMs, mounts, build folder and, if this build began publishing and did not finish, its generation
        folder. An unfinished build's evidence files go too, exactly those its state.json lists, except secret-scan.json,
-       which stays as the record of why it failed; its evidence folder goes if it made it and it is then empty. Idempotent:
-       everything absent counts as done. Never touches another generation or anything outside these folders. #>
-    param([Parameter(Mandatory)]$Storage, [Parameter(Mandatory)]$Provider, [Parameter(Mandatory)]$Names, [string]$EvidenceRoot)
+       which stays as the record of why it failed; its evidence folder goes if it made it and it is then empty. The build VM
+       state.json names is detached through -Network after the VMs are gone. Idempotent: everything absent counts as done. Never touches another generation or anything outside these folders. #>
+    param([Parameter(Mandatory)]$Storage, [Parameter(Mandatory)]$Provider, [Parameter(Mandatory)]$Names, [string]$EvidenceRoot, [hashtable]$Network)
     $buildDir = Join-Path (Join-Path $Storage.Staging.Path 'build') $Names.BuildId
     $state = $null
     $statePath = Join-Path $buildDir 'state.json'
     if ((Get-AapPathKind $statePath) -eq 'file') { try { $state = Read-AapJson $statePath } catch { $state = $null } }
     foreach ($vm in $Names.BuildVm, $Names.VerifyVm) { $null = Invoke-AapProvider $Provider 'RemoveVm' @{ Name = $vm } }
+    # The build VM's network, now that the VM is gone (Consumer obligations, 4), by the id state.json took at NewVm, so the
+    # run after a crash detaches too. A failure keeps the build folder: the next run of this build id tries again.
+    $vmId = [string](Get-AapProp $state 'vm_id')
+    if ($vmId) {   # check:rerun-detach
+        if ($vmId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z') { throw 'AAP_StorageUntrusted: state.json holds a VM id that is not one' }
+        if ($null -eq $Network) { throw "AAP_NetworkUnavailable: $($Names.BuildVm) was attached and cannot be detached without the network module" }
+        try { $null = Invoke-AapNetwork $Network 'Detach' @{ VmId = $vmId; VmName = $Names.BuildVm; Profile = 'windows' } }
+        catch { throw "AAP_NetworkUntrusted: the network is not proven detached: $($_.Exception.Message -replace '^AAP_[A-Za-z]+: ', '')" }
+    }
     foreach ($d in 'os.vhdx', 'temp.vhdx', 'verify\os.avhdx', 'verify\temp.vhdx') {
         $f = Join-Path $buildDir $d
         if ((Get-AapPathKind $f) -eq 'file') { $null = Invoke-AapProvider $Provider 'Dismount' @{ Vhdx = $f } }
@@ -1087,7 +1133,7 @@ function Invoke-AapWinImageBuild {
 
         $buildDir = Join-Path $buildRoot $names.BuildId
         if ((Get-AapPathKind $buildDir) -ne 'absent') {
-            Remove-AapWinBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot
+            Remove-AapWinBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot -Network $Network
             $result.PartialCleaned = $true
         }
         if ((Get-AapPathKind $genDir) -ne 'absent') {
@@ -1120,7 +1166,7 @@ function Invoke-AapWinImageBuild {
             Config = $Config; Provider = $Provider; Network = $Network; Plan = $plan; Names = $names; BuildDir = $buildDir; EvidenceDir = $evidenceDir
             StatePath = (Join-Path $buildDir 'state.json'); OsDisk = (Join-Path $buildDir 'os.vhdx'); TempDisk = (Join-Path $buildDir 'temp.vhdx')
             Vm = $names.BuildVm; VmId = $null; User = [string]$plan.variables.install_user; Password = $pw; GuestScript = 'C:\aap-build\AapGuestRunner.ps1'
-            Decl = $null; NetCheckedAt = [DateTime]::MinValue; Tick = $script:NetTick
+            Decl = $null; AnswerNet = $null; NetCheckedAt = [DateTime]::MinValue; Tick = $script:NetTick
             SourceArchive = $source; VerifyScript = (Join-Path $here 'guest\AapGuestVerify.ps1'); ProbeScript = $script:ProbeScript; HelloC = $script:HelloC; Registry = $null
             State = [ordered]@{ schema = 1; build_id = $names.BuildId; generation_id = $names.GenerationId; status = 'running'; started_at = (Get-AapUtc); steps = [ordered]@{}
                 evidence_created = $false; written = (New-Object System.Collections.Generic.List[string])
@@ -1150,6 +1196,8 @@ function Invoke-AapWinImageBuild {
         Set-AapStep $ctx 'vm' 'intent'
         $vm = Invoke-AapProvider $Provider 'NewVm' @{ Name = $ctx.Vm; Path = $buildDir; OsDisk = $ctx.OsDisk; TempDisk = $ctx.TempDisk; Cpus = [int]$Config.BuildCpus; MemGib = [int]$Config.BuildMemGib }
         $ctx.VmId = Get-AapVmId $vm
+        $ctx.State.vm_id = $ctx.VmId   # before Attach: a run after a crash detaches it (Remove-AapWinBuild)
+        Save-AapState $ctx
         Assert-AapVmConfig $ctx $ctx.Vm $ctx.VmId
         Connect-AapBuildNetwork $ctx -First
         $null = Invoke-AapProvider $Provider 'StartVm' @{ VmName = $ctx.Vm; VmId = $ctx.VmId }
@@ -1166,7 +1214,7 @@ function Invoke-AapWinImageBuild {
         $ctx.Evidence.registry_check = $ctx.Registry
 
         Set-AapStep $ctx 'seal' 'intent'
-        $null = Invoke-AapProvider $Provider 'StopVm' @{ VmName = $ctx.Vm; VmId = $ctx.VmId; TimeoutSeconds = 1800 }
+        $null = Invoke-AapProvider $Provider 'StopVm' @{ VmName = $ctx.Vm; VmId = $ctx.VmId; Tick = $ctx.Tick; TimeoutSeconds = 1800 }
         $null = Invoke-AapProvider $Provider 'RemoveVm' @{ Name = $ctx.Vm }
         $null = Invoke-AapNetwork $Network 'Detach' (Get-AapNetRequest $ctx)   # after the VM is gone (Consumer obligations, 4)
         $ctx.Decl = $null
@@ -1233,11 +1281,8 @@ function Invoke-AapWinImageBuild {
         if ($started -and -not $published) {
             $result.Status = 'failed'
             if ($ctx) { try { $ctx.State.status = 'failed'; Save-AapState $ctx } catch { $null = $_ } }
-            try { Remove-AapWinBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot } catch { $result.Detail = Get-AapPrintable "$($result.Detail); cleanup failed: $($_.Exception.Message)" 500 }
-            # The VMs are gone (or their removal failed and Detach refuses): Detach on every teardown, also after a failed Attach.
-            if ($ctx -and $ctx.VmId) {
-                try { $null = Invoke-AapNetwork $Network 'Detach' (Get-AapNetRequest $ctx) } catch { $result.Detail = Get-AapPrintable "$($result.Detail); cleanup failed, the network is not proven detached: $($_.Exception.Message)" 500 }
-            }
+            # The VMs removed, then Detach (by state.json's VM id), on every teardown, also after a failed Attach.
+            try { Remove-AapWinBuild -Storage $storage -Provider $Provider -Names $names -EvidenceRoot $evidenceRoot -Network $Network } catch { $result.Detail = Get-AapPrintable "$($result.Detail); cleanup failed: $($_.Exception.Message)" 500 }
         }
     } finally {
         $script:BuildCtx = $null
@@ -1248,4 +1293,5 @@ function Invoke-AapWinImageBuild {
 
 Export-ModuleMember -Function Read-AapStorageRecord, Read-AapWinBuildPlan, Get-AapWinBlockers, New-AapWinPassword, New-AapWinUnattend, ConvertFrom-AapGuestReply,
     Read-AapSecretAllowlist, Invoke-AapWinSecretScan, New-AapWinGenerationRecord, New-AapWinBudgetRecord, Remove-AapWinBuild, Invoke-AapWinImageBuild, Remove-AapTree,
-    Get-AapWinNames, Get-AapPathKind, Assert-AapPlainPath, Write-AapGuestFile, Select-AapWindowsPartition, Receive-AapCappedJob, Set-AapReadOnlyAcl
+    Get-AapWinNames, Get-AapPathKind, Assert-AapPlainPath, Write-AapGuestFile, Select-AapWindowsPartition, Receive-AapCappedJob, Set-AapReadOnlyAcl,
+    Wait-AapVmOff, Wait-AapGuestReady

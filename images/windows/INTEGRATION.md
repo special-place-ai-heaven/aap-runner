@@ -56,9 +56,10 @@ says, and takes the module as `-Network` (`Attach`, `Detach`, `Verify`, each cal
 automatic start `Nothing` and checkpoints off. Before its first start and before each start after a reboot (a reboot is a
 shutdown and a start): `Attach`, `Get-AapHostNetworkDeclarationProblems`, before the first start the answer file with the
 declaration's static addressing, `Verify` (every object it writes is a problem) and `Get-AapHostNetworkAdapterProblems` on
-the provider's `GetVmNetwork`. While it runs: `Verify` and the read-back at most every 30 seconds. Teardown: `RemoveVm`,
-then `Detach`, on every failed run too; the next run does not know a crashed run's VM id, so the module's reconcile
-removes that record. The check is imported from `supervisor\network` only after that folder passes the admin-only check.
+the provider's `GetVmNetwork`; a later `Attach` must declare the addressing the answer file carries. While it runs, the
+wait for a shutdown included: `Verify` and the read-back at most every 30 seconds. Teardown: `RemoveVm`, then `Detach`, on
+every failed run too, by the VM id `state.json` records at `NewVm`, so the next run of a crashed build id detaches it.
+Stopping `aap-wbuild-*` VMs whose build lock nobody holds is the P12/P19 reconcile (ledger), not the builder's. The check is imported from `supervisor\network` only after that folder passes the admin-only check.
 
 ## P14: Windows guest bootstrap
 
