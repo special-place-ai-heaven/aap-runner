@@ -1,6 +1,6 @@
 # Parity implementation ledger
 
-Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-21 on origin/main 1814b7a: P00, P01, P02, P02.2, P03, P04, P05, P06, P06.1, P07, P07.1, P08, P09, P10, P10.2, P10.3, P11, P11.1, P13, P13.1, P13.2, P13.3, P17, P18 and P20.0 are COMPLETE. P06.2 cleanup is running and P11.2 verification is pending, so the global no-new-dispatch barrier is CLOSED; in flight: P13.4 (PR #66, reviewed PASS, hosted CI running). Wave 6 is current. States below are current; everything not listed otherwise is NOT_STARTED. ledger.json is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in WORKTREES.md. Only COMPLETE dependencies unlock work; merged or gate-verified alone does not.
+Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-21 (ledger close 5) on origin/main 61eead7: P00, P01, P02, P02.2, P03, P04, P05, P06, P06.1, P07, P07.1, P08, P09, P10, P10.2, P10.3, P11, P11.1, P11.2, P13, P13.1, P13.2, P13.3, P13.4, P15, P17, P18 and P20.0 are COMPLETE, and P06.2 is COMPLETE (cleanup verified CLEAN 2026-10-21). P14 is MERGED_CLEANUP_REQUIRED (PR #69 merged at 61eead7; independent cleanup verifier pending), so the global no-new-dispatch barrier stays CLOSED; in flight (PR_OPEN): P12 (PR #70), P04.1 (PR #71) and coord-ci-wiring-6 (PR #72). Wave 6 is current. States below are current; everything not listed otherwise is NOT_STARTED. ledger.json is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in WORKTREES.md. Only COMPLETE dependencies unlock work; merged or gate-verified alone does not.
 
 ## Owner decisions and open gates
 
@@ -14,6 +14,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-21 
   - Q3: GitHub App `actions: read` + `contents: read` on selected repositories for cache trust-class lookups (gates P02.3; Q1 is a precondition).
   - Q4: hard VM lifetime cap before the Windows profile serves public repositories.
   - Q5: even-mode drain when a runner count is raised.
+  - Q6: guest identity record (P02.5, proposed) approval — offline record in the unattend/cloud-init seed, Hyper-V KVP off, SMBIOS UUID as the alternative.
 
 ## P00 — Build the worktree, lease and cleanup gate
 
@@ -103,7 +104,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-21 
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `parity/cache/qualification/**`, `tests/parity/cache/qualification/**`.
 - Deliverable: Extend the Linux -g rows and land the harness follow-ups from the P04 reviews; align retention.md requirement 4 with cache rule 6 revision 3 (trust namespace = repository + job trust class).
 - Acceptance: Every new row has a recorded direct-versus-cached comparison or an explicit unqualified marker; retention.md no longer contradicts cache-qualification.md rule 6; Pester and unittest suites green on both PowerShell hosts and in hosted CI.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: PR_OPEN — PR #71 (draft) on parity/p04-1-qualification-matrix: 8 Linux -g rows (all UNQUALIFIED/direct pending the lab), matrix_revision 2, retention.md aligned with cache rule 6 revision 3, five harness fixes in both harnesses; code review FIX-FIRST (must-fix: remove -EncodedCommand from two new test paths) and security M1 (poison control phase) open; not merged.
 - Why: P04 left Linux -g rows unqualified and retention.md requirement 4 still contradicts cache rule 6 revision 3.
 
 ## P05 — Build differential certification harness
@@ -211,7 +212,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-21 
 - Pinned execution lane: Sol high; ownership: `supervisor/aap-runner-supervisor.ps1`, `supervisor/supervisor.Tests.ps1`, `supervisor/README.md`, `crates/tray/src/state.rs`, `crates/tray/src/settings.rs`.
 - Deliverable: Integrate providers into existing PowerShell host task. Add compatible per-profile allocation/status, pool-wide on/off/pause/drain, generation-aware observations and legacy adoption. Update both contract sides/tests in the same PR.
 - Acceptance: Profile counts are two live controls, Linux 0-5 and Windows 0-5, with Linux + Windows <= 5; each control's maximum is recomputed from the other (3 Linux => Windows max 2; 5 Windows => Linux 0) and 0 is valid for either. Resource allotment follows the counts per profile and the host reserve is never given away. The tray shows the two profiles as separate groups with the OS on every runner card and per-profile totals and limits next to each control (owner requirement 2026-10-19). Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Old settings/status read safely; unknown future schemas reject safely; mixed state and failure reporting proven with fixtures. Off/pause/resizing never cancels a running job. Rust and both PowerShell suites pass.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: PR_OPEN — PR #70 on parity/p12-supervisor-integration (draft): round-3 fixes applied (Off/drain keeps the distro up unless the manager is provably idle, busy/unavailable/unreadable release re-check, desired-state re-read before terminate); supervisor/capacity/backend suites green on pwsh 7 and Windows PowerShell 5.1; the full backend mutation runners are NOT yet run; not merged.
 
 ## P13 — Package zccache guest integration
 
@@ -246,13 +247,71 @@ P07.1 additionally records the gzip allowlist route, removal of the docker.image
 
 New children and follow-ups (all NOT_STARTED; owner is coordinator): P22.1 verifies the deployed zccache daemon SHA-256 before priming; P12.1 adds a host-network watcher at most every 60 seconds during long build phases; P12.2 reconciles orphan aap-wbuild-* VMs whose build lock is not held; P10.4 ties each aap-guest-<id> adapter to its VM id; P10.5 runs P10.0 Verify with ErrorActionPreference Stop and asks the lab to confirm interface name Ethernet; P02.4 tests clone-to-clone ARP poisoning on the shared guest switch. Authored work used fakes only; no VM, vSwitch or NAT exists yet. Test suites ran on pwsh 7 and Windows PowerShell 5.1; hosted CI was 4/4 green on every merged head. P07.1 and P06.2 remain PARTIAL on the at-most-60-second running-phase network re-check until P12.1 lands. P13.3 accepted residuals remain: concurrent writers to the same -o path may interleave; Windows hardlinked outputs pass delivery check without a link-count check (COPY mode is the control); link/lld-link outputs are unchecked. Operational note: replies may remain in agent transcripts, reviewers may write findings to scratchpad files, and idle agents may need a nudge. The empty C:/c/AI_STUFF/PROGRAMMING/aap-runner-work/parity tree created by a path-translation slip at 02:41 is left for the owner to delete.
 
+## Close 5 - 2026-10-21
+
+Ledger corrections and additions recorded in ledger.json this close:
+
+| Item | Delivery state |
+| --- | --- |
+| P11.2 #63 5b8ca03; P06.2 #64 1814b7a; P13.4 #66 c652963; P15 #68 af65183 | COMPLETE; cleanup verified CLEAN 2026-10-21 by an independent read-only verifier |
+| P14 #69 61eead7 | MERGED_CLEANUP_REQUIRED; independent cleanup verifier pending |
+| P12 #70; P04.1 #71; coord-ci-wiring-6 #72 | PR_OPEN; not merged |
+
+Fixed in this close: the P11.2 and P06.2 `pr` fields previously held merge SHAs (`pull/5b8ca03`, `pull/1814b7a`) instead of PR numbers; both now point at PRs #63 and #64, and P11.2/P06.2/P13.4 are COMPLETE with cleanup verified CLEAN. P10.0 stays IN_PROGRESS (only the contract, shared pure check, shared fake and four consumer conformance items have merged; the real Hyper-V module is not written).
+
+New follow-ups (all NOT_STARTED): P08.2 re-checks that the runner is still idle immediately before the release request in `distro/worker-auth.sh`; P22.2 records a minimum guest memory and CPU per image generation so an 8 CPU / 16 GiB host cannot admit ~2 GiB Windows guests (which cannot boot Windows Server) and P22/P24 certificates state the minimums; P02.5 is the proposed offline guest identity record written into the Windows unattend/answer file and the Linux cloud-init seed (vm_id, reservation_id, lease_generation, expected scratch disk size/identity; Hyper-V KVP off, SMBIOS UUID alternative; NOT P02.4; owner approval queued as Q6), landing as a contract revision plus four conformance items (P10 WriteUnattend, P11 seed, P14, P15); P13.5 gives zccache an empty stdin in the cache shim (`guests/cache/linux/aap-zccache.sh`, `guests/cache/windows/AapZcCache.psm1`), landing after P04.1 merges. Coordinator PR open: coord-ci-wiring-6 (#72) wires `tests/guests/linux/agent_test.sh` after the ubuntu `guest_test.sh` step, shellcheck globs for `guests/linux/*.sh` and `tests/guests/linux/*.sh`, and `tests/guests/windows` into the pester-backends Run.Path.
+
+## P13.4 — Compare activation list ordinally
+
+- Earliest wave: 6; prerequisites: P13.2.
+- Pinned execution lane: Sol medium; ownership: `guests/cache/**`, `tests/guests/cache/**`.
+- Deliverable: Compare activation list ordinally.
+- Acceptance: PR #66 merged; cleanup verified CLEAN.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #66 merged at `c652963` (branch parity/p13-4-activation-compare); cleanup verified CLEAN 2026-10-21 by an independent read-only verifier.
+
+## P08.2 — Release a worker lease only if the runner is still idle
+
+- Earliest wave: 5; prerequisites: P08.
+- Pinned execution lane: Sol medium; ownership: `distro/worker-auth.sh`, `tests/worker_auth_test.sh`.
+- Deliverable: In `distro/worker-auth.sh`, re-check that the runner is still idle immediately before sending the release request, so a busy or unreadable runner keeps its lease instead of being released.
+- Acceptance: A runner that turns busy (or whose status is unreadable) between the idle read and the release request is not released; worker_auth_test.sh green on real Linux in hosted CI.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Why: the P12 cross-family review found the busy? re-check before releasing a runner fails OPEN on an unreadable status; the same release path is reached from worker-auth.sh.
+
+## P13.5 — Give zccache an empty stdin in the cache shim
+
+- Earliest wave: 6; prerequisites: P13, P04.1.
+- Pinned execution lane: Sol medium; ownership: `guests/cache/linux/aap-zccache.sh`, `guests/cache/windows/AapZcCache.psm1`, `tests/guests/cache/**`.
+- Deliverable: Run the zccache client with an empty/closed stdin from the cache shim on both platforms so an open stdin cannot hang the client.
+- Acceptance: Each shim invocation proves an empty stdin on both platforms; a hung-stdin mutation is caught by tests/guests/cache on both PowerShell hosts and real Linux.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Why: P04.1 found that an open stdin hangs the zccache client; land it after P04.1 merges.
+
+## P02.5 — Guest identity record (proposed; owner approval queued)
+
+- Earliest wave: 6; prerequisites: P02.2.
+- Pinned execution lane: Sol high (Claude: Opus high); ownership: `parity/contracts/**`, `docs/parity/evidence/lab/**`.
+- Deliverable: Proposed (NOT P02.4, the unrelated ARP-poisoning lab test; owner approval queued as Q6): the host writes a per-clone guest identity record OFFLINE into the Windows unattend/answer file and the Linux cloud-init seed (vm_id, reservation_id, lease_generation, expected scratch disk size/identity); the guest reads it once at first probe and binds. Hyper-V KVP stays OFF (KVP-on leaks the host name; P06 security review); SMBIOS UUID is the alternative. Implement as a contract-revision PR (contract text + schema + fixtures + validator + tests), reviewed first, then four small conformance items: P10 WriteUnattend, P11 seed, P14, P15.
+- Acceptance: validate.py PASS with the new fixtures; a missing or mismatched identity record fails the first probe closed; no host-identifying data reaches the guest beyond the record fields; independent security review; gated on owner approval (Q6).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (proposed).
+- Why: the Highs from the cross-family review need a guest-side binding of vm_id/reservation/lease_generation to the clone; KVP-on leaks the host name.
+
+## P22.2 — Minimum guest memory and CPU per image generation (P22/P24)
+
+- Earliest wave: 7; prerequisites: P09.
+- Pinned execution lane: Sol medium; ownership: `supervisor/capacity/**`, `tests/capacity/**`.
+- Deliverable: Record a minimum guest memory and CPU per image generation in the allocator inputs and refuse admission of a profile whose per-generation minimums do not fit the host after the control VM and the reserve, so the P22/P24 certificates state the minimums.
+- Acceptance: An 8 CPU / 16 GiB host admits only profiles whose image-generation minimum memory/CPU fit the host reserve; a ~2 GiB Windows guest (which cannot boot Windows Server) is refused before boot, not admitted and left unbootable.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Why: today an 8 CPU / 16 GiB host admits Windows guests at ~2 GiB including overhead, which cannot boot Windows Server.
+
 ## P14 — Implement Windows guest bootstrap
 
 - Earliest wave: 6; prerequisites: P06, P10, P13.
 - Pinned execution lane: Luna high; ownership: `guests/windows/**`, `tests/guests/windows/**`.
 - Deliverable: Initialize fresh job identity/shell/PATH/SDK/tool-cache defaults, verified cache overlay, sensitive registration material and one-job Actions runner. Preserve hosted-style developer-environment setup rather than globally prepending every VS path.
 - Acceptance: Fresh PowerShell and cmd job steps discover correct default tools; setup actions select non-default versions; no owner credential, registration material or bootstrap residue survives reset.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: MERGED_CLEANUP_REQUIRED — PR #69 merged at `61eead7` (origin/main head; branch parity/p14-windows-guest-bootstrap); independent cleanup verifier pending.
 
 ## P15 — Implement Linux guest bootstrap
 
@@ -260,7 +319,7 @@ New children and follow-ups (all NOT_STARTED; owner is coordinator): P22.1 verif
 - Pinned execution lane: Luna high; ownership: `guests/linux/**`, `tests/guests/linux/**`.
 - Deliverable: Initialize actual Actions process HOME/temp/locale/PATH/SDK/tool-cache/user privileges/container services plus verified cache overlay and ephemeral registration.
 - Acceptance: Tools installed in image remain discoverable across job steps; environment files and setup actions work. Guest sudo/package/service operations succeed; host/control-plane access is denied.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #68 merged at `af65183` (branch parity/p15-linux-guest-bootstrap); cleanup verified CLEAN 2026-10-21 by an independent read-only verifier.
 
 ## P16 — Integrate legacy distro and retire maintained sccache wiring
 
