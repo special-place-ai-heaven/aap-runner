@@ -1,5 +1,5 @@
 {
-  "expect": "a record names aap-guests-win, a switch P19 owns",
+  "expect": "a record names aap-guests-win-0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b, a switch P19 owns",
   "instance": {
     "schema": 1,
     "kind": "host_network_record",
@@ -21,11 +21,11 @@
     "created": [
       {
         "kind": "adapter",
-        "name": "aap-guest"
+        "name": "aap-guest-0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b"
       },
       {
         "kind": "switch",
-        "name": "aap-guests-win"
+        "name": "aap-guests-win-0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b"
       }
     ]
   }

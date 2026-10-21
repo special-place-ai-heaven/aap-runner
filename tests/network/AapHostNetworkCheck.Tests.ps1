@@ -53,9 +53,10 @@ BeforeAll {
             VlanMode = 'Untagged'; StormLimit = '100'; LegacyAcls = 0; Peers = $Peers; Acls = $acls.ToArray()
         }
     }
-    # The read-back as a consumer runs it (no host targets) or, given -HostDeny, as the module's Verify does.
+    # The read-back as a consumer runs it (no host targets) or, given -HostDeny, as the module's Verify does, with the host's
+    # LAN address 192.168.1.10 discovered too.
     function Get-P($D, $A, [string[]]$HostDeny) {
-        if ($PSBoundParameters.ContainsKey('HostDeny')) { @(Get-AapHostNetworkAdapterProblems -Declaration $D -Adapters @($A) -HostDeny $HostDeny) }
+        if ($PSBoundParameters.ContainsKey('HostDeny')) { @(Get-AapHostNetworkAdapterProblems -Declaration $D -Adapters @($A) -HostDeny (@($HostDeny) + '192.168.1.10') -HostLan '192.168.1.10') }
         else { @(Get-AapHostNetworkAdapterProblems -Declaration $D -Adapters @($A)) }
     }
     function Find-Rule($A, [string]$Action, [string]$Dir, [string]$Remote, [string]$Protocol) {
@@ -65,6 +66,26 @@ BeforeAll {
         $hit = @(Find-Rule $A $Action $Dir $Remote $Protocol)
         if ($hit.Count -ne 1) { throw "test setup: $($hit.Count) rules match" }
         foreach ($k in @($Values.Keys)) { $hit[0][$k] = $Values[$k] }
+    }
+    # What makes the shared check impure: a command, method, type or New-Object argument outside its allowlist, a command or
+    # member named by a value, the engine or host objects, or text naming a file, registry, network or Hyper-V API.
+    function Get-PurityViolation([string]$Text) {
+        $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$null, [ref]$null)
+        $own = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
+        $cmds = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] }, $true))
+        $cmds | Where-Object { -not $_.GetCommandName() } | ForEach-Object { "command by a value: $($_.Extent.Text)" }
+        $cmds | ForEach-Object { $_.GetCommandName() } | Where-Object { $_ -and $own -notcontains $_ -and @('ForEach-Object', 'Where-Object', 'Select-Object', 'Sort-Object', 'New-Object', 'Set-StrictMode', 'Export-ModuleMember') -notcontains $_ } | ForEach-Object { "command: $_" }
+        $ast.FindAll({ param($n) $n -is [Management.Automation.Language.MemberExpressionAst] -and $n.Member -isnot [Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { "member by a value: $($_.Extent.Text)" }
+        $methods = @('Add', 'Contains', 'ContainsKey', 'GetAddressBytes', 'Max', 'Split', 'Substring', 'ToArray', 'ToString', 'ToUpperInvariant', 'Trim', 'TryParse')
+        $ast.FindAll({ param($n) $n -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $n.Member -is [Management.Automation.Language.StringConstantExpressionAst] }, $true) |
+            Where-Object { $methods -notcontains $_.Member.Value } | ForEach-Object { "method: $($_.Member.Value)" }
+        $ast.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] -and @('ExecutionContext', 'Host') -contains $_.VariablePath.UserPath }, $true) | ForEach-Object { "variable: $($_.Extent.Text)" }
+        $types = @('string', 'string[]', 'int', 'long', 'bool', 'ref', 'object[]', 'pscustomobject', 'Math', 'Net.IPAddress', 'Collections.IDictionary', 'Collections.IList')
+        $ast.FindAll({ param($n) $n -is [Management.Automation.Language.TypeConstraintAst] -or $n -is [Management.Automation.Language.TypeExpressionAst] }, $true) |
+            ForEach-Object { $_.TypeName.FullName } | Where-Object { $types -notcontains $_ } | ForEach-Object { "type: $_" }
+        $cmds | Where-Object { $_.GetCommandName() -eq 'New-Object' } | ForEach-Object { @($_.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.Extent.Text }) -join ' ' } |
+            Where-Object { @('Collections.Generic.List[string]', 'Collections.Generic.List[object]') -notcontains $_ } | ForEach-Object { "New-Object $_" }
+        if ($Text -match 'hyper-v\\|\[(system\.)?io\.|microsoft\.win32|hk(lm|cu):|webclient|net\.http|net\.sockets|add-type|reflection|\[type\]') { "text: $($Matches[0])" }
     }
     function Remove-Rule($A, [string]$Action, [string]$Dir, [string]$Remote, [string]$Protocol) {
         $gone = @(Find-Rule $A $Action $Dir $Remote $Protocol)
@@ -106,10 +127,10 @@ Describe 'the shared host network check' {
             (Get-P $j $r) -join ' | ' | Should -Be ''
         }
 
-        It 'reads every documented form of an unrestricted field, another case and a /32' {
+        It 'reads every documented form of an unrestricted field, another case of a keyword and a /32' {
             Set-Rule $a Deny Inbound '10.0.0.0/8' @{ LocalAddress = ''; Protocol = '*'; LocalPort = 'any'; RemotePort = ' Any '; IsolationId = '' }
             Set-Rule $a Deny Outbound '10.0.0.0/8' @{ LocalAddress = '0.0.0.0/0'; Protocol = '' }
-            Set-Rule $a Deny Inbound 'ff00::/8' @{ LocalAddress = '::/0'; RemoteAddress = 'FF00::/8' }
+            Set-Rule $a Deny Inbound 'ff00::/8' @{ LocalAddress = '::/0' }
             Set-Rule $a Allow Outbound '0.0.0.0/0' @{ LocalAddress = '172.31.250.2' }
             Set-Rule $a Allow Outbound '192.168.1.53' @{ RemoteAddress = '192.168.1.53/32'; LocalAddress = '172.31.250.2' } -Protocol UDP
             Set-Rule $a Allow Inbound '192.168.1.53' @{ Protocol = '6' } -Protocol TCP
@@ -267,9 +288,13 @@ Describe 'the shared host network check' {
         }
 
         It 'reports the remote address <V>' -Tag rule-remote, addr-canonical, addr-prefix-length, addr-host-bits -TestCases @(
-            @{ V = 'ANY' }, @{ V = '10.1.0.0/8' }, @{ V = '10.0.0.0/33' }, @{ V = '10.0.0.0/08' }, @{ V = '010.0.0.0/8' }, @{ V = '10/8' }, @{ V = '10.0.0.0/8 ' }, @{ V = '' }) {
+            @{ V = 'ANY' }, @{ V = '10.1.0.0/8' }, @{ V = '10.0.0.0/33' }, @{ V = '10.0.0.0/08' }, @{ V = '010.0.0.0/8' }, @{ V = '10/8' }, @{ V = '10.0.0.0/8 ' }, @{ V = '' }
+            @{ V = 'FF00::/8' }, @{ V = 'fF00::/8' }) {
             $a.Acls[0].RemoteAddress = $V
-            Get-P $d $a | Should -Be @("rule 1's remote address '$V' is not an address or a prefix", 'no unscoped Inbound deny for 10.0.0.0/8')
+            # The check never throws on what Hyper-V reports: a throw here is a failed assertion, not an error.
+            $got = @{}
+            { $got.P = Get-P $d $a } | Should -Not -Throw
+            $got.P | Should -Be @("rule 1's remote address '$V' is not an address or a prefix", 'no unscoped Inbound deny for 10.0.0.0/8')
         }
     }
 
@@ -324,7 +349,18 @@ Describe 'the shared host network check' {
         }
 
         It 'reports an empty host discovery' -Tag host-empty {
-            Get-P $d $a @() | Should -Be @('no host-specific targets: host discovery found nothing')
+            @(Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @($a) -HostDeny @() -HostLan @()) | Should -Be @(
+                'no host-specific targets: host discovery found nothing'
+                'the host-specific targets hold no address of a host interface that is not a vEthernet adapter: host discovery is incomplete')
+        }
+
+        It 'reports a host discovery without a non-vEthernet address: <Case>' -Tag host-lan -TestCases @(
+            @{ Case = 'none named'; L = $null }, @{ Case = 'an empty list'; L = @() }, @{ Case = 'one not among the targets'; L = @('192.168.1.11') }) {
+            $args2 = @{ Declaration = $d; Adapters = @($a); HostDeny = @('172.31.250.1', '192.168.1.10') }
+            if ($null -ne $L) { $args2.HostLan = $L }
+            @(Get-AapHostNetworkAdapterProblems @args2) | Should -Be @('the host-specific targets hold no address of a host interface that is not a vEthernet adapter: host discovery is incomplete')
+            $args2.HostLan = @('192.168.1.10')
+            (@(Get-AapHostNetworkAdapterProblems @args2)) -join ' | ' | Should -Be ''
         }
 
         It 'reports a host discovery without the gateway' -Tag host-gateway {
@@ -622,19 +658,20 @@ Describe 'the shared host network check' {
     }
 
     Context 'purity and hygiene' {
-        It 'uses only allowed commands, types and New-Object arguments, invokes nothing by a computed name, and touches no file, registry, network or Hyper-V' {
-            $ast = [Management.Automation.Language.Parser]::ParseFile($script:Module, [ref]$null, [ref]$null)
-            $own = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
-            $cmds = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] }, $true))
-            @($cmds | Where-Object { -not $_.GetCommandName() } | ForEach-Object { $_.Extent.Text }) | Should -BeNullOrEmpty -Because 'a command the parser cannot name is a dynamic invocation'
-            @($cmds | ForEach-Object { $_.GetCommandName() } | Sort-Object -Unique | Where-Object { $own -notcontains $_ -and @('ForEach-Object', 'Where-Object', 'Select-Object', 'Sort-Object', 'New-Object', 'Set-StrictMode', 'Export-ModuleMember') -notcontains $_ }) | Should -BeNullOrEmpty
-            @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.MemberExpressionAst] -and $n.Member -isnot [Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Extent.Text }) | Should -BeNullOrEmpty -Because 'a member named by a value is a dynamic invocation'
-            $types = @('string', 'string[]', 'int', 'long', 'bool', 'ref', 'object[]', 'pscustomobject', 'Math', 'Net.IPAddress', 'Collections.IDictionary', 'Collections.IList')
-            @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.TypeConstraintAst] -or $n -is [Management.Automation.Language.TypeExpressionAst] }, $true) |
-                    ForEach-Object { $_.TypeName.FullName } | Sort-Object -Unique | Where-Object { $types -notcontains $_ }) | Should -BeNullOrEmpty
-            @($cmds | Where-Object { $_.GetCommandName() -eq 'New-Object' } | ForEach-Object { @($_.CommandElements | Select-Object -Skip 1 | ForEach-Object { $_.Extent.Text }) -join ' ' } |
-                    Where-Object { @('Collections.Generic.List[string]', 'Collections.Generic.List[object]') -notcontains $_ }) | Should -BeNullOrEmpty
-            [IO.File]::ReadAllText($script:Module) | Should -Not -Match 'hyper-v\\|\[(system\.)?io\.|microsoft\.win32|hk(lm|cu):|webclient|net\.http|net\.sockets|add-type|reflection|\[type\]'
+        It 'uses only allowed commands, methods, types and New-Object arguments, invokes nothing by a computed name, and touches no file, registry, network or Hyper-V' {
+            Get-PurityViolation ([IO.File]::ReadAllText($script:Module)) | Should -BeNullOrEmpty
+        }
+
+        It 'catches an injected <Case>' -TestCases @(
+            @{ Case = 'reflection through a method'; Probe = '$t = "".GetType().Assembly.GetType(''System.IO.File'')' }
+            @{ Case = 'script invocation through the engine'; Probe = '$ExecutionContext.InvokeCommand.InvokeScript(''1'')' }
+            @{ Case = 'host access'; Probe = '$Host.UI.WriteLine(''x'')' }
+            @{ Case = 'command by a value'; Probe = '$c = ''Get-Date''; & $c' }
+            @{ Case = 'member by a value'; Probe = '$m = ''Trim''; ''x''.$m()' }
+            @{ Case = 'file type'; Probe = '[System.IO.File]::Exists(''x'')' }
+            @{ Case = 'web client'; Probe = '$w = New-Object Net.WebClient' }
+            @{ Case = 'cmdlet'; Probe = 'Get-Content -LiteralPath x' }) {
+            @(Get-PurityViolation ([IO.File]::ReadAllText($script:Module) + "`nfunction Test-AapNetProbe { $Probe }`n")).Count | Should -BeGreaterThan 0
         }
 
         It '<_.Name> compiles and holds no expression invocation, encoded command, base64 blob or SecureString marshaling' -ForEach @(

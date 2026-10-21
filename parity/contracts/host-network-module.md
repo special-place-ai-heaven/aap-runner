@@ -96,7 +96,8 @@ address on a guess.
 - Returns the **problem list**: zero or more strings written to the output stream, each one
   printable line of at most 200 characters, at most 64. Empty means every check below holds. It
   throws only when it cannot look: Hyper-V does not answer, a record it cannot read (check 1 reads
-  them all), or a host discovery that finds nothing or not the declaration's gateway (check 5).
+  them all), or a partial host discovery: nothing, no gateway, or no address of a host interface
+  that is not a vEthernet adapter (check 5).
 - Checks, against the record and what Hyper-V and the host report now:
   1. The VM exists, its record is `attached` and names the same `VmName` and `Profile`, and no
      other record on its switch holds its address.
@@ -111,12 +112,16 @@ address on a guess.
      vEthernet adapters included (IPv4 and IPv6; loopback excluded), the on-link IPv4 prefix of
      every vEthernet adapter (the guest and build switches', WSL's NAT, any other), and every LAN
      IPv6 prefix (the on-link prefix of each global unicast IPv6 address on a host interface that is
-     not a vEthernet adapter). A discovery that finds nothing, or not the declaration's gateway, is
-     a throw: Verify cannot look, and an empty list never passes. Each target lies inside an
-     unscoped Deny in each direction (outbound, above the source pin), and no declared endpoint
-     lies inside one, so a private resolver is never the host, another aap subnet or the WSL
-     distro. A public IPv4 address among them (outside every fixed range) is itself a problem
-     ([Limitations](#limitations)).
+     not a vEthernet adapter). A discovery without the declaration's gateway, or without at least
+     one address of a host interface that is not a vEthernet adapter (the LAN card's), is a throw:
+     Verify cannot look, and an empty or partial list never passes. Verify always passes the
+     targets to the shared check as `-HostDeny` and the LAN addresses as `-HostLan`; it never calls
+     the check without them (P10.0's tests assert it). Each target lies inside an unscoped Deny in
+     each direction (outbound, above the source pin), and no declared endpoint lies inside one, so
+     a private resolver is never one of the discovered targets: the host's addresses, the WSL
+     distro's prefix or another aap subnet. What discovery does not see is not covered
+     ([Limitations](#limitations), Scope). A public IPv4 address among the targets (outside every
+     fixed range) is itself a problem ([Limitations](#limitations)).
   6. Every Allow is the source pin, exactly once, or exactly one declared endpoint (its address,
      its protocol, its remote port, and the guest's address as local address), and every endpoint
      has an Allow in each direction; with no endpoint declared, the source pin is the only Allow.
@@ -141,8 +146,11 @@ address on a guess.
   per-guest candidate, D2; nothing for the per-profile candidate), each by the name the record
   holds. Each removal is idempotent (absent is done). The record goes last; its address goes to the
   end of the released list.
-- A record that names a switch P19 owns (`aap-guests-*`, `aap-build-*`) is not the module's to
-  remove: it counts as unreadable.
+- Every name a record holds ends in its own VM id (`aap-guest-<vm_id>`, `aap-guest-block-<vm_id>`;
+  schema pattern `aap-<words>-<vm_id>`), so a record can never name another VM's object or a host
+  rule such as `FPS-SMB-In-TCP`. A record with a name that does not end in its own VM id, or that
+  names a switch P19 owns (`aap-guests-*`, `aap-build-*`), is not the module's to remove: it counts
+  as unreadable.
 - Idempotent: no record means nothing to do, and success (never attached, already detached).
 - A record it cannot read, or one naming another `VmName` or `Profile`, makes it throw; the record
   stays.
@@ -209,7 +217,15 @@ address on a guess.
   longest released first. Attach takes an address no record holds: one never released (lowest
   first), else the one released longest ago. An address freed a moment ago may still sit in a
   neighbour's or the host's ARP cache and the NAT's connection table; reusing it last keeps a new
-  guest from inheriting traffic meant for the old one.
+  guest from inheriting traffic meant for the old one. It is written exactly like a record: to a
+  temporary name in the same folder, flushed, and renamed over the old file, under the lock.
+- **An unreadable `released.json`** (not a JSON list of IPv4 addresses) fails closed: Attach and
+  Detach throw `AAP_NetworkUntrusted: released.json is unreadable` and change nothing; Verify does
+  not read it. Nothing rebuilds it silently. Only the module's **recovery op** (an owner's explicit
+  step outside `Attach`, `Detach` and `Verify`, never called by a consumer) rebuilds it: under the
+  lock, from every record (one it cannot read makes it throw), it writes each switch's addresses
+  that no record holds, lowest first; the old order is lost, so addresses freed shortly before the
+  damage may be reused sooner.
 - Reconcile, each time the module is constructed and before it serves a call: a record whose VM
   Hyper-V definitively does not have is detached; a record of an existing VM stays (its consumer
   owns it, and Verify judges it before any start); when Hyper-V cannot say, the reconcile stops
@@ -300,6 +316,17 @@ those rules are a second barrier, not the only one.
 
 ## Limitations
 
+- **Scope of the guarantee.** A guest reaches the internet through the host's NAT, sends only from
+  its own address (the source pin), and reaches none of the denied ranges in either direction: the
+  private, CGNAT, link-local, loopback, reserved, multicast and broadcast IPv4 ranges and all IPv6,
+  which covers the host's and the LAN's private addresses and every discovered host target. The
+  contract does **not** block: LAN or routed targets on public addresses (the guest's traffic to
+  them leaves through NAT like any internet traffic); a hairpin through the owner's router to the
+  owner's own public address and from there to its port forwards; or a host address outside every
+  fixed range, which makes the host not certified rather than covered. A host interface that comes
+  up after Verify (a VPN adapter, say) is checked only at the next Verify (Consumer obligations, 3).
+  These are residuals and lab items, not guarantees; a host with a public IPv4 address stays not
+  certified.
 - **A host with a public IPv4 address** (owner decision queued, 2026-10-21). The fixed ranges cover
   private IPv4 and all IPv6; a LAN, or any host interface, on public IPv4 addresses is outside the
   enforcement shape, and guests could reach it through NAT. Exact condition: check 5's targets
@@ -322,15 +349,16 @@ those rules are a second barrier, not the only one.
 ## Shared check (DECIDED)
 
 `supervisor/network/AapHostNetworkCheck.psm1`: pure (no Hyper-V, file, registry or network call;
-a test allows only its own functions and the pipeline cmdlets, a list of type names and of
-`New-Object` arguments, and no command or member named by a value), Windows PowerShell 5.1 and
+a test allows only its own functions and the pipeline cmdlets, a list of method names, of type
+names and of `New-Object` arguments, no command or member named by a value and no
+`$ExecutionContext` or `$Host`, and proves it catches injected probes), Windows PowerShell 5.1 and
 PowerShell 7, every result a list of problem lines (printable, at most 200 characters, at most 64;
 capped once where the result leaves the module), none meaning the check holds.
 
 | Function | Use |
 |---|---|
 | `Get-AapHostNetworkDeclarationProblems -Request <the request> -Declaration <Attach's value>` | the declaration check; any line is `AAP_NetworkInvalid` |
-| `Get-AapHostNetworkAdapterProblems -Declaration <declaration> -Adapters <read-back> [-HostDeny <targets>]` | the read-back; any line is `AAP_NetworkUntrusted`. It re-checks the declaration first. `-HostDeny` is check 5's targets, for the module's Verify; given, it must be non-empty and hold the declaration's gateway; consumers do not pass it |
+| `Get-AapHostNetworkAdapterProblems -Declaration <declaration> -Adapters <read-back> [-HostDeny <targets> -HostLan <addresses>]` | the read-back; any line is `AAP_NetworkUntrusted`. It re-checks the declaration first. `-HostDeny` is check 5's targets and `-HostLan` the discovered addresses of host interfaces that are not vEthernet adapters, for the module's Verify; given, the targets must be non-empty, hold the declaration's gateway and at least one of the `-HostLan` addresses; consumers pass neither |
 | `Get-AapHostNetworkSwitchName -VmName <name>` | the VM's switch (table above), `''` for a VM that gets none |
 | `Get-AapHostNetworkFixedDeny` | the fixed ranges, for the module to write |
 
@@ -346,8 +374,9 @@ Fail closed: a read-back or declaration field that is missing is never read as u
 field (`resolvers`, `endpoints`) that is not a list is a problem; values compare exactly (`'On'`,
 not `$true` or `'on'`); a rule without all ten fields or with any other field, with another
 action or direction, stateful, with an isolation id other than 0, a weight that is not an Int32 or
-a remote address that is not one address or prefix in canonical text (no host bits under the
-prefix, no zero-padded prefix length) is a problem and counts for nothing. A field is unrestricted
+a remote address that is not one address or prefix in canonical text (the address as .NET
+prints it, so IPv6 in lower case; no host bits under the prefix, no zero-padded prefix length) is
+a problem and counts for nothing; the check never throws on what a read-back holds. A field is unrestricted
 only when it reads `''`, `*` or `ANY` (any case), or, for a local address, the wildcard of the
 remote address's family (D2: which one Hyper-V shows for an unset field; the check narrows to that
 form once the lab has seen it).
@@ -356,7 +385,7 @@ Tests: `tests/network/AapHostNetworkCheck.Tests.ps1`, a failing case for every r
 field, and a parity test: on every `attach-*` fixture the check judges as `validate.py` does (the
 Python reference predicate, which reads the fixed and private ranges from this module), and for a
 semantic refusal it names the same field; `tests/common/Invoke-AapHostNetworkMutations.ps1`
-disables each of the check's `# check:` conditions in turn (67, the address arithmetic's guards
+disables each of the check's `# check:` conditions in turn (68, the address arithmetic's guards
 included) and requires a test to fail for each.
 
 ## Consumer obligations (DECIDED)
@@ -470,18 +499,21 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
   Attach's preconditions (Off, no adapter of the consumer's); the journal lock (an exclusive
   `lock` file) around every record write and every read of all records; records written
   to a temporary name and renamed; every Attach and every Verify refused while any record is
-  unreadable (a record naming a P19 switch included); least recently used allocation with
+  unreadable (a record naming a P19 switch, or a name without its own VM id, included); an
+  unreadable `released.json` stopping Attach and Detach until `Repair-AapFakeHostNetworkReleased`
+  (the recovery op) rebuilds it; least recently used allocation with
   exhaustion refused; intent before act; the same declaration on a repeated Attach; a second VM
   refused on a build switch; Detach refused while the VM exists or Hyper-V cannot say; the record
   removed by Detach and its address released; Verify computed from the records and the simulated
   host through the shared check (no knob sets its answer), with a held address reported and a
-  host discovery without the gateway thrown.
+  host discovery without the gateway or a LAN address thrown.
   State lives only under `-Root` (`records\<vm id>.json`, `released.json`, `lock`, `host\<vm id>`,
   `knobs.json`), so a child process killed mid-step leaves the world its parent recovers from, and
   concurrent processes share it (a test attaches from six at once).
 - `Get-AapFakeHostNetworkAdapter -Root -VmId` returns what Hyper-V would report for the VM, in the
   provider shape above (`Peers`: the other VMs with the module's adapter on the same switch), from
-  Attach's act on, for the consumer's provider fake (`GetVmNetwork`, `GetVmConfig.Adapters`).
+  Attach's act on, for the consumer's provider fake (`GetVmNetwork`, `GetVmConfig.Adapters`). It
+  reads the records under the journal lock.
 - `Set-AapFakeHostNetworkKnob -Root -Tamper <names> -Fail <names>`. Tampers change the simulated
   host, so Verify and the read-back both see them: `no-adapter`, `second-adapter`,
   `external-switch`, `other-switch`, `dhcp-guard-off`, `router-guard-off`, `mac-spoofing-on`,
@@ -490,8 +522,9 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
   `10.0.0.0/8`), `scoped-deny` (inbound `192.168.0.0/16` narrowed to TCP port 1), `stateful-rule`,
   `isolated-rule` (rule 1), `no-source-pin`, `pin-above-deny` (the pin at weight 50),
   `extra-allow` (an unnarrowed outbound Allow of the gateway, the old design), and three only
-  Verify can see: `public-host` (the host gains `203.0.113.7`), `host-empty` and
-  `host-no-gateway` (a discovery that finds nothing, or no gateway: Verify throws). Faults:
+  Verify can see: `public-host` (the host gains `203.0.113.7`), `host-empty`, `host-no-gateway`
+  and `host-no-lan` (a discovery that finds nothing, no gateway, or no LAN address: Verify
+  throws). Faults:
   `Attach`, `Detach`, `Verify` (the op throws), `AttachAfterIntent` (Attach stops after its intent
   record) and `AttachAfterAct` (after the adapter exists, before the record says `attached`), as a
   crash would.
@@ -501,7 +534,8 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
   (`aap-build-linux`), each gateway at `.1` and no DHCP or DNS service; resolvers `192.0.2.53` and
   `198.51.100.53` (public documentation addresses); no endpoint, so the source pin is the only
   Allow; vEthernet addresses the four gateways, `172.29.16.1` and `2001:db8:5::1`, their IPv4
-  prefixes and `172.29.16.0/20`; LAN IPv6 prefix `2001:db8:1::/64`. Not modelled: the journal
+  prefixes and `172.29.16.0/20`; the LAN card's `192.168.1.10`; LAN IPv6 prefix
+  `2001:db8:1::/64`. Not modelled: the journal
   folder's ACL, the reconcile, the switch extensions (check 8), and a removed VM's adapter, which
   stays visible as a peer until Detach (fail closed).
 
@@ -513,7 +547,7 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
   that a packet no rule matches passes.
 - Read-back: the text `Get-VMNetworkAdapterExtendedAcl` shows for an unset address, port or protocol
   (the check accepts `''`, `*`, `ANY` and the family wildcard until then); whether a `/32` and an
-  IPv6 range come back as written; `UDP` or `17`; `Stateful` as `False` and `IsolationID` as `0`;
+  IPv6 range come back as written, the IPv6 one in lower case (the check refuses another case); `UDP` or `17`; `Stateful` as `False` and `IsolationID` as `0`;
   `StormLimit` as `100`; `Get-VMNetworkAdapterAcl` empty on a new adapter; and how a rule's
   direction is listed (the documentation says an entry "appears in both the inbound ACL and the
   outbound ACL"; the enum has only `Inbound` and `Outbound`). `VlanSetting.OperationMode` on
@@ -562,7 +596,13 @@ Its tests are `tests/common/AapHostNetworkFake.Tests.ps1`; `Invoke-AapHostNetwor
 
 ## Open points
 
-1. **Runner clones share their profile's switch** under the per-profile candidate: a D2 design
+1. **Known residual (owner decision 8): two clones on one shared guest switch can poison each
+   other's ARP**, and the host's entry for each other, so a hostile clone can receive what the
+   internet sends its neighbour. **The Windows profile must not serve public repositories until a
+   clone isolation control (permanent host neighbour entries with the source pin, or a switch per
+   guest) is REQUIRED by this contract and proven in the D2 lab.** Until then this contract
+   requires neither, and the check keeps refusing `VlanMode` `Private`.
+   **Runner clones share their profile's switch** under the per-profile candidate: a D2 design
    decision for P02.1 (the build VM's own switch is decided above). The guards do not stop ARP
    poisoning between clones either: a clone that poisons the host's ARP entry for a neighbour
    receives what the internet sends that neighbour (the denies stop only what carries private

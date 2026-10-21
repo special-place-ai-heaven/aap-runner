@@ -372,8 +372,11 @@ CANDIDATE (D2):
   guest-transport.md, Wire framing.
 - Network: the enforcement shape is DECIDED (no External or Default switch; DHCP guard and router
   guard on, MAC spoofing off; extended port ACLs denying the host vEthernet addresses, private,
-  link-local, CGNAT, multicast, limited broadcast, reserved and loopback ranges, all IPv6 and other clones, and a
-  source pin so a guest sends only from its own address; enhanced
+  link-local, CGNAT, multicast, limited broadcast, reserved and loopback ranges and all IPv6, other clones'
+  addresses included, and a source pin so a guest sends only from its own address; two clones on one shared
+  switch can still poison each other's ARP, so the Windows profile serves no public repository until a clone
+  isolation control is required by host-network-module.md and proven in the D2 lab; LAN targets on public
+  addresses and a router hairpin to the owner's public address are residuals, not blocked; enhanced
   session and Guest Service Interface off; host ports blocked on the guest vEthernet). The
   mechanism (internal switch per profile with NAT, or an internal switch per guest; a private switch has no host adapter and is not viable) is CANDIDATE D2,
   owned by the P10.0 guest network module. The lab proves internet egress works and every denied

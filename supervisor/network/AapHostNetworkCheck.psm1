@@ -47,12 +47,13 @@ function Get-AapHostNetworkAdapterProblems {
     <# Hyper-V's read-back of a VM's adapters (the provider shape, contract Read-back) against the declaration Attach returned.
        HostDeny: the host's addresses and prefixes (Verify check 5), which the host-specific denies must cover and no
        endpoint may lie in; only the module knows the host, so its Verify passes them and consumers do not. Given, it must
-       hold the declaration's gateway (an empty or partial discovery cannot pass). Any line: AAP_NetworkUntrusted. #>
+       hold the declaration's gateway and, as HostLan, at least one address of a host interface that is not a vEthernet
+       adapter (an empty or partial discovery cannot pass). Any line: AAP_NetworkUntrusted. #>
     param([Parameter(Mandatory)][AllowNull()]$Declaration, [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][object[]]$Adapters,
-        [AllowEmptyCollection()][string[]]$HostDeny)
+        [AllowEmptyCollection()][string[]]$HostDeny, [AllowEmptyCollection()][string[]]$HostLan)
     $targets = $null
-    if ($PSBoundParameters.ContainsKey('HostDeny')) { $targets = [string[]]@($HostDeny) }
-    @(Get-AapNetAdapterProblem $Declaration $Adapters $targets) | ForEach-Object { Format-AapNetText $_ 197 } | Select-Object -First 64
+    if ($PSBoundParameters.ContainsKey('HostDeny') -or $PSBoundParameters.ContainsKey('HostLan')) { $targets = [string[]]@($HostDeny) }
+    @(Get-AapNetAdapterProblem $Declaration $Adapters $targets ([string[]]@($HostLan))) | ForEach-Object { Format-AapNetText $_ 197 } | Select-Object -First 64
 }
 
 # ---- the declaration -----------------------------------------------------------------------------------------------------
@@ -114,7 +115,7 @@ function Get-AapNetDeclarationProblem($Request, $d) {
 
 # ---- the read-back -------------------------------------------------------------------------------------------------------
 
-function Get-AapNetAdapterProblem($d, $Adapters, $HostDeny) {
+function Get-AapNetAdapterProblem($d, $Adapters, $HostDeny, [string[]]$HostLan) {
     $echo = @{ VmId = (Get-AapNetField $d 'vm_id'); VmName = (Get-AapNetField $d 'vm_name'); Profile = (Get-AapNetField $d 'profile') }
     $bad = @(Get-AapNetDeclarationProblem $echo $d)
     if ($bad.Count) { return @($bad | ForEach-Object { "declaration: $_" }) }   # check:adapter-declaration
@@ -188,6 +189,7 @@ function Get-AapNetAdapterProblem($d, $Adapters, $HostDeny) {
     $ends = @(Get-AapNetField $d 'endpoints' | ForEach-Object { ConvertTo-AapNetEndpoint $_ })
     if ($null -ne $HostDeny -and $HostDeny.Count -eq 0) { $p.Add('no host-specific targets: host discovery found nothing') }   # check:host-empty
     if ($null -ne $HostDeny -and $HostDeny.Count -and -not @($HostDeny | Where-Object { $g = Split-AapNetPrefix $_; $null -ne $g -and $g.Text -ceq "$gw/32" }).Count) { $p.Add("the host-specific targets lack the gateway $($gw): host discovery is incomplete") }   # check:host-gateway
+    if ($null -ne $HostDeny -and -not @($HostLan | Where-Object { $_ -and $HostDeny -ccontains $_ }).Count) { $p.Add('the host-specific targets hold no address of a host interface that is not a vEthernet adapter: host discovery is incomplete') }   # check:host-lan
     foreach ($t in $HostDeny) {
         $tp = Split-AapNetPrefix $t
         if ($null -eq $tp) { $p.Add("the host-specific target '$(Format-AapNetText $t)' is not an address or a prefix"); continue }   # check:host-deny
@@ -297,12 +299,12 @@ function ConvertTo-AapNetEndpoint($e) {
 }
 
 # An address ('172.31.250.1', an address alone is a /32 or /128) or a prefix ('10.0.0.0/8') in canonical text, as
-# @{ Text; Address; Bytes; Bits; Width }; $null for anything else: another spelling (a zero-padded prefix length too), host
-# bits under the prefix, a wildcard.
+# @{ Text; Address; Bytes; Bits; Width }; $null for anything else: another spelling (upper-case IPv6 and a zero-padded prefix
+# length too), host bits under the prefix, a wildcard.
 function Split-AapNetPrefix([string]$Text) {
     $parts = $Text.Split('/')
     $ip = $null
-    if ($parts.Count -gt 2 -or -not [Net.IPAddress]::TryParse($parts[0], [ref]$ip) -or $ip.ToString() -ne $parts[0]) { return $null }   # check:addr-canonical
+    if ($parts.Count -gt 2 -or -not [Net.IPAddress]::TryParse($parts[0], [ref]$ip) -or $ip.ToString() -cne $parts[0]) { return $null }   # check:addr-canonical
     $bytes = $ip.GetAddressBytes()
     $width = $bytes.Length * 8
     $bits = $width

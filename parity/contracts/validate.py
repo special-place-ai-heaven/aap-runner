@@ -693,6 +693,8 @@ def sem_host_network_module(doc):
         if [c["kind"] for c in doc["created"]].count("adapter") != 1:
             raise Invalid("a record names exactly one adapter")
         for c in doc["created"]:
+            if not c["name"].endswith("-" + doc["declaration"]["vm_id"]):
+                raise Invalid(f"a record names {c['name']}, not one of VM {doc['declaration']['vm_id']}")
             if c["name"].startswith(("aap-guests-", "aap-build-")):
                 raise Invalid(f"a record names {c['name']}, a switch P19 owns")
 

@@ -35,7 +35,7 @@ BeforeAll {
         $d = [ordered]@{ schema = 1; kind = 'host_network_attach'; vm_id = $Id; vm_name = $Name; profile = 'windows'; subnet = '172.31.250.0/24'
             gateway = '172.31.250.1'; address = $Address; resolvers = @('192.0.2.53', '198.51.100.53'); endpoints = @()
         }
-        $r = [ordered]@{ schema = 1; kind = 'host_network_record'; state = $State; declaration = $d; created = @([ordered]@{ kind = 'adapter'; name = 'aap-guest' }) }
+        $r = [ordered]@{ schema = 1; kind = 'host_network_record'; state = $State; declaration = $d; created = @([ordered]@{ kind = 'adapter'; name = "aap-guest-$Id" }) }
         [IO.File]::WriteAllText((Join-Path $t.Root "records\$Id.json"), (ConvertTo-Json -InputObject $r -Depth 6))
     }
     # A consumer's read-back of the simulated adapter: the shared check without the host-specific targets.
@@ -63,7 +63,10 @@ Describe 'the shared host network fake' {
     Describe 'Attach' {
         It 'returns the declaration and leaves one adapter exactly as the contract requires' -Tag alloc-lru {
             $t.Vms[$script:WinId] = Off
-            $d = & $t.Net.Attach (Win)
+            # A fresh host always has an address: a throw here is a failed assertion, not an error.
+            $got = @{}
+            { $got.D = & $t.Net.Attach (Win) } | Should -Not -Throw
+            $d = $got.D
             $d.vm_id | Should -Be $script:WinId
             $d.vm_name | Should -Be 'aap-w-1-3-1a2b3c4d'
             $d.profile | Should -Be 'windows'
@@ -87,6 +90,7 @@ Describe 'the shared host network fake' {
             Get-TestReadback $t $d $script:WinId | Should -BeNullOrEmpty
             @(& $t.Net.Verify (Win)).Count | Should -Be 0
             @(Get-AapFakeHostNetworkRecord -Root $t.Root | ForEach-Object { $_.state }) | Should -Be @('attached')
+            @((Get-AapFakeHostNetworkRecord -Root $t.Root).created | ForEach-Object { "$($_.kind) $($_.name)" }) | Should -Be @("adapter aap-guest-$($script:WinId)")
         }
 
         It 'gives validate.py a declaration and a record, and the shared check a read-back, that they accept, for both profiles' -Tag contract {
@@ -339,7 +343,7 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             @{ Tamper = 'foreign-peer'; Want = @('the runner clone shares aap-guests-win with aap-wbuild-0badc0de, not only runner clones of its profile') }
             @{ Tamper = 'drop-fixed-deny'; Want = @('no unscoped Outbound deny for 10.0.0.0/8') }
             @{ Tamper = 'drop-inbound-deny'; Want = @('no unscoped Inbound deny for 10.0.0.0/8') }
-            @{ Tamper = 'scoped-deny'; Want = @('no unscoped Inbound deny for 192.168.0.0/16') }
+            @{ Tamper = 'scoped-deny'; Want = @('no unscoped Inbound deny for 192.168.0.0/16', "no unscoped Inbound deny covers the host's 192.168.1.10/32") }
             @{ Tamper = 'stateful-rule'; Want = @("rule 1 is stateful 'True', not False", 'no unscoped Inbound deny for 10.0.0.0/8') }
             @{ Tamper = 'isolated-rule'; Want = @("rule 1 has isolation id '7', not 0", 'no unscoped Inbound deny for 10.0.0.0/8') }
             @{ Tamper = 'no-source-pin'; Want = @('there are 0 source pins, not 1') }
@@ -356,9 +360,9 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             $p | Should -Contain "no unscoped Outbound deny covers the host's 172.31.250.1/32"
         }
 
-        It 'cannot look when host discovery finds <Tamper>' -Tag verify-discovery -TestCases @(@{ Tamper = 'host-empty' }, @{ Tamper = 'host-no-gateway' }) {
+        It 'cannot look when host discovery finds <Tamper>' -Tag verify-discovery -TestCases @(@{ Tamper = 'host-empty' }, @{ Tamper = 'host-no-gateway' }, @{ Tamper = 'host-no-lan' }) {
             Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $Tamper
-            { & $t.Net.Verify (Win) } | Should -Throw '*not the gateway 172.31.250.1: cannot look'
+            { & $t.Net.Verify (Win) } | Should -Throw '*not the gateway 172.31.250.1 and a LAN address: cannot look'
         }
 
         It 'reports nothing again once a tamper is gone, and never changes the journal' {
@@ -406,7 +410,7 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             }
             Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper public-host
             @(& $t.Net.Verify (Win)).Count | Should -BeGreaterThan 0
-            foreach ($x in 'public-host', 'host-empty', 'host-no-gateway') {
+            foreach ($x in 'public-host', 'host-empty', 'host-no-gateway', 'host-no-lan') {
                 Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $x
                 Get-TestReadback $t $decl $script:WinId | Should -BeNullOrEmpty -Because $x
             }
@@ -417,7 +421,9 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
         It 'an unreadable record makes all three calls for its VM throw, and it stays: <Case>' -Tag record-readable -TestCases @(
             @{ Case = 'not JSON'; Text = 'not json' }
             @{ Case = 'an unknown state'; Text = '{"schema":1,"kind":"host_network_record","state":"detaching","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest"}]}' }
-            @{ Case = 'a switch P19 owns'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest"},{"kind":"switch","name":"aap-guests-win"}]}' }) {
+            @{ Case = 'a switch P19 owns'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"switch","name":"aap-guests-win"}]}' }
+            @{ Case = 'another VM''s rule'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"aap-guest-block-0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b"}]}' }
+            @{ Case = 'a host rule'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"FPS-SMB-In-TCP"}]}' }) {
             $path = Join-Path $t.Root "records\$($script:WinId).json"
             [IO.File]::WriteAllText($path, $Text)
             $t.Vms[$script:WinId] = Off
@@ -437,6 +443,26 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             $t.Vms.Remove($script:WinId)
             & $t.Net.Detach (Win)
             @(Get-ChildItem -LiteralPath (Join-Path $t.Root 'records') -File | ForEach-Object { $_.BaseName }) | Should -Be @($script:LinId)
+        }
+
+        It 'stops Attach and Detach on an unreadable released.json until the recovery op rebuilds it: <Case>' -Tag released-readable -TestCases @(
+            @{ Case = 'torn'; Text = '["172.31.250.2", "172.31' }, @{ Case = 'not a list of addresses'; Text = '[{"address":"172.31.250.2"}]' }, @{ Case = 'a name'; Text = '["gateway"]' }) {
+            $t.Vms[$script:WinId] = Off; $t.Vms[$script:WinId2] = Off
+            $null = & $t.Net.Attach (Win)
+            $path = Join-Path $t.Root 'released.json'
+            [IO.File]::WriteAllText($path, $Text)
+            { & $t.Net.Attach (Win 'aap-w-2-4-0f0e0d0c' $script:WinId2) } | Should -Throw 'AAP_NetworkUntrusted: released.json is unreadable*'
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId2).Count | Should -Be 0
+            $t.Vms.Remove($script:WinId)
+            $before = Get-TestState $t
+            { & $t.Net.Detach (Win) } | Should -Throw 'AAP_NetworkUntrusted: released.json is unreadable*'
+            Get-TestState $t | Should -Be $before
+            @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:WinId).Count | Should -Be 1
+            [IO.File]::ReadAllText($path) | Should -Be $Text -Because 'nothing rebuilds it but the recovery op'
+            Repair-AapFakeHostNetworkReleased -Root $t.Root
+            & $t.Net.Detach (Win)
+            (& $t.Net.Attach (Win 'aap-w-2-4-0f0e0d0c' $script:WinId2)).address | Should -Be '172.31.250.3'
+            @(Get-ChildItem -LiteralPath $t.Root -Filter '*.tmp' -File -Recurse).Count | Should -Be 0
         }
 
         It 'refuses an unknown tamper or fault name' -Tag knob-names -TestCases @(@{ K = @{ Tamper = 'extra-alow' } }, @{ K = @{ Fail = 'attach' } }) {

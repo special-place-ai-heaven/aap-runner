@@ -5,7 +5,8 @@
 # adapter checks are the shared check (supervisor/network/AapHostNetworkCheck.psm1), as the module's are. State lives only
 # under -Root, so a child process killed mid-step leaves the world its parent then recovers from:
 #   records\<vm id>.json  the module's journal (host_network_record), written before anything is attached
-#   released.json         addresses Detach freed, least recently used first
+#   released.json         addresses Detach freed, least recently used first; written like a record; unreadable, it stops
+#                         Attach and Detach until Repair-AapFakeHostNetworkReleased rebuilds it
 #   lock                  the journal lock, held exclusively for every record write and every read of all records
 #   host\<vm id>          the simulated host: the VM has the module's adapter (its guards and ACLs follow from the record)
 #   knobs.json            tampers (changes to the simulated host, seen by Verify and the read-back alike) and faults
@@ -28,13 +29,14 @@ $script:Resolvers = @('192.0.2.53', '198.51.100.53')
 $script:HostAddresses = @('172.31.250.1', '172.31.251.1', '172.31.252.1', '172.31.253.1', '172.29.16.1', '2001:db8:5::1')   # the vEthernet adapters'
 $script:OnLink = @('172.31.250.0/24', '172.31.251.0/24', '172.31.252.0/24', '172.31.253.0/24', '172.29.16.0/20')   # each vEthernet adapter's IPv4 prefix
 $script:LanPrefixes = @('2001:db8:1::/64')
+$script:LanAddresses = @('192.168.1.10')   # the host's own address on its LAN card, not a vEthernet adapter
 $script:PublicHost = '203.0.113.7'   # what the public-host tamper gives the host
 $script:Weight = @{ CatchAll = 1; Pin = 5; Deny = 10 }   # one per rule class (contract, Rules and weights); no endpoint, so no endpoint allow
 $script:LockSeconds = 30
 $script:GuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 $script:TamperNames = @('no-adapter', 'second-adapter', 'external-switch', 'other-switch', 'dhcp-guard-off', 'router-guard-off', 'mac-spoofing-on',
     'port-mirroring', 'vlan-trunk', 'storm-limit-off', 'legacy-acl', 'foreign-peer', 'drop-fixed-deny', 'drop-inbound-deny', 'scoped-deny', 'stateful-rule',
-    'isolated-rule', 'no-source-pin', 'pin-above-deny', 'extra-allow', 'public-host', 'host-empty', 'host-no-gateway')
+    'isolated-rule', 'no-source-pin', 'pin-above-deny', 'extra-allow', 'public-host', 'host-empty', 'host-no-gateway', 'host-no-lan')
 $script:FailNames = @('Attach', 'AttachAfterIntent', 'AttachAfterAct', 'Detach', 'Verify')
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 
@@ -73,7 +75,8 @@ function Get-AapFakeHostNetworkAdapter {
        attaching), tampers applied. Peers are the other VMs with the module's adapter on the same switch; a removed VM's
        adapter shows until Detach (fail closed). #>
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$VmId)
-    $rec = Read-AapFakeNetRecord $Root $VmId
+    $lock = Enter-AapFakeNetLock $Root
+    try { $rec = Read-AapFakeNetRecord $Root $VmId; $all = @(Get-AapFakeNetRecords $Root) } finally { $lock.Dispose() }
     if ($null -eq $rec -or -not [IO.File]::Exists((Get-AapFakeNetHostPath $Root $VmId))) { return }
     $d = $rec.declaration
     $sw = Get-AapHostNetworkSwitchName ([string]$d.vm_name)
@@ -88,7 +91,7 @@ function Get-AapFakeHostNetworkAdapter {
                 }
                 foreach ($r in @(Get-AapHostNetworkFixedDeny)) { New-AapFakeNetRule 'Deny' $dir $r $script:Weight.Deny }
             })
-        $peers = @(Get-AapFakeNetRecords $Root | Where-Object { $_.declaration.vm_id -cne $VmId -and (Get-AapHostNetworkSwitchName ([string]$_.declaration.vm_name)) -ceq $sw -and
+        $peers = @($all | Where-Object { $_.declaration.vm_id -cne $VmId -and (Get-AapHostNetworkSwitchName ([string]$_.declaration.vm_name)) -ceq $sw -and
                 [IO.File]::Exists((Get-AapFakeNetHostPath $Root ([string]$_.declaration.vm_id))) } | ForEach-Object { [string]$_.declaration.vm_name })
         $n = @{ SwitchName = $sw; SwitchType = 'Internal'; DhcpGuard = 'On'; RouterGuard = 'On'; MacAddressSpoofing = 'Off'; PortMirroringMode = 'None'; VlanMode = 'Untagged'
             StormLimit = '100'; LegacyAcls = 0; Peers = $peers; Acls = $acls
@@ -171,7 +174,7 @@ function Add-AapFakeNetAttachment([string]$Root, $q, $Vm, [string[]]$Fail) {
             $decl = [ordered]@{ schema = 1; kind = 'host_network_attach'; vm_id = $q.VmId; vm_name = $q.VmName; profile = $q.Profile; subnet = $n.Subnet
                 gateway = $n.Gateway; address = $address; resolvers = $script:Resolvers; endpoints = @()
             }
-            Write-AapFakeNetRecord $Root ([ordered]@{ schema = 1; kind = 'host_network_record'; state = 'attaching'; declaration = $decl; created = @([ordered]@{ kind = 'adapter'; name = 'aap-guest' }) })
+            Write-AapFakeNetRecord $Root ([ordered]@{ schema = 1; kind = 'host_network_record'; state = 'attaching'; declaration = $decl; created = @([ordered]@{ kind = 'adapter'; name = "aap-guest-$($q.VmId)" }) })
             $rec = Read-AapFakeNetRecord $Root $q.VmId
         }
     } finally { $lock.Dispose() }
@@ -198,10 +201,12 @@ function Remove-AapFakeNetAttachment([string]$Root, $q, $Vm) {
         }
         # The adapter and its port ACLs went with the VM and the per-profile switch is not the VM's: only the record is left,
         # removed by the VM's id, and with it goes the VM's address, now the most recently used.
+        # The released list first: one it cannot read stops Detach before anything changes.
+        $address = [string]$rec.declaration.address
+        $released = @(@(Read-AapFakeNetReleased $Root | Where-Object { $_ -cne $address }) + $address)
         $hostPath = Get-AapFakeNetHostPath $Root $q.VmId
         if ([IO.File]::Exists($hostPath)) { [IO.File]::Delete($hostPath) }
-        $address = [string]$rec.declaration.address
-        Write-AapFakeNetReleased $Root @(@(Read-AapFakeNetReleased $Root | Where-Object { $_ -cne $address }) + $address)
+        Write-AapFakeNetReleased $Root $released
         $path = Get-AapFakeNetRecordPath $Root $q.VmId
         if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }   # check:detach-removes
     } finally { $lock.Dispose() }
@@ -223,8 +228,9 @@ function Get-AapFakeNetProblem([string]$Root, $q, $Vm) {
             ForEach-Object { [string]$_.declaration.vm_name })
     if ($twins.Count) { "the address $($d.address) is also held by $($twins -join ', ')" }   # check:verify-address
     $targets = @(Get-AapFakeNetHostTarget @((Read-AapFakeNetKnobs $Root).tamper))
-    if ($targets -cnotcontains "$($d.gateway)/32") { throw "AAP_NetworkUntrusted: host discovery found $($targets.Count) targets and not the gateway $($d.gateway): cannot look" }   # check:verify-discovery
-    Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @(Get-AapFakeHostNetworkAdapter -Root $Root -VmId $id) -HostDeny $targets
+    $lan = @($script:LanAddresses | ForEach-Object { "$_/32" } | Where-Object { $targets -ccontains $_ })
+    if ($targets -cnotcontains "$($d.gateway)/32" -or -not $lan.Count) { throw "AAP_NetworkUntrusted: host discovery found $($targets.Count) targets, not the gateway $($d.gateway) and a LAN address: cannot look" }   # check:verify-discovery
+    Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @(Get-AapFakeHostNetworkAdapter -Root $Root -VmId $id) -HostDeny $targets -HostLan $lan
 }
 
 # ---- records, the lock, knobs and the fake host --------------------------------------------------------------------------
@@ -238,9 +244,10 @@ function Read-AapFakeNetRecord([string]$Root, [string]$VmId) {
     $ok = $false
     try {
         $rec = [IO.File]::ReadAllText($path) | ConvertFrom-Json
-        # A record that names a switch P19 owns is not the module's to remove (contract, Detach).
+        # A record that names a switch P19 owns, or anything whose name does not end in its own VM id (another VM's rule, a
+        # host rule), is not the module's to remove (contract, Detach).
         $ok = $rec.kind -ceq 'host_network_record' -and @('attaching', 'attached') -ccontains $rec.state -and $rec.declaration.vm_id -ceq $VmId -and
-            -not @($rec.created | Where-Object { ([string]$_.name) -clike 'aap-guests-*' -or ([string]$_.name) -clike 'aap-build-*' }).Count
+            -not @($rec.created | Where-Object { ([string]$_.name) -clike 'aap-guests-*' -or ([string]$_.name) -clike 'aap-build-*' -or -not ([string]$_.name).EndsWith("-$VmId") }).Count
     } catch { $ok = $false }
     if (-not $ok) { throw "AAP_NetworkUntrusted: the record of VM $VmId is unreadable; it stays for an owner" }   # check:record-readable
     $rec
@@ -251,13 +258,16 @@ function Get-AapFakeNetRecords([string]$Root) {
     foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $Root 'records') -Filter '*.json' -File)) { Read-AapFakeNetRecord $Root $f.BaseName }
 }
 
-# Written to a temporary name and renamed over the old record: a crash leaves the old or the new one, never a torn one.
 function Write-AapFakeNetRecord([string]$Root, $Record) {
-    $id = [string]$Record.declaration.vm_id
-    $path = Get-AapFakeNetRecordPath $Root $id
-    $tmp = Join-Path $Root "records\$id.tmp"
-    [IO.File]::WriteAllText($tmp, ($Record | ConvertTo-Json -Depth 6), $script:Utf8)
-    if ([IO.File]::Exists($path)) { [IO.File]::Replace($tmp, $path, [NullString]::Value) } else { [IO.File]::Move($tmp, $path) }
+    Write-AapFakeNetFile (Get-AapFakeNetRecordPath $Root ([string]$Record.declaration.vm_id)) ($Record | ConvertTo-Json -Depth 6)
+}
+
+# Written to a temporary name in the same folder and renamed over the old file: a crash leaves the old or the new one,
+# never a torn one.
+function Write-AapFakeNetFile([string]$Path, [string]$Text) {
+    $tmp = [IO.Path]::ChangeExtension($Path, '.tmp')
+    [IO.File]::WriteAllText($tmp, $Text, $script:Utf8)
+    if ([IO.File]::Exists($Path)) { [IO.File]::Replace($tmp, $Path, [NullString]::Value) } else { [IO.File]::Move($tmp, $Path) }
 }
 
 # The journal lock: one exclusive handle on <Root>\lock; a holder that dies releases it. Fails closed after a wait. Held for
@@ -271,13 +281,19 @@ function Enter-AapFakeNetLock([string]$Root) {
     }
 }
 
+# The released list; one it cannot read (not a JSON list of IPv4 addresses) throws: never guessed, never rebuilt here.
 function Read-AapFakeNetReleased([string]$Root) {
     $path = Join-Path $Root 'released.json'
     if (-not [IO.File]::Exists($path)) { return }
-    foreach ($a in ([IO.File]::ReadAllText($path) | ConvertFrom-Json)) { [string]$a }
+    $list = $null
+    try { $list = @([IO.File]::ReadAllText($path) | ConvertFrom-Json | ForEach-Object { $_ }) } catch { $list = $null }
+    if ($null -eq $list -or @($list | Where-Object { $_ -isnot [string] -or $_ -cnotmatch '^[0-9]{1,3}(\.[0-9]{1,3}){3}\z' }).Count) {   # check:released-readable
+        throw 'AAP_NetworkUntrusted: released.json is unreadable; Attach and Detach stop until the recovery op rebuilds it'
+    }
+    $list
 }
 function Write-AapFakeNetReleased([string]$Root, [string[]]$Addresses) {
-    [IO.File]::WriteAllText((Join-Path $Root 'released.json'), (ConvertTo-Json -InputObject @($Addresses)), $script:Utf8)
+    Write-AapFakeNetFile (Join-Path $Root 'released.json') (ConvertTo-Json -InputObject @($Addresses))
 }
 
 # The least recently used free address of switch $n's subnet: one never released first (lowest), then the one released
@@ -304,15 +320,32 @@ function New-AapFakeNetRule([string]$Action, [string]$Direction, [string]$Remote
     }
 }
 
-# What host discovery finds (contract, Verify check 5): the host's addresses, each vEthernet adapter's IPv4 prefix and the
-# LAN IPv6 prefixes. The fixed ranges cover all of them, so the module writes no deny of its own for them; the tampers
-# make discovery find a public address, nothing, or no gateway.
+# What host discovery finds (contract, Verify check 5): the host's addresses (vEthernet and LAN), each vEthernet adapter's
+# IPv4 prefix and the LAN IPv6 prefixes. The fixed ranges cover all of them, so the module writes no deny of its own for
+# them; the tampers make discovery find a public address, nothing, no gateway, or no LAN address.
 function Get-AapFakeNetHostTarget([string[]]$Tamper) {
     if ($Tamper -ccontains 'host-empty') { return }
     $gateways = @($script:Net.Values | ForEach-Object { $_.Gateway })
-    $addresses = @(@($script:HostAddresses | Where-Object { -not ($Tamper -ccontains 'host-no-gateway' -and $gateways -ccontains $_) }) + @(if ($Tamper -ccontains 'public-host') { $script:PublicHost }))
+    $addresses = @(@($script:HostAddresses | Where-Object { -not ($Tamper -ccontains 'host-no-gateway' -and $gateways -ccontains $_) }) +
+        @($script:LanAddresses | Where-Object { $Tamper -cnotcontains 'host-no-lan' }) + @(if ($Tamper -ccontains 'public-host') { $script:PublicHost }))
     @($addresses | ForEach-Object { if ($_.Contains(':')) { "$_/128" } else { "$_/32" } }) + $script:OnLink + $script:LanPrefixes
 }
 
+function Repair-AapFakeHostNetworkReleased {
+    <# The module's recovery op for an unreadable released.json (contract, Journal): an owner's explicit step, never part of
+       Attach, Detach or Verify. Under the lock, from every record (one it cannot read throws), it writes the list anew: each
+       switch's addresses that no record holds, lowest first (the old order is lost). #>
+    param([Parameter(Mandatory)][string]$Root)
+    $lock = Enter-AapFakeNetLock $Root
+    try {
+        $held = @(Get-AapFakeNetRecords $Root | ForEach-Object { [string]$_.declaration.address })
+        $free = @(foreach ($n in @($script:Net.Values | Sort-Object { $_.Subnet })) {
+                $base = $n.Subnet.Substring(0, $n.Subnet.LastIndexOf('.'))
+                1..254 | ForEach-Object { "$base.$_" } | Where-Object { $_ -cne $n.Gateway -and $held -cnotcontains $_ }
+            })
+        Write-AapFakeNetReleased $Root $free
+    } finally { $lock.Dispose() }
+}
+
 Export-ModuleMember -Function New-AapFakeHostNetwork, Invoke-AapFakeHostNetwork, Get-AapFakeHostNetworkAdapter, Set-AapFakeHostNetworkKnob,
-    Get-AapFakeHostNetworkRecord
+    Get-AapFakeHostNetworkRecord, Repair-AapFakeHostNetworkReleased
