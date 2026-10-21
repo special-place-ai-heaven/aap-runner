@@ -72,6 +72,10 @@ $script:CapHeadroom = 1.25              # cap = measured peak x 1.25, rounded up
 $script:MemOverheadMibMax = 1024
 # The owner-approved lab ceilings (contracts README, Resolved 2026-10-20): a config may ask for less, never more.
 $script:OwnerLimits = [ordered]@{ BuildCpus = 4; BuildMemGib = 10; BaseGibMax = 186; JobDiskGibMax = 55 }
+# The difference sections P05's certify.py compare reports (compare_inventories; a test derives them from certify.py). A
+# plan section name outside this list would match no difference and so gate nothing.
+$script:CompareSections = @('coverage', 'image', 'infra', 'user', 'env', 'credential_env', 'path.process', 'path.machine', 'shells', 'tools', 'command_paths',
+    'tool_cache', 'tool_cache.defaults', 'action_archive_cache', 'services', 'docker', 'docker.images', 'hardware', 'limits', 'limits.sysctl')
 $script:Uuid = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 $script:Safe = '^[A-Za-z0-9_./:+-]{0,200}\z'   # every value that reaches the guest request or the seed
 
@@ -181,6 +185,8 @@ function Read-AapUbuntuBuildPlan {
     $foreign = @('image', 'infra', 'run_identity', 'credential_env')
     $owned = @(Get-AapProp (Get-AapProp $plan 'verify') 'required_sections' | Where-Object { $_ })
     if ($owned.Count -eq 0 -or @($owned | Where-Object { $foreign -ccontains [string]$_ }).Count) { throw "AAP_PlanInvalid: verify.required_sections must name the sections the image owns and none of $($foreign -join ', ')" }   # check:plan-required
+    $unknown = @(@(Get-AapProp (Get-AapProp $plan 'verify') 'gate_sections') + $owned | Where-Object { $script:CompareSections -cnotcontains [string]$_ })
+    if ($unknown.Count) { throw "AAP_PlanInvalid: verify names sections P05's comparison never reports: $(@($unknown | ForEach-Object { Get-AapPrintable ([string]$_) 40 }) -join ', ')" }   # check:plan-sections
     # The upstream source archive and the installation media are P03 entries pinned here by name and SHA-256, so plan_sha256
     # covers them. Until one is pinned, its blocker must be in the plan and must not be waivable.
     foreach ($k in @(@{ Key = 'source'; Blocker = 'p07-upstream-source-archive' }, @{ Key = 'media'; Blocker = 'p07-ubuntu-server-media' })) {

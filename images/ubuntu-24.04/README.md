@@ -164,9 +164,10 @@ everything it made (VMs, build disks, a partly published generation, the evidenc
    `env`, `limits`, `limits.sysctl`, `hardware`, `tool_cache`, `action_archive_cache`, `services`, `path.process`,
    `path.machine`) fail the build. `image`, `infra`, `run_identity` and `credential_env` are not the image's: they describe
    the runner (a verification guest has none, so `image.runner_version`, `runner_os` and `runner_arch` are null), the job's
-   identity and the Azure fabric, and the plan is refused if it names them. `docker.images` is not gated either: the six
-   cached images are `:latest` pulls inside `install-docker.sh` (P03 blocker `ubuntu-floating-container-images`; the
-   pinned toolset lists none), so no pinned input says which names a build gets; P24 decides them. Their
+   identity and the Azure fabric, and the plan is refused if it names them, or names a section P05's comparison never
+   reports (`certify.py`'s own section names: a misspelt one would gate nothing). `docker.images` is not gated either:
+   the six cached images are `:latest` pulls inside `install-docker.sh` (P03 blocker `ubuntu-floating-container-images`;
+   the pinned toolset lists none), so no pinned input says which names a build gets; P24 decides them. Their
    differences and every other one (kernel build, read-ahead, mount options, tool versions from floating feeds, hardware)
    are recorded in `build.json` for P24, and so are the count and the first 200 of what the image has beyond the reference
    (`extra`). `tool_cache.defaults` is not gated: the hosted capture records no defaults. Before the agent answers, the

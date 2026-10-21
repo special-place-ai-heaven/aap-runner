@@ -113,6 +113,34 @@ Describe 'build plan mirrors the pinned upstream template' {
             'action_archive_cache', 'services', 'path.process', 'path.machine')
         foreach ($s in 'image', 'infra', 'run_identity', 'credential_env') { @($script:Plan.verify.required_sections) + @($script:Plan.verify.gate_sections) | Should -Not -Contain $s }
     }
+    It 'knows exactly the sections P05''s certify.py compare reports, read from its source' -Skip:(-not $script:Py) {
+        # Every section name compare_inventories passes to C.mapping or C.add, and the path.<k> of its compare_paths loop.
+        $code = @'
+import ast, sys
+tree = ast.parse(open(sys.argv[1], encoding='utf-8').read())
+fn = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'compare_inventories'][0]
+out = set()
+for n in ast.walk(fn):
+    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name) and n.func.value.id == 'C':
+        arg = n.args[0] if n.func.attr == 'mapping' else n.args[1] if n.func.attr == 'add' else None
+        if isinstance(arg, ast.Constant):
+            out.add(arg.value)
+    if isinstance(n, ast.For) and isinstance(n.iter, ast.Tuple) and any(isinstance(c, ast.Call) and getattr(c.func, 'id', '') == 'compare_paths' for c in ast.walk(n)):
+        out.update('path.' + e.value for e in n.iter.elts)
+print('\n'.join(sorted(out)))
+'@
+        $sections = @(& $script:Py -B -I -S -c $code (Join-Path $script:Repo 'tools\parity-certify\certify.py'))
+        $LASTEXITCODE | Should -Be 0
+        $sections | Should -Be @(& (Get-Module AapUbuntuImage) { $script:CompareSections } | Sort-Object)
+    }
+    It 'refuses a plan that names a section the comparison never reports: <Case>' -Tag 'plan-sections' -TestCases @(
+        @{ Case = 'a misspelt required section'; Edit = { param($p) $p.verify.required_sections = @('tool', 'shells') } },
+        @{ Case = 'a misspelt gate section'; Edit = { param($p) $p.verify.gate_sections = @('coverage', 'servces') } }) {
+        $p = New-PinnedPlan (Join-Path $TestDrive 'sections.json')
+        & $Edit $p
+        Write-TestJson $p (Join-Path $TestDrive 'sections.json')
+        { Read-AapUbuntuBuildPlan -Path (Join-Path $TestDrive 'sections.json') } | Should -Throw 'AAP_PlanInvalid*never reports*'
+    }
     It 'records the cached Docker images and never gates them: no pinned input names what install-docker.sh pulls' {
         # The six images are :latest pulls of install-docker.sh (P03's unpinned floating-container blocker); the pinned
         # toolset lists none. Until a pin names them, a missing one is P24's to decide, not a build failure.
