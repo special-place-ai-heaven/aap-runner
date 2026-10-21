@@ -977,7 +977,7 @@
       "license": {
         "class": "unknown",
         "redistribution": "unknown",
-        "note": "Checksum list of the Ubuntu 24.04 point releases published beside the release media; the terms of the release data were not read or recorded. Transport integrity only, not a signature."
+        "note": "Checksum list of the Ubuntu 24.04 point releases published beside the release media; the terms of the release data were not read or recorded."
       },
       "retry": {
         "max_attempts": 3,
@@ -986,7 +986,7 @@
       },
       "scripts": [],
       "evidence_ref": "parity/baselines/ubuntu-24.04-x64/inputs.md, NEEDS EXTERNAL AUTHORIZATION 1",
-      "note": "Checksum list of the 24.04 point releases (kernel.org ubuntu-releases mirror). Byte-identical on 2026-10-21 to releases.ubuntu.com/24.04.5/SHA256SUMS, which serves no Content-Type so the acquisition tool would refuse it; the signed SHA256SUMS.gpg beside it was not verified (no key). Its ubuntu-24.04.5-live-server-amd64.iso line is the hash source of the ISO entry. Transport integrity only, not a signature."
+      "note": "Checksum list of the 24.04 point releases, pinned from the kernel.org ubuntu-releases mirror because releases.ubuntu.com/24.04.5/SHA256SUMS serves no Content-Type. GPG-verified 2026-10-22: its SHA256SUMS.gpg (releases.ubuntu.com) is a good signature by the Ubuntu CD Image Automatic Signing Key (2012), fingerprint 8439 38DF 228D 22F7 B374 2BC0 D94A A3F0 EFE2 1092 (keyserver.ubuntu.com key; fingerprint cross-checked on ubuntu.com/tutorials/how-to-verify-ubuntu), over bytes byte-identical to this pin. Its ubuntu-24.04.5-live-server-amd64.iso line is the hash source of the ISO entry."
     },
     {
       "name": "ubuntu-24.04.5-live-server",

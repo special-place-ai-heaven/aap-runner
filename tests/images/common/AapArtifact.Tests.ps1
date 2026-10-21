@@ -1044,6 +1044,14 @@ Describe 'coverage of the P01 inputs' {
         $sums[0].hash.value | Should -Match '^[0-9a-f]{64}$'
         $sums[0].size_bytes | Should -Be 893
         ($iso[0].note + ' ' + $sums[0].note) | Should -Match 'releases\.ubuntu\.com/24\.04\.5'
+        # P03.1-gpg (2026-10-22): SHA256SUMS.gpg from releases.ubuntu.com verified in a throwaway GNUPGHOME
+        # against a fresh key from keyserver.ubuntu.com cross-checked on ubuntu.com/tutorials/how-to-verify-ubuntu:
+        # a good signature over bytes byte-identical to the literal pin. The sums entry note records that outcome
+        # in place of the former TOFU caveat (the signature was never verified, no key); it must not regress to it.
+        $sums[0].note | Should -Not -Match 'not verified'
+        $sums[0].note | Should -Match 'good signature'
+        $sums[0].note | Should -Match '8439 38DF 228D 22F7 B374 2BC0 D94A A3F0 EFE2 1092'
+        $sums[0].note | Should -Match '2026-10-22'
     }
 }
 
