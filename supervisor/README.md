@@ -26,7 +26,8 @@ it.** The only reason is that WSL sessions belong to the logon session
   to exit after its job, then `wsl.exe --terminate aap-runner`. Flipping back to
   on while draining undrains instead. A job still running after the 6 h is
   never ended: the distro stays up, the status stays `draining`, and the next
-  tick drains and waits again.
+  tick drains and waits again. Desired is read once more right before the
+  terminate; on again there undrains instead.
 - **While Off** it makes no `wsl.exe` call, so Vmmem can exit. Desired off is
   the only case: Linux + Windows is at least 1, and while On the distro runs
   even with Linux at 0, because the broker (and the App key) live there.
@@ -36,7 +37,12 @@ it.** The only reason is that WSL sessions belong to the logon session
   pool instead, so when the grep fails no manager flag is ever used. The
   status is `error` until `install-host.ps1` from this branch is re-run. On
   still starts the units with `systemctl`, settings are ignored, and Off
-  terminates the distro without a drain, ending any running job.
+  cannot drain: it terminates the distro only once the manager is provably
+  idle (its unit inactive, or its `status.json` says `idle` with every slot
+  idle); a running job or an unreadable status keeps the distro up
+  (`draining`) and the next tick looks again. A job the old manager starts
+  right after that idle read still ends with the distro (it cannot be told
+  to stop taking jobs).
 - **After every `systemctl start`** it checks `is-active` and logs the last
   5 journal lines of a unit that did not come up.
 
@@ -165,11 +171,16 @@ profile `none`.
   `draining`; a busy one keeps its job, the backend tears it down after. Off
   waits for the VM slots (and the manager) before `wsl.exe --terminate`,
   because the broker that releases their runners lives in the distro; desired
-  on again during that wait undoes the drain. A slot whose backend is not
-  loaded counts while it may hold a job (`busy`, `draining`, `quarantined`).
-  After 6 h with a VM slot still live, or while the allocator state cannot be
-  read, Off never terminates: the distro stays up, the status stays
-  `draining`, and the next tick tries again.
+  on again during that wait undoes the drain. Every VM slot counts until it is
+  reconciled, also one whose backend is not loaded: nothing here can stop
+  its runner or tear it down, so it holds Off until that backend is loaded,
+  and the `detail` names the profile and the count (`no backend loaded for
+  ...`); Pause marks such a slot `draining` but cannot stop it either. After
+  6 h with a VM slot still live, or while the allocator state cannot be read
+  (with a backend loaded or anything in the capacity folder), Off never
+  terminates: the distro stays up, the status stays `draining`, and the next
+  tick tries again. Today no backend context exists, so no VM slot can be
+  admitted and none of this holds Off on the live install.
 
 The GitHub App id, the key and the runner labels are not read from the
 inbox by the supervisor. They live in `/etc/aap-runner/manager.conf` and

@@ -577,6 +577,22 @@ Describe 'aap-runner host supervisor' {
             (Get-AapStatusFile).state | Should -Be 'off'
         }
 
+        It 'keeps the distro when desired flips to on with the last observation' -Tag 'off-recheck' {
+            $script:responder = {
+                param($line)
+                if ($line -like '*is-active aap-runner-manager') {
+                    Write-AapStateFile '{"desired":"on"}'
+                    return (Get-AapFakeResult 3 'inactive')
+                }
+                return (Get-AapFakeResult 0 '')
+            }
+            Invoke-AapCycle
+            $script:calls | Should -Not -Contain 'wsl --terminate aap-runner'
+            $script:calls[-1] | Should -Be 'wsl -d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --undrain'
+            $AapRt.Mode | Should -Be 'on'
+            $script:keep.Killed | Should -BeFalse
+        }
+
         It 'undrains instead of terminating when desired flips back to on' {
             $script:activeLeft = 1000
             Mock Wait-AapInterval { Write-AapStateFile '{"desired":"on"}' }
@@ -1765,26 +1781,39 @@ Describe 'aap-runner host supervisor' {
                 (Get-AapStatusFile).state | Should -BeExactly 'draining'
             }
 
-            It 'Off waits for a busy slot whose backend is not loaded, never for an idle one' -Tag 'off-vm-job' {
+            It 'Off waits for every slot of a backend that is not loaded and names it' -Tag 'off-vm-job' {
                 Enable-AapFakeVm
                 Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
                 Reset-AapFakeDistro 1 9 28 @('idle')
                 Invoke-AapCycle
                 Invoke-AapMinute 4
                 $vms = @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' })
-                $cap = @{ Root = $AapRt.CapRoot; ReservationId = $vms[0].reservation_id; LeaseGeneration = $vms[0].lease_generation; RelaxedTrustForTests = $true; WarningAction = 'SilentlyContinue' }
-                [void](Set-AapSlotState @cap -State busy)
+                [void](Set-AapSlotState -Root $AapRt.CapRoot -ReservationId $vms[0].reservation_id -LeaseGeneration $vms[0].lease_generation -State busy -RelaxedTrustForTests -WarningAction SilentlyContinue)
+                $loaded = $AapRt.Vm.windows
                 $AapRt.Vm.windows = $null
                 $AapCfg.DrainTimeoutSeconds = 30
                 Write-AapStateFile '{"desired":"off"}'
                 Invoke-AapCycle
                 $script:calls | Should -Not -Contain 'wsl --terminate aap-runner'
-                @(Get-AapCapLive | ForEach-Object { $_.state }) -join ',' | Should -Match 'busy'
-                @(Get-AapCapLive | Where-Object { $_.reservation_id -ceq $vms[1].reservation_id })[0].state | Should -BeExactly 'ready'
-                # The job ends: the slot leaves busy. The idle one, which nothing here can tear down, does not hold Off.
-                [void](Set-AapSlotState @cap -State collecting)
+                $AapRt.Mode | Should -BeExactly 'on'
+                # Both are marked draining (the idle one too); nothing here can tear them down.
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' } | ForEach-Object { $_.state }) -join ',' | Should -Be 'draining,draining'
+                (Get-AapStatusFile).detail | Should -Match 'no backend loaded for 2 windows VM slots'
+                # The backend is back: it tears both down, and Off stops the distro.
+                $AapRt.Vm.windows = $loaded
                 Invoke-AapCycle
                 $script:calls | Should -Contain 'wsl --terminate aap-runner'
+            }
+
+            It 'Off stops the distro when no VM slot can exist, even with no allocator state' -Tag 'off-cap-ready' {
+                $file = Join-Path $TestDrive 'not-a-folder'
+                [IO.File]::WriteAllText($file, '')
+                $AapRt.CapRoot = Join-Path $file 'capacity'
+                $AapRt.Mode = 'on'
+                Write-AapStateFile '{"desired":"off"}'
+                Invoke-AapCycle
+                $script:calls | Should -Contain 'wsl --terminate aap-runner'
+                $AapRt.Mode | Should -BeExactly 'off'
             }
 
             It 'a Pause during a legacy drain reaches the VM slots' -Tag 'wait-pause' {
@@ -2054,8 +2083,31 @@ Describe 'aap-runner host supervisor' {
             $script:calls[-1] | Should -Be 'wsl --terminate aap-runner'
             @($script:calls | Where-Object { $_ -like '*/usr/local/sbin/aap-runner-manager -*' }).Count | Should -Be 0
             @($script:calls | Where-Object { $_ -like '*limits.conf*' }).Count | Should -Be 0
-            Get-AapLogText | Should -Match 'WARN no drain'
             (Get-AapStatusFile).state | Should -Be 'off'
+        }
+
+        It 'Off with a manager that cannot drain stops the distro only once it is provably idle (<case>)' -Tag 'off-old-busy' -ForEach @(
+            @{ case = 'a running job'; status = '{"state":"running","slots":[{"slot":1,"state":"running","job":"build"}]}'; stops = $false }
+            @{ case = 'an unreadable status'; status = 'not json'; stops = $false }
+            @{ case = 'idle'; status = '{"state":"idle","slots":[{"slot":1,"state":"idle","job":""}]}'; stops = $true }
+        ) {
+            $script:mgrStatus = $status
+            $script:responder = {
+                param($line)
+                if ($line -like '*/bin/grep -q -- --undrain *') { return (Get-AapFakeResult 1 '') }
+                if ($line -like '*is-active aap-runner-manager') { return (Get-AapFakeResult 0 'active') }
+                if ($line -like '*cat /run/aap-runner/status.json') { return (Get-AapFakeResult 0 $script:mgrStatus) }
+                return (& $script:healthy $line)
+            }
+            $AapRt.Mode = 'on'
+            Write-AapStateFile '{"desired":"off"}'
+            Invoke-AapCycle
+            ($script:calls -contains 'wsl --terminate aap-runner') | Should -Be $stops
+            @($script:calls | Where-Object { $_ -like '*/usr/local/sbin/aap-runner-manager -*' }).Count | Should -Be 0
+            if (-not $stops) {
+                $AapRt.Mode | Should -Be 'on'
+                (Get-AapStatusFile).state | Should -Be 'draining'
+            }
         }
 
         It 'probes once and keeps the normal sequence when the probe passes' {

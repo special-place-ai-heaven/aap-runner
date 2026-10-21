@@ -151,6 +151,8 @@ function Initialize-AapRuntime {
     $AapRt.CapWhy = $null
     # grant_waits: raised legacy totals wait for the slots' next grant.
     $AapRt.HoldWhy = $null
+    # VM slots of a profile whose backend is not loaded (Get-AapVmOrphans).
+    $AapRt.VmOrphans = $null
     $AapRt.CapFlags = @()
     # The last refusal or error logged, per allocator call.
     $AapRt.CapLogged = @{}
@@ -1505,7 +1507,7 @@ function Test-AapLegacyWanted {
 # status-settings.md), an allocator error, a refused limits file, a refused
 # settings file, VM slots past the lease wall clock, the stopped legacy pool.
 function Get-AapDetail {
-    $parts = @($AapRt.CapWhy, $AapRt.HoldWhy, $AapRt.CapError, $AapRt.RefusedWhy, $AapRt.SettingsWhy) + @($AapRt.CapFlags)
+    $parts = @($AapRt.CapWhy, $AapRt.HoldWhy, $AapRt.CapError, $AapRt.VmOrphans, $AapRt.RefusedWhy, $AapRt.SettingsWhy) + @($AapRt.CapFlags)
     if ($AapRt.ManagerStopped) { $parts += 'legacy pool stopped: no Linux slot is granted' }
     return (@($parts | Where-Object { $_ }) -join '; ')
 }
@@ -1757,6 +1759,18 @@ function Invoke-AapVmSteps {
         $AapRt.Steps[$r.reservation_id] = $line
     }
     foreach ($k in @($AapRt.Steps.Keys)) { if (-not $seen[$k]) { $AapRt.Steps.Remove($k) } }
+    $AapRt.VmOrphans = Get-AapVmOrphans $st.State
+}
+
+# The live VM slots of profiles whose backend is not loaded: nothing here
+# steps, drains or tears them down. For the detail; $null when there are none.
+function Get-AapVmOrphans($Doc) {
+    $n = [ordered]@{}
+    foreach ($r in @($Doc.reservations | Where-Object { $_.backend -ceq 'hyperv-vm' -and $_.state -cne 'reconciled' -and -not $AapRt.Vm[[string]$_.profile] })) {
+        $n[[string]$r.profile] = 1 + [int]$n[[string]$r.profile]
+    }
+    if (-not $n.Count) { return $null }
+    return "no backend loaded for $(@($n.Keys | ForEach-Object { "$($n[$_]) $_ VM slots" }) -join ' and '): not stepped or torn down, Off waits for them"
 }
 
 # Pause and Off (allocator INTEGRATION.md, P12 item 9): every ready or busy VM
@@ -1767,8 +1781,9 @@ function Invoke-AapVmDrain {
     if (-not ($AapRt.Cap -and $AapRt.CapReady)) { return }
     $st = Invoke-AapCap 'Get-AapAllocatorState'
     if (-not $st.Ok) { return }
-    # A slot whose backend is not loaded cannot be stepped: it keeps its state.
-    foreach ($r in @($st.State.reservations | Where-Object { $_.backend -ceq 'hyperv-vm' -and $AapRt.Vm[[string]$_.profile] })) {
+    # Also a slot whose backend is not loaded: it is marked, but nothing stops
+    # its runner or tears it down until that backend is loaded (the detail says so).
+    foreach ($r in @($st.State.reservations | Where-Object { $_.backend -ceq 'hyperv-vm' })) {
         if ($r.state -ceq 'ready' -or $r.state -ceq 'busy') {   # check:vm-drain
             $d = Invoke-AapCap 'Set-AapSlotState' @{ ReservationId = [string]$r.reservation_id; LeaseGeneration = [long]$r.lease_generation; State = 'draining' }
             if ($d.Status -ceq 'ok') { Write-AapLog "vm $($r.profile) slot $($r.slot) $($r.reservation_id): $($r.state) -> draining" }
@@ -1777,12 +1792,13 @@ function Invoke-AapVmDrain {
 }
 
 # Off: the VM slots finish their jobs and are torn down before the distro,
-# where the broker releases their runners, stops. 'gone'; 'unknown' (the
-# allocator state is not readable) or 'timeout' (logged), and Off
-# keeps the distro; 'aborted' when state.json says $AbortWhen, like
-# Wait-AapManagerInactive. A slot whose backend is loaded counts until it is
-# reconciled; one whose backend is not loaded cannot be torn down here and
-# counts while its record may hold a job (busy, draining or quarantined).
+# where the broker releases their runners, stops. 'gone' only without the
+# capacity module (no VM slot can exist) or once every VM slot is
+# reconciled, whatever its backend: a slot whose backend is not loaded
+# cannot be torn down here, so it holds Off until that backend is loaded.
+# 'unknown' when the allocator state cannot be read while a VM backend is
+# loaded or the capacity folder holds anything, 'timeout' (logged): Off
+# keeps the distro. 'aborted' when state.json says $AbortWhen.
 function Wait-AapVmGone([string]$AbortWhen) {
     if (-not $AapRt.Cap) { return 'gone' }
     $deadline = (Get-AapNow).AddSeconds($AapCfg.DrainTimeoutSeconds)
@@ -1790,10 +1806,15 @@ function Wait-AapVmGone([string]$AbortWhen) {
         Invoke-AapVmDrain
         Invoke-AapVmSteps
         $st = Invoke-AapCap 'Get-AapAllocatorState'
-        if (-not $st.Ok) { return 'unknown' }   # check:off-cap-ready
+        if (-not $st.Ok) {
+            $held = $AapRt.Vm.windows -or $AapRt.Vm.linux -or ([IO.Directory]::Exists($AapRt.CapRoot) -and @([IO.Directory]::GetFileSystemEntries($AapRt.CapRoot)).Count)
+            if ($held) { return 'unknown' }   # check:off-cap-ready
+            return 'gone'
+        }
+        $AapRt.VmOrphans = Get-AapVmOrphans $st.State
         $n = 0
-        foreach ($r in @($st.State.reservations | Where-Object { $_.backend -ceq 'hyperv-vm' -and $_.state -cne 'reconciled' })) {
-            if ($AapRt.Vm[[string]$r.profile] -or @('busy', 'draining', 'quarantined') -ccontains $r.state) { $n++ }   # check:off-vm-job
+        foreach ($r in @($st.State.reservations | Where-Object { $_.backend -ceq 'hyperv-vm' })) {
+            if ($r.state -cne 'reconciled') { $n++ }   # check:off-vm-job
         }
         if ($n -eq 0) { return 'gone' }
         if ((Get-AapNow) -ge $deadline) {
@@ -1801,9 +1822,18 @@ function Wait-AapVmGone([string]$AbortWhen) {
             return 'timeout'
         }
         if ((Read-AapDesired) -eq $AbortWhen) { return 'aborted' }
-        Write-AapStatus 'draining' '' "stopping: waiting for $n VM slots"
+        Write-AapStatus 'draining' '' ((@("stopping: waiting for $n VM slots", $AapRt.VmOrphans) | Where-Object { $_ }) -join '; ')
         Wait-AapInterval $AapCfg.DrainPollSeconds
     }
+}
+
+# For a manager without --drain: idle only when its unit is inactive, or its
+# status.json says idle with every slot idle. Unreadable or unknown is busy.
+function Test-AapManagerIdle {
+    $lines = @(Split-AapLine (Invoke-AapRoot @('/bin/systemctl', 'is-active', 'aap-runner-manager')).Out)
+    if ($lines.Count -ge 1 -and ($lines[0] -eq 'inactive' -or $lines[0] -eq 'failed')) { return $true }
+    $m = ConvertFrom-AapManagerStatus (Invoke-AapRoot @('/bin/cat', '/run/aap-runner/status.json')).Out
+    return ($null -ne $m -and $m.State -ceq 'idle' -and @($m.Slots | Where-Object { $_.state -cne 'idle' }).Count -eq 0)
 }
 
 # On -> Off. Off wins over paused. Drain lets the running job finish. If the
@@ -1833,7 +1863,12 @@ function Invoke-AapOff {
             return
         }
     } else {
-        Write-AapLog "WARN no drain: $AapOldManager; terminating, which ends any running job"
+        # An old manager cannot drain: the distro stops only once it is
+        # provably idle. A job it starts right after that read still ends.
+        if (-not (Test-AapManagerIdle)) {   # check:off-old-busy
+            Write-AapStatus 'draining' '' "stopping: waiting for the legacy job to end; $AapOldManager"
+            return
+        }
     }
     $g = Wait-AapVmGone 'on'
     if ($g -eq 'aborted') {
@@ -1844,7 +1879,16 @@ function Invoke-AapOff {
         return
     }
     if ($g -ne 'gone') {   # check:off-vm-busy
-        Write-AapStatus 'draining' '' "stopping: VM slots may still run jobs ($g); Off waits on"
+        Write-AapStatus 'draining' '' ((@("stopping: VM slots may still run jobs ($g); Off waits on", $AapRt.VmOrphans) | Where-Object { $_ }) -join '; ')
+        return
+    }
+    # The waits end on their last observation; desired is read once more
+    # right before the distro stops.
+    if ((Read-AapDesired) -ne 'off') {   # check:off-recheck
+        Write-AapLog 'desired is on again before terminate; undraining'
+        if ($AapRt.ManagerOk) { [void](Invoke-AapRoot @($AapManager, '--undrain')) }
+        $AapRt.Paused = $false
+        $AapRt.NextHealth = [DateTimeOffset]::MinValue
         return
     }
     $r = Invoke-AapWsl -Arguments @('--terminate', $AapCfg.Distro)
@@ -1864,6 +1908,7 @@ function Invoke-AapOff {
     $AapRt.CapReady = $false
     $AapRt.CapWhy = $null
     $AapRt.HoldWhy = $null
+    $AapRt.VmOrphans = $null
     $AapRt.CapFlags = @()
     Write-AapStatus 'off' '' 'stopped'
 }
