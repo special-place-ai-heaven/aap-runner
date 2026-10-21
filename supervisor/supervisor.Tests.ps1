@@ -10,7 +10,32 @@
 
 Describe 'aap-runner host supervisor' {
     BeforeAll {
-        . (Join-Path $PSScriptRoot 'aap-runner-supervisor.ps1')
+        # The mutation runner (tests/supervisor) points this at a mutated copy.
+        $script:sup = Join-Path $PSScriptRoot 'aap-runner-supervisor.ps1'
+        if ($env:AAP_SUPERVISOR_SCRIPT) { $script:sup = $env:AAP_SUPERVISOR_SCRIPT }
+        . $script:sup
+        $script:fixtures = Join-Path $PSScriptRoot '..\parity\contracts\fixtures'
+        $script:validator = Join-Path $PSScriptRoot '..\parity\contracts\validate.py'
+
+        # A contract fixture as the file a writer would produce: an invalid one is
+        # wrapped as {"expect": ..., "instance": ...}.
+        function Get-AapFixture([string]$Path) {
+            $text = Get-Content -Raw -LiteralPath (Join-Path $script:fixtures $Path)
+            $o = $text | ConvertFrom-Json
+            if ($o.PSObject.Properties['instance']) { return (ConvertTo-Json $o.instance -Compress -Depth 8) }
+            return $text
+        }
+
+        function Get-AapV5File {
+            return Get-Content -Raw -LiteralPath (Join-Path $AapCfg.DataDir 'status.v5.json') | ConvertFrom-Json
+        }
+
+        # parity/contracts/validate.py on the status.v5.json just written: 'ok' or its verdict.
+        function Test-AapV5Contract {
+            $out = & python $script:validator status-v5 (Join-Path $AapCfg.DataDir 'status.v5.json') 2>&1
+            if ($LASTEXITCODE -eq 0) { return 'ok' }
+            return ($out | Out-String).Trim()
+        }
 
         function Get-AapFakeResult([int]$Code, [string]$Out) {
             return [pscustomobject]@{ Code = $Code; Out = $Out; Err = ''; TimedOut = $false }
@@ -83,6 +108,11 @@ Describe 'aap-runner host supervisor' {
         Mock Get-ScheduledTaskInfo { return [pscustomobject]@{ LastTaskResult = $script:mountResult } }
         # Never touch the live vmmemWSL from a test.
         Mock Set-AapVmPriority { }
+        # A fixed host: 32 logical CPUs, 96 GiB.
+        Mock Get-AapHostInfo {
+            return [ordered]@{ cpu_cores = [long]32; mem_gib = [long]96; volumes = @(Get-AapHostVolumes $Doc); io_mbps = [long]$script:hostIo; control_distro_mem_gib = [long]2 }
+        }
+        $script:hostIo = 0
     }
 
     Describe 'state.json parsing' {
@@ -1042,6 +1072,712 @@ Describe 'aap-runner host supervisor' {
             $AapRt.Mode | Should -Be 'off'
             $AapRt.Paused | Should -BeFalse
             (Get-AapStatusFile).state | Should -Be 'off'
+        }
+    }
+
+    Describe 'status.v5.json without the capacity module' {
+        It 'is written beside status.json and passes the contract check' -Tag 'v5' {
+            Write-AapStatus 'off' '' ''
+            $v = Get-AapV5File
+            $v.schema | Should -Be 5
+            $v.state | Should -BeExactly 'off'
+            @($v.settings_schemas) -join ',' | Should -Be '1,2'
+            $v.applied_settings_schema | Should -BeNullOrEmpty
+            $v.profiles[0].profile | Should -BeExactly 'linux'
+            $v.profiles[0].backend | Should -BeExactly 'wsl-legacy'
+            $v.profiles[1].backend | Should -BeExactly 'none'
+            $v.profiles[1].available | Should -BeFalse
+            $v.profiles[1].unavailable_reason | Should -BeExactly 'capacity module not installed'
+            $v.storage.state | Should -BeExactly 'unconfigured'
+            $v.capacity.host.cpus | Should -Be 32
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'mirrors the legacy pool slots with Linux on every slot' -Tag 'v5' {
+            $script:managerJson = '{"schema":4,"state":"running","job":"ci-1","runner_count":2,"job_cpus":16,"job_memory":"32g","job_io_mbps":120,"sharing":"fixed","sampled_at":1760436000,"work_disk_gib":200,"work_disk_free_gb":120.7,"work_disk_floor_gb":15,"cleaning":false,"slots":[{"slot":1,"state":"running","job":"ci\u202e-1\u0007","repo":"o/r","run_url":"https://github.com/o/r/actions/runs/9","job_url":"https://github.com/o/r/actions/runs/9/job/77","started_at":1760436000,"cpu_cores":6.2,"mem_gib":12.5},{"slot":2,"state":"idle"}]}'
+            $script:responder = {
+                param($line)
+                if ($line -like '*cat /run/aap-runner/status.json') { return (Get-AapFakeResult 0 $script:managerJson) }
+                return (& $script:healthy $line)
+            }
+            Write-AapStateFile '{"desired":"on"}'
+            Write-AapSettingsFile '{"schema":2,"runner_count":2,"job_cpus":16,"job_memory_gib":32,"paused":false,"windows_runner_count":3}'
+            Invoke-AapCycle
+            $v = Get-AapV5File
+            $v.state | Should -BeExactly 'running'
+            $v.applied_settings_schema | Should -Be 2
+            $v.profiles[0].count | Should -Be 2
+            $v.profiles[1].count | Should -Be 0
+            $v.profiles[0].profile_cap.cpus | Should -Be 16
+            $v.profiles[0].per_runner.mem_gib | Should -Be 16
+            @($v.slots).Count | Should -Be 2
+            $v.slots[0].os | Should -BeExactly 'Linux'
+            $v.slots[0].lifecycle | Should -BeExactly 'busy'
+            $v.slots[0].job | Should -BeExactly 'ci -1'
+            $v.slots[1].lifecycle | Should -BeExactly 'ready'
+            $v.slots[1].job_url | Should -BeNullOrEmpty
+            $v.legacy_pool.work_disk_free_gb | Should -Be 120
+            $v.legacy_pool.sharing | Should -BeExactly 'fixed'
+            [IO.File]::ReadAllText((Join-Path $AapCfg.DataDir 'status.v5.json')) | Should -Match '"started_at":"2025-10-14T10:00:00Z"'
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'refuses settings schema 3 and names the newer schema in the detail' -Tag 'settings-newer' {
+            $AapRt.Mode = 'on'
+            $AapRt.ManagerOk = $true
+            $AapRt.KeepAlive = Get-AapFakeProcess
+            Write-AapStateFile '{"desired":"on"}'
+            Write-AapSettingsFile '{"runner_count":3,"job_cpus":12,"job_memory_gib":48,"paused":false}'
+            [void](Read-AapSettingsFile)
+            Write-AapSettingsFile (Get-AapFixture 'settings-v3\valid\owner-example-per-profile.json')
+            Invoke-AapCycle
+            Get-AapLimitsKey $AapRt.Settings.Limits | Should -Be '3,12,48'
+            (Get-AapStatusFile).detail | Should -Match 'settings.json schema 3 is newer than this supervisor accepts \(1, 2\)'
+            (Get-AapV5File).detail | Should -Match 'schema 3 is newer'
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+    }
+
+    Describe 'settings.json schema 3' {
+        BeforeEach {
+            $AapRt.Cap = $true
+            $AapRt.Generation.linux = $null
+            Write-AapSettingsFile '{"runner_count":3,"job_cpus":12,"job_memory_gib":48,"paused":true}'
+            [void](Read-AapSettingsFile)
+        }
+
+        It 'accepts the valid contract fixture <name>' -TestCases @(
+            @{ name = 'owner-example-per-profile'; linux = 3; windows = 2; mode = 'per_profile'; shares = '60,30' }
+            @{ name = 'legacy-totals-capped-by-share'; linux = 3; windows = 2; mode = 'per_profile'; shares = '60,30' }
+            @{ name = 'windows-only-even'; linux = 0; windows = 2; mode = 'even'; shares = ',' }
+        ) {
+            Write-AapSettingsFile (Get-AapFixture "settings-v3\valid\$name.json")
+            $s = Read-AapSettingsFile
+            $s.Schema | Should -Be 3
+            $s.Profiles.Linux | Should -Be $linux
+            $s.Profiles.Windows | Should -Be $windows
+            $s.Profiles.ShareMode | Should -BeExactly $mode
+            "$($s.Profiles.LinuxShare),$($s.Profiles.WindowsShare)" | Should -Be $shares
+            $s.Profiles.Reserve | Should -Be 10
+            $s.Profiles.LeaseHours | Should -Be 6
+            $s.Limits.RunnerCount | Should -Be $linux
+            Get-AapLogText | Should -Not -Match 'WARN'
+        }
+
+        It 'refuses the invalid contract fixture <name> and keeps the last valid settings' -Tag 'v3-counts', 'v3-reserve', 'v3-zero-share' -TestCases @(
+            @{ name = 'future-schema-4'; tag = 'settings-newer' }
+            @{ name = 'share-for-zero-count'; tag = 'v3-zero-share' }
+            @{ name = 'shares-plus-reserve-not-100'; tag = 'v3-reserve' }
+            @{ name = 'shares-sum-95'; tag = 'v3-reserve' }
+            @{ name = 'string-count'; tag = '' }
+            @{ name = 'three-plus-three'; tag = 'v3-counts' }
+            @{ name = 'unknown-linux-backend'; tag = '' }
+            @{ name = 'zero-plus-zero'; tag = 'v3-counts' }
+        ) {
+            Write-AapSettingsFile (Get-AapFixture "settings-v3\invalid\$name.json")
+            $s = Read-AapSettingsFile
+            Get-AapLimitsKey $s.Limits | Should -Be '3,12,48'
+            $s.Paused | Should -BeTrue
+            Get-AapLogText | Should -Match 'WARN settings.json'
+        }
+
+        It 'names a newer schema for the status detail until a valid file arrives' -Tag 'settings-newer' {
+            Write-AapSettingsFile (Get-AapFixture 'settings-v3\invalid\future-schema-4.json')
+            [void](Read-AapSettingsFile)
+            $AapRt.SettingsWhy | Should -BeExactly 'settings.json schema 4 is newer than this supervisor accepts (1, 2, 3)'
+            Get-AapDetail | Should -Match 'schema 4 is newer'
+            Write-AapSettingsFile (Get-AapFixture 'settings-v3\valid\windows-only-even.json')
+            [void](Read-AapSettingsFile)
+            $AapRt.SettingsWhy | Should -BeNullOrEmpty
+        }
+
+        It 'refuses <name>' -Tag 'v3-even', 'v3-zero-share', 'v3-linux-vm' -TestCases @(
+            @{ name = 'even shares that are not null'; tag = 'v3-even'; patch = @{ linux_share_percent = 60; windows_share_percent = 30 } }
+            @{ name = 'a 0 count with a share'; tag = 'v3-zero-share'; patch = @{ share_mode = 'per_profile'; runner_count = 0; windows_runner_count = 2; linux_share_percent = 30; windows_share_percent = 60 } }
+            @{ name = 'reserve 5'; tag = ''; patch = @{ host_reserve_percent = 5 } }
+            @{ name = 'lease hours 0'; tag = ''; patch = @{ lease_wall_clock_hours = 0 } }
+            @{ name = 'Linux on VMs without an Ubuntu generation'; tag = 'v3-linux-vm'; patch = @{ linux_backend = 'hyperv-vm' } }
+            @{ name = 'an extra key'; tag = ''; patch = @{ extra = 1 } }
+            @{ name = 'a fraction'; tag = ''; patch = @{ windows_runner_count = 1.5 } }
+        ) {
+            $o = Get-AapFixture 'settings-v3\valid\windows-only-even.json' | ConvertFrom-Json
+            foreach ($k in $patch.Keys) { $o | Add-Member -NotePropertyName $k -NotePropertyValue $patch[$k] -Force }
+            Write-AapSettingsFile (ConvertTo-Json $o -Compress)
+            $s = Read-AapSettingsFile
+            Get-AapLimitsKey $s.Limits | Should -Be '3,12,48'
+            Get-AapLogText | Should -Match 'WARN settings.json'
+        }
+
+        It 'accepts Linux on VMs while an Ubuntu generation is active' {
+            $AapRt.Generation.linux = @{ Id = 'ubuntu-24.04-x64/20261012.334.1-aap.1'; State = 'active' }
+            $o = Get-AapFixture 'settings-v3\valid\windows-only-even.json' | ConvertFrom-Json
+            $o.linux_backend = 'hyperv-vm'
+            Write-AapSettingsFile (ConvertTo-Json $o -Compress)
+            (Read-AapSettingsFile).Profiles.LinuxBackend | Should -BeExactly 'hyperv-vm'
+        }
+
+        It 'puts an allocator hold-back first in the detail' {
+            $AapRt.RefusedWhy = 'limits refused'
+            $AapRt.CapWhy = 'resize_waits: slot 5 must leave first'
+            $AapRt.CapFlags = @('slot 2 is past the 6 h lease wall clock')
+            Get-AapDetail | Should -BeExactly 'resize_waits: slot 5 must leave first; limits refused; slot 2 is past the 6 h lease wall clock'
+        }
+
+        It 'still reads schema 1 and 2 as Windows 0, even shares and reserve 10' {
+            Write-AapSettingsFile '{"schema":2,"runner_count":4,"job_cpus":8,"job_memory_gib":32,"paused":false,"windows_runner_count":1}'
+            $s = Read-AapSettingsFile
+            $s.Schema | Should -Be 2
+            $s.Profiles.Linux | Should -Be 4
+            $s.Profiles.Windows | Should -Be 0
+            $s.Profiles.ShareMode | Should -BeExactly 'even'
+            Write-AapSettingsFile '{"runner_count":4,"job_cpus":8,"job_memory_gib":32,"paused":false}'
+            (Read-AapSettingsFile).Schema | Should -Be 1
+        }
+    }
+
+    Describe 'capacity: the allocator drives the pool' {
+        BeforeAll {
+            Import-Module (Join-Path $PSScriptRoot 'capacity\AapCapacity.psm1') -Force
+
+            # A legacy manager and its distro: limits.conf, drain, the unit, status.json.
+            function Reset-AapFakeDistro([int]$Count = 3, [int]$Cpus = 28, [int]$Mem = 72, [string[]]$Slots = @('idle', 'idle', 'idle')) {
+                $script:mgr = @{
+                    Active = $true; Drained = $false; Count = $Count; Cpus = $Cpus; Mem = $Mem; Slots = $Slots
+                    Conf = "AAP_RUNNER_COUNT=$Count`nAAP_JOB_CPUS=$Cpus`nAAP_JOB_MEMORY=${Mem}g`n"; Stops = 0; Starts = 0
+                }
+                $script:responder = {
+                    param($line)
+                    $m = $script:mgr
+                    switch -Wildcard ($line) {
+                        '*is-active sysbox aap-runner-manager' { return (Get-AapFakeResult 0 ("active`n" + $(if ($m.Active) { 'active' } else { 'inactive' }))) }
+                        '*is-active aap-runner-manager' {
+                            # A drained manager exits once its jobs end; the fake's jobs end at once unless held.
+                            if ($m.Drained -and -not $script:holdJobs) { if ($m.Active) { $m.Stops++ }; $m.Active = $false }
+                            if ($m.Active) { return (Get-AapFakeResult 0 'active') }
+                            return (Get-AapFakeResult 3 'inactive')
+                        }
+                        '*aap-runner-manager --drain' { $m.Drained = $true; return (Get-AapFakeResult 0 '') }
+                        '*aap-runner-manager --undrain' { $m.Drained = $false; return (Get-AapFakeResult 0 '') }
+                        '*systemctl start*aap-runner-manager' {
+                            if (-not $m.Active) { $m.Starts++ }
+                            $m.Active = $true
+                            if ($m.Conf -match 'AAP_RUNNER_COUNT=(\d+)\nAAP_JOB_CPUS=(\d+)\nAAP_JOB_MEMORY=(\d+)g') { $m.Count = [int]$Matches[1]; $m.Cpus = [int]$Matches[2]; $m.Mem = [int]$Matches[3] }
+                            return (Get-AapFakeResult 0 '')
+                        }
+                        '*cat /etc/aap-runner/limits.conf' { return (Get-AapFakeResult 0 $m.Conf) }
+                        '*/bin/sh -c *' { $m.Conf = $script:stdin[-1]; return (Get-AapFakeResult 0 '') }
+                        '*cat /run/aap-runner/status.json' {
+                            $states = @(for ($i = 0; $i -lt $m.Count; $i++) { if ($i -lt $m.Slots.Count) { $m.Slots[$i] } else { 'idle' } })
+                            $slots = @(for ($i = 0; $i -lt $m.Count; $i++) { [ordered]@{ slot = $i + 1; state = $states[$i]; job = $(if ($states[$i] -eq 'running') { "job-$($i + 1)" } else { '' }) } })
+                            $state = $(if ($states -contains 'running') { 'running' } else { 'idle' })
+                            # The allocator reads sample times against the real clock.
+                            $at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                            if ($script:sampleAt) { $at = $script:sampleAt }
+                            $doc = [ordered]@{ schema = 4; state = $state; job = ''; runner_count = $m.Count; job_cpus = $m.Cpus; job_memory = "$($m.Mem)g"; sampled_at = $at; slots = $slots }
+                            return (Get-AapFakeResult 0 (ConvertTo-Json $doc -Compress -Depth 4))
+                        }
+                        default { return (Get-AapFakeResult 0 '') }
+                    }
+                }
+            }
+
+            # One cycle a minute later, so every cycle runs health.
+            function Invoke-AapMinute([int]$Times = 1) {
+                for ($i = 0; $i -lt $Times; $i++) {
+                    $script:clock.Now = $script:clock.Now.AddSeconds(60)
+                    Invoke-AapCycle
+                }
+            }
+
+            function Get-AapCapDoc { return (Get-AapAllocatorState -Root $AapRt.CapRoot -RelaxedTrustForTests -WarningAction SilentlyContinue).State }
+            function Get-AapCapLive { return @((Get-AapCapDoc).reservations | Where-Object { $_.state -cne 'reconciled' }) }
+
+            # A VM backend fake, by the names the supervisor calls (Kind 'Fake'): creating
+            # becomes ready with a VM id, draining runs on through teardown.
+            function Invoke-AapFakeStep {
+                param($Backend, $Reservation, $BaseSha256)
+                $r = $Reservation
+                $script:steps.Add("$($r.reservation_id) $($r.state) $BaseSha256")
+                if ($script:stepThrows -contains $r.reservation_id) { throw 'AAP_FakeBroken: the fake provider failed' }
+                $cap = @{ Root = $AapRt.CapRoot; ReservationId = $r.reservation_id; LeaseGeneration = [long]$r.lease_generation; RelaxedTrustForTests = $true; WarningAction = 'SilentlyContinue' }
+                if ($r.state -ceq 'creating') { [void](Set-AapSlotState @cap -State ready -VmId ([guid]::NewGuid().ToString())); return @{ Action = 'ready'; Code = '' } }
+                if ($r.state -ceq 'draining' -and -not $script:holdVms) {
+                    [void](Set-AapSlotState @cap -State collecting)
+                    [void](Set-AapSlotState @cap -State deleting)
+                    $proof = @{ kind = 'vm'; observed_at = [DateTime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'"); vm_absent = $true; disks_absent = $true; vm_files_absent = $true; runner_deregistered = $true }
+                    [void](Complete-AapTeardown @cap -Proof $proof)
+                    return @{ Action = 'destroyed'; Code = '' }
+                }
+                return @{ Action = 'waiting'; Code = '' }
+            }
+            function Get-AapFakeInventory {
+                param($Backend)
+                $live = @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' })
+                $vms = @($live | Where-Object { $_.vm_id } | ForEach-Object { @{ name = (Get-AapVmName -Profile $_.profile -Slot $_.slot -LeaseGeneration $_.lease_generation -ReservationId $_.reservation_id); vm_id = $_.vm_id; cpus = [int]$_.cpus; mem_gib = [int]$_.mem_gib } })
+                $ids = @($live | ForEach-Object { [string]$_.reservation_id })
+                return @{ vms = [object[]]$vms; folders = [object[]]$ids; journaled = [object[]]$ids }
+            }
+            function Get-AapFakeBrokerStatus { param($Backend, $Reservation) return @{ status = 'online'; busy = $true; job_ended = $false } }
+            function Get-AapFakeStorageProblem { param($Backend) return @($script:storageProblems) }
+            function Get-AapFakeHostProblem { param($Backend) return @($script:hostProblems) }
+
+            # The short (8.3) names CI's TEMP has would not pass the root pattern.
+            function Get-AapLongPath([string]$Path) {
+                $parts = $Path.TrimEnd('\').Split('\')
+                $long = $parts[0] + '\'
+                foreach ($p in $parts[1..($parts.Count - 1)]) { $long = Join-Path $long (New-Object IO.DirectoryInfo $long).GetDirectories($p)[0].Name }
+                return $long
+            }
+
+            function Enable-AapFakeVm([string[]]$Profiles = @('windows')) {
+                $base = Get-AapLongPath $TestDrive
+                $roots = @{}
+                foreach ($t in 'base', 'clone', 'scratch') {
+                    $roots[$t] = Join-Path $base "vm-$t-$([guid]::NewGuid().ToString('n').Substring(0, 6))"
+                    [void](New-Item -ItemType Directory -Path $roots[$t])
+                }
+                $guid = '00000000-0000-4000-8000-000000000001'
+                $b = @{ Storage = @{ FloorGib = 30; base_root = @{ Path = $roots.base; Guid = $guid }; clone_root = @{ Path = $roots.clone; Guid = $guid }; scratch_root = @{ Path = $roots.scratch; Guid = $guid } } }
+                foreach ($p in $Profiles) {
+                    $AapRt.Vm[$p] = @{ Kind = 'Fake'; B = $b }
+                    $AapRt.Generation[$p] = @{ Id = $script:gen[$p]; State = 'active'; BaseSha256 = ('ab' * 32); MemOverheadMib = 512; CloneGib = 40; ScratchGib = $(if ($p -eq 'windows') { 20 } else { 0 }); IoMbps = 50 }
+                }
+                $script:hostIo = 400
+            }
+        }
+
+        BeforeEach {
+            $AapRt.Cap = $true
+            $AapRt.CapRoot = Join-Path $AapCfg.DataDir 'capacity'
+            $AapRt.CapArgs = @{ RelaxedTrustForTests = $true; WarningAction = 'SilentlyContinue' }
+            $AapRt.VmWhy = @{ linux = 'the host network module (P10.0) is not installed'; windows = 'the host network module (P10.0) is not installed' }
+            $script:gen = @{ windows = 'win25-vs2026-x64/20261007.264.1-aap.1'; linux = 'ubuntu-24.04-x64/20261012.334.1-aap.1' }
+            $script:steps = New-Object System.Collections.Generic.List[string]
+            $script:stepThrows = @()
+            $script:storageProblems = @()
+            $script:hostProblems = @()
+            $script:holdJobs = $false
+            $script:holdVms = $false
+            $script:sampleAt = $null
+            Mock Get-AapFreeGib { return [long]500 }
+            Reset-AapFakeDistro
+            Write-AapStateFile '{"desired":"on"}'
+        }
+
+        It 'adopts the running legacy pool and reports each slot with its job' -Tag 'v5' {
+            Reset-AapFakeDistro 3 27 72 @('running', 'idle', 'idle')
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":27,"job_memory_gib":72,"paused":false}'
+            Invoke-AapCycle
+            Invoke-AapMinute
+            $doc = Get-AapCapDoc
+            $doc.legacy_adopted | Should -BeTrue
+            @(Get-AapCapLive | Where-Object { $_.backend -ceq 'wsl-legacy' }).Count | Should -Be 3
+            $script:mgr.Starts | Should -Be 0 -Because 'adopting the pool as it runs restarts nothing'
+            $v = Get-AapV5File
+            @($v.settings_schemas) -join ',' | Should -Be '1,2,3'
+            $v.capacity.used_slots | Should -Be 3
+            $v.profiles[0].generation_state | Should -BeExactly 'active'
+            $v.profiles[1].unavailable_reason | Should -Match 'P10.0'
+            @($v.slots | Where-Object { $_.job -eq 'job-1' }).Count | Should -Be 1
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'caps the legacy pool to the Linux share and keeps the reserve (owner example)' -Tag 'adopt-target', 'settings-max' {
+            Write-AapSettingsFile (Get-AapFixture 'settings-v3\valid\owner-example-per-profile.json')
+            Invoke-AapCycle
+            # 32 CPUs and 96 GiB: Linux 60 % = 19 CPUs and 57 GiB, 6 CPUs and 19 GiB each.
+            $script:stdin | Should -Contain "AAP_RUNNER_COUNT=3`nAAP_JOB_CPUS=18`nAAP_JOB_MEMORY=57g`nAAP_JOB_IO_PERCENT=90`nAAP_POOL_SHARING=slice`n"
+            Invoke-AapMinute 2
+            (Get-AapCapDoc).legacy_adopted | Should -BeTrue
+            $v = Get-AapV5File
+            $v.capacity.share_mode | Should -BeExactly 'per_profile'
+            $v.profiles[0].share_percent | Should -Be 60
+            $v.profiles[0].profile_cap.cpus | Should -Be 19
+            $v.profiles[0].per_runner.mem_gib | Should -Be 19
+            $v.profiles[1].share_percent | Should -Be 30
+            $v.profiles[1].profile_cap.mem_gib | Should -Be 28
+            $v.profiles[1].count | Should -Be 2
+            $v.profiles[1].available | Should -BeFalse
+            ($v.profiles[0].profile_cap.cpus + $v.profiles[1].profile_cap.cpus) | Should -BeLessOrEqual ([Math]::Floor(32 * 0.9))
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'never writes limits.conf above the settings' -Tag 'settings-max' {
+            Reset-AapFakeDistro 3 27 72
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":27,"job_memory_gib":72,"paused":false}'
+            Invoke-AapCycle
+            Invoke-AapMinute
+            (Get-AapCapDoc).legacy_adopted | Should -BeTrue
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":12,"job_memory_gib":36,"paused":false}'
+            Invoke-AapMinute
+            $script:stdin[-1] | Should -BeExactly "AAP_RUNNER_COUNT=3`nAAP_JOB_CPUS=12`nAAP_JOB_MEMORY=36g`n"
+        }
+
+        It 'grants a legacy slot before the manager runs it' -Tag 'legacy-stop' {
+            Reset-AapFakeDistro 3 27 72
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":27,"job_memory_gib":72,"paused":false}'
+            Invoke-AapCycle
+            Invoke-AapMinute
+            Write-AapSettingsFile '{"schema":2,"runner_count":4,"job_cpus":28,"job_memory_gib":72,"paused":false}'
+            Invoke-AapMinute 2
+            @(Get-AapCapLive | Where-Object { $_.backend -ceq 'wsl-legacy' -and (Test-AapGranted $_) }).Count | Should -Be 4
+            $script:mgr.Count | Should -Be 4
+            $script:stdin -join '|' | Should -Not -Match 'AAP_RUNNER_COUNT=0'
+        }
+
+        It 'waits for a fresh manager sample before adopting' -Tag 'adopt-target' {
+            # A sample from 2025: adoption is refused as stale and limits.conf stays as it is.
+            $script:sampleAt = 1760436000
+            Write-AapSettingsFile '{"schema":2,"runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false}'
+            Invoke-AapCycle
+            Invoke-AapMinute 2
+            (Get-AapCapDoc).legacy_adopted | Should -BeFalse
+            @($script:stdin).Count | Should -Be 0
+            $script:mgr.Count | Should -Be 3
+        }
+
+        It 'drains and stops a running legacy pool when Linux goes to 0' -Tag 'legacy-stop' {
+            Reset-AapFakeDistro 3 27 72
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":27,"job_memory_gib":72,"paused":false}'
+            Invoke-AapCycle
+            Invoke-AapMinute
+            $AapRt.ManagerStopped | Should -BeFalse
+            Write-AapSettingsFile (Get-AapFixture 'settings-v3\valid\windows-only-even.json')
+            Invoke-AapMinute 2
+            $AapRt.ManagerStopped | Should -BeTrue
+            $script:mgr.Active | Should -BeFalse
+            @(Get-AapCapLive | Where-Object { $_.backend -ceq 'wsl-legacy' }).Count | Should -Be 0 -Because 'the stopped manager releases its slots'
+            (Get-AapStatusFile).detail | Should -Match 'legacy pool stopped'
+        }
+
+        It 'stops the manager for Linux 0, keeps the distro up and adopts the stopped pool' -Tag 'legacy-stop', 'stop-inactive' {
+            Write-AapSettingsFile (Get-AapFixture 'settings-v3\valid\windows-only-even.json')
+            Invoke-AapCycle
+            $script:calls | Should -Not -Contain 'wsl -d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --undrain'
+            $script:calls | Should -Contain 'wsl -d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --drain'
+            $AapRt.ManagerStopped | Should -BeTrue
+            Invoke-AapMinute 2
+            $script:mgr.Active | Should -BeFalse
+            $script:calls | Should -Not -Contain 'wsl --terminate aap-runner'
+            $script:calls | Should -Contain 'wsl -d aap-runner --exec /bin/sleep infinity'
+            $script:stdin -join '|' | Should -Not -Match 'AAP_RUNNER_COUNT=0'
+            (Get-AapCapDoc).legacy_adopted | Should -BeTrue
+            $s = Get-AapStatusFile
+            $s.state | Should -BeExactly 'idle'
+            $s.detail | Should -Match 'legacy pool stopped'
+            $v = Get-AapV5File
+            $v.profiles[0].count | Should -Be 0
+            $v.profiles[0].image_generation | Should -BeNullOrEmpty
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'does not stop the manager while its job still runs' -Tag 'stop-inactive' {
+            Reset-AapFakeDistro 3 27 72
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":27,"job_memory_gib":72,"paused":false}'
+            Invoke-AapCycle
+            Invoke-AapMinute
+            $AapCfg.DrainTimeoutSeconds = 30
+            $script:holdJobs = $true
+            Write-AapSettingsFile (Get-AapFixture 'settings-v3\valid\windows-only-even.json')
+            Invoke-AapMinute
+            $AapRt.ManagerStopped | Should -BeFalse
+            $script:mgr.Active | Should -BeTrue
+            Get-AapLogText | Should -Match 'drain timeout'
+        }
+
+        It 'starts the manager again once Linux slots are granted' {
+            Write-AapSettingsFile (Get-AapFixture 'settings-v3\valid\windows-only-even.json')
+            Invoke-AapCycle
+            Invoke-AapMinute
+            $AapRt.ManagerStopped | Should -BeTrue
+            $o = Get-AapFixture 'settings-v3\valid\windows-only-even.json' | ConvertFrom-Json
+            $o.runner_count = 2
+            $o.windows_runner_count = 0
+            Write-AapSettingsFile (ConvertTo-Json $o -Compress)
+            Invoke-AapMinute 2
+            $AapRt.ManagerStopped | Should -BeFalse
+            $script:mgr.Active | Should -BeTrue
+            $script:mgr.Count | Should -Be 2
+        }
+
+        It 'shows an allocator error, admits nothing and leaves the legacy pool running' {
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":false}'
+            Invoke-AapCycle
+            Invoke-AapMinute
+            [IO.File]::WriteAllText((Join-Path $AapRt.CapRoot 'allocator.json'), '{"schema":2,"revision":')
+            $script:calls.Clear()
+            Invoke-AapMinute
+            $s = Get-AapStatusFile
+            $s.state | Should -BeExactly 'error'
+            $s.detail | Should -Match 'allocator invalid_state'
+            $script:calls | Should -Not -Contain 'wsl -d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --drain'
+            (Get-AapV5File).state | Should -BeExactly 'error'
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'refuses to initialize over a lost allocator state' {
+            [void](New-Item -ItemType Directory -Force -Path $AapRt.CapRoot)
+            $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $out = & icacls.exe $AapRt.CapRoot /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' "*${me}:(OI)(CI)F" 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "icacls failed: $out" }
+            [IO.File]::WriteAllText((Join-Path $AapRt.CapRoot 'allocator.log'), 'old')
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":false}'
+            Invoke-AapCycle
+            Invoke-AapMinute
+            (Get-AapStatusFile).detail | Should -Match 'invalid_state'
+            Test-Path -LiteralPath (Join-Path $AapRt.CapRoot 'allocator.json') | Should -BeFalse
+        }
+
+        Context 'VM profiles through the backend calls' {
+            It 'admits Windows slots on the generation budget and steps each with its pinned hash' -Tag 'vm-admit', 'admit-after-adoption' {
+                Enable-AapFakeVm
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"per_profile","linux_share_percent":30,"windows_share_percent":60,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 0 -Because 'no VM before the legacy pool is adopted'
+                Invoke-AapMinute 3
+                $vms = @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' })
+                $vms.Count | Should -Be 2
+                $vms[0].clone_gib | Should -Be 40
+                $vms[0].scratch_gib | Should -Be 20
+                $vms[0].mem_overhead_mib | Should -Be 512
+                $vms[0].image_generation | Should -BeExactly $script:gen.windows
+                @($script:steps | Where-Object { $_ -like "* $('ab' * 32)" }).Count | Should -BeGreaterThan 1
+                $v = Get-AapV5File
+                $v.profiles[1].available | Should -BeTrue
+                $v.profiles[1].generation_state | Should -BeExactly 'active'
+                @($v.slots | Where-Object { $_.os -eq 'Windows' -and $_.backend -eq 'hyperv-vm' }).Count | Should -Be 2
+                @($v.slots | Where-Object { $_.os -eq 'Linux' -and $_.backend -eq 'wsl-legacy' }).Count | Should -Be 1
+                $v.storage.state | Should -BeExactly 'ok'
+                Test-AapV5Contract | Should -Be 'ok'
+            }
+
+            It 'admits nothing while storage is untrusted and says why' -Tag 'vm-storage', 'vm-admit' {
+                Enable-AapFakeVm
+                $script:storageProblems = @('clone_root: owner S-1-5-21-1 is not an admin: X:\c')
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 3
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 0
+                $v = Get-AapV5File
+                $v.storage.state | Should -BeExactly 'untrusted'
+                $v.storage.detail | Should -BeExactly 'clone: owner'
+                $v.profiles[1].available | Should -BeFalse
+                $v.profiles[1].unavailable_reason | Should -BeExactly 'storage is untrusted'
+                Test-AapV5Contract | Should -Be 'ok'
+            }
+
+            It 'admits nothing on a host problem or without an active generation' -Tag 'vm-host', 'vm-generation', 'vm-admit' {
+                Enable-AapFakeVm
+                $script:hostProblems = @('AAP_EnhancedSession: Enhanced Session Mode is not off on this Hyper-V host')
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 2
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 0
+                (Get-AapV5File).profiles[1].unavailable_reason | Should -Match '^AAP_EnhancedSession'
+                $script:hostProblems = @()
+                $AapRt.ChecksAt = [DateTimeOffset]::MinValue
+                $AapRt.Generation.windows = $null
+                Invoke-AapMinute 2
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 0
+                (Get-AapV5File).profiles[1].unavailable_reason | Should -BeExactly 'no approved active generation'
+                Test-AapV5Contract | Should -Be 'ok'
+            }
+
+            It 'pause drains ready and busy VM slots and never ends a running job' -Tag 'vm-drain' {
+                Enable-AapFakeVm
+                $script:holdVms = $true
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                $vms = @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' })
+                $vms.Count | Should -Be 2
+                [void](Set-AapSlotState -Root $AapRt.CapRoot -ReservationId $vms[0].reservation_id -LeaseGeneration $vms[0].lease_generation -State busy -RelaxedTrustForTests -WarningAction SilentlyContinue)
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":true,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Invoke-AapMinute 2
+                $after = @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' })
+                @($after | ForEach-Object { $_.state }) -join ',' | Should -Be 'draining,draining'
+                @($after | Where-Object { $_.reservation_id -ceq $vms[0].reservation_id }).Count | Should -Be 1 -Because 'the busy one keeps its job'
+                (Get-AapStatusFile).state | Should -BeExactly 'paused'
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' -and $_.state -ceq 'creating' }).Count | Should -Be 0 -Because 'nothing is admitted while paused'
+                Test-AapV5Contract | Should -Be 'ok'
+            }
+
+            It 'resizing Windows down drains the idle slot first and keeps the busy one' {
+                Enable-AapFakeVm
+                $script:holdVms = $true
+                $set = '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"per_profile","linux_share_percent":30,"windows_share_percent":60,"lease_wall_clock_hours":6}'
+                Write-AapSettingsFile $set
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                $vms = @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' })
+                [void](Set-AapSlotState -Root $AapRt.CapRoot -ReservationId $vms[0].reservation_id -LeaseGeneration $vms[0].lease_generation -State busy -RelaxedTrustForTests -WarningAction SilentlyContinue)
+                Write-AapSettingsFile ($set -replace '"windows_runner_count":2', '"windows_runner_count":1')
+                Invoke-AapMinute
+                $busy = @(Get-AapCapLive | Where-Object { $_.reservation_id -ceq $vms[0].reservation_id })[0]
+                $busy.state | Should -BeExactly 'busy'
+                @(Get-AapCapLive | Where-Object { $_.reservation_id -ceq $vms[1].reservation_id })[0].state | Should -BeExactly 'draining'
+            }
+
+            It 'Off waits for the VM slots before the distro stops' {
+                Enable-AapFakeVm
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 2
+                $script:holdVms = $true
+                $script:released = $false
+                Mock Wait-AapInterval {
+                    $script:calls.Add("sleep $Seconds")
+                    $script:clock.Now = $script:clock.Now.AddSeconds($Seconds)
+                    # The VM jobs end after the first wait.
+                    $script:holdVms = $false
+                }
+                Write-AapStateFile '{"desired":"off"}'
+                Invoke-AapCycle
+                $i = [array]::IndexOf(@($script:calls), 'wsl --terminate aap-runner')
+                $i | Should -BeGreaterThan 0
+                @($script:calls)[0..$i] | Should -Contain 'sleep 10'
+                @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' }).Count | Should -Be 0
+                $AapRt.Mode | Should -BeExactly 'off'
+            }
+
+            It 'Off turned back on while VM slots drain keeps the distro' {
+                Enable-AapFakeVm
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                $script:holdVms = $true
+                Mock Wait-AapInterval {
+                    $script:calls.Add("sleep $Seconds")
+                    $script:clock.Now = $script:clock.Now.AddSeconds($Seconds)
+                    Write-AapStateFile '{"desired":"on"}'
+                }
+                Write-AapStateFile '{"desired":"off"}'
+                Invoke-AapCycle
+                $script:calls | Should -Not -Contain 'wsl --terminate aap-runner'
+                $AapRt.Mode | Should -BeExactly 'on'
+                Get-AapLogText | Should -Match 'desired is on again while VM slots drain'
+            }
+
+            It 'reports what generation the VM slots run' -Tag 'v5' {
+                Enable-AapFakeVm
+                $script:holdVms = $true
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":1,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 3
+                (Get-AapV5File).profiles[1].generation_state | Should -BeExactly 'active'
+                # A newer generation is promoted while the slot still runs the old one.
+                $AapRt.Generation.windows = @{ Id = 'win25-vs2026-x64/20261007.264.1-aap.2'; State = 'active'; BaseSha256 = ('cd' * 32); MemOverheadMib = 512; CloneGib = 40; ScratchGib = 20; IoMbps = 50 }
+                Invoke-AapMinute
+                $v = Get-AapV5File
+                $v.profiles[1].image_generation | Should -BeExactly 'win25-vs2026-x64/20261007.264.1-aap.2'
+                $v.profiles[1].generation_state | Should -BeExactly 'draining_old'
+                @($v.slots | Where-Object { $_.os -eq 'Windows' })[0].image_generation | Should -BeExactly $script:gen.windows
+                Test-AapV5Contract | Should -Be 'ok'
+                $AapRt.Generation.windows.State = 'stale'
+                Invoke-AapMinute
+                (Get-AapV5File).profiles[1].generation_state | Should -BeExactly 'stale'
+                $AapRt.Generation.windows.State = 'quarantined'
+                Invoke-AapMinute
+                $v = Get-AapV5File
+                $v.profiles[1].generation_state | Should -BeExactly 'quarantined'
+                $v.profiles[1].available | Should -BeFalse
+                (Get-AapCapDoc).profiles.windows.active_generation | Should -BeNullOrEmpty
+                Test-AapV5Contract | Should -Be 'ok'
+            }
+
+            It 'runs Linux on VMs with the legacy manager stopped' {
+                Enable-AapFakeVm @('linux')
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"hyperv-vm","runner_count":2,"windows_runner_count":0,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Invoke-AapCycle
+                Invoke-AapMinute 3
+                $AapRt.ManagerStopped | Should -BeTrue
+                $vms = @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' })
+                $vms.Count | Should -Be 2
+                $vms[0].profile | Should -BeExactly 'linux'
+                $vms[0].scratch_gib | Should -Be 0
+                $v = Get-AapV5File
+                $v.profiles[0].backend | Should -BeExactly 'hyperv-vm'
+                $v.legacy_pool | Should -BeNullOrEmpty
+                Test-AapV5Contract | Should -Be 'ok'
+            }
+
+            It 'logs a failing step and steps the others' {
+                Enable-AapFakeVm
+                $script:holdVms = $true
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":2,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                $vms = @(Get-AapCapLive | Where-Object { $_.backend -ceq 'hyperv-vm' })
+                $script:stepThrows = @($vms[0].reservation_id)
+                $script:steps.Clear()
+                Invoke-AapMinute
+                Get-AapLogText | Should -Match "$($vms[0].reservation_id): step failed: AAP_FakeBroken"
+                @($script:steps | Where-Object { $_ -like "$($vms[1].reservation_id) *" }).Count | Should -BeGreaterThan 0
+            }
+        }
+    }
+
+    Describe 'code the supervisor imports' {
+        BeforeEach {
+            $script:dir = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+            [void](New-Item -ItemType Directory -Path $script:dir)
+            [IO.File]::WriteAllText((Join-Path $script:dir 'AapCapacity.psm1'), '')
+            # Owned by the test user, also when the test runs elevated (then new files belong to Administrators).
+            $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            if ((Get-Acl -LiteralPath $script:dir).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $me) {
+                $out = & icacls.exe $script:dir /setowner "*$me" /T 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "icacls failed: $out" }
+            }
+        }
+
+        It 'refuses a folder owned by someone else' -Tag 'code-owner' {
+            @(Get-AapCodeProblem $script:dir) -join '; ' | Should -Match 'is not an admin'
+        }
+
+        It 'refuses a folder anyone else may write' -Tag 'code-write' {
+            $me = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $out = & icacls.exe $script:dir /grant "*${me}:(M)" 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "icacls failed: $out" }
+            @(Get-AapCodeProblem $script:dir) -join '; ' | Should -Match "$me may write"
+        }
+
+        It 'refuses a junction' -Tag 'code-reparse' {
+            $link = Join-Path $TestDrive ([guid]::NewGuid().ToString('n'))
+            $out = & cmd.exe /c mklink /J $link $script:dir 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "mklink failed: $out" }
+            @(Get-AapCodeProblem $link) -join '; ' | Should -Match 'reparse point'
+        }
+
+        It 'trusts an admin-only folder' {
+            @(Get-AapCodeProblem (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\Modules\Microsoft.PowerShell.Utility')).Count | Should -Be 0
+        }
+
+        It 'stays the schema 2 supervisor when the capacity module is not admin-only' -Tag 'code-trusted' {
+            $mod = Join-Path $script:dir 'capacity'
+            [void](New-Item -ItemType Directory -Path $mod)
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'capacity\AapCapacity.psm1') -Destination $mod
+            Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'capacity\allocator.schema.json') -Destination $mod
+            $AapCfg.ModuleDir = $script:dir
+            try { Initialize-AapProviders } finally { $AapCfg.ModuleDir = $PSScriptRoot }
+            $AapRt.Cap | Should -BeFalse
+            Get-AapLogText | Should -Match 'capacity module not loaded, it is not admin-only'
+        }
+
+        It 'stays the schema 2 supervisor without the capacity module' {
+            $AapCfg.ModuleDir = $script:dir
+            try { Initialize-AapProviders } finally { $AapCfg.ModuleDir = $PSScriptRoot }
+            $AapRt.Cap | Should -BeFalse
+            Get-AapLogText | Should -Match 'capacity module not installed'
         }
     }
 
