@@ -67,7 +67,7 @@ The build guest runs internet-sourced installers, so nothing a guest says or wri
   `aap-build-linux`, never beside another VM, statically addressed from the module's declaration (no DHCP). The builder
   follows the contract's consumer obligations: `Attach` while the VM is Off and the shared declaration check
   (`AAP_NetworkInvalid`), the declaration written into the build seed's autoinstall `network` section, then before every
-  start `Attach` again, `Verify` (every object it writes is a problem, `AAP_NetworkUntrusted`) and the builder's own
+  start `Attach` again, `Verify` (every object and every error it writes is a problem, `AAP_NetworkUntrusted`) and the builder's own
   read-back of Hyper-V through the shared check (`supervisor/network/AapHostNetworkCheck.psm1`: guards, mirroring, VLAN,
   storm limit, legacy ACLs, peers, both directions of every fixed deny, the source pin, weights, stateless rules); `Verify`
   again before a phase while the VM runs, once a minute has passed since the last check; after the VM is removed,
@@ -145,8 +145,9 @@ everything it made (VMs, build disks, a partly published generation, the evidenc
    agent's state folder, program, both units and the `sockets.target.wants` link, a dangling one included): `install-user-absent`, `no-password-hash`, `no-authorized-keys`,
    `no-ssh-host-keys`, `no-agent`, `no-cloud-state`, `no-build-sudoers`, `no-build-network`. A finding is `AAP_SecretFound`,
    a rule not checked `AAP_ScanIncomplete`. The host shuts the VM down, removes it, then detaches its network (`Detach`; one
-   that throws fails the build: the network is not proven detached, and the module's reconcile removes the record), compacts
-   and hashes `os.vhdx`.
+   that throws fails the build once the rest of the cleanup is done: the network is not proven detached, and the module's
+   reconcile removes the record), compacts and hashes `os.vhdx`. `Remove-AapUbuntuBuild` refuses
+   (`AAP_NetworkUnavailable`) a build folder whose `state.json` names a build VM unless it is given the module (`-Network`).
 5. **Secret scan** in the scanner guest (rules below). Anything but `clean` fails the build.
 6. **Fresh-guest verification**: a differencing child of the sealed disk, a seed that creates the job user `runner` (uid
    1001; `adm`, `users`, `docker`, `systemd-journal`; passwordless sudo, as on the hosted image), **no network adapter** and no
@@ -183,8 +184,10 @@ everything it made (VMs, build disks, a partly published generation, the evidenc
 8. **Records** under `<EvidenceRoot>\P07\<build id>\`, created new by this run: `generation.json` (image-catalog schema 2,
    state `candidate`, `built_by_item` `P07`), `budget.json` (backend-lifecycle schema 2), `build.json` (`plan_sha256`,
    `inputs_manifest_sha256`, `builder_commit`, waiver records, media hash, the base deviation, phases with their exec mode,
-   script hashes and exit codes, the seal check, verification counts and facts, the inventory comparison, measurements),
-   `secret-scan.json`, and the guest-authored `software-report.md/.json` and `job-inventory.json`.
+   script hashes and exit codes, the seal check, verification counts and facts, the inventory comparison, measurements,
+   the build VM's network declaration), `secret-scan.json`, and the guest-authored `software-report.md/.json` and
+   `job-inventory.json`. The declaration holds no secret but names the private build subnet, the resolvers and the VM's
+   GUID: `build.json` stays out of the public repository.
 
 ## Configuration
 
@@ -285,7 +288,7 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
   As root on a read-only mount there should be none. A `.gz` counts as read only when `grep` read its whole decompressed
   stream and `zcat` ended cleanly: a truncated or corrupt stream, or a `grep` that fails (a single line too long for its
   memory: a gzip bomb), is never clean: it is reported as an `unreadable-stream` finding with the file's SHA-256, and
-  makes the result `incomplete` unless an allowlist entry covers exactly that path and those bytes (the route for a file
+  makes the result `incomplete` unless an allowlist entry covers exactly that rule, path and bytes (the route for a file
   the image legitimately ships damaged, a test fixture for example, after review). A match stands whatever `zcat` reports
   after `grep` stopped reading: a broken pipe, which under systemd's default `IgnoreSIGPIPE=yes` (the agent's unit keeps
   it) is an error message, not a signal.
@@ -298,10 +301,11 @@ the value. The seal check result is recorded in `secret-scan.json` under `seal`.
   The only secret the build guest ever holds is its own per-build channel token, which dies with the build and which the
   scan looks for. The scan detects leaks; it is not an integrity or backdoor control: a hostile installer that wants to
   leave something behind is not stopped by it.
-- **Allowlist**: `secret-allowlist.json` (`schema` 1, `entries` of exactly `path` (relative, `/`-separated, no wildcard),
-  `sha256` and `justification`), each path at most once. An entry suppresses a finding (an `unreadable-stream`
-  included) only for that exact path with those exact bytes, never a `build-credential` or `build-agent` finding; an entry that matches no finding exactly is itself a
-  finding (`allowlist-mismatch`). It is empty. Per-machine material is deleted at seal rather than allowlisted (the snakeoil
+- **Allowlist**: `secret-allowlist.json` (`schema` 1, `entries` of exactly `rule` (one of the scan rules), `path`
+  (relative, `/`-separated, no wildcard), `sha256` and `justification`), each rule and path at most once. An entry
+  suppresses only a finding of its rule (an `unreadable-stream` included) for that exact path with those exact bytes, never
+  a `build-credential` or `build-agent` finding: an entry for a damaged `.gz` does not cover a key or token found in the
+  same bytes. An entry that matches no finding exactly is itself a finding (`allowlist-mismatch`). It is empty. Per-machine material is deleted at seal rather than allowlisted (the snakeoil
   TLS key, the random seed; each clone makes its own, P15). Expect the first real build to name other files the upstream
   image legitimately carries; each needs a reviewed decision, not a rule change.
 

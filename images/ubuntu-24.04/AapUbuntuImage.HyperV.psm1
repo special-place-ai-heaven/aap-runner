@@ -219,11 +219,12 @@ function New-AapUbuntuHyperVProvider {
         @(Hyper-V\Get-VMNetworkAdapter -VM $vm) | Hyper-V\Remove-VMNetworkAdapter
         @{ Id = [string]$vm.Id }
     }
-    # The seed image into the VM's last DVD drive, only while the VM is Off.
+    # The seed image into the VM's last DVD drive, only while the VM is Off and has exactly the drives NewVm made: one per
+    # medium and the seed's.
     $p.SetSeed = { param($a)
         $vm = Get-AapVm $a
         $drives = @(Hyper-V\Get-VMDvdDrive -VM $vm)
-        if ([string]$vm.State -ne 'Off' -or $drives.Count -lt 1) { throw "AAP_Unexpected: $($a.VmName) is not Off or has no seed drive" }
+        if ([string]$vm.State -ne 'Off' -or $drives.Count -ne @($a.Dvds).Count + 1) { throw "AAP_Unexpected: $($a.VmName) is not Off or does not have exactly its media drives and the seed drive" }
         Hyper-V\Set-VMDvdDrive -VMDvdDrive $drives[-1] -Path $a.Path
     }
     $p.GetVmConfig = { param($a)

@@ -488,8 +488,9 @@ function Assert-AapSealReply($Reply) {
 # SHA-256, never the matched value; the host validates its report and applies the reviewed allowlist.
 
 function Read-AapUbuntuAllowlist {
-    <# secret-allowlist.json: reviewed exceptions, each an exact relative path (forward slashes, from the image root) and
-       SHA-256 with its justification. No wildcard: an entry suppresses a finding only for that path with those bytes. #>
+    <# secret-allowlist.json: reviewed exceptions, each a scan rule, an exact relative path (forward slashes, from the image
+       root) and SHA-256 with its justification. No wildcard: an entry suppresses a finding only of that rule for that path
+       with those bytes, so an entry for a damaged .gz never covers a key or token found in the same bytes. #>
     param([Parameter(Mandatory)][string]$Path)
     if ((Get-AapPathKind $Path) -ne 'file' -or (New-Object IO.FileInfo $Path).Length -gt 65536) { throw "AAP_AllowlistInvalid: $Path is missing or over 64 KiB" }
     try { $doc = Read-AapJson $Path } catch { throw "AAP_AllowlistInvalid: $Path is not JSON" }
@@ -497,13 +498,13 @@ function Read-AapUbuntuAllowlist {
     $out = New-Object System.Collections.Generic.List[object]
     foreach ($e in @($doc.entries | Where-Object { $null -ne $_ })) {
         $names = $(if ($e -is [Management.Automation.PSCustomObject]) { (@(Get-AapNames $e | Sort-Object) -join ',') } else { '' })
-        $p = [string](Get-AapProp $e 'path')
-        if (@($out | Where-Object { $_.path -ceq $p }).Count) { throw "AAP_AllowlistInvalid: $(Get-AapPrintable $p 200) is listed twice" }   # check:allowlist-duplicate
-        if ($names -cne 'justification,path,sha256' -or $p -cnotmatch '^[A-Za-z0-9._()+@ -]+(/[A-Za-z0-9._()+@ -]+)*\z' -or $p -match '(^|/)\.\.?(/|$)' -or   # check:allowlist
+        $p = [string](Get-AapProp $e 'path'); $r = [string](Get-AapProp $e 'rule')
+        if (@($out | Where-Object { $_.path -ceq $p -and $_.rule -ceq $r }).Count) { throw "AAP_AllowlistInvalid: $(Get-AapPrintable "$r $p" 200) is listed twice" }   # check:allowlist-duplicate
+        if ($names -cne 'justification,path,rule,sha256' -or $script:ScanRules -cnotcontains $r -or $p -cnotmatch '^[A-Za-z0-9._()+@ -]+(/[A-Za-z0-9._()+@ -]+)*\z' -or $p -match '(^|/)\.\.?(/|$)' -or   # check:allowlist
             [string](Get-AapProp $e 'sha256') -cnotmatch '^[0-9a-f]{64}\z' -or [string](Get-AapProp $e 'justification') -cnotmatch '^[\x20-\x7e]{10,1000}\z') {
-            throw 'AAP_AllowlistInvalid: every entry needs exactly a relative path, its sha256 and a justification'
+            throw 'AAP_AllowlistInvalid: every entry needs exactly a scan rule, a relative path, its sha256 and a justification'
         }
-        $out.Add([pscustomobject]@{ path = $p; sha256 = [string]$e.sha256 })
+        $out.Add([pscustomobject]@{ rule = $r; path = $p; sha256 = [string]$e.sha256 })
     }
     return $out.ToArray()
 }
@@ -540,10 +541,10 @@ function ConvertFrom-AapScanReport {
 
 function Get-AapUbuntuScanResult {
     <# Applies the allowlist to a validated scan report. 'found': a finding the allowlist does not cover (a build-credential
-       finding is never covered), or an allowlist entry that matches no finding with exactly its path and bytes.
+       finding is never covered), or an allowlist entry that matches no finding with exactly its rule, path and bytes.
        'incomplete': an unreadable path, a finding list the scanner had to cut, or more large files than it lists, or an
-       unreadable-stream (a .gz the scanner could not decompress to its end) that no entry covers with exactly its path and
-       bytes: a reviewed entry is how a file the image legitimately ships damaged, such as a test fixture, passes. #>
+       unreadable-stream (a .gz the scanner could not decompress to its end) that no entry covers with exactly its rule, path
+       and bytes: a reviewed entry is how a file the image legitimately ships damaged, such as a test fixture, passes. #>
     param([Parameter(Mandatory)]$Report, [Parameter(Mandatory)][string]$AllowlistPath, $Seal = $null)
     $allow = @(Read-AapUbuntuAllowlist -Path $AllowlistPath)
     $findings = New-Object System.Collections.Generic.List[object]
@@ -552,16 +553,19 @@ function Get-AapUbuntuScanResult {
     $used = @{}
     foreach ($f in @($Report.findings)) {
         $hit = $null
-        foreach ($a in $allow) { if ($a.path -ceq [string]$f.path) { $hit = $a } }
+        foreach ($a in $allow) {
+            if ($a.rule -cne [string]$f.rule) { continue }   # check:allowlist-rule
+            if ($a.path -ceq [string]$f.path) { $hit = $a }
+        }
         if ($script:NeverAllowed -ccontains [string]$f.rule -or $null -eq $hit -or [string]$f.sha256 -cne $hit.sha256) {   # check:allowlist-exact
             # An uncovered stream the scanner could not read is not a secret found, but the scan is not complete without it.
             if ([string]$f.rule -ceq 'unreadable-stream') { $streams.Add("unreadable-stream $([string]$f.path)") }   # check:allowlist-stream
             else { $findings.Add([pscustomobject]@{ rule = [string]$f.rule; path = [string]$f.path }) }
         } else {
-            $allowed.Add([pscustomobject]@{ rule = [string]$f.rule; path = $hit.path; sha256 = $hit.sha256 }); $used[$hit.path] = $true
+            $allowed.Add([pscustomobject]@{ rule = $hit.rule; path = $hit.path; sha256 = $hit.sha256 }); $used["$($hit.rule) $($hit.path)"] = $true
         }
     }
-    foreach ($a in $allow) { if (-not $used.ContainsKey($a.path)) { $findings.Add([pscustomobject]@{ rule = 'allowlist-mismatch'; path = $a.path }) } }   # check:allowlist-stale
+    foreach ($a in $allow) { if (-not $used.ContainsKey("$($a.rule) $($a.path)")) { $findings.Add([pscustomobject]@{ rule = 'allowlist-mismatch'; path = $a.path }) } }   # check:allowlist-stale
     $result = 'clean'
     if ($Report.unreadable_count -gt 0 -or $streams.Count -or $Report.findings_count -gt @($Report.findings).Count -or $Report.large_files_count -gt @($Report.large_files).Count) { $result = 'incomplete' }   # check:scan-incomplete
     if ($findings.Count) { $result = 'found' }
@@ -753,13 +757,14 @@ function New-AapGuest($Ctx, [string]$Mode, [string]$Vm, [string]$Dir, [string]$O
     $decl = $(if ($Mode -eq 'build') { Connect-AapGuestNetwork $Ctx $g } else { $null })
     $made = New-AapUbuntuSeed -Mode $Mode -Plan $Ctx.Plan -InstanceId "aap-$($Ctx.Names.Tag)-$Mode" -Known $Known -Network $decl
     $null = Invoke-AapProvider $Ctx.Provider 'NewSeedImage' @{ Path = $g.Seed; Label = 'CIDATA'; Files = $made.Files }
-    $null = Invoke-AapProvider $Ctx.Provider 'SetSeed' @{ VmName = $g.Vm; VmId = $g.VmId; Path = $g.Seed }
+    $null = Invoke-AapProvider $Ctx.Provider 'SetSeed' @{ VmName = $g.Vm; VmId = $g.VmId; Path = $g.Seed; Dvds = @($Dvds) }
     $g.Token = $made.Token
     return $g
 }
 
 # Attach (the VM Off) and the shared declaration check. The declaration comes from the module's journal each time; the
-# builder keeps it only while the VM it was attached for runs.
+# builder uses the latest for the seed and the read-back, and build.json records it (the private subnet, the resolvers and
+# the VM's GUID, no secret: build.json stays out of the public repository, README).
 function Connect-AapGuestNetwork($Ctx, $Guest) {
     $req = @{ VmId = $Guest.VmId; VmName = $Guest.Vm; Profile = 'linux' }
     try { $decl = & $Ctx.Network.Attach $req } catch { throw "AAP_NetworkUntrusted: Attach of $($Guest.Vm) failed: $(Get-AapPrintable ([string]$_.Exception.Message) 300)" }
@@ -771,10 +776,14 @@ function Connect-AapGuestNetwork($Ctx, $Guest) {
 
 # Verify, and before a start Hyper-V's read-back of the build VM against its declaration through the shared check. While it
 # runs (-Running, between phases) Verify alone, as Consumer obligations 3 asks. Every object Verify writes is a problem, an
-# empty or $null one included.
+# empty or $null one included, and so is every error it writes without throwing (a Verify that outputs nothing but errors
+# has not verified).
 function Assert-AapGuestNetwork($Ctx, $Guest, [switch]$Running) {
     $req = @{ VmId = $Guest.VmId; VmName = $Guest.Vm; Profile = 'linux' }
-    try { $problems = @(& $Ctx.Network.Verify $req) } catch { throw "AAP_NetworkUntrusted: Verify of $($Guest.Vm) failed: $(Get-AapPrintable ([string]$_.Exception.Message) 300)" }
+    try { $out = @(& $Ctx.Network.Verify $req 2>&1) } catch { throw "AAP_NetworkUntrusted: Verify of $($Guest.Vm) failed: $(Get-AapPrintable ([string]$_.Exception.Message) 300)" }
+    $errors = @($out | Where-Object { $_ -is [Management.Automation.ErrorRecord] })
+    $problems = @($out | Where-Object { $_ -isnot [Management.Automation.ErrorRecord] })
+    if ($errors.Count) { throw "AAP_NetworkUntrusted: Verify of $($Guest.Vm) wrote errors: $(@($errors | Select-Object -First 3 | ForEach-Object { Get-AapPrintable ([string]$_) 150 }) -join '; ')" }   # check:network-verify-errors
     if ($problems.Count) { throw "AAP_NetworkUntrusted: $($Guest.Vm): $(@($problems | Select-Object -First 3 | ForEach-Object { Get-AapPrintable ([string]$_) 150 }) -join '; ')" }   # check:network-verify
     $Ctx.NetVerifiedAt = Get-Date
     if ($Running) { return }
@@ -943,16 +952,20 @@ function Remove-AapUbuntuBuild {
     <# Removes a build's VMs, build folder and, if this build began publishing and did not finish, its generation folder. An
        unfinished build's evidence files go too, exactly those its state.json lists, except secret-scan.json, which stays as
        the record of why it failed; its evidence folder goes if it made it and it is then empty. Idempotent: everything
-       absent counts as done. Never touches another generation or anything outside these folders. With -Network, the build
-       VM's network is detached once its VM is gone (the VM id comes from state.json); a Detach that throws throws. #>
+       absent counts as done. Never touches another generation or anything outside these folders. The build VM's network is
+       detached with -Network once its VM is gone (the VM id comes from state.json); a build that recorded a VM id and no
+       -Network is refused before anything is removed. A Detach that throws throws once the rest of the cleanup is done:
+       the module keeps the attachment in its journal for its own reconcile. #>
     param([Parameter(Mandatory)]$Storage, [Parameter(Mandatory)]$Provider, [Parameter(Mandatory)]$Names, [string]$EvidenceRoot, [hashtable]$Network)
     $buildDir = Join-Path (Join-Path $Storage.Staging.Path 'build') $Names.BuildId
     $state = $null
     $statePath = Join-Path $buildDir 'state.json'
     if ((Get-AapPathKind $statePath) -eq 'file') { try { $state = Read-AapJson $statePath } catch { $state = $null } }
-    foreach ($vm in $Names.BuildVm, $Names.ScanVm, $Names.VerifyVm) { $null = Invoke-AapProvider $Provider 'RemoveVm' @{ Name = $vm } }
     $vmId = [string](Get-AapProp $state 'vm_id')
-    if ($Network -and $vmId) { Disconnect-AapGuestNetwork $Network $vmId $Names.BuildVm }
+    if ($vmId -and -not $Network) { throw "AAP_NetworkUnavailable: $($Names.BuildId) recorded a build VM; its cleanup needs the host network module (-Network) to detach it" }   # check:cleanup-network
+    foreach ($vm in $Names.BuildVm, $Names.ScanVm, $Names.VerifyVm) { $null = Invoke-AapProvider $Provider 'RemoveVm' @{ Name = $vm } }
+    $detachError = $null
+    if ($vmId) { try { Disconnect-AapGuestNetwork $Network $vmId $Names.BuildVm } catch { $detachError = $_ } }
     $done = $null -ne $state -and (Get-AapProp $state 'status') -eq 'done'
     $publishing = $null -ne $state -and (Get-AapProp (Get-AapProp $state 'steps') 'publish') -eq 'intent'
     if ($publishing -and -not $done) {
@@ -966,6 +979,7 @@ function Remove-AapUbuntuBuild {
         if ((Get-AapProp $state 'evidence_created') -eq $true -and (Get-AapPathKind $ev) -eq 'dir' -and @([IO.Directory]::GetFileSystemEntries($ev)).Count -eq 0) { Remove-AapTree $ev $EvidenceRoot }
     }
     Remove-AapTree $buildDir $Storage.Staging.Path
+    if ($detachError) { throw $detachError }   # check:cleanup-detach
 }
 
 function Invoke-AapUbuntuImageBuild {

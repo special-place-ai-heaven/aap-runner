@@ -11,7 +11,7 @@ helper, the providers or the catalog yet. Contracts: `parity/contracts/image-cat
 | The sealed base disk | `<base_root>\ubuntu-24.04-x64\<image_version>-aap.<n>\base.vhdx` | Read-only file and folder: owner Administrators; SYSTEM, Administrators and `S-1-5-83-0` (Virtual Machines) read and execute; protected DACL; ReadOnly attribute |
 | Generation entry | `<EvidenceRoot>\P07\<build id>\generation.json` | One image-catalog schema 2 `generations[]` item, `state` `candidate`, `built_by_item` `P07`, no overlays, no certificate |
 | Budget | `...\budget.json` | backend-lifecycle schema 2 `budget` record, `profile` `linux`, `measured: true`, scratch 0 |
-| Evidence | `...\build.json`, `secret-scan.json` | `plan_sha256`, `inputs_manifest_sha256`, `builder_commit`, waivers, media hash, the base deviation, phases with exec mode, script hashes and exit codes, the seal check, verification counts and facts, the inventory comparison (gate and required sections, recorded differences), measured bytes; the scan's findings, unreadable paths, large files with hashes |
+| Evidence | `...\build.json`, `secret-scan.json` | `plan_sha256`, `inputs_manifest_sha256`, `builder_commit`, waivers, media hash, the base deviation, phases with exec mode, script hashes and exit codes, the seal check, verification counts and facts, the inventory comparison (gate and required sections, recorded differences), measured bytes, the build VM's network declaration (private subnet, resolvers, VM GUID: keep `build.json` out of the public repository); the scan's findings, unreadable paths, large files with hashes |
 | Guest-authored files | `...\software-report.md/.json`, `job-inventory.json` | Written by the build or verification guest; size-capped while received and hashed; `job-inventory.json` was also compared by P05's `certify.py` on the host |
 
 `<build id>` is the generation id with `/` replaced by `_`. Build VMs are named `aap-lbuild-<8 hex>`, `aap-lscan-<8 hex>` and
@@ -123,8 +123,10 @@ Everything else is copied. These 19 functions are verbatim copies of P06's (same
   autoinstall `network` section (`dhcp4: false`, matched by driver `hv_netvsc`) in a seed made after `Attach` and put in the
   VM's seed drive while it is Off (`SetSeed`), then before each of its two starts `Attach` again, `Verify` and the
   provider's read-back (`GetVmNetwork`, the contract's provider shape) through `Get-AapHostNetworkAdapterProblems`; `Verify`
-  again before a phase once a minute has passed since the last check; `RemoveVm` then `Detach`, also on every failure path
-  and for a crashed run's build VM (its id is in `state.json`). The scanner and verification VMs never reach the module.
+  again before a phase once a minute has passed since the last check (an error `Verify` writes counts as a problem);
+  `RemoveVm` then `Detach`, also on every failure path and for a crashed run's build VM (its id is in `state.json`; a
+  cleanup without the module is refused, and a `Detach` that throws is reported after the rest of the cleanup). The scanner
+  and verification VMs never reach the module.
 - `aap-build-linux` must exist as an **Internal** switch (P19); the builder refuses otherwise, before anything is made, and
   never falls back to a guest switch. Nothing on the switch serves DHCP or DNS: the build guest has static addressing and
   reaches the Ubuntu archive, GitHub and the vendor feeds through NAT and public resolvers.

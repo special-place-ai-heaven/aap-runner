@@ -339,6 +339,16 @@ for sigpipe in default ignored; do
   # with the file's hash, for an exact allowlist entry
   [ "$(reply '[f["sha256"] for f in r["findings"] if f["path"].endswith("trunc.log.gz")][0]')" = "$(sha "${u}/var/log/trunc.log.gz")" ] || fail "an unreadable stream lacks its hash: $(out)"
 done
+# A damaged .gz with a token in its readable head: a finding of each rule over the same bytes, so the host's allowlist
+# entry for the unreadable stream (bound to its rule) never covers the token.
+v="${tmp}/both"
+mkdir -p "${v}/var/log"
+python3 -B -I -c 'import gzip, sys; d = gzip.compress(("token=ghp_" + "W" * 36 + "\n" + "clean filler line\n" * 50000).encode()); open(sys.argv[1], "wb").write(d[:len(d) // 2])' "${v}/var/log/both.log.gz"
+RC=0; bash "${guest}/aap-scan.sh" --known-file "${tmp}/known" --out "${tmp}/out" --target "${v}" > "${tmp}/scan.log" 2>&1 || RC=$?
+h=$(sha "${v}/var/log/both.log.gz")
+[ "${RC}" = 0 ] && [ "$(reply 'sorted((f["rule"], f["path"], f["sha256"]) for f in r["findings"])')" = \
+  "[('github-token', 'var/log/both.log.gz', '${h}'), ('unreadable-stream', 'var/log/both.log.gz', '${h}')]" ] ||
+  fail "a damaged .gz with a token did not report both rules: $(out) $(cat "${tmp}/scan.log")"
 printf 'nothex\n' > "${tmp}/badknown"
 RC=0; bash "${guest}/aap-scan.sh" --known-file "${tmp}/badknown" --out "${tmp}/scan2.json" --target "${t}" > /dev/null 2>&1 || RC=$?
 [ "${RC}" = 2 ] && [ ! -e "${tmp}/scan2.json" ] || fail 'a malformed known token was accepted'

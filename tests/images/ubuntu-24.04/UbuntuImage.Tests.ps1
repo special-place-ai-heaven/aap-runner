@@ -493,6 +493,7 @@ Describe 'a full build with fakes' {
         $vm.ContainsKey('SwitchName') | Should -BeFalse
         @($vm.Dvds | ForEach-Object { Split-Path -Leaf $_ }) | Should -Be @('ubuntu-24.04.5-live-server-amd64.iso')
         Split-Path -Leaf (Get-Ops $w 'SetSeed')[0].Args.Path | Should -Be 'seed.iso'
+        @((Get-Ops $w 'SetSeed')[0].Args.Dvds) | Should -Be @($vm.Dvds)   # the provider requires exactly these drives and the seed's
         $vm.BootFromDvd | Should -BeTrue
         (Get-Ops $w 'NewBuildDisk')[0].Args.SizeGib | Should -Be 150
         @((Get-Ops $w 'TypeBootCommand')[0].Args.Keys) -join '' | Should -Match 'autoinstall ds=nocloud<enter>'
@@ -734,6 +735,18 @@ Describe 'the build VM''s network: the host network module (host-network-module.
         ($w.Requests | Select-Object -Last 1).phase | Should -Be 'p05'
         Assert-CleanedUp
     }
+    It 'counts an error Verify writes without throwing as a problem while the build VM runs, though it outputs nothing' -Tag 'network-verify-errors' {
+        Set-ModuleVar 'NetVerifyMinutes' 0
+        $w | Add-Member -NotePropertyName HostChanged -NotePropertyValue $false -Force
+        Set-GuestFault 'p05' { param($w, $req) $w.HostChanged = $true; Get-FakeGuestReply $w $req }
+        $w.Network.Verify = { param($a) Add-FakeCall 'Verify' $a
+            if ($w.HostChanged) { Write-Error 'the host gained a public address' -ErrorAction Continue } else { & $w.NetFake.Verify $a } }
+        $r = Invoke-Build
+        $r.Reason | Should -Be 'AAP_NetworkUntrusted'
+        $r.Detail | Should -Match 'wrote errors: the host gained a public address'
+        ($w.Requests | Select-Object -Last 1).phase | Should -Be 'p05'
+        Assert-CleanedUp
+    }
     It 'reads the adapter back itself: a module whose Verify reports nothing does not get a VM with <Tamper> started' -Tag 'network-readback' -TestCases @(
         @{ Tamper = 'dhcp-guard-off' }, @{ Tamper = 'extra-allow' }, @{ Tamper = 'drop-inbound-deny' }, @{ Tamper = 'foreign-peer' }) {
         $w.Network.Verify = { param($a) Add-FakeCall 'Verify' $a }
@@ -762,12 +775,13 @@ Describe 'the build VM''s network: the host network module (host-network-module.
         Assert-CleanedUp
         @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot) | Should -BeNullOrEmpty   # the record a failed Attach kept goes with Detach
     }
-    It 'reports a Detach that fails as a network not proven detached, and keeps the record for the module''s reconcile' {
+    It 'reports a Detach that fails as a network not proven detached, and keeps the record for the module''s reconcile' -Tag 'cleanup-detach' {
         Set-AapFakeHostNetworkKnob -Root $w.NetRoot -Fail @('Detach')
         $r = Invoke-Build
         $r.Reason | Should -Be 'AAP_NetworkUntrusted'
         $r.Detail | Should -Match 'not proven detached'
         $r.Detail | Should -Match 'cleanup failed'
+        Assert-CleanedUp   # the build folder (the sealed disk) and the evidence go all the same
         @(Get-AapFakeHostNetworkRecord -Root $w.NetRoot).Count | Should -Be 1
     }
     It 'refuses a VM that could start on its own or keep a checkpoint: <Case>' -Tag 'vm-config' -TestCases @(
@@ -1126,21 +1140,32 @@ Describe 'secret scan allowlist' {
     AfterAll { Remove-World $script:AlWorld }
     It 'suppresses a finding only for the exact path and bytes on the allowlist' -Tag 'allowlist-exact' {
         $sha = Get-TextSha 'snakeoil'
-        Set-Allow @([ordered]@{ path = 'etc/ssl/private/ssl-cert-snakeoil.key'; sha256 = $sha; justification = 'reviewed in the D2 lab: per-image test key' })
+        Set-Allow @([ordered]@{ rule = 'pem-private-key'; path = 'etc/ssl/private/ssl-cert-snakeoil.key'; sha256 = $sha; justification = 'reviewed in the D2 lab: per-image test key' })
         (Get-AapUbuntuScanResult -Report (Get-Report @([ordered]@{ rule = 'pem-private-key'; path = 'etc/ssl/private/ssl-cert-snakeoil.key'; sha256 = $sha })) -AllowlistPath $script:Al).result | Should -Be 'clean'
         (Get-AapUbuntuScanResult -Report (Get-Report @([ordered]@{ rule = 'pem-private-key'; path = 'etc/ssl/private/ssl-cert-snakeoil.key'; sha256 = (Get-TextSha 'other') })) -AllowlistPath $script:Al).result | Should -Be 'found'
         (Get-AapUbuntuScanResult -Report (Get-Report @([ordered]@{ rule = 'pem-private-key'; path = 'ETC/ssl/private/ssl-cert-snakeoil.key'; sha256 = $sha })) -AllowlistPath $script:Al).result | Should -Be 'found'
     }
     It 'never allowlists the build <Rule>' -Tag 'allowlist-exact' -TestCases @(@{ Rule = 'build-credential' }, @{ Rule = 'build-agent' }) {
         $sha = Get-TextSha 'f'
-        Set-Allow @([ordered]@{ path = 'var/lib/x'; sha256 = $sha; justification = 'an attempt to hide the build token or agent' })
+        Set-Allow @([ordered]@{ rule = $Rule; path = 'var/lib/x'; sha256 = $sha; justification = 'an attempt to hide the build token or agent' })
         $r = Get-AapUbuntuScanResult -Report (Get-Report @([ordered]@{ rule = $Rule; path = 'var/lib/x'; sha256 = $sha })) -AllowlistPath $script:Al
         $r.result | Should -Be 'found'
         @($r.findings | ForEach-Object { $_.rule }) | Should -Contain $Rule
     }
-    It 'refuses an allowlist that lists a path twice' -Tag 'allowlist-duplicate' {
-        Set-Allow @([ordered]@{ path = 'etc/x'; sha256 = ('a' * 64); justification = 'the first, reviewed entry' }, [ordered]@{ path = 'etc/x'; sha256 = ('b' * 64); justification = 'a second entry for other bytes' })
+    It 'refuses an allowlist that lists a rule and path twice' -Tag 'allowlist-duplicate' {
+        Set-Allow @([ordered]@{ rule = 'pem-private-key'; path = 'etc/x'; sha256 = ('a' * 64); justification = 'the first, reviewed entry' }, [ordered]@{ rule = 'pem-private-key'; path = 'etc/x'; sha256 = ('b' * 64); justification = 'a second entry for other bytes' })
         { Read-AapUbuntuAllowlist -Path $script:Al } | Should -Throw 'AAP_AllowlistInvalid*listed twice*'
+        Set-Allow @([ordered]@{ rule = 'pem-private-key'; path = 'etc/x'; sha256 = ('a' * 64); justification = 'the first, reviewed entry' }, [ordered]@{ rule = 'unreadable-stream'; path = 'etc/x'; sha256 = ('a' * 64); justification = 'the same bytes under another rule' })
+        @(Read-AapUbuntuAllowlist -Path $script:Al).Count | Should -Be 2
+    }
+    It 'covers only the rule an entry names: an entry for a damaged .gz does not hide a token found in the same bytes' -Tag 'allowlist-rule' {
+        $sha = Get-TextSha 'damaged log with a token in its readable head'
+        $p = 'var/log/old.log.gz'
+        Set-Allow @([ordered]@{ rule = 'unreadable-stream'; path = $p; sha256 = $sha; justification = 'reviewed in the D2 lab: an upstream log shipped damaged' })
+        $r = Get-AapUbuntuScanResult -Report (Get-Report @([ordered]@{ rule = 'github-token'; path = $p; sha256 = $sha }, [ordered]@{ rule = 'unreadable-stream'; path = $p; sha256 = $sha })) -AllowlistPath $script:Al
+        $r.result | Should -Be 'found'
+        @($r.findings | ForEach-Object { "$($_.rule) $($_.path)" }) | Should -Be @("github-token $p")
+        @($r.allowlisted | ForEach-Object { $_.rule }) | Should -Be @('unreadable-stream')
     }
     It 'counts a .gz the scanner could not read to its end as incomplete, not found, unless an exact entry covers it' -Tag 'allowlist-stream' {
         $sha = Get-TextSha 'damaged fixture'
@@ -1151,24 +1176,26 @@ Describe 'secret scan allowlist' {
         $r.unreadable_count | Should -Be 1
         @($r.unreadable) | Should -Contain 'unreadable-stream opt/hostedtoolcache/x/test/corrupt.gz'
         @($r.findings).Count | Should -Be 0
-        Set-Allow @([ordered]@{ path = $f.path; sha256 = $sha; justification = 'reviewed in the D2 lab: an upstream test fixture shipped damaged' })
+        Set-Allow @([ordered]@{ rule = 'unreadable-stream'; path = $f.path; sha256 = $sha; justification = 'reviewed in the D2 lab: an upstream test fixture shipped damaged' })
         (Get-AapUbuntuScanResult -Report (Get-Report @($f)) -AllowlistPath $script:Al).result | Should -Be 'clean'
-        Set-Allow @([ordered]@{ path = $f.path; sha256 = (Get-TextSha 'other bytes'); justification = 'reviewed for other bytes than the image has' })
+        Set-Allow @([ordered]@{ rule = 'unreadable-stream'; path = $f.path; sha256 = (Get-TextSha 'other bytes'); justification = 'reviewed for other bytes than the image has' })
         (Get-AapUbuntuScanResult -Report (Get-Report @($f)) -AllowlistPath $script:Al).result | Should -Be 'found'   # the stale entry is itself a finding
     }
     It 'fails on an allowlist entry that matches nothing' -Tag 'allowlist-stale' {
-        Set-Allow @([ordered]@{ path = 'etc/gone'; sha256 = (Get-TextSha 'g'); justification = 'a file the image no longer has' })
+        Set-Allow @([ordered]@{ rule = 'pem-private-key'; path = 'etc/gone'; sha256 = (Get-TextSha 'g'); justification = 'a file the image no longer has' })
         $r = Get-AapUbuntuScanResult -Report (Get-Report @()) -AllowlistPath $script:Al
         $r.result | Should -Be 'found'
         $r.findings[0].rule | Should -Be 'allowlist-mismatch'
     }
     It 'refuses an allowlist entry with <Case>' -Tag 'allowlist' -TestCases @(
-        @{ Case = 'a wildcard'; Entry = [ordered]@{ path = 'etc/*'; sha256 = ('a' * 64); justification = 'too broad to review' } },
-        @{ Case = 'a parent step'; Entry = [ordered]@{ path = 'etc/../root/x'; sha256 = ('a' * 64); justification = 'escapes its folder' } },
-        @{ Case = 'an absolute path'; Entry = [ordered]@{ path = '/etc/shadow'; sha256 = ('a' * 64); justification = 'absolute paths are not allowed' } },
-        @{ Case = 'no hash'; Entry = [ordered]@{ path = 'etc/x'; justification = 'missing its hash' } },
-        @{ Case = 'a short justification'; Entry = [ordered]@{ path = 'etc/x'; sha256 = ('a' * 64); justification = 'ok' } },
-        @{ Case = 'an extra field'; Entry = [ordered]@{ path = 'etc/x'; sha256 = ('a' * 64); justification = 'has another field'; rule = 'pem-private-key' } }) {
+        @{ Case = 'a wildcard'; Entry = [ordered]@{ rule = 'pem-private-key'; path = 'etc/*'; sha256 = ('a' * 64); justification = 'too broad to review' } },
+        @{ Case = 'a parent step'; Entry = [ordered]@{ rule = 'pem-private-key'; path = 'etc/../root/x'; sha256 = ('a' * 64); justification = 'escapes its folder' } },
+        @{ Case = 'an absolute path'; Entry = [ordered]@{ rule = 'pem-private-key'; path = '/etc/shadow'; sha256 = ('a' * 64); justification = 'absolute paths are not allowed' } },
+        @{ Case = 'no hash'; Entry = [ordered]@{ rule = 'pem-private-key'; path = 'etc/x'; justification = 'missing its hash' } },
+        @{ Case = 'a short justification'; Entry = [ordered]@{ rule = 'pem-private-key'; path = 'etc/x'; sha256 = ('a' * 64); justification = 'ok' } },
+        @{ Case = 'no rule'; Entry = [ordered]@{ path = 'etc/x'; sha256 = ('a' * 64); justification = 'covers every rule at once' } },
+        @{ Case = 'an unknown rule'; Entry = [ordered]@{ rule = 'any'; path = 'etc/x'; sha256 = ('a' * 64); justification = 'a rule the scanner does not have' } },
+        @{ Case = 'an extra field'; Entry = [ordered]@{ rule = 'pem-private-key'; path = 'etc/x'; sha256 = ('a' * 64); justification = 'has another field'; note = 'x' } }) {
         Set-Allow @($Entry)
         { Read-AapUbuntuAllowlist -Path $script:Al } | Should -Throw 'AAP_AllowlistInvalid*'
     }
@@ -1293,6 +1320,16 @@ Describe 'partial builds and evidence ownership' {
         (Invoke-Build).Status | Should -Be 'unchanged'
         Test-Path (Join-Path (Get-EvidenceDir) 'generation.json') | Should -BeTrue
     }
+    It 'refuses to clean a build that recorded its build VM without the host network module, and removes nothing' -Tag 'cleanup-network' {
+        $names = Get-AapUbuntuNames $w.Plan 1
+        $w.Vms[$names.BuildVm] = 'Off'
+        $bd = Join-Path $w.Staging "build\$script:BuildId"
+        [void][IO.Directory]::CreateDirectory($bd)
+        Write-TestJson ([ordered]@{ schema = 1; status = 'running'; vm_id = [guid]::NewGuid().ToString(); steps = [ordered]@{}; written = @(); evidence_created = $false }) (Join-Path $bd 'state.json')
+        { Remove-AapUbuntuBuild -Storage (Read-AapStorageRecord -Path $w.StoragePath) -Provider $w.Provider -Names $names -EvidenceRoot $w.Evidence } | Should -Throw 'AAP_NetworkUnavailable*'
+        Test-Path $bd | Should -BeTrue
+        $w.Vms[$names.BuildVm] | Should -Be 'Off'
+    }
     It 'cleans exactly the evidence files a crashed run listed' {
         $bd = Join-Path $w.Staging "build\$script:BuildId"; $ev = Get-EvidenceDir
         [void][IO.Directory]::CreateDirectory($bd); [void][IO.Directory]::CreateDirectory($ev)
@@ -1352,8 +1389,8 @@ Describe 'the production provider (static: it is never run here)' {
         $prov = @($script:ProvText.Split("`n") | ForEach-Object { $_.Trim() })
         foreach ($l in $lines) { $prov | Should -Contain $l }
     }
-    It 'puts the seed image into the last DVD drive, only while the VM is Off' {
-        $script:ProvText | Should -Match "if \(\[string\]\`$vm.State -ne 'Off' -or \`$drives.Count -lt 1\) \{ throw"
+    It 'puts the seed image into the last DVD drive, only while the VM is Off and has exactly its media drives and the seed''s' {
+        $script:ProvText | Should -Match "if \(\[string\]\`$vm.State -ne 'Off' -or \`$drives.Count -ne @\(\`$a.Dvds\).Count \+ 1\) \{ throw"
         $script:ProvText | Should -Match 'Hyper-V\\Set-VMDvdDrive -VMDvdDrive \$drives\[-1\] -Path \$a\.Path'
         $script:ProvText | Should -Match '(?m)^        Hyper-V\\Add-VMDvdDrive -VM \$vm$'
     }

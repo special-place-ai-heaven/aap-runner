@@ -194,8 +194,8 @@ for pair in "${TARGET}|" "${ESP}|boot/efi/"; do
       ! gz "${f}" -F -e "${KNOWN}" || add_finding build-credential "${rel}"   # check:scan-gz-known
       ! gz "${f}" -P -e "${wide}" || add_finding build-credential "${rel}"   # check:scan-gz-wide
     fi
-    # A finding with the file's hash, so a reviewed allowlist entry (exact path and bytes) can cover a .gz the image ships
-    # damaged; the host counts an uncovered one as incomplete, not as a secret.
+    # A finding of its own rule with the file's hash: a reviewed allowlist entry (that rule, exact path and bytes) can cover
+    # a .gz the image ships damaged and nothing else found in it; the host counts an uncovered one as incomplete, not found.
     [ "${GZ_BAD}" = 0 ] || add_finding unreadable-stream "${rel}"
   done < "${tmp}/gz"
 done
