@@ -8,21 +8,14 @@
     "vm_id": "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b",
     "vm_name": "aap-w-1-3-1a2b3c4d",
     "profile": "windows",
-    "subnet": "172.31.250.0/24",
-    "endpoints": [
-      {
-        "role": "gateway",
-        "address": "172.31.250.1"
-      },
-      {
-        "role": "dhcp",
-        "address": "172.31.250.1"
-      },
-      {
-        "role": "dns",
-        "address": "172.31.250.1"
-      }
-    ]
+    "subnet": "172.31.240.0/24",
+    "gateway": "172.31.240.1",
+    "address": "172.31.240.2",
+    "resolvers": [
+      "192.0.2.53",
+      "198.51.100.53"
+    ],
+    "endpoints": []
   },
   "created": [
     {

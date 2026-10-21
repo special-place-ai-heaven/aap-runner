@@ -1,5 +1,5 @@
 {
-  "expect": "endpoint 192.168.1.1 is not a host address of 172.31.250.0/24",
+  "expect": "$.endpoints[0]: missing required property 'protocol'",
   "instance": {
     "schema": 1,
     "kind": "host_network_attach",
@@ -7,18 +7,16 @@
     "vm_name": "aap-w-1-3-1a2b3c4d",
     "profile": "windows",
     "subnet": "172.31.250.0/24",
+    "gateway": "172.31.250.1",
+    "address": "172.31.250.2",
+    "resolvers": [
+      "192.0.2.53",
+      "198.51.100.53"
+    ],
     "endpoints": [
       {
         "role": "gateway",
         "address": "172.31.250.1"
-      },
-      {
-        "role": "dhcp",
-        "address": "172.31.250.1"
-      },
-      {
-        "role": "dns",
-        "address": "192.168.1.1"
       }
     ]
   }

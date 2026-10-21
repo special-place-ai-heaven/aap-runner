@@ -13,7 +13,8 @@ $script:FixedDeny = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.
 $script:Directions = @('Inbound', 'Outbound')   # an extended port ACL has no 'Both'
 $script:AdapterKeys = @('SwitchName', 'SwitchType', 'DhcpGuard', 'RouterGuard', 'MacAddressSpoofing', 'PortMirroringMode', 'VlanMode', 'Peers', 'Acls')
 $script:RuleKeys = @('Action', 'Direction', 'RemoteAddress', 'LocalAddress', 'Protocol', 'RemotePort', 'LocalPort', 'Weight')
-$script:DeclarationKeys = @('schema', 'kind', 'vm_id', 'vm_name', 'profile', 'subnet', 'endpoints')
+$script:DeclarationKeys = @('schema', 'kind', 'vm_id', 'vm_name', 'profile', 'subnet', 'gateway', 'address', 'resolvers', 'endpoints')
+$script:EndpointKeys = @('address', 'protocol', 'port')
 $script:GuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 $script:NameRe = '^aap-([wl])(-[1-5]-[0-9]{1,9}-|build-)[0-9a-f]{8}\z'
 
@@ -40,8 +41,9 @@ function Get-AapHostNetworkDeclarationProblems {
 
 function Get-AapHostNetworkAdapterProblems {
     <# Hyper-V's read-back of a VM's adapters (the provider shape, contract Read-back) against the declaration Attach returned.
-       HostDeny: addresses and prefixes the module's host-specific denies must cover; only the module knows the host, so its
-       Verify passes them and consumers do not. Any line: AAP_NetworkUntrusted. #>
+       HostDeny: the host's addresses and LAN prefixes (Verify check 5), which the host-specific denies must cover and no
+       endpoint may lie in; only the module knows the host, so its Verify passes them and consumers do not. Any line:
+       AAP_NetworkUntrusted. #>
     param([Parameter(Mandatory)][AllowNull()]$Declaration, [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][object[]]$Adapters,
         [string[]]$HostDeny = @())
     @(Get-AapNetAdapterProblem $Declaration $Adapters $HostDeny) | Select-Object -First 64
@@ -64,23 +66,38 @@ function Get-AapNetDeclarationProblem($Request, $d) {
     }
     $net = Split-AapNetPrefix ([string](Get-AapNetField $d 'subnet'))
     if ($null -eq $net -or $net.Width -ne 32 -or $net.Bits -lt 16 -or $net.Bits -gt 30) { $p.Add("the subnet $(Format-AapNetText (Get-AapNetField $d 'subnet')) is not an IPv4 network of /16 to /30"); return $p.ToArray() }   # check:decl-subnet
-    $ends = @(Get-AapNetField $d 'endpoints')
-    if ($ends.Count -lt 1 -or $ends.Count -gt 4) { $p.Add("the declaration has $($ends.Count) endpoints, not 1 to 4") }   # check:decl-endpoints
-    $roles = @($ends | ForEach-Object { [string](Get-AapNetField $_ 'role') })
-    if (@($roles -ceq 'gateway').Count -ne 1 -or @($roles -ceq 'dhcp').Count -gt 1 -or @($roles -ceq 'dns').Count -gt 2) { $p.Add('the endpoints are not one gateway, at most one dhcp and at most two dns') }   # check:decl-roles
+    if (-not (Test-AapNetPrivate $net)) { $p.Add("the subnet $($net.Text) is not inside a private fixed range"); return $p.ToArray() }   # check:decl-subnet-private
+    # The guest's static addressing: no DHCP serves it (contract, Attach).
+    $gw = [string](Get-AapNetField $d 'gateway')
+    if (-not (Test-AapNetHost $net (Split-AapNetAddress $gw))) { $p.Add("the gateway $(Format-AapNetText $gw) is not a host address of $($net.Text)") }   # check:decl-gateway
+    $addr = [string](Get-AapNetField $d 'address')
+    if (-not (Test-AapNetHost $net (Split-AapNetAddress $addr)) -or $addr -ceq $gw) { $p.Add("the address $(Format-AapNetText $addr) is not a host address of $($net.Text) other than the gateway") }   # check:decl-address
+    # The narrowed exceptions, none by default: one private address outside the subnet, TCP or UDP, one port.
+    $ends = Get-AapNetList $d 'endpoints'
+    if ($null -eq $ends -or $ends.Count -gt 4) { $p.Add('the endpoints are not a list of at most 4') }   # check:decl-endpoints
+    $dns = New-Object Collections.Generic.List[string]
     $seen = New-Object Collections.Generic.List[string]
     foreach ($e in $ends) {
-        $role = [string](Get-AapNetField $e 'role')
-        $extra = @(Get-AapNetNames $e | Where-Object { @('role', 'address', 'port') -cnotcontains $_ })
-        if ($extra.Count -or @('gateway', 'dhcp', 'dns') -cnotcontains $role -or -not (Test-AapNetField $e 'address')) { $p.Add("an endpoint ($(Format-AapNetText $role)) is not exactly role gateway, dhcp or dns, address and an optional port"); continue }   # check:decl-endpoint
-        $text = [string](Get-AapNetField $e 'address')
-        $ip = Split-AapNetPrefix $text
-        if ($null -eq $ip -or $ip.Width -ne 32 -or $text -cne $ip.Address -or -not (Test-AapNetHost $net $ip)) { $p.Add("the $role endpoint $(Format-AapNetText $text) is not a host address of $($net.Text)"); continue }   # check:decl-address
-        $port = Get-AapNetField $e 'port'
-        if ((Test-AapNetField $e 'port') -and -not ((Test-AapNetInt $port) -and $port -ge 1 -and $port -le 65535)) { $p.Add("the $role endpoint $text has a port that is not 1 to 65535"); continue }   # check:decl-port
-        $key = "$role $text $port"
-        if ($seen -ccontains $key) { $p.Add("the $role endpoint $text is declared twice") }   # check:decl-endpoints
+        if ((@(Get-AapNetNames $e | Sort-Object) -join ',') -cne (@($script:EndpointKeys | Sort-Object) -join ',')) { $p.Add('an endpoint is not exactly address, protocol and port'); continue }   # check:decl-endpoint
+        $text = [string](Get-AapNetField $e 'address'); $proto = [string](Get-AapNetField $e 'protocol'); $port = Get-AapNetField $e 'port'
+        $ip = Split-AapNetAddress $text
+        if ($null -eq $ip -or -not (Test-AapNetPrivate $ip) -or (Test-AapNetCover $net $ip)) { $p.Add("the endpoint $(Format-AapNetText $text) is not one private IPv4 address outside $($net.Text)"); continue }   # check:decl-endpoint-address
+        if (@('TCP', 'UDP') -cnotcontains $proto -or -not ((Test-AapNetInt $port) -and $port -ge 1 -and $port -le 65535)) { $p.Add("the endpoint $text is not narrowed to TCP or UDP and one port 1 to 65535"); continue }   # check:decl-endpoint-narrow
+        $key = "$text $proto $port"
+        if ($seen -ccontains $key) { $p.Add("the endpoint $key is declared twice") }   # check:decl-endpoints
         $seen.Add($key)
+        if ($port -eq 53) { $dns.Add($text) }
+    }
+    # The resolvers the guest is given: public ones need no Allow; a private one only as an endpoint on port 53.
+    $res = Get-AapNetList $d 'resolvers'
+    if ($null -eq $res -or $res.Count -lt 1 -or $res.Count -gt 2) { $p.Add('the resolvers are not a list of one or two addresses'); return $p.ToArray() }   # check:decl-resolvers
+    $listed = New-Object Collections.Generic.List[string]
+    foreach ($r in $res) {
+        $text = [string]$r
+        $ip = Split-AapNetAddress $text
+        if ($null -eq $ip -or $listed -ccontains $text) { $p.Add("the resolver $(Format-AapNetText $text) is not one IPv4 address, listed once"); continue }   # check:decl-resolver
+        $listed.Add($text)
+        if ((Test-AapNetFixed $ip) -and $dns -cnotcontains $text) { $p.Add("the resolver $text is private but not a declared endpoint on port 53") }   # check:decl-resolver-private
     }
     $p.ToArray()
 }
@@ -133,23 +150,28 @@ function Get-AapNetAdapterProblem($d, $Adapters, [string[]]$HostDeny) {
                 Protocol = (ConvertTo-AapNetProtocol ([string](Get-AapNetField $r 'Protocol'))); RemotePort = ([string](Get-AapNetField $r 'RemotePort')).Trim() })
     }
 
-    # Rule (i): every fixed range denied in both directions, unscoped; the host-specific targets covered the same way.
+    # Rule (i): every fixed range denied in both directions, unscoped; the host-specific targets covered the same way, none
+    # of them an endpoint, and none a public IPv4 address, which the decided shape does not cover (contract, Limitations).
     foreach ($range in $script:FixedDeny) {
         foreach ($dir in $script:Directions) {
             if (-not @($rules | Where-Object { $_.Remote.Text -ceq $range -and (Test-AapNetFullDeny $_ $dir) }).Count) { $p.Add("no unscoped $dir deny for $range") }   # check:fixed-deny
         }
     }
+    $ends = @(Get-AapNetField $d 'endpoints' | ForEach-Object { ConvertTo-AapNetEndpoint $_ })
     foreach ($t in @($HostDeny)) {
         $tp = Split-AapNetPrefix $t
         if ($null -eq $tp) { $p.Add("the host-specific target '$(Format-AapNetText $t)' is not an address or a prefix"); continue }   # check:host-deny
+        if ($tp.Width -eq 32 -and -not (Test-AapNetFixed $tp)) { $p.Add("the host's $($tp.Text) is public IPv4, outside the enforcement shape: not certified (contract, Limitations)"); continue }   # check:host-public
         foreach ($dir in $script:Directions) {
             if (-not @($rules | Where-Object { (Test-AapNetFullDeny $_ $dir) -and (Test-AapNetCover $_.Remote $tp) }).Count) { $p.Add("no unscoped $dir deny covers the host's $($tp.Text)") }   # check:host-deny
+        }
+        foreach ($e in $ends) {
+            if (Test-AapNetCover $tp $e.Ip) { $p.Add("the endpoint $($e.Text) lies in the host's $($tp.Text)") }   # check:host-endpoint
         }
     }
 
     # Rule (ii): every allow is exactly a declared endpoint and outweighs every deny of its direction that covers it; every
-    # endpoint has an allow in both directions.
-    $ends = @(Get-AapNetField $d 'endpoints' | ForEach-Object { ConvertTo-AapNetEndpoint $_ })
+    # endpoint has an allow in both directions. With no endpoint declared (the default) there is no allow at all.
     foreach ($dir in $script:Directions) {
         $allows = @($rules | Where-Object { $_.Action -ceq 'Allow' -and $_.Direction -ceq $dir })
         foreach ($a in $allows) {
@@ -160,7 +182,7 @@ function Get-AapNetAdapterProblem($d, $Adapters, [string[]]$HostDeny) {
             }
         }
         foreach ($e in $ends) {
-            if (-not @($allows | Where-Object { Test-AapNetEndpointRule $_ $e }).Count) { $p.Add("the $($e.Role) endpoint $($e.Text) has no $dir allow") }   # check:endpoint-allow
+            if (-not @($allows | Where-Object { Test-AapNetEndpointRule $_ $e }).Count) { $p.Add("the endpoint $($e.Text) has no $dir allow") }   # check:endpoint-allow
         }
     }
     $p.ToArray()
@@ -174,15 +196,10 @@ function Test-AapNetFullDeny($r, [string]$Dir) {
     $true
 }
 
-# Whether allow $r is exactly endpoint $e: its one address; with the endpoint's port, TCP or UDP to that port and nothing
-# else narrowed; without a port, nothing narrowed at all.
+# Whether allow $r is exactly endpoint $e: its one address, its protocol and its remote port, and nothing else narrowed.
 function Test-AapNetEndpointRule($r, $e) {
     if ($r.Remote.Bits -ne $r.Remote.Width -or $r.Remote.Address -cne $e.Address) { return $false }   # check:allow-address
-    if ($null -eq $e.Port) {
-        if ($r.Scope.Count) { return $false }   # check:allow-scope
-        return $true
-    }
-    if (($r.Scope -join ',') -cne 'protocol,remote port' -or @('TCP', 'UDP') -cnotcontains $r.Protocol -or $r.RemotePort -cne [string]$e.Port) { return $false }   # check:allow-port
+    if (($r.Scope -join ',') -cne 'protocol,remote port' -or $r.Protocol -cne $e.Protocol -or $r.RemotePort -cne [string]$e.Port) { return $false }   # check:allow-port
     $true
 }
 
@@ -200,6 +217,12 @@ function Get-AapNetField($o, [string]$Name) {
 function Get-AapNetNames($o) {
     if ($o -is [Collections.IDictionary]) { @($o.Keys | ForEach-Object { [string]$_ }) } elseif ($null -ne $o) { @($o.PSObject.Properties | ForEach-Object { $_.Name }) }
 }
+# A field that must be a list, as the list itself (empty or not); nothing when it is missing or not a list.
+function Get-AapNetList($o, [string]$Name) {
+    if (-not (Test-AapNetField $o $Name)) { return }
+    $v = $(if ($o -is [Collections.IDictionary]) { , $o[$Name] } else { , $o.PSObject.Properties[$Name].Value })
+    if ($v -is [Collections.IList]) { , $v }
+}
 function Test-AapNetInt($v) { $v -is [int] -or $v -is [long] }
 
 # A field that leaves a rule unrestricted: '', '*' or ANY (D2: which one Hyper-V shows for an unset field). For a local
@@ -212,11 +235,10 @@ function ConvertTo-AapNetProtocol([string]$Text) {
     if ($t -ceq '6') { 'TCP' } elseif ($t -ceq '17') { 'UDP' } else { $t }
 }
 
-# A declared endpoint, already checked, as @{ Role; Address; Port; Text }.
+# A declared endpoint, already checked, as @{ Address; Ip; Protocol; Port; Text }.
 function ConvertTo-AapNetEndpoint($e) {
-    $addr = [string](Get-AapNetField $e 'address')
-    $port = $(if (Test-AapNetField $e 'port') { [int](Get-AapNetField $e 'port') } else { $null })
-    @{ Role = [string](Get-AapNetField $e 'role'); Address = $addr; Port = $port; Text = $(if ($null -ne $port) { "${addr}:$port" } else { $addr }) }
+    $addr = [string](Get-AapNetField $e 'address'); $proto = [string](Get-AapNetField $e 'protocol'); $port = [int](Get-AapNetField $e 'port')
+    @{ Address = $addr; Ip = (Split-AapNetPrefix $addr); Protocol = $proto; Port = $port; Text = "$addr $proto $port" }
 }
 
 # An address ('172.31.250.1', an address alone is a /32 or /128) or a prefix ('10.0.0.0/8') in canonical text, as
@@ -236,6 +258,21 @@ function Split-AapNetPrefix([string]$Text) {
     @{ Text = "$($ip.ToString())/$bits"; Address = $ip.ToString(); Bytes = $bytes; Bits = $bits; Width = $width }
 }
 
+# One IPv4 address in canonical text ('172.31.250.1', no prefix), as Split-AapNetPrefix gives it; $null for anything else.
+function Split-AapNetAddress([string]$Text) {
+    $ip = Split-AapNetPrefix $Text
+    if ($null -ne $ip -and $ip.Width -eq 32 -and $Text -ceq $ip.Address) { $ip }
+}
+
+# Whether address or prefix $P lies inside a fixed range.
+function Test-AapNetFixed($P) { @($script:FixedDeny | Where-Object { Test-AapNetCover (Split-AapNetPrefix $_) $P }).Count -gt 0 }
+
+# Whether IPv4 address or prefix $P is private: inside a fixed range, and unicast a NAT routes (neither link-local
+# 169.254.0.0/16 nor multicast), so inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 or 100.64.0.0/10.
+function Test-AapNetPrivate($P) {
+    $P.Width -eq 32 -and (Test-AapNetFixed $P) -and -not ($P.Bytes[0] -eq 169 -and $P.Bytes[1] -eq 254) -and $P.Bytes[0] -lt 224
+}
+
 # Whether prefix $P contains $T, an address or a prefix of the same family.
 function Test-AapNetCover($P, $T) {
     if ($P.Width -ne $T.Width -or $T.Bits -lt $P.Bits) { return $false }
@@ -248,7 +285,7 @@ function Test-AapNetCover($P, $T) {
 
 # Whether $Ip is a host address of the IPv4 network $Net: inside it, neither its network nor its broadcast address.
 function Test-AapNetHost($Net, $Ip) {
-    if (-not (Test-AapNetCover $Net $Ip)) { return $false }
+    if ($null -eq $Ip -or -not (Test-AapNetCover $Net $Ip)) { return $false }
     $hb = @(for ($i = $Net.Bits; $i -lt 32; $i++) { [int][bool]($Ip.Bytes[$i -shr 3] -band (0x80 -shr ($i % 8))) })
     ($hb -contains 0) -and ($hb -contains 1)
 }

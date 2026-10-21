@@ -1,0 +1,43 @@
+{
+  "expect": "$.endpoints: more than 4 items",
+  "instance": {
+    "schema": 1,
+    "kind": "host_network_attach",
+    "vm_id": "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8",
+    "vm_name": "aap-wbuild-1a2b3c4d",
+    "profile": "windows",
+    "subnet": "172.31.252.0/24",
+    "gateway": "172.31.252.1",
+    "address": "172.31.252.2",
+    "resolvers": [
+      "192.168.1.53"
+    ],
+    "endpoints": [
+      {
+        "address": "192.168.1.53",
+        "protocol": "UDP",
+        "port": 53
+      },
+      {
+        "address": "192.168.1.54",
+        "protocol": "UDP",
+        "port": 53
+      },
+      {
+        "address": "192.168.1.55",
+        "protocol": "UDP",
+        "port": 53
+      },
+      {
+        "address": "192.168.1.56",
+        "protocol": "UDP",
+        "port": 53
+      },
+      {
+        "address": "192.168.1.57",
+        "protocol": "UDP",
+        "port": 53
+      }
+    ]
+  }
+}

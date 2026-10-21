@@ -1,7 +1,7 @@
 # The shared host network check (supervisor/network/AapHostNetworkCheck.psm1) against parity/contracts/host-network-module.md:
-# the declaration check and the read-back rules (i) to (iv). Pester 5 on Windows PowerShell 5.1 and PowerShell 7. Tags name
-# the check each test guards; tests/common/Invoke-AapHostNetworkMutations.ps1 disables each check in turn and requires its
-# tagged tests to fail.
+# the declaration check and the read-back rules (i) to (iv). Pester 5 on Windows PowerShell 5.1 and PowerShell 7; python 3
+# on PATH for the parity test with parity/contracts/validate.py. Tags name the check each test guards;
+# tests/common/Invoke-AapHostNetworkMutations.ps1 disables each check in turn and requires its tagged tests to fail.
 
 BeforeDiscovery {
     $fixed = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'ff00::/8', 'fe80::/10', 'fc00::/7')
@@ -18,10 +18,12 @@ BeforeAll {
     $script:Fixed = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'ff00::/8', 'fe80::/10', 'fc00::/7')
     $script:Id = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'
 
-    # A declaration: gateway and DHCP on .1, DNS on .2, DHCP and DNS with their ports.
+    # A declaration as Attach returns it: the VM's static address .2 and the gateway .1 of its switch's subnet, and the one
+    # kind of exception there is, a private resolver the owner chose (UDP and TCP 53), beside a public resolver.
     function New-Decl([string]$Name = 'aap-w-1-3-1a2b3c4d', [string]$Prof = 'windows', [string]$Net = '172.31.250') {
         [ordered]@{ schema = 1; kind = 'host_network_attach'; vm_id = $script:Id; vm_name = $Name; profile = $Prof; subnet = "$Net.0/24"
-            endpoints = @([ordered]@{ role = 'gateway'; address = "$Net.1" }, [ordered]@{ role = 'dhcp'; address = "$Net.1"; port = 67 }, [ordered]@{ role = 'dns'; address = "$Net.2"; port = 53 })
+            gateway = "$Net.1"; address = "$Net.2"; resolvers = @('192.168.1.53', '192.0.2.53')
+            endpoints = @([ordered]@{ address = '192.168.1.53'; protocol = 'UDP'; port = 53 }, [ordered]@{ address = '192.168.1.53'; protocol = 'TCP'; port = 53 })
         }
     }
     function Get-Req($D) { @{ VmId = $D.vm_id; VmName = $D.vm_name; Profile = $D.profile } }
@@ -29,17 +31,13 @@ BeforeAll {
     function New-Rule([string]$Action, [string]$Dir, [string]$Remote, [int]$Weight, [string]$Protocol = 'ANY', [string]$RemotePort = 'ANY') {
         @{ Action = $Action; Direction = $Dir; RemoteAddress = $Remote; LocalAddress = 'ANY'; Protocol = $Protocol; RemotePort = $RemotePort; LocalPort = 'ANY'; Weight = $Weight }
     }
-    # What a conformant module leaves: each fixed range denied both ways at weight 10 (rules 1-9 inbound, 14-22 outbound), each
-    # endpoint allowed both ways at 100 (10-13 inbound, 23-26 outbound: gateway, DHCP over UDP, DNS over UDP and TCP).
+    # What a conformant module leaves: each fixed range denied both ways at weight 10 (rules 1-9 inbound, 12-20 outbound),
+    # each endpoint allowed both ways at 100, narrowed to its protocol and port (10-11 inbound, 21-22 outbound: UDP, TCP).
     function New-Adapter($D, [string]$Switch = 'aap-guests-win', [object[]]$Peers = @()) {
         $acls = New-Object Collections.Generic.List[object]
         foreach ($dir in 'Inbound', 'Outbound') {
             foreach ($r in $script:Fixed) { $acls.Add((New-Rule Deny $dir $r 10)) }
-            foreach ($e in $D.endpoints) {
-                if (-not $e.Contains('port')) { $acls.Add((New-Rule Allow $dir $e.address 100)); continue }
-                $acls.Add((New-Rule Allow $dir $e.address 100 UDP ([string]$e.port)))
-                if ($e.role -eq 'dns') { $acls.Add((New-Rule Allow $dir $e.address 100 TCP ([string]$e.port))) }
-            }
+            foreach ($e in $D.endpoints) { $acls.Add((New-Rule Allow $dir $e.address 100 $e.protocol ([string]$e.port))) }
         }
         @{ SwitchName = $Switch; SwitchType = 'Internal'; DhcpGuard = 'On'; RouterGuard = 'On'; MacAddressSpoofing = 'Off'; PortMirroringMode = 'None'
             VlanMode = 'Untagged'; Peers = $Peers; Acls = $acls.ToArray()
@@ -78,6 +76,15 @@ Describe 'the shared host network check' {
             (Get-P $b (New-Adapter $b 'aap-build-linux')) -join ' | ' | Should -Be ''
         }
 
+        It 'passes the default: public resolvers, no endpoint and no allow, after JSON' {
+            $d.resolvers = @('192.0.2.53'); $d.endpoints = @()
+            $j = $d | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+            $r = New-Adapter $d | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+            @($r.Acls | Where-Object { $_.Action -eq 'Allow' }).Count | Should -Be 0
+            (Get-DeclP $j (Get-Req $d)) -join ' | ' | Should -Be ''
+            (Get-P $j $r) -join ' | ' | Should -Be ''
+        }
+
         It 'passes a declaration and a read-back that went through JSON' {
             $j = $d | ConvertTo-Json -Depth 6 | ConvertFrom-Json
             $r = $a | ConvertTo-Json -Depth 6 | ConvertFrom-Json
@@ -89,8 +96,9 @@ Describe 'the shared host network check' {
             Set-Rule $a Deny Inbound '10.0.0.0/8' @{ LocalAddress = ''; Protocol = '*'; LocalPort = 'any'; RemotePort = ' Any ' }
             Set-Rule $a Deny Outbound '10.0.0.0/8' @{ LocalAddress = '0.0.0.0/0'; Protocol = '' }
             Set-Rule $a Deny Inbound 'ff00::/8' @{ LocalAddress = '::/0'; RemoteAddress = 'FF00::/8' }
-            Set-Rule $a Allow Outbound '172.31.250.1' @{ RemoteAddress = '172.31.250.1/32' } -Protocol ANY
-            Set-Rule $a Allow Inbound '172.31.250.2' @{ Protocol = '17' } -Protocol UDP
+            Set-Rule $a Allow Outbound '192.168.1.53' @{ RemoteAddress = '192.168.1.53/32' } -Protocol UDP
+            Set-Rule $a Allow Inbound '192.168.1.53' @{ Protocol = '6' } -Protocol TCP
+            Set-Rule $a Allow Inbound '192.168.1.53' @{ Protocol = 'udp' } -Protocol UDP
             $a.VlanMode = 'Access'
             (Get-P $d $a) -join ' | ' | Should -Be ''
         }
@@ -259,9 +267,9 @@ Describe 'the shared host network check' {
         }
     }
 
-    Context 'host-specific denies (the module''s Verify)' {
+    Context 'host-specific targets (the module''s Verify)' {
         It 'needs no rule of its own for a target a fixed range covers' {
-            (Get-P $d $a @('172.29.16.1', '172.31.250.0/24', 'fd00:aaaa::1')) -join ' | ' | Should -Be ''
+            (Get-P $d $a @('172.29.16.1', '172.31.250.1', '100.100.100.100', 'fd00:aaaa::1')) -join ' | ' | Should -Be ''
         }
 
         It 'reports a target no unscoped deny covers, per direction' -Tag host-deny {
@@ -283,66 +291,76 @@ Describe 'the shared host network check' {
         It 'reports a target that is not an address or a prefix' -Tag host-deny {
             Get-P $d $a @('the LAN') | Should -Be @("the host-specific target 'the LAN' is not an address or a prefix")
         }
+
+        It 'does not certify a host with the public IPv4 <T>, denied or not' -Tag host-public -TestCases @(
+            @{ T = '203.0.113.7'; W = '203.0.113.7/32' }, @{ T = '198.51.100.0/24'; W = '198.51.100.0/24' }) {
+            $want = @("the host's $W is public IPv4, outside the enforcement shape: not certified (contract, Limitations)")
+            Get-P $d $a @($T) | Should -Be $want
+            foreach ($dir in 'Inbound', 'Outbound') { $a.Acls += New-Rule Deny $dir $W 10 }
+            Get-P $d $a @($T) | Should -Be $want
+        }
+
+        It 'reports an endpoint that is one of the host''s addresses' -Tag host-endpoint {
+            Get-P $d $a @('192.168.1.53') | Should -Be @("the endpoint 192.168.1.53 UDP 53 lies in the host's 192.168.1.53/32", "the endpoint 192.168.1.53 TCP 53 lies in the host's 192.168.1.53/32")
+        }
     }
 
     Context 'rule (ii): every allow exactly a declared endpoint, above every deny that covers it' {
-        It 'reports an allow for <R>' -Tag allow-declared, allow-address -TestCases @(
-            @{ R = '192.168.1.1'; T = '192.168.1.1/32' }, @{ R = '172.31.250.0/30'; T = '172.31.250.0/30' }, @{ R = '172.31.250.9'; T = '172.31.250.9/32' }
-            @{ R = '0.0.0.0/0'; T = '0.0.0.0/0' }, @{ R = 'fd00::1/128'; T = 'fd00::1/128' }) {
-            $a.Acls += New-Rule Allow Outbound $R 100
-            Get-P $d $a | Should -Be @("rule 27: the Outbound allow $T is not exactly a declared endpoint")
+        It 'reports an allow of <R> <Pr> <Po>' -Tag allow-declared, allow-address -TestCases @(
+            @{ R = '172.31.250.1'; Pr = 'ANY'; Po = 'ANY'; T = '172.31.250.1/32'; S = '' }
+            @{ R = '172.31.250.1'; Pr = 'UDP'; Po = '53'; T = '172.31.250.1/32'; S = ' [protocol, remote port]' }
+            @{ R = '192.168.1.53'; Pr = 'ANY'; Po = 'ANY'; T = '192.168.1.53/32'; S = '' }
+            @{ R = '192.168.1.54'; Pr = 'UDP'; Po = '53'; T = '192.168.1.54/32'; S = ' [protocol, remote port]' }
+            @{ R = '192.168.1.0/24'; Pr = 'UDP'; Po = '53'; T = '192.168.1.0/24'; S = ' [protocol, remote port]' }
+            @{ R = '0.0.0.0/0'; Pr = 'ANY'; Po = 'ANY'; T = '0.0.0.0/0'; S = '' }
+            @{ R = 'fd00::1/128'; Pr = 'UDP'; Po = '53'; T = 'fd00::1/128'; S = ' [protocol, remote port]' }) {
+            $a.Acls += New-Rule Allow Outbound $R 100 $Pr $Po
+            Get-P $d $a | Should -Be @("rule 23: the Outbound allow $T$S is not exactly a declared endpoint")
         }
 
-        It 'reports the gateway allow narrowed by its <F>' -Tag allow-scope, allow-declared -TestCases @(
-            @{ F = 'Protocol'; V = 'TCP'; S = 'protocol' }, @{ F = 'LocalPort'; V = '80'; S = 'local port' }, @{ F = 'LocalAddress'; V = '172.31.250.7'; S = 'local address' }
-            @{ F = 'RemotePort'; V = '53'; S = 'remote port' }) {
-            Set-Rule $a Allow Outbound '172.31.250.1' @{ $F = $V } -Protocol ANY
-            Get-P $d $a | Should -Be @("rule 23: the Outbound allow 172.31.250.1/32 [$S] is not exactly a declared endpoint", 'the gateway endpoint 172.31.250.1 has no Outbound allow')
+        It 'reports the endpoint''s outbound UDP allow <Case>' -Tag allow-port, allow-declared, allow-address -TestCases @(
+            @{ Case = 'to another port'; V = @{ RemotePort = '54' }; T = '192.168.1.53/32'; S = ' [protocol, remote port]' }
+            @{ Case = 'to a port range'; V = @{ RemotePort = '53-53' }; T = '192.168.1.53/32'; S = ' [protocol, remote port]' }
+            @{ Case = 'to every UDP port'; V = @{ RemotePort = 'ANY' }; T = '192.168.1.53/32'; S = ' [protocol]' }
+            @{ Case = 'over ICMP'; V = @{ Protocol = '1' }; T = '192.168.1.53/32'; S = ' [protocol, remote port]' }
+            @{ Case = 'over every protocol'; V = @{ Protocol = 'ANY' }; T = '192.168.1.53/32'; S = ' [remote port]' }
+            @{ Case = 'from one local port'; V = @{ LocalPort = '5353' }; T = '192.168.1.53/32'; S = ' [protocol, local port, remote port]' }
+            @{ Case = 'from one local address'; V = @{ LocalAddress = '172.31.250.2' }; T = '192.168.1.53/32'; S = ' [local address, protocol, remote port]' }
+            @{ Case = 'to a /31'; V = @{ RemoteAddress = '192.168.1.52/31' }; T = '192.168.1.52/31'; S = ' [protocol, remote port]' }
+            @{ Case = 'to every port and protocol'; V = @{ Protocol = 'ANY'; RemotePort = 'ANY' }; T = '192.168.1.53/32'; S = '' }) {
+            Set-Rule $a Allow Outbound '192.168.1.53' $V -Protocol UDP
+            Get-P $d $a | Should -Be @("rule 21: the Outbound allow $T$S is not exactly a declared endpoint", 'the endpoint 192.168.1.53 UDP 53 has no Outbound allow')
         }
 
-        It 'reports the DNS allow <Case>' -Tag allow-port, allow-declared -TestCases @(
-            @{ Case = 'to another port'; V = @{ RemotePort = '54' }; S = ' [protocol, remote port]' }
-            @{ Case = 'to a port range'; V = @{ RemotePort = '53-53' }; S = ' [protocol, remote port]' }
-            @{ Case = 'over ICMP'; V = @{ Protocol = '1' }; S = ' [protocol, remote port]' }
-            @{ Case = 'from one local port'; V = @{ LocalPort = '5353' }; S = ' [protocol, local port, remote port]' }
-            @{ Case = 'to every port'; V = @{ Protocol = 'ANY'; RemotePort = 'ANY' }; S = '' }) {
-            Set-Rule $a Allow Outbound '172.31.250.2' $V -Protocol UDP
-            Get-P $d $a | Should -Be @("rule 25: the Outbound allow 172.31.250.2/32$S is not exactly a declared endpoint")
+        It 'counts an allow of the other protocol for no endpoint of that protocol' -Tag allow-port {
+            Set-Rule $a Allow Inbound '192.168.1.53' @{ Protocol = 'TCP' } -Protocol UDP
+            Get-P $d $a | Should -Be @('the endpoint 192.168.1.53 UDP 53 has no Inbound allow')
         }
 
         It 'reports an allow that does not outweigh the deny covering it: weight <W>' -Tag allow-weight -TestCases @(@{ W = 10 }, @{ W = 5 }) {
-            Set-Rule $a Allow Outbound '172.31.250.1' @{ Weight = $W } -Protocol ANY
-            Get-P $d $a | Should -Be @("rule 23: the Outbound allow 172.31.250.1/32 (weight $W) does not outweigh the deny 172.16.0.0/12 (weight 10)")
+            Set-Rule $a Allow Outbound '192.168.1.53' @{ Weight = $W } -Protocol UDP
+            Get-P $d $a | Should -Be @("rule 21: the Outbound allow 192.168.1.53/32 (weight $W) does not outweigh the deny 192.168.0.0/16 (weight 10)")
         }
 
         It 'reports every allow a heavier deny of its direction covers, and only those' -Tag allow-weight {
-            $a.Acls += New-Rule Deny Outbound '172.31.250.0/24' 500
+            $a.Acls += New-Rule Deny Outbound '192.168.1.0/24' 500
             Get-P $d $a | Should -Be @(
-                'rule 23: the Outbound allow 172.31.250.1/32 (weight 100) does not outweigh the deny 172.31.250.0/24 (weight 500)'
-                'rule 24: the Outbound allow 172.31.250.1/32 (weight 100) does not outweigh the deny 172.31.250.0/24 (weight 500)'
-                'rule 25: the Outbound allow 172.31.250.2/32 (weight 100) does not outweigh the deny 172.31.250.0/24 (weight 500)'
-                'rule 26: the Outbound allow 172.31.250.2/32 (weight 100) does not outweigh the deny 172.31.250.0/24 (weight 500)')
+                'rule 21: the Outbound allow 192.168.1.53/32 (weight 100) does not outweigh the deny 192.168.1.0/24 (weight 500)'
+                'rule 22: the Outbound allow 192.168.1.53/32 (weight 100) does not outweigh the deny 192.168.1.0/24 (weight 500)')
         }
 
-        It 'reports the <Dir> allow of the gateway missing' -Tag endpoint-allow -TestCases @(@{ Dir = 'Inbound' }, @{ Dir = 'Outbound' }) {
-            Remove-Rule $a Allow $Dir '172.31.250.1' -Protocol ANY
-            Get-P $d $a | Should -Be @("the gateway endpoint 172.31.250.1 has no $Dir allow")
-        }
-
-        It 'reports the DNS endpoint without an outbound allow, and needs only one of UDP and TCP' -Tag endpoint-allow {
-            Remove-Rule $a Allow Outbound '172.31.250.2' -Protocol TCP
-            (Get-P $d $a) -join ' | ' | Should -Be ''
-            Remove-Rule $a Allow Outbound '172.31.250.2' -Protocol UDP
-            Get-P $d $a | Should -Be @('the dns endpoint 172.31.250.2:53 has no Outbound allow')
+        It 'reports the <Dir> allow of an endpoint missing' -Tag endpoint-allow -TestCases @(@{ Dir = 'Inbound' }, @{ Dir = 'Outbound' }) {
+            Remove-Rule $a Allow $Dir '192.168.1.53' -Protocol TCP
+            Get-P $d $a | Should -Be @("the endpoint 192.168.1.53 TCP 53 has no $Dir allow")
         }
     }
 
     Context 'the declaration' {
         It 'reports the keys: <Case>' -Tag decl-keys -TestCases @(
-            @{ Case = 'an extra key'; Edit = { param($x) $x.extra = 1 } }, @{ Case = 'no subnet'; Edit = { param($x) $x.Remove('subnet') } }
+            @{ Case = 'an extra key'; Edit = { param($x) $x.extra = 1 } }, @{ Case = 'no gateway'; Edit = { param($x) $x.Remove('gateway') } }
             @{ Case = 'nothing'; Edit = $null }) {
             $x = $(if ($Edit) { & $Edit $d; $d } else { $null })
-            Get-DeclP $x (Get-Req $d) | Should -Be @("the declaration's keys are not exactly schema, kind, vm_id, vm_name, profile, subnet, endpoints")
+            Get-DeclP $x (Get-Req $d) | Should -Be @("the declaration's keys are not exactly schema, kind, vm_id, vm_name, profile, subnet, gateway, address, resolvers, endpoints")
         }
 
         It 'reports <F> <V>' -Tag decl-keys -TestCases @(@{ F = 'schema'; V = 2 }, @{ F = 'schema'; V = '1' }, @{ F = 'kind'; V = 'host_network_record' }) {
@@ -370,51 +388,108 @@ Describe 'the shared host network check' {
             Get-DeclP $d | Should -Be @("the subnet $V is not an IPv4 network of /16 to /30")
         }
 
-        It 'reports <N> endpoints' -Tag decl-endpoints -TestCases @(@{ N = 0 }, @{ N = 5 }) {
-            $d.endpoints = @(for ($i = 0; $i -lt $N; $i++) { [ordered]@{ role = $(if ($i) { 'dns' } else { 'gateway' }); address = "172.31.250.$($i + 1)" } })
-            Get-DeclP $d | Should -Contain "the declaration has $N endpoints, not 1 to 4"
+        It 'reports the subnet <V>, which is not private' -Tag decl-subnet-private -TestCases @(
+            @{ V = '203.0.113.0/24' }, @{ V = '172.32.0.0/16' }, @{ V = '169.254.10.0/24' }, @{ V = '224.1.0.0/16' }) {
+            $d.subnet = $V
+            Get-DeclP $d | Should -Be @("the subnet $V is not inside a private fixed range")
+        }
+
+        It 'reports the gateway <V>' -Tag decl-gateway -TestCases @(
+            @{ V = '172.31.251.1' }, @{ V = '172.31.250.0' }, @{ V = '172.31.250.255' }, @{ V = '172.31.250.1/32' }, @{ V = '172.031.250.1' }, @{ V = '' }) {
+            $d.gateway = $V
+            Get-DeclP $d | Should -Be @("the gateway $V is not a host address of 172.31.250.0/24")
+        }
+
+        It 'reports the address <V>' -Tag decl-address -TestCases @(
+            @{ V = '172.31.250.1' }, @{ V = '172.31.251.2' }, @{ V = '172.31.250.255' }, @{ V = '172.31.250.2/32' }, @{ V = 'fd00::2' }, @{ V = '' }) {
+            $d.address = $V
+            Get-DeclP $d | Should -Be @("the address $V is not a host address of 172.31.250.0/24 other than the gateway")
+        }
+
+        It 'reports the endpoints <Case>' -Tag decl-endpoints -TestCases @(
+            @{ Case = 'as five'; E = @(53..57 | ForEach-Object { [ordered]@{ address = "192.168.1.$_"; protocol = 'UDP'; port = 53 } }) }
+            @{ Case = 'as one object, not a list'; E = [ordered]@{ address = '192.168.1.53'; protocol = 'UDP'; port = 53 } }
+            @{ Case = 'as nothing'; E = $null }) {
+            $d.endpoints = $E
+            Get-DeclP $d | Should -Contain 'the endpoints are not a list of at most 4'
         }
 
         It 'reports an endpoint declared twice' -Tag decl-endpoints {
-            $d.endpoints = @($d.endpoints) + @([ordered]@{ role = 'dns'; address = '172.31.250.2'; port = 53 })
-            Get-DeclP $d | Should -Be @('the dns endpoint 172.31.250.2 is declared twice')
-        }
-
-        It 'reports roles <R>' -Tag decl-roles -TestCases @(
-            @{ R = 'gateway gateway' }, @{ R = 'dns' }, @{ R = 'gateway dhcp dhcp' }, @{ R = 'gateway dns dns dns' }) {
-            $i = 0
-            $d.endpoints = @(foreach ($role in $R.Split(' ')) { $i++; [ordered]@{ role = $role; address = "172.31.250.$i" } })
-            Get-DeclP $d | Should -Be @('the endpoints are not one gateway, at most one dhcp and at most two dns')
+            $d.endpoints = @($d.endpoints) + @([ordered]@{ address = '192.168.1.53'; protocol = 'UDP'; port = 53 })
+            Get-DeclP $d | Should -Be @('the endpoint 192.168.1.53 UDP 53 is declared twice')
         }
 
         It 'reports an endpoint <Case>' -Tag decl-endpoint -TestCases @(
-            @{ Case = 'with role ntp'; E = [ordered]@{ role = 'ntp'; address = '172.31.250.3' }; R = 'ntp' }
-            @{ Case = 'with an extra key'; E = [ordered]@{ role = 'dns'; address = '172.31.250.3'; weight = 1 }; R = 'dns' }
-            @{ Case = 'without an address'; E = [ordered]@{ role = 'dns' }; R = 'dns' }) {
+            @{ Case = 'with an extra key'; E = [ordered]@{ address = '192.168.1.54'; protocol = 'UDP'; port = 53; weight = 1 } }
+            @{ Case = 'without a protocol'; E = [ordered]@{ address = '192.168.1.54'; port = 53 } }
+            @{ Case = 'without a port'; E = [ordered]@{ address = '192.168.1.54'; protocol = 'UDP' } }
+            @{ Case = 'in the old shape'; E = [ordered]@{ role = 'gateway'; address = '172.31.250.1' } }
+            @{ Case = 'that is nothing'; E = $null }) {
             $d.endpoints = @($d.endpoints) + @($E)
-            Get-DeclP $d | Should -Be @("an endpoint ($R) is not exactly role gateway, dhcp or dns, address and an optional port")
+            Get-DeclP $d | Should -Be @('an endpoint is not exactly address, protocol and port')
         }
 
-        It 'reports the endpoint address <V>' -Tag decl-address -TestCases @(
-            @{ V = '172.31.251.2' }, @{ V = '172.31.250.0' }, @{ V = '172.31.250.255' }, @{ V = '172.31.250.2/32' }, @{ V = 'fd00::2' }, @{ V = '172.031.250.2' }, @{ V = '' }) {
-            $d.endpoints[2].address = $V
-            Get-DeclP $d | Should -Be @("the dns endpoint $V is not a host address of 172.31.250.0/24")
+        It 'reports the endpoint address <V>' -Tag decl-endpoint-address -TestCases @(
+            @{ V = '172.31.250.1' }, @{ V = '172.31.250.9' }, @{ V = '192.0.2.53' }, @{ V = '224.0.0.251' }, @{ V = '169.254.169.254' }
+            @{ V = '192.168.1.0/24' }, @{ V = '192.168.001.53' }, @{ V = 'fd00::53' }, @{ V = '' }) {
+            $d.endpoints[1].address = $V
+            Get-DeclP $d | Should -Be @("the endpoint $V is not one private IPv4 address outside 172.31.250.0/24")
         }
 
-        It 'reports the endpoint port <V>' -Tag decl-port -TestCases @(@{ V = 0 }, @{ V = 65536 }, @{ V = '53' }, @{ V = $null }, @{ V = 53.5 }) {
-            $d.endpoints[2].port = $V
-            Get-DeclP $d | Should -Be @('the dns endpoint 172.31.250.2 has a port that is not 1 to 65535')
+        It 'reports the endpoint <F> <V>' -Tag decl-endpoint-narrow -TestCases @(
+            @{ F = 'protocol'; V = 'ICMP' }, @{ F = 'protocol'; V = 'tcp' }, @{ F = 'protocol'; V = 'ANY' }, @{ F = 'protocol'; V = '' }
+            @{ F = 'port'; V = 0 }, @{ F = 'port'; V = 65536 }, @{ F = 'port'; V = '53' }, @{ F = 'port'; V = $null }, @{ F = 'port'; V = 53.5 }) {
+            $d.endpoints[1][$F] = $V
+            Get-DeclP $d | Should -Be @('the endpoint 192.168.1.53 is not narrowed to TCP or UDP and one port 1 to 65535')
+        }
+
+        It 'reports the resolvers <Case>' -Tag decl-resolvers -TestCases @(
+            @{ Case = 'as none'; R = @() }, @{ Case = 'as three'; R = @('192.0.2.53', '198.51.100.53', '203.0.113.53') }
+            @{ Case = 'as text, not a list'; R = '192.0.2.53' }, @{ Case = 'as nothing'; R = $null }) {
+            $d.resolvers = $R
+            Get-DeclP $d | Should -Be @('the resolvers are not a list of one or two addresses')
+        }
+
+        It 'reports the resolver <V>' -Tag decl-resolver -TestCases @(@{ V = '192.0.2.53/32' }, @{ V = '192.0.2.053' }, @{ V = 'fd00::53' }, @{ V = '' }) {
+            $d.resolvers = @('192.168.1.53', $V)
+            Get-DeclP $d | Should -Be @("the resolver $V is not one IPv4 address, listed once")
+        }
+
+        It 'reports a resolver listed twice' -Tag decl-resolver {
+            $d.resolvers = @('192.0.2.53', '192.0.2.53')
+            Get-DeclP $d | Should -Be @('the resolver 192.0.2.53 is not one IPv4 address, listed once')
+        }
+
+        It 'reports the private resolver <V>, which is no endpoint on port 53' -Tag decl-resolver-private -TestCases @(
+            @{ V = '172.31.250.1' }, @{ V = '10.0.0.53' }, @{ V = '192.168.1.54' }, @{ V = '100.100.100.100' }) {
+            $d.resolvers = @($V)
+            Get-DeclP $d | Should -Be @("the resolver $V is private but not a declared endpoint on port 53")
+        }
+
+        It 'reports a private resolver whose endpoint is on another port' -Tag decl-resolver-private {
+            $d.endpoints = @([ordered]@{ address = '192.168.1.53'; protocol = 'TCP'; port = 853 })
+            Get-DeclP $d | Should -Be @('the resolver 192.168.1.53 is private but not a declared endpoint on port 53')
         }
 
         It 'stops the read-back at a declaration it refuses' -Tag adapter-declaration {
             $d.schema = 2
             Get-P $d $a | Should -Be @('declaration: the declaration is not a host_network_attach of schema 1')
         }
+    }
 
-        It 'agrees with parity/contracts/validate.py on <Name>' -Tag contract -ForEach $fixtures {
+    Context 'parity with parity/contracts/validate.py, the Python reference predicate' {
+        BeforeAll {
+            # validate.py's own fixture run prints 'ok' for each fixture it judges as its folder says: a valid one passes, an
+            # invalid one fails for its stated reason.
+            $out = @(& python -B -I (Join-Path $script:Repo 'parity\contracts\validate.py') 2>&1 | ForEach-Object { "$_" })
+            $script:PyOk = @($out | Where-Object { $_ -cmatch '^ok +host-network-module/' } | ForEach-Object { ($_ -split '\s+')[1] })
+        }
+
+        It 'judges <Name> as validate.py does' -Tag contract -ForEach $fixtures {
             $doc = Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
             $x = $(if ($Valid) { $doc } else { $doc.instance })
             $p = @(Get-DeclP $x @{ VmId = $x.vm_id; VmName = $x.vm_name; Profile = $x.profile })
+            "host-network-module/$Name" | Should -BeIn $script:PyOk -Because 'validate.py judges it as its folder says'
             if ($Valid) { $p -join ' | ' | Should -Be '' } else { $p.Count | Should -BeGreaterThan 0 }
         }
     }

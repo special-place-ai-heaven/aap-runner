@@ -377,9 +377,9 @@ CANDIDATE (D2):
   mechanism (internal switch per profile with NAT, or an internal switch per guest; a private switch has no host adapter and is not viable) is CANDIDATE D2,
   owned by the P10.0 guest network module. The lab proves internet egress works and every denied
   path fails, over IPv4 and IPv6. The module's interface for both backends and both image
-  builders (`Attach`, `Detach`, `Verify`; remove the VM, then detach; the declared endpoints and
-  the consumers' read-back of them through one shared check; a build VM's own switch; failure
-  codes) is [host-network-module.md](../../parity/contracts/host-network-module.md).
+  builders (`Attach`, `Detach`, `Verify`; remove the VM, then detach; static guest addressing with
+  no DHCP and no Allow by default; the consumers' read-back through one shared check; a build VM's
+  own switch; failure codes) is [host-network-module.md](../../parity/contracts/host-network-module.md).
 
 ```mermaid
 sequenceDiagram

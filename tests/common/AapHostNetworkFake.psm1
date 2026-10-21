@@ -13,20 +13,23 @@ Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot '..\..\supervisor\network\AapHostNetworkCheck.psm1')
 
-# The fake host (contract, Shared fake): the four switches of the per-profile candidate, gateway, DHCP and DNS at .1.
+# The fake host (contract, Shared fake): the four switches of the per-profile candidate, each with its gateway at .1 and no
+# DHCP or DNS service; guests get static addresses and two public resolvers (documentation addresses), and no endpoint.
 $script:Net = @{
     'aap-guests-win' = @{ Subnet = '172.31.250.0/24'; Gateway = '172.31.250.1' }
     'aap-guests-linux' = @{ Subnet = '172.31.251.0/24'; Gateway = '172.31.251.1' }
     'aap-build-win' = @{ Subnet = '172.31.252.0/24'; Gateway = '172.31.252.1' }
     'aap-build-linux' = @{ Subnet = '172.31.253.0/24'; Gateway = '172.31.253.1' }
 }
+$script:Resolvers = @('192.0.2.53', '198.51.100.53')
 $script:HostAddresses = @('172.31.250.1', '172.31.251.1', '172.31.252.1', '172.31.253.1', '172.29.16.1', '2001:db8:5::1')   # the vEthernet adapters'
 $script:LanPrefixes = @('2001:db8:1::/64')
+$script:PublicHost = '203.0.113.7'   # what the public-host tamper gives the host
 $script:DenyWeight = 10
 $script:AllowWeight = 100
 $script:GuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 $script:TamperNames = @('no-adapter', 'second-adapter', 'external-switch', 'other-switch', 'dhcp-guard-off', 'router-guard-off', 'mac-spoofing-on',
-    'port-mirroring', 'vlan-trunk', 'foreign-peer', 'drop-fixed-deny', 'drop-inbound-deny', 'scoped-deny', 'drop-host-deny', 'extra-allow', 'allow-weight')
+    'port-mirroring', 'vlan-trunk', 'foreign-peer', 'drop-fixed-deny', 'drop-inbound-deny', 'scoped-deny', 'drop-host-deny', 'extra-allow', 'public-host')
 $script:FailNames = @('Attach', 'AttachAfterIntent', 'Detach', 'Verify')
 $script:Utf8 = New-Object Text.UTF8Encoding($false)
 
@@ -70,12 +73,9 @@ function Get-AapFakeHostNetworkAdapter {
     $tamper = @((Read-AapFakeNetKnobs $Root).tamper)
     $count = $(if ($tamper -ccontains 'no-adapter') { 0 } elseif ($tamper -ccontains 'second-adapter') { 2 } else { 1 })
     for ($i = 0; $i -lt $count; $i++) {
+        # Denies only: the fake declares no endpoint, so it writes no allow.
         $acls = @(foreach ($dir in 'Inbound', 'Outbound') {
-                foreach ($r in @(@(Get-AapHostNetworkFixedDeny) + @(Get-AapFakeNetHostTarget $d))) { New-AapFakeNetRule 'Deny' $dir $r $script:DenyWeight }
-                foreach ($e in @($d.endpoints)) {
-                    if ($null -eq $e.PSObject.Properties['port']) { New-AapFakeNetRule 'Allow' $dir ([string]$e.address) $script:AllowWeight; continue }
-                    foreach ($proto in @(@('UDP') + @(if ($e.role -ceq 'dns') { 'TCP' }))) { New-AapFakeNetRule 'Allow' $dir ([string]$e.address) $script:AllowWeight $proto ([string]$e.port) }
-                }
+                foreach ($r in @(@(Get-AapHostNetworkFixedDeny) + @(Get-AapFakeNetHostTarget @()))) { New-AapFakeNetRule 'Deny' $dir $r $script:DenyWeight }
             })
         $peers = @(Get-AapFakeNetNeighbour $Root $VmId $sw | Where-Object { $_.state -ceq 'attached' } | ForEach-Object { [string]$_.declaration.vm_name })
         $n = @{ SwitchName = $sw; SwitchType = 'Internal'; DhcpGuard = 'On'; RouterGuard = 'On'; MacAddressSpoofing = 'Off'; PortMirroringMode = 'None'; VlanMode = 'Untagged'
@@ -94,8 +94,7 @@ function Get-AapFakeHostNetworkAdapter {
             'drop-inbound-deny' { $n.Acls = @($n.Acls | Where-Object { -not ($_.Direction -ceq 'Inbound' -and $_.RemoteAddress -ceq '10.0.0.0/8') }) }
             'scoped-deny' { foreach ($r in $n.Acls) { if ($r.Direction -ceq 'Inbound' -and $r.RemoteAddress -ceq '192.168.0.0/16') { $r.Protocol = 'TCP'; $r.LocalPort = '1' } } }
             'drop-host-deny' { $n.Acls = @($n.Acls | Where-Object { $_.RemoteAddress -cne $script:LanPrefixes[0] }) }
-            'extra-allow' { $n.Acls = @($n.Acls) + @(New-AapFakeNetRule 'Allow' 'Outbound' '192.168.1.1' $script:AllowWeight) }
-            'allow-weight' { @($n.Acls | Where-Object { $_.Action -ceq 'Allow' })[0].Weight = $script:DenyWeight }
+            'extra-allow' { $n.Acls = @($n.Acls) + @(New-AapFakeNetRule 'Allow' 'Outbound' ([string]$d.gateway) $script:AllowWeight) }
         }
         $n
     }
@@ -137,13 +136,17 @@ function Add-AapFakeNetAttachment([string]$Root, $q, [bool]$Exists, [bool]$StopA
     }
     if ($null -eq $rec) {
         $sw = Get-AapHostNetworkSwitchName $q.VmName
+        $others = @(Get-AapFakeNetNeighbour $Root $q.VmId $sw)
         # A build VM shares its switch with no VM (contract, Switches): refused while another record names that switch.
-        $others = @(Get-AapFakeNetNeighbour $Root $q.VmId $sw | ForEach-Object { [string]$_.declaration.vm_name })
-        if ($sw -clike 'aap-build-*' -and $others.Count) { throw "AAP_NetworkUntrusted: $sw already carries $($others -join ', ')" }   # check:attach-peers
-        # Intent before act: the record names the declaration and what Attach creates before anything changes.
+        if ($sw -clike 'aap-build-*' -and $others.Count) { throw "AAP_NetworkUntrusted: $sw already carries $(@($others | ForEach-Object { $_.declaration.vm_name }) -join ', ')" }   # check:attach-peers
+        # The VM's static address: the lowest host address of the subnet that is not the gateway and no other record's.
         $n = $script:Net[$sw]
+        $held = @(@($others | ForEach-Object { [string]$_.declaration.address }) + $n.Gateway)
+        $base = $n.Subnet.Substring(0, $n.Subnet.LastIndexOf('.'))
+        $address = @(1..254 | ForEach-Object { "$base.$_" } | Where-Object { $held -notcontains $_ })[0]
+        # Intent before act: the record names the declaration and what Attach creates before anything changes.
         $decl = [ordered]@{ schema = 1; kind = 'host_network_attach'; vm_id = $q.VmId; vm_name = $q.VmName; profile = $q.Profile; subnet = $n.Subnet
-            endpoints = @([ordered]@{ role = 'gateway'; address = $n.Gateway }, [ordered]@{ role = 'dhcp'; address = $n.Gateway; port = 67 }, [ordered]@{ role = 'dns'; address = $n.Gateway; port = 53 })
+            gateway = $n.Gateway; address = $address; resolvers = $script:Resolvers; endpoints = @()
         }
         Write-AapFakeNetRecord $Root ([ordered]@{ schema = 1; kind = 'host_network_record'; state = 'attaching'; declaration = $decl; created = @([ordered]@{ kind = 'adapter'; name = 'aap-guest' }) })
         $rec = Read-AapFakeNetRecord $Root $q.VmId
@@ -161,7 +164,8 @@ function Remove-AapFakeNetAttachment([string]$Root, $q, [bool]$Exists) {
     if ($rec.declaration.vm_name -cne $q.VmName -or $rec.declaration.profile -cne $q.Profile) {   # check:detach-same-vm
         throw "AAP_NetworkUntrusted: VM $($q.VmId) is recorded as $($rec.declaration.vm_name) ($($rec.declaration.profile))"
     }
-    # The adapter and its port ACLs went with the VM and the per-profile switch is not the VM's: only the record is left.
+    # The adapter and its port ACLs went with the VM and the per-profile switch is not the VM's: only the record is left,
+    # and with it goes the VM's address.
     $path = Get-AapFakeNetRecordPath $Root $q.VmId
     if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }   # check:detach-removes
 }
@@ -175,7 +179,8 @@ function Get-AapFakeNetProblem([string]$Root, $q, [bool]$Exists) {
     if ($null -eq $rec -or $rec.state -cne 'attached') { return "VM $id is not attached" }   # check:verify-record
     $d = $rec.declaration
     if ($d.vm_name -cne $q.VmName -or $d.profile -cne $q.Profile) { return "VM $id is recorded as $($d.vm_name) ($($d.profile))" }   # check:verify-record
-    Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @(Get-AapFakeHostNetworkAdapter -Root $Root -VmId $id) -HostDeny @(Get-AapFakeNetHostTarget $d)
+    $targets = @(Get-AapFakeNetHostTarget @((Read-AapFakeNetKnobs $Root).tamper))
+    Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @(Get-AapFakeHostNetworkAdapter -Root $Root -VmId $id) -HostDeny $targets
 }
 
 # ---- records, knobs and the fake host -----------------------------------------------------------------------------------
@@ -219,11 +224,11 @@ function New-AapFakeNetRule([string]$Action, [string]$Direction, [string]$Remote
     @{ Action = $Action; Direction = $Direction; RemoteAddress = $Remote; LocalAddress = 'ANY'; Protocol = $Protocol; RemotePort = $RemotePort; LocalPort = 'ANY'; Weight = $Weight }
 }
 
-# What the host-specific denies must cover now (contract, Verify check 5): the host's vEthernet addresses that are not
-# declared endpoints, the LAN IPv6 prefixes and the VM's subnet. The fake writes exactly these as its host-specific denies.
-function Get-AapFakeNetHostTarget($d) {
-    $ends = @($d.endpoints | ForEach-Object { [string]$_.address })
-    @($script:HostAddresses | Where-Object { $ends -notcontains $_ } | ForEach-Object { if ($_.Contains(':')) { "$_/128" } else { "$_/32" } }) + $script:LanPrefixes + @([string]$d.subnet)
+# What the host-specific denies must cover (contract, Verify check 5): the host's addresses and its LAN IPv6 prefixes. The
+# fake writes exactly these as its host-specific denies; the public-host tamper adds an address it cannot cover.
+function Get-AapFakeNetHostTarget([string[]]$Tamper) {
+    $addresses = @(@($script:HostAddresses) + @(if ($Tamper -ccontains 'public-host') { $script:PublicHost }))
+    @($addresses | ForEach-Object { if ($_.Contains(':')) { "$_/128" } else { "$_/32" } }) + $script:LanPrefixes
 }
 
 Export-ModuleMember -Function New-AapFakeHostNetwork, Invoke-AapFakeHostNetwork, Get-AapFakeHostNetworkAdapter, Set-AapFakeHostNetworkKnob,

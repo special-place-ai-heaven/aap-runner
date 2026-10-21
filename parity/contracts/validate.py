@@ -631,26 +631,52 @@ def sem_cleanup_receipt(doc):
             raise Invalid(f"disposed {d.get('id', d.get('resource'))}: absence not observed")
 
 
+def _host_net_fixed():
+    """The fixed deny ranges, read from their one copy, the shared check (host-network-module.md, Rules and weights)."""
+    path = HERE.parent.parent / "supervisor" / "network" / "AapHostNetworkCheck.psm1"
+    m = re.search(r"^\$script:FixedDeny = @\(([^)]*)\)", path.read_text(encoding="utf-8"), re.M)
+    if not m:
+        raise Invalid(f"no $script:FixedDeny list in {path.name}")
+    return [ipaddress.ip_network(s) for s in re.findall(r"'([^']+)'", m.group(1))]
+
+
+def _host_net_private(net, fixed):
+    """Inside a fixed range and unicast a NAT routes: neither link-local nor multicast (the shared check's Test-AapNetPrivate)."""
+    return (net.version == 4 and any(f.version == 4 and net.subnet_of(f) for f in fixed)
+            and not net.network_address.is_link_local and not net.network_address.is_multicast)
+
+
 def _host_net_declaration(d):
-    """host-network-module.md, Attach: the name's letter is the profile's, one gateway, at most one dhcp
-    and two dns endpoints, each a host address of the declared subnet."""
+    """host-network-module.md, Attach: the name's letter is the profile's; a private subnet holding the gateway and the
+    VM's static address; each endpoint one private address outside the subnet; a private resolver only as an endpoint
+    on port 53. The shared check's Get-AapHostNetworkDeclarationProblems applies the same rules."""
     if d["vm_name"][4] != d["profile"][0]:
         raise Invalid(f"vm_name {d['vm_name']} does not match profile {d['profile']}")
+    fixed = _host_net_fixed()
     try:
         net = ipaddress.ip_network(d["subnet"])
     except ValueError:
         raise Invalid(f"subnet {d['subnet']} is not a network address")
-    roles = [e["role"] for e in d["endpoints"]]
-    if roles.count("gateway") != 1:
-        raise Invalid("exactly one gateway endpoint")
-    if roles.count("dhcp") > 1:
-        raise Invalid("at most one dhcp endpoint")
-    if roles.count("dns") > 2:
-        raise Invalid("at most two dns endpoints")
+    if not _host_net_private(net, fixed):
+        raise Invalid(f"subnet {d['subnet']} is not inside a private fixed range")
+    def host(a):
+        ip = ipaddress.ip_address(a)
+        return ip in net and ip not in (net.network_address, net.broadcast_address)
+
+    if not host(d["gateway"]):
+        raise Invalid(f"gateway {d['gateway']} is not a host address of {d['subnet']}")
+    if not host(d["address"]) or d["address"] == d["gateway"]:
+        raise Invalid(f"address {d['address']} is not a host address of {d['subnet']} other than the gateway")
+    on53 = set()
     for e in d["endpoints"]:
-        ip = ipaddress.ip_address(e["address"])
-        if ip not in net or ip in (net.network_address, net.broadcast_address):
-            raise Invalid(f"endpoint {e['address']} is not a host address of {d['subnet']}")
+        ip = ipaddress.ip_network(e["address"])
+        if not _host_net_private(ip, fixed) or ip.subnet_of(net):
+            raise Invalid(f"endpoint {e['address']} is not one private IPv4 address outside {d['subnet']}")
+        if e["port"] == 53:
+            on53.add(e["address"])
+    for r in d["resolvers"]:
+        if any(f.version == 4 and ipaddress.ip_network(r).subnet_of(f) for f in fixed) and r not in on53:
+            raise Invalid(f"resolver {r} is private but not a declared endpoint on port 53")
 
 
 def sem_host_network_module(doc):

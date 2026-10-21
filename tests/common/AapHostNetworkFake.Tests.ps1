@@ -12,6 +12,7 @@ BeforeAll {
     $script:WinId = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'
     $script:LinId = '0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b'
     $script:WinId2 = '5e0c1b2a-3948-4d5e-9f6a-7b8c9d0e1f2a'
+    $script:WinId3 = '7a8b9c0d-1e2f-4a3b-8c4d-5e6f7a8b9c0d'
 
     # A fresh fake host under TEMP. Vms is what Hyper-V has; the hook reads the same hashtable the test changes.
     function New-TestNet {
@@ -56,20 +57,20 @@ Describe 'the shared host network fake' {
             $d.vm_id | Should -Be $script:WinId
             $d.vm_name | Should -Be 'aap-w-1-3-1a2b3c4d'
             $d.profile | Should -Be 'windows'
-            $d.subnet | Should -Be '172.31.250.0/24'
-            @($d.endpoints | ForEach-Object { "$($_.role)=$($_.address)$(if ($_.PSObject.Properties['port']) { ':' + $_.port })" }) | Should -Be @('gateway=172.31.250.1', 'dhcp=172.31.250.1:67', 'dns=172.31.250.1:53')
+            @($d.subnet, $d.gateway, $d.address) | Should -Be @('172.31.250.0/24', '172.31.250.1', '172.31.250.2')
+            @($d.resolvers) | Should -Be @('192.0.2.53', '198.51.100.53')
+            @($d.endpoints).Count | Should -Be 0
             $nics = @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:WinId)
             $nics.Count | Should -Be 1
             $n = $nics[0]
             @($n.SwitchName, $n.SwitchType, $n.DhcpGuard, $n.RouterGuard, $n.MacAddressSpoofing, $n.PortMirroringMode, $n.VlanMode) | Should -Be @('aap-guests-win', 'Internal', 'On', 'On', 'Off', 'None', 'Untagged')
             @($n.Peers).Count | Should -Be 0
-            @($n.Acls | Where-Object { $_.Action -eq 'Allow' } | ForEach-Object { "$($_.Direction) $($_.RemoteAddress) $($_.Protocol) $($_.RemotePort) $($_.Weight)" }) | Should -Be @(
-                'Inbound 172.31.250.1 ANY ANY 100', 'Inbound 172.31.250.1 UDP 67 100', 'Inbound 172.31.250.1 UDP 53 100', 'Inbound 172.31.250.1 TCP 53 100'
-                'Outbound 172.31.250.1 ANY ANY 100', 'Outbound 172.31.250.1 UDP 67 100', 'Outbound 172.31.250.1 UDP 53 100', 'Outbound 172.31.250.1 TCP 53 100')
+            @($n.Acls | Where-Object { $_.Action -ne 'Deny' }).Count | Should -Be 0
             $deny = @($n.Acls | Where-Object { $_.Action -eq 'Deny' })
             $deny.Count | Should -Be 32
             @($deny | Where-Object { $_.Weight -ne 10 -or "$($_.LocalAddress)$($_.Protocol)$($_.LocalPort)$($_.RemotePort)" -ne 'ANYANYANYANY' }).Count | Should -Be 0
             @($deny | Where-Object { $_.Direction -eq 'Inbound' }).Count | Should -Be 16
+            @($deny | Where-Object { $_.RemoteAddress -eq '172.31.250.1/32' } | ForEach-Object { $_.Direction }) | Should -Be @('Inbound', 'Outbound')
             Get-TestReadback $t $d $script:WinId | Should -BeNullOrEmpty
             @(& $t.Net.Verify (Win)).Count | Should -Be 0
             @(Get-AapFakeHostNetworkRecord -Root $t.Root | ForEach-Object { $_.state }) | Should -Be @('attached')
@@ -86,7 +87,7 @@ Describe 'the shared host network fake' {
         It 'puts a build VM alone on its profile''s build switch' {
             $t.Vms[$script:LinId] = $true
             $d = & $t.Net.Attach (Lin)
-            $d.subnet | Should -Be '172.31.253.0/24'
+            @($d.subnet, $d.gateway, $d.address) | Should -Be @('172.31.253.0/24', '172.31.253.1', '172.31.253.2')
             $n = @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:LinId)[0]
             $n.SwitchName | Should -Be 'aap-build-linux'
             @(& $t.Net.Verify (Lin)).Count | Should -Be 0
@@ -107,6 +108,19 @@ Describe 'the shared host network fake' {
             @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:WinId)[0].Peers | Should -Be @('aap-w-2-4-0f0e0d0c')
             Get-TestReadback $t $a $script:WinId | Should -BeNullOrEmpty
             @(& $t.Net.Verify (Win)).Count | Should -Be 0
+        }
+
+        It 'gives each VM on a switch its own address, held from the intent record until Detach' {
+            $t.Vms[$script:WinId] = $true; $t.Vms[$script:WinId2] = $true; $t.Vms[$script:WinId3] = $true; $t.Vms[$script:LinId] = $true
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Fail AttachAfterIntent
+            { & $t.Net.Attach (Win) } | Should -Throw
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            (& $t.Net.Attach (Win 'aap-w-2-4-0f0e0d0c' $script:WinId2)).address | Should -Be '172.31.250.3'
+            (& $t.Net.Attach (Win)).address | Should -Be '172.31.250.2'
+            (& $t.Net.Attach (Lin 'aap-l-1-1-0a0b0c0d')).address | Should -Be '172.31.251.2'
+            $t.Vms.Remove($script:WinId)
+            & $t.Net.Detach (Win)
+            (& $t.Net.Attach (Win 'aap-w-3-1-01020304' $script:WinId3)).address | Should -Be '172.31.250.2'
         }
 
         It 'returns the same declaration on a repeated Attach and keeps one record and one adapter' {
@@ -232,10 +246,8 @@ Describe 'the shared host network fake' {
             @{ Tamper = 'drop-inbound-deny'; Want = @('no unscoped Inbound deny for 10.0.0.0/8') }
             @{ Tamper = 'scoped-deny'; Want = @('no unscoped Inbound deny for 192.168.0.0/16') }
             @{ Tamper = 'drop-host-deny'; Want = @("no unscoped Inbound deny covers the host's 2001:db8:1::/64", "no unscoped Outbound deny covers the host's 2001:db8:1::/64") }
-            @{ Tamper = 'extra-allow'; Want = @('rule 41: the Outbound allow 192.168.1.1/32 is not exactly a declared endpoint') }
-            @{ Tamper = 'allow-weight'; Want = @('rule 17: the Inbound allow 172.31.250.1/32 (weight 10) does not outweigh the deny 172.16.0.0/12 (weight 10)'
-                    'rule 17: the Inbound allow 172.31.250.1/32 (weight 10) does not outweigh the deny 172.31.250.0/24 (weight 10)')
-            }) {
+            @{ Tamper = 'extra-allow'; Want = @('rule 33: the Outbound allow 172.31.250.1/32 is not exactly a declared endpoint') }
+            @{ Tamper = 'public-host'; Want = @("the host's 203.0.113.7/32 is public IPv4, outside the enforcement shape: not certified (contract, Limitations)") }) {
             Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $Tamper
             @(& $t.Net.Verify (Win)) | Should -Be $Want
         }
@@ -270,23 +282,25 @@ Describe 'the shared host network fake' {
             @(& $t.Net.Verify (Win)) | Should -Be @("VM $($script:WinId) does not exist")
         }
 
-        It 'gives a consumer''s read-back every tamper but the host-specific deny to reject; Verify reports all of them' -Tag contract {
+        It 'gives a consumer''s read-back every tamper but the host''s to reject; Verify reports all of them' -Tag contract {
             foreach ($x in @('no-adapter', 'second-adapter', 'external-switch', 'other-switch', 'dhcp-guard-off', 'router-guard-off',
-                    'mac-spoofing-on', 'port-mirroring', 'vlan-trunk', 'foreign-peer', 'drop-fixed-deny', 'drop-inbound-deny', 'scoped-deny', 'extra-allow', 'allow-weight')) {
+                    'mac-spoofing-on', 'port-mirroring', 'vlan-trunk', 'foreign-peer', 'drop-fixed-deny', 'drop-inbound-deny', 'scoped-deny', 'extra-allow')) {
                 Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $x
                 @(& $t.Net.Verify (Win)).Count | Should -BeGreaterThan 0 -Because $x
                 @(Get-TestReadback $t $decl $script:WinId).Count | Should -BeGreaterThan 0 -Because $x
             }
-            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper drop-host-deny
-            @(& $t.Net.Verify (Win)).Count | Should -Be 2
-            Get-TestReadback $t $decl $script:WinId | Should -BeNullOrEmpty
+            foreach ($x in 'drop-host-deny', 'public-host') {
+                Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $x
+                @(& $t.Net.Verify (Win)).Count | Should -BeGreaterThan 0 -Because $x
+                Get-TestReadback $t $decl $script:WinId | Should -BeNullOrEmpty -Because $x
+            }
         }
     }
 
     Describe 'records, knobs and state' {
         It 'an unreadable record makes all three calls throw, and it stays: <Case>' -Tag record-readable -TestCases @(
             @{ Case = 'not JSON'; Text = 'not json' }
-            @{ Case = 'an unknown state'; Text = '{"schema":1,"kind":"host_network_record","state":"detaching","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","endpoints":[{"role":"gateway","address":"172.31.250.1"}]},"created":[{"kind":"adapter","name":"aap-guest"}]}' }) {
+            @{ Case = 'an unknown state'; Text = '{"schema":1,"kind":"host_network_record","state":"detaching","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest"}]}' }) {
             $null = New-Item -ItemType Directory -Force -Path (Join-Path $t.Root 'records')
             $path = Join-Path $t.Root "records\$($script:WinId).json"
             [IO.File]::WriteAllText($path, $Text)

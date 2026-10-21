@@ -5,19 +5,20 @@
   "vm_name": "aap-wbuild-1a2b3c4d",
   "profile": "windows",
   "subnet": "172.31.252.0/24",
+  "gateway": "172.31.252.1",
+  "address": "172.31.252.2",
+  "resolvers": [
+    "192.168.1.53"
+  ],
   "endpoints": [
     {
-      "role": "gateway",
-      "address": "172.31.252.1"
+      "address": "192.168.1.53",
+      "protocol": "UDP",
+      "port": 53
     },
     {
-      "role": "dhcp",
-      "address": "172.31.252.1",
-      "port": 67
-    },
-    {
-      "role": "dns",
-      "address": "172.31.252.1",
+      "address": "192.168.1.53",
+      "protocol": "TCP",
       "port": 53
     }
   ]

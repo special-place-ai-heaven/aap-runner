@@ -8,17 +8,13 @@
     "vm_id": "0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b",
     "vm_name": "aap-lbuild-9f8e7d6c",
     "profile": "linux",
-    "subnet": "172.31.251.0/24",
-    "endpoints": [
-      {
-        "role": "gateway",
-        "address": "172.31.251.1"
-      },
-      {
-        "role": "dns",
-        "address": "172.31.251.2"
-      }
-    ]
+    "subnet": "172.31.253.0/24",
+    "gateway": "172.31.253.1",
+    "address": "172.31.253.2",
+    "resolvers": [
+      "192.0.2.53"
+    ],
+    "endpoints": []
   },
   "created": [
     {

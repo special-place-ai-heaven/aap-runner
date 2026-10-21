@@ -138,10 +138,14 @@ Enforcement shape every candidate must satisfy:
 - **No External switch and no Default Switch** for guests. Guests attach only to the switches the
   module creates.
 - Per VM adapter: DHCP guard **on**, router guard **on**, MAC address spoofing **off**.
-- Extended port ACLs on every guest adapter deny traffic to: the host's vEthernet addresses
-  (except the explicit DHCP and DNS endpoints the design uses), RFC 1918 ranges, 169.254.0.0/16,
-  100.64.0.0/10, multicast, fe80::/10, fc00::/7, the LAN's IPv6 prefix, and the clone subnet except
-  its gateway. Internet egress is allowed.
+- Extended port ACLs on every guest adapter deny traffic to and from (both directions) the host's
+  addresses, RFC 1918 ranges, 169.254.0.0/16, 100.64.0.0/10, multicast, fe80::/10, fc00::/7, the
+  LAN's IPv6 prefix and the guest subnet, its gateway included. No Allow names the host or the
+  gateway: routing needs none, and guests get static addressing and resolvers from their seed or
+  answer file, so no DHCP or DNS service runs for them. The only Allow is an exception the network
+  module declares, narrowed to one protocol, one port and one private address (for example a
+  resolver the owner chose). Internet egress is allowed. Rules, weights and the declaration:
+  [host-network-module.md](host-network-module.md).
 - Enhanced session mode and the Guest Service Interface integration service are **off** for guest VMs.
 - Host firewall / WFP rules (created by the installer through the existing helper, P19) block the
   host's listening ports (at least 135, 139, 445, 3389, 5985) on the guest-facing vEthernet adapters.
@@ -151,9 +155,12 @@ Candidate mechanism: one Hyper-V internal switch per profile (`aap-guests-win`,
 egress. An internal switch gives the host a vEthernet adapter on that subnet, so the host **is**
 reachable at layer 3 unless the ACLs and firewall rules above block it; that is why those rules are
 mandatory, not optional. Alternative candidate: one **internal** switch per guest (its own subnet
-and NAT, same ACLs and firewall rules). A Hyper-V private switch has no host adapter, so it cannot
-carry host NAT egress or host SSH and is not viable for these designs. P02.1 picks one with evidence, and must also show the design holds with WSL in mirrored
-networking mode.
+and NAT, same ACLs and firewall rules). Either way the rule is one: guests and build VMs attach
+only to internal switches, never to a private switch, which has no host adapter and so no NAT
+egress (the guest channels use hvsocket, not the network). Build VMs (P06, P07) never share a
+switch: under the per-profile candidate they get their own, `aap-build-win` and `aap-build-linux`.
+P02.1 picks per profile or per guest with evidence, and must also show the design holds with WSL
+in mirrored networking mode.
 
 ## What is never supplied to a guest (DECIDED)
 
