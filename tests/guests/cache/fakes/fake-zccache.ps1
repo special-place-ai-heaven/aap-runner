@@ -15,8 +15,12 @@
 # FAKE_ZC_NODELIVER=1 writes nothing, FAKE_ZC_EMPTY=1 an empty object, FAKE_ZC_LINK=1 a symbolic link to the entry
 # (zccache.cmd runs this under PowerShell 7 then, which can make one in developer mode). FAKE_ZC_PROGRESS=N first prints N of zccache's
 # progress lines to stderr.
-# FAKE_ZC_STDIN=1 (P04.1) appends eof to fake-stdin.log and carries on when this call's stdin is at EOF; an open or
-# feeding stdin is appended as open and fails the call with exit 7, as a client handed the caller's stdin would hang.
+# FAKE_ZC_STDIN=1 (P04.1) appends eof to fake-stdin.log and carries on when this call's stdin is at EOF: the read is
+# synchronous, so the kernel answers at once for a pipe the module closed (RedirectStandardInput, closed right after
+# Start), while an open stdin blocks the fake until the shim's timeout stops it (the log then stays empty). A feeding
+# stdin is appended as open and fails the call with exit 7, as a client handed the caller's stdin would hang. ReadAsync
+# plus a wait budget cannot tell a loaded VM from an open stdin: the CI host delayed the continuation past the wait and
+# a closed stdin was recorded open (P13.5). fake-stdin-facts.log records what each probe saw, for failure messages.
 $ErrorActionPreference = 'Stop'
 $all = [Environment]::GetCommandLineArgs()
 $i = 1
@@ -38,11 +42,18 @@ $null = New-Item -ItemType Directory -Force -Path (Join-Path $root 'artifacts')
 $names = @(Get-ChildItem Env: | ForEach-Object { $_.Name } | Sort-Object)
 Add-Line (Join-Path $root 'fake-env.log') (($names -join ' ') + ' MODE=' + $env:ZCCACHE_MODE + ' SIZE=' + $env:ZCCACHE_CACHE_SIZE_BYTES)
 if ($env:FAKE_ZC_STDIN -eq '1') {
+    # Synchronous on purpose (see the header): no wait budget, no thread pool, nothing scheduled.
+    $sw = New-Object System.Diagnostics.Stopwatch
+    $sw.Start()
+    Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int which);
+[DllImport("kernel32.dll")] public static extern int GetFileType(IntPtr h);' -Name Zc -Namespace P135
+    $t = [P135.Zc]::GetFileType([P135.Zc]::GetStdHandle(-10))
+    Add-Line (Join-Path $root 'fake-stdin-facts.log') ("pid={0} type={1} redirected={2}" -f $PID, $t, [Console]::IsInputRedirected)
     $buf = New-Object byte[] 1
-    $t = [Console]::OpenStandardInput().ReadAsync($buf, 0, 1)
-    if (-not $t.Wait(2000)) { Add-Line (Join-Path $root 'fake-stdin.log') 'open'; exit 7 }
-    if ($t.Result -gt 0) { Add-Line (Join-Path $root 'fake-stdin.log') 'open'; exit 7 }
+    $n = [Console]::OpenStandardInput().Read($buf, 0, 1)
+    if ($n -gt 0) { Add-Line (Join-Path $root 'fake-stdin.log') 'open'; exit 7 }
     Add-Line (Join-Path $root 'fake-stdin.log') 'eof'
+    Add-Line (Join-Path $root 'fake-stdin-facts.log') ("result=eof ms={0}" -f $sw.ElapsedMilliseconds)
 }
 if ($env:FAKE_ZC_CRASH -eq '1') { exit 139 }
 if ($argv[0] -eq 'session-start') {
