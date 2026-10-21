@@ -11,15 +11,17 @@ cover every compiler version, and rule 6's trust namespace is the repository plu
 class (event, ref and head repository). Matrix documents keep `schema` 1, and every revision-1
 matrix stays valid.
 
-Rule 6 amendment (P13 security review, 2026-10-20): `workflow_dispatch` is untrusted, a tag push
-is trusted only when its `head_sha` is reachable from the default branch, the class is derived by
-the host from GitHub's job record matched by `runner_id` and `runner_group_id`, untrusted jobs get
-only a private per-job root, and the namespace key adds the zccache version. No schema change.
+Rule 6 amendment (P13 security review, 2026-10-20): `workflow_dispatch` is untrusted, a tag push is
+trusted only when its `head_sha` is reachable from the default branch (that test is superseded by
+P13.2), the class is derived by the host from GitHub's job record matched by `runner_id` and
+`runner_group_id`, untrusted jobs get only a private per-job root, and the namespace key adds the
+zccache version. No schema change.
 
 Rule 6 amendment (P13.2, 2026-10-21): GitHub's run record does not say whether `head_branch` names a
-branch or a tag, so a trusted class also needs the host to find, when it binds the class, that no
-tag has exactly the default branch's name; a failed lookup means no shared root. The residual is
-stated in rule 6. No schema change.
+branch or a tag, so reachability from the default branch is not enough: a job is trusted only when
+its `head_sha` is the default branch's head when the host binds the class (`compare` status exactly
+`identical`). Runs superseded before binding and re-runs of older runs get a private root. No schema
+change.
 
 ## Rules (DECIDED)
 
@@ -50,33 +52,28 @@ stated in rule 6. No schema change.
    so it needs its own evidence.
 6. Runtime: one cache root per trust namespace. A trust namespace is the repository plus the trust
    class of the job, so a repository alone is not a namespace. A job is **trusted** only when all
-   hold: its event is `push` or `schedule`; its ref is the repository's default
-   branch; and its head repository is the repository itself. Every other job is **untrusted**:
-   `workflow_dispatch` (any untrusted job in the same repository whose `GITHUB_TOKEN` has
-   `actions: write` can dispatch a run on the default branch with inputs the attacker chooses, so
-   the event and ref do not make it trusted), `pull_request`, `pull_request_target`,
-   `workflow_run`, `issue_comment`, `merge_group`, pushes to
-   any other branch (`dependabot/*`, `renovate/*`, feature branches), tag pushes, and any event this
-   rule does not name. A tag push is never trusted. GitHub's run record names the ref without its
-   kind (for a tag push `head_branch` is the tag's name), so when the host binds the class it
-   establishes two things, and an unknown answer to either means no shared root: the run's
-   `head_sha` is reachable from the default branch (`compare default...head_sha` is `identical` or
-   `behind`), and no tag has exactly the default branch's name (`git/matching-refs/tags/<default>`,
-   each returned `ref` compared exactly with `refs/tags/<default>`). While such a tag exists, no run
-   of the repository is trusted.
-   **Residual (P13.2).** Two kinds of run can still classify trusted while running a commit other
-   than the default branch's current head, at a time a writer chose: the run of a tag named like the
-   default branch and deleted before the lookup (any commit reachable from the default branch), and
-   a re-run of an earlier default-branch run (that run's head). Old heads were reviewed states, but
-   a flaw since fixed in their workflow becomes usable again. Reachable commits that never were a
-   head are worse: with merge commits or rebase merges a pull request's intermediate commits are
-   reachable without having been reviewed on their own, so a writer who added a step and removed it
-   later in the same pull request can run it with a trusted root. The residual is acceptable only
-   where the default branch's history holds no such intermediate commits (it only ever took squash
-   merges) or no writer can create a tag with the default branch's name (a tag ruleset), and only if
-   replaying old heads is accepted. Closing it needs a stricter rule (the run's `head_sha` equals
-   the default branch's head when the class is bound), which costs the shared root of every run
-   superseded before binding and of every re-run: an OWNER decision.
+   hold: its event is `push` or `schedule`; its `head_branch` is the repository's default branch;
+   its head repository is the repository itself; and its `head_sha` is the default branch's head
+   when the host binds the class. Every other job is **untrusted**: `workflow_dispatch` (any
+   untrusted job in the same repository whose `GITHUB_TOKEN` has `actions: write` can dispatch a run
+   on the default branch with inputs the attacker chooses, so the event and ref do not make it
+   trusted), `pull_request`, `pull_request_target`, `workflow_run`, `issue_comment`, `merge_group`,
+   pushes to any other branch (`dependabot/*`, `renovate/*`, feature branches), tag pushes and
+   re-runs at any commit other than the default branch's current head, and any event this rule does
+   not name. GitHub's run record has no ref field, and for a tag push `head_branch` is the tag's
+   name, so a tag named like the default branch gives a record that looks exactly like a push to
+   that branch. The rule therefore does not depend on telling them apart: the job is trusted only
+   when, at the time the host binds the class, its `head_sha` IS the default branch's head (`compare
+   default...head_sha` answers `identical` and its base commit is that `head_sha`); `behind`,
+   `ahead`, `diverged`, any other status, a failed call or an answer about another commit is not
+   trusted, and an unknown answer means no shared root. A tag or a re-run at any older commit,
+   including an intermediate commit of a merged pull request that was never reviewed on its own, is
+   untrusted, live or deleted. What remains is a run of the current head started at a time a writer
+   chose (a tag at the current head, a re-run while its commit is still the head): it runs exactly
+   the reviewed head, as a push to the branch would. The cost: a run whose push was superseded
+   before binding, and a re-run of an older run, get a private root (a lower hit rate, accepted). A
+   tag ruleset that stops writers from creating a tag with the default branch's name is optional
+   hardening, not a condition.
    The ref alone never decides the class: `pull_request_target`, `workflow_run`
    and `issue_comment` run on the default branch with input an outsider controls. A root is shared
    only among jobs whose writers are at least as trusted as every reader; an untrusted job never

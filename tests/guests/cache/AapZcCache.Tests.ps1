@@ -776,67 +776,76 @@ Describe 'ConvertTo-AapZcArg' {
 
 Describe 'Get-AapCacheTrustClass (contract rule 6, amended)' {
     BeforeAll {
+        $script:Head = 'a' * 40
         function New-Run([string]$Event = 'push', [string]$Branch = 'main', [int]$Repo = 1, [int]$Head = 1) {
-            [pscustomobject]@{ event = $Event; head_branch = $Branch; head_sha = ('a' * 40); repository = [pscustomobject]@{ id = $Repo }; head_repository = [pscustomobject]@{ id = $Head } }
+            [pscustomobject]@{ event = $Event; head_branch = $Branch; head_sha = $script:Head; repository = [pscustomobject]@{ id = $Repo }; head_repository = [pscustomobject]@{ id = $Head } }
+        }
+        # The compare body as the host's call gets it (GET .../compare/main...{head_sha}), parsed from JSON text on
+        # whichever edition runs the suite.
+        function New-Compare([string]$Status, [string]$Base = ('b' * 40)) {
+            ('{"status":"' + $Status + '","ahead_by":0,"behind_by":0,"base_commit":{"sha":"' + $Base + '"},"commits":[]}') | ConvertFrom-Json
         }
         $script:Repository = [pscustomobject]@{ id = 1; full_name = 'org/repo'; default_branch = 'main' }
     }
-    It '<Case> is <Want>' -Tag 'TRUST-EVENT', 'TRUST-BRANCH', 'TRUST-HEAD-REPO', 'TRUST-REACH-UNKNOWN', 'TRUST-REACHABLE' -TestCases @(
-        @{ Case = 'push to the default branch'; Run = @('push', 'main', 1, 1); Reach = $true; Want = 'trusted' }
-        @{ Case = 'schedule'; Run = @('schedule', 'main', 1, 1); Reach = $true; Want = 'trusted' }
-        @{ Case = 'workflow_dispatch on the default branch'; Run = @('workflow_dispatch', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'pull_request'; Run = @('pull_request', 'main', 1, 2); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'pull_request_target on the default branch'; Run = @('pull_request_target', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'workflow_run on the default branch'; Run = @('workflow_run', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'issue_comment on the default branch'; Run = @('issue_comment', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'merge_group'; Run = @('merge_group', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'an event the rule does not name'; Run = @('repository_dispatch', 'main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'push to dependabot/*'; Run = @('push', 'dependabot/npm/x', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'push to a branch named like the default in another case'; Run = @('push', 'Main', 1, 1); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'push from another head repository'; Run = @('push', 'main', 1, 2); Reach = $true; Want = 'untrusted' }
-        @{ Case = 'a tag named like the default branch, already deleted, head not on the default branch'; Run = @('push', 'main', 1, 1); Reach = $false; Want = 'untrusted' }
-        @{ Case = 'a push whose head was not checked against the default branch'; Run = @('push', 'main', 1, 1); Reach = $null; Want = $null }
+    It '<Case> is <Want>' -Tag 'TRUST-EVENT', 'TRUST-BRANCH', 'TRUST-HEAD-REPO' -TestCases @(
+        @{ Case = 'push to the default branch'; Run = @('push', 'main', 1, 1); Want = 'trusted' }
+        @{ Case = 'schedule'; Run = @('schedule', 'main', 1, 1); Want = 'trusted' }
+        @{ Case = 'workflow_dispatch on the default branch'; Run = @('workflow_dispatch', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'pull_request'; Run = @('pull_request', 'main', 1, 2); Want = 'untrusted' }
+        @{ Case = 'pull_request_target on the default branch'; Run = @('pull_request_target', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'workflow_run on the default branch'; Run = @('workflow_run', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'issue_comment on the default branch'; Run = @('issue_comment', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'merge_group'; Run = @('merge_group', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'an event the rule does not name'; Run = @('repository_dispatch', 'main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'push to dependabot/*'; Run = @('push', 'dependabot/npm/x', 1, 1); Want = 'untrusted' }
+        @{ Case = 'push to a branch named like the default in another case'; Run = @('push', 'Main', 1, 1); Want = 'untrusted' }
+        @{ Case = 'push from another head repository'; Run = @('push', 'main', 1, 2); Want = 'untrusted' }
     ) {
-        $got = Get-AapCacheTrustClass -Run (New-Run @Run) -Repository $script:Repository -HeadOnDefaultBranch $Reach -DefaultBranchTags @()
-        if ($null -eq $Want) { $got | Should -BeNullOrEmpty }
-        else {
-            $got.trust_class | Should -BeExactly $Want
-            $got.repository_id | Should -Be 1
-            $got.repository | Should -BeExactly 'org/repo'
-        }
+        $got = Get-AapCacheTrustClass -Run (New-Run @Run) -Repository $script:Repository -Compare (New-Compare 'identical' $script:Head)
+        $got.trust_class | Should -BeExactly $Want
+        $got.repository_id | Should -Be 1
+        $got.repository | Should -BeExactly 'org/repo'
     }
-    # GitHub's run record of a tag push is the record of a branch push with the tag's name as head_branch: the same
-    # fields, no ref and no ref kind. Only the host's tag lookup (matching-refs/tags/<default branch>) tells them apart.
-    It 'a push to the default branch with <Case> is <Want>' -Tag 'TRUST-TAG', 'TRUST-TAG-UNKNOWN' -TestCases @(
-        @{ Case = 'a tag named like the default branch on a commit of that branch'; Tags = @(@{ ref = 'refs/tags/main' }); Want = 'untrusted' }
-        @{ Case = 'that tag among tags that only start with its name'; Tags = @(@{ ref = 'refs/tags/main-v2' }, @{ ref = 'refs/tags/main' }); Want = 'untrusted' }
-        @{ Case = 'no tag starting with the default branch''s name'; Tags = @(); Want = 'trusted' }
-        @{ Case = 'only tags that start with the default branch''s name'; Tags = @(@{ ref = 'refs/tags/main-v2' }, @{ ref = 'refs/tags/mainline' }, @{ ref = 'refs/tags/main/x' }); Want = 'trusted' }
-        @{ Case = 'a tag named like the default branch in another case (a push of it fails the branch check)'; Tags = @(@{ ref = 'refs/tags/Main' }); Want = 'trusted' }
-        @{ Case = 'no tag lookup (the call failed)'; Tags = $null; Want = $null }
-        @{ Case = 'a lookup entry without a ref'; Tags = @(@{ object = @{ sha = ('a' * 40) } }); Want = $null }
-        @{ Case = 'a null lookup entry'; Tags = @($null); Want = $null }
-        @{ Case = 'a lookup answering another name'; Tags = @(@{ ref = 'refs/tags/v1' }); Want = $null }
-        @{ Case = 'a lookup answering branches'; Tags = @(@{ ref = 'refs/heads/main' }); Want = $null }
+    # GitHub's record of a tag push is the record of a branch push with the tag's name as head_branch: no ref, no ref
+    # kind. Only the run's head being the default branch's current head makes it trusted, whatever pushed it.
+    It 'a push run named like the default branch, <Case>, is <Want>' -Tag 'TRUST-HEAD-UNKNOWN', 'TRUST-HEAD-CURRENT', 'TRUST-HEAD-MATCH' -TestCases @(
+        @{ Case = 'at the branch''s current head (a branch push, or a tag at that head)'; Status = 'identical'; Base = 'a'; Want = 'trusted' }
+        @{ Case = 'superseded before binding'; Status = 'behind'; Base = 'b'; Want = 'untrusted' }
+        @{ Case = 'from a tag at an older commit, live or deleted before binding'; Status = 'behind'; Base = 'b'; Want = 'untrusted' }
+        @{ Case = 'from a re-run of an older run'; Status = 'behind'; Base = 'b'; Want = 'untrusted' }
+        @{ Case = 'from a tag at an unreviewed commit C1 that a merge made reachable, tag deleted before binding'; Status = 'behind'; Base = 'b'; Want = 'untrusted' }
+        @{ Case = 'from a tag at a commit not on the branch'; Status = 'ahead'; Base = 'b'; Want = 'untrusted' }
+        @{ Case = 'from a tag at a diverged commit'; Status = 'diverged'; Base = 'b'; Want = 'untrusted' }
+        @{ Case = 'with a status the rule does not know'; Status = 'unexpected'; Base = 'a'; Want = 'untrusted' }
+        @{ Case = 'with a status in another case'; Status = 'Identical'; Base = 'a'; Want = 'untrusted' }
+        @{ Case = 'with no compare answer (404, error, rate limit, timeout)'; Status = $null; Base = $null; Want = $null }
+        @{ Case = 'with a compare answer without a status'; Status = ''; Base = 'a'; Want = $null }
+        @{ Case = 'with identical about another commit'; Status = 'identical'; Base = 'c'; Want = $null }
+        @{ Case = 'with identical but no base commit'; Status = 'identical'; Base = ''; Want = $null }
     ) {
-        $got = Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -HeadOnDefaultBranch $true -DefaultBranchTags $Tags
+        $compare = if ($null -eq $Status) { $null } else { New-Compare $Status $(if ($Base) { $Base * 40 } else { '' }) }
+        $got = Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -Compare $compare
         if ($null -eq $Want) { $got | Should -BeNullOrEmpty }
-        else {
-            $got.trust_class | Should -BeExactly $Want
-            $got.repository_id | Should -Be 1
-        }
+        else { $got.trust_class | Should -BeExactly $Want }
+    }
+    It 'a run without a head commit yields no class' -Tag 'TRUST-HEAD-MATCH' {
+        $run = New-Run
+        $run.head_sha = ''
+        Get-AapCacheTrustClass -Run $run -Repository $script:Repository -Compare (New-Compare 'identical' '') | Should -BeNullOrEmpty
     }
     It 'a run of another repository yields no class' -Tag 'TRUST-SAME-REPO' {
-        Get-AapCacheTrustClass -Run (New-Run 'push' 'main' 2 2) -Repository $script:Repository -HeadOnDefaultBranch $true -DefaultBranchTags @() | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run (New-Run 'push' 'main' 2 2) -Repository $script:Repository -Compare (New-Compare 'identical' $script:Head) | Should -BeNullOrEmpty
     }
     It 'an incomplete record yields no class, without throwing under strict mode' {
         Set-StrictMode -Version Latest
-        Get-AapCacheTrustClass -Run $null -Repository $script:Repository -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
-        Get-AapCacheTrustClass -Run (New-Run) -Repository $null -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
-        Get-AapCacheTrustClass -Run (New-Run) -Repository ([pscustomobject]@{ id = 1; full_name = 'org/repo' }) -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
-        Get-AapCacheTrustClass -Run ([pscustomobject]@{ head_branch = 'main' }) -Repository $script:Repository -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
-        Get-AapCacheTrustClass -Run ([pscustomobject]@{ event = 'push'; head_branch = 'main'; repository = [pscustomobject]@{ id = 1 } }) -Repository $script:Repository -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
-        Get-AapCacheTrustClass -Run @{ event = 'push'; head_branch = 'main'; repository = @{ id = 1 }; head_repository = @{} } -Repository $script:Repository -HeadOnDefaultBranch $true | Should -BeNullOrEmpty
+        $c = New-Compare 'identical' $script:Head
+        Get-AapCacheTrustClass -Run $null -Repository $script:Repository -Compare $c | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run (New-Run) -Repository $null -Compare $c | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run (New-Run) -Repository ([pscustomobject]@{ id = 1; full_name = 'org/repo' }) -Compare $c | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run ([pscustomobject]@{ head_branch = 'main' }) -Repository $script:Repository -Compare $c | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run ([pscustomobject]@{ event = 'push'; head_branch = 'main'; repository = [pscustomobject]@{ id = 1 } }) -Repository $script:Repository -Compare $c | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run @{ event = 'push'; head_branch = 'main'; repository = @{ id = 1 }; head_repository = @{} } -Repository $script:Repository -Compare $c | Should -BeNullOrEmpty
+        Get-AapCacheTrustClass -Run (New-Run) -Repository $script:Repository -Compare 'identical' | Should -BeNullOrEmpty
     }
 }
 

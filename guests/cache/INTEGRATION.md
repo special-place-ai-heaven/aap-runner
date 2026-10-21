@@ -20,12 +20,17 @@ is the wiring for after that proof.
    separate low-privilege account or retire it once the Windows VM profile is certified.
 3. **zccache licence**: AGPL-3.0-only; images containing it are not redistributed until the owner records a compliance
    decision (README.md).
+4. **Activation.** Shared roots stay OFF until the lab proof exists (top of this page). After it, a repository gets a
+   shared root only once the owner's decision to enable that repository is recorded host-side; until then its jobs use
+   private roots. Rule 6 leaves no per-repository condition to check before that decision (no merge-method or tag-rule
+   precondition): it trusts only a run of the default branch's current head.
 
 ## Where the job's trust class comes from (decision for P16; option A chosen for the design)
 
-Contract rule 6, as amended on 2026-10-20 (cache-qualification.md): a job is `trusted` only when its event is `push` or `schedule`, its
-ref is the repository's default branch, its head commit is reachable from that branch and its head repository is the
-repository itself; everything else is `untrusted`. `workflow_dispatch` is untrusted: any untrusted job of the same
+Contract rule 6, as amended on 2026-10-20 and 2026-10-21 (cache-qualification.md): a job is `trusted` only when its
+event is `push` or `schedule`, its `head_branch` is the repository's default branch, its head repository is the
+repository itself, and its head commit IS the default branch's head when the class is bound; everything else is
+`untrusted`. `workflow_dispatch` is untrusted: any untrusted job of the same
 repository that holds `actions: write` can dispatch a workflow with inputs of its choosing. The class comes from
 GitHub's records of the job assigned to the runner, bound before any shared root attaches, never from the guest. The
 broker's App today has only the organization self-hosted-runners permission (broker.md), which cannot read a job, its
@@ -55,28 +60,30 @@ their own separate token with the self-hosted-runners permission. The App key st
 3. `Select-AapCacheJob -Jobs <all those jobs> -RunnerId <the runner id the broker registered for this VM, from its
    ledger> -RunnerGroupId <the pool's group>`: exactly one job or `$null`. Never match by runner name.
 4. `GET /repos/{o}/{r}/actions/runs/{job.run_id}` (the run: `event`, `head_branch`, `head_sha`, `repository.id`,
-   `head_repository.id`), `GET /repos/{o}/{r}` (`id`, `full_name`, `default_branch`),
-   `GET /repos/{o}/{r}/compare/{default_branch}...{head_sha}`: `-HeadOnDefaultBranch` is `$true` when its `status` is
-   `identical` or `behind`, `$false` for `ahead` or `diverged`, `$null` when the call failed, and
-   `GET /repos/{o}/{r}/git/matching-refs/tags/{default_branch}` (each `/`-separated part of the name percent-encoded):
-   `-DefaultBranchTags` is the array it returned with status 200, as `Invoke-RestMethod` returns it (an empty array
-   when no tag starts with that name; `ConvertFrom-Json` on PowerShell 7 needs `-NoEnumerate` to keep `[]` an array),
-   `$null` for any other status.
-5. `Get-AapCacheTrustClass -Run <run> -Repository <repository> -HeadOnDefaultBranch <bool or $null>
-   -DefaultBranchTags <array or $null>` returns `trust_class`, `repository_id` and `repository`, or `$null`.
+   `head_repository.id`), `GET /repos/{o}/{r}` (`id`, `full_name`, `default_branch`) and, at bind time,
+   `GET /repos/{o}/{r}/compare/{default_branch}...{head_sha}`: `-Compare` is its parsed body when it answered 200
+   (`status`, `base_commit.sha`), `$null` for any other answer or none.
+5. `Get-AapCacheTrustClass -Run <run> -Repository <repository> -Compare <compare body or $null>` returns `trust_class`,
+   `repository_id` and `repository`, or `$null`.
 
-Zero or several matching jobs, any failed call, a run of another repository, an unchecked head or a missing or
-malformed tag lookup mean `$null`: no class, private root only.
+Zero or several matching jobs, any failed call, a run of another repository, or a compare answer that is missing,
+has no `status`, or says `identical` about another commit mean `$null`: no class, private root only.
 
-**Tag hazard.** For a tag push, the run's `head_branch` is the tag's name and nothing in the run or job record says
-the ref was a tag, so a tag named like the default branch makes its run look like a push to that branch. Two checks
-close it as far as the API allows: the head must be **reachable** from the default branch (the compare call), and **no
-tag may have exactly the default branch's name** when the class is bound (the matching-refs call; while such a tag
-exists, no run of that repository is trusted). The lookup is `git/matching-refs`, not `git/ref/tags/<name>`: a 200
-with a list is positive evidence that no such tag exists, while `git/ref` reports a missing tag as a 404 that a missing
-permission or repository can also produce. The prefix match is harmless because `Get-AapCacheTrustClass` compares
-every returned `ref` exactly with `refs/tags/<default_branch>` and refuses an answer whose entries do not all start
-with it. What remains (a tag deleted before the lookup, and re-runs) is the residual stated in the contract, rule 6.
+**Tag pushes and re-runs.** GitHub's run record has no ref field, and for a tag push `head_branch` is the tag's name,
+so a tag named like the default branch produces a record that looks exactly like a push to that branch. The rule does
+not try to tell them apart. It trusts a run only when its `head_sha` is the default branch's head when the class is
+bound (`status` exactly `identical`, `base_commit.sha` equal to the run's `head_sha`); `behind`, `ahead`, `diverged`
+and any other status are untrusted. A tag at an older commit, live or deleted, a re-run of an older run and a run
+whose push was superseded before binding all fail that; a tag at the current head runs exactly the reviewed head.
+The cost is a private root for runs superseded before binding and for re-runs of older runs (a lower hit rate,
+accepted). The compare call needs `contents: read`, already part of option A.
+
+**Required call-site tests (P02.3, the host code that makes these calls).** With a recorded or faked GitHub, the bind
+step must show, per compare answer, the class it hands on: 200 `identical` with the run's head as base: trusted;
+200 `behind`, `ahead`, `diverged`: untrusted; 200 `identical` with another base commit, 200 without `status`, 404,
+any other error status, a rate-limit answer (403/429), a timeout and a truncated or unparseable body: `$null`. Only
+`identical` is ever trusted. Parse the body with `Invoke-RestMethod` or `ConvertFrom-Json`; both editions give the
+same object (tested in `AapZcCache.Tests.ps1`).
 
 **Deadline.** If the class is not established within a bounded time after the runner turns busy (start with 60 s),
 the job keeps its private root for its whole life. No retry later in the job.
