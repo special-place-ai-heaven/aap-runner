@@ -15,15 +15,15 @@
 # FAKE_ZC_NODELIVER=1 writes nothing, FAKE_ZC_EMPTY=1 an empty object, FAKE_ZC_LINK=1 a symbolic link to the entry
 # (zccache.cmd runs this under PowerShell 7 then, which can make one in developer mode). FAKE_ZC_PROGRESS=N first prints N of zccache's
 # progress lines to stderr.
-# FAKE_ZC_STDIN=1 (P04.1) appends eof to fake-stdin.log and carries on when this call's stdin drains to EOF: the
-# client must never be handed the caller's open stdin (that never EOFs and would hang it). The reads are synchronous,
-# so the kernel answers at once for a pipe the module closed (RedirectStandardInput, closed right after Start),
-# while an open stdin blocks the fake until the shim's timeout stops it, and the log then stays empty (the count
-# assertion fails). Whatever a .NET Framework redirect writer put in the pipe first is drained and ignored: on a
-# UTF-8 console its StandardInput StreamWriter emits the encoding's three-byte preamble into the pipe before close,
-# so a byte-strict empty check would fail on every CI host that runs one (the CI host's probe saw EF BB BF,
-# P13.5). ReadAsync plus a wait budget was also wrong: it cannot tell a loaded VM from an open stdin.
-# fake-stdin-facts.log records what each probe saw, for failure messages.
+# FAKE_ZC_STDIN=1 (P04.1, P13.5b) appends eof to fake-stdin.log and carries on only when this call's stdin delivers
+# exactly zero bytes and then EOF: the zccache client must get an EMPTY stdin, never the caller's open one (that
+# never EOFs and would hang it). The reads are synchronous, so the kernel answers at once for a pipe the module
+# closed (RedirectStandardInput, closed right after Start), while an open stdin blocks the fake until the shim's
+# timeout stops it, and the log then stays empty (the count assertion fails). Any byte before EOF fails the call
+# with exit 7: on a UTF-8 console .NET Framework's StandardInput writer emits its encoding's three-byte preamble
+# into the pipe at Start, which the module now prevents (P13.5b). ReadAsync plus a wait budget was also wrong: it
+# cannot tell a loaded VM from an open stdin (P13.5). fake-stdin-facts.log records what each probe saw, with byte
+# counts and hex, for failure messages.
 $ErrorActionPreference = 'Stop'
 $all = [Environment]::GetCommandLineArgs()
 $i = 1
@@ -64,11 +64,18 @@ if ($env:FAKE_ZC_STDIN -eq '1') {
     $n = $s.Read($buf, 0, $buf.Length)   # synchronous: data or EOF at once, an open stdin blocks
     while ($n -gt 0) {
         $drained += $n
-        if ($drained -le 16) { Add-Line $facts ("drained: {0}" -f ((($buf[0..([Math]::Min($n, 16) - 1)] | ForEach-Object { '{0:x2}' -f $_ }) -join ' '))) }
+        Add-Line $facts ("drained: {0}" -f ((($buf[0..([Math]::Min($n, 16) - 1)] | ForEach-Object { '{0:x2}' -f $_ }) -join ' ')))
         $n = $s.Read($buf, 0, $buf.Length)
     }
+    if ($drained -gt 0) {
+        # The module's redirect must hand the client exactly zero bytes and then EOF (P13.5b); anything before EOF
+        # (a UTF-8 console's EF BB BF preamble from a redirect writer) breaks that promise.
+        Add-Line $stdinLog 'open'
+        Add-Line $facts ("result=bytes drained={0}" -f $drained)
+        exit 7
+    }
     Add-Line $stdinLog 'eof'
-    Add-Line $facts ("result=eof drained={0} ms={1}" -f $drained, $sw.ElapsedMilliseconds)
+    Add-Line $facts ("result=eof drained=0 ms={0}" -f $sw.ElapsedMilliseconds)
 }
 if ($env:FAKE_ZC_CRASH -eq '1') { exit 139 }
 if ($argv[0] -eq 'session-start') {

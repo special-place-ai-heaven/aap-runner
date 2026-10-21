@@ -141,7 +141,23 @@ function Invoke-AapZcProcess {
         $si.EnvironmentVariables.Clear()
         foreach ($k in $Environment.Keys) { $si.EnvironmentVariables[[string]$k] = [string]$Environment[$k] }
     }
+    # Windows PowerShell 5.1 (.NET Framework) builds the redirected stdin writer at Start, from this console's input
+    # encoding, and flushes that encoding's preamble into the pipe: with a UTF-8 console the zccache client would read
+    # EF BB BF before EOF instead of the empty stdin this call promises (P04.1, P13.5b). PowerShell 7 writes no
+    # preamble. Swap in a BOM-less encoding for the Start only (the same idiom as aap-broker.psm1), then put the
+    # caller's back; no console, or an encoding without a preamble, leaves nothing to do.
+    $savedInputEncoding = $null
+    if ($Capture -and $PSVersionTable.PSEdition -ne 'Core') {
+        try {
+            $current = [Console]::InputEncoding
+            if ($current.GetPreamble().Length -gt 0) {
+                [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+                $savedInputEncoding = $current
+            }
+        } catch { $null = $_ }
+    }
     $p = [System.Diagnostics.Process]::Start($si)
+    if ($null -ne $savedInputEncoding) { try { [Console]::InputEncoding = $savedInputEncoding } catch { $null = $_ } }
     if ($Capture) { $p.StandardInput.Close() }  # the zccache client starts with an empty stdin, never the caller's open one (P04.1)
     try {
         $r = [pscustomobject]@{ ExitCode = $null; TimedOut = $false; Stdout = $null; Stderr = $null }
