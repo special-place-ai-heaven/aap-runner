@@ -40,7 +40,7 @@ C:\AI_STUFF\PROGRAMMING\aap-runner-work\parity\Pxx\attempt-N\
   logs\                 temporary, sanitized diagnostics
 ```
 
-Layout in use (as of 2026-10-20, after P00 landed and 15 items plus 9 coordinator
+Layout in use (as of 2026-10-21, after P00 landed and 26 items plus 13 coordinator
 PRs were run through it):
 
 ```text

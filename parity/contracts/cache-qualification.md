@@ -39,8 +39,8 @@ change.
    `parity/cache/qualification/`) or `direct`. A pair missing from the matrix is `direct`.
    `direct` means the native compiler with no wrapper; full parity must hold with every pair direct.
    A matrix has at most 256 rows. Revision 1 allowed 64, so P04 shipped Linux `debug-pdb` rows
-   only for the image-default clang 18.1.3 and gcc 13.3.0; **P04.1** extends them to every
-   compiler version. On Linux `debug-pdb` means DWARF `-g` output; there is no separate `-g`
+   only for the image-default clang 18.1.3 and gcc 13.3.0; P04.1 extended them to every
+   compiler version (Linux matrix revision 2). On Linux `debug-pdb` means DWARF `-g` output; there is no separate `-g`
    invocation.
 4. `qualified` needs, per platform and compiler version: uncached, cold and warm builds with equal
    exit codes and equivalent outputs (reproducible fixture or documented semantic comparison);
@@ -92,7 +92,7 @@ change.
    in time, the job gets no shared root (direct compilation, or a per-job root destroyed with the
    VM). Until the owner decision below is applied, the broker's App has only the self-hosted runners
    permission (broker.md), which cannot read a job's event or ref. This rule replaces the ref-based
-   trust class in retention.md requirement 4; P04.1 aligns that file.
+   trust class in retention.md requirement 4; P04.1 aligned that file with this rule.
    The class source (P13, revision 3 of this rule; security review of P13). The host derives the
    class from GitHub's record of the job assigned to the runner, matched by `runner_id` (from the
    broker ledger) and `runner_group_id`, and exactly one match is required: zero or several matches
@@ -112,7 +112,7 @@ change.
    Retention is the daemon's (budget via `ZCCACHE_CACHE_SIZE_BYTES` or `_PERCENT`); index, log,
    metadata and temp bytes are counted separately against the guest scratch budget. No
    manager-side oldest-file eviction. Requirements: [retention.md](../cache/qualification/retention.md)
-   (retention.md requirement 4 is superseded by rule 6).
+   (retention.md requirement 4 follows rule 6).
 7. A wrapper failure at runtime falls back to the direct compiler for that invocation and reports
    cache state `degraded` in `status.v5.json`; it never fails a build that would pass direct. A zero
    exit whose declared outputs (the object, the depfile) are missing, empty or not regular files is

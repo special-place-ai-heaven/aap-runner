@@ -184,10 +184,9 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 - **P03**: the staging root is the storage document's staging tier (`staging_root`, or
   `<base_root>\staging`), held to the same checks; the README example under
   `D:\aap-runner\images` is superseded.
-- **P04.1**: add the Linux `debug-pdb` (`-g`) rows for every compiler version (8 more rows at
-  P04's versions) now that a matrix may hold 256 rows, and align `retention.md` requirement 4
-  with rule 6's job trust class (event, ref and head repository). Until then rule 6 supersedes
-  requirement 4's ref-based trust class.
+- **P04.1** (done 2026-10-21): the Linux `debug-pdb` (`-g`) rows for every compiler version (8
+  more rows, Linux matrix revision 2), and `retention.md` requirement 4 now follows rule 6's job
+  trust class.
 - **P05.1**: write waivers into the evidence record's `waivers` field and stop appending them to
   `command`; until then `parity-report.json` and `verdict.json` stay authoritative. Nit: the
   harness's `re.match(...$)` checks for workload ids and SHAs accept one trailing newline (Python
@@ -251,4 +250,5 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 | 2026-10-21 | P12 | status-settings | settings 3, status 5, revision 3 (text only) | landed: no longer drafts; the supervisor accepts settings 3 and writes `status.v5.json` only with the capacity module beside it, and without it writes `status.v5.json` with `settings_schemas` `[1,2]` (legacy pool, Windows `backend: none`); "What exists today" becomes "Before P12". No schema change |
 | 2026-10-21 | P12 review | allocator | 2 (text and validate.py) | `per_profile` memory cap is `floor(pool_mem * share / (100 - reserve))`, the share of the memory pool after the control VM, instead of `floor(host.mem_gib * share / 100)`, which could let the two caps sum over the pool once the control VM is paid first (3 Linux at 60 % and 2 Windows at 30 % on 32 CPUs and 96 GiB asked 85 GiB of an 84 GiB pool, so the fifth slot was refused); the CPU cap is unchanged (its floors never sum over the pool). Fixtures: the owner example's Linux reservations are 18 GiB; `control-distro-memory-over-pool` is now refused by the Linux per-runner share. `allocator.json` stays schema 2 |
 | 2026-10-21 | P12 review | status-settings | settings 3, status 5, revision 3 (text only) | compatibility: the tray never writes schema 2 over a stored schema 3 file (it writes schema 3 from the stored keys even while `status.v5.json` is stale, missing or newer), checks what it writes against the schema it writes, shows a stored schema 3 file's own counts, and treats an `updated` in the future as stale; a supervisor downgrade then needs `settings.json` removed. Status detail gains the reason word `grant_waits`. `generation_state` prose: the legacy pool reports `legacy-manager` (or its granted generation) as `active`. No schema change |
+| 2026-10-21 | P04.1 | cache-qualification | 2 (text only) | rules 3 and 6 record that P04.1 added the Linux `debug-pdb` rows for every compiler version (matrix revision 2) and aligned retention.md requirement 4 with rule 6; no rule changes. No schema change |
 | 2026-10-21 | P13.3 | cache-qualification | 2 (text only) | rule 7: a zero exit whose declared outputs (object, depfile) are missing, empty or not regular files is a wrapper failure; outputs the shim cannot name (rustc, other sidecars) rely on zccache's own delivery and P04's evidence. No schema change |

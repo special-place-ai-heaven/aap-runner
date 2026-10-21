@@ -55,9 +55,11 @@ function Get-AapCacheTrustClass {
     $refSha = [string](Get-AapCacheProp (Get-AapCacheProp $BranchRef 'object') 'sha')
     if (-not $name -or -not $default -or -not $ev -or -not $runRepo) { return $null }
     if ($runRepo -ne $repoId) { return $null }  # SAFETY:TRUST-SAME-REPO (the run belongs to another repository)
-    # Ordinal string membership: PowerShell's -contains would coerce $true -eq 1 and 1.0 -eq 1.
-    $enabled = @(@($EnabledRepositoryIds) | Where-Object { $_ -is [string] -or $_ -is [int] -or $_ -is [long] } | ForEach-Object { [string]$_ })
-    if ($enabled -cnotcontains $repoId) { return $null }  # SAFETY:TRUST-ACTIVATION (not enabled by the owner)
+    # Ordinal membership in a set: -contains would coerce $true -eq 1 and 1.0 -eq 1, and -ccontains compares by culture,
+    # where an entry with a BOM, soft hyphen, ZWJ or NUL (on pwsh 7 also ZWSP or Arabic-Indic digits) equals '1'.
+    $enabled = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($e in @($EnabledRepositoryIds)) { if ($e -is [string] -or $e -is [int] -or $e -is [long]) { $null = $enabled.Add([string]$e) } }
+    if (-not $enabled.Contains($repoId)) { return $null }  # SAFETY:TRUST-ACTIVATION (not enabled by the owner)
     $class = 'trusted'
     if (@('push', 'schedule') -cnotcontains $ev) { $class = 'untrusted' }  # SAFETY:TRUST-EVENT
     elseif ($branch -cne $default) { $class = 'untrusted' }  # SAFETY:TRUST-BRANCH

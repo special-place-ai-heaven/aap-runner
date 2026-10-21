@@ -1,11 +1,13 @@
 # zccache 1.15.6 qualification harness, Windows x86_64. LAB ONLY (P13/P22), see ../README.md.
 #
 # Runs one (compiler, invocation) pair through method steps 1-6: uncached, cold and warm builds,
-# a relocated build for debug-pdb, three poisoned-cache builds and the deliberate-error case. Every
+# a relocated build for debug-pdb, a control build (prime, stop the daemon, rebuild with nothing
+# corrupted), three poisoned-cache builds and the deliberate-error case. Every
 # case uses its own fresh cache root. It compares exit codes and artifact hashes, counts journal
 # outcomes and writes one evidence record via record.jq. It never emits "qualified": the record's
 # row stays "direct" and `harness_pass` says whether steps 1-6 held. Lab steps 7-9 decide the rest.
-# zccache runs from a private, hash-checked copy under -Work; its daemons are stopped at the end.
+# zccache runs from a private, hash-checked copy under -Work; its daemons (the copies zccache deploys
+# into each cache root) are recorded with their hashes and stopped at the end.
 #
 # Exit codes: 0 record written (read harness_pass), 1 unexpected harness error (no record),
 # 2 usage, 3 refused (not a clean lab), 4 zccache.exe or zccache-fp.exe is not the pinned binary.
@@ -46,6 +48,10 @@ $ZqSecretName = '(?i)token|secret|pass|credential|jit|jwt|private_?key|(^|_)(api
 # A value carrying URL credentials, scheme://user:password@host, whatever the variable is called.
 $ZqUrlCredential = '://[^/@\s]*:[^/@\s]*@'
 $ZqHere = $PSScriptRoot
+# zccache 1.15.6 keeps its state one level below the root ZCCACHE_CACHE_DIR names, in v1.15.6\: the
+# artifact store, crashes\, crash-spool\, and the copy of itself it deploys and runs as the daemon,
+# v1.15.6\zccache-daemon.exe (resolve.rs versioned_subdir, cli/runtime/deploy.rs 106-125 at the pin).
+$ZqState = 'v1.15.6'
 
 function Get-ZqMarkerPath([string[]]$Roots) {
     # The live pool on the owner's host: installer, supervisor data and the WSL distro root.
@@ -262,47 +268,71 @@ function Invoke-ZqCorrupt([string]$Store, [ValidateSet('artifact', 'same_size', 
     $n
 }
 
-# The private bin directory must be fully qualified and below a drive or share root: an empty or
-# relative path would let the process helpers match executables the harness does not own.
-function Assert-ZqBin([string]$Bin) {
-    if ($Bin -notmatch '^(?:[A-Za-z]:\\|\\\\[^\\]+\\[^\\]+\\)[^\\]') { throw "zq: refusing bin path '$Bin'; it must be absolute" }
+# -Work must be fully qualified and below a drive or share root: an empty or relative path would
+# let the process helpers match executables the harness does not own.
+function Assert-ZqWork([string]$Work) {
+    if ($Work -notmatch '^(?:[A-Za-z]:\\|\\\\[^\\]+\\[^\\]+\\)[^\\]') { throw "zq: refusing work path '$Work'; it must be absolute" }
 }
 
-function Get-ZqOwnProcess([string]$Bin) {
-    Assert-ZqBin $Bin
-    $prefix = $Bin.TrimEnd('\') + '\'
+# Where an executable runs from: 'bin' (the private copy, <work>\bin), 'root' (the daemon copy
+# zccache deployed into one of the harness's cache roots, exactly <work>\cache-*\v1.15.6\zccache-daemon.exe)
+# or ''.
+function Get-ZqOwner([string]$Work, [string]$Path) {
+    $prefix = $Work.TrimEnd('\') + '\'
+    if (-not $Path -or -not $Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return '' }
+    $rel = $Path.Substring($prefix.Length)
+    if ($rel.StartsWith('bin\', [StringComparison]::OrdinalIgnoreCase)) { return 'bin' }
+    if ($rel -match ('^cache-[^\\]+\\' + [regex]::Escape($ZqState) + '\\zccache-daemon\.exe$')) { return 'root' }
+    ''
+}
+
+function Get-ZqOwnProcess([string]$Work) {
+    Assert-ZqWork $Work
     @(Get-Process -Name 'zccache*' -ErrorAction SilentlyContinue | Where-Object {
             $p = $null; try { $p = $_.Path } catch { }
-            $p -and $p.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+            Get-ZqOwner $Work $p
         })
 }
 
-# Every visible zccache* process: the lab records which binary the daemons really run.
-function Get-ZqDaemon([string]$Bin) {
-    Assert-ZqBin $Bin
-    $prefix = $Bin.TrimEnd('\') + '\'
+# Every visible zccache* process: the lab records which binary the daemons really run, and from where.
+function Get-ZqDaemon([string]$Work) {
+    Assert-ZqWork $Work
     , @(Get-Process -Name 'zccache*' -ErrorAction SilentlyContinue | ForEach-Object {
             $p = $null; try { $p = $_.Path } catch { }
+            $owner = Get-ZqOwner $Work $p
             [ordered]@{
                 pid = $_.Id
                 exe = $(if ($p) { Get-ZqPrintable $p } else { $null })
-                in_private_bin = [bool]($p -and $p.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase))
+                in_private_bin = $owner -eq 'bin'
+                in_cache_root = $owner -eq 'root'
                 sha256 = $(if ($p -and (Test-Path -LiteralPath $p -PathType Leaf)) { Get-ZqSha256 $p } else { $null })
             }
         })
 }
 
-# Stops every process running from the private copy; $true when none is left.
-function Stop-ZqDaemon([string]$Bin) {
-    foreach ($p in (Get-ZqOwnProcess $Bin)) { try { $p.Kill(); $null = $p.WaitForExit(5000) } catch { } }
-    (Get-ZqOwnProcess $Bin).Count -eq 0
+# Stops every process running the private copy or a deployed daemon copy, gracefully first as on
+# Linux (TERM, then a kill): CloseMainWindow posts WM_CLOSE, which a console daemon without a
+# window ignores, so a daemon that must flush gets its moment before the hard kill anyway.
+# $true when nothing the harness owns is left.
+function Stop-ZqDaemon([string]$Work) {
+    $ps = @(Get-ZqOwnProcess $Work)
+    foreach ($p in $ps) { try { $null = $p.CloseMainWindow() } catch { } }
+    foreach ($p in $ps) { try { $null = $p.WaitForExit(500) } catch { } }
+    foreach ($p in $ps) { try { if (-not $p.HasExited) { $p.Kill(); $null = $p.WaitForExit(5000) } } catch { } }
+    (Get-ZqOwnProcess $Work).Count -eq 0
 }
 
-# Files under each cache root's crashes/ folder. The dumps themselves never leave the VM.
+# Every file in a crashes\ folder and every non-empty one in a crash-spool\ folder below each cache
+# root: README 433-434 names <root>\crashes; at the pin they are <root>\v1.15.6\crashes and
+# crash-spool, where each live process keeps an empty pending-*.rpcrash that a crash fills
+# (crash.rs 24-34; seen on Linux, to confirm on Windows in the lab). The dumps never leave the VM.
 function Get-ZqCrashDump([string]$Work) {
     $counts = [ordered]@{}
     foreach ($d in @(Get-ChildItem -LiteralPath $Work -Directory -Filter 'cache-*' -ErrorAction SilentlyContinue)) {
-        $counts[$d.Name] = @(Get-ZqFiles (Join-Path $d.FullName 'crashes')).Count
+        $counts[$d.Name] = @(Get-ZqFiles $d.FullName | Where-Object {
+                $rel = $_.FullName.Substring($d.FullName.Length)
+                $rel -match '\\crashes\\' -or ($rel -match '\\crash-spool\\' -and $_.Length -gt 0)
+            }).Count
     }
     $counts
 }
@@ -335,10 +365,12 @@ function Resolve-ZqWork([string]$Work) {
     Join-Path $d.FullName ($parts -join '\')
 }
 
+# stdin is empty (@() piped in): the zccache 1.15.6 client reads its stdin, and on Linux one that
+# inherited a shell's open stdin waited on it forever before compiling (seen in WSL, P04.1).
 function Invoke-ZqRun([string]$Exe, [string[]]$Argv, [string]$Log, [string]$Cwd) {
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     Push-Location -LiteralPath $Cwd
-    try { & $Exe @Argv > "$Log.out" 2> "$Log.err"; $LASTEXITCODE } finally { Pop-Location; $ErrorActionPreference = $prev }
+    try { @() | & $Exe @Argv > "$Log.out" 2> "$Log.err"; $LASTEXITCODE } finally { Pop-Location; $ErrorActionPreference = $prev }
 }
 
 # One build. $Root empty: the compiler directly. Otherwise through zccache with that cache root,
@@ -374,6 +406,36 @@ function Invoke-ZqPhase($Ctx, [string]$Src, [string]$Case, [string]$Root, [strin
         exit = $rc; artifacts = (Get-ZqArtifact $outDir); primary_present = (Test-Path -LiteralPath (Join-Path $outDir $cmd.Primary))
         argv = @($cmd.Args); cache_dir = $(if ($Root) { Split-Path -Leaf $Root } else { $null }); zccache_env = $zenv; journal = $journal
     }
+}
+
+# One poison variant on its own root: prime it, stop the daemons, corrupt zccache's store and
+# build again. The daemon alive since priming must not watch the store change (in WSL it served
+# a hit with correct bytes after every store file was replaced, which says nothing about the
+# store), and the poisoned build must start a fresh daemon that reads the store from disk. The
+# stop's result is recorded; record.jq's rejected() requires it.
+function Invoke-ZqPoison($Ctx, [string]$Src, [string]$Root, [string]$Variant, [string[]]$ArtifactHash, [string]$Work) {
+    $prime = Invoke-ZqPhase $Ctx $Src 'ok' $Root "ok-prime-$Variant"
+    $stopped = Stop-ZqDaemon $Work
+    $n = Invoke-ZqCorrupt (Join-Path (Join-Path $Root $ZqState) 'artifacts') $Variant $ArtifactHash
+    $p = Invoke-ZqPhase $Ctx $Src 'ok' $Root "ok-poisoned-$Variant"
+    $p.prime_exit = $prime.exit
+    $p.daemon_stopped = $stopped
+    $p.corrupted_files = $n
+    $p
+}
+
+# The control phase: prime a fresh root, stop the daemon, rebuild with nothing corrupted. The
+# rebuild must hit and equal uncached, proving a daemon restart alone keeps serving the store.
+# Without it every poisoned build's miss could be the restart's doing, not the corruption's
+# (M1), and all three poison checks would pass without exercising corruption detection.
+# record.jq's rejected() requires this run.
+function Invoke-ZqControl($Ctx, [string]$Src, [string]$Root, [string]$Work) {
+    $prime = Invoke-ZqPhase $Ctx $Src 'ok' $Root 'ok-control-prime'
+    $stopped = Stop-ZqDaemon $Work
+    $p = Invoke-ZqPhase $Ctx $Src 'ok' $Root 'ok-control'
+    $p.prime_exit = $prime.exit
+    $p.daemon_stopped = $stopped
+    $p
 }
 
 function New-ZqTree([string]$Work, [string]$Name) {
@@ -450,23 +512,20 @@ function Invoke-ZqMain {
             $runs.relocated_direct = Invoke-ZqPhase $ctx $moved 'ok' '' 'ok-relocated-direct'
             $runs.relocated = Invoke-ZqPhase $ctx $moved 'ok' (Join-Path $w 'cache-ok') 'ok-relocated'
         }
+        $runs.control = Invoke-ZqControl $ctx $src (Join-Path $w 'cache-control') $w
         foreach ($v in @('artifact', 'same_size', 'marker')) {
-            $root = Join-Path $w ('cache-poison-' + $v.Replace('_', '-'))
-            $prime = Invoke-ZqPhase $ctx $src 'ok' $root "ok-prime-$v"
-            $n = Invoke-ZqCorrupt (Join-Path $root 'artifacts') $v @($runs.uncached.artifacts.Values)
-            $p = Invoke-ZqPhase $ctx $src 'ok' $root "ok-poisoned-$v"
-            $p.prime_exit = $prime.exit
-            $p.corrupted_files = $n
-            $runs["poisoned_$v"] = $p
+            $runs["poisoned_$v"] = Invoke-ZqPoison $ctx $src (Join-Path $w ('cache-poison-' + $v.Replace('_', '-'))) $v @($runs.uncached.artifacts.Values) $w
         }
         $errs = [ordered]@{}
         $errs.uncached = Invoke-ZqPhase $ctx $src 'error' '' 'error-uncached'
         $errs.cold = Invoke-ZqPhase $ctx $src 'error' (Join-Path $w 'cache-error') 'error-cold'
         $errs.warm = Invoke-ZqPhase $ctx $src 'error' (Join-Path $w 'cache-error') 'error-warm'
 
-        $daemons = Get-ZqDaemon $bin
+        $daemons = Get-ZqDaemon $w
+        # The final stop before the record. Crash dumps are counted after it, so a daemon that
+        # dumps while being stopped (its pending crash-spool record fills) is not missed.
+        $stopped = Stop-ZqDaemon $w
         $crashes = Get-ZqCrashDump $w
-        $stopped = Stop-ZqDaemon $bin
         $meta = [ordered]@{
             platform = 'windows-x86_64'
             command = "qualify.ps1 -Compiler $Compiler -CompilerVersion '$CompilerVersion' -Invocation $Invocation -EvidenceRef $EvidenceRef"
@@ -485,7 +544,7 @@ function Invoke-ZqMain {
         $r = $record | ConvertFrom-Json
         Write-Output "harness_pass=$($r.harness_pass): $($r.row.reason)"
     } finally {
-        $null = Stop-ZqDaemon $bin   # also after a failure; crash dumps stay in the VM
+        $null = Stop-ZqDaemon $w   # also after a failure; crash dumps stay in the VM
     }
 }
 

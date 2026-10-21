@@ -24,23 +24,12 @@
     "helper_script_folder": "C:\\Program Files\\WindowsPowerShell\\Modules\\",
     "install_user": "installer"
   },
-  "variables_source": "upstream images/windows/templates/variable.windows.pkr.hcl defaults at aee0669, not stored in parity/baselines; image_version is the P01 baseline",
+  "variables_source": "upstream images/windows/templates/variable.windows.pkr.hcl defaults at aee0669, checked 2026-10-21 against the pinned runner-images archive (P03.1): every default matches except image_version (the P01 baseline; upstream default dev) and image_os (the profile; upstream default empty), both passed per build",
   "source": {
     "entry": "runner-images-aee0669",
-    "sha256": null
+    "sha256": "dfd0aa2828ec860f0edf01a0146f1db3a0e41d16f1cddd92a28b0e3ee579b4ef"
   },
-  "blockers": [
-    {
-      "id": "p06-upstream-source-archive",
-      "reason": "images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at aee0669 (images/windows scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive whose SHA-256 this plan pins. No waiver clears this blocker.",
-      "owner_action": "P03 owner adds a literal-pinned entry for the archive of actions/runner-images at aee0669dd04510a11756664eb77f5630debabed3, then this generator is rerun with -ScriptsDir and -SourceSha256 to pin every script hash and the archive."
-    },
-    {
-      "id": "p06-upstream-variables-unverified",
-      "reason": "The variable defaults above come from the upstream variables file, which P01 did not store. They are not yet checked against the pinned bytes.",
-      "owner_action": "Compare them with variable.windows.pkr.hcl inside the P03-staged archive and drop this blocker in the same change."
-    }
-  ],
+  "blockers": [],
   "phases": [
     {
       "id": "p01",
@@ -139,52 +128,52 @@
         {
           "name": "Configure-WindowsDefender.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "5953dc82daee91e2119a20113182141acf85769aa58b394a00684f98c309d5ac"
         },
         {
           "name": "Configure-PowerShell.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "a7f5edb322f3762cb23f15a4724aceee1d406c3aa3477960665a4bc8a50f7c88"
         },
         {
           "name": "Install-PowerShellModules.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "265e29dbfa3d7e67d4b19acfba63d5557a81b2042a26c73acaada02b9ef613fa"
         },
         {
           "name": "Install-WSL2.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "d95ea281185aab91de279b62065119d5c521ff5bae3ec5d730f1ffb9a32abf09"
         },
         {
           "name": "Install-WindowsFeatures.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "6c6b93ba2b85ff2ee0da2fbddd8b783dc66a16a5ac03b3679de1a2df1a13f1ab"
         },
         {
           "name": "Install-Chocolatey.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "f3d93aedf6b7a40bfef14bd3954849bf8313586235d4d60d342e1a70c413f81d"
         },
         {
           "name": "Configure-BaseImage.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "a01336a9557d379c0b38015e6a35a5229a702e025dec5e735afa707bbefa9a21"
         },
         {
           "name": "Configure-ImageDataFile.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "88c36fbcf22b03fc2954f8428d2ca67b070b93bb025e2e47c2c6802a838f2912"
         },
         {
           "name": "Configure-SystemEnvironment.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "e303c4bbfb81d724ab4020259e6a4d42b6e501291e82a5ef607e6b5b413d6b8a"
         },
         {
           "name": "Configure-DotnetSecureChannel.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "19ae25c0983d88aa9f5ebfb7cf4d4d1d97223691c06e5b1ee00024fa52296529"
         }
       ],
       "env": {
@@ -242,27 +231,27 @@
         {
           "name": "Install-Docker.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "ebff04d4ab5712679241685e579beb2bbe409fa0a1febf763bb77f01d1546ffc"
         },
         {
           "name": "Install-DockerWinCred.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "deabf900e5a808c2e07e492054269e0ea359de52c0ce0c556bf90465e3ab2114"
         },
         {
           "name": "Install-DockerCompose.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "e95721c1d4cc0eadbeb38daba77d6f74f32fdb4dd6487a11461e69e78e9740d0"
         },
         {
           "name": "Install-PowershellCore.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "1afb9dfc1e167f261d4b3a6abbc90d1b35582e5f6911ca414672eac124736267"
         },
         {
           "name": "Install-WebPlatformInstaller.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "930e0525e5c5d0f8cc773c32670f497a23b3da4a327a18b92703bf118649c5fa"
         }
       ],
       "env": {
@@ -303,12 +292,12 @@
         {
           "name": "Install-VisualStudio.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "31e2e533a8615727b4d740f0538e488a6076018ff8fed2948b91841870522e01"
         },
         {
           "name": "Install-KubernetesTools.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "11947a30cf5154a13906203e4d166f89a331c2d979f2561b4ef275aa89ac4e85"
         }
       ],
       "env": {
@@ -351,42 +340,42 @@
         {
           "name": "Install-Wix.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "463afc2b515caf28ee6f252c61f0e36a1e8b353c2753e0c4f2deeb8551e8e6a7"
         },
         {
           "name": "Install-VSExtensions.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "d0651a1f67cf4f4db75dbf450db38064540bc07aa6cf5f6ece72c073718e3e92"
         },
         {
           "name": "Install-AzureCli.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "112413eb0f47fd23aaf777c83289bda64498c8551270461c0217d9800ad10a0a"
         },
         {
           "name": "Install-AzureDevOpsCli.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "705d2f8d9745a6457f1441477a7c0839cbd864990474b0e580f775626fa5d633"
         },
         {
           "name": "Install-ChocolateyPackages.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "1af5fc3bae4516ca512e3da9009863fd84c33856eca80ba1f6cead9ccb368aca"
         },
         {
           "name": "Install-JavaTools.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "5635e9143ad148138b446047817821a7aa5cf3a459401c6ef0e0ef20a155cff2"
         },
         {
           "name": "Install-Kotlin.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "a370d6a9266f4100a9bf1e94e91c522b02b9f1658d779985470b4353493de703"
         },
         {
           "name": "Install-OpenSSL.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "f3ffefc1a0763b5dd273f5d8b201edb03f76f1a96bf8625c799a47f7a5c58cff"
         }
       ],
       "env": {
@@ -414,7 +403,7 @@
         {
           "name": "Install-ServiceFabricSDK.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "4d12a897cf788623877f71e8bba09e1ace62e46ee06c3dc333c09bcc5e58790a"
         }
       ],
       "env": {
@@ -455,212 +444,212 @@
         {
           "name": "Install-ActionsCache.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "17475b4061b094dfdcda2206643e9bec19fce40df8095a0ed5757f338550c4da"
         },
         {
           "name": "Install-Ruby.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "ce97b07a0205398465f341d0410a3ad2391211879dafb6a0c3d8a1a1b15c2aa2"
         },
         {
           "name": "Install-PyPy.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "9b771d1e831d0f96ccbdca8d7fa2c9579f10376a919edb930b242e824ac50599"
         },
         {
           "name": "Install-Toolset.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "fc74e010f39d662014142135bd49ad65c95ce2f5fc3feefe313339902d3fec4f"
         },
         {
           "name": "Configure-Toolset.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "987d6bd4627ad3c5e124435694a5d969179348feb201067a3acb738cb048d22e"
         },
         {
           "name": "Install-NodeJS.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "02d0551024ff8cb04feb900232dc035ac0e7495b1a38ae238a313b53a25d8bae"
         },
         {
           "name": "Install-AndroidSDK.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "9a4db3f31b0b4b2755ab7012d2ce45cedc6953958891d6db431d90f35a7953d7"
         },
         {
           "name": "Install-PowershellAzModules.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "498629da3399dc7c9bf1a0175027323f137474a4add3534624fd3683bf0e46a7"
         },
         {
           "name": "Install-Pipx.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "1cc28474ca181e6024a8c0db4d4241251e7a9d4e806dd1fd834c9ba96ea68fb0"
         },
         {
           "name": "Install-Git.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "8b7320968c3f3f984e89ae9eab5fd097c0b8fb31aad401bdf1ccf91e7ad06603"
         },
         {
           "name": "Install-GitHub-CLI.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "18ff9ac1b562ecabfc34200e6d91194231a9dee60580fc85ad521aff1312a552"
         },
         {
           "name": "Install-PHP.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "464f69317e7a375ef49880b12cebf8bcf83ee70793b099f06bdecac561a5ad4b"
         },
         {
           "name": "Install-Rust.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "1f5b30f0bdbc0566641db9433699590d4cd8e32611354f69e9deba8a645d9513"
         },
         {
           "name": "Install-Sbt.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "b1a4ff1d1be2c282f54c2fbcf9bc6e25a23a9ddda3764cea1d7c15d0e9b0b04e"
         },
         {
           "name": "Install-Chrome.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "64e9dccacdb7301c65119967cb7568fdef5230bb83aa5f84f2e2293ba3ea4f04"
         },
         {
           "name": "Install-EdgeDriver.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "ded2349194bdee2c13ef48c7ec6401ef036f5a417a9dcbfa5a4e84d8c8fcb9d5"
         },
         {
           "name": "Install-Firefox.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "cd99a5a8150fcec1d47d3772979ca8c345dd3a1b1c04aab874766151f6acf785"
         },
         {
           "name": "Install-Selenium.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "3c447c7b1381c70d6267c326fb6000f5c581cfad3d18df8af1b2baeb89806a2a"
         },
         {
           "name": "Install-IEWebDriver.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "c6000d4fd792e21043e37eed4418c01696732e0c96c7d95b6499c93beedb2da3"
         },
         {
           "name": "Install-Apache.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "be912e3e90cdda64251530d857d2486edd5dd98611c8b247c17d795085319644"
         },
         {
           "name": "Install-Nginx.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "436f443d6d028d95de61c77e09cf205258bc31b5f89fc5ae3565ab47689d00f7"
         },
         {
           "name": "Install-Msys2.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "f1348a46e8cbaa2dc4775a5dc22dc6065e1c166eb160e6f0e175ab2dd88760c0"
         },
         {
           "name": "Install-WinAppDriver.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "93306aea65661acb5b56d09670f2a98587ae8f49558c33201a430c9a8f42a0c7"
         },
         {
           "name": "Install-R.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "a96995635705dd931bbc5f0e039457a3f834fa64c6929218601f193eb6abed22"
         },
         {
           "name": "Install-AWSTools.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "f0b230140f96dc612ffd9db8c8617588cf201bf2bf7875fd98b3499efcd1c38a"
         },
         {
           "name": "Install-DACFx.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "e5e3aab22acdb6635b8406c0c2e56f1a0d6abdcca28a3c33ee75380d56ccf104"
         },
         {
           "name": "Install-MysqlCli.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "7a63d9e4a09e8955a7b18e5b9627e5b6685ad522f6f87a3a7cc42182f5eeb889"
         },
         {
           "name": "Install-SQLPowerShellTools.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "fb6ab41781a6b2721817edf53042aeaab85d05768dc592fe1f08d89b06f79a3c"
         },
         {
           "name": "Install-SQLOLEDBDriver.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "2f9e8c73237de589bec2aba21576363215aa4654b69dfc4fde6048ed965f435f"
         },
         {
           "name": "Install-DotnetSDK.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "ee985484d3725fe62e99db0c4d6da3f7ddb8b0ca43c3c12d7f4ff99add65d4e6"
         },
         {
           "name": "Install-Mingw64.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "d5f6cd2b566ed77e67b6c0c0f2fb0254d0d4609678375a2bdce08be98d6ab817"
         },
         {
           "name": "Install-Haskell.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "aba0876329c929678fe3d8eaf1529c90e92ca9e444484a415445e7adcef87f94"
         },
         {
           "name": "Install-Stack.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "1d8974da60c1907dbabaeb26df8806c476e5d944320ea270fd67067ad0a5b824"
         },
         {
           "name": "Install-Miniconda.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "efc9dc249d2bf5db2cf9b29ccbfa81902acd15e21b279ef8ed9938085ceb2f1f"
         },
         {
           "name": "Install-AzureCosmosDbEmulator.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "bf3ac1d82e62240751532ceab592f374db1c97a682a926f4435c507307a3ecf1"
         },
         {
           "name": "Install-Zstd.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "17653b59e05c3a52f8281f6a232f2e459c177f4d0c154bc42f8772553d7acf92"
         },
         {
           "name": "Install-Vcpkg.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "e7d9cf4c784a9ba3455319f5a3c91f39f5867d00fb69b8289bed31a85ac31629"
         },
         {
           "name": "Install-Bazel.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "6ffa8d4edf919442a9a8ad63839a591ead18acd39129492448ba8fd80eeb0780"
         },
         {
           "name": "Install-RootCA.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "ecd84ff56193eeccb76b061b7ac537704b6d08293378999274e0e4a7c06ad9eb"
         },
         {
           "name": "Install-MongoDB.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "c1f8231defca0372e74a14ac4f7c0c79c8d97c99b08fb35cc5d21fe2102c8468"
         },
         {
           "name": "Install-CodeQLBundle.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "2531d8b32904c62e3e7ae68cc4a85c788e4e3f29fba9289b6a52ed35427a7103"
         },
         {
           "name": "Configure-Diagnostics.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "9a8f95a3046c69f699884c860dce45df1a57ed2e2a8199510538b92bd4332f67"
         }
       ],
       "env": {
@@ -688,37 +677,37 @@
         {
           "name": "Install-LLVM.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "c45403ef5a47ed9cb06a8a6085584214625043b870c10d756a76d172a1212375"
         },
         {
           "name": "Install-PostgreSQL.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "88d3d1a5b1d6c2ddba3a2d29613bc14a1b85b9d654fdd2ecbac07d7d056c1f04"
         },
         {
           "name": "Install-WindowsUpdates.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "34e4a5f441cb4da39e7993c5ca9b19fa36788600b6099041b61cb66209aad56d"
         },
         {
           "name": "Configure-DynamicPort.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "8a9fa73e00b7aa6ff4bce6ed4d61d1b46204a9c7eb060de273bde020fdd1696f"
         },
         {
           "name": "Configure-GDIProcessHandleQuota.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "638f7b7b858cb6d0c2b8de77dceb7e8a57a6ca76e9ff4c3d1432c7a04af10c44"
         },
         {
           "name": "Configure-Shell.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "c8b4b170578b90fe574a7d56c9cb7dc0edaed78e652b1884610f24e124143f58"
         },
         {
           "name": "Configure-DeveloperMode.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "9bfc6f1b979a7155a6c6ce82829b6c675c56a2e5cf77d237fee2f5693d4ae39e"
         }
       ],
       "env": {
@@ -759,17 +748,17 @@
         {
           "name": "Install-WindowsUpdatesAfterReboot.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "ba151c76fa47d1aa1ac5535e627b95cfb1ef596cdb172f7bcd183c1bbee641ed"
         },
         {
           "name": "Invoke-Cleanup.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "34a7df3fa5bbcd15d04a21024266bb4ffa6569d462becfb3e6131dc78b5e366e"
         },
         {
           "name": "RunAll-Tests.ps1",
           "dir": "tests",
-          "sha256": null
+          "sha256": "8fb77c3c506eb544a0b4097672b859308d6d6c0cfac4b453010a519782100552"
         }
       ],
       "env": {
@@ -857,22 +846,22 @@
         {
           "name": "Install-NativeImages.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "34cf9ef14b27b21f75c0c545b7c285e434c866b260d84778427fa676516e1453"
         },
         {
           "name": "Configure-System.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "0528f94e41814570915a5750596231dcf319287cc58c79e58679a3e59c2dc87d"
         },
         {
           "name": "Configure-User.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "db3ab76fa3166e848de9fddc3e08596110596417440d9ea327b7b5cb49a3e794"
         },
         {
           "name": "Post-Build-Validation.ps1",
           "dir": "build",
-          "sha256": null
+          "sha256": "7f830448d45441f8b8de3c9a4541d85873018a0b57da13f5e0b7fb9a71bfae73"
         }
       ],
       "env": {

@@ -169,7 +169,7 @@ $plan = [ordered]@{
         imagedata_file          = '/imagegeneration/imagedata.json'
         install_user            = 'installer'
     }
-    variables_source  = 'upstream images/ubuntu/templates/variable.ubuntu.pkr.hcl defaults at 7e7dc1b, not stored in parity/baselines; image_folder is the P01 baseline (/imagegeneration), image_os the hosted ImageOS, image_version the P01 baseline'
+    variables_source  = 'upstream images/ubuntu/templates/variable.ubuntu.pkr.hcl defaults at 7e7dc1b, checked 2026-10-21 against the pinned runner-images archive (P03.1): every default matches except image_version (the P01 baseline; upstream default dev) and image_os (the hosted ImageOS ubuntu24; upstream default empty), both passed per build'
     # The local base for the Azure Marketplace image (a P03 blocker, azure-base-image-ubuntu-24.04, waived only by the chair):
     # the official 24.04 live-server ISO, installed unattended with the Azure kernel flavour and agent the hosted image runs.
     base              = [ordered]@{
@@ -202,7 +202,6 @@ $plan = [ordered]@{
     }
     blockers          = @(
         if (-not ($SourceEntry -and $SourceSha256)) { [ordered]@{ id = 'p07-upstream-source-archive'; waivable = $false; reason = 'images/common/artifacts.manifest.json has no entry for the actions/runner-images tree at 7e7dc1b (images/ubuntu scripts, assets, toolsets and helpers/software-report-base). The builder copies the upstream scripts only from a P03-verified archive, pinned here in inputs.source.'; owner_action = 'P03 owner adds a literal-pinned entry for the archive of actions/runner-images at 7e7dc1bcc0ef464e5e315a2b4c33609590c6cffe, then this generator is rerun with -ScriptsDir, -SourceEntry and -SourceSha256.' } }
-        [ordered]@{ id = 'p07-upstream-variables-unverified'; waivable = $true; reason = 'The variable defaults above come from the upstream variables file, which P01 did not store. They are not yet checked against the pinned bytes.'; owner_action = 'Compare them with variable.ubuntu.pkr.hcl inside the P03-staged archive and drop this blocker in the same change.' }
         if (-not ($MediaEntry -and $MediaSha256)) { [ordered]@{ id = 'p07-ubuntu-server-media'; waivable = $false; reason = 'The Ubuntu 24.04 live-server ISO is not a P03 manifest entry, so nothing ties the media a build boots to the signed Canonical SHA256SUMS.'; owner_action = 'P03 adds the ISO with Canonical''s signed SHA256SUMS as its hash source and records the point release (the hosted image reports 24.04.5); this generator is rerun with -MediaEntry and -MediaSha256.' } }
     )
     phases            = $phases
