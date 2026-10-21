@@ -1413,6 +1413,16 @@ Describe 'aap-runner host supervisor' {
             $script:stdin[-1] | Should -BeExactly "AAP_RUNNER_COUNT=3`nAAP_JOB_CPUS=12`nAAP_JOB_MEMORY=36g`n"
         }
 
+        It 'keeps the limits the manager runs while there is no settings.json' -Tag 'keep-manager-limits' {
+            # 26 CPUs over 3 slots adopt as 9 each; limits.conf must not grow to 27.
+            Reset-AapFakeDistro 3 26 72
+            Invoke-AapCycle
+            Invoke-AapMinute 2
+            (Get-AapCapDoc).legacy_adopted | Should -BeTrue
+            @($script:stdin).Count | Should -Be 0
+            $script:mgr.Cpus | Should -Be 26
+        }
+
         It 'grants a legacy slot before the manager runs it' -Tag 'legacy-stop' {
             Reset-AapFakeDistro 3 27 72
             Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":27,"job_memory_gib":72,"paused":false}'

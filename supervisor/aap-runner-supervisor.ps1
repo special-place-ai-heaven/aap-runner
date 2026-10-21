@@ -1578,9 +1578,7 @@ function Grant-AapSlots($s, $St) {
     $why = $null
     $lp = $St.Profiles.linux
     if ($doc.profiles.linux.backend -ceq 'wsl-legacy' -and $lp.Admitted -lt $lp.Count) {
-        $caps = @{}
-        if ($s.Limits) { $caps = @{ JobCpus = $s.Limits.JobCpus; JobMemoryGib = $s.Limits.JobMemoryGib } }
-        $L = Invoke-AapCap 'Get-AapLegacyLimits' $caps
+        $L = Invoke-AapCap 'Get-AapLegacyLimits' (Get-AapLegacyCaps $s)
         for ($i = $lp.Admitted; $L.Ok -and $i -lt $lp.Count; $i++) {
             $r = Invoke-AapCap 'Request-AapReservation' @{ Profile = 'linux'; Cpus = $L.NextSlotCpus; MemGib = $L.NextSlotMemGib; ImageGeneration = $AapLegacyGeneration }
             if (-not $r.Ok) {
@@ -1619,8 +1617,7 @@ function Grant-AapSlots($s, $St) {
 # limits.conf with 0, and release the slots that left.
 function Sync-AapLegacyPool($s) {
     $lim = $s.Limits
-    $caps = @{}
-    if ($lim) { $caps = @{ JobCpus = $lim.JobCpus; JobMemoryGib = $lim.JobMemoryGib } }
+    $caps = Get-AapLegacyCaps $s
     $L = Invoke-AapCap 'Get-AapLegacyLimits' $caps
     if (-not $L.Ok) { return }
     if ($L.Stop) {   # check:legacy-stop
@@ -1643,15 +1640,26 @@ function Sync-AapLegacyPool($s) {
         $target = $L
     }
     $limits = @{ RunnerCount = [int]$target.RunnerCount; JobCpus = [int]$target.JobCpus; JobMemoryGib = [int]$target.JobMemoryGib; IoPercent = $null; Sharing = $null }
+    if ($caps.Count) {
+        if ($caps.JobCpus -lt $limits.JobCpus) { $limits.JobCpus = $caps.JobCpus }   # check:settings-max
+        if ($caps.JobMemoryGib -lt $limits.JobMemoryGib) { $limits.JobMemoryGib = $caps.JobMemoryGib }   # check:settings-max
+    }
     if ($lim) {
-        if ($lim.JobCpus -lt $limits.JobCpus) { $limits.JobCpus = $lim.JobCpus }   # check:settings-max
-        if ($lim.JobMemoryGib -lt $limits.JobMemoryGib) { $limits.JobMemoryGib = $lim.JobMemoryGib }   # check:settings-max
         $limits.IoPercent = $lim.IoPercent
         $limits.Sharing = $lim.Sharing
     }
     if ($limits.RunnerCount -lt 1) { return }
     Set-AapLimits $limits
     if ($AapRt.ManagerStopped -and -not $AapRt.Paused -and $AapRt.Applied -eq (Get-AapLimitsKey $limits)) { Start-AapManager }
+}
+
+# The most the legacy totals may be: the settings' totals, or with no
+# settings.json (no override) the limits the manager runs.
+function Get-AapLegacyCaps($s) {
+    $from = $s.Limits
+    if (-not $from) { $from = $AapRt.Effective }   # check:keep-manager-limits
+    if (-not $from) { return @{} }
+    return @{ JobCpus = $from.JobCpus; JobMemoryGib = $from.JobMemoryGib }
 }
 
 function Start-AapManager {
