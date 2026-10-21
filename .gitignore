@@ -3,3 +3,6 @@ target/
 
 # Hosted reference captures are evidence, not logs to discard.
 !parity/baselines/**/*.log
+
+# SymForge MCP index (local tool state).
+/.symforge/
