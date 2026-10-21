@@ -8,7 +8,7 @@
   "platforms": {
     "linux-x86_64": {
       "matrix": "parity/cache/qualification/linux-x86_64.json",
-      "matrix_revision": 1,
+      "matrix_revision": 2,
       "acquisition_entry": "zccache-x86_64-unknown-linux-musl",
       "archive": "zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz",
       "archive_sha256": "885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7",

@@ -22,18 +22,17 @@ RUST_BIN = "direct per upstream binary-crate pass-through (README 400-403)"
 # Contract template (parity/contracts/cache-qualification.md, "Matrix template").
 CC = {"compile-object", "compile-pch", "response-file", "depfile", "path-with-spaces"}
 GCC = {"compile-object", "compile-pch", "response-file", "depfile"}
+# On Linux debug-pdb means -g DWARF output, for every compiler version (contract revision 2, P04.1).
 TEMPLATE = {
     "linux-x86_64": {"rustc": {"rustc-wrapper", "link", "path-with-spaces"},
-                     "clang": CC, "clang++": CC, "gcc": GCC, "g++": GCC},
+                     "clang": CC | {"debug-pdb"}, "clang++": CC | {"debug-pdb"},
+                     "gcc": GCC | {"debug-pdb"}, "g++": GCC | {"debug-pdb"}},
     "windows-x86_64": {"rustc": {"rustc-wrapper", "link", "path-with-spaces", "debug-pdb"},
                        "clang": CC, "clang++": CC,
                        "clang-cl": {"compile-object", "response-file", "debug-pdb", "path-with-spaces"},
                        "cl": {"compile-object", "compile-pch", "response-file", "debug-pdb"},
                        "link": {"link"}, "lld-link": {"link"}},
 }
-# Linux -g (debug-pdb) rows exist only for the image defaults: matrix revision 1 predates the
-# 256-row cap of contract revision 2; P04.1 adds them for every compiler version.
-LINUX_DEBUG = {("clang", "18.1.3"), ("clang++", "18.1.3"), ("gcc", "13.3.0"), ("g++", "13.3.0")}
 
 LAB_GATES = {"concurrency", "daemon_restart", "unsupported_invocations"}
 IDENTITY = ("compiler", "compiler_version", "invocation", "evidence_ref")
@@ -133,8 +132,6 @@ class MatrixTests(unittest.TestCase):
                 versions.setdefault(row["compiler"], set()).add(row["compiler_version"])
             have = {(r["compiler"], r["compiler_version"], r["invocation"]) for r in rows}
             want = {(c, v, i) for c, invs in TEMPLATE[p].items() for v in versions.get(c, {"MISSING"}) for i in invs}
-            if p == "linux-x86_64":
-                want |= {(c, v, "debug-pdb") for c, v in LINUX_DEBUG}
             self.assertEqual(have, want, p)
 
     def test_versions_come_from_the_p01_baselines(self):

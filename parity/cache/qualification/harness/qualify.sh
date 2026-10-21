@@ -2,11 +2,13 @@
 # zccache 1.15.6 qualification harness, Linux x86_64. LAB ONLY (P13/P22), see ../README.md.
 #
 # Runs one (compiler, invocation) pair through method steps 1-6: uncached, cold and warm builds,
-# a relocated build for debug-pdb, three poisoned-cache builds and the deliberate-error case. Every
+# a relocated build for debug-pdb, a control build (prime, stop the daemon, rebuild with nothing
+# corrupted), three poisoned-cache builds and the deliberate-error case. Every
 # case uses its own fresh cache root. It compares exit codes and artifact hashes, counts journal
 # outcomes and writes one evidence record via record.jq. It never emits "qualified": the record's
 # row stays "direct" and `harness_pass` says whether steps 1-6 held. Lab steps 7-9 decide the rest.
-# zccache runs from a private, hash-checked copy under WORK; its daemons are stopped at the end.
+# zccache runs from a private, hash-checked copy under WORK; its daemons (the copies zccache deploys
+# into each cache root) are recorded with their hashes and stopped at the end.
 #
 # Usage: qualify.sh COMPILER COMPILER_PATH COMPILER_VERSION INVOCATION ZCCACHE OUT EVIDENCE_REF WORK
 #   ZCCACHE is the unpacked binary from the pinned archive, with zccache-fp beside it.
@@ -32,6 +34,10 @@ ZQ_URL_CREDENTIAL_RE='://[^/@[:space:]]*:[^/@[:space:]]*@'
 ZQ_ENV_KEEP=(PATH HOME PWD TMPDIR LANG LC_ALL CARGO_HOME RUSTUP_HOME RUSTUP_TOOLCHAIN
   ZCCACHE_MODE ZCCACHE_CACHE_DIR ZCCACHE_SESSION_ID)
 ZQ_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# zccache 1.15.6 keeps its state one level below the root ZCCACHE_CACHE_DIR names, in v1.15.6/: the
+# artifact store, crashes/, crash-spool/, and the copy of itself it deploys and runs as the daemon,
+# v1.15.6/zccache-daemon (resolve.rs versioned_subdir, cli/runtime/deploy.rs 106-125 at the pin).
+ZQ_STATE=v1.15.6
 
 zq_pairs() {
   case "$1" in
@@ -65,11 +71,13 @@ zq_url_credential_names() { # names only; the values are never printed
   for n in $(compgen -e); do [[ "${!n-}" =~ ${ZQ_URL_CREDENTIAL_RE} ]] && echo "${n}"; done | sort -u
 }
 
+# stdin is /dev/null: the zccache 1.15.6 client reads its stdin, and one started from a shell whose
+# stdin stays open (a pipe or a terminal) waited on it forever before compiling (seen in WSL, P04.1).
 zq_run() { # CMD... -> CMD under `env -i` with the ZQ_ENV_KEEP variables that are set
   local n
   local -a keep=()
   for n in "${ZQ_ENV_KEEP[@]}"; do [[ -n "${!n+x}" ]] && keep+=("${n}=${!n}"); done
-  env -i "${keep[@]}" "$@"
+  env -i "${keep[@]}" "$@" < /dev/null
 }
 
 zq_kept_zccache_names() { # the ZCCACHE_* names zq_run passes on, space-separated
@@ -213,35 +221,45 @@ zq_corrupt() { # STORE artifact|same-size|marker [HASHES]
   echo "${n}"
 }
 
-# The private bin directory must be absolute and below /: an empty or relative path would make
-# the process helpers match executables the harness does not own.
-zq_bin_ok() { [[ "$1" == /?* ]] || { echo "zq: refusing bin path '$1'; it must be absolute" >&2; return 1; }; }
+# WORK must be absolute and below /: an empty or relative path would make the process helpers
+# match executables the harness does not own.
+zq_work_ok() { [[ "$1" == /?* ]] || { echo "zq: refusing work path '$1'; it must be absolute" >&2; return 1; }; }
+
+# Where an executable runs from: "bin" (the private copy, WORK/bin), "root" (the daemon copy zccache
+# deployed into one of the harness's cache roots, exactly WORK/cache-*/v1.15.6/zccache-daemon) or "".
+zq_owner() { # WORK EXE
+  local rel=${2#"$1"/}
+  if [[ "${rel}" == "$2" ]]; then echo ""
+  elif [[ "${rel}" == bin/* ]]; then echo bin
+  elif [[ "${rel}" == cache-*/* && "${rel#*/}" == "${ZQ_STATE}/zccache-daemon" ]]; then echo root
+  else echo ""; fi
+}
 
 # Every visible process whose executable is named zccache*, as JSON: the lab records which binary
-# the daemons really run.
-zq_daemons() { # BIN
-  zq_bin_ok "$1" || { echo '[]'; return 1; }
+# the daemons really run, and from where.
+zq_daemons() { # WORK
+  zq_work_ok "$1" || { echo '[]'; return 1; }
   local p exe
   for p in /proc/[0-9]*; do
     exe=$(readlink "${p}/exe" 2> /dev/null) || continue
     [[ "${exe##*/}" == zccache* ]] || continue
-    printf '%s\t%s\t%s\n' "${p##*/}" "${exe}" "$(sha256sum "${p}/exe" 2> /dev/null | cut -d' ' -f1)"
-  done | jq -R -s -c --arg bin "$1/" 'split("\n") | map(select(length > 0) | split("\t")
-    | {pid: (.[0] | tonumber), exe: (.[1] | .[0:120]), in_private_bin: (.[1] | startswith($bin)),
+    printf '%s\t%s\t%s\t%s\n' "${p##*/}" "${exe}" "$(sha256sum "${p}/exe" 2> /dev/null | cut -d' ' -f1)" "$(zq_owner "$1" "${exe}")"
+  done | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t")
+    | {pid: (.[0] | tonumber), exe: (.[1] | .[0:120]), in_private_bin: (.[3] == "bin"), in_cache_root: (.[3] == "root"),
        sha256: (if .[2] == "" then null else .[2] end)})'
 }
 
-zq_own_pids() { # BIN -> pids of processes running an executable from BIN
-  zq_bin_ok "$1" || return 1
+zq_own_pids() { # WORK -> pids of processes running the private copy or a deployed daemon copy
+  zq_work_ok "$1" || return 1
   local p exe
   for p in /proc/[0-9]*; do
     exe=$(readlink "${p}/exe" 2> /dev/null) || continue
-    [[ "${exe}" == "$1"/* ]] && echo "${p##*/}"
+    [[ -n "$(zq_owner "$1" "${exe}")" ]] && echo "${p##*/}"
   done
 }
 
-zq_stop_daemons() { # BIN -> prints true when nothing runs from BIN any more
-  zq_bin_ok "$1" || { echo false; return 1; }
+zq_stop_daemons() { # WORK -> prints true when nothing the harness owns runs any more
+  zq_work_ok "$1" || { echo false; return 1; }
   local -a pids
   mapfile -t pids < <(zq_own_pids "$1")
   ((${#pids[@]})) && kill -TERM "${pids[@]}" 2> /dev/null
@@ -255,11 +273,15 @@ zq_stop_daemons() { # BIN -> prints true when nothing runs from BIN any more
   if [[ -z "$(zq_own_pids "$1")" ]]; then echo true; else echo false; fi
 }
 
-zq_crash_dumps() { # WORK -> JSON object {cache root: files under its crashes/}; dumps never leave the VM
+# Counts every file in a crashes/ folder and every non-empty one in a crash-spool/ folder below a
+# root: README 433-434 names <root>/crashes; at the pin they are <root>/v1.15.6/crashes and
+# crash-spool, where each live process keeps an empty pending-*.rpcrash that a crash fills
+# (crash.rs 24-34). No link is followed.
+zq_crash_dumps() { # WORK -> JSON object {cache root: crash files below it}; dumps never leave the VM
   local root
   for root in "$1"/cache-*; do
     [[ -d "${root}" ]] || continue
-    printf '%s\t%s\n' "${root##*/}" "$(find "${root}/crashes" -type f 2> /dev/null | wc -l)"
+    printf '%s\t%s\n' "${root##*/}" "$(find "${root}" -type f \( -path '*/crashes/*' -o \( -path '*/crash-spool/*' -size +0 \) \) 2> /dev/null | wc -l)"
   done | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): (.[1] | tonumber)}) | add // {}'
 }
 
@@ -297,19 +319,41 @@ zq_phase() { # SRC CASE ROOT NAME
     unset ZCCACHE_CACHE_DIR ZCCACHE_SESSION_ID
   fi
   [[ -e "${src}/out/${ZQ_PRIMARY}" ]] && present=true
+  # The argv goes in as JSON read from its file: after --args jq still parses options, so -c, -g
+  # or -x as a compiler argument would change or break jq's own command line.
   jq -c -n --argjson x "${rc}" --argjson a "$(zq_artifacts "${src}/out")" --argjson p "${present}" \
     --argjson j "${journal}" --arg c "${root##*/}" --arg z "${zenv}" \
-    '{exit: $x, artifacts: $a, primary_present: $p, argv: $ARGS.positional,
+    --argjson v "$(jq -R -s -c 'rtrimstr("\n") | split("\n")' "${log}.argv")" \
+    '{exit: $x, artifacts: $a, primary_present: $p, argv: $v,
       cache_dir: (if $c == "" then null else $c end), zccache_env: ($z | split(" ") | map(select(length > 0))),
-      journal: $j}' --args "${argv[@]}"
+      journal: $j}'
 }
 
 zq_poison() { # SRC ROOT artifact|same-size|marker [HASHES]
-  local prime n p
+  local prime stop n p
   prime=$(zq_phase "$1" ok "$2" "ok-prime-$3") || return 1
-  n=$(zq_corrupt "$2/artifacts" "$3" "${4:-}")
+  # Stop the daemon before corrupting: the daemon alive since priming must not watch the store
+  # change (in WSL it served a hit with correct bytes after every store file was replaced, which
+  # says nothing about the store), and the poisoned build must start a fresh daemon that reads
+  # the store from disk. The stop result is recorded; record.jq's rejected() requires it.
+  stop=$(zq_stop_daemons "${ZQ_WORK}") || return 1
+  n=$(zq_corrupt "$2/${ZQ_STATE}/artifacts" "$3" "${4:-}")
   p=$(zq_phase "$1" ok "$2" "ok-poisoned-$3") || return 1
-  jq -c --argjson e "$(jq .exit <<<"${prime}")" --argjson n "${n}" '.prime_exit = $e | .corrupted_files = $n' <<<"${p}"
+  jq -c --argjson e "$(jq .exit <<<"${prime}")" --argjson s "${stop}" --argjson n "${n}" \
+    '.prime_exit = $e | .daemon_stopped = $s | .corrupted_files = $n' <<<"${p}"
+}
+
+# The control phase: prime a fresh root, stop the daemon, rebuild with nothing corrupted. The
+# rebuild must hit and equal uncached, proving a daemon restart alone keeps serving the store.
+# Without it every poisoned build's miss could be the restart's doing, not the corruption's
+# (M1), and all three poison checks would pass without exercising corruption detection.
+# record.jq's rejected() requires this run.
+zq_control() { # SRC ROOT
+  local prime stop p
+  prime=$(zq_phase "$1" ok "$2" ok-control-prime) || return 1
+  stop=$(zq_stop_daemons "${ZQ_WORK}") || return 1
+  p=$(zq_phase "$1" ok "$2" ok-control) || return 1
+  jq -c --argjson e "$(jq .exit <<<"${prime}")" --argjson s "${stop}" '.prime_exit = $e | .daemon_stopped = $s' <<<"${p}"
 }
 
 zq_tree() { # WORK NAME -> a fresh copy of the fixtures
@@ -338,7 +382,7 @@ zq_main() {
   # Canonical WORK first, then a private copy under it, hashed after copying, never the file given
   # on the command line.
   work=$(zq_work_dir "$8") && mkdir -- "${work}/logs" || return 1
-  ZQ_BIN="${work}/bin"
+  ZQ_WORK=${work} ZQ_BIN="${work}/bin"
   install -d -m 0700 "${ZQ_BIN}" && cp -- "${zc}" "${ZQ_BIN}/zccache" && cp -- "${fp}" "${ZQ_BIN}/zccache-fp" &&
     chmod 0700 "${ZQ_BIN}/zccache" "${ZQ_BIN}/zccache-fp" || return 1
   ZQ_ZC="${ZQ_BIN}/zccache"
@@ -346,7 +390,7 @@ zq_main() {
   fpsha=$(sha256sum "${ZQ_BIN}/zccache-fp" | cut -d' ' -f1)
   [[ "${zsha}" == "${ZQ_BINARY_SHA256}" ]] || { echo "BINARY: ${zc} is ${zsha}, not the pinned 1.15.6 zccache" >&2; return 4; }
   [[ "${fpsha}" == "${ZQ_FP_SHA256}" ]] || { echo "BINARY: ${fp} is ${fpsha}, not the pinned 1.15.6 zccache-fp" >&2; return 4; }
-  trap 'zq_stop_daemons "${ZQ_BIN}" > /dev/null' EXIT
+  trap 'zq_stop_daemons "${ZQ_WORK}" > /dev/null' EXIT
 
   export ZCCACHE_MODE=COPY  # contract rule 6; hardlink and reflink need their own proof
   local started banner src moved
@@ -357,7 +401,7 @@ zq_main() {
   if [[ "${ZQ_INVOCATION}" == path-with-spaces ]]; then src=$(zq_tree "${work}" "src with spaces"); else src=$(zq_tree "${work}" src); fi || return 1
 
   # Fresh cache root per case; no cache root is ever deleted (its daemon may still be alive).
-  local u c w rd=null r=null pa ps pm eu ec ew
+  local u c w rd=null r=null ctl pa ps pm eu ec ew
   u=$(zq_phase "${src}" ok "" ok-uncached) || return 1
   c=$(zq_phase "${src}" ok "${work}/cache-ok" ok-cold) || return 1
   w=$(zq_phase "${src}" ok "${work}/cache-ok" ok-warm) || return 1
@@ -366,6 +410,7 @@ zq_main() {
     rd=$(zq_phase "${moved}" ok "" ok-relocated-direct) || return 1
     r=$(zq_phase "${moved}" ok "${work}/cache-ok" ok-relocated) || return 1
   fi
+  ctl=$(zq_control "${src}" "${work}/cache-control") || return 1
   pa=$(zq_poison "${src}" "${work}/cache-poison-artifact" artifact "$(jq -r '.artifacts[]' <<<"${u}" | tr '\n' ' ')") || return 1
   ps=$(zq_poison "${src}" "${work}/cache-poison-same-size" same-size) || return 1
   pm=$(zq_poison "${src}" "${work}/cache-poison-marker" marker) || return 1
@@ -373,15 +418,17 @@ zq_main() {
   ec=$(zq_phase "${src}" error "${work}/cache-error" error-cold) || return 1
   ew=$(zq_phase "${src}" error "${work}/cache-error" error-warm) || return 1
 
-  local daemons crashes stopped tools meta
-  daemons=$(zq_daemons "${ZQ_BIN}")
-  crashes=$(zq_crash_dumps "${work}")
-  stopped=$(zq_stop_daemons "${ZQ_BIN}")
+  local daemons stopped crashes tools meta
+  daemons=$(zq_daemons "${work}")
   tools=$(jq -c -n --arg b "$(head -n 1 <<<"${banner}" | zq_printable)" --arg p "$(zq_printable <<<"${ZQ_CC}")" \
     --arg s "$(sha256sum "${ZQ_CC}" | cut -d' ' -f1)" --arg z "$(zq_run "${ZQ_ZC}" --version 2>&1 | head -n 1 | zq_printable)" \
     --arg zs "${zsha}" --arg fs "${fpsha}" --arg jv "$(jq --version 2>&1 | head -n 1 | zq_printable)" \
     '{compiler: $b, compiler_path: $p, compiler_sha256: $s, zccache: $z, zccache_sha256: $zs, "zccache-fp_sha256": $fs, jq: $jv}')
-  zq_stop_daemons "${ZQ_BIN}" > /dev/null  # `zccache --version` may have started nothing; make sure
+  # The final stop before the record: `zccache --version` above may have started a daemon, so the
+  # recorded stop covers it too. Crash dumps are counted after the stop, so a daemon that dumps
+  # while being stopped (its pending crash-spool record fills) is not missed.
+  stopped=$(zq_stop_daemons "${work}")
+  crashes=$(zq_crash_dumps "${work}")
   meta=$(jq -c -n --argjson t "${tools}" --argjson os "$(zq_os)" --argjson d "${daemons}" --argjson cd "${crashes}" \
     --argjson ds "${stopped}" --arg cmd "qualify.sh ${ZQ_COMPILER} ${cver} ${ZQ_INVOCATION} ${eref}" \
     --arg st "${started}" --arg en "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg c "${ZQ_COMPILER}" --arg v "${cver}" \
@@ -393,10 +440,10 @@ zq_main() {
       started_at: $st, ended_at: $en, compiler: $c, compiler_version: $v, invocation: $i, evidence_ref: $e}' \
     --args ${ZQ_REMOVED[@]+"${ZQ_REMOVED[@]}"})
   jq -n --argjson m "${meta}" --argjson u "${u}" --argjson c "${c}" --argjson w "${w}" --argjson rd "${rd}" \
-    --argjson r "${r}" --argjson pa "${pa}" --argjson ps "${ps}" --argjson pm "${pm}" \
+    --argjson r "${r}" --argjson ctl "${ctl}" --argjson pa "${pa}" --argjson ps "${ps}" --argjson pm "${pm}" \
     --argjson eu "${eu}" --argjson ec "${ec}" --argjson ew "${ew}" \
     '{meta: $m, errors: {uncached: $eu, cold: $ec, warm: $ew},
-      runs: ({uncached: $u, cold: $c, warm: $w, relocated_direct: $rd, relocated: $r,
+      runs: ({uncached: $u, cold: $c, warm: $w, control: $ctl, relocated_direct: $rd, relocated: $r,
               poisoned_artifact: $pa, poisoned_same_size: $ps, poisoned_marker: $pm} | with_entries(select(.value != null)))}' \
     > "${work}/record-input.json" || return 1
   jq -a -f "${ZQ_HERE}/record.jq" "${work}/record-input.json" > "${out}" || return 1

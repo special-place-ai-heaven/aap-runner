@@ -15,10 +15,20 @@ def hits($r): $r.journal.hit + $r.journal.link_hit;
 # No hit and no unrecognised outcome: upstream lists every outcome (README 1247), so "other"
 # could be a hit under another name.
 def no_hits($r): journal_ok($r) and hits($r) == 0 and $r.journal.other == 0;
-# A corrupted entry was looked up (a miss, error or link miss), nothing was served, and the
-# build still equals uncached.
-def rejected($r; $u):
-  ($r.corrupted_files | num) and $r.corrupted_files >= 1 and ($u.exit | num)
+# The control build: prime a fresh root, stop the daemon, rebuild with nothing corrupted. The
+# rebuild must hit and equal uncached: a daemon restart alone must keep serving the store, or a
+# poisoned build's miss could be the restart's doing, not the corruption's (M1), and every
+# poisoned_*_rejected check would pass without exercising corruption detection.
+def control_ok($c; $u):
+  ($c.daemon_stopped == true) and ($c.prime_exit | num) and $c.prime_exit == $u.exit
+  and ($c.exit | num) and $c.exit == $u.exit and same($u; $c)
+  and journal_ok($c) and hits($c) >= 1;
+# A corrupted entry was looked up (a miss, error or link miss), nothing was served, the build
+# equals uncached, the daemon was stopped before the store was corrupted, and the control build
+# hit after its own stop.
+def rejected($r; $u; $c):
+  control_ok($c; $u) and ($r.daemon_stopped == true)
+  and ($r.corrupted_files | num) and $r.corrupted_files >= 1 and ($u.exit | num)
   and $r.prime_exit == $u.exit and $r.exit == $u.exit and same($u; $r)
   and no_hits($r) and $r.journal.miss + $r.journal.error + $r.journal.link_miss >= 1;
 # The version as a whole dotted number, e.g. 18.1.3 but not 18.1.30.
@@ -40,14 +50,15 @@ obj | (.meta | obj) as $m | (.runs | obj | map_values(obj)) as $r | (.errors | o
     warm_has_hits: (journal_ok($r.warm) and hits($r.warm) >= 1),
     errors_stay_errors: (all($e.uncached, $e.cold, $e.warm; (.exit | num) and .primary_present == false)
       and $e.uncached.exit != 0 and $e.cold.exit == $e.uncached.exit and $e.warm.exit == $e.uncached.exit),
-    poisoned_artifact_rejected: rejected($r.poisoned_artifact; $u),
-    poisoned_same_size_rejected: rejected($r.poisoned_same_size; $u),
-    poisoned_marker_rejected: rejected($r.poisoned_marker; $u),
+    poisoned_artifact_rejected: rejected($r.poisoned_artifact; $u; $r.control),
+    poisoned_same_size_rejected: rejected($r.poisoned_same_size; $u; $r.control),
+    poisoned_marker_rejected: rejected($r.poisoned_marker; $u; $r.control),
     zccache_env_clean: (($r | length) >= 1 and all($r[], $e[]; (.zccache_env | type) == "array"
       and all(.zccache_env[]; IN(harness_vars[])))),
+    # A daemon runs the private copy or the copy zccache deployed into one of the harness's roots.
     daemons_pinned: (($t.zccache_sha256 | sha) and ($t["zccache-fp_sha256"] | sha)
       and ($m.daemons | type) == "array" and ($m.daemons | length) >= 1
-      and all($m.daemons[]; type == "object" and .in_private_bin == true and (.sha256 | sha)
+      and all($m.daemons[]; type == "object" and (.in_private_bin == true or .in_cache_root == true) and (.sha256 | sha)
         and (.sha256 == $t.zccache_sha256 or .sha256 == $t["zccache-fp_sha256"]))),
     no_crash_dumps: (($m.crash_dumps | type) == "object" and ($m.crash_dumps | length) >= 1
       and all($m.crash_dumps[]; num and . == 0)),

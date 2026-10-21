@@ -31,19 +31,29 @@ P16 removes it. No zccache root is ever trimmed by the manager or by any script 
    holds `tmp/`, `depgraph/`, `index.bin`, `crashes/`, `logs/`, lock files and download-daemon state
    (R 433-436), plus `daemon-state/<namespace>` (R 482-489) and private staging below
    `{cache_root}/staging` (R 524-530). The compile journal grows with every compile (R 1240-1252).
-   P13 must:
+   At the pin all of this sits in `<root>/v1.15.6/`, beside a copy of the `zccache` binary
+   (27,876,808 bytes on Linux) that zccache deploys there and runs as the root's daemon
+   ([README](README.md), "Method"). P13 must:
    - measure non-artifact bytes per root (`du` of the root minus the artifact store) after the lab
      runs, and set a hard cap for them inside the guest scratch budget;
    - bound the journal and log files, by rotation if zccache offers it (**to confirm in lab**,
      the README documents none) or by the guest's own disposable lifetime;
    - report artifact, metadata, log and temp bytes separately in sanitized telemetry.
-4. **One root per trust namespace.** A trust namespace is the repository plus the trust class of
-   the ref that runs the job. PR branches are one class and the default branch is another, so
-   repository alone is not enough. A root may be shared only among jobs whose writers are at least
-   as trusted as every reader. A PR job therefore never writes a root that a default-branch build
-   reads. The contract's "default per repository" (cache-qualification.md rule 6) is too coarse on
-   its own, so P13 also splits by ref trust class. P02 should align the contract wording. Each root
-   has its own daemon, endpoint, artifacts and indexes,
+4. **One root per trust namespace.** [cache-qualification.md](../../contracts/cache-qualification.md)
+   rule 6 defines the namespace and the job trust class (revision 3, amended by P13.2), and this
+   requirement follows it. A trust namespace is the repository plus the trust class of the job, so
+   a repository alone is not a namespace, and neither is a ref. The host takes the class from
+   GitHub's record of the job assigned to the runner, never from the guest. A job is trusted only
+   when its event is `push` or `schedule`, its `head_branch` is the default branch, its head
+   repository is the repository itself, and its `head_sha` is the default branch's head when the
+   host binds the class. Every other job is untrusted, including `workflow_dispatch`,
+   `pull_request_target`, `workflow_run`, and tag pushes and re-runs at any commit other than
+   the default branch's current head. An untrusted job gets only a private per-job root that goes
+   with its VM. There is no shared untrusted root. A root may be shared only among jobs whose
+   writers are at least as trusted as every reader, so an untrusted job never writes a root that
+   a trusted job reads. The
+   namespace key is the repository id, the trust class, the zccache version and the toolchain
+   digest. Each root has its own daemon, endpoint, artifacts and indexes,
    because `ZCCACHE_CACHE_DIR` isolates all of them (R 422-437). `ZCCACHE_ENDPOINT` must not be
    set, since that would join two roots to one daemon. The qualification harness removes it,
    along with every other inherited `ZCCACHE_*` variable. `ZCCACHE_DAEMON_NAMESPACE` or

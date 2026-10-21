@@ -37,7 +37,9 @@ BeforeAll {
         $names = @(if ($null -ne $Journal) { 'ZCCACHE_CACHE_DIR', 'ZCCACHE_MODE', 'ZCCACHE_SESSION_ID' } else { 'ZCCACHE_MODE' })
         [ordered]@{ exit = $Exit; artifacts = $Artifacts; primary_present = ($Exit -eq 0); argv = @('x'); cache_dir = $null; zccache_env = $names; journal = $Journal }
     }
-    function New-Poisoned($Artifacts) { $p = New-Entry 0 $Artifacts (New-Journal 0 1); $p.prime_exit = 0; $p.corrupted_files = 2; $p }
+    function New-Poisoned($Artifacts) { $p = New-Entry 0 $Artifacts (New-Journal 0 1); $p.prime_exit = 0; $p.daemon_stopped = $true; $p.corrupted_files = 2; $p }
+    # The control run: primed, daemon stopped, rebuilt with nothing corrupted, and it hit.
+    function New-Control($Artifacts) { $p = New-Entry 0 $Artifacts (New-Journal 1 0); $p.prime_exit = 0; $p.daemon_stopped = $true; $p }
     # A record.jq input in which every harness check holds.
     function New-PassingInput([string]$Invocation = 'compile-object', [string]$Compiler = 'clang-cl') {
         $a = [ordered]@{ 'hello.obj' = ('a' * 64) }
@@ -47,6 +49,7 @@ BeforeAll {
             $runs.relocated_direct = New-Entry 0 $b $null
             $runs.relocated = New-Entry 0 $b (New-Journal 0 1)
         }
+        $runs.control = New-Control $a
         $runs.poisoned_artifact = New-Poisoned $a
         $runs.poisoned_same_size = New-Poisoned $a
         $runs.poisoned_marker = New-Poisoned $a
@@ -352,13 +355,106 @@ Describe 'Journal, files, environment and corruption' {
             Invoke-ZqCorrupt $d 'artifact' @() | Should -Be 0
         } finally { Remove-Item -LiteralPath $d -Recurse -Force }
     }
-    It 'refuses an empty, relative or root bin path in the process helpers' {
+    It 'refuses an empty, relative or root work path in the process helpers' {
         Mock Get-Process { }   # even a regressed guard could then stop nothing
-        foreach ($b in @('', 'bin', 'w\bin', 'C:bin', '\bin', 'C:\')) {
-            { Stop-ZqDaemon $b } | Should -Throw '*refusing bin path*' -Because "bin '$b'"
-            { Get-ZqDaemon $b } | Should -Throw '*refusing bin path*' -Because "bin '$b'"
+        foreach ($b in @('', 'work', 'w\work', 'C:work', '\work', 'C:\')) {
+            { Stop-ZqDaemon $b } | Should -Throw '*refusing work path*' -Because "work '$b'"
+            { Get-ZqDaemon $b } | Should -Throw '*refusing work path*' -Because "work '$b'"
         }
         Should -Invoke Get-Process -Times 0 -Exactly
+    }
+    It 'owns only the private copy and the daemon copy zccache deploys into one of its cache roots' {
+        $cases = [ordered]@{
+            'C:\w\bin\zccache.exe' = 'bin'; 'c:\W\BIN\zccache-fp.exe' = 'bin'
+            'C:\w\cache-ok\v1.15.6\zccache-daemon.exe' = 'root'; 'C:\w\cache-poison-marker\v1.15.6\zccache-daemon.exe' = 'root'
+            'C:\w\cache-ok\v1.15.6\zccache.exe' = ''; 'C:\w\cache-ok\v1.15.5\zccache-daemon.exe' = ''
+            'C:\w\cache-ok\x\v1.15.6\zccache-daemon.exe' = ''; 'C:\w\src\v1.15.6\zccache-daemon.exe' = ''
+            'C:\w\cache-ok\zccache-daemon.exe' = ''; 'C:\w\cache-ok\v1.15.6\zccache-daemon.exe.old' = ''
+            'C:\wx\bin\zccache.exe' = ''; 'C:\other\bin\zccache.exe' = ''
+        }
+        foreach ($k in $cases.Keys) { Get-ZqOwner 'C:\w' $k | Should -Be $cases[$k] -Because $k }
+        Get-ZqOwner 'C:\w' $null | Should -Be ''
+    }
+    It 'lists, pins and stops the private copy and the daemon deployed into a cache root, and nothing else' {
+        $w = New-TempDir
+        $procs = @()
+        try {
+            # Copies of ping.exe stand in for zccache: the helpers look only at process names and paths.
+            $paths = @('bin\zccache.exe', 'cache-ok\v1.15.6\zccache-daemon.exe', 'cache-ok\v9.9.9\zccache-daemon.exe') | ForEach-Object { Join-Path $w $_ }
+            foreach ($p in $paths) {
+                $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $p)
+                Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\PING.EXE') -Destination $p
+            }
+            $procs = @($paths | ForEach-Object { Start-Process -FilePath $_ -ArgumentList '-n 60 127.0.0.1' -NoNewWindow -PassThru -RedirectStandardOutput "$_.out" })
+            Start-Sleep -Milliseconds 500
+            $seen = @{}
+            foreach ($x in (Get-ZqDaemon $w)) { $seen[[int]$x.pid] = $x }
+            $seen[$procs[0].Id].in_private_bin | Should -BeTrue
+            $seen[$procs[0].Id].in_cache_root | Should -BeFalse
+            $seen[$procs[1].Id].in_private_bin | Should -BeFalse
+            $seen[$procs[1].Id].in_cache_root | Should -BeTrue
+            $seen[$procs[1].Id].sha256 | Should -Be (Get-ZqSha256 $paths[1])
+            ($seen[$procs[2].Id].in_private_bin -or $seen[$procs[2].Id].in_cache_root) | Should -BeFalse
+            Stop-ZqDaemon $w | Should -BeTrue
+            $procs[0].HasExited | Should -BeTrue
+            $procs[1].HasExited | Should -BeTrue
+            $procs[2].HasExited | Should -BeFalse -Because 'a process the harness does not own keeps running'
+        } finally {
+            foreach ($p in $procs) { if (-not $p.HasExited) { $p.Kill(); $null = $p.WaitForExit(5000) } }
+            Remove-Item -LiteralPath $w -Recurse -Force
+        }
+    }
+    It 'counts crash dumps and filled crash-spool records in zccache''s v1.15.6 state folder, not empty pending ones' {
+        $w = New-TempDir
+        try {
+            foreach ($f in 'cache-ok\crashes\a.txt', 'cache-ok\v1.15.6\crashes\b.txt', 'cache-ok\v1.15.6\artifacts\x', 'cache-error\v1.15.6\crash-spool\pending-1-2-a.rpcrash') {
+                $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $w $f))
+                [IO.File]::WriteAllText((Join-Path $w $f), '')
+            }
+            [IO.File]::WriteAllText((Join-Path $w 'cache-error\v1.15.6\crash-spool\pending-3-4-b.rpcrash'), 'r')
+            $c = Get-ZqCrashDump $w
+            $c['cache-ok'] | Should -Be 2
+            $c['cache-error'] | Should -Be 1
+        } finally { Remove-Item -LiteralPath $w -Recurse -Force }
+    }
+    It 'poisons zccache''s store in the v1.15.6 state folder after stopping the daemons' {
+        $script:Steps = [Collections.Generic.List[string]]::new()
+        Mock Invoke-ZqPhase { $script:Steps.Add("phase $Name"); [ordered]@{ exit = 0 } }
+        Mock Invoke-ZqCorrupt { $script:Steps.Add("corrupt $Store $Variant"); 1 }
+        Mock Stop-ZqDaemon { $script:Steps.Add("stop $Work"); $true }
+        $p = Invoke-ZqPoison @{} 'C:\w\src' 'C:\w\cache-poison-artifact' 'artifact' @('h') 'C:\w'
+        $script:Steps -join '|' | Should -Be 'phase ok-prime-artifact|stop C:\w|corrupt C:\w\cache-poison-artifact\v1.15.6\artifacts artifact|phase ok-poisoned-artifact'
+        $p.prime_exit | Should -Be 0
+        $p.daemon_stopped | Should -BeTrue
+        $p.corrupted_files | Should -Be 1
+    }
+    It 'primes the control root, stops the daemon and rebuilds with nothing corrupted' {
+        $script:Steps = [Collections.Generic.List[string]]::new()
+        Mock Invoke-ZqPhase { $script:Steps.Add("phase $Name"); [ordered]@{ exit = 0 } }
+        Mock Stop-ZqDaemon { $script:Steps.Add("stop $Work"); $true }
+        $c = Invoke-ZqControl @{} 'C:\w\src' 'C:\w\cache-control' 'C:\w'
+        $script:Steps -join '|' | Should -Be 'phase ok-control-prime|stop C:\w|phase ok-control'
+        $c.prime_exit | Should -Be 0
+        $c.daemon_stopped | Should -BeTrue
+    }
+    It 'gives every run an empty stdin, so a zccache client never waits on the shell''s open stdin' {
+        $py = @(Get-Command python -CommandType Application -ErrorAction Stop)[0].Source
+        $d = New-TempDir
+        try {
+            # The child shell runs a plain script file with -File, never an encoded command line
+            # (the owner rejected those; Malwarebytes quarantines them as obfuscated PowerShell).
+            $cmd = ". '$($script:Harness)'; `$null = Invoke-ZqRun '$py' @('-c', 'import sys; print(len(sys.stdin.read()))') '$d\r' '$d'; [IO.File]::ReadAllText('$d\r.out')"
+            $runner = Join-Path $d 'stdin-runner.ps1'
+            [IO.File]::WriteAllText($runner, $cmd)
+            $psi = New-Object Diagnostics.ProcessStartInfo $script:Shell, ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $runner + '"')
+            $psi.UseShellExecute = $false; $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true
+            $p = [Diagnostics.Process]::Start($psi)
+            try {
+                $p.StandardInput.WriteLine('from the shell')   # and left open, as a console or a pipe would be
+                $p.WaitForExit(30000) | Should -BeTrue -Because 'a run that inherits the open stdin waits on it'
+                $p.StandardOutput.ReadToEnd().Trim() | Should -Be '0'
+            } finally { if (-not $p.HasExited) { $p.Kill() }; $p.Dispose() }
+        } finally { Remove-Item -LiteralPath $d -Recurse -Force }
     }
     It 'formats UTC timestamps the same in every culture' {
         $c = [Globalization.CultureInfo]::new('en-US'); $c.DateTimeFormat.TimeSeparator = '.'
@@ -376,9 +472,9 @@ Describe 'Journal, files, environment and corruption' {
         @($os.Keys) -join ',' | Should -Be 'os_version,image_os,image_version'
     }
     It 'sees no daemon and stops nothing for a private directory that runs nothing' {
-        $bin = Join-Path $script:Tmp ('p04-bin-' + [guid]::NewGuid().ToString('N'))
-        @(Get-ZqDaemon $bin | Where-Object { $_.in_private_bin }).Count | Should -Be 0
-        Stop-ZqDaemon $bin | Should -BeTrue
+        $w = Join-Path $script:Tmp ('p04-work-' + [guid]::NewGuid().ToString('N'))
+        @(Get-ZqDaemon $w | Where-Object { $_.in_private_bin -or $_.in_cache_root }).Count | Should -Be 0
+        Stop-ZqDaemon $w | Should -BeTrue
     }
 }
 
@@ -414,6 +510,13 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         $r.row.reason | Should -Match 'relocated_matches_direct'
         $in.runs.Remove('relocated')
         (Get-Record $in).checks.relocated_matches_direct | Should -BeFalse
+    }
+    It 'accepts a pinned daemon that runs from the copy zccache deployed into a cache root' {
+        $in = New-PassingInput
+        $in.meta.daemons[0] = [ordered]@{ pid = 43; exe = 'C:\w\cache-ok\v1.15.6\zccache-daemon.exe'; in_private_bin = $false; in_cache_root = $true; sha256 = $ZqBinarySha256 }
+        $r = Get-Record $in
+        $r.checks.daemons_pinned | Should -BeTrue
+        $r.harness_pass | Should -BeTrue
     }
     It 'accepts a rejected entry that shows as a miss, an error or a link miss' {
         foreach ($k in 'miss', 'error', 'link_miss') {
@@ -457,11 +560,21 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
         @{ Name = 'nothing in the store was corrupted'; Check = 'poisoned_same_size_rejected'; Break = { param($i) $i.runs.poisoned_same_size.corrupted_files = 0 } }
         @{ Name = 'the priming build failed'; Check = 'poisoned_same_size_rejected'; Break = { param($i) $i.runs.poisoned_same_size.prime_exit = 1 } }
         @{ Name = 'the poison step did not run'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.Remove('poisoned_marker') } }
+        @{ Name = 'a poisoned build ran with its daemon still alive'; Check = 'poisoned_marker_rejected'; Break = { param($i) $i.runs.poisoned_marker.daemon_stopped = $false } }
+        @{ Name = 'the control build never hit'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.control.journal.hit = 0 } }
+        @{ Name = 'the control daemon stop failed'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.control.daemon_stopped = $false } }
+        @{ Name = 'the control build differs from uncached'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.control.artifacts = [ordered]@{ 'hello.obj' = ('b' * 64) } } }
+        @{ Name = 'the control build exits non-zero'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.control.exit = 1 } }
+        @{ Name = 'the control run is missing'; Check = 'poisoned_artifact_rejected'; Break = { param($i) $i.runs.Remove('control') } }
         @{ Name = 'a lab-shell ZCCACHE_ variable reached a build'; Check = 'zccache_env_clean'; Break = { param($i) $i.runs.warm.zccache_env = @('ZCCACHE_ENDPOINT', 'ZCCACHE_MODE') } }
         @{ Name = 'a run does not record its ZCCACHE_ names'; Check = 'zccache_env_clean'; Break = { param($i) $i.runs.warm.Remove('zccache_env') } }
         @{ Name = 'a run records its ZCCACHE_ names as text'; Check = 'zccache_env_clean'; Break = { param($i) $i.runs.warm.zccache_env = 'ZCCACHE_MODE' } }
         @{ Name = 'no daemon was observed'; Check = 'daemons_pinned'; Break = { param($i) $i.meta.daemons = @() } }
         @{ Name = 'a daemon runs from outside the private copy'; Check = 'daemons_pinned'; Break = { param($i) $i.meta.daemons[0].in_private_bin = $false } }
+        @{ Name = 'a daemon runs from neither the private copy nor a cache root'; Check = 'daemons_pinned'; Break = {
+                param($i) $i.meta.daemons[0].in_private_bin = $false; $i.meta.daemons[0].in_cache_root = $false } }
+        @{ Name = 'the cache-root flag is text'; Check = 'daemons_pinned'; Break = {
+                param($i) $i.meta.daemons[0].in_private_bin = $false; $i.meta.daemons[0].in_cache_root = 'true' } }
         @{ Name = 'a daemon runs another binary'; Check = 'daemons_pinned'; Break = { param($i) $i.meta.daemons[0].sha256 = ('0' * 64) } }
         @{ Name = 'the daemon and pinned hashes are both missing'; Check = 'daemons_pinned'; Break = {
                 param($i) $i.meta.daemons[0].sha256 = $null; $i.meta.tool_versions.zccache_sha256 = $null } }
