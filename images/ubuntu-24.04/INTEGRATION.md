@@ -201,7 +201,12 @@ Everything else is copied. These 19 functions are verbatim copies of P06's (same
   against `variable.ubuntu.pkr.hcl` inside the archive) and `p07-ubuntu-server-media` are all dropped.
 - The checksum entry `ubuntu-server-24.04.5-sha256sums` is pinned from the kernel.org `ubuntu-releases` mirror because
   `releases.ubuntu.com` serves no Content-Type and the acquisition tool would refuse it; the bytes were verified
-  identical on 2026-10-21. The signed `SHA256SUMS.gpg` was not verified (no key); transport integrity only.
+  identical on 2026-10-21. The `SHA256SUMS.gpg` beside it was verified on 2026-10-22 in a throwaway GNUPGHOME: a good
+  signature from the Ubuntu CD Image Automatic Signing Key (2012), fingerprint
+  `8439 38DF 228D 22F7 B374 2BC0 D94A A3F0 EFE2 1092` (key from `keyserver.ubuntu.com`, fingerprint cross-checked
+  against `ubuntu.com/tutorials/how-to-verify-ubuntu`), made over bytes byte-identical to the pinned kernel.org copy,
+  whose `ubuntu-24.04.5-live-server-amd64.iso` line matches the ISO entry pin. The pin is signature-authenticated, not
+  transport integrity only.
 - The 14 P03 Ubuntu blockers stay blockers: a build needs each resolved, or waived by id with a chair approval record
   (`id`, `rationale`, `plan_sha256`, `approver`) passed in `Waivers` and recorded in `build.json`; a bare id is refused. The
   former plan blockers were resolved by pinning (source and media) and by the variables check, not waived.
