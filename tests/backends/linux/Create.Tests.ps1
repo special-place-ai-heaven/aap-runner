@@ -36,10 +36,11 @@ BeforeAll {
         @(Get-ChildItem -LiteralPath $x.W.Clones).Count | Should -Be 0
     }
     function Grant-LinAce([string]$Path, [string]$Grant) { $o = & icacls.exe $Path /grant $Grant 2>&1; if ($LASTEXITCODE) { throw "icacls: $o" } }
-    # A declaration as the P10.0 module returns it for a Linux clone (the shared fake's host), with $Change applied.
+    # A declaration as the P10.0 module returns it for a Linux clone (the shared fake's host; host-network-module.md, schema 2:
+    # the static MAC of the module's range included), with $Change applied.
     function New-LinDecl([string]$Name, [hashtable]$Change = @{}) {
-        $d = [ordered]@{ schema = 1; kind = 'host_network_attach'; vm_id = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'; vm_name = $Name; profile = 'linux'
-            subnet = '172.31.251.0/24'; gateway = '172.31.251.1'; address = '172.31.251.7'; resolvers = @('192.0.2.53', '198.51.100.53'); endpoints = @()
+        $d = [ordered]@{ schema = 2; kind = 'host_network_attach'; vm_id = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'; vm_name = $Name; profile = 'linux'
+            subnet = '172.31.251.0/24'; gateway = '172.31.251.1'; address = '172.31.251.7'; mac = '02-A0-98-00-00-01'; resolvers = @('192.0.2.53', '198.51.100.53'); endpoints = @()
         }
         foreach ($k in $Change.Keys) { $d[$k] = $Change[$k] }
         $d

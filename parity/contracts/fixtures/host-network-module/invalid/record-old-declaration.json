@@ -1,7 +1,7 @@
 {
   "expect": "missing required property 'gateway'",
   "instance": {
-    "schema": 1,
+    "schema": 2,
     "kind": "host_network_record",
     "state": "attached",
     "declaration": {
@@ -17,6 +17,10 @@
       {
         "kind": "adapter",
         "name": "aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"
+      },
+      {
+        "kind": "neighbor",
+        "name": "aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"
       }
     ]
   }

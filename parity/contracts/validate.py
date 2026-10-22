@@ -688,6 +688,15 @@ def _host_net_ranges(name):
         raise Invalid(f"no $script:{name} list in {path.name}")
     return [ipaddress.ip_network(s) for s in re.findall(r"'([^']+)'", m.group(1))]
 
+def _host_net_mac_range():
+    """The 3-byte prefix of the module's static-MAC range, read from its one copy, the shared check (host-network-module.md,
+    Attach): every `mac` the module allocates lies inside it."""
+    path = HERE.parent.parent / "supervisor" / "network" / "AapHostNetworkCheck.psm1"
+    m = re.search(r"^\$script:MacRange = '([^']+)'", path.read_text(encoding="utf-8"), re.M)
+    if not m:
+        raise Invalid(f"no $script:MacRange in {path.name}")
+    return m.group(1)
+
 
 def _host_net_private(net):
     """IPv4 and inside a range a NAT routes unicast in (the shared check's Test-AapNetPrivate)."""
@@ -696,8 +705,9 @@ def _host_net_private(net):
 
 def _host_net_declaration(d):
     """host-network-module.md, Attach: the name's letter is the profile's; a private subnet holding the gateway and the
-    VM's static address; the endpoints one private resolver outside the subnet (UDP and TCP 53, the schema's part) that is
-    one of the resolvers; every other resolver public (outside every fixed range). The shared check's
+    VM's static address; the MAC of the module's range, which the host's permanent neighbour entry pairs with the address;
+    the endpoints one private resolver outside the subnet (UDP and TCP 53, the schema's part) that is one of the
+    resolvers; every other resolver public (outside every fixed range). The shared check's
     Get-AapHostNetworkDeclarationProblems applies the same rules."""
     if d["vm_name"][4] != d["profile"][0]:
         raise Invalid(f"vm_name {d['vm_name']} does not match profile {d['profile']}")
@@ -716,6 +726,9 @@ def _host_net_declaration(d):
         raise Invalid(f"gateway {d['gateway']} is not a host address of {d['subnet']}")
     if not host(d["address"]) or d["address"] == d["gateway"]:
         raise Invalid(f"address {d['address']} is not a host address of {d['subnet']} other than the gateway")
+    rng = _host_net_mac_range()
+    if not re.fullmatch(r"([0-9A-F]{2}-){5}[0-9A-F]{2}", d["mac"]) or not d["mac"].startswith(rng + "-"):
+        raise Invalid(f"mac {d['mac']} is not one static MAC of the module's range {rng}-xx-xx-xx")
     on53 = set()
     for e in d["endpoints"]:
         ip = ipaddress.ip_network(e["address"])
@@ -740,6 +753,8 @@ def sem_host_network_module(doc):
         _host_net_declaration(doc["declaration"])
         if [c["kind"] for c in doc["created"]].count("adapter") != 1:
             raise Invalid("a record names exactly one adapter")
+        if [c["kind"] for c in doc["created"]].count("neighbor") != 1:
+            raise Invalid("a record names exactly one neighbour entry")
         for c in doc["created"]:
             if not c["name"].endswith("-" + doc["declaration"]["vm_id"]):
                 raise Invalid(f"a record names {c['name']}, not one of VM {doc['declaration']['vm_id']}")

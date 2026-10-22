@@ -108,8 +108,10 @@ function New-AapWinHyperVProvider {
         $nics = foreach ($n in @(Hyper-V\Get-VMNetworkAdapter -VM $vm)) {
             $name = ''; $type = ''
             if ($n.SwitchId) { $sw = Hyper-V\Get-VMSwitch -Id $n.SwitchId -ErrorAction Stop; $name = [string]$sw.Name; $type = [string]$sw.SwitchType }
+            # MacAddress goes through as Hyper-V prints it: the shared check normalises it (twelve hex digits, no separators). This
+            # module is apart from the one that imports the check, so it must not call the check's functions (contract, Read-back).
             @{  SwitchName = $name; SwitchType = $type
-                DhcpGuard = [string]$n.DhcpGuard; RouterGuard = [string]$n.RouterGuard; MacAddressSpoofing = [string]$n.MacAddressSpoofing
+                MacAddress = [string]$n.MacAddress; DhcpGuard = [string]$n.DhcpGuard; RouterGuard = [string]$n.RouterGuard; MacAddressSpoofing = [string]$n.MacAddressSpoofing
                 PortMirroringMode = [string]$n.PortMirroringMode; VlanMode = [string]$n.VlanSetting.OperationMode; StormLimit = [string]$n.StormLimit
                 LegacyAcls = @(Hyper-V\Get-VMNetworkAdapterAcl -VMNetworkAdapter $n).Count
                 # the other VMs with an adapter on the same switch; the host's own adapters are not VMs
