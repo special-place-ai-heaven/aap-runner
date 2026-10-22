@@ -14,15 +14,11 @@
   "max_compile_heavy": 2,
   "max_full_test_suites": 1,
   "cleanup_barrier": "GLOBAL_NO_NEW_ITEM_WHILE_MERGED_UNCLEAN",
-  "as_of": "2026-10-21",
-  "origin_main": "1814b7ae9114b1e0d65a0db245737307a69051a6",
+  "as_of": "2026-10-22",
+  "origin_main": "a55cb7b333ba0d94c750ea03906caa9853fb6d04",
   "current_wave": 6,
-  "in_flight": [
-    "P06.2",
-    "P11.2",
-    "P13.4"
-  ],
-  "cleanup_barrier_state": "CLOSED: P06.2 cleanup is running and P11.2 verifier is pending; no new item dispatch until both merged items have independently verified CLEAN receipts",
+  "in_flight": [],
+  "cleanup_barrier_state": "OPEN: every cleanup receipt in the parity evidence store (52 at this close) now carries an independent verifier verdict and none reads pending, which is what WORKTREES.md requires of all merged tasks, coordinator PRs included: P03.1, P04.1, P12, P13.5, P13.5b, P14 and coordinator PR #72 were verified in pass 1 (2026-10-22 02:17 CEST; report verifier-pass-2026-10-22.md in the parity work directory) and coordinator PRs #65 (CLEAN-WITH-NOTES), #73 (CLEAN) and #77 (CLEAN-WITH-NOTES) in pass 2 (2026-10-22 03:58 CEST; report verifier-pass-2-2026-10-22.md). The close-4 entry that recorded coordinator PR #65 as verified CLEAN had no recorded evidence before pass 2. WORKTREES.md also says an early-merged incomplete item is preserved, never made COMPLETE to escape the barrier, and has its remainder item recorded before dispatch reopens: P13.5 and P13.5b merged without an independent review, the independent post-merge review returned FIX-FIRST on both, so they stay IN_PROGRESS and their remainder item P13.5c (remainder_of P13.5b) is recorded in this file",
   "tasks": [
     {
       "id": "P00",
@@ -258,11 +254,30 @@
         "tests/images/common/**"
       ],
       "lane": "Luna high",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Add the actions/runner-images trees for the pinned build commits aee0669 (Windows) and 7e7dc1b (Ubuntu) to the P03 manifest so the 82 null upstream script hashes in P06 (and the P07 equivalents) become non-null; add the Ubuntu 24.04 server ISO entry with hash, provenance and license.",
       "acceptance": "No consumer script hash is null; builds no longer stop with AAP_ScriptUnpinned for lack of a pin; a changed or corrupt tree and a missing ISO hash are rejected by tests; unreproducible inputs remain explicit blockers.",
-      "merge_proof": null,
-      "cleanup_receipt": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/74",
+        "method": "merge-commit",
+        "accepted_head": "27405a9f88c831dece65a29675a769bdb3dc9b87",
+        "merge_sha": "38d813acfacd563cc25eafa501003f1d5cf5fd9a",
+        "ci_run": "39621944088"
+      },
+      "follow_up_merges": [
+        {
+          "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/78",
+          "method": "merge-commit",
+          "accepted_head": "27b8d0e744bbf0e751809d1607e9b4b4295e7b02",
+          "merge_sha": "a55cb7b333ba0d94c750ea03906caa9853fb6d04",
+          "ci_run": "39686286153",
+          "what": "GPG verification of the pinned Ubuntu 24.04.5 SHA256SUMS"
+        }
+      ],
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P03.1-attempt-1.receipt.json (PR #74) and C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P03.1-attempt-2.receipt.json (PR #78) (independently verified, CLEAN-WITH-NOTES 2026-10-22)",
+      "branch": "parity/p03-1-manifest-pins",
+      "evidence": "PR #74 merged at 38d813a (2026-10-21; branch parity/p03-1-manifest-pins, head 27405a9, one commit on c0588e2; hosted CI run 39621944088 4/4 SUCCESS): pins the actions/runner-images source archives (Windows by raw commit aee0669, 82 script hashes; Ubuntu by release tag ubuntu24/20261012.334 because codeload 404s raw-SHA tarballs, 72 script hashes, the pinned sha256 keeps the bytes exact) and the Ubuntu 24.04.5 live-server ISO through its checksum file (kernel.org ubuntu-releases mirror copy, sha256 728064ecf411f4ab702d9c3ca0a938ce672771424c028a1b52b2449f7eb5a068; its ISO line 97f3d7ffb032c3eb3b23d2c8be9cc76e60c2c1f2c0146ba5ba9fe01cafae0fd8 matches the ISO entry pin). Both build plans regenerate fully pinned (no null script hash; the upstream-source and server-media blockers are resolved, 14 profile blockers stay) and docker-engine-windows-static keeps its documented null first-fetch hash as an explicit blocker. Local suites on pwsh 7 and Windows PowerShell 5.1: tests/images/common 218/218, tests/images/windows 347/347, tests/images/ubuntu-24.04 338/338; independent read-only review READY (one Nice, no required change). GPG outcome, PR #78 merged at a55cb7b (head 27b8d0e; hosted CI run 39686286153 4/4 SUCCESS; push CI on main at a55cb7b run 39693023525 SUCCESS): the kernel.org-pinned ubuntu-24.04.5 SHA256SUMS was GPG-verified once on 2026-10-22 local time (2026-10-21T22:14Z) in a throwaway keyring (nothing imported into any real keyring): good signature, gpg --verify exit 0, from the Ubuntu CD Image Automatic Signing Key (2012), fingerprint 8439 38DF 228D 22F7 B374 2BC0 D94A A3F0 EFE2 1092 (key from keyserver.ubuntu.com, fingerprint cross-checked against ubuntu.com/tutorials/how-to-verify-ubuntu), over bytes byte-identical to the pinned kernel.org copy (sha256 728064ecf411f4ab702d9c3ca0a938ce672771424c028a1b52b2449f7eb5a068); its ubuntu-24.04.5-live-server-amd64.iso line matches the ISO entry pin; the ISO itself was never downloaded. The former TOFU caveat (signature not verified, no key) is retired in New-AapManifest.ps1, artifacts.manifest.json and images/ubuntu-24.04/INTEGRATION.md and pinned by tests/images/common (216/216 on both PowerShell hosts; the new assertion fails against the old text). Cleanup receipts P03.1-attempt-1.receipt.json (PR #74; written by a cleanup agent (GLM worker) for the coordinator) and P03.1-attempt-2.receipt.json (PR #78; written by the orchestrator): cleanup verified CLEAN-WITH-NOTES 2026-10-22 by an independent read-only verifier, who cross-checked the pinned digest, fingerprint and ISO line against the repo and the kernel.org copy but did not repeat the GPG run (notes: attempt 1 has three stale time-bound statements; attempt 2 was renamed from P03.1-gpg-attempt-1 after failing validation, and the retained GPG report prints the SHA256SUMS digest with 62 characters instead of 64).",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/74",
       "why": "P06 and P07 real builds are refused (AAP_ScriptUnpinned) because the runner-images script hashes are null until their trees are pinned in the manifest."
     },
     {
@@ -312,12 +327,18 @@
         "tests/parity/cache/qualification/**"
       ],
       "lane": "Sol high (Claude: Opus high)",
-      "delivery_state": "PR_OPEN",
+      "delivery_state": "COMPLETE",
       "deliverable": "Extend the Linux -g rows and land the harness follow-ups from the P04 reviews; align retention.md requirement 4 with cache rule 6 revision 3 (trust namespace = repository + job trust class).",
       "acceptance": "Every new row has a recorded direct-versus-cached comparison or an explicit unqualified marker; retention.md no longer contradicts cache-qualification.md rule 6; Pester and unittest suites green on both PowerShell hosts and in hosted CI.",
-      "merge_proof": null,
-      "cleanup_receipt": null,
-      "evidence": "PR #71 (draft) on parity/p04-1-qualification-matrix: 8 Linux -g rows (all UNQUALIFIED/direct pending the lab), matrix_revision 2, retention.md aligned with cache rule 6 revision 3, five harness fixes in both harnesses; code review FIX-FIRST (must-fix: remove -EncodedCommand from two new test paths) and security M1 (poison control phase) open; not merged.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/71",
+        "method": "merge-commit",
+        "accepted_head": "1475f9803c619af47f5854689257d5cde278e10f",
+        "merge_sha": "f80757c069fac76473dbabe6ae03d90f7e184c37",
+        "ci_run": "39603900134"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P04.1-attempt-1.receipt.json (independently verified, CLEAN-WITH-NOTES 2026-10-22)",
+      "evidence": "PR #71 merged at f80757c (2026-10-21; branch parity/p04-1-qualification-matrix, head 1475f98, two commits on af65183; hosted CI run 39603900134 4/4 SUCCESS): 8 Linux -g rows (all UNQUALIFIED/direct pending the lab), matrix_revision 2, retention.md aligned with cache rule 6 revision 3, five harness fixes in both harnesses. The review must-fixes landed in the merged head (-EncodedCommand removed from the two new test paths; security M1 poison control phase, stop-before-corrupt and crash-count-after-stop), per the orchestrator's records, which the cleanup agent did not re-derive: debug rows equal the debug-rows fixture 69=69, gen_wrappers.py --check rc 0, unittest 11/11, validate.py PASS (12 schemas), harness Pester 93/93, mutate.py 8/8 killed. Cleanup receipt P04.1-attempt-1.receipt.json written by a cleanup agent (GLM worker) for the coordinator: cleanup verified CLEAN-WITH-NOTES 2026-10-22 by an independent read-only verifier (note: the receipt counts 14 changed files, GitHub shows 13).",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/71",
       "branch": "parity/p04-1-qualification-matrix",
       "why": "P04 left Linux -g rows unqualified and retention.md requirement 4 still contradicts cache rule 6 revision 3."
@@ -688,12 +709,20 @@
         "crates/tray/src/settings.rs"
       ],
       "lane": "Sol high",
-      "delivery_state": "PR_OPEN",
+      "delivery_state": "COMPLETE",
       "deliverable": "Integrate providers into existing PowerShell host task. Add compatible per-profile allocation/status, pool-wide on/off/pause/drain, generation-aware observations and legacy adoption. Update both contract sides/tests in the same PR.",
       "acceptance": "Profile counts are two live controls, Linux 0-5 and Windows 0-5, with Linux + Windows <= 5; each control's maximum is recomputed from the other (3 Linux => Windows max 2; 5 Windows => Linux 0) and 0 is valid for either. Resource allotment follows the counts per profile and the host reserve is never given away. The tray shows the two profiles as separate groups with the OS on every runner card and per-profile totals and limits next to each control (owner requirement 2026-10-19). Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Old settings/status read safely; unknown future schemas reject safely; mixed state and failure reporting proven with fixtures. Off/pause/resizing never cancels a running job. Rust and both PowerShell suites pass.",
-      "merge_proof": null,
-      "cleanup_receipt": null,
-      "evidence": "PR #70 on parity/p12-supervisor-integration (draft): round-3 fixes applied (Off/drain keeps the distro up unless the manager is provably idle, busy/unavailable/unreadable release re-check, desired-state re-read before terminate); supervisor/capacity/backend suites green on pwsh 7 and Windows PowerShell 5.1; the full backend mutation runners are NOT yet run; not merged.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/70",
+        "method": "merge-commit",
+        "accepted_head": "b958f9738cf592d561f9cdc243355f387554c10b",
+        "merge_sha": "15e7f39a2377d936d8232504a4b1ba2435e4dd5d",
+        "ci_run": "39635099925"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P12-attempt-1.receipt.json (independently verified, CLEAN-WITH-NOTES 2026-10-22)",
+      "base_sha": "1814b7ae9114b1e0d65a0db245737307a69051a6",
+      "reviewed_head": "6b96f71ec86e02f64d66b37323beac0bcc7086b2",
+      "evidence": "PR #70 merged at 15e7f39 (2026-10-21; branch parity/p12-supervisor-integration, forked at 1814b7a). The PR head b958f97 is main (38d813a, the PR #74 merge) merged into the branch tip 6b96f71 to resolve the parity/contracts/README.md conflict. Hosted CI: run 39614507774 on 6b96f71 4/4 SUCCESS; the pull_request run 39635099925 on b958f97 started 3 s before the merge and finished 4/4 SUCCESS afterwards, so the merged head was not CI-verified before the merge; push CI on main at 15e7f39 (run 39635120199) 4/4 SUCCESS. Independent code and security review READY at the same logic (later commits only changed tests), per the coordinator's records, which the cleanup agent did not re-derive. Backend mutation runners on pwsh 7.6.6: Linux 102 checks (101 killed), Windows 86 checks (85 killed); each survivor is stdin-bom, a Windows PowerShell 5.1-only behaviour that survives under pwsh 7 and is killed under Windows PowerShell 5.1.26100.9711 on both backends. This documented platform exception is still open: the survivor targets supervisor/backends/linux/AapLinBackend.psm1 and supervisor/backends/windows/AapWinBackend.psm1, which PR #76 (P13.5b) does not touch (the two modules, their transport tests and the mutation runners are byte-identical at 15e7f39, c37bdec, 680b820 and 729d3e7), and P13.5c investigates it. Cleanup receipt P12-attempt-1.receipt.json written by a cleanup agent (GLM worker) for the coordinator: cleanup verified CLEAN-WITH-NOTES 2026-10-22 by an independent read-only verifier after an empty leftover parity/P12 directory was removed (notes: the receipt's base_sha and reviewed_head were corrected to the git-verified values recorded here before the pass, and the merge-of-main commit b958f97 carries the placeholder author email [EMAIL]).",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/70",
       "branch": "parity/p12-supervisor-integration"
     },
@@ -779,7 +808,7 @@
         "tests/guests/windows/**"
       ],
       "lane": "Luna high",
-      "delivery_state": "MERGED_CLEANUP_REQUIRED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Initialize fresh job identity/shell/PATH/SDK/tool-cache defaults, verified cache overlay, sensitive registration material and one-job Actions runner. Preserve hosted-style developer-environment setup rather than globally prepending every VS path.",
       "acceptance": "Fresh PowerShell and cmd job steps discover correct default tools; setup actions select non-default versions; no owner credential, registration material or bootstrap residue survives reset.",
       "merge_proof": {
@@ -787,8 +816,8 @@
         "method": "merge-commit",
         "merge_sha": "61eead74607479e4c2cd38c9c47fa2425b1b336d"
       },
-      "cleanup_receipt": null,
-      "evidence": "PR #69 merged at 61eead7 (origin/main head; branch parity/p14-windows-guest-bootstrap); independent cleanup verifier pending.",
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P14-attempt-1.receipt.json (independently verified, CLEAN 2026-10-22)",
+      "evidence": "PR #69 merged at 61eead7 (2026-10-21; branch parity/p14-windows-guest-bootstrap, head 6e7b37a; hosted CI run 39585329014 4/4 SUCCESS); cleanup receipt P14-attempt-1.receipt.json written by a cleanup agent (Claude Code, Sonnet) for the coordinator: cleanup verified CLEAN 2026-10-22 by an independent read-only verifier.",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/69",
       "branch": "parity/p14-windows-guest-bootstrap"
     },
@@ -1496,7 +1525,10 @@
       "deliverable": "Test clone-to-clone ARP poisoning; Windows profile must not serve public repositories until clone isolation is required and proven.",
       "acceptance": "Authorized lab proves clone isolation before public-repository service.",
       "merge_proof": null,
-      "cleanup_receipt": null
+      "cleanup_receipt": null,
+      "decisions": [
+        "Design decision recorded at ledger close 6 (2026-10-22), the clone isolation control the owner chose per PR #80: L2 isolation between clones is a permanent host neighbour entry per guest (a static MAC from the range 02-A0-98-xx-xx-xx plus New-NetNeighbor -State Permanent) plus the source pin; private VLAN is an optional lab add-on only and the shared check keeps refusing VlanMode Private; the per-guest switch stays the documented alternative. The contract revision is PR #80 (open, not merged). Open lab questions: whether the permanent entry holds against gratuitous ARP and ARP replies from a guest, and whether a static MAC survives Windows Setup and cloud-init. This item stays NOT_STARTED: the lab proof is gated on P02.1 and the owner."
+      ]
     },
     {
       "id": "P08.2",
@@ -1534,8 +1566,17 @@
       "delivery_state": "IN_PROGRESS",
       "deliverable": "Run the zccache client with an empty/closed stdin from the cache shim on both platforms (Linux guests/cache/linux/aap-zccache.sh, Windows guests/cache/windows/AapZcCache.psm1) so an open stdin cannot hang the zccache client.",
       "acceptance": "Each shim invocation proves an empty stdin on both platforms; a hung-stdin mutation is caught by tests/guests/cache on both PowerShell hosts and real Linux.",
-      "merge_proof": null,
-      "cleanup_receipt": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/75",
+        "method": "merge-commit",
+        "accepted_head": "04b4ba29e6b7467d1ccbe89501f19891f85207ea",
+        "merge_sha": "c37bdec61217da24a5be4a2e32fbf7733de678fb",
+        "ci_run": "39666824846"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P13.5-attempt-1.receipt.json (independently verified, CLEAN-WITH-NOTES 2026-10-22)",
+      "evidence": "PR #75 merged at c37bdec (2026-10-21; branch parity/p13-5-zccache-stdin, head 04b4ba2, four commits on c0588e2; hosted CI run 39666824846 4/4 SUCCESS). Both shims run the zccache client with a redirected, closed stdin. Two earlier CI rounds (runs 39624296155 and 39653218770) failed only the pester-backends job (the receipt names the P04.1 stdin pair); the root cause was the test double, not the module: the fake-zccache.ps1 probe used a scheduling-dependent ReadAsync budget and, decisively, saw the three-byte UTF-8 preamble (EF BB BF) that .NET Framework's redirected StandardInput writer emits on a UTF-8 console; the probe now drains stdin synchronously to EOF and logs every observed fact. Local, per the cleanup receipt: tests/guests/cache Pester 269 passed 0 failed on Windows PowerShell 5.1.26100 and pwsh 7.6.6; bash tests/run.sh exit 0 in WSL Ubuntu-24.04; removing the module's StandardInput.Close() fails the stdin tests (0 passed, 2 failed). Merged without an independent review (WORKTREES.md requires one); the CI rounds with probe-facts-driven iteration were the only review evidence. Independent post-merge review (Codex gpt-6.1-sol, high, read-only, 2026-10-22; reply t006-p135-post-merge-sol in the parity work directory): FIX-FIRST. HIGH: a closed stdin is not necessarily empty (the redirected writer's preamble reaches the client on Windows PowerShell 5.1 with a UTF-8 input encoding and the merged probe accepts it; P13.5b, PR #76, addresses the normal start path). MEDIUM: the Windows initialization test does not establish its advertised condition (no held-open input pipe; it asserts on a shared log). MEDIUM: the Linux probe treats read exit status 1 as zero bytes, so 'x' followed by EOF passes as empty. The fixes are P13.5c, and P13.5 stays IN_PROGRESS until P13.5c lands and is independently reviewed. Cleanup receipt P13.5-attempt-1.receipt.json written by a cleanup agent (GLM worker) for the coordinator: cleanup verified CLEAN-WITH-NOTES 2026-10-22 by an independent read-only verifier (notes: the receipt's written time and leases_released list are inexact, and the four PR commits carry the placeholder author email [EMAIL]).",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/75",
+      "branch": "parity/p13-5-zccache-stdin",
       "why": "P04.1 found that an open stdin hangs the zccache client; land it after P04.1 merges."
     },
     {
@@ -1575,6 +1616,103 @@
       "merge_proof": null,
       "cleanup_receipt": null,
       "why": "Today an 8 CPU / 16 GiB host admits Windows guests at ~2 GiB including overhead, which cannot boot Windows Server."
+    },
+    {
+      "id": "P13.5b",
+      "title": "An empty stdin means zero bytes before EOF on every console",
+      "earliest_wave": 6,
+      "needs": [
+        "P11",
+        "P13.5"
+      ],
+      "owns": [
+        "guests/cache/windows/AapZcCache.psm1",
+        "supervisor/backends/linux/AapLinBackend.HyperV.psm1",
+        "tests/guests/cache/**"
+      ],
+      "lane": "Sol medium",
+      "delivery_state": "IN_PROGRESS",
+      "deliverable": "Windows PowerShell 5.1 builds the redirected stdin writer at Process.Start from the console input encoding and flushes that encoding's preamble (EF BB BF on a UTF-8 console) into the client's pipe, so a closed stdin is not empty. Swap in a BOM-less console input encoding for the Start only, then restore the caller's, in Invoke-AapZcProcess -Capture (guests/cache/windows/AapZcCache.psm1) and in the Linux backend's HyperV ssh-keygen start (supervisor/backends/linux/AapLinBackend.HyperV.psm1); the fake zccache fails any byte before EOF (exit 7) and logs what it saw; the stdin Describe runs on a UTF-8 console as the regression.",
+      "acceptance": "An empty stdin means zero bytes before EOF on every console: the fake zccache client reads zero bytes and then EOF on a UTF-8 console and any byte fails the call; tests/guests/cache green on both PowerShell hosts and in hosted CI.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/76",
+        "method": "merge-commit",
+        "accepted_head": "680b8209436f3e082601748a4c518d773961c970",
+        "merge_sha": "729d3e725c6977704ae967af1be62a25717da89e",
+        "ci_run": "39680138282"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\coord-p13-5b-attempt-1.receipt.json (independently verified, CLEAN-WITH-NOTES 2026-10-22)",
+      "branch": "parity/p13-5b-stdin-no-preamble",
+      "evidence": "PR #76 merged at 729d3e7 (2026-10-21; branch parity/p13-5b-stdin-no-preamble, head 680b820, one commit on c37bdec; hosted CI run 39680138282 4/4 SUCCESS; push CI on main at 729d3e7 run 39684945365 SUCCESS). The change is four files: guests/cache/windows/AapZcCache.psm1, supervisor/backends/linux/AapLinBackend.HyperV.psm1, tests/guests/cache/AapZcCache.Tests.ps1 and tests/guests/cache/fakes/fake-zccache.ps1. The swap happens only when the console input encoding has a preamble (and, in Invoke-AapZcProcess, only on Windows PowerShell 5.1; PowerShell 7 writes no preamble). It does not close the P12 stdin-bom mutation survivor: the survivor's target modules (supervisor/backends/linux/AapLinBackend.psm1 and supervisor/backends/windows/AapWinBackend.psm1), their transport tests and the mutation runners are byte-identical at 15e7f39, c37bdec, 680b820 and 729d3e7, and no backend mutation re-run is recorded; the cleanup receipt's scope sentence claiming closure was unsupported. Merged without an independent review (WORKTREES.md requires one); the receipt records no local test counts. Independent post-merge review (Codex gpt-6.1-sol, high, read-only, 2026-10-22; reply t006-p135-post-merge-sol in the parity work directory): FIX-FIRST. HIGH: Process.Start exceptions bypass the encoding restore (no finally around Start in Invoke-AapZcProcess and in the ssh-keygen start), so a failed launch leaves the caller's encoding changed. MEDIUM: the global encoding swap is unsynchronized (a second runspace can observe the temporary encoding) and the ssh-keygen start lacks the Windows PowerShell 5.1 guard the cache module has. MEDIUM: the tests do not exercise the wrapped Windows PowerShell 5.1 path (the cache tests launch pwsh 7) and there is no provider test. The fixes are P13.5c, and P13.5b stays IN_PROGRESS until P13.5c lands and is independently reviewed. Cleanup receipt coord-p13-5b-attempt-1.receipt.json written by the orchestrator: cleanup verified CLEAN-WITH-NOTES 2026-10-22 by an independent read-only verifier (notes: the receipt was renamed from P13.5b-attempt-1 after failing validation, there is no registry manifest, the cleanup script also force-removed an unrelated tray-build worktree, and commit 680b820 carries the placeholder author email [EMAIL]).",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/76",
+      "why": "P13.5's CI rounds showed that on a UTF-8 console .NET Framework's redirected stdin writer emits the console input encoding's preamble into the client's pipe at Start, so a client that reads its stdin sees three bytes before EOF instead of an empty stdin."
+    },
+    {
+      "id": "P13.5c",
+      "title": "Fix the defects the independent review found in the P13.5 and P13.5b stdin work",
+      "earliest_wave": 6,
+      "needs": [
+        "P13",
+        "P04.1",
+        "P11"
+      ],
+      "remainder_of": "P13.5b",
+      "owns": [
+        "guests/cache/windows/AapZcCache.psm1",
+        "supervisor/backends/linux/AapLinBackend.HyperV.psm1",
+        "tests/guests/cache/**",
+        "tests/backends/linux/**",
+        "tests/backends/windows/Invoke-AapWinMutations.ps1"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Fix exactly the findings of the independent post-merge review of PRs #75 and #76 (Codex gpt-6.1-sol, high, read-only, 2026-10-22): (1) HIGH, PR #76: restore the console input encoding in a finally around Process.Start in Invoke-AapZcProcess (guests/cache/windows/AapZcCache.psm1) and in the Linux backend's HyperV ssh-keygen start (supervisor/backends/linux/AapLinBackend.HyperV.psm1), so a failed start (missing executable, denied launch) cannot leave the caller's encoding changed; (2) MEDIUM, PR #76: give the ssh-keygen swap the same Windows PowerShell 5.1 guard as the cache module and serialize cooperating starters across save, swap, start and restore, so a second runspace cannot observe the temporary encoding, and document the concurrency constraint; (3) MEDIUM, PR #76: tests that exercise the wrapped Windows PowerShell 5.1 path (the cache tests launch pwsh 7 today), both console encodings and failed starts, plus a provider test with a harmless fake executable; (4) HIGH, PR #75: a closed stdin must be empty: suppress the preamble and require zero bytes (the merged probe accepted the BOM; PR #76 fixes only the normal start path); (5) MEDIUM, PR #75: test the Windows initialization separately in a child whose input pipe stays open and assert its own probe records; (6) MEDIUM, PR #75: make the Linux probe (tests/guests/cache/fakes/fake-zccache) read one byte explicitly and reject any byte instead of taking read exit status 1 as zero bytes; (7) LOW: the fake writes process metadata and stdin hex to disk, keep counts only. Also investigate and record why the P12 mutation survivor (stdin-bom: the tagged conditions at supervisor/backends/linux/AapLinBackend.psm1 line ~873 and supervisor/backends/windows/AapWinBackend.psm1 line ~805, replaced by $false in tests/backends/linux/Invoke-AapLinMutations.ps1 and tests/backends/windows/Invoke-AapWinMutations.ps1) survives under pwsh 7; PR #76 does not touch those modules, so the survivor is still open, and a code change in them needs an ownership revision.",
+      "acceptance": "Every finding has a test that fails on the pre-change code (heads 04b4ba2 and 680b820; main 729d3e7) and passes after the fix: a failed Process.Start with a preamble-bearing original encoding leaves that encoding unchanged; cooperating starters never observe or restore a foreign encoding; the wrapped Windows PowerShell 5.1 path is exercised under UTF-8 and non-UTF-8 consoles; the initialization probe fails without the production fix; the Linux probe rejects 'x' followed by EOF; the P12 survivor is either killed by a new check or recorded as a documented platform exception with evidence; tests/guests/cache and the backend suites are green on both PowerShell hosts and real Linux in hosted CI; independent review READY at the exact head, because P13.5 and P13.5b merged without one. Commits use the required special-place-administrator noreply identity.",
+      "merge_proof": null,
+      "cleanup_receipt": null,
+      "branch": "parity/p13-5c-stdin-restore",
+      "why": "The independent post-merge review (Codex gpt-6.1-sol, high, read-only, 2026-10-22; replies t005-ledger6-sol and t006-p135-post-merge-sol in the parity work directory) returned FIX-FIRST on PRs #75 and #76, which merged without an independent review. Also recorded here: the five implementation commits 6637d71, d278cae, 98801d3, 04b4ba2 (PR #75) and 680b820 (PR #76) carry the literal placeholder author and committer email [EMAIL] instead of the required noreply identity; history is not rewritten.",
+      "note": "Owner is the coordinator. P13.5c is the remainder item of the early-merged P13.5b (and P13.5): its prerequisite is the merged P13.5b code, not P13.5b's COMPLETE state, and P13.5 and P13.5b stay IN_PROGRESS until P13.5c lands and is independently reviewed."
+    },
+    {
+      "id": "P10.6",
+      "title": "Enforce the 6-hour hard VM lifetime cap in the Windows backend",
+      "earliest_wave": 7,
+      "needs": [
+        "P10",
+        "P12"
+      ],
+      "owns": [
+        "supervisor/backends/windows/**",
+        "tests/backends/windows/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Windows backend part of owner decision Q4: the supervisor enforces a 6 hour wall-clock cap per VM, independent of the job and of the guest. At the cap the VM is stopped, reclaimed through the verified-teardown path, and the job is reported failed with an explicit reason; the slot is not reused before verified teardown. A guest reply and the runner's GitHub status (online, busy) never extend or reset the cap, and its start time is persisted, not held only in memory.",
+      "acceptance": "Fake-backed tests prove the cap fires at the boundary, survives a supervisor restart (the start time is persisted, not held in memory) and reclaims a guest that ignores shutdown; the Windows backend suite is green on both PowerShell hosts and in hosted CI. The lab proof is gated on the owner.",
+      "merge_proof": null,
+      "cleanup_receipt": null,
+      "why": "Owner decision Q4 (2026-10-21/22): a hard VM lifetime cap of 6 hours for all repositories. P10 declared the gap 'no hard VM lifetime cap' (supervisor/backends/windows/INTEGRATION.md request 4, supervisor/broker/INTEGRATION.md F4): a guest that holds its runner credential can keep GitHub reporting its runner online and busy, so a heartbeat-quarantined slot may never be freed. Needs a contract revision first or with this item: allocator.md (Wall-clock rule), status-settings.md and the README still say the wall clock only flags and never destroys, backend-lifecycle.md has no lifetime-cap result, and lease_wall_clock_hours (1..72, default 6) must be reconciled with the fixed 6 hour cap."
+    },
+    {
+      "id": "P11.3",
+      "title": "Enforce the 6-hour hard VM lifetime cap in the Linux backend",
+      "earliest_wave": 7,
+      "needs": [
+        "P11",
+        "P12"
+      ],
+      "owns": [
+        "supervisor/backends/linux/**",
+        "tests/backends/linux/**"
+      ],
+      "lane": "Sol high",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Linux backend part of owner decision Q4: the supervisor enforces a 6 hour wall-clock cap per VM, independent of the job and of the guest. At the cap the VM is stopped, reclaimed through the verified-teardown path, and the job is reported failed with an explicit reason; the slot is not reused before verified teardown. A guest reply and the runner's GitHub status (online, busy) never extend or reset the cap, and its start time is persisted, not held only in memory.",
+      "acceptance": "Fake-backed tests prove the cap fires at the boundary, survives a supervisor restart (the start time is persisted, not held in memory) and reclaims a guest that ignores shutdown; the Linux backend suite is green on both PowerShell hosts and in hosted CI. The lab proof is gated on the owner.",
+      "merge_proof": null,
+      "cleanup_receipt": null,
+      "why": "Owner decision Q4 (2026-10-21/22): a hard VM lifetime cap of 6 hours for all repositories. The Linux backend inherits the P10 gap (supervisor/backends/linux/INTEGRATION.md request 3: hard VM lifetime cap, as the Windows twin's request 4): a guest that holds its runner credential can keep GitHub reporting its runner online and busy, so a heartbeat-quarantined slot may never be freed. Same contract dependency as P10.6: allocator.md (Wall-clock rule), status-settings.md and the README still say the wall clock only flags and never destroys, backend-lifecycle.md has no lifetime-cap result, and lease_wall_clock_hours (1..72, default 6) must be reconciled with the fixed 6 hour cap."
     }
   ],
   "authorization": {
@@ -1591,8 +1729,12 @@
     "2026-10-20 owner: E:\\ root locked to Administrators (done by an elevated step 2026-10-20 ~01:04); E:\\aap-runner\\{base,clones,scratch,staging} created admin-only and the ISO copy verified by SHA-256.",
     "2026-10-20 owner: partitions and volumes are never touched; only plain files inside E:\\aap-runner\\ after approval (C: = NVMe, D: and E: share one USB disk, D: holds owner data).",
     "2026-10-20 owner: interim Windows host runner approved, unisolated by owner choice (FRESH-win-interim, group aap-win-interim, label windows-host-interim, hidden logon task); retire it when the VM profile is certified. It can reach the GitHub App key, an accepted risk that must be closed before the App gains more permissions.",
-    "PENDING owner: zccache 1.15.6 is AGPL-3.0-only; images containing it must not be redistributed until the owner records a compliance decision (internal use is fine).",
-    "PENDING owner: give the GitHub App actions:read + contents:read, installed only on the aap-crrr runner group's repositories, so the host can look up each job's trust class for cache sharing (gates P02.3 and P13 activation). Cost: a stolen App key could also read run logs, artifacts and source of those repos. The interim-runner/App-key exposure above is a precondition."
+    "2026-10-21/22 owner (decision session, Q1): restrict the aap-win-interim runner group to selected repositories only and require approval for fork pull-request workflows from all outside collaborators. These are GitHub org/repo settings the OWNER applies: the agent token gets 403 on the runner-group and fork-approval APIs, so the current settings are UNREAD and UNAPPLIED. Must be applied before Q3.",
+    "2026-10-21/22 owner (decision session, Q2): zccache 1.15.6 is AGPL-3.0-only; internal use only, never redistribute binaries or images containing it; P13 activation is unblocked on this question.",
+    "2026-10-21/22 owner (decision session, Q3): the GitHub App gets actions: read and contents: read, only on the repositories in the aap-crrr runner group and only AFTER Q1 is applied, so the host can look up each job's trust class for cache sharing (gates P02.3 and cache sharing). The owner applies it; unapplied at ledger close 6. Cost as queued: a stolen App key could also read run logs, artifacts and source of those repos.",
+    "2026-10-21/22 owner (decision session, Q4): hard VM lifetime cap of 6 hours for all repositories. Follow-up items P10.6 (Windows backend) and P11.3 (Linux backend), both NOT_STARTED; the lab proof is gated on the owner.",
+    "2026-10-21/22 owner (decision session, Q5): even-mode drain accepted as is (raising a runner count in even mode drains every admitted runner).",
+    "2026-10-21/22 owner (decision session, Q6): the offline per-clone guest identity record (P02.5) is approved: written into the Windows unattend/answer file and the Linux cloud-init seed with the fields vm_id, reservation_id, lease_generation and expected scratch disk size/identity; Hyper-V KVP stays off; the SMBIOS UUID alternative is rejected. The contract revision is PR #79 (open, not merged)."
   ],
   "coordinator_prs": [
     {
@@ -1693,14 +1835,28 @@
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/65",
       "merge_sha": "b51580a5356ab303eed65534c65ac14adb7ab92b",
       "what": "Ubuntu image suites wired: guest_test.sh, shellcheck globs and Pester",
-      "cleanup": "verified CLEAN"
+      "cleanup": "verified CLEAN-WITH-NOTES 2026-10-22 by an independent read-only verifier (verifier pass 2; the 'verified CLEAN' this file recorded at close 4 had no recorded evidence before this pass, the receipt having said the verifier had not run; notes: the shared parity/coord directory was recreated empty by later items, and the receipt's tray duration is 2m45s, not 3m05)"
     },
     {
       "item": "coord-ci-wiring-6",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/72",
-      "merge_sha": null,
+      "merge_sha": "dc35042e8637cacd5551b29030a77a344e6805f7",
       "what": "CI runs tests/guests/linux/agent_test.sh after the ubuntu guest_test.sh step; shellcheck covers guests/linux/*.sh and tests/guests/linux/*.sh; pester-backends Run.Path gains tests/guests/windows",
-      "cleanup": "open (PR #72, not merged)"
+      "cleanup": "verified CLEAN 2026-10-22 by an independent read-only verifier (merged 2026-10-21; PR head cda9bbb, hosted CI run 39601145272 4/4 SUCCESS; receipt coord-ci-wiring-6-attempt-1.receipt.json written by a cleanup agent (GLM worker) for the coordinator)"
+    },
+    {
+      "item": "coord-ledger-close-5",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/73",
+      "merge_sha": "c0588e2452c9de8d199e8ba1e5467ff2fc2dbd10",
+      "what": "ledger close 5 (docs/parity/LEDGER.md and docs/parity/ledger.json only)",
+      "cleanup": "verified CLEAN 2026-10-22 by an independent read-only verifier (verifier pass 2; merged 2026-10-21; PR head 33509cd, hosted CI run 39604623075 4/4 SUCCESS; receipt coord-ledger-close-5-attempt-1.receipt.json)"
+    },
+    {
+      "item": "coord-gitignore-symforge",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/77",
+      "merge_sha": "52f9d2287fd9c9268dc195ae953bd5c3d8c7bf1e",
+      "what": "/.symforge/ added to .gitignore (the SymForge index directory; the owner's local edit in the base clone, landed so the base clone syncs cleanly); only .gitignore changed",
+      "cleanup": "verified CLEAN-WITH-NOTES 2026-10-22 by an independent read-only verifier (verifier pass 2; merged 2026-10-21; PR head 029bf4b, hosted CI run 39684506638 4/4 SUCCESS; receipt coord-gitignore-symforge-attempt-1.receipt.json; notes: the PR added three lines, not one, and the owner's redundant uncommitted .gitignore diff in the base clone was dropped before the fast-forward, which can no longer be inspected); remote branch parity/gitignore-symforge is gone"
     }
   ],
   "owner_decisions_queued": [
@@ -1708,37 +1864,61 @@
       "id": "Q1",
       "urgent": true,
       "topic": "interim runner exposure",
-      "detail": "FRESH-win-interim (group aap-win-interim, label windows-host-interim) runs jobs as the owner's account and can read the GitHub App key. If the runner group admits public repositories and fork-PR workflows need no approval, an outsider's fork PR can run there. Decide the fork-PR path explicitly: restrict the group, require approval for all outside collaborators, or stop the runner until the VM profile is certified. Must be closed before the App gains more permissions."
+      "detail": "FRESH-win-interim (group aap-win-interim, label windows-host-interim) runs jobs as the owner's account and can read the GitHub App key. If the runner group admits public repositories and fork-PR workflows need no approval, an outsider's fork PR can run there. Decide the fork-PR path explicitly: restrict the group, require approval for all outside collaborators, or stop the runner until the VM profile is certified. Must be closed before the App gains more permissions.",
+      "status": "DECIDED",
+      "decided": "2026-10-21/22 (owner decision session)",
+      "answer": "Restrict the aap-win-interim runner group to selected repositories only, and require approval for fork pull-request workflows from all outside collaborators.",
+      "still_open": "The OWNER applies both GitHub org/repo settings. The agent token gets 403 on the runner-group and fork-approval APIs, so the current settings are UNREAD and UNAPPLIED and nothing here claims the exposure is closed. Must be applied before Q3."
     },
     {
       "id": "Q2",
       "urgent": false,
       "topic": "zccache AGPL-3.0-only compliance",
-      "detail": "Images containing zccache 1.15.6 must not be redistributed until a compliance decision is recorded (internal use is fine). Gates P13 activation."
+      "detail": "Images containing zccache 1.15.6 must not be redistributed until a compliance decision is recorded (internal use is fine). Gates P13 activation.",
+      "status": "DECIDED",
+      "decided": "2026-10-21/22 (owner decision session)",
+      "answer": "zccache 1.15.6 is AGPL-3.0-only: internal use only; never redistribute binaries or images containing it. P13 activation is unblocked on this question.",
+      "still_open": "Nothing for the licence decision. Standing rule: no binary or image containing zccache is distributed. P13 shared-root activation still also needs Q3 applied and P02.3."
     },
     {
       "id": "Q3",
       "urgent": false,
       "topic": "GitHub App actions:read + contents:read on selected repos",
-      "detail": "Needed for the host's per-job cache trust-class lookups, installed only on the aap-crrr runner group's repositories. Cost: a stolen App key could also read run logs, artifacts and source of those repos. Gates P02.3 and cache sharing; Q1 is a precondition."
+      "detail": "Needed for the host's per-job cache trust-class lookups, installed only on the aap-crrr runner group's repositories. Cost: a stolen App key could also read run logs, artifacts and source of those repos. Gates P02.3 and cache sharing; Q1 is a precondition.",
+      "status": "DECIDED",
+      "decided": "2026-10-21/22 (owner decision session)",
+      "answer": "GitHub App permissions actions: read and contents: read, only on repositories in the aap-crrr runner group, and only AFTER Q1 is applied.",
+      "still_open": "The OWNER applies it after Q1; unapplied at ledger close 6, so P02.3 (bind_cache) and cache sharing cannot rely on the permissions yet."
     },
     {
       "id": "Q4",
       "urgent": false,
       "topic": "hard VM lifetime cap",
-      "detail": "A hostile guest that keeps its runner credential can look busy forever; the allocator only flags it. Decide a cap before the Windows profile serves public repos (open gap in P10)."
+      "detail": "A hostile guest that keeps its runner credential can look busy forever; the allocator only flags it. Decide a cap before the Windows profile serves public repos (open gap in P10).",
+      "status": "DECIDED",
+      "decided": "2026-10-21/22 (owner decision session)",
+      "answer": "Hard VM lifetime cap of 6 hours for all repositories.",
+      "still_open": "Not implemented. Follow-up items P10.6 (Windows backend) and P11.3 (Linux backend), both NOT_STARTED (their prerequisites P10/P11 and P12 are COMPLETE); the lab proof is gated on the owner. The frozen contract (allocator.md Wall-clock rule, status-settings.md, the README) still says the wall clock only flags and never destroys, so a contract revision is needed first or with them."
     },
     {
       "id": "Q5",
       "urgent": false,
       "topic": "even-mode drain",
-      "detail": "In even mode, raising a runner count drains every admitted runner (legacy manager stop/start each time). Accept that or choose a smoother rule."
+      "detail": "In even mode, raising a runner count drains every admitted runner (legacy manager stop/start each time). Accept that or choose a smoother rule.",
+      "status": "DECIDED",
+      "decided": "2026-10-21/22 (owner decision session)",
+      "answer": "Accept as is: raising a runner count in even mode drains every admitted runner (legacy manager stop/start each time).",
+      "still_open": "Nothing."
     },
     {
       "id": "Q6",
       "urgent": false,
       "topic": "guest identity record (P02.5, proposed)",
-      "detail": "Approve the proposed offline per-clone guest identity record (vm_id, reservation_id, lease_generation, expected scratch disk size/identity) written into the Windows unattend/answer file and the Linux cloud-init seed, with Hyper-V KVP off (KVP-on leaks the host name; P06 security review) and SMBIOS UUID as the alternative. Gates P02.5 and its four conformance items (P10 WriteUnattend, P11 seed, P14, P15)."
+      "detail": "Approve the proposed offline per-clone guest identity record (vm_id, reservation_id, lease_generation, expected scratch disk size/identity) written into the Windows unattend/answer file and the Linux cloud-init seed, with Hyper-V KVP off (KVP-on leaks the host name; P06 security review) and SMBIOS UUID as the alternative. Gates P02.5 and its four conformance items (P10 WriteUnattend, P11 seed, P14, P15).",
+      "status": "APPROVED",
+      "decided": "2026-10-21/22 (owner decision session)",
+      "answer": "APPROVED: the host writes an offline per-clone guest identity record into the Windows unattend/answer file and the Linux cloud-init seed (fields vm_id, reservation_id, lease_generation, expected scratch disk size/identity); Hyper-V KVP stays off; the SMBIOS UUID alternative is rejected.",
+      "still_open": "The contract revision is PR #79 (open, not merged); then the four conformance items (P10 WriteUnattend, P11 seed, P14, P15) and the independent security review. P02.5 stays NOT_STARTED."
     }
   ]
 }
