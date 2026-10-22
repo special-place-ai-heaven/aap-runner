@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/host-network-module.schema.json",
   "title": "Host network module (P10.0): Attach's declaration, Verify's problem list and the module's journal record",
-  "x-contract-version": 1,
+  "x-contract-version": 2,
   "x-owner": "P10.0 (module); consumers P06, P07, P10, P11 (their read-back through supervisor/network/AapHostNetworkCheck.psm1); P12 builds it; P19 the journal folder, switches and host rules",
   "oneOf": [
     {
@@ -67,12 +67,13 @@
         "subnet",
         "gateway",
         "address",
+        "mac",
         "resolvers",
         "endpoints"
       ],
       "properties": {
         "schema": {
-          "const": 1
+          "const": 2
         },
         "kind": {
           "const": "host_network_attach"
@@ -97,6 +98,11 @@
         },
         "address": {
           "$ref": "#/$defs/ipv4"
+        },
+        "mac": {
+          "type": "string",
+          "$comment": "the adapter's static MAC, of the module's range 02-A0-98-00-00-00 to 02-A0-98-FF-FF-FF, in the contract's canonical dashed uppercase form (the provider read-backs pass Hyper-V's own text through as read, and the shared check normalises it where check 2 compares it); the range itself is semantic: the shared check and validate.py read their one copy from supervisor/network/AapHostNetworkCheck.psm1",
+          "pattern": "^([0-9A-F]{2}-){5}[0-9A-F]{2}$"
         },
         "resolvers": {
           "type": "array",
@@ -138,7 +144,8 @@
             "adapter",
             "switch",
             "nat",
-            "firewall_rule"
+            "firewall_rule",
+            "neighbor"
           ]
         },
         "name": {
@@ -159,7 +166,7 @@
       ],
       "properties": {
         "schema": {
-          "const": 1
+          "const": 2
         },
         "kind": {
           "const": "host_network_record"
