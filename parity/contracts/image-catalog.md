@@ -13,7 +13,8 @@ moves. Rollback is catalog state only. Clones and scratch (`<clone_root>`, `<scr
 per-reservation disposables, not catalog content. Administrators/SYSTEM only, written by atomic
 rename with `revision` + 1. Base disks are read-only for everyone after sealing. Revision 2
 (P02.2): catalog `schema` 2, artifact paths relative to `base_root` (revision 1 prefixed them with
-`base/`).
+`base/`). P02.5 (additive, `schema` stays 2): the `guest-agent` overlay carries
+`guest_transport_revision` (rule 8).
 
 ## Generation identity (DECIDED)
 
@@ -30,7 +31,8 @@ Each generation records:
   `48608655281529b27f298ea92cc8ad63e52f847fa2fb8b03d1e0ddd5e2a192ed`.
 - `artifacts`: every file with role, path relative to `base_root` inside `<generation_id>/`, bytes,
   SHA-256.
-- `overlays`: guest agent, actions-runner, zccache, cache config, each with version and hash.
+- `overlays`: guest agent, actions-runner, zccache, cache config, each with version and hash; the
+  guest agent also the guest-transport revision it implements (`guest_transport_revision`, rule 8).
 - `provenance`: building item, builder commit, the P03 inputs manifest hash, build time.
 - `secret_scan`: result and evidence (`evidence_ref` under `evidence/`, required unless the
   result is `not_run`) for "no credential, token, key or registration material in the sealed
@@ -67,6 +69,16 @@ ARCHITECTURE.md section 6.
    (`live_activation`, gate D5); `validate.py` rejects it without one. A `lab` catalog may activate
    without it.
    The live supervisor refuses, and admits nothing from, a catalog at its configured `base_root` whose scope is not `live`. Lab catalogs never live under the live base root (lab roots are never equal to or inside live roots). A catalog at that path that says `lab` (or anything but `live`) disables the VM profiles, with the reason in status. Defense in depth: each entry in the admin-only `C:\ProgramData\aap-runner\capacity\approved-images.json` pins the generation's artifact hashes **and** carries the reference to the owner's `live_activation` record; the live supervisor admits an `active` generation only when the catalog and that entry both have it. (Supervisor rules for P12/P21.)
+8. Guest agent revision (guest-transport revision 2, P02.5). The wire cannot tell a revision-1 agent
+   from a revision-2 one (guest-transport.md, Admission), so the catalog carries it: P21 writes the
+   `guest-agent` overlay's `guest_transport_revision` from the agent's conformance record (the
+   P14/P15 agent tests and the P02.1 lab), never from a guest. An `approved`, `active` or `retired`
+   generation, the retained rollback generation included, needs 2 or later (`validate.py` rejects
+   the catalog otherwise; a `candidate` may lack the overlay until P21 adds it). The supervisor's
+   admin-only `approved-images.json` entry carries the same revision beside the artifact hashes, and
+   every `create` admits a generation only when both agree on a revision the host implements, a
+   certification run of a candidate included; P25 refuses a rollback to a generation that fails the
+   same check.
 
 ## Evaluation media (owner decision 2026-10-19)
 
@@ -99,4 +111,6 @@ An active generation without a certificate, two active generations, an active po
 quarantined generation, a short hash, an artifact path that escapes `base_root`, an artifact in a
 `rollback/` folder, an artifact stored under another generation's folder, an active generation without the owner's
 live activation record, a clean scan without evidence, a certificate path with `..`, an active
-generation whose secret scan found something.
+generation whose secret scan found something, an active generation whose guest agent has no
+revision or no overlay, a retained rollback generation whose guest agent is revision 1, a revision
+on an overlay that is not the guest agent.

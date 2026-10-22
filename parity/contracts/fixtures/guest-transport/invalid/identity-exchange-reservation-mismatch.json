@@ -1,0 +1,43 @@
+{
+  "expect": "cmd.reservation_id does not match the identity record",
+  "instance": {
+    "schema": 2,
+    "kind": "identity_exchange",
+    "record": {
+      "schema": 2,
+      "kind": "guest_identity",
+      "vm_id": "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b",
+      "reservation_id": "r-1a2b3c4d000000b1",
+      "lease_generation": 3,
+      "scratch": {
+        "size_gib": 50,
+        "identity": "9d8c7b6a-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+      }
+    },
+    "cmd": {
+      "schema": 1,
+      "kind": "host_cmd",
+      "vm_id": "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b",
+      "reservation_id": "r-5e6f7a8b000000d3",
+      "lease_generation": 3,
+      "seq": 1,
+      "nonce": "11111111111111111111111111111111",
+      "cmd": "probe",
+      "payload_bytes": 0,
+      "expires_at": "2026-10-22T08:02:00Z"
+    },
+    "reply": {
+      "schema": 1,
+      "kind": "guest_reply",
+      "vm_id": "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b",
+      "reservation_id": "r-5e6f7a8b000000d3",
+      "lease_generation": 3,
+      "seq": 1,
+      "nonce": "11111111111111111111111111111111",
+      "status": "ok",
+      "guest_state": "ready",
+      "runner_exit_code": null,
+      "diag": "identity record bound at the first probe; first boot finished"
+    }
+  }
+}

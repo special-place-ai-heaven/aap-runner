@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/guest-transport.schema.json",
-  "title": "Host-to-guest management envelope (fixed commands) and the guest reply the host accepts",
-  "x-contract-version": 1,
-  "x-owner": "P10/P11 (host side), P14/P15 (guest agent); lab proof by P08/P10/P11 under gate D2; consumers P22, P26",
+  "title": "Host-to-guest management envelope (fixed commands), the guest reply the host accepts, and the per-clone guest identity record",
+  "x-contract-version": 2,
+  "x-owner": "P10/P11 (host side; the identity record is their offline write at create), P14/P15 (guest agent; the record is the first-probe binding); lab proof by P08/P10/P11 under gate D2; consumers P22, P26",
   "oneOf": [
     {
       "$ref": "#/$defs/host_cmd"
@@ -13,6 +13,12 @@
     },
     {
       "$ref": "#/$defs/exchange"
+    },
+    {
+      "$ref": "#/$defs/guest_identity"
+    },
+    {
+      "$ref": "#/$defs/identity_exchange"
     }
   ],
   "$defs": {
@@ -190,6 +196,158 @@
         },
         "reply": {
           "$ref": "#/$defs/guest_reply"
+        }
+      }
+    },
+    "guest_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The per-clone identity record (revision 2): the host's OFFLINE write into the clone's own bootstrap material (Windows: the answer file, Linux: the cloud-init seed), the only carrier of the clone identity (host-to-guest KVP stays off; encoding it in the SMBIOS UUID was rejected, owner 2026-10-21). The guest binds from it once, at the first probe of this boot; after the bootstrap deleted the material no record may appear again. additionalProperties false and tight patterns: no host-identifying data (no host name, no host path, no user name) rides it.",
+      "required": [
+        "schema",
+        "kind",
+        "vm_id",
+        "reservation_id",
+        "lease_generation",
+        "scratch"
+      ],
+      "properties": {
+        "schema": {
+          "const": 2
+        },
+        "kind": {
+          "const": "guest_identity"
+        },
+        "vm_id": {
+          "$ref": "#/$defs/uuid",
+          "description": "This clone's Hyper-V VM id: the id the transport addresses (-VMId, the AF_HYPERV connect) and the backend journals at create. The agent binds it as this VM's own."
+        },
+        "reservation_id": {
+          "$ref": "#/$defs/reservation_id"
+        },
+        "lease_generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 999999999
+        },
+        "scratch": {
+          "type": [
+            "null",
+            "object"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "size_gib",
+            "identity"
+          ],
+          "description": "The scratch disk this clone must adopt, or null exactly when it has none (the Linux profile: scratch_gib 0). A scratch disk that does not match fails the first probe closed.",
+          "properties": {
+            "size_gib": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4096,
+              "description": "The reservation's scratch_gib: the cap the host reserved for the disk (at most 4096, the allocator's maximum). The image's own maximum size is a little under it, by less than 1 GiB, because the whole file stays within the cap, so the guest compares the size the disk reports, rounded up to whole GiB, with this value."
+            },
+            "identity": {
+              "$ref": "#/$defs/uuid",
+              "description": "The scratch disk image's unique id, a UUID the host records from the image it just created. Which guest-visible identifier equals it is a P02.1 lab point."
+            }
+          }
+        }
+      }
+    },
+    "identity_exchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Test and evidence composite (revision 2): the identity record a guest bound at the first probe of its boot, one command and its reply, and optionally what the guest's later check of the bootstrap material found. The command must carry the record's vm_id, reservation_id and lease_generation, a reread before cleanup must equal the record and cannot come with a reply in listening, busy or job_done (the guest deletes the material before it answers listening), and no record may be found after cleanup, identical or not (validate.py): the guest never rebinds. One command and one reply do not show the order of events across commands.",
+      "required": [
+        "schema",
+        "kind",
+        "record",
+        "cmd",
+        "reply"
+      ],
+      "allOf": [
+        {
+          "description": "Cleanup precedes listening: the guest deletes its bootstrap material, the record included, before it answers listening, and busy and job_done only follow a started runner. A reread before cleanup therefore goes with a reply in one of the other states (guest-transport.md, The sequence: bind, cleanup, presence check).",
+          "if": {
+            "required": [
+              "reread"
+            ],
+            "properties": {
+              "reread": {
+                "required": [
+                  "phase"
+                ],
+                "properties": {
+                  "phase": {
+                    "const": "before_cleanup"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reply": {
+                "properties": {
+                  "guest_state": {
+                    "enum": [
+                      "booting",
+                      "ready",
+                      "registered",
+                      "failed",
+                      "shutting_down"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "schema": {
+          "const": 2
+        },
+        "kind": {
+          "const": "identity_exchange"
+        },
+        "record": {
+          "$ref": "#/$defs/guest_identity"
+        },
+        "cmd": {
+          "$ref": "#/$defs/host_cmd"
+        },
+        "reply": {
+          "$ref": "#/$defs/guest_reply"
+        },
+        "reread": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "phase",
+            "record"
+          ],
+          "description": "Optional: what the guest's check of the clone's bootstrap material found when it answered cmd. before_cleanup: the material is still there and must hold the bound record again, and the reply is not listening, busy or job_done, because the guest deletes the material before it answers listening. after_cleanup: the material is gone, so record is null; a record found there, identical or not, fails closed (validate.py).",
+          "properties": {
+            "phase": {
+              "enum": [
+                "before_cleanup",
+                "after_cleanup"
+              ]
+            },
+            "record": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/guest_identity"
+                }
+              ]
+            }
+          }
         }
       }
     }

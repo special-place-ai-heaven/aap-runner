@@ -1,0 +1,14 @@
+{
+  "expect": "$.vm_id: does not match pattern",
+  "instance": {
+    "schema": 2,
+    "kind": "guest_identity",
+    "vm_id": "6F1D2C3B-4A59-4E6F-8A7B-9C0D1E2F3A4B",
+    "reservation_id": "r-1a2b3c4d000000b1",
+    "lease_generation": 3,
+    "scratch": {
+      "size_gib": 50,
+      "identity": "9d8c7b6a-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+    }
+  }
+}

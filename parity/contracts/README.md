@@ -20,8 +20,8 @@ names the error it must produce, so it cannot pass for the wrong reason.
 | [Allocator](allocator.md) | 2 | `allocator.schema.json` | P09 | P10, P11, P12, P16, P20, P22 | DECIDED |
 | [Backend lifecycle](backend-lifecycle.md) | 2 | `backend-lifecycle.schema.json` | P10, P11; storage document P19 | P09, P12, P19, P20, P22, P25 | DECIDED; budgets and cap enforcement measured later (P02.1, P06, P07) |
 | [Broker](broker.md) | 1 | `broker.schema.json` | P08 | P10, P11, P14, P15, P16, P26 | DECIDED; JIT runner behaviour CANDIDATE (D2) |
-| [Guest transport](guest-transport.md) | 1 | `guest-transport.schema.json` | P10/P11 host, P14/P15 guest | P22, P26 | envelope DECIDED; mechanisms CANDIDATE (D2) |
-| [Image catalog](image-catalog.md) | 2 | `image-catalog.schema.json` | P21, P25 | P06, P07, P10, P11, P12, P19, P20, P24 | DECIDED |
+| [Guest transport](guest-transport.md) | 2 | `guest-transport.schema.json` | P10/P11 host (the identity record is their offline write at create), P14/P15 guest | P22, P26 | envelope and identity record DECIDED; mechanisms CANDIDATE (D2) |
+| [Image catalog](image-catalog.md) | 2 (P02.5: additive overlay field) | `image-catalog.schema.json` | P21, P25 | P06, P07, P10, P11, P12, P19, P20, P24 | DECIDED |
 | [Cache qualification](cache-qualification.md) | 2 | `cache-qualification.schema.json` | P04 | P13, P14, P15, P16, P20, P22, P24 | DECIDED |
 | [Status and settings](status-settings.md) | settings 3, status 5 (revision 3); tray-local 1 | `settings-v3`, `status-v5`, `tray-windows-choice` schemas | P12, P20 | P19, P22 | DECIDED; landed in P12 (supervisor reads 3 and writes `status.v5.json`; tray reads it and writes 3); window controls P20 |
 | [Evidence and cleanup](evidence-cleanup.md) | evidence 2, receipt 1 | `evidence-bundle`, `cleanup-receipt` schemas | P05, P00 | every item, P24, P26, P28 | DECIDED |
@@ -66,6 +66,18 @@ names the error it must produce, so it cannot pass for the wrong reason.
     passes the ProgramData trust checks at install, at every supervisor start and before every
     `create`; no defaults and no hard-coded drive letters; per-volume disk admission with a
     free-space floor (backend-lifecycle.md, allocator.md).
+13. Per-clone guest identity record (owner, 2026-10-21; guest-transport revision 2): the host writes
+    it OFFLINE at `create` — Windows into the answer file, Linux into the cloud-init seed; the guest
+    binds `vm_id`/`reservation_id`/`lease_generation` and the expected scratch disk from it once, at
+    the first `probe`. Host-to-guest KVP stays off (the P06 security review), and the SMBIOS
+    UUID is not the carrier. No host-identifying data rides the record. Fail-closed
+    (guest-transport.md, Per-clone identity record): a missing or malformed record (or two) and a
+    scratch disk that does not match end the first `probe`; a command that differs from the record
+    is `refused`; a different or second record before cleanup, or any record after cleanup, is never
+    bound and ends the clone. The wire cannot tell a revision-1 agent from a revision-2 one, so
+    admission verifies the agent: only a generation whose catalog entry certifies revision 2 or
+    later, the rollback generation included, is admitted (guest-transport.md, Admission;
+    image-catalog.md, rule 8).
 
 ## Candidate pending D2 lab proof
 
@@ -74,8 +86,8 @@ The transport lab proof is a **single-owner ledger child, P02.1**, which gates P
 and a **test org and repository**, so the lab never uses the production App, key or org. Plan:
 [guest-transport.md](guest-transport.md#lab-proof-plan-p021-executed-for-p08-p10-p11).
 
-1. PowerShell Direct as the Windows management channel, including credential bootstrap by offline
-   unattend or KVP, and safe handling of hostile deserialized output.
+1. PowerShell Direct as the Windows management channel, including credential bootstrap by the
+   offline unattend answer file, and safe handling of hostile deserialized output.
 2. SSH over a Hyper-V socket for Ubuntu with KVP host-key pinning (fallback: per-clone isolated switch).
 3. Guest network isolation (internet only; no host, WSL distro, LAN or other guests): one
    internal switch per profile with Windows NAT, host firewall rules and per-adapter ACLs, or one
@@ -252,3 +264,5 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 | 2026-10-21 | P12 review | status-settings | settings 3, status 5, revision 3 (text only) | compatibility: the tray never writes schema 2 over a stored schema 3 file (it writes schema 3 from the stored keys even while `status.v5.json` is stale, missing or newer), checks what it writes against the schema it writes, shows a stored schema 3 file's own counts, and treats an `updated` in the future as stale; a supervisor downgrade then needs `settings.json` removed. Status detail gains the reason word `grant_waits`. `generation_state` prose: the legacy pool reports `legacy-manager` (or its granted generation) as `active`. No schema change |
 | 2026-10-21 | P04.1 | cache-qualification | 2 (text only) | rules 3 and 6 record that P04.1 added the Linux `debug-pdb` rows for every compiler version (matrix revision 2) and aligned retention.md requirement 4 with rule 6; no rule changes. No schema change |
 | 2026-10-21 | P13.3 | cache-qualification | 2 (text only) | rule 7: a zero exit whose declared outputs (object, depfile) are missing, empty or not regular files is a wrapper failure; outputs the shim cannot name (rustc, other sidecars) rely on zccache's own delivery and P04's evidence. No schema change |
+| 2026-10-22 | P02.5 | guest-transport | 2 | new `guest_identity` record (schema 2; the envelope documents stay schema 1) + `identity_exchange` test composite with an optional phased `reread` (`before_cleanup`: the same record again; `after_cleanup`: `null`): the host (P10 into the answer file, P11 into the cloud-init seed) writes the per-clone record OFFLINE at create, once the VM and its scratch disk exist — `vm_id`, `reservation_id`, `lease_generation`, expected scratch `size_gib` (the reservation's `scratch_gib`; the guest compares the disk's size rounded up to whole GiB, because the image is created a little under the cap) and `identity`, or null; the guest binds once at the first `probe` (replacing the first-writer `reservation_id`/`lease_generation` binding), takes its VM id from the record alone (not SMBIOS, not KVP), then follows one sequence, bind, cleanup, presence check: before cleanup the same record read again changes nothing, after cleanup any record found, identical or not, ends the clone; host-to-guest KVP stays off, so the credential's KVP sub-candidate (b) and the Linux seed-or-KVP choice are withdrawn (P06: KVP-on hands the job the host's fully qualified name), and the SMBIOS UUID is not the carrier (owner, 2026-10-21); `additionalProperties: false` (`scratch` too) + tight patterns so no host-identifying data rides it; fail-closed: missing or malformed record, two records, a scratch disk that does not match, a mismatched command (`refused`; `validate.py`: cmd vs record on `vm_id`/`reservation_id`/`lease_generation`), a different or second record before cleanup, a before-cleanup re-read beside a `listening`, `busy` or `job_done` reply (the guest deletes the material before it answers `listening`; the schema's `allOf` carries that rule), or any record after cleanup (`validate.py`: `reread`); admission: the wire cannot tell revision-1 from revision-2 agents, so only a generation whose catalog entry certifies a revision-2 guest agent is admitted, the rollback generation included (image-catalog row below); fixtures 5 valid + 18 invalid (a composite is one command and one reply, so they prove what one exchange may show, not the order across commands: that is the agent tests' and the lab's); lab cases added (another `reservation_id`, a swapped seed, material that reappears, an old-agent generation, host-to-guest KVP) |
+| 2026-10-22 | P02.5 | image-catalog | 2 (additive; the catalog `schema` stays 2) | the `guest-agent` overlay carries `guest_transport_revision` (guest-transport.md, Admission): written by P21 from the agent's conformance record, never from a guest; `validate.py` requires 2 or later in every `approved`, `active` or `retired` generation (the retained rollback generation included; a `candidate` may lack the overlay) and refuses the field on any other overlay; rule 8: the supervisor's `approved-images.json` entry carries the revision beside the artifact hashes, every `create` (certification runs included) admits only a revision the host implements, and P25 refuses a rollback that fails it; fixtures: the two valid catalogs carry the revision, 4 new invalid (no revision, no guest-agent overlay, a revision-1 rollback generation, a revision on another overlay), and the 12 older invalid catalogs carry it too, so each fails for its own rule only |

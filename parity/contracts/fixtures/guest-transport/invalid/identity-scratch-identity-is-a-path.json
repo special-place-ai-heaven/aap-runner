@@ -1,0 +1,14 @@
+{
+  "expect": "$.scratch.identity: does not match pattern",
+  "instance": {
+    "schema": 2,
+    "kind": "guest_identity",
+    "vm_id": "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b",
+    "reservation_id": "r-1a2b3c4d000000b1",
+    "lease_generation": 3,
+    "scratch": {
+      "size_gib": 50,
+      "identity": "E:\\aap-runner\\scratch\\r-1a2b3c4d000000b1\\scratch.vhdx"
+    }
+  }
+}
