@@ -447,6 +447,34 @@ t_init_stdin() {
   check "init: the daemon-starting client gets an empty stdin too" [ "$(cat "${P}/job/roots/private/fake-stdin.log" 2> /dev/null)" == eof ]
   check "init: a stdin-safe start still qualifies the root" [ "$(jq -r .state "${CFG}")" == qualified ]
 }
+t_probe_stdin() { # the instrument of the two cases above: zero bytes then EOF is the only stdin it accepts, and it stores nothing
+  # bash's read returns 1 for 'x' then EOF as it does for EOF alone and drops NUL bytes: the probe reads one byte, counted.
+  local root="${TMPROOT}/probe-stdin" feed want log pid
+  mkdir -p "${root}"
+  feed_probe() { ZCCACHE_CACHE_DIR="${root}" FAKE_ZC_STDIN=1 bash "${FAKES}/fake-zccache" session-end x > /dev/null 2>&1; printf '%s' "$?" > "${root}/rc"; }
+  for feed in empty x xnl nul bom; do
+    rm -f "${root}/rc" "${root}/fake-stdin.log"
+    case ${feed} in
+      empty) feed_probe < /dev/null ;;
+      x) printf 'x' | feed_probe ;;
+      xnl) printf 'x\n' | feed_probe ;;
+      nul) printf '\0' | feed_probe ;;
+      bom) printf '\357\273\277' | feed_probe ;;
+    esac
+    if [[ ${feed} == empty ]]; then want=0 log=eof; else want=7 log=open; fi
+    check "probe: stdin ${feed}: exit ${want}" [ "$(cat "${root}/rc" 2> /dev/null)" == "${want}" ]
+    check "probe: stdin ${feed}: recorded ${log}" [ "$(cat "${root}/fake-stdin.log" 2> /dev/null)" == "${log}" ]
+  done
+  # A stdin that stays open: nothing but the call's own log is on disk while the probe waits, and it is refused after 2 s.
+  rm -f "${root}/rc" "${root}/fake-stdin.log"
+  feed_probe < <(sleep 5) &
+  pid=$!
+  sleep 1
+  check "probe: an open stdin is not stored while the probe waits" [ -z "$(find "${root}" -type f ! -name fake-env.log -print)" ]
+  wait "${pid}"
+  check "probe: stdin open: exit 7" [ "$(cat "${root}/rc" 2> /dev/null)" == 7 ]
+  check "probe: stdin open: recorded open" [ "$(cat "${root}/fake-stdin.log" 2> /dev/null)" == open ]
+}
 # ---- delivery: zccache's exit 0 counts only with every declared output in place ----
 stale() { printf 'STALE\n' > "$1"; }
 delivery_failed() { # NAME: the call was answered by the direct compiler after a delivery failure
@@ -809,6 +837,7 @@ run t_shim_crash LNX-SHIM-FALLBACK
 run t_shim_delivery_object LNX-OUT-CHECK LNX-OUT-STALE LNX-OUT-DAEMON
 run t_shim_stdin
 run t_init_stdin
+run t_probe_stdin
 run t_shim_delivery_depfile LNX-OUT-CHECK LNX-OUT-STALE
 run t_shim_delivery_shape LNX-OUT-CHECK LNX-OUT-CLEAR LNX-OUT-NLINK LNX-OUT-DAEMON
 run t_shim_delivery_ok

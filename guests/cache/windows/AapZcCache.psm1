@@ -115,10 +115,6 @@ function ConvertTo-AapZcArg([string]$Arg) {
     return $sb.ToString()
 }
 
-# Runs a program. -Capture: hidden, output captured as bytes, standard input closed at once (an open stdin hangs the
-# zccache client, P04.1) and with -TimeoutSeconds killed (TimedOut) when it runs longer. Otherwise the program shares
-# this process's console and standard handles, as a direct compiler must (the shim always runs in a console, so no
-# window appears).
 # Stops a process and every descendant it still has: a timed-out client and what it started, or a root's daemon and the
 # compiles it runs. PowerShell 7 kills the tree itself; Windows PowerShell 5.1 has no tree kill, taskkill /T does it.
 function Stop-AapZcTree([int]$Id) {
@@ -127,6 +123,52 @@ function Stop-AapZcTree([int]$Id) {
     } else { $null = & (Join-Path ([Environment]::SystemDirectory) 'taskkill.exe') /T /F /PID $Id 2>&1 }
 }
 
+# Process.Start for a call that redirects standard input (Invoke-AapZcProcess -Capture). Windows PowerShell 5.1 (.NET
+# Framework) builds the redirected stdin writer inside Start from [Console]::InputEncoding and, the writer auto-flushing,
+# writes that encoding's preamble into the pipe right there: with a UTF-8 console the child reads EF BB BF before the EOF
+# of the empty stdin this module promises it (P04.1, P13.5b). Closing the pipe afterwards, by its writer or by its
+# BaseStream, cannot take the bytes back, and .NET Framework has no ProcessStartInfo.StandardInputEncoding, so Start runs
+# under a preamble-free [Console]::InputEncoding and the caller's is put back in a finally that also covers a Start that
+# throws (a missing executable, access denied). PowerShell 7 writes no preamble, and a call that redirects no stdin has no
+# writer: both start as they are.
+# [Console]::InputEncoding is process-wide, so save, swap, Start and restore are one critical section under a mutex named
+# for this process, Local\AapConsoleInputEncoding-<pid>; the starters that take that name (the same idiom in
+# AapLinBackend.psm1, AapWinBackend.psm1 and AapLinBackend.HyperV.psm1) never start under another's temporary encoding or
+# restore under another's Start. Code outside that group can still read the temporary encoding, and each swap replaces
+# [Console]::In with a fresh reader, so nothing may read [Console]::In while a start runs. Only an encoding with a
+# preamble is swapped, and for the same code page without one (UTF-8, and little- or big-endian Unicode, whose setter
+# leaves the console's own code page alone), so the OS console code page is never changed. No console, no preamble, or
+# a preamble with no such twin: nothing to swap (a preamble of that kind would still reach the child).
+function Start-AapZcProcess([System.Diagnostics.ProcessStartInfo]$Psi) {
+    if ($PSVersionTable.PSEdition -eq 'Core' -or -not $Psi.RedirectStandardInput) { return [System.Diagnostics.Process]::Start($Psi) }
+    $lock = New-Object System.Threading.Mutex($false, ('Local\AapConsoleInputEncoding-' + $PID))
+    $held = $false
+    try {
+        try { $held = $lock.WaitOne(60000) } catch [System.Threading.AbandonedMutexException] { $held = $true }  # a starter that died inside left it so
+        if (-not $held) { throw 'AAP_ZC_StartBusy: another child start held the console input encoding for 60 s' }
+        $saved = $null
+        try {
+            $current = [Console]::InputEncoding
+            if ($current.GetPreamble().Length -gt 0) {
+                $free = $null   # the same code page, no preamble
+                if ($current.CodePage -eq 65001) { $free = New-Object System.Text.UTF8Encoding($false) }
+                elseif ($current.CodePage -eq 1200) { $free = New-Object System.Text.UnicodeEncoding($false, $false) }
+                elseif ($current.CodePage -eq 1201) { $free = New-Object System.Text.UnicodeEncoding($true, $false) }
+                if ($null -ne $free) { [Console]::InputEncoding = $free; $saved = $current }
+            }
+        } catch { $null = $_ }
+        try { return [System.Diagnostics.Process]::Start($Psi) }
+        finally { if ($null -ne $saved) { try { [Console]::InputEncoding = $saved } catch { $null = $_ } } }
+    } finally {
+        if ($held) { $lock.ReleaseMutex() }
+        $lock.Dispose()
+    }
+}
+
+# Runs a program. -Capture: hidden, output captured as bytes, standard input closed at once (an open stdin hangs the
+# zccache client, P04.1) and with -TimeoutSeconds killed (TimedOut) when it runs longer. Otherwise the program shares
+# this process's console and standard handles, as a direct compiler must (the shim always runs in a console, so no
+# window appears).
 function Invoke-AapZcProcess {
     param([Parameter(Mandatory)][string]$FilePath, [string[]]$Arguments = @(), [System.Collections.IDictionary]$Environment, [switch]$Capture, [int]$TimeoutSeconds = 0)
     $si = New-Object System.Diagnostics.ProcessStartInfo
@@ -141,23 +183,7 @@ function Invoke-AapZcProcess {
         $si.EnvironmentVariables.Clear()
         foreach ($k in $Environment.Keys) { $si.EnvironmentVariables[[string]$k] = [string]$Environment[$k] }
     }
-    # Windows PowerShell 5.1 (.NET Framework) builds the redirected stdin writer at Start, from this console's input
-    # encoding, and flushes that encoding's preamble into the pipe: with a UTF-8 console the zccache client would read
-    # EF BB BF before EOF instead of the empty stdin this call promises (P04.1, P13.5b). PowerShell 7 writes no
-    # preamble. Swap in a BOM-less encoding for the Start only (the same idiom as aap-broker.psm1), then put the
-    # caller's back; no console, or an encoding without a preamble, leaves nothing to do.
-    $savedInputEncoding = $null
-    if ($Capture -and $PSVersionTable.PSEdition -ne 'Core') {
-        try {
-            $current = [Console]::InputEncoding
-            if ($current.GetPreamble().Length -gt 0) {
-                [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
-                $savedInputEncoding = $current
-            }
-        } catch { $null = $_ }
-    }
-    $p = [System.Diagnostics.Process]::Start($si)
-    if ($null -ne $savedInputEncoding) { try { [Console]::InputEncoding = $savedInputEncoding } catch { $null = $_ } }
+    $p = Start-AapZcProcess $si
     if ($Capture) { $p.StandardInput.Close() }  # the zccache client starts with an empty stdin, never the caller's open one (P04.1)
     try {
         $r = [pscustomobject]@{ ExitCode = $null; TimedOut = $false; Stdout = $null; Stderr = $null }

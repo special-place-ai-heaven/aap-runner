@@ -11,15 +11,20 @@
 # FAKE_ZC_LINK=1 a symbolic link to the entry, FAKE_ZC_HARDLINK=1 a hard link to it. FAKE_ZC_PROGRESS=N first prints N
 # of zccache's progress lines to stderr.
 # FAKE_ZC_STDIN=1, or a file named stdin-probe beside this file (init starts the daemon under env -i, which drops the
-# variable), (P04.1) records eof in fake-stdin.log and carries on when this call's stdin is at EOF; any open or
-# feeding stdin is recorded as open and fails the call with exit 7, as a client handed the caller's stdin would hang.
+# variable), (P04.1, P13.5c) records eof in fake-stdin.log and carries on only when this call's stdin delivers zero
+# bytes and then EOF; a byte of any value (the caller's data, an encoding's preamble) or a stdin still open after 2 s is
+# recorded as open and fails the call with exit 7, as a client handed the caller's stdin would hang. One byte is read
+# explicitly, through dd, which counts it: bash's read returns 1 for 'x' then EOF as it does for EOF alone, and drops NUL
+# bytes. The byte goes to /dev/null: nothing the probe receives is stored or logged, only that it was open.
 root=${ZCCACHE_CACHE_DIR:?}
 mkdir -p "${root}/artifacts"
 names=$(env -0 | while IFS= read -r -d '' kv; do printf '%s\n' "${kv%%=*}"; done | sort | tr '\n' ' ')
 printf '%s MODE=%s SIZE=%s\n' "${names}" "${ZCCACHE_MODE:-}" "${ZCCACHE_CACHE_SIZE_BYTES:-}" >> "${root}/fake-env.log"
 if [[ -n "${FAKE_ZC_STDIN:-}" || -e "$(dirname "$0")/stdin-probe" ]]; then
-  read -t 2 -r _; rc=$?  # 0 data, 1 EOF, >128 still open after 2 s
-  if [[ ${rc} -ne 1 ]]; then printf 'open\n' > "${root}/fake-stdin.log"; exit 7; fi
+  # dd counts what it read ("0+0 records in" is EOF, "1+0 records in" is one byte of any value) and writes it to /dev/null;
+  # timeout exits 124 when dd is still waiting after 2 s (an open stdin), and a failed read is not EOF either.
+  seen=$(LC_ALL=C timeout 2 dd bs=1 count=1 of=/dev/null 2>&1); rc=$?
+  if [[ ${rc} -ne 0 || "${seen}" != "0+0 records in"* ]]; then printf 'open\n' > "${root}/fake-stdin.log"; exit 7; fi
   printf 'eof\n' > "${root}/fake-stdin.log"
 fi
 [[ "${FAKE_ZC_CRASH:-}" == 1 ]] && exit 139

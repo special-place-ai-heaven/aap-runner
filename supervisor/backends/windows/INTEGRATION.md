@@ -31,8 +31,9 @@ supervisor, the installer, the guest image, the network or CI yet. How the backe
 
    One step at a time; a step makes at most one guest command plus one broker call, except that create, a job's end and
    a hostile reply run on through destroy. A step can still take minutes: create re-hashes the base (a 130 GB file on
-   the USB volume) and destroy waits up to 3 x 5 s. `$B` belongs to ONE runspace: its hashtables, its scriptblocks
-   (runspace-affine) and the process-wide `[Console]::InputEncoding` swap around each child start are not thread-safe.
+   the USB volume) and destroy waits up to 3 x 5 s. `$B` belongs to ONE runspace: its hashtables and its scriptblocks
+   (runspace-affine) are not thread-safe. The one process-wide thing a step touches, the `[Console]::InputEncoding` swap
+   around each child start, is serialised across every runspace of the process by a mutex and always restored (see below).
    Steps of one reservation never overlap: `Invoke-AapWinStep` holds `<JournalRoot>\<reservation_id>.lock`
    (`FileShare.None`, deleted on close) and returns `held`/`step_in_progress` when another step has it. If a slow create
    must not delay the heartbeats of the others, run it in a second runspace with its own `New-AapWinBackend` context (the
@@ -121,11 +122,16 @@ host preparation.
 
 ## Every child with redirected stdin (P12, P14)
 
-- Write stdin only through `StandardInput.BaseStream`, and start the process under a preamble-free
-  `[Console]::InputEncoding` (`New-Object Text.UTF8Encoding($false)`), restored in `finally`, tolerating a host without
-  a console. Windows PowerShell 5.1 otherwise writes the encoding's preamble at `Process.Start`, and under code page
-  65001 the child reads `EF BB BF` before the first byte. `Start-AapWinProcess` in `AapWinBackend.psm1` and the remote
-  script in `psdirect-call.ps1` do this; `Transport.Tests.ps1` checks the bytes under the current code page, 65001 and 850.
+- Write stdin only through `StandardInput.BaseStream`, and start the process the way `Start-AapWinProcess` does: under
+  Windows PowerShell 5.1, and only when `[Console]::InputEncoding` has a preamble, swap in the same code page without it
+  (UTF-8 without a BOM, little-endian Unicode without its preamble) for the `Process.Start`, and put the caller's encoding
+  back in `finally`, a failed start included. The swap runs inside a per-process mutex (`Local\AapConsoleInputEncoding-<pid>`)
+  that every starter of the process shares; PowerShell 7 and a host without a console start as they are. Windows
+  PowerShell 5.1 otherwise writes the encoding's preamble inside `Process.Start`, and under code page 65001 the child reads
+  `EF BB BF` before the first byte; closing the pipe afterwards cannot take it back. `Start-AapWinProcess` in
+  `AapWinBackend.psm1` is the implementation (the remote script in `psdirect-call.ps1` is not changed by it);
+  `Transport.Tests.ps1` checks the bytes under the current code page, 65001 and 850, and in a Windows PowerShell 5.1
+  process of its own on a default, a UTF-8 and a little-endian Unicode console.
 - Secret bytes (the JIT config, the guest password) never appear in a function parameter that is logged, an argument
   list or script text: they go to the child's stdin only.
 
