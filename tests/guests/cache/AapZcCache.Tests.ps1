@@ -119,6 +119,54 @@ BeforeAll {
         $fs = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
         try { (New-Object IO.StreamReader($fs)).ReadToEnd() } finally { $fs.Dispose() }
     }
+    # ---- hosted children (P13.5c) --------------------------------------------------------------------------------------
+    $script:Ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $script:HostSwitches = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass')
+    function Get-HostExe([string]$Shell) { if ($Shell -eq 'pwsh') { $script:Pwsh } else { $script:Ps51 } }
+    # Runs a PowerShell host (Exe + HostArgs, every token double-quoted) in a process of its own with a console of its own:
+    # CreateNoWindow gives it a new hidden console, so nothing here touches this process's console, whatever host runs the
+    # suite and whether it has a console at all. -Utf8Console starts the host behind cmd.exe's chcp 65001: its console
+    # input code page is UTF-8 as a CI host's is, and a Windows PowerShell 5.1 host reads a preamble-bearing
+    # [Console]::InputEncoding there; without it the console is the machine's default. Standard input is a pipe, closed at
+    # once or, with -HoldStdin, held open until the host exits, as a job step's is. Env sets variables in the child only.
+    function Invoke-HostedChild {
+        param([Parameter(Mandatory)][string]$Exe, [Parameter(Mandatory)][string[]]$HostArgs, [switch]$Utf8Console, [switch]$HoldStdin,
+            [hashtable]$Env = @{}, [int]$TimeoutSeconds = 240)
+        foreach ($t in @($Exe) + $HostArgs) { if ($t.Contains('"') -or $t.EndsWith('\')) { throw "Invoke-HostedChild: cannot quote $t" } }
+        $quoted = @(@($Exe) + $HostArgs | ForEach-Object { '"' + $_ + '"' }) -join ' '
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        if ($Utf8Console) {
+            $psi.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+            $psi.Arguments = '/d /s /c ""' + (Join-Path $env:SystemRoot 'System32\chcp.com') + '" 65001 >nul & ' + $quoted + '"'
+        } else {
+            $psi.FileName = $Exe
+            $psi.Arguments = (@($HostArgs | ForEach-Object { '"' + $_ + '"' }) -join ' ')
+        }
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        # A PowerShell 7 caller leaves its module path behind; Windows PowerShell 5.1 must rebuild its own (as fake-zccache.cmd does).
+        if ($Exe -eq $script:Ps51) { [void]$psi.EnvironmentVariables.Remove('PSModulePath') }
+        foreach ($k in $Env.Keys) { $psi.EnvironmentVariables[[string]$k] = [string]$Env[$k] }
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $timedOut = $false
+        try {
+            $null = $p.Handle  # Windows PowerShell 5.1 reports no ExitCode unless the handle was opened while running
+            if (-not $HoldStdin) { $p.StandardInput.Close() }
+            $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+            # One deadline for the host's exit and for draining its output: a descendant that keeps stdout or stderr open
+            # must not hold the suite past it.
+            $until = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+            $timedOut = -not $p.WaitForExit($TimeoutSeconds * 1000)
+            if (-not $timedOut) { $timedOut = -not [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($o, $e), [int][Math]::Max(0, ($until - [DateTime]::UtcNow).TotalMilliseconds)) }
+            try { $p.StandardInput.Close() } catch { $null = $_ }
+            [pscustomobject]@{ Code = $(if ($timedOut) { $null } else { $p.ExitCode }); TimedOut = $timedOut; Out = $(if ($o.IsCompleted) { $o.Result } else { '' }); Err = $(if ($e.IsCompleted) { $e.Result } else { '' }) }
+        } finally {
+            # Whatever ended this call (the deadline, an exception, a stopped run), nothing of its process tree is left.
+            if ($timedOut -or -not $p.HasExited) { try { $null = & (Join-Path $env:SystemRoot 'System32\taskkill.exe') /T /F /PID $p.Id 2>&1 } catch { $null = $_ } }
+            $p.Dispose()
+        }
+    }
+    function Write-Driver([string]$Name, [string]$Text) { $f = Join-Path $script:RunRoot $Name; [IO.File]::WriteAllText($f, $Text, $script:Utf8); $f }
     # The compiler launcher Initialize-AapZcJob wrote for CMake (state\runner.env), or the same command when it wrote
     # none: the shim always starts exactly as a build would start it.
     function Get-Launcher($Pkg) {
@@ -413,65 +461,248 @@ Describe 'zcshim: decisions and results (real processes, fake zccache)' {
     }
 }
 
-Describe 'zcshim: the zccache client never gets the caller''s open stdin (P04.1)' {
+Describe 'zcshim: the zccache client gets an empty stdin whatever its caller holds, on every host and console (P04.1, P13.5b, P13.5c)' {
     BeforeAll {
         Mock Get-AapZcProcessList -ModuleName AapZcCache { Get-FakeProcessList }
         $script:Pkg = New-Package
-        # Every fake zccache call this Describe makes (the daemon-starting session-start of Initialize-AapZcJob
-        # included) records eof and carries on only when its stdin delivers exactly zero bytes and then EOF: the
-        # fake reads synchronously, so the kernel answers at once for a pipe the module closed (RedirectStandardInput,
-        # closed right after Start), while an open stdin never EOFs, blocks the fake until the shim's timeout stops
-        # it, as a client handed the caller's stdin would hang (the log then stays empty and the count assertion
-        # fails). Any byte before EOF fails the call with exit 7 (P13.5b). fake-stdin-facts.log records what each
-        # probe saw, with byte counts and hex, in failure messages.
-        # P13.5b regression: run this Describe on a UTF-8 console, where .NET Framework's redirected stdin writer
-        # emits its encoding's EF BB BF preamble into the pipe at Start unless the module prevents it. The daemon
-        # prime below and every wrapped call then see the console the CI host runs one on; a missing fix makes both
-        # tests fail (the fake logs 'open' with the bytes).
-        $script:SavedInputEncoding = $null
-        try {
-            $script:SavedInputEncoding = [Console]::InputEncoding
-            [Console]::InputEncoding = [System.Text.Encoding]::GetEncoding(65001)
-        } catch { $script:SavedInputEncoding = $null }
-        $env:FAKE_ZC_STDIN = '1'
+        # Initialized here, in this process, without the probe. Every case below starts a process of its own with the probe
+        # on (FAKE_ZC_STDIN in that child's environment, which the shim and Initialize-AapZcJob pass on to every client
+        # they start) and reads the records of its own run. The fake records eof and carries on only when its stdin
+        # delivers exactly zero bytes and then EOF: it reads synchronously, so the kernel answers at once for a pipe the
+        # module closed (RedirectStandardInput, closed right after Start), while an open stdin blocks the fake until the
+        # module's timeout stops it, as a client handed the caller's stdin would hang, and a byte before EOF fails the call
+        # with exit 7 (P13.5b). Each case runs under an open stdin pipe this test holds, as a job step's is, on the
+        # machine's default console and on a UTF-8 one (where Windows PowerShell 5.1 writes EF BB BF into a redirected
+        # stdin pipe at Process.Start unless the module prevents it), under Windows PowerShell 5.1 (the host the guest
+        # agent runs the initialization in) and PowerShell 7 (the job step's compiler launcher); the shim itself is run
+        # under both. Nothing here changes this process's own console.
         $null = Initialize-Package $script:Pkg
         $script:Expected = Get-Direct $script:Pkg (Join-Path $script:Pkg.Src 'a.c')
-    }
-    AfterAll {
-        if ($null -ne $script:SavedInputEncoding) { try { [Console]::InputEncoding = $script:SavedInputEncoding } catch { $null = $_ } }
-        Remove-Item Env:\FAKE_ZC_STDIN -ErrorAction SilentlyContinue
+        $script:InitDriver = Write-Driver 'init-driver.ps1' @'
+param([string]$Install, [string]$Job)
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $Install 'AapZcCache.psm1')
+$c = Initialize-AapZcJob -InstallDir $Install -JobRoot $Job -BudgetBytes 104857600
+"state=$($c.state)"
+'@
+        $script:ConsoleProbe = Write-Driver 'probe-console.ps1' @'
+$e = [Console]::InputEncoding
+"cp=$($e.CodePage) preamble=$($e.GetPreamble().Length)"
+'@
+        function Get-StdinRecord([string]$Root) {
+            $f = Join-Path $Root 'fake-stdin.log'
+            if (Test-Path -LiteralPath $f) { @(Get-Content -LiteralPath $f) } else { @() }
+        }
+        function Get-StdinFact([string]$Root) {
+            $f = Join-Path $Root 'fake-stdin-facts.log'
+            if (Test-Path -LiteralPath $f) { (@(Get-Content -LiteralPath $f) | Select-Object -Last 12) -join ' | ' } else { '(no facts logged)' }
+        }
     }
 
-    It 'a wrapped call starts its client with an empty stdin while the caller holds its own open' {
-        $out = Join-Path $script:Pkg.Tree 'stdin.o'
-        $l = @(Get-Launcher $script:Pkg)
-        # The shim runs with a stdin pipe this test holds open for the whole call, as a job step would.
-        $saved = $env:AAP_ZC_STATE; $env:AAP_ZC_STATE = $script:Pkg.Config
-        $si = New-Object System.Diagnostics.ProcessStartInfo
-        $si.FileName = $l[0]
-        $si.Arguments = (@($l | Select-Object -Skip 1) + @($script:Pkg.Cc, '-c', (Join-Path $script:Pkg.Src 'a.c'), '-o', $out) | ForEach-Object { ConvertTo-AapZcArg $_ }) -join ' '
-        $si.UseShellExecute = $false
-        $si.RedirectStandardInput = $true
-        $p = [System.Diagnostics.Process]::Start($si)
-        $null = $p.Handle  # Windows PowerShell 5.1 reports no ExitCode unless the handle was opened while running
-        try { $p.WaitForExit() } finally { $p.StandardInput.Close() }
-        $env:AAP_ZC_STATE = $saved
-        $code = $p.ExitCode
-        $p.Dispose()
-        $code | Should -Be 0
+    It 'the hosted UTF-8 console is one: a Windows PowerShell 5.1 child reads a preamble-bearing console input encoding there' {
+        $r = Invoke-HostedChild -Exe $script:Ps51 -HostArgs ($script:HostSwitches + @('-File', $script:ConsoleProbe)) -Utf8Console
+        $r.Out.Trim() | Should -Be 'cp=65001 preamble=3' -Because $r.Err
+    }
+
+    It 'a <Shell> shim on the <Con> console starts its client with an empty stdin while the caller holds its own open' -ForEach @(
+        @{ Shell = 'pwsh'; Con = 'default' }, @{ Shell = 'pwsh'; Con = 'utf8' }, @{ Shell = 'powershell'; Con = 'default' }, @{ Shell = 'powershell'; Con = 'utf8' }
+    ) {
+        $root = Join-Path $script:Pkg.Job 'roots\private'
+        $seen = (Get-StdinRecord $root).Count
+        $ran = @(Get-Journal $script:Pkg).Count
+        $out = Join-Path $script:Pkg.Tree ("stdin-$Shell-$Con.o")
+        $l = @(Get-Launcher $script:Pkg)   # CMake's launcher, pwsh -File zcshim.ps1: the other host runs the same shim
+        $r = Invoke-HostedChild -Exe (Get-HostExe $Shell) -HostArgs (@($l | Select-Object -Skip 1) + @($script:Pkg.Cc, '-c', (Join-Path $script:Pkg.Src 'a.c'), '-o', $out)) `
+            -Utf8Console:($Con -eq 'utf8') -HoldStdin -Env @{ AAP_ZC_STATE = $script:Pkg.Config; FAKE_ZC_STDIN = '1' }
+        $r.TimedOut | Should -BeFalse
+        $r.Code | Should -Be 0 -Because $r.Err
         [IO.File]::ReadAllBytes($out) | Should -Be $script:Expected
-        @(Get-Journal $script:Pkg)[-1] | Should -Be 'miss'  # the wrapped path really ran
-        $stdin = @(Get-Content -LiteralPath (Join-Path $script:Pkg.Job 'roots\private\fake-stdin.log'))
-        $stdin | Should -Not -Contain 'open'
-        $stdin[-1] | Should -Be 'eof'
+        @(Get-Journal $script:Pkg).Count | Should -BeGreaterThan $ran -Because 'the wrapped path (a client call) really ran'
+        $mine = @(Get-StdinRecord $root | Select-Object -Skip $seen)
+        $mine.Count | Should -BeGreaterThan 0 -Because ('this run recorded no probe line: ' + (Get-StdinFact $root))
+        @($mine | Where-Object { $_ -ne 'eof' }).Count | Should -Be 0 -Because ('the probes recorded: ' + (Get-StdinFact $root))
     }
 
-    It 'the daemon-starting client (session-start during Initialize-AapZcJob) got an empty stdin too' {
-        $facts = @(if (Test-Path -LiteralPath (Join-Path $script:Pkg.Job 'roots\private\fake-stdin-facts.log')) {
-            Get-Content -LiteralPath (Join-Path $script:Pkg.Job 'roots\private\fake-stdin-facts.log') })
-        $stdin = @(Get-Content -LiteralPath (Join-Path $script:Pkg.Job 'roots\private\fake-stdin.log'))
-        $stdin.Count | Should -BeGreaterThan 0 -Because ("no fake call ever recorded its stdin: {0}" -f ($facts -join ' | '))
-        $stdin | Should -Not -Contain 'open' -Because ("the probes recorded: {0}" -f ($facts -join ' | '))
+    It 'Initialize-AapZcJob under a <Shell> host on the <Con> console, its own stdin an open pipe, starts every client with an empty stdin' -ForEach @(
+        @{ Shell = 'powershell'; Con = 'default' }, @{ Shell = 'powershell'; Con = 'utf8' }, @{ Shell = 'pwsh'; Con = 'default' }, @{ Shell = 'pwsh'; Con = 'utf8' }
+    ) {
+        $job = Join-Path $script:Pkg.Tree ("init-$Shell-$Con")
+        $root = Join-Path $job 'roots\private'
+        $r = Invoke-HostedChild -Exe (Get-HostExe $Shell) -HostArgs ($script:HostSwitches + @('-File', $script:InitDriver, $script:Pkg.Install, $job)) `
+            -Utf8Console:($Con -eq 'utf8') -HoldStdin -Env @{ FAKE_ZC_STDIN = '1' }
+        foreach ($x in @(Get-FakePidFile | Where-Object { $_.File.DirectoryName -eq $root })) { Stop-Process -Id $x.Id -Force -ErrorAction SilentlyContinue }
+        $r.TimedOut | Should -BeFalse
+        $r.Code | Should -Be 0 -Because $r.Err
+        # This run's own records: the job root is new, so nothing else wrote them; session-start and session-end each probe once.
+        $mine = @(Get-StdinRecord $root)
+        $mine.Count | Should -BeGreaterOrEqual 2 -Because ('the clients of this run recorded: ' + (Get-StdinFact $root))
+        @($mine | Where-Object { $_ -ne 'eof' }).Count | Should -Be 0 -Because ('the probes recorded: ' + (Get-StdinFact $root))
+    }
+}
+
+Describe 'Invoke-AapZcProcess -Capture: the caller''s console input encoding and concurrent starters (P13.5c)' {
+    BeforeAll {
+        $script:ModulePath = Join-Path $script:Src 'windows\AapZcCache.psm1'
+        $script:Dir = Join-Path $script:RunRoot 'starters'
+        $null = New-Item -ItemType Directory -Path $script:Dir
+        [IO.File]::WriteAllText((Join-Path $script:Dir 'notaprogram.exe'), 'this is not a program')
+        $null = New-Item -ItemType Directory -Path (Join-Path $script:Dir 'adir.exe')
+        $script:FailDriver = Write-Driver 'start-failure.ps1' @'
+param([string]$Module, [string]$Target)
+$ErrorActionPreference = 'Stop'
+Import-Module $Module
+$m = Get-Module AapZcCache
+$b = [Console]::InputEncoding
+$threw = $false
+try { & $m { param($f) $null = Invoke-AapZcProcess -FilePath $f -Capture } $Target } catch { $threw = $true }
+$a = [Console]::InputEncoding
+'threw={0} before=cp{1}/pre{2} after=cp{3}/pre{4}' -f $threw, $b.CodePage, $b.GetPreamble().Length, $a.CodePage, $a.GetPreamble().Length
+'@
+        # Workers x Each starts of find.exe /c /v "" (it prints 0 for an empty stdin, 1 for any byte), every worker its own runspace.
+        $script:RaceDriver = Write-Driver 'start-race.ps1' @'
+param([string]$Module, [int]$Workers, [int]$Each)
+$ErrorActionPreference = 'Stop'
+$find = Join-Path $env:SystemRoot 'System32\find.exe'
+$b = [Console]::InputEncoding
+$pool = [runspacefactory]::CreateRunspacePool(1, $Workers); $pool.Open()
+$jobs = @(foreach ($w in 1..$Workers) {
+        $ps = [powershell]::Create(); $ps.RunspacePool = $pool
+        [void]$ps.AddScript({ param($Module, $Find, $Each)
+                Import-Module $Module
+                $m = Get-Module AapZcCache
+                $empty = 0; $bytes = 0
+                foreach ($i in 1..$Each) {
+                    $r = & $m { param($f) Invoke-AapZcProcess -FilePath $f -Arguments @('/c', '/v', '') -Capture } $Find
+                    if ([Text.Encoding]::ASCII.GetString($r.Stdout).Trim() -eq '0') { $empty++ } else { $bytes++ }
+                }
+                [pscustomobject]@{ Empty = $empty; Bytes = $bytes }
+            }).AddArgument($Module).AddArgument($find).AddArgument($Each)
+        [pscustomobject]@{ Ps = $ps; Handle = $ps.BeginInvoke() }
+    })
+$empty = 0; $bytes = 0
+foreach ($j in $jobs) { $r = $j.Ps.EndInvoke($j.Handle); $empty += $r.Empty; $bytes += $r.Bytes; $j.Ps.Dispose() }
+$pool.Close()
+$a = [Console]::InputEncoding
+'before=cp{0}/pre{1} empty={2} bytes={3} after=cp{4}/pre{5}' -f $b.CodePage, $b.GetPreamble().Length, $empty, $bytes, $a.CodePage, $a.GetPreamble().Length
+'@
+        # This thread holds the mutex the starters of a process share while a second runspace starts a child.
+        $script:CoopDriver = Write-Driver 'start-wait.ps1' @'
+param([string]$Module)
+$ErrorActionPreference = 'Stop'
+$find = Join-Path $env:SystemRoot 'System32\find.exe'
+$state = [hashtable]::Synchronized(@{ Ready = $false; Started = 0L })
+$lock = New-Object Threading.Mutex($false, ('Local\AapConsoleInputEncoding-' + $PID))
+[void]$lock.WaitOne()
+$ps = [powershell]::Create()
+[void]$ps.AddScript({ param($Module, $Find, $State)
+        Import-Module $Module
+        $psi = New-Object Diagnostics.ProcessStartInfo
+        $psi.FileName = $Find; $psi.Arguments = '/c /v ""'
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $State.Ready = $true   # imported: the next thing it does is start a child
+        $p = & (Get-Module AapZcCache) { param($x) Start-AapZcProcess $x } $psi
+        $State.Started = [DateTime]::UtcNow.Ticks   # the child is started: the critical section has been entered
+        $p.StandardInput.Close(); $null = $p.StandardOutput.ReadToEnd(); [void]$p.WaitForExit(10000); $p.Dispose()
+    }).AddArgument($Module).AddArgument($find).AddArgument($state)
+$h = $ps.BeginInvoke()
+$until = [DateTime]::UtcNow.AddSeconds(60)
+while (-not $state.Ready -and -not $h.IsCompleted -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 50 }
+Start-Sleep -Milliseconds 1500
+$blocked = -not $h.IsCompleted
+$released = [DateTime]::UtcNow.Ticks
+$lock.ReleaseMutex()
+$finished = $h.AsyncWaitHandle.WaitOne(30000)
+$err = ''
+if ($finished) { try { $null = $ps.EndInvoke($h) } catch { $err = $_.Exception.Message } }
+"blocked=$blocked ordered=$($state.Started -ge $released) finished=$finished err=$err"
+'@
+        # The console's own code page is 437 and its encoding little-endian Unicode (1200, preamble FF FE). The Framework
+        # setter leaves the console code page alone for Unicode, so a start must swap in the same code page without the
+        # preamble and put Unicode back: never set the console to UTF-8, which nothing would then undo.
+        $script:UnicodeDriver = Write-Driver 'start-unicode.ps1' @'
+param([string]$Module, [string]$Missing)
+$ErrorActionPreference = 'Stop'
+Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint GetConsoleCP();' -Name Cp -Namespace AapT
+[Console]::InputEncoding = [Text.Encoding]::GetEncoding(437)
+[Console]::InputEncoding = [Text.Encoding]::Unicode
+Import-Module $Module
+$m = Get-Module AapZcCache
+$find = Join-Path $env:SystemRoot 'System32\find.exe'
+$b = [Console]::InputEncoding
+$os0 = [AapT.Cp]::GetConsoleCP()
+$r = & $m { param($f) Invoke-AapZcProcess -FilePath $f -Arguments @('/c', '/v', '') -Capture } $find
+$child = [Text.Encoding]::ASCII.GetString($r.Stdout).Trim()
+$threw = $false
+try { $null = & $m { param($f) Invoke-AapZcProcess -FilePath $f -Capture } $Missing } catch { $threw = $true }
+$a = [Console]::InputEncoding
+'before=cp{0}/pre{1}/os{2} child={3} threw={4} after=cp{5}/pre{6}/os{7}' -f $b.CodePage, $b.GetPreamble().Length, $os0, $child, $threw, $a.CodePage, $a.GetPreamble().Length, [AapT.Cp]::GetConsoleCP()
+'@
+    }
+
+    It 'a start that fails (<Fail>) leaves the console input encoding the <Shell> host had, UTF-8 with its preamble' -ForEach @(
+        @{ Shell = 'powershell'; Fail = 'missing.exe' }, @{ Shell = 'powershell'; Fail = 'notaprogram.exe' }
+        @{ Shell = 'powershell'; Fail = 'adir.exe' }, @{ Shell = 'pwsh'; Fail = 'missing.exe' }
+    ) {
+        $r = Invoke-HostedChild -Exe (Get-HostExe $Shell) -HostArgs ($script:HostSwitches + @('-File', $script:FailDriver, $script:ModulePath, (Join-Path $script:Dir $Fail))) -Utf8Console
+        $r.Out.Trim() | Should -Be 'threw=True before=cp65001/pre3 after=cp65001/pre3' -Because $r.Err
+    }
+
+    It 'starters racing in one Windows PowerShell 5.1 process on a UTF-8 console each give their child an empty stdin and leave the encoding as it was' {
+        $r = Invoke-HostedChild -Exe $script:Ps51 -HostArgs ($script:HostSwitches + @('-File', $script:RaceDriver, $script:ModulePath, '8', '25')) -Utf8Console
+        $r.Out.Trim() | Should -Be 'before=cp65001/pre3 empty=200 bytes=0 after=cp65001/pre3' -Because $r.Err
+    }
+
+    It 'a console whose input encoding is little-endian Unicode (code page 437): the child reads zero stdin bytes, Unicode is put back, even after a failed start, and the console code page stays 437' {
+        $r = Invoke-HostedChild -Exe $script:Ps51 -HostArgs ($script:HostSwitches + @('-File', $script:UnicodeDriver, $script:ModulePath, (Join-Path $script:Dir 'missing.exe')))
+        $r.Out.Trim() | Should -Be 'before=cp1200/pre2/os437 child=0 threw=True after=cp1200/pre2/os437' -Because $r.Err
+    }
+
+    It 'a starter waits while another thread of the process holds the mutex every starter shares' {
+        $r = Invoke-HostedChild -Exe $script:Ps51 -HostArgs ($script:HostSwitches + @('-File', $script:CoopDriver, $script:ModulePath)) -Utf8Console
+        $r.Out.Trim() | Should -Be 'blocked=True ordered=True finished=True err=' -Because $r.Err
+    }
+}
+
+Describe 'the fake zccache stdin probe, the instrument the cases above rely on' {
+    It 'accepts an empty stdin, rejects <Name>, and logs counts, never the bytes' -ForEach @(
+        @{ Name = 'no bytes at all'; Bytes = @(); ExpectedExit = 0; Record = 'eof'; Count = 0 }
+        @{ Name = 'one byte'; Bytes = @(0x78); ExpectedExit = 7; Record = 'open'; Count = 1 }
+        @{ Name = 'a NUL byte'; Bytes = @(0x00); ExpectedExit = 7; Record = 'open'; Count = 1 }
+        @{ Name = 'the UTF-8 preamble'; Bytes = @(0xEF, 0xBB, 0xBF); ExpectedExit = 7; Record = 'open'; Count = 3 }
+    ) {
+        $root = Join-Path $script:RunRoot ('probe-' + [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $root
+        $feed = Join-Path $root 'feed.bin'
+        [IO.File]::WriteAllBytes($feed, [byte[]]$Bytes)
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+        $psi.Arguments = '/d /s /c ""' + (Join-Path $script:Fakes 'fake-zccache.cmd') + '" session-end x < "' + $feed + '""'
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $psi.EnvironmentVariables['ZCCACHE_CACHE_DIR'] = $root; $psi.EnvironmentVariables['FAKE_ZC_STDIN'] = '1'
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $timedOut = $false
+        try {
+            $null = $p.Handle
+            $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+            # One deadline for the probe's exit and for draining its output.
+            $until = [DateTime]::UtcNow.AddSeconds(120)
+            $timedOut = -not $p.WaitForExit(120000)
+            if (-not $timedOut) { $timedOut = -not [System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($o, $e), [int][Math]::Max(0, ($until - [DateTime]::UtcNow).TotalMilliseconds)) }
+            $actualExit = $(if ($timedOut) { $null } else { $p.ExitCode })
+        } finally {
+            if ($timedOut -or -not $p.HasExited) { try { $null = & (Join-Path $env:SystemRoot 'System32\taskkill.exe') /T /F /PID $p.Id 2>&1 } catch { $null = $_ } }
+            $p.Dispose()
+        }
+        $timedOut | Should -BeFalse
+        # PowerShell variable names are case-insensitive: the expected exit and the actual one must not share a name.
+        $actualExit | Should -Be $ExpectedExit -Because ($o.Result + $e.Result)
+        @(Get-Content -LiteralPath (Join-Path $root 'fake-stdin.log')) | Should -Be @($Record)
+        $facts = @(Get-Content -LiteralPath (Join-Path $root 'fake-stdin-facts.log'))
+        (($facts) -join "`n") | Should -Match ('(?m)^result={0} drained={1}( ms=\d+)?$' -f $(if ($Count) { 'bytes' } else { 'eof' }), $Count) -Because ($facts -join ' | ')
+        # Every fact is a process fact or a count: the bytes the probe received are not written to disk.
+        @($facts | Where-Object { $_ -notmatch '^(pid=\d+ parent=\d+\(.*\) type=\d+ redirected=\w+|result=(eof|bytes) drained=\d+( ms=\d+)?)$' }).Count |
+            Should -Be 0 -Because ('a line that is neither a process fact nor a count: ' + ($facts -join ' | '))
     }
 }
 

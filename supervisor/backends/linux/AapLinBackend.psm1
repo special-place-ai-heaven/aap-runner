@@ -28,8 +28,9 @@
 # and broker calls go to AapCapacity.psm1 and aap-broker.psm1 beside this folder.
 # Lines tagged '# check:<name>' are the safety checks tests/backends/linux/Invoke-AapLinMutations.ps1 disables one at a
 # time; each must make at least one test fail.
-# One backend context ($B) belongs to one runspace: its hashtables, its scriptblocks and the process-wide console input
-# encoding swap around each child start are not thread-safe. Steps of one reservation never overlap: Invoke-AapLinStep
+# One backend context ($B) belongs to one runspace: its hashtables and its scriptblocks are runspace-affine. The
+# process-wide console input encoding swap around each child start (Start-AapLinProcess) is serialised across every
+# runspace of the process by a mutex. Steps of one reservation never overlap: Invoke-AapLinStep
 # holds <JournalRoot>\<reservation_id>.lock (FileShare.None, deleted on close) for the whole step.
 
 Set-StrictMode -Version 2
@@ -864,16 +865,45 @@ public static class AapLinIsoWriter {
 }
 '@
 
-# Windows PowerShell 5.1 (.NET Framework) builds a redirected stdin writer from [Console]::InputEncoding and writes its
-# preamble at Process.Start: under code page 65001 the child would read EF BB BF before the envelope. Start under a
-# preamble-free encoding and restore it; without a console there is nothing to swap.
+# Process.Start for the call child, whose stdin gets the envelope and the payload as raw bytes through BaseStream. Windows
+# PowerShell 5.1 (.NET Framework) builds a redirected stdin writer inside Start from [Console]::InputEncoding and, the
+# writer auto-flushing, writes that encoding's preamble into the pipe right there: under code page 65001 the child would
+# read EF BB BF before the envelope. Nothing done to the pipe afterwards can take those bytes back and .NET Framework has
+# no ProcessStartInfo.StandardInputEncoding, so Start runs under a preamble-free [Console]::InputEncoding and the
+# caller's is put back in a finally that also covers a Start that throws (a missing executable, access denied).
+# PowerShell 7 writes no preamble: it starts as it is.
+# [Console]::InputEncoding is process-wide, so save, swap, Start and restore are one critical section under a mutex named
+# for this process, Local\AapConsoleInputEncoding-<pid>; the starters that take that name (the same idiom in
+# AapWinBackend.psm1, AapLinBackend.HyperV.psm1 and guests\cache\windows\AapZcCache.psm1) never start under another's
+# temporary encoding or restore under another's Start. Code outside that group can still read the temporary encoding, and
+# each swap replaces [Console]::In with a fresh reader, so nothing may read [Console]::In while a start runs. Only an
+# encoding with a preamble is swapped, and for the same code page without one (UTF-8, and little- or big-endian Unicode,
+# whose setter leaves the console's own code page alone), so the OS console code page is never changed. No console, no
+# preamble, or a preamble with no such twin: nothing to swap (a preamble of that kind would still reach the child).
 function Start-AapLinProcess([Diagnostics.ProcessStartInfo]$Psi) {
-    $saved = $null
-    try { $saved = [Console]::InputEncoding } catch { $null = $_ }
-    if ($null -ne $saved) {   # check:stdin-bom
-        try { [Console]::InputEncoding = New-Object Text.UTF8Encoding($false) } catch { $saved = $null }
+    if ($PSVersionTable.PSEdition -eq 'Core' -or -not $Psi.RedirectStandardInput) { return [Diagnostics.Process]::Start($Psi) }
+    $lock = New-Object Threading.Mutex($false, ('Local\AapConsoleInputEncoding-' + $PID))
+    $held = $false
+    try {
+        try { $held = $lock.WaitOne(60000) } catch [Threading.AbandonedMutexException] { $held = $true }   # a starter that died inside left it so
+        if (-not $held) { throw 'AAP_Unexpected: another child start held the console input encoding for 60 s' }
+        $saved = $null
+        try {
+            $current = [Console]::InputEncoding
+            if ($current.GetPreamble().Length -gt 0) {   # check:stdin-bom
+                $free = $null   # the same code page, no preamble
+                if ($current.CodePage -eq 65001) { $free = New-Object Text.UTF8Encoding($false) }
+                elseif ($current.CodePage -eq 1200) { $free = New-Object Text.UnicodeEncoding($false, $false) }
+                elseif ($current.CodePage -eq 1201) { $free = New-Object Text.UnicodeEncoding($true, $false) }
+                if ($null -ne $free) { [Console]::InputEncoding = $free; $saved = $current }
+            }
+        } catch { $null = $_ }
+        try { return [Diagnostics.Process]::Start($Psi) }
+        finally { if ($null -ne $saved) { try { [Console]::InputEncoding = $saved } catch { $null = $_ } } }
+    } finally {
+        if ($held) { $lock.ReleaseMutex() }
+        $lock.Dispose()
     }
-    try { [Diagnostics.Process]::Start($Psi) } finally { if ($null -ne $saved) { try { [Console]::InputEncoding = $saved } catch { $null = $_ } } }
 }
 
 # The default transport: one hidden ssh.exe per command, by absolute path, with a fixed command line that names only the

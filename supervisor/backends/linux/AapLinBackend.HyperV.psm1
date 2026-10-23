@@ -71,6 +71,47 @@ function Get-AapLinKvpItem($Items, [string]$Name) {
     $null
 }
 
+# Process.Start for the ssh-keygen child, whose stdin is redirected and closed right after Start. Windows PowerShell 5.1
+# (.NET Framework) builds a redirected stdin writer inside Start from [Console]::InputEncoding and, the writer
+# auto-flushing, writes that encoding's preamble into the pipe right there: with a UTF-8 console ssh-keygen would read
+# EF BB BF before the EOF of the empty stdin it is meant to get. Closing the pipe afterwards cannot take the bytes back
+# and .NET Framework has no ProcessStartInfo.StandardInputEncoding, so Start runs under a preamble-free
+# [Console]::InputEncoding and the caller's is put back in a finally that also covers a Start that throws (a missing
+# executable, access denied). PowerShell 7 writes no preamble: it starts as it is.
+# [Console]::InputEncoding is process-wide, so save, swap, Start and restore are one critical section under a mutex named
+# for this process, Local\AapConsoleInputEncoding-<pid>; the starters that take that name (the same idiom in
+# AapLinBackend.psm1, AapWinBackend.psm1 and guests\cache\windows\AapZcCache.psm1) never start under another's temporary
+# encoding or restore under another's Start. Code outside that group can still read the temporary encoding, and each swap
+# replaces [Console]::In with a fresh reader, so nothing may read [Console]::In while a start runs. Only an encoding with
+# a preamble is swapped, and for the same code page without one (UTF-8, and little- or big-endian Unicode, whose setter
+# leaves the console's own code page alone), so the OS console code page is never changed. No console, no preamble, or a
+# preamble with no such twin: nothing to swap (a preamble of that kind would still reach the child).
+function Start-AapLinHvProcess([Diagnostics.ProcessStartInfo]$Psi) {
+    if ($PSVersionTable.PSEdition -eq 'Core' -or -not $Psi.RedirectStandardInput) { return [Diagnostics.Process]::Start($Psi) }
+    $lock = New-Object Threading.Mutex($false, ('Local\AapConsoleInputEncoding-' + $PID))
+    $held = $false
+    try {
+        try { $held = $lock.WaitOne(60000) } catch [Threading.AbandonedMutexException] { $held = $true }   # a starter that died inside left it so
+        if (-not $held) { throw 'AAP_Unexpected: another child start held the console input encoding for 60 s' }
+        $saved = $null
+        try {
+            $current = [Console]::InputEncoding
+            if ($current.GetPreamble().Length -gt 0) {   # check:keygen-stdin-bom
+                $free = $null   # the same code page, no preamble
+                if ($current.CodePage -eq 65001) { $free = New-Object Text.UTF8Encoding($false) }
+                elseif ($current.CodePage -eq 1200) { $free = New-Object Text.UnicodeEncoding($false, $false) }
+                elseif ($current.CodePage -eq 1201) { $free = New-Object Text.UnicodeEncoding($true, $false) }
+                if ($null -ne $free) { [Console]::InputEncoding = $free; $saved = $current }
+            }
+        } catch { $null = $_ }
+        try { return [Diagnostics.Process]::Start($Psi) }
+        finally { if ($null -ne $saved) { try { [Console]::InputEncoding = $saved } catch { $null = $_ } } }
+    } finally {
+        if ($held) { $lock.ReleaseMutex() }
+        $lock.Dispose()
+    }
+}
+
 function New-AapLinHyperVProvider {
     <# The provider hashtable New-AapLinBackend expects. #>
     $p = @{}
@@ -99,20 +140,7 @@ function New-AapLinHyperVProvider {
         $psi.FileName = $script:KeyGenExe
         $psi.Arguments = '-q -t ed25519 -N "" -C aap-management -f "{0}"' -f (Join-Path $a.Dir 'id_ed25519')
         $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true; $psi.RedirectStandardInput = $true
-        # Windows PowerShell 5.1 (.NET Framework) flushes this console's input-encoding preamble into the redirected
-        # stdin pipe at Start: with a UTF-8 console ssh-keygen would read EF BB BF instead of the empty stdin (closed
-        # right after Start) it is meant to get. Swap in a BOM-less encoding for the Start only (the idiom of
-        # aap-broker.psm1), then put the caller's back. PowerShell 7, no console, or no preamble: nothing to do.
-        $savedInputEncoding = $null
-        try {
-            $current = [Console]::InputEncoding
-            if ($current.GetPreamble().Length -gt 0) {
-                [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
-                $savedInputEncoding = $current
-            }
-        } catch { $null = $_ }
-        $proc = [Diagnostics.Process]::Start($psi)
-        if ($null -ne $savedInputEncoding) { try { [Console]::InputEncoding = $savedInputEncoding } catch { $null = $_ } }
+        $proc = Start-AapLinHvProcess $psi
         try {
             $proc.StandardInput.Close()
             $o = $proc.StandardOutput.ReadToEndAsync(); $e = $proc.StandardError.ReadToEndAsync()
