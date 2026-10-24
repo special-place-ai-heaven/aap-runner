@@ -186,7 +186,7 @@ Describe 'a restarted supervisor keeps the guest channel' {
         $B = New-LinBackend $w
         $r = New-LinReservation $w
         $rid = $r.reservation_id
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)   # created: nothing sent yet
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)   # created: nothing sent yet
         [IO.File]::ReadAllText((Join-Path $w.Clones "$rid\ssh\seq")) | Should -BeExactly '0'
         $B2 = New-LinBackend $w
         @(Invoke-LinSteps $B2 $w $rid -Max 3 -Until { param($x) $x.state -eq 'ready' } | ForEach-Object { $_.Action }) -join ',' | Should -Be 'booted,ready'
@@ -198,7 +198,7 @@ Describe 'a restarted supervisor keeps the guest channel' {
         $w = New-LinWorld
         $B = New-LinBackend $w
         $r = New-LinReservation $w
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)   # created
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)   # created
         [IO.Directory]::Delete((Join-Path $w.Clones "$($r.reservation_id)\ssh"), $true)
         $B2 = New-LinBackend $w
         (Invoke-AapLinStep -Backend $B2 -Reservation (Get-LinRes $w $r.reservation_id)).Action | Should -Be 'destroyed'

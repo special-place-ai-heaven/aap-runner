@@ -34,8 +34,10 @@ transport is CANDIDATE (D2) until the lab proof P02.1 passes; the guest network 
 
 ## How it works
 
-`Invoke-AapLinStep -Backend $B -Reservation $r [-BaseSha256 <pin>]` does one step for one reservation, chosen by the
-allocator state and the reservation's journal. The supervisor calls it for every live Linux VM reservation on every tick.
+`Invoke-AapLinStep -Backend $B -Reservation $r [-BaseSha256 <pin>] [-CatalogGuestRevision <integer>] [-ApprovedGuestRevision <integer>]`
+does one step for one reservation, chosen by its state and journal. The supervisor calls it on every tick; create
+requires both revision pins to be integer 2 before its intent or any provider operation (`AAP_GuestRevision`). See
+[INTEGRATION.md](INTEGRATION.md#p12-supervisor) for the admin-owned source of each pin, including rollback/certification.
 
 | Allocator state | Step |
 |---|---|
@@ -88,6 +90,9 @@ The seed (`New-AapLinSeed`, written by the provider's `NewSeedImage` as ISO 9660
   passwordless sudo; `lock_passwd: true`) as the only entry of `users` (so cloud-init's default user, uid 1000, is never
   created, and no account gets uid 1000), and root's `authorized_keys` with exactly one line:
   `restrict,command="/usr/local/libexec/aap-guest/agent" ssh-ed25519 <public> aap-management`.
+  Line 2 is the ignored YAML comment `# aap-guest-identity: <canonical closed JSON>` holding the journaled VM id,
+  reservation id, lease generation and `scratch: null` (schema 2); no host data or secret. Exact embedding and phased
+  binding/cleanup rules: [guest README](../../../guests/linux/README.md#per-clone-offline-identity-guest-transport-revision-2).
 - `meta-data`: a fresh `instance-id` (`aap-<rid hex>-<lease generation>-<random>`) and `local-hostname`.
 - `network-config` (version 2): the static addressing from the declaration P10.0's `Attach` returned, once the shared
   check accepted it for this VM: the `address` with the subnet's prefix length, the `gateway` as default route, the
@@ -96,9 +101,11 @@ The seed (`New-AapLinSeed`, written by the provider's `NewSeedImage` as ISO 9660
   declaration itself is never journaled or kept: every create run and every boot attaches again and gets the same one
   from the module's journal.
 
-The writer takes only full blocks from IMAPI2's image stream (a short read fails the image instead of leaving stale bytes
-in it) and reports the size and SHA-256 of what it wrote; create reads the file back through a read-only handle against
-both before any VM gets it (`AAP_SeedInvalid`).
+The writer takes only full blocks from IMAPI2's image stream and reports its size and SHA-256. Create writes an
+unpublished `seed.iso.tmp`, verifies it through a read-only handle, then atomically renames/replaces `seed.iso` before
+attaching it (`AAP_SeedInvalid` on a short/lost write). A retried never-booted create removes stale temporary ISO/staging
+files, keeps the same identity and journaled VM, and replaces the whole seed, never appends. A failed new write cannot
+publish a partial seed. KVP stays on only for the guest-to-host public host-key item; the host writes no item to a guest.
 
 Never a private key, a JIT config, a registration token, a password or a host key. Once the guest answers its first probe
 `ready`, the seed is ejected (`EjectSeed`), deleted, and the VM is checked to hold no medium; a failure destroys the clone
@@ -235,6 +242,6 @@ pwsh -File tests/backends/linux/Invoke-AapLinMutations.ps1
   Against it the backend follows the contract's consumer obligations; that cloud-init NoCloud takes the address from
   `network-config` on `hv_netvsc` with no DHCP client asking, and the provider's adapter read-back as Hyper-V really
   shows it, are lab points (P02.1).
-- The guest agent, the sshd vsock socket and the KVP host-key publisher (P15) do not exist; the fake guest follows
-  guest-transport.md and INTEGRATION.md, P15.
+- The guest agent, sshd vsock socket and KVP host-key publisher are implemented in `guests/linux`; their real-VM behavior
+  is not proven here. Simulated backend tests and the real guest reader tests enforce guest-transport revision 2.
 - `shutdown` is never sent: destroy turns the VM off.

@@ -11,6 +11,7 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd "${here}/../../.." && pwd)
 guest=${AAP_GUEST_DIR:-${repo}/guests/linux}
+seed_data=${AAP_SEED_USER_DATA:-${here}/fixtures/seed-user-data.golden}
 tmp=$(mktemp -d)
 S="${tmp}/sys"
 K="${tmp}/knob"
@@ -30,6 +31,7 @@ prereq() { echo "PREREQUISITE: $*" >&2; exit 11; }
 VM=6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b
 RID=r-1a2b3c4d000000b1
 HK="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5$(printf 'Ab%.0s' {1..24})"
+IDENTITY='{"schema":2,"kind":"guest_identity","vm_id":"'${VM}'","reservation_id":"'${RID}'","lease_generation":7,"scratch":null}'
 JIT=$(printf 'SYNTHETIC-JIT-MARKER-%s' "${RANDOM}${RANDOM}${RANDOM}" | base64 -w0)
 
 # --- stubs: every call is logged with its arguments; behaviour comes from knob files ----------------------------------
@@ -57,12 +59,13 @@ stubs make-ssl-cert '[ ! -e "${K}/no-tls" ] || exit 1' '[ -e "${K}/tls-empty" ] 
 stubs loginctl 'exit 0'
 stubs chown 'exit 0'
 stubs pgrep '[ -e "${K}/worker" ]'
+stubs lsblk '[ ! -e "${K}/lsblk-fails" ] || exit 1' 'echo disk' '[ ! -e "${K}/extra-disk" ] || echo disk' 'exit 0'
 stubs dd '[ ! -e "${K}/dd-fail" ] || exit 1' 'if [ -e "${K}/dd-short" ]; then /bin/dd "$@" | head -c 100; else exec /bin/dd "$@"; fi'
 
 cat > "${tmp}/check.py" <<'EOF'
 # One reply line: printable, one JSON object, valid with its command as a guest-transport exchange, and a state the
 # backend accepts for an ok reply to that command. Prints status|state|code, then diag.
-import json, subprocess, sys
+import json, pathlib, subprocess, sys
 conn, out, validate, work = sys.argv[1:5]
 raw = open(out, 'rb').read()
 assert raw.endswith(b'\n') and raw.count(b'\n') == 1, 'not exactly one reply line'
@@ -74,6 +77,25 @@ doc = {'schema': 1, 'kind': 'exchange', 'cmd': c, 'reply': r}
 if (c['cmd'] == 'deliver_registration') != (c['payload_bytes'] > 0):  # a command outside the contract: the reply alone
     assert all(c[k] == r[k] for k in ('vm_id', 'reservation_id', 'lease_generation', 'seq', 'nonce')), 'wrong echo'
     doc = r
+if r['status'] == 'ok':
+    st = pathlib.Path(work) / 'sys/var/lib/aap-guest'
+    record = json.loads((st / 'identity.json').read_text())
+    cloud = pathlib.Path(work) / 'sys/var/lib/cloud'
+    cleaned = (st / 'identity.cleaned').exists()
+    cache_files = list(cloud.glob('instances/*/obj.pkl'))
+    assert not cache_files if cleaned else bool(cache_files), 'wrong obj.pkl cache phase'
+    copies = list(cloud.glob('instances/*/user-data.txt*')) + list(cloud.glob('instances/*/cloud-config.txt*'))
+    copies += [p for p in (cloud / 'seed').rglob('*') if p.is_file()]
+    reread = []
+    for p in copies:
+        if p.is_file():
+            for line in p.read_text().splitlines():
+                if 'aap-guest-identity' in line:
+                    assert line.startswith('# aap-guest-identity: '), 'malformed reread marker'
+                    reread.append(json.loads(line.split(': ', 1)[1]))
+    assert (not reread) if cleaned else (reread and all(x == record for x in reread)), 'wrong phased material'
+    doc = {'schema': 2, 'kind': 'identity_exchange', 'record': record, 'cmd': c, 'reply': r,
+           'reread': {'phase': 'after_cleanup' if cleaned else 'before_cleanup', 'record': None if cleaned else reread[0]}}
 with open(work + '/exchange.json', 'w') as f:
     json.dump(doc, f)
 v = subprocess.run([sys.executable, '-B', '-I', validate, 'guest-transport', work + '/exchange.json'], capture_output=True, text=True)
@@ -98,9 +120,12 @@ reset() {
   # pool 1 already holds another item and a stale one of ours
   { printf other; head -c 507 /dev/zero; printf value; head -c 2043 /dev/zero
     printf aap-ssh-host-key-ed25519; head -c 488 /dev/zero; printf stale; head -c 2043 /dev/zero; } > "${S}/var/lib/hyperv/.kvp_pool_1"
-  for f in user-data.txt user-data.txt.i cloud-config.txt; do echo seed > "${S}/var/lib/cloud/instances/i-1/${f}"; done
+  for f in user-data.txt user-data.txt.i; do cp "${seed_data}" "${S}/var/lib/cloud/instances/i-1/${f}"; done
+  echo '#cloud-config' > "${S}/var/lib/cloud/instances/i-1/cloud-config.txt"
   ln -s instances/i-1 "${S}/var/lib/cloud/instance"
-  echo seed > "${S}/var/lib/cloud/seed/nocloud/user-data"
+  # cloud-init also caches serialized user-data here; it is opaque binary and is not read as an identity source.
+  printf 'opaque\0%s\n' "${IDENTITY}" > "${S}/var/lib/cloud/instances/i-1/obj.pkl"
+  cp "${seed_data}" "${S}/var/lib/cloud/seed/nocloud/user-data"
   for f in a b; do printf 'echo %s >> "%s/postgen"\n' "${f}" "${tmp}" > "${S}/imagegeneration/post-generation/${f}.sh"; done
   printf 'LANG=C.UTF-8\n' > "${S}/etc/default/locale"
   cat > "${S}/etc/environment" <<'EOF'
@@ -154,7 +179,7 @@ send() {
   local p=${3:-}
   CNT=$((CNT + 1))
   printf '%s{"schema":1,"kind":"host_cmd","vm_id":"%s","reservation_id":"%s","lease_generation":%s,"seq":%s,"nonce":"%s","cmd":"%s","payload_bytes":%s,"expires_at":"%s"}\n%s' \
-    "${BOM:-}" "${VMX:-${VM}}" "${RID}" "${GENX:-7}" "$2" "${NONCE:-$(printf '%032x' "$((CNT + 4096))")}" "$1" "${LENX:-${#p}}" \
+    "${BOM:-}" "${VMX:-${VM}}" "${RIDX:-${RID}}" "${GENX:-7}" "$2" "${NONCE:-$(printf '%032x' "$((CNT + 4096))")}" "$1" "${LENX:-${#p}}" \
     "${EXPX:-$(date -u -d '+60 sec' +%Y-%m-%dT%H:%M:%SZ)}" "${p}" > "${tmp}/conn"
   agent "${tmp}/conn"
   [ "${RC}" = 0 ] || fail "$1 seq $2 exited ${RC}"
@@ -168,6 +193,122 @@ expect() { # STATUS STATE CODE LABEL: the last reply
 noreply() { [ "${RC}" = 0 ] && [ ! -s "${tmp}/out" ] || fail "$1: answered '$(cat "${tmp}/out")' rc ${RC}"; }
 wait_for() { for _ in $(seq 100); do [ ! -e "$1" ] || return 0; sleep 0.1; done; fail "$2: ${1#"${tmp}"/} never appeared"; }
 env_of() { grep -m1 "^$1=" "${tmp}/listener.env" | cut -d= -f2-; }
+
+# --- revision-2 offline identity (each send is a new agent process) ----------------------------------------------------
+seed_only() {
+  rm -rf "${S}/var/lib/cloud/seed" "${S}/var/lib/cloud/instances/i-1/"*
+  mkdir -p "${S}/var/lib/cloud/instances/i-1"
+  printf '#cloud-config\n# aap-guest-identity: %s\n' "$1" > "${S}/var/lib/cloud/instances/i-1/user-data.txt"
+}
+identity_fails() {
+  send probe 1
+  expect error failed null "$1"
+  [ "${DIAG}" = 'identity record invalid' ] || fail "$1: unsafe diagnostic ${DIAG}"
+  [ ! -e "${ST}/identity.json" ] || fail "$1: partial binding"
+  chmod -R u+rwX "${S}/var/lib/cloud" 2> /dev/null || true
+  rm -rf "${S}/var/lib/cloud"
+  seed_only "${IDENTITY}"
+  send probe 2
+  expect refused failed null "$1 stays final"
+}
+
+# cloud-init may point instance at the active cache by either a relative or absolute path.
+for target in relative absolute; do
+  reset
+  if [ "${target}" = absolute ]; then
+    rm "${S}/var/lib/cloud/instance"
+    ln -s "${S}/var/lib/cloud/instances/i-1" "${S}/var/lib/cloud/instance"
+  fi
+  send probe 1
+  expect ok booting null "${target} cloud-init instance symlink binds identity"
+done
+reset; rm "${S}/var/lib/cloud/instance"; ln -s i-1 "${S}/var/lib/cloud/instance"
+identity_fails 'relative instance link without instances prefix'
+reset; rm "${S}/var/lib/cloud/instance"; ln -s /tmp/outside/instances/i-1 "${S}/var/lib/cloud/instance"
+identity_fails 'absolute instance link outside cloud cache'
+reset; ln -s i-1 "${S}/var/lib/cloud/instances/i-2"; rm "${S}/var/lib/cloud/instance"
+ln -s "${S}/var/lib/cloud/instances/i-2" "${S}/var/lib/cloud/instance"
+identity_fails 'absolute instance target is itself a symlink'
+reset; rm -rf "${S}/var/lib/cloud"; identity_fails 'missing identity'
+reset; seed_only "${IDENTITY}"; chmod 000 "${S}/var/lib/cloud/instances/i-1/user-data.txt"; identity_fails 'unreadable material'
+reset; rm -f "${S}/var/lib/cloud/instance"; rm -rf "${S}/var/lib/cloud/instances"; echo blocked > "${S}/var/lib/cloud/instances"; identity_fails 'instances is not a directory'
+reset; rm -f "${S}/var/lib/cloud/instance"; chmod 000 "${S}/var/lib/cloud/instances"; identity_fails 'unreadable instances cannot hide a cached copy'
+for bad in 'not-json SYNTHETIC-JIT-MARKER' \
+  "${IDENTITY/\"schema\":2/\"schema\":1}" "${IDENTITY/\"schema\":2/\"schema\":\"2\"}" \
+  "${IDENTITY/\"scratch\":null/\"scratch\":{}}" "${IDENTITY/\"scratch\":null/\"scratch\":null,\"host_path\":\"SECRET\"}" \
+  "${IDENTITY/\"lease_generation\":7/\"lease_generation\":0}" "${IDENTITY/\"lease_generation\":7/\"lease_generation\":$((999999999 + 1))}" \
+  "${IDENTITY/\"lease_generation\":7/\"lease_generation\":7.1}" "${IDENTITY/\"lease_generation\":7/\"lease_generation\":\"7\"}" \
+  "${IDENTITY/6f1d2c3b/6F1D2C3B}" "${IDENTITY/r-1a2b/r-1A2B}" \
+  "${IDENTITY/\"schema\":2/\"schema\":1,\"schema\":2}" "${IDENTITY} ${IDENTITY}"; do
+  reset; seed_only "${bad}"; identity_fails 'malformed identity'
+done
+reset; seed_only "${IDENTITY}"; printf '# aap-guest-identity: %s\n' "${IDENTITY}" >> "${S}/var/lib/cloud/instances/i-1/user-data.txt"
+identity_fails 'two records in one file'
+reset; printf '# misplaced aap-guest-identity: %s\n' "${IDENTITY}" > "${S}/var/lib/cloud/instances/i-1/cloud-config.txt"
+identity_fails 'malformed marker in another copy'
+reset; echo '# aap-guest-identity: not-json' > "${S}/var/lib/cloud/instances/i-1/user-data.txt"; rm -f "${S}/var/lib/cloud/instances/i-1/user-data.txt.i"
+identity_fails 'a malformed copy cannot be hidden by a valid seed copy'
+reset; ln -s "${S}/var/lib/cloud/instances/i-1" "${S}/var/lib/cloud/instances/i-2"; identity_fails 'a linked instance cannot hide material'
+reset; printf '# aap-guest-identity: %s\n' "${IDENTITY/\"lease_generation\":7/\"lease_generation\":8}" > "${S}/var/lib/cloud/instances/i-1/cloud-config.txt"
+identity_fails 'conflicting copies'
+reset; seed_only "${IDENTITY}"; printf '\0' >> "${S}/var/lib/cloud/instances/i-1/user-data.txt"; identity_fails 'NUL in material'
+reset; seed_only "${IDENTITY}"; printf '\377' >> "${S}/var/lib/cloud/instances/i-1/user-data.txt"; identity_fails 'non-ASCII material'
+reset; seed_only "${IDENTITY}"; printf '%1048577s' ' ' >> "${S}/var/lib/cloud/instances/i-1/user-data.txt"; identity_fails 'oversized material'
+reset; touch "${K}/extra-disk"; identity_fails 'a data disk with scratch null'
+reset; touch "${K}/lsblk-fails"; identity_fails 'unreadable disk inventory'
+
+reset; send status 1
+expect refused failed null 'only probe can bind'
+[ ! -e "${ST}/identity.json" ] && [ ! -e "${ST}/seq" ] || fail 'non-probe bound identity or sequence'
+send probe 1; expect ok booting null 'first probe binds after an unbound command'
+cmp -s <(printf '%s\n' "${IDENTITY}") "${ST}/identity.json" || fail 'binding is not the offline record'
+[ "$(stat -c %a "${ST}/identity.json")" = 600 ] || fail 'binding is not root-private'
+send probe 2; expect ok booting null 'identical copies before cleanup'
+send probe 2; expect refused booting null 'identity does not weaken replay refusal'
+RIDX=r-0000000000000000 send probe 3; expect refused booting null 'another reservation after binding'
+GENX=8 send probe 3; expect refused booting null 'another generation after binding'
+
+for field in vm reservation generation; do
+  reset
+  case "${field}" in
+    vm) VMX=00000000-0000-4000-8000-000000000000 send probe 1 ;;
+    reservation) RIDX=r-0000000000000000 send probe 1 ;;
+    generation) GENX=8 send probe 1 ;;
+  esac
+  expect refused booting null "first probe mismatched ${field}"
+  [ "$(cat "${ST}/identity.json")" = "${IDENTITY}" ] && [ ! -e "${ST}/seq" ] || fail 'envelope chose the binding'
+  send probe 1; expect ok booting null "correct identity after mismatched ${field}"
+done
+reset; rm -f "${S}/sys/class/dmi/id/product_uuid"; send probe 1
+expect ok booting null 'SMBIOS is not the identity carrier'
+reset; send probe 1; seed_only "${IDENTITY/\"lease_generation\":7/\"lease_generation\":8}"
+send probe 2; expect refused failed null 'replacement before cleanup'
+seed_only "${IDENTITY}"; send probe 3; expect refused failed null 'restoring material cannot rebind'
+[ "$(cat "${ST}/identity.json")" = "${IDENTITY}" ] || fail 'a replacement changed binding'
+reset; send probe 1; rm -rf "${S}/var/lib/cloud"; send probe 2
+expect refused failed null 'missing record before cleanup'
+reset; send probe 1; printf '# aap-guest-identity: %s\n' "${IDENTITY}" >> "${S}/var/lib/cloud/instances/i-1/user-data.txt"
+send probe 2; expect refused failed null 'duplicate record after binding'
+for record in "${IDENTITY}" "${IDENTITY/\"lease_generation\":7/\"lease_generation\":8}" 'not-json SYNTHETIC-JIT-MARKER'; do
+  reset; firstboot; send probe 1
+  send deliver_registration 2 "${JIT}"; expect ok registered null 'cleanup before registered'
+[ -f "${ST}/identity.cleaned" ] && [ ! -e "${S}/var/lib/cloud/instances/i-1/obj.pkl" ] && [ ! -e "${S}/var/lib/cloud/seed" ] &&
+    [ -z "$(find "${S}/var/lib/cloud" \( -name 'user-data*' -o -name 'cloud-config.txt*' -o -name obj.pkl \) -print -quit)" ] || fail 'cleanup phase not persisted'
+  mkdir -p "${S}/var/lib/cloud/seed/nocloud"
+  printf '# aap-guest-identity: %s\n' "${record}" > "${S}/var/lib/cloud/seed/nocloud/user-data"
+  send status 3; expect refused failed null 'record reappeared after cleanup'
+  rm -rf "${S}/var/lib/cloud/seed"; send probe 4; expect refused failed null 'after-cleanup failure stays final'
+done
+reset; firstboot; send probe 1
+[ -f "${S}/var/lib/cloud/instances/i-1/obj.pkl" ] || fail 'first probe deleted the opaque datasource cache early'
+send deliver_registration 2 "${JIT}"; expect ok registered null 'cleanup removes opaque datasource cache'
+[ ! -e "${S}/var/lib/cloud/instances/i-1/obj.pkl" ] || fail 'opaque datasource cache survived cleanup'
+printf 'opaque\0%s\n' "${IDENTITY}" > "${S}/var/lib/cloud/instances/i-1/obj.pkl"
+send status 3; expect refused failed null 'opaque datasource cache reappeared after cleanup'
+reset; firstboot; send probe 1; send deliver_registration 2 "${JIT}"
+rm -f "${ST}/identity.json"; seed_only "${IDENTITY}"
+send probe 3; expect refused failed null 'cleanup phase forbids rebinding even if binding state was lost'
+[ ! -e "${ST}/identity.json" ] || fail 'after-cleanup material rebound a lost identity'
 
 # --- envelope ---------------------------------------------------------------------------------------------------------
 reset
@@ -255,7 +396,7 @@ assert len(raw) % 2560 == 0 and recs == [('other', 'value'), ('aap-ssh-host-key-
 EOF
 [ "$(find "${S}/var/lib/hyperv" -mindepth 1 | wc -l)" = 1 ] && [ "$(stat -c %a "${S}/var/lib/hyperv/.kvp_pool_1")" = 644 ] &&
   [ "$(stat -c %i "${S}/var/lib/hyperv/.kvp_pool_1")" != "${inode}" ] || fail 'the KVP pool was not swapped in whole (renamed over the old one)'
-[ -z "$(find "${S}/var/lib/cloud" -name 'user-data*' -o -name cloud-config.txt -o -name seed)" ] || fail "the seed's copies survived first boot"
+[ -f "${S}/var/lib/cloud/instances/i-1/user-data.txt" ] || fail 'firstboot removed identity before first probe'
 [ "$(sort "${tmp}/postgen" | tr '\n' ' ')" = 'a b ' ] || fail "post-generation: $(cat "${tmp}/postgen")"
 for c in 'make-ssl-cert generate-default-snakeoil --force-overwrite' 'loginctl enable-linger runner' 'systemctl start docker.service' \
   "chown -R runner:runner ${S}/opt/actions-runner"; do
@@ -290,9 +431,15 @@ expect error ready null 'start_runner before any registration'
 send deliver_registration 5 'not base64!'
 expect error ready null 'a payload that is not an encoded JIT config'
 reset; firstboot; send probe 1
+chmod 0555 "${S}/var/lib/cloud/instances/i-1"
+send deliver_registration 2 "${JIT}"
+chmod 0755 "${S}/var/lib/cloud/instances/i-1"
+expect error ready null 'readable seed copies that cannot be deleted'
+[ ! -e "${ST}/runner.pid" ] && [ ! -e "${ST}/identity.cleaned" ] || fail 'registration ran before verified cleanup'
+reset; firstboot; send probe 1
 mkdir -p "${S}/var/lib/cloud/instances/i-1/user-data.txt.d"
 send deliver_registration 2 "${JIT}"
-expect error ready null 'seed copies that cannot be removed'
+expect refused failed null 'unreadable seed copy refuses before delivery'
 reset; firstboot; send probe 1
 echo seed > "${S}/var/lib/cloud/instances/i-1/user-data.txt"
 send deliver_registration 2 "${JIT}"

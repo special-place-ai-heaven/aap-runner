@@ -1,0 +1,21 @@
+#cloud-config
+# aap-guest-identity: {"schema":2,"kind":"guest_identity","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","reservation_id":"r-1a2b3c4d000000b1","lease_generation":7,"scratch":null}
+hostname: aap-l-1-7-1a2b3c4d
+preserve_hostname: false
+disable_root: false
+ssh_pwauth: false
+ssh_deletekeys: true
+ssh_genkeytypes: [ed25519]
+users:
+  - name: runner
+    uid: 1001
+    groups: [adm, users, docker, systemd-journal]
+    shell: /bin/bash
+    lock_passwd: true
+    sudo: 'ALL=(ALL) NOPASSWD:ALL'
+write_files:
+  - path: /root/.ssh/authorized_keys
+    owner: root:root
+    permissions: '0600'
+    content: |
+      restrict,command="/usr/local/libexec/aap-guest/agent" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA aap-management

@@ -82,14 +82,14 @@ Describe 'one job, end to end' {
         $w = New-LinWorld
         $B = New-LinBackend $w
         $r = New-LinReservation $w
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         @(Get-ChildItem -LiteralPath $w.Scratch).Count | Should -Be 0
         @(Get-LinCalls $w 'NewDiffDisk *')[0] | Should -BeLike "*\$($r.reservation_id)\os.avhdx *base.vhdx"
         $w = New-LinWorld
         $B = New-LinBackend $w
         $q = Request-AapReservation -Root $w.Cap -Profile linux -MemOverheadMib 512 -CloneGib 55 -ScratchGib 10 -IoMbps 100 -ImageGeneration $script:LinGen -RelaxedTrustForTests
         $q.Ok | Should -BeTrue
-        [void](Invoke-AapLinStep -Backend $B -Reservation $q.Reservation -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $q.Reservation -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         @(Get-LinJournal $w $q.Reservation.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_BadRequest: the Linux profile has no scratch disk*'
         @(Get-LinCalls $w 'NewVm *').Count | Should -Be 0
     }
