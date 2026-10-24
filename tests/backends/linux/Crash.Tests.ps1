@@ -45,6 +45,7 @@ Describe 'killed at every lifecycle boundary' {
     It 'killed at <Fault>: recovered from the journal' -ForEach @(
         @{ Fault = 'create:after-intent'; Knobs = @{} }, @{ Fault = 'create:after-folders'; Knobs = @{} }, @{ Fault = 'create:after-disks'; Knobs = @{} }, @{ Fault = 'create:after-key'; Knobs = @{} }
         @{ Fault = 'create:after-seed'; Knobs = @{} }, @{ Fault = 'create:after-newvm'; Knobs = @{} }, @{ Fault = 'create:after-vm'; Knobs = @{} }, @{ Fault = 'create:after-done'; Knobs = @{} }
+        @{ Fault = 'create:before-seed-publish'; Knobs = @{} }
         @{ Fault = 'create:after-attach'; Knobs = @{} }, @{ Fault = 'boot:after-checks'; Knobs = @{} }
         @{ Fault = 'boot:after-intent'; Knobs = @{} }, @{ Fault = 'boot:after-done'; Knobs = @{} }, @{ Fault = 'ready:after-pin'; Knobs = @{} }, @{ Fault = 'ready:after-eject'; Knobs = @{} }, @{ Fault = 'ready:after-done'; Knobs = @{} }
         @{ Fault = 'run_one:after-intent'; Knobs = @{} }, @{ Fault = 'run_one:after-lease'; Knobs = @{} }, @{ Fault = 'run_one:after-deliver'; Knobs = @{} }, @{ Fault = 'run_one:after-start'; Knobs = @{} }
