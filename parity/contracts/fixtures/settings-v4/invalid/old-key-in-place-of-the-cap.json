@@ -1,0 +1,19 @@
+{
+  "expect": "missing required property 'vm_lifetime_cap_hours'",
+  "instance": {
+    "schema": 4,
+    "linux_backend": "wsl-legacy",
+    "runner_count": 3,
+    "windows_runner_count": 2,
+    "job_cpus": 19,
+    "job_memory_gib": 57,
+    "paused": false,
+    "io_percent": 90,
+    "sharing": "slice",
+    "host_reserve_percent": 10,
+    "share_mode": "per_profile",
+    "linux_share_percent": 60,
+    "windows_share_percent": 30,
+    "lease_wall_clock_hours": 6
+  }
+}

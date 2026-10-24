@@ -19,11 +19,13 @@ A pattern's `$` means end of input, as in ECMA-262: Python's `$` would also matc
 newline, so check() anchors at the end of the string instead. Documents are bounded to 256 KiB.
 Exit 0 when everything holds, 1 otherwise.
 """
+import hashlib
 import ipaddress
 import json
 import math
 import re
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -430,6 +432,74 @@ def _storage_roots(roots):
                 raise Invalid(f"roots.{a} and roots.{b}: drive letters and volume GUIDs map one to one")
 
 
+def _utc(text, what):
+    """A time the schema's pattern let through that is also a real UTC calendar time (not 2026-02-30)."""
+    try:
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        raise Invalid(f"{what} is not a real UTC time")
+
+
+def _cap_deadline(cap):
+    """The one arithmetic of every VM lifetime cap record (allocator.md, Hard VM lifetime cap): the
+    deadline is the start plus cap_hours whole hours. Returns the deadline."""
+    started, deadline = _utc(cap["started_utc"], "started_utc"), _utc(cap["deadline_utc"], "deadline_utc")
+    try:
+        end = started + timedelta(hours=cap["cap_hours"])
+    except OverflowError:  # the pattern admits 9999-12-31T22:00:00Z, whose cap ends after the calendar does
+        raise Invalid("started_utc plus cap_hours hours is beyond the calendar")
+    if end != deadline:
+        raise Invalid("deadline_utc must be started_utc plus cap_hours hours")
+    return deadline
+
+
+CEILING_HOURS = 6  # the owner's ceiling (Q4): a VM's deadline record and the watchdog use it, never the configured cap
+
+
+def notes_check(doc):
+    """The `check` field of a VM Notes record (allocator.md, B1): the first 32 hex of the SHA-256 of
+    `aap-vm-cap:1|` and the record's identity fields joined by `|`. It detects truncation and hand edits;
+    it is no secret, because whoever can write Notes can already stop the VM."""
+    fields = "|".join(doc[k] for k in ("vm_id", "vm_name", "reservation_id", "started_utc", "deadline_utc"))
+    return hashlib.sha256(("aap-vm-cap:1|" + fields).encode("ascii")).hexdigest()[:32]
+
+
+def sem_vm_cap_notes(doc):
+    """The deadline record a VM carries in its own Notes (allocator.md, B1 and B3): the deadline is the start
+    plus the 6 hour ceiling exactly, the name ends in the reservation's first 8 hex, the check holds."""
+    started, deadline = _utc(doc["started_utc"], "started_utc"), _utc(doc["deadline_utc"], "deadline_utc")
+    try:
+        end = started + timedelta(hours=CEILING_HOURS)
+    except OverflowError:
+        raise Invalid("started_utc plus the 6 hour ceiling is beyond the calendar")
+    if end != deadline:
+        raise Invalid("deadline_utc must be started_utc plus the 6 hour ceiling")
+    if not doc["vm_name"].endswith("-" + doc["reservation_id"][2:10]):
+        raise Invalid("vm_name must end with the first 8 hex of the reservation_id")
+    if doc["check"] != notes_check(doc):
+        raise Invalid("check does not match the record's identity fields")
+
+
+def sem_lifetime_clock(doc):
+    """The persisted clock record of the supervisor or the watchdog (allocator.md, L7 and B2): the high-water
+    mark is the largest time ever estimated, so a stepped-back clock leaves written_utc behind it, never ahead."""
+    written, high = _utc(doc["written_utc"], "written_utc"), _utc(doc["high_water_utc"], "high_water_utc")
+    if high < written:
+        raise Invalid("high_water_utc is the largest time ever seen, so never before written_utc")
+    vms, reservations = set(), set()
+    for e in doc["latched"]:
+        if e["vm_id"] in vms or e["reservation_id"] in reservations:
+            raise Invalid("a VM or a reservation is latched once")
+        vms.add(e["vm_id"])
+        reservations.add(e["reservation_id"])
+        if _utc(e["decided_utc"], "decided_utc") > high:
+            raise Invalid("a latched decision is never after high_water_utc")
+        if e["trigger"] == "deadline" and (e["elapsed_s"] is None or e["elapsed_s"] < e["cap_hours"] * 3600):
+            raise Invalid("elapsed_s is below cap_hours: no measure had reached the cap")
+        if doc["role"] == "watchdog" and e["cap_hours"] != CEILING_HOURS:
+            raise Invalid("the watchdog latches only at the 6 hour ceiling")
+
+
 def sem_backend_lifecycle(doc):
     if doc["kind"] == "storage":
         _storage_roots(doc["roots"])
@@ -457,6 +527,23 @@ def sem_backend_lifecycle(doc):
     for d in doc["disks"]:
         if d["path"] != exact[d["role"]]:
             raise Invalid(f"disk {d['role']}: path must be exactly {exact[d['role']]}")
+    code = (doc["result"] or {}).get("code")
+    cap = doc.get("lifetime_cap")
+    if (cap is not None or code == "vm_lifetime_cap") and doc["backend"] != "hyperv-vm":
+        raise Invalid("the lifetime cap binds hyperv-vm records only")
+    if code == "vm_lifetime_cap" and doc["op"] in ("destroy", "reconcile"):
+        raise Invalid("vm_lifetime_cap closes create, boot, ready, run_one, drain or collect, never destroy or reconcile")
+    if cap is not None:
+        if doc["op"] != "destroy" or doc["phase"] != "intent":
+            raise Invalid("lifetime_cap rides only on a destroy intent record")
+        _cap_deadline(cap)
+        if cap["trigger"] == "deadline" and (cap["elapsed_s"] is None or cap["elapsed_s"] < cap["cap_hours"] * 3600):
+            raise Invalid("elapsed_s is below cap_hours: no measure had reached the cap")
+        off = _utc(cap["power_off_utc"], "power_off_utc")
+        if off < _utc(cap["started_utc"], "started_utc"):
+            raise Invalid("power_off_utc is before started_utc")
+        if _utc(doc["at"], "at") < off:
+            raise Invalid("the evidence is written after the power-off was issued: at is before power_off_utc")
 
 
 def sem_broker(doc):
@@ -623,6 +710,7 @@ def sem_status_v5(doc):
     if doc["capacity"]["used_slots"] + doc["capacity"]["free_slots"] != doc["capacity"]["max_slots"]:
         raise Invalid("used_slots + free_slots must equal max_slots")
     _status_storage(doc["storage"], doc["profiles"])
+    _status_caps(doc)
 
 
 def _status_storage(st, profiles):
@@ -648,6 +736,35 @@ def _status_storage(st, profiles):
         for p in profiles:
             if p["backend"] == "hyperv-vm" and p["available"]:
                 raise Invalid(f"hyperv-vm profile {p['profile']} is available while storage is {st['state']}")
+
+
+# States in which the supervisor runs the capacity pass, so it evaluates the cap before it writes the status
+# document (allocator.md, L3); `off`, `starting` and `error` make no such claim (allocator.md, L9).
+_CAP_EVALUATED_STATES = ("idle", "running", "draining", "paused")
+
+
+def _status_caps(doc):
+    """VM lifetime cap per slot (allocator.md, Hard VM lifetime cap): only a VM slot carries one, its window
+    is start plus cap_hours, a slot whose cap has fired is being reclaimed, in a state that runs the capacity
+    pass a slot more than 60 s past its deadline has fired, and a fired cap leads the detail."""
+    updated, fired = None, False
+    for s in doc["slots"]:
+        cap = s.get("vm_lifetime_cap")
+        if cap is None:
+            continue
+        if s["backend"] != "hyperv-vm":
+            raise Invalid(f"slot {s['slot']}: a wsl-legacy slot has no VM lifetime cap")
+        deadline = _cap_deadline(cap)
+        if cap["reason"] is not None:
+            fired = True
+            if s["lifecycle"] not in ("creating", "deleting", "quarantined"):
+                raise Invalid(f"slot {s['slot']}: the cap has fired, so the slot is creating (no VM id yet), deleting or quarantined, not {s['lifecycle']}")
+        elif doc["state"] in _CAP_EVALUATED_STATES:
+            updated = updated or _utc(doc["updated"], "updated")
+            if updated - deadline > timedelta(seconds=60):
+                raise Invalid(f"slot {s['slot']}: past its deadline_utc and the cap has not fired")
+    if fired and not doc["detail"].startswith("vm_lifetime_cap:"):
+        raise Invalid("a slot is being reclaimed for the cap: detail must start with vm_lifetime_cap:")
 
 
 def sem_evidence_bundle(doc):
@@ -770,7 +887,10 @@ SEMANTIC = {
     "image-catalog": sem_image_catalog,
     "cache-qualification": sem_cache_qualification,
     "settings-v3": sem_settings_v3,
+    "settings-v4": sem_settings_v3,  # schema 4 differs from 3 only in the cap key, which the schema covers
     "status-v5": sem_status_v5,
+    "vm-cap-notes": sem_vm_cap_notes,
+    "lifetime-clock": sem_lifetime_clock,
     "tray-windows-choice": None,
     "evidence-bundle": sem_evidence_bundle,
     "cleanup-receipt": sem_cleanup_receipt,

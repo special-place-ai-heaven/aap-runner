@@ -1,4 +1,4 @@
-# Backend lifecycle contract (version 2)
+# Backend lifecycle contract (version 3)
 
 Owners: **P10** (Windows provider), **P11** (Linux provider); measured budgets come from P06/P07;
 the storage document is written by the elevated helper (**P19**). Readers: P09, P12, P19, P20, P22,
@@ -8,6 +8,11 @@ P25. Schema: [`backend-lifecycle.schema.json`](backend-lifecycle.schema.json) (`
 Revision 2 (P02.2, 2026-10-20): configurable storage tiers replace the single image root, journal
 disk paths are relative to their tier root, and budgets carry per-tier caps
 ([README, revision log](README.md#revision-log)).
+
+Revision 3 (P09.x, 2026-10-22, owner decision Q4): a hard VM lifetime cap, so the result code
+`vm_lifetime_cap`, the `lifetime_cap` evidence on the destroy intent record and the destroy order for a cap
+([Hard lifetime cap](#hard-lifetime-cap-decided-owner-q4-revision-3)). Records keep `schema` 2: both additions are
+optional, so every older record stays valid.
 
 ## Provider interface (DECIDED)
 
@@ -20,10 +25,10 @@ A provider is a PowerShell module loaded by the supervisor (`supervisor/backends
 | `boot` | vm_id | `Start-VM` | running already counts as done |
 | `ready` | vm_id | transport `probe` succeeds and returns `ready` | repeatable |
 | `run_one` | vm_id, lease | broker `lease_request`, `deliver_registration`, `start_runner`; then heartbeats until `job_done` | a lease id is used once; a retry takes a new lease id |
-| `drain` | vm_id | runner listening without a job: stop it; busy: wait for the job; then `collect` | repeatable |
+| `drain` | vm_id | runner listening without a job: stop it; busy: wait for the job (at most until the lifetime cap); then `collect` | repeatable |
 | `collect` | vm_id | fetch the agent's bounded JSON job summary only; never the runner root, `_diag`, credential files or crash dumps | repeatable |
 | `reset` | vm_id | **forbidden** (security review M3): destroy is the only way to remove every copy of the runner credential | |
-| `destroy` | vm_id | broker `release_request` for the lease, if one was issued (mandatory; `deregistered` or `already_gone` both count); `Stop-VM -TurnOff`, `Remove-VM`, delete `<clone_root>\<reservation_id>\` and `<scratch_root>\<reservation_id>\` through literal, reparse-checked paths; observe absence of the VM, its configuration, saved-state and checkpoint files, and both folders | absent counts as done; release is idempotent per lease |
+| `destroy` | vm_id | broker `release_request` for the lease, if one was issued (mandatory; `deregistered` or `already_gone` both count); `Stop-VM -TurnOff`, `Remove-VM`, delete `<clone_root>\<reservation_id>\` and `<scratch_root>\<reservation_id>\` through literal, reparse-checked paths; observe absence of the VM, its configuration, saved-state and checkpoint files, and both folders; for a reservation past its lifetime cap the `Stop-VM -TurnOff` comes first, before the release ([Hard lifetime cap](#hard-lifetime-cap-decided-owner-q4-revision-3)) | absent counts as done; release is idempotent per lease |
 | `reconcile` | none | see allocator.md, Reconcile | read-only until it acts through destroy |
 
 Every op appends an `intent` record before it acts and a `done` or `failed` record after, to
@@ -39,12 +44,61 @@ object per line, schema `op`). `idempotency_key` is `<reservation_id>/<lease_gen
 | VM created, `done` not written | re-run `create`; it finds the named VM and records its id |
 | `boot`/`ready` in flight | re-probe; on timeout destroy |
 | lease issued (or pending), not delivered | the lease id is spent; broker `release_request` with that lease id (the broker finds the runner in its ledger or by derived name); destroy; the slot's next reservation takes a new generation |
-| runner busy | resume heartbeats; never cancel the job |
+| runner busy | resume heartbeats; never cancel the job before its lifetime cap (a VM already past it is powered off on the first step after the restart) |
 | `destroy` intent, partial | re-run destroy; absence is the only success |
 | journal unreadable | quarantine the reservation; capacity held |
 
 Provider rules for heartbeats, `JobRunning` and hostile-guest reasons: allocator.md, Provider
 rules for P10 and P11.
+
+## Hard lifetime cap (DECIDED, owner Q4, revision 3)
+
+Every VM has a hard lifetime cap ([allocator.md, Hard VM lifetime cap](allocator.md#hard-vm-lifetime-cap-decided-owner-decision-q4-2026-10-22):
+when it fires, the order, the clocks, the host backstop). It is the way the host ends a running VM by time, beside the
+other host limits (a hostile guest, the clone cap, a paused VM, the guest network). One order, everywhere (allocator.md
+L4): latch the decision in memory, power the VM off at the hypervisor, then persist and tear down. The journal side,
+once per reservation, therefore **follows** the power-off:
+
+| When | Record |
+|---|---|
+| the cap is reached and the power-off was issued | for every op whose last record is an `intent`, except `destroy` and `reconcile` (which close themselves): a `failed` record with result code `vm_lifetime_cap` and a fixed `detail` (no guest text); an open `run_one` is the job's failure, an open `create` or `boot` closes the same way |
+| then | a `destroy` `intent` record carrying `lifetime_cap` (below), written as soon as the journal can be written and retried every tick until it is: the power-off never waits for it, and a crash before it loses only the reason, never the power-off (allocator.md, L4 and L6). A `destroy` already open (a teardown being retried when the cap was reached) gets a new `intent` record with the same idempotency key and the evidence attached. A provider that finds a `lifetime_cap` record already in the journal (a restart decides again) writes neither this record nor the closing ones again. A destroy record names the VM id, taken from the reservation or else from the provider's derived-name lookup made before its first journal write: when neither yields one there is no VM and no destroy intent to carry the evidence, and the `create` `failed` record with the code is the only trace |
+| the power-off fails (a Hyper-V error, the VM not observed off) | an ordinary `destroy` `failed` record (`retryable`), once per distinct failure; the power-off repeats at every tick and the escalation ladder climbs (allocator.md, L5) |
+| the VM is observed off and the rest of `destroy` is done | `destroy` `done` `absent`, then the teardown proof, as for any destroy |
+
+**Journal replay never starts a capped VM.** A replayed `create`, `boot` or `ready` for a reservation that is latched, or
+whose recovered age has reached the cap, issues no start: the open op is closed `failed` with the code, and a VM that is
+not running at supervisor start is never started by recovery (allocator.md, L6).
+
+**Deadline record and start gate.** At `create`, after the VM exists and before it is first started, the provider writes
+the VM's Notes with the deadline record of allocator.md B1 ([vm-cap-notes.schema.json](vm-cap-notes.schema.json)) and
+reads it back. `boot` starts the VM only when the read-back equals what was written and the host watchdog's record is
+fresh (allocator.md, B7); otherwise the reservation stays `creating`, and the step waits and retries every tick. The
+Linux provider writes the same record.
+
+**Calls.** Every call a step makes is bounded and isolated, due power-offs come first, and a teardown call is held to the
+nearest other live deadline (allocator.md, L3). Before the decision, a call into the guest, the broker or GitHub for a
+reservation never starts at or after that reservation's deadline; after the decision no guest call is made.
+
+`lifetime_cap` contains `cap_hours` (1..6), immutable `started_utc`, `deadline_utc` (start plus cap hours), `trigger`,
+`elapsed_s`, `power_off_utc` and `reason: vm_lifetime_cap`. `trigger` is `deadline`, `host_reboot` or `clock_unavailable`.
+Only `deadline` claims elapsed age reached the cap and requires a known `elapsed_s >= cap_hours * 3600`. The safety
+triggers allow measured age below the cap or `null` if age is unknown; a reboot/clock failure never fabricates six hours.
+
+**Ordering timestamps are high-water estimates, not raw wall samples.** For a cap destroy intent, both `power_off_utc`
+and the journal's `at` use one per-reservation evidence clock. Before issuance, sample in memory with
+`evidence_now = max(started_utc, previous_evidence_now, true_now, now_utc)`; advance from its boot-bound monotonic counter
+when available. Capture `power_off_utc` from that clock at issuance. After the call returns/times out, sample it again
+for `at`, with a floor of `power_off_utc`, then persist. A raw rollback before the reservation's wall time or between
+issuance and persistence therefore cannot reverse these evidence timestamps. If clock history is unavailable, the
+reservation-start floor establishes ordering only, not elapsed age: the explicit safety trigger and nullable elapsed
+field say what is unknown. Never replace raw wall samples by claiming fabricated measured elapsed time.
+
+The validator refuses wrong placement, deadline arithmetic, a `deadline` trigger without sufficient known elapsed time,
+bad UTC timestamps, `power_off_utc < started_utc` or `at < power_off_utc` in this high-water domain, cap evidence on a
+legacy backend, and `vm_lifetime_cap` on destroy/reconcile. Older records without a cap object remain valid. A failed
+E2 attempt still running is ordinary destroy `failed`/`retryable` with fixed detail `cap_breach`; it is never `done` or
+proof of termination. P10.6/P11.3 test both safety triggers, both rollback windows and the breach path.
 
 ## Storage tiers (DECIDED, owner 2026-10-20)
 
@@ -198,3 +252,9 @@ staging root equal to `<base_root>\staging`, a missing tier, one drive letter on
 drive letters on one volume, a floor under 10 GiB, a root inside the data folder, and root paths
 with a trailing dot, a trailing space, a `~` short name, a `:stream` or `::$INDEX_ALLOCATION`
 stream, forward slashes or a trailing backslash.
+
+Hard lifetime cap (revision 3): evidence with a deadline an hour off, a cap of 7 hours, an `elapsed_s` one second
+under the cap, no `elapsed_s`, a reason that is not `vm_lifetime_cap`, a start that is not a real time; evidence on
+a `run_one` record and on a `destroy` `done` record; the result code `vm_lifetime_cap` on a `destroy` and on a
+`reconcile` record. Valid: the evidence on a `destroy` intent at the deadline and with the wall clock behind it, and
+a `run_one` `failed` with the code.

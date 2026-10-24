@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/settings-v4.schema.json",
+  "title": "inbox\\settings.json schema 4: schema 3 with the hard VM lifetime cap (owner decision Q4) under a new name",
+  "x-contract-version": 4,
+  "x-owner": "P12 (supervisor reader and both contract docs); P20 (tray writer); P09.x (the cap rule, allocator.md); schema 3 stays readable",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "linux_backend",
+    "vm_lifetime_cap_hours",
+    "runner_count",
+    "windows_runner_count",
+    "job_cpus",
+    "job_memory_gib",
+    "paused",
+    "io_percent",
+    "sharing",
+    "host_reserve_percent",
+    "share_mode",
+    "linux_share_percent",
+    "windows_share_percent"
+  ],
+  "properties": {
+    "schema": {
+      "const": 4
+    },
+    "linux_backend": {
+      "enum": [
+        "wsl-legacy",
+        "hyperv-vm"
+      ],
+      "description": "Supervisor-side; the tray writes back what status.v5.json reports and never changes it. Flipped only by the cutover item P27. Default wsl-legacy."
+    },
+    "vm_lifetime_cap_hours": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 6,
+      "description": "The hard VM lifetime cap (allocator.md, Hard VM lifetime cap): no hyperv-vm reservation lives longer than this many hours from its acquired_at, whatever the job, the guest or GitHub says. A ceiling of 6 hours, default 6: lower is allowed, higher is refused whole and never clamped. It replaces schema 3's lease_wall_clock_hours, which only flagged."
+    },
+    "runner_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5,
+      "description": "The Linux count, as in schema 2 (now 0 allowed when Windows >= 1)."
+    },
+    "windows_runner_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "job_cpus": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 28,
+      "description": "Legacy WSL pool total, unchanged meaning; the supervisor caps it to the Linux share (shares win); ignored while runner_count is 0 or linux_backend is hyperv-vm."
+    },
+    "job_memory_gib": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 80
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "io_percent": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "sharing": {
+      "enum": [
+        "slice",
+        "fixed"
+      ]
+    },
+    "host_reserve_percent": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 90
+    },
+    "share_mode": {
+      "enum": [
+        "even",
+        "per_profile"
+      ]
+    },
+    "linux_share_percent": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 90
+    },
+    "windows_share_percent": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 90
+    }
+  }
+}
