@@ -1,0 +1,13 @@
+{
+  "expect": "check does not match the record's identity fields",
+  "instance": {
+    "schema": 1,
+    "kind": "aap-vm-cap",
+    "vm_id": "0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b",
+    "vm_name": "aap-w-4-3-1a2b3c4d",
+    "reservation_id": "r-1a2b3c4d000000b1",
+    "started_utc": "2026-10-19T12:00:00Z",
+    "deadline_utc": "2026-10-19T18:00:00Z",
+    "check": "e82bcaa1472d346d48c806cf07acf02f"
+  }
+}

@@ -51,7 +51,8 @@
         "enum": [
           1,
           2,
-          3
+          3,
+          4
         ]
       }
     },
@@ -60,7 +61,8 @@
         null,
         1,
         2,
-        3
+        3,
+        4
       ]
     },
     "capacity": {
@@ -525,6 +527,39 @@
           ],
           "minimum": 0,
           "maximum": 4096
+        },
+        "vm_lifetime_cap": {
+          "$ref": "#/$defs/vm_lifetime_cap"
+        }
+      }
+    },
+    "vm_lifetime_cap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cap_hours",
+        "started_utc",
+        "deadline_utc",
+        "reason"
+      ],
+      "description": "The slot's hard VM lifetime cap (allocator.md, Hard VM lifetime cap); only a hyperv-vm slot carries it, and a supervisor that predates revision 4 of status-settings.md writes none. started_utc is the reservation's acquired_at, deadline_utc is started_utc plus cap_hours hours (validate.py), reason is null until the cap fires and vm_lifetime_cap from then until the slot is freed (the slot is creating without a VM id, deleting or quarantined). Times, a count of hours and one fixed word: no host name, path or id.",
+      "properties": {
+        "cap_hours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "started_utc": {
+          "$ref": "#/$defs/time"
+        },
+        "deadline_utc": {
+          "$ref": "#/$defs/time"
+        },
+        "reason": {
+          "enum": [
+            null,
+            "vm_lifetime_cap"
+          ]
         }
       }
     },

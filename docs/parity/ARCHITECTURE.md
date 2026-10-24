@@ -132,8 +132,8 @@ DECIDED:
 - Heartbeat (one rule everywhere): a validated guest `status` reply, or for a legacy slot the
   manager's slot entry in a fresh `status.json` (sample age <= 90 s), sets `heartbeat_at` at most
   every 30 s. Three missed intervals move `ready`/`busy` to `quarantined` (kind `heartbeat`),
-  capacity held. A later validated heartbeat returns the slot to `busy` or `ready`. A heartbeat quarantine leads to destroy only when the broker reports the runner `offline` or `absent` and not busy, or the job is known to have ended. A VM whose runner GitHub reports `busy` is never destroyed; once `lease_wall_clock_hours` (default 6) have passed since the reservation's `acquired_at`, the slot is only flagged in status for the owner.
-  A running job is never cancelled by this rule. A hostile guest reply is immediate and final from any guest
+  capacity held. A later validated heartbeat returns the slot to `busy` or `ready`. A heartbeat quarantine leads to destroy only when the broker reports the runner `offline` or `absent` and not busy, or the job is known to have ended, or the VM's lifetime cap is reached. A runner GitHub reports `busy` is never destroyed on that report, but every VM has a hard lifetime cap (owner decision Q4): `vm_lifetime_cap_hours` (default and ceiling 6) from the reservation's `acquired_at`, after which the supervisor powers the VM off at the hypervisor and tears it down whatever the job, the guest or GitHub says (allocator.md, Hard VM lifetime cap).
+  The heartbeat rule never ends a running job; the lifetime cap and a hostile guest reply do, as do the providers' own limits (clone cap, paused VM, guest network). A hostile guest reply is immediate and final from any guest
   state, a heartbeat or crash quarantine included: the kind becomes `hostile_guest`, then
   `deleting`.
 - Only `reconciled` with a teardown proof frees a slot: VM and disks observed absent (or, for a
@@ -149,7 +149,7 @@ DECIDED:
   measured overhead come off the pool before any runner share.
 - The allocator lock is an exclusive lock file in the admin-only capacity folder with a bounded
   wait that fails visibly (status `error`), not a named mutex.
-- Nothing admitted is ever evicted (allocator.md, Resize and host measurement). A smaller count
+- Nothing admitted is ever evicted by a resize or a host measurement (allocator.md, Resize and host measurement; the lifetime cap ends work by time). A smaller count
   drains the excess (`resize_waits`); a host measurement that no longer holds the live
   reservations is stored clamped to them (`pool_over_live`), so nothing more is admitted. In
   `even` mode a count increase lowers every share, so every admitted runner drains, the legacy
@@ -165,7 +165,7 @@ DECIDED:
 stateDiagram-v2
   [*] --> creating: reserve slot (persisted first)
   creating --> ready: VM booted, runner listening
-  creating --> deleting: create or boot failed
+  creating --> deleting: create or boot failed, or the lifetime cap
   ready --> busy: job assigned
   ready --> draining: drain, pause, resize down, generation retire
   busy --> draining: drain, pause, resize down (job keeps running)
@@ -179,17 +179,19 @@ stateDiagram-v2
   quarantined --> busy: validated heartbeat, job running
   quarantined --> ready: validated heartbeat, listening
   quarantined --> quarantined: hostile reply in a heartbeat or crash quarantine (kind hostile_guest)
-  quarantined --> deleting: runner offline and not busy, job ended, or kind hostile_guest
-  busy --> deleting: hostile guest reply only (immediate, final, any guest state)
+  quarantined --> deleting: runner offline and not busy, job ended, kind hostile_guest, or the lifetime cap
+  busy --> deleting: hostile guest reply or the lifetime cap (immediate, any guest state)
+  ready --> deleting: lifetime cap
+  draining --> deleting: lifetime cap
   busy --> ready: legacy pool slot only, next job (never hyperv-vm)
   deleting --> quarantined: teardown failed after retries
   quarantined --> reconciled: reconcile observes absence
   reconciled --> [*]: slot free
 ```
 
-`draining` from `busy` waits for the job (graceful, never cancelled). Off, pause and resizing
-never cancel a running job (existing rule, kept). `draining` always passes through `collecting`
-before `deleting`.
+`draining` from `busy` waits for the job (graceful, never cancelled, at most until the lifetime cap). Off, pause
+and resizing never cancel a running job (existing rule, kept); the lifetime cap does, at its deadline.
+`draining` always passes through `collecting` before `deleting`, except at the cap.
 
 ## 3. Backend lifecycle (contract: [backend-lifecycle.md](../../parity/contracts/backend-lifecycle.md))
 
@@ -505,7 +507,7 @@ flowchart LR
 | VM create/boot | Hyper-V error, timeout | journal `failed`; destroy; reconciled after absence observed |
 | Guest transport | auth fails, no reply | bounded retries, then the heartbeat rule above |
 | Guest transport | hostile reply | immediate `deleting` with `hostile_guest`; final, never back to service |
-| Heartbeat | 3 missed (90 s) | `quarantined` (kind `heartbeat`), capacity held; back to `busy`/`ready` on a validated heartbeat; destroy only once GitHub reports the runner offline and not busy, or the job ended; a busy runner past `lease_wall_clock_hours` is held and flagged, never destroyed |
+| Heartbeat | 3 missed (90 s) | `quarantined` (kind `heartbeat`), capacity held; back to `busy`/`ready` on a validated heartbeat; destroy only once GitHub reports the runner offline and not busy, or the job ended, or the VM reaches its lifetime cap (VM lifetime row below) |
 | Job | cancelled, failed, timed out | normal: `collecting` then `deleting` |
 | Teardown | VM or disk will not go | three retries over 15 s, then `quarantined`; capacity held; status shows it |
 | Unknown VM `aap-*` on the host | no journal | reconcile quarantines it in a free slot or refuses admission until resolved; never adopted silently |
@@ -513,7 +515,9 @@ flowchart LR
 | Storage root or volume | a trust check fails, the volume changed or is missing | VM profiles `available: false` with tier and reason; no admission; nothing created or repaired; a reservation whose disks are gone is quarantined (`crash`) until reconcile observes absence |
 | Storage volume | free space below the floor | no new VM admission; running VMs continue within their admitted caps |
 | Clone growth | clone folder passes `clone_gib_max`, or Hyper-V pauses the VM for lack of space | destroy (`fatal`, journaled); the job fails |
-| Control distro down | no broker | VM profiles report `available: false`; running guests finish their jobs |
+| VM lifetime | deadline or conservative clock-safety trigger | latch, issue bounded concurrent power-off, then persist and verified teardown; E1 attempt within 90 s; independent watchdog durable E1/E2 progress and observation within 300 s; only observed Off is termination, otherwise explicit unresolved cap_breach/error, capacity held and starts blocked; network isolation is not termination |
+| Supervisor, allocator or journal lost, backend not loadable | the supervisor path cannot decide | independent host watchdog uses each admitted VM's validated Notes deadline and identity; pre-existing/unrecorded VMs block profile activation until reconciled; no VM starts while the watchdog heartbeat is stale (allocator.md, B1 to B9) |
+| Control distro down | no broker | VM profiles report `available: false`; running guests finish their jobs, until their lifetime cap |
 
 ## 11. Responsibilities by later item
 
