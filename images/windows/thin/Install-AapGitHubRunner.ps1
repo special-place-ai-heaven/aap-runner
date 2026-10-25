@@ -15,6 +15,15 @@ $headers = @{ 'User-Agent' = 'aap-runner-thin-installer' }
 $tempRoot = $null
 $stage = 'preflight'
 try {
+    # Setup caches answer files containing the guest administrator password.
+    # Delete only answer XML files, preserving setup logs and other artifacts.
+    foreach ($cacheDirectory in @('Panther', 'System32\Sysprep')) {
+        $cachePath = Join-Path $env:WINDIR $cacheDirectory
+        if (Test-Path -LiteralPath $cachePath) {
+            Get-ChildItem -LiteralPath $cachePath -Filter '*unattend*.xml' -File -Recurse -Force -ErrorAction Stop |
+                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction Stop }
+        }
+    }
     if ($RepoUrl -notmatch '^https://github\.com/[^/\s]+/[^/\s]+/?$') {
         throw 'Expected a GitHub repository HTTPS URL.'
     }
