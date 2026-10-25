@@ -71,9 +71,8 @@ try {
         Pop-Location
     }
     $stage = 'runner service'
-    $serviceName = (Get-Content -LiteralPath (Join-Path $InstallRoot '.service') -Raw).Trim()
-    if ($serviceName -notlike 'actions.runner.*') { throw 'Unexpected runner service name.' }
-    $service = Get-Service -Name $serviceName
+    $service = Get-Service -Name 'actions.runner.*' | Select-Object -First 1
+    if ($null -eq $service) { throw 'Runner service is missing.' }
     if ($service.Status -ne 'Running') { Start-Service -InputObject $service }
     $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
     $service.Refresh()
