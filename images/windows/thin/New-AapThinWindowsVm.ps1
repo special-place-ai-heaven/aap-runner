@@ -220,11 +220,12 @@ $vhdPath = Join-Path $LabRoot ($VMName + '.vhdx')
 $vm = Hyper-V\New-VM -Name $VMName -Path $LabRoot -Generation 2 -MemoryStartupBytes ([int64]$MemoryGB * 1GB) -VHDPath $vhdPath -SwitchName $switch[0].Name
 Hyper-V\Set-VM -VM $vm -ProcessorCount $CpuCount -StaticMemory -SnapshotFileLocation $LabRoot -SmartPagingFilePath $LabRoot
 Hyper-V\Set-VMFirmware -VM $vm -EnableSecureBoot On -SecureBootTemplate MicrosoftWindows
-# Grant only this new VM access to the credential-bearing ISO; never grant other VMs or host users access.
+# Grant only this VM disk read/write and setup-media read access; leave the password file admin-only.
 $vmAccount = New-Object Security.Principal.NTAccount('NT VIRTUAL MACHINE', $vm.Id.ToString())
-foreach ($path in @($LabRoot, $answerIso)) {
+$vmRights = @{ $LabRoot = 'ReadAndExecute'; $answerIso = 'Read'; $vhdPath = 'ReadWrite' }
+foreach ($path in $vmRights.Keys) {
     $acl = Get-Acl -LiteralPath $path
-    $rule = New-Object Security.AccessControl.FileSystemAccessRule($vmAccount, 'ReadAndExecute', 'Allow')
+    $rule = New-Object Security.AccessControl.FileSystemAccessRule($vmAccount, $vmRights[$path], 'Allow')
     [void]$acl.AddAccessRule($rule)
     Set-Acl -LiteralPath $path -AclObject $acl
 }
