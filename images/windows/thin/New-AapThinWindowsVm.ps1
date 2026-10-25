@@ -3,6 +3,7 @@
 .SYNOPSIS
 Creates one ordinary Windows Server evaluation VM; does not install a runner or change host networking.
 .DESCRIPTION
+Defaults to Generation 1 with BIOS/MBR setup; -Generation 2 selects UEFI setup with Secure Boot.
 Run elevated on the Hyper-V host. LabRoot's parent must already exist. Refuses existing VMs and nonempty
 LabRoot directories; a failed run leaves its own artifacts for inspection, never deletes an existing VM.
 The answer ISO contains the setup credential: detach and delete it after setup, keeping admin-password.txt private.
@@ -12,6 +13,7 @@ The unmodified Microsoft installation DVD may require its initial "press any key
 param(
     [ValidatePattern('^(?=.{1,15}$)(?![0-9]+$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$')]
     [string]$VMName = 'aap-win-thin',
+    [ValidateSet(1,2)][int]$Generation = 1,
     [ValidateNotNullOrEmpty()][string]$LabRoot = 'E:/aap-runner/thin-vm',
     [ValidateRange(32, 65536)][int]$VhdSizeGB = 250,
     [ValidateRange(2, 1024)][int]$MemoryGB = 8,
@@ -72,7 +74,8 @@ if (Test-Path -LiteralPath $LabRoot) {
         throw 'LabRoot has prior artifacts; nothing was changed.'
     }
 }
-$templatePath = Join-Path $PSScriptRoot 'autounattend.template.xml'
+$templateName = if ($Generation -eq 1) { 'autounattend.bios.template.xml' } else { 'autounattend.template.xml' }
+$templatePath = Join-Path $PSScriptRoot $templateName
 $template = [IO.File]::ReadAllText($templatePath)
 foreach ($placeholder in @('{{ADMIN_PASSWORD}}', '{{IMAGE_INDEX}}', '{{COMPUTER_NAME}}')) {
     if (-not $template.Contains($placeholder)) { throw 'The unattended setup template is missing a required placeholder.' }
@@ -223,11 +226,10 @@ Set-AdminOnlyAcl $answerIso
 
 $vhdPath = Join-Path $LabRoot ($VMName + '.vhdx')
 [void](Hyper-V\New-VHD -Path $vhdPath -SizeBytes ([int64]$VhdSizeGB * 1GB) -Dynamic)
-$vm = Hyper-V\New-VM -Name $VMName -Path $LabRoot -Generation 2 -MemoryStartupBytes ([int64]$MemoryGB * 1GB) -VHDPath $vhdPath -SwitchName $switch[0].Name
+$vm = Hyper-V\New-VM -Name $VMName -Path $LabRoot -Generation $Generation -MemoryStartupBytes ([int64]$MemoryGB * 1GB) -VHDPath $vhdPath -SwitchName $switch[0].Name
 Hyper-V\Set-VMProcessor -VM $vm -Count $CpuCount
 Hyper-V\Set-VMMemory -VM $vm -DynamicMemoryEnabled $true -StartupBytes ([int64]$MemoryGB * 1GB) -MinimumBytes ([int64]$MinimumMemoryGB * 1GB) -MaximumBytes ([int64]$MaximumMemoryGB * 1GB) -Buffer $Buffer
 Hyper-V\Set-VM -VM $vm -AutomaticCheckpointsEnabled $false -AutomaticStartAction StartIfRunning -AutomaticStartDelay 30 -AutomaticStopAction ShutDown -SnapshotFileLocation $LabRoot -SmartPagingFilePath $LabRoot
-Hyper-V\Set-VMFirmware -VM $vm -EnableSecureBoot On -SecureBootTemplate MicrosoftWindows
 # Grant only this VM disk read/write and setup-media read access; leave the password file admin-only.
 $vmAccount = New-Object Security.Principal.NTAccount('NT VIRTUAL MACHINE', $vm.Id.ToString())
 $vmRights = @{ $LabRoot = 'ReadAndExecute'; $answerIso = 'Read'; $vhdPath = 'Modify' }
@@ -237,11 +239,22 @@ foreach ($path in $vmRights.Keys) {
     [void]$acl.AddAccessRule($rule)
     Set-Acl -LiteralPath $path -AclObject $acl
 }
-$windowsDvd = Hyper-V\Add-VMDvdDrive -VM $vm -Path $IsoPath -Passthru
-[void](Hyper-V\Add-VMDvdDrive -VM $vm -Path $answerIso)
-$osDisk = @(Hyper-V\Get-VMHardDiskDrive -VM $vm)[0]
-# Prefer the signed installation DVD; Windows Setup will subsequently boot the installed OS.
-Hyper-V\Set-VMFirmware -VM $vm -BootOrder @($windowsDvd, $osDisk)
+if ($Generation -eq 1) {
+    # Reuse the default IDE DVD so source media precedes the nonbootable answer disc.
+    $windowsDvd = @(Hyper-V\Get-VMDvdDrive -VM $vm | Where-Object { $_.ControllerNumber -eq 1 -and $_.ControllerLocation -eq 0 })
+    if ($windowsDvd.Count -eq 0) {
+        [void](Hyper-V\Add-VMDvdDrive -VM $vm -ControllerNumber 1 -ControllerLocation 0 -Path $IsoPath)
+    } else {
+        Hyper-V\Set-VMDvdDrive -VMDvdDrive $windowsDvd[0] -Path $IsoPath
+    }
+    [void](Hyper-V\Add-VMDvdDrive -VM $vm -ControllerNumber 1 -ControllerLocation 1 -Path $answerIso)
+    Hyper-V\Set-VMBios -VM $vm -StartupOrder @('CD','IDE')
+} else {
+    $windowsDvd = Hyper-V\Add-VMDvdDrive -VM $vm -Path $IsoPath -Passthru
+    [void](Hyper-V\Add-VMDvdDrive -VM $vm -Path $answerIso)
+    $osDisk = @(Hyper-V\Get-VMHardDiskDrive -VM $vm)[0]
+    Hyper-V\Set-VMFirmware -VM $vm -EnableSecureBoot On -SecureBootTemplate MicrosoftWindows -BootOrder @($windowsDvd, $osDisk)
+}
 Hyper-V\Start-VM -VM $vm
 Write-Host "Started '$VMName' with $CpuCount vCPUs, dynamic RAM ($MemoryGB GiB startup, $MinimumMemoryGB-$MaximumMemoryGB GiB range, $Buffer% buffer) and a $VhdSizeGB GiB dynamic disk."
 Write-Host 'Administrator credentials are in the protected admin-password.txt under LabRoot; no credential is printed.'
