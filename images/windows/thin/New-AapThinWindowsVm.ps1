@@ -222,7 +222,7 @@ Hyper-V\Set-VM -VM $vm -ProcessorCount $CpuCount -StaticMemory -SnapshotFileLoca
 Hyper-V\Set-VMFirmware -VM $vm -EnableSecureBoot On -SecureBootTemplate MicrosoftWindows
 # Grant only this VM disk read/write and setup-media read access; leave the password file admin-only.
 $vmAccount = New-Object Security.Principal.NTAccount('NT VIRTUAL MACHINE', $vm.Id.ToString())
-$vmRights = @{ $LabRoot = 'ReadAndExecute'; $answerIso = 'Read'; $vhdPath = 'ReadWrite' }
+$vmRights = @{ $LabRoot = 'ReadAndExecute'; $answerIso = 'Read'; $vhdPath = 'Modify' }
 foreach ($path in $vmRights.Keys) {
     $acl = Get-Acl -LiteralPath $path
     $rule = New-Object Security.AccessControl.FileSystemAccessRule($vmAccount, $vmRights[$path], 'Allow')
