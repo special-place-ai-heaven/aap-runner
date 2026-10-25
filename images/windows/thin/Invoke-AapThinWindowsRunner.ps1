@@ -13,6 +13,7 @@ param(
     [string]$LabRoot = 'E:/aap-runner/thin-vm',
     [string]$RepoUrl = 'https://github.com/special-place-ai-heaven/aap-runner',
     [Parameter(Mandatory = $true)][string]$GuestScript,
+    [string]$GuestUser = 'aapadmin',
     [ValidateRange(1, 1440)][int]$SetupTimeoutMinutes = 45
 )
 
@@ -45,7 +46,7 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { Stop-Driver 'gh CLI n
 
 $plain = (Get-Content -LiteralPath $passwordFile -Raw).TrimEnd("`r", "`n")
 if ([string]::IsNullOrEmpty($plain)) { Stop-Driver 'password file is empty' }
-$credential = New-Object Management.Automation.PSCredential('Administrator', (ConvertTo-SecureString -String $plain -AsPlainText -Force))
+$credential = New-Object Management.Automation.PSCredential(".\$GuestUser", (ConvertTo-SecureString -String $plain -AsPlainText -Force))
 $plain = $null
 
 Write-HostStatus "waiting for PowerShell Direct on $VMName (timeout ${SetupTimeoutMinutes}m)"
@@ -81,25 +82,6 @@ while ($true) {
     Start-Sleep -Seconds ([Math]::Min(15, [Math]::Max(1, [int]($deadline - (Get-Date)).TotalSeconds)))
 }
 Write-HostStatus "PowerShell Direct ready (guest $guestName)"
-
-# The answer ISO carries the setup password: eject it from this VM only, then delete it.
-$labFull = [IO.Path]::GetFullPath($LabRoot).TrimEnd('\', '/') + '\'
-foreach ($dvd in @(Get-VMDvdDrive -VMName $VMName)) {
-    if ($dvd.Path -and [IO.Path]::GetFullPath($dvd.Path).StartsWith($labFull, [StringComparison]::OrdinalIgnoreCase)) {
-        Set-VMDvdDrive -VMName $VMName -ControllerNumber $dvd.ControllerNumber -ControllerLocation $dvd.ControllerLocation -Path $null -ErrorAction Stop
-        Write-HostStatus ("ejected lab media from DVD {0}:{1}" -f $dvd.ControllerNumber, $dvd.ControllerLocation)
-    }
-}
-$left = @(Get-VMDvdDrive -VMName $VMName | Where-Object { $_.Path -and [IO.Path]::GetFullPath($_.Path).StartsWith($labFull, [StringComparison]::OrdinalIgnoreCase) })
-if ($left.Count -gt 0) { Stop-Driver 'lab media still attached after eject' }
-$answerIso = Join-Path $LabRoot 'autounattend.iso'
-if (Test-Path -LiteralPath $answerIso) {
-    Remove-Item -LiteralPath $answerIso -Force -ErrorAction Stop
-    if (Test-Path -LiteralPath $answerIso) { Stop-Driver 'answer ISO still present after delete' }
-    Write-HostStatus 'answer ISO deleted'
-} else {
-    Write-HostStatus 'answer ISO already absent'
-}
 
 Write-HostStatus "requesting registration token for $owner/$repo"
 $token = $null
