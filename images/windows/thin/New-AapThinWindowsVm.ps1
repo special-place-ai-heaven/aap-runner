@@ -13,15 +13,21 @@ param(
     [ValidatePattern('^(?=.{1,15}$)(?![0-9]+$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$')]
     [string]$VMName = 'aap-win-thin',
     [ValidateNotNullOrEmpty()][string]$LabRoot = 'E:/aap-runner/thin-vm',
-    [ValidateRange(32, 65536)][int]$VhdSizeGB = 80,
-    [ValidateRange(2, 1024)][int]$MemoryGB = 10,
-    [ValidateRange(1, 1024)][int]$CpuCount = 4,
+    [ValidateRange(32, 65536)][int]$VhdSizeGB = 250,
+    [ValidateRange(2, 1024)][int]$MemoryGB = 8,
+    [ValidateRange(2, 1024)][int]$MinimumMemoryGB = 4,
+    [ValidateRange(2, 1024)][int]$MaximumMemoryGB = 32,
+    [ValidateRange(5, 2000)][int]$Buffer = 20,
+    [ValidateRange(1, 1024)][int]$CpuCount = 8,
     [ValidateNotNullOrEmpty()][string]$SwitchName = 'Default Switch',
     [string]$IsoPath
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+if ($MinimumMemoryGB -gt $MemoryGB -or $MemoryGB -gt $MaximumMemoryGB) {
+    throw 'Dynamic memory requires MinimumMemoryGB <= MemoryGB <= MaximumMemoryGB.'
+}
 Import-Module Hyper-V -ErrorAction Stop
 Import-Module Storage -ErrorAction Stop
 Import-Module Dism -ErrorAction Stop
@@ -218,7 +224,9 @@ Set-AdminOnlyAcl $answerIso
 $vhdPath = Join-Path $LabRoot ($VMName + '.vhdx')
 [void](Hyper-V\New-VHD -Path $vhdPath -SizeBytes ([int64]$VhdSizeGB * 1GB) -Dynamic)
 $vm = Hyper-V\New-VM -Name $VMName -Path $LabRoot -Generation 2 -MemoryStartupBytes ([int64]$MemoryGB * 1GB) -VHDPath $vhdPath -SwitchName $switch[0].Name
-Hyper-V\Set-VM -VM $vm -ProcessorCount $CpuCount -StaticMemory -SnapshotFileLocation $LabRoot -SmartPagingFilePath $LabRoot
+Hyper-V\Set-VMProcessor -VM $vm -Count $CpuCount
+Hyper-V\Set-VMMemory -VM $vm -DynamicMemoryEnabled $true -StartupBytes ([int64]$MemoryGB * 1GB) -MinimumBytes ([int64]$MinimumMemoryGB * 1GB) -MaximumBytes ([int64]$MaximumMemoryGB * 1GB) -Buffer $Buffer
+Hyper-V\Set-VM -VM $vm -AutomaticCheckpointsEnabled $false -AutomaticStartAction StartIfRunning -AutomaticStartDelay 30 -AutomaticStopAction ShutDown -SnapshotFileLocation $LabRoot -SmartPagingFilePath $LabRoot
 Hyper-V\Set-VMFirmware -VM $vm -EnableSecureBoot On -SecureBootTemplate MicrosoftWindows
 # Grant only this VM disk read/write and setup-media read access; leave the password file admin-only.
 $vmAccount = New-Object Security.Principal.NTAccount('NT VIRTUAL MACHINE', $vm.Id.ToString())
@@ -235,5 +243,5 @@ $osDisk = @(Hyper-V\Get-VMHardDiskDrive -VM $vm)[0]
 # Prefer the signed installation DVD; Windows Setup will subsequently boot the installed OS.
 Hyper-V\Set-VMFirmware -VM $vm -BootOrder @($windowsDvd, $osDisk)
 Hyper-V\Start-VM -VM $vm
-Write-Host "Started '$VMName' with $CpuCount vCPUs, $MemoryGB GiB fixed RAM and a $VhdSizeGB GiB dynamic disk."
+Write-Host "Started '$VMName' with $CpuCount vCPUs, dynamic RAM ($MemoryGB GiB startup, $MinimumMemoryGB-$MaximumMemoryGB GiB range, $Buffer% buffer) and a $VhdSizeGB GiB dynamic disk."
 Write-Host 'Administrator credentials are in the protected admin-password.txt under LabRoot; no credential is printed.'
