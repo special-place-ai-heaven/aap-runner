@@ -280,7 +280,7 @@ Each job gets `RUSTC_WRAPPER=sccache`, `SCCACHE_DIR=/var/cache/aap-sccache/defau
 | Actor | What we assume | What limits them |
 |---|---|---|
 | CI job code | Can run whatever the workflow runs, inside one container. Every job on this host shares one cache directory read-write as the runner uid. The per-repository `SCCACHE_DIR` is a convention, not a boundary: any job can write objects that a later job of any repository on this host, including main-branch builds, will link. Fork PRs never run here | One host mount (the compile cache on the work disk, never under `/mnt`), no host docker socket, inner dockerd only, container and its volumes deleted after the job, fork jobs are not scheduled |
-| Fork PR | Must not get a runner | Job `if` skips foreign `pull_request` heads. No `pull_request_target`. Org setting keeps fork workflows off. The runner group disallows public repos |
+| Fork PR | Must not get a runner (target, not as-built) | AAP's own jobs: no `pull_request_target`. **As built on 2026-10-26 this row does not hold**: the group admits the public repos `symforge` and `RelayForge`, `symforge`'s `ci.yml` has no fork guard, and a fork PR there can reach this pool (BRUCE `BRUCE_TP_RUNNERS_SEC.md` F1-F3). It holds once Rob restricts the group to selected private repos and the C3 branches move both public repos' Linux jobs to `ubuntu-latest` |
 | Stolen App private key | Attacker can mint registration tokens until the key is revoked | The App has org permission **Self-hosted runners: Read and write** and nothing else. It cannot change branch protection, collaborators, or repo settings. The runner group lists selected repos, so a registered runner is not offered to the rest of the org |
 | `ghrunner` (uid 1002) | Can log in to the distro | No sudo, not in the `docker` group, no Windows filesystem, no Windows PATH |
 | WSLInterop binfmt | Registered VM-wide, including inside this distro | With `interop` off, vsock accept fails, so the binfmt cannot launch a Windows exe. It is left registered because it is not per-distro. It is not a way out |
@@ -294,11 +294,13 @@ Any future deploy secret goes in a GitHub Environment with required reviewers. I
 
 ## Scope decision
 
-The runner group is an **org** group named `aap-crrr`, restricted to the selected AAP private repositories. Public repositories are disallowed.
+The runner group is an **org** group named `aap-crrr`. The intended scope is the selected AAP private repositories only, with public repositories disallowed.
+
+**As built (verified from the GitHub API on 2026-10-26): that is not the current state** (BRUCE `BRUCE_TP_RUNNERS_SEC.md` F1-F3). In the 7 days to 2026-10-26 the group ran jobs for the public repositories `special-place-ai-heaven/symforge` (228 jobs) and `special-place-ai-heaven/RelayForge` (50 jobs), next to `Agent_Army_Professionals` and `TestPilot`. The group's own settings could not be read (the token lacks `admin:org`). Until Rob changes the group to selected private repositories with public repositories off, treat every job on this pool, and the shared compile cache, as reachable from those public repositories.
 
 An org-scoped GitHub App needs only **Self-hosted runners: Read and write**. Repo-scoped ephemeral registration needs repo **Administration: Read and write**, which can change branch protection, collaborators, and settings. That is a strictly larger blast radius if the key leaks. Repo restriction is enforced by the group's selected-repos list. This is the more secure option, so it is the one we use.
 
-`special-place-ai-heaven/symforge` is checked out as a public sibling. It is not a repository that should be selected in this group. Workflows run only on the AAP private repos in the list.
+`special-place-ai-heaven/symforge` is checked out as a public sibling. It should not be selected in this group, but as of 2026-10-26 its CI does run here (see above). Once the C3 change lands and the group is restricted, workflows run only on the private repos in the list.
 
 ## Org settings checklist
 
@@ -306,7 +308,7 @@ Do this in the org that owns the private AAP repos before starting the manager. 
 
 - [ ] Runner group `aap-crrr` exists.
 - [ ] Group access is **Selected repositories**, and the list is the AAP private repos that should run this CI. Public repositories are not selected.
-- [ ] "Allow public repositories" is off for the group.
+- [ ] "Allow public repositories" is off for the group. (Not true on 2026-10-26: public `symforge` and `RelayForge` jobs ran here; BRUCE F3.)
 - [ ] Fork pull request workflows from outside collaborators are off (not "require approval").
 - [ ] GitHub App is org-owned. Organization permission is **Self-hosted runners: Read and write** only. No Administration, Contents, Secrets, or Actions write on the App.
 - [ ] App is installed on the org. Installation id and App id go in `/etc/aap-runner/manager.conf`.

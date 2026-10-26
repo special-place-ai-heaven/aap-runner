@@ -11,7 +11,7 @@
       ],
       "file_name": "SHA256SUMS",
       "urls": [
-        "https://github.com/zackees/zccache/releases/download/1.15.6/SHA256SUMS"
+        "https://github.com/forge-ci/zccache/releases/download/1.15.6/SHA256SUMS"
       ],
       "redirect_hosts": [
         "release-assets.githubusercontent.com",
@@ -52,7 +52,7 @@
       ],
       "file_name": "zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz",
       "urls": [
-        "https://github.com/zackees/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz"
+        "https://github.com/forge-ci/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz"
       ],
       "redirect_hosts": [
         "release-assets.githubusercontent.com",
@@ -92,7 +92,7 @@
       ],
       "file_name": "zccache-v1.15.6-x86_64-unknown-linux-musl-debug.tar.gz",
       "urls": [
-        "https://github.com/zackees/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-unknown-linux-musl-debug.tar.gz"
+        "https://github.com/forge-ci/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-unknown-linux-musl-debug.tar.gz"
       ],
       "redirect_hosts": [
         "release-assets.githubusercontent.com",
@@ -132,7 +132,7 @@
       ],
       "file_name": "zccache-v1.15.6-x86_64-pc-windows-msvc.zip",
       "urls": [
-        "https://github.com/zackees/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-pc-windows-msvc.zip"
+        "https://github.com/forge-ci/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-pc-windows-msvc.zip"
       ],
       "redirect_hosts": [
         "release-assets.githubusercontent.com",
@@ -172,7 +172,7 @@
       ],
       "file_name": "zccache-v1.15.6-x86_64-pc-windows-msvc-debug.zip",
       "urls": [
-        "https://github.com/zackees/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-pc-windows-msvc-debug.zip"
+        "https://github.com/forge-ci/zccache/releases/download/1.15.6/zccache-v1.15.6-x86_64-pc-windows-msvc-debug.zip"
       ],
       "redirect_hosts": [
         "release-assets.githubusercontent.com",
