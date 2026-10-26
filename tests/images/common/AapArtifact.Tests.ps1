@@ -1961,7 +1961,7 @@ Describe 'real download (integration)' -Tag Network {
         # Probed here and not at discovery, so a run that leaves this tag out never contacts the network (and never waits
         # for a probe to time out). A host with no egress skips the two tests below.
         $script:NetGallery = Test-HttpsReachable 'https://www.powershellgallery.com/api/v2/package/Pester/5.9.0'
-        $script:NetGitHub = Test-HttpsReachable 'https://github.com/zackees/zccache/releases/download/1.15.6/SHA256SUMS'
+        $script:NetGitHub = Test-HttpsReachable 'https://github.com/forge-ci/zccache/releases/download/1.15.6/SHA256SUMS'
     }
     It 'fetches Pester 5.9.0 from the PowerShell Gallery and verifies its SHA-512' {
         if (-not $script:NetGallery) { Set-ItResult -Skipped -Because 'no HTTPS answer from the PowerShell Gallery'; return }

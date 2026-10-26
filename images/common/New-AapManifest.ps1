@@ -16,7 +16,7 @@ $winInputs = 'parity/baselines/windows-2025-vs2026-x64/inputs.md, "Version- or h
 $ubuInputs = 'parity/baselines/ubuntu-24.04-x64/inputs.md, "Version- or hash-pinned values"'
 $zccRef = 'parity/baselines/zccache.md, "Release assets"'
 $ghHosts = @('release-assets.githubusercontent.com', 'objects.githubusercontent.com')
-$zcc = 'https://github.com/zackees/zccache/releases/download/1.15.6/'
+$zcc = 'https://github.com/forge-ci/zccache/releases/download/1.15.6/'
 $sfBase = 'https://download.microsoft.com/download/b/8/a/b8a2fb98-0ec1-41e5-be98-9d8b5abf7856/'
 $octet = @('application/octet-stream')
 
