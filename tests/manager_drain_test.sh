@@ -201,7 +201,7 @@ AAP_JOB_TIMEOUT_MINUTES=120
 AAP_RUNNER_COUNT=1
 finish_runner_count
 RUNNER_UID=$(id -u)
-SCCACHE_HOST_DIR="${RUN_DIR}/sccache"
+ZCCACHE_HOST_DIR="${RUN_DIR}/zccache"
 : > "${RUN_DIR}/drain"
 run_one 1 > /dev/null 2>&1 || fail "run_one failed while draining"
 grep -q '^create ' "${calls}" || fail "the docker stub saw no create: $(cat "${calls}")"

@@ -26,12 +26,12 @@ change.
 
 ## Rules (DECIDED)
 
-1. zccache **1.15.6**, tag `1.15.6`, commit `15ec9537af0d219e07b72ce2b3f97d5f68d72b5e`, release
-   archives `zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz`
-   (`885a109c...28e59f7`) and `zccache-v1.15.6-x86_64-pc-windows-msvc.zip`
-   (`a9e2b079...fd949b`). The schema pins version, commit, archive name and hash per platform.
-   `binary_sha256` is filled by P04 after unpacking; the owner's benchmark binary is compared,
-   never moved or modified.
+1. zccache **1.15.11**, tag `1.15.11`, commit `e5bc38be49dbd88963167e343256b31cca8c1678`, release
+   archives `zccache-v1.15.11-x86_64-unknown-linux-musl.tar.gz`
+   (`b79cac8a...43949b`) and `zccache-v1.15.11-x86_64-pc-windows-msvc.zip`
+   (`4b33feb8...bbef81`). The schema pins version, commit, archive name and hash per platform.
+   `binary_sha256` is the unpacked `zccache` member. The owner's benchmark directory is not moved
+   or modified.
 2. **No sccache**: no sccache binary, renamed wrapper, variable, cache format, path or fallback in
    any mode. `validate.py` rejects a matrix that mentions it.
 3. Rows are unique per (compiler, compiler_version, invocation); `evidence_ref` stays under

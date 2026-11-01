@@ -16,7 +16,7 @@ $winInputs = 'parity/baselines/windows-2025-vs2026-x64/inputs.md, "Version- or h
 $ubuInputs = 'parity/baselines/ubuntu-24.04-x64/inputs.md, "Version- or hash-pinned values"'
 $zccRef = 'parity/baselines/zccache.md, "Release assets"'
 $ghHosts = @('release-assets.githubusercontent.com', 'objects.githubusercontent.com')
-$zcc = 'https://github.com/zackees/zccache/releases/download/1.15.6/'
+$zcc = 'https://github.com/forge-ci/zccache/releases/download/1.15.11/'
 $sfBase = 'https://download.microsoft.com/download/b/8/a/b8a2fb98-0ec1-41e5-be98-9d8b5abf7856/'
 $octet = @('application/octet-stream')
 
@@ -39,23 +39,23 @@ function Blocker($id, $name, $profiles, $kind, $reason, $action, $scripts, $ref)
 }
 
 # ---- licences: read from the upstream sources named in each note, not assumed ----------------------------------
-$zccLic = Lic 'open-source' 'restricted' 'AGPL-3.0-only per Cargo.toml, README and LICENSE at commit 15ec953. Copyleft: redistribution carries source-offer duties (AGPL section 13 covers network use). Decide compliance before shipping the binary in an image.'
+$zccLic = Lic 'open-source' 'restricted' 'AGPL-3.0-only per Cargo.toml, README and LICENSE at commit e5bc38b. Copyleft: redistribution carries source-offer duties (AGPL section 13 covers network use). Decide compliance before shipping the binary in an image.'
 $composeLic = Lic 'open-source' 'allowed' 'Apache License 2.0 (LICENSE of docker/compose at tag v2.40.3, read 2026-10-19). Keep the notice when redistributing.'
 
 function Zcc($file, $profile, $sha, $size) {
-    Entry -Name ('zccache-' + ($file -replace '^zccache-v1\.15\.6-', '' -replace '\.(tar\.gz|zip)$', '')) -Version '1.15.6' -Profiles @($profile) -File $file -Url ($zcc + $file) -Redirect $ghHosts `
+    Entry -Name ('zccache-' + ($file -replace '^zccache-v1\.15\.11-', '' -replace '\.(tar\.gz|zip)$', '')) -Version '1.15.11' -Profiles @($profile) -File $file -Url ($zcc + $file) -Redirect $ghHosts `
         -Source 'upstream-file' -Value $sha -UpEntry 'zccache-sha256sums' -UpKey $file -Size $size -Max 104857600 -Types $octet -License $zccLic -Timeout 900 -Ref $zccRef `
         -Note 'Pinned value cross-checked against the SHA256SUMS entry of the same release; both must agree.'
 }
 
 $entries = @(
-    (Entry -Name 'zccache-sha256sums' -Version '1.15.6' -Profiles @($win, $ubu) -File 'SHA256SUMS' -Url ($zcc + 'SHA256SUMS') -Redirect $ghHosts -Source 'literal' `
-        -Value '6b5c2b96c99ab876814cedf3c6c1801d80dc2491fb823fcd8b58f3662c0231c3' -Size 1636 -Max 65536 -Types @('application/octet-stream', 'text/plain') -License $zccLic -Timeout 120 -Ref $zccRef `
+    (Entry -Name 'zccache-sha256sums' -Version '1.15.11' -Profiles @($win, $ubu) -File 'SHA256SUMS' -Url ($zcc + 'SHA256SUMS') -Redirect $ghHosts -Source 'literal' `
+        -Value '98501a80bb111e932a8eb843d56520aa97308b465cb02b18c8eb279698352864' -Size 1648 -Max 65536 -Types @('application/octet-stream', 'text/plain') -License $zccLic -Timeout 120 -Ref $zccRef `
         -Note 'Its first line hashes itself as the empty string; consumers skip that line. Transport integrity only, not a signature.')
-    (Zcc 'zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz' $ubu '885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7' 12389072)
-    (Zcc 'zccache-v1.15.6-x86_64-unknown-linux-musl-debug.tar.gz' $ubu '6eccf0034b23df2fa9f6f523e43a5c2335847e6eb956de8b2e2a284651afaecd' 29806744)
-    (Zcc 'zccache-v1.15.6-x86_64-pc-windows-msvc.zip' $win 'a9e2b079946d00757a56fea3dacd8a47f9cb4bcbfe8c427ffd719ced59fd949b' 10545387)
-    (Zcc 'zccache-v1.15.6-x86_64-pc-windows-msvc-debug.zip' $win '619e41467ea832454c0a5fa8ab009497274279f8bbfe8ad4a39bc18784901ceb' 34900341)
+    (Zcc 'zccache-v1.15.11-x86_64-unknown-linux-musl.tar.gz' $ubu 'b79cac8a521056ef66de3f903546648f21a6da3d3880af33463f66200143949b' 12330509)
+    (Zcc 'zccache-v1.15.11-x86_64-unknown-linux-musl-debug.tar.gz' $ubu '58db574afb2c2ad261a8ff35b5e96368ac7143dc587c555e13eb1e4ac4675909' 29899750)
+    (Zcc 'zccache-v1.15.11-x86_64-pc-windows-msvc.zip' $win '4b33feb8da02f2564a1f5c9846d03a7a5af8ab0ab2f2b10560a11f30e5bbef81' 10443043)
+    (Zcc 'zccache-v1.15.11-x86_64-pc-windows-msvc-debug.zip' $win 'f354e89622fbf40fb2fd0fccb6016dbadbf0fbcd05a101d69f048d076042b1dd' 34956910)
 
     (Entry -Name 'android-commandlinetools-win' -Version '13114758' -Profiles @($win) -File 'commandlinetools-win-13114758_latest.zip' -Url 'https://dl.google.com/android/repository/commandlinetools-win-13114758_latest.zip' `
         -Source 'literal' -Value '98B565CB657B012DAE6794CEFC0F66AE1EFB4690C699B78A614B4A6A3505B003' -Size 143040480 -Max 268435456 -Types @('application/zip') `

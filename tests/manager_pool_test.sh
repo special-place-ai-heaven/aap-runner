@@ -108,11 +108,11 @@ echo "runner uid ok"
 
 # The cache must sit on the work disk that disk_ok verifies, and never under
 # /mnt, which assert_no_mnt_mounts refuses after docker create.
-[[ "${SCCACHE_HOST_DIR}" == "${WORK_MOUNT}"/* ]] || fail "sccache source ${SCCACHE_HOST_DIR} is not under ${WORK_MOUNT}"
-if mount_source_forbidden "${SCCACHE_HOST_DIR}"; then
-  fail "the sccache source ${SCCACHE_HOST_DIR} is refused by assert_no_mnt_mounts"
+[[ "${ZCCACHE_HOST_DIR}" == "${WORK_MOUNT}/zccache" ]] || fail "zccache source ${ZCCACHE_HOST_DIR} is not ${WORK_MOUNT}/zccache"
+if mount_source_forbidden "${ZCCACHE_HOST_DIR}"; then
+  fail "the zccache source ${ZCCACHE_HOST_DIR} is refused by assert_no_mnt_mounts"
 fi
-[[ "${SCCACHE_CONTAINER_DIR}" != /mnt* ]] || fail "sccache target ${SCCACHE_CONTAINER_DIR} is under /mnt"
-echo "sccache mount source ok"
+[[ "${ZCCACHE_CONTAINER_DIR}" == /var/cache/aap-zccache ]] || fail "zccache target ${ZCCACHE_CONTAINER_DIR} is not /var/cache/aap-zccache"
+echo "zccache mount source ok"
 
 echo "manager pool tests ok"

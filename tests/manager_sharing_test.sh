@@ -77,7 +77,7 @@ arm_wall_clock() { echo "$$"; }
 disarm_wall_clock() { :; }
 AAP_RUNNER_IMAGE=aap-crrr-runner:local
 RUNNER_UID=$(id -u)
-SCCACHE_HOST_DIR="${work}/sccache"
+ZCCACHE_HOST_DIR="${work}/zccache"
 
 # pool COUNT SHARING: the load_config limit steps for 24 cpus, 72g, 90% of a
 # 1000 MiB/s disk on /dev/sde, then setup_pool_sharing.

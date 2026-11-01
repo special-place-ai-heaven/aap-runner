@@ -1961,7 +1961,7 @@ Describe 'real download (integration)' -Tag Network {
         # Probed here and not at discovery, so a run that leaves this tag out never contacts the network (and never waits
         # for a probe to time out). A host with no egress skips the two tests below.
         $script:NetGallery = Test-HttpsReachable 'https://www.powershellgallery.com/api/v2/package/Pester/5.9.0'
-        $script:NetGitHub = Test-HttpsReachable 'https://github.com/zackees/zccache/releases/download/1.15.6/SHA256SUMS'
+        $script:NetGitHub = Test-HttpsReachable 'https://github.com/forge-ci/zccache/releases/download/1.15.11/SHA256SUMS'
     }
     It 'fetches Pester 5.9.0 from the PowerShell Gallery and verifies its SHA-512' {
         if (-not $script:NetGallery) { Set-ItResult -Skipped -Because 'no HTTPS answer from the PowerShell Gallery'; return }
@@ -1977,7 +1977,7 @@ Describe 'real download (integration)' -Tag Network {
         $p.sha256 | Should -Be '5a0fd80b361600bf4bbd4c307c1fd01b17f11668bab19e657add41b00ad22ab9'
         ([Uri]$p.final_url).Host | Should -Be 'cdn.powershellgallery.com'
     }
-    It 'fetches the zccache 1.15.6 SHA256SUMS from GitHub and confirms every pinned archive hash against it' {
+    It 'fetches the zccache 1.15.11 SHA256SUMS from GitHub and confirms every pinned archive hash against it' {
         if (-not $script:NetGitHub) { Set-ItResult -Skipped -Because 'no HTTPS answer from GitHub'; return }
         $m = Read-AapManifest -Path $script:ManifestPath
         $st = New-Staging
@@ -1985,8 +1985,8 @@ Describe 'real download (integration)' -Tag Network {
         $r.Complete | Should -BeTrue -Because "$($r.Results.Message)"
         $sums = $m.entries | Where-Object name -eq 'zccache-sha256sums'
         $p = Get-Content -Raw -LiteralPath ((Get-AapStagedPath $st $sums) + '.provenance.json') | ConvertFrom-Json
-        $p.sha256 | Should -Be '6b5c2b96c99ab876814cedf3c6c1801d80dc2491fb823fcd8b58f3662c0231c3'
-        $p.bytes | Should -Be 1636
+        $p.sha256 | Should -Be '98501a80bb111e932a8eb843d56520aa97308b465cb02b18c8eb279698352864'
+        $p.bytes | Should -Be 1648
         (Get-Content -Raw -LiteralPath ((Get-AapStagedPath $st $sums) + '.provenance.json')) | Should -Not -Match 'jwt|sig='
         @($p.url_chain).Count | Should -BeGreaterThan 1
         Write-Host "zccache SHA256SUMS: bytes=$($p.bytes) sha256=$($p.sha256) final_host=$(([Uri]$p.final_url).Host) type=$($p.content_type)"

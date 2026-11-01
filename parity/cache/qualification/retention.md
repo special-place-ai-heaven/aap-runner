@@ -1,14 +1,14 @@
 # zccache retention and storage requirements (for P13 and P16)
 
 Status: requirements, not measurements. Nothing here was run. Citations are the README at the pinned
-commit (`R` = <https://github.com/zackees/zccache/blob/15ec9537af0d219e07b72ce2b3f97d5f68d72b5e/README.md>,
+commit (`R` = <https://github.com/forge-ci/zccache/blob/e5bc38be49dbd88963167e343256b31cca8c1678/README.md>,
 line numbers) and the FEATURE-MATRIX at the same commit (`FM`). The contract is
 [cache-qualification.md](../../contracts/cache-qualification.md) rule 6.
 
 ## What is replaced
 
 The legacy distro currently bounds the compile cache in the manager. `distro/manager.sh` runs
-`bound_sccache_tree` and `trim_sccache_tree` before each job and in post-job cleanup. These
+`bound_zccache_tree` and `trim_zccache_tree` before each job and in post-job cleanup. These
 measure the tree with `du -sb`. Over 15% of `AAP_WORK_DISK_GIB`, they delete the oldest files by
 mtime until the tree is at or under 80% of that bound. That is raw oldest-file eviction. It
 ignores entry boundaries, so jobs already running can miss a trimmed file (`distro/README.md`).
@@ -31,8 +31,8 @@ P16 removes it. No zccache root is ever trimmed by the manager or by any script 
    holds `tmp/`, `depgraph/`, `index.bin`, `crashes/`, `logs/`, lock files and download-daemon state
    (R 433-436), plus `daemon-state/<namespace>` (R 482-489) and private staging below
    `{cache_root}/staging` (R 524-530). The compile journal grows with every compile (R 1240-1252).
-   At the pin all of this sits in `<root>/v1.15.6/`, beside a copy of the `zccache` binary
-   (27,876,808 bytes on Linux) that zccache deploys there and runs as the root's daemon
+   At the pin all of this sits in `<root>/v1.15.11/`, beside a copy of the `zccache` binary
+   (27,744,784 bytes on Linux) that zccache deploys there and runs as the root's daemon
    ([README](README.md), "Method"). P13 must:
    - measure non-artifact bytes per root (`du` of the root minus the artifact store) after the lab
      runs, and set a hard cap for them inside the guest scratch budget;

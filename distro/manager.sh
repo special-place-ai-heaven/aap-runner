@@ -82,18 +82,23 @@ DEREG_NAMES=()
 # systemd restarts the whole pool.
 SLOT_MAX_FAILS=5
 SLOT_FAST_SECONDS=120
-# Shared rustc cache on the work disk, bind-mounted into every job. sccache's
-# local disk cache is built for concurrent readers and writers (separate
-# sccache servers, one per job), so parallel slots can share it. ci.yml sets
-# SCCACHE_DIR to a per-repository subdirectory; "default" is for jobs that do not.
-SCCACHE_HOST_DIR=${WORK_MOUNT}/sccache
-SCCACHE_CONTAINER_DIR=/var/cache/aap-sccache
-SCCACHE_CACHE_SIZE=10G
-# SCCACHE_CACHE_SIZE bounds one directory, and any job can create another.
-# Before each job the whole tree is measured. Over 15% of the disk, the oldest
-# files are removed until the tree is at 80% of that bound. finish_disk_bounds
-# sets the cap from AAP_WORK_DISK_GIB. 9216 MiB is 15% of the default 60 GiB.
-SCCACHE_TREE_MAX_MB=9216
+# Compile cache on the work disk, bind-mounted into every job. The runner does
+# not set RUSTC_WRAPPER: a missing wrapper breaks the build, and the job image
+# does not have to contain zccache. A workflow opts in with the forge-ci/zccache
+# action, which installs zccache and only then exports the wrapper. The mount
+# is the parent tree. A job that wants the cache sets ZCCACHE_CACHE_DIR to a
+# per-repository subdirectory (/var/cache/aap-zccache/<owner>_<repo>) and
+# creates it. The runner does not point every job at one shared directory.
+# ZCCACHE_CACHE_SIZE_BYTES is always set (10 GiB) so a zccache that starts is
+# capped. That limit is per directory. Before each job the whole tree is
+# measured. Over 15% of the disk, the oldest files are removed until the tree
+# is at 80% of that bound. finish_disk_bounds sets the cap from
+# AAP_WORK_DISK_GIB. 9216 MiB is 15% of the default 60 GiB. An existing
+# ${WORK_MOUNT}/sccache directory is left in place.
+ZCCACHE_HOST_DIR=${WORK_MOUNT}/zccache
+ZCCACHE_CONTAINER_DIR=/var/cache/aap-zccache
+ZCCACHE_CACHE_SIZE_BYTES=10737418240
+ZCCACHE_TREE_MAX_MB=9216
 RUNNER_UID=""
 # Interface for the Windows-side supervisor (wsl -d aap-runner -u root --).
 # ${RUN_DIR}/drain stops new jobs; ${RUN_DIR}/status.json reports the pool.
@@ -326,7 +331,7 @@ finish_disk_bounds() {
     WORK_DISK_MIN_GB=1
   fi
   WORK_DISK_MAX_GB=$((AAP_WORK_DISK_GIB + 4))
-  SCCACHE_TREE_MAX_MB=$(( AAP_WORK_DISK_GIB * 1024 * 15 / 100 ))
+  ZCCACHE_TREE_MAX_MB=$(( AAP_WORK_DISK_GIB * 1024 * 15 / 100 ))
 }
 
 # Absent keys use the defaults. A present value that is not this grammar is refused.
@@ -1041,25 +1046,25 @@ cleanup_job() {
 # does not get the lock skips the trim and returns 0; the holder's pass
 # covers it. Without RUN_DIR (self-check, tests) there is no lock file and
 # the trim just runs.
-bound_sccache_tree() {
-  [[ -d "${RUN_DIR}" ]] || { trim_sccache_tree; return 0; }
+bound_zccache_tree() {
+  [[ -d "${RUN_DIR}" ]] || { trim_zccache_tree; return 0; }
   (
     flock -n 9 || exit 0
-    trim_sccache_tree
-  ) 9> "${RUN_DIR}/sccache-trim.lock"
+    trim_zccache_tree
+  ) 9> "${RUN_DIR}/zccache-trim.lock"
 }
 
 # Bytes, not du -sm. Over the cap, delete oldest regular files until the tree
 # is at or under 80% of the cap. The directory stays.
-trim_sccache_tree() {
+trim_zccache_tree() {
   local used bound target need sz path
-  [[ -d "${SCCACHE_HOST_DIR}" ]] || return 0
-  [[ "${SCCACHE_TREE_MAX_MB}" =~ ^[0-9]+$ ]] || return 0
-  bound=$(( SCCACHE_TREE_MAX_MB * 1024 * 1024 ))
-  used=$(du -sb "${SCCACHE_HOST_DIR}" 2>/dev/null | awk '{ print $1 }')
+  [[ -d "${ZCCACHE_HOST_DIR}" ]] || return 0
+  [[ "${ZCCACHE_TREE_MAX_MB}" =~ ^[0-9]+$ ]] || return 0
+  bound=$(( ZCCACHE_TREE_MAX_MB * 1024 * 1024 ))
+  used=$(du -sb "${ZCCACHE_HOST_DIR}" 2>/dev/null | awk '{ print $1 }')
   [[ "${used}" =~ ^[0-9]+$ && "${used}" -gt "${bound}" ]] || return 0
   target=$(( bound * 80 / 100 ))
-  echo "sccache tree ${SCCACHE_HOST_DIR} is ${used} bytes, over ${bound}; trimming oldest files to ${target}" >&2
+  echo "zccache tree ${ZCCACHE_HOST_DIR} is ${used} bytes, over ${bound}; trimming oldest files to ${target}" >&2
   need=$(( used - target ))
   while IFS=$'\t' read -r _ sz path; do
     [[ -n "${path}" && -f "${path}" ]] || continue
@@ -1068,7 +1073,7 @@ trim_sccache_tree() {
       need=$(( need - sz ))
     fi
     (( need > 0 )) || break
-  done < <(find "${SCCACHE_HOST_DIR}" -type f -printf '%T@\t%s\t%p\n' | sort -n)
+  done < <(find "${ZCCACHE_HOST_DIR}" -type f -printf '%T@\t%s\t%p\n' | sort -n)
 }
 
 # A marker is named after the cleaner's pid. One whose process is gone (a
@@ -1166,7 +1171,7 @@ reclaim_pool_cache() {
 # is included because that tree is on this disk.
 clean_after_job() {
   begin_cleaning
-  bound_sccache_tree || true
+  bound_zccache_tree || true
   prune_job_docker
   reclaim_pool_cache || true
   maybe_daily_clean
@@ -1198,9 +1203,9 @@ run_one() {
   net="${name}"
   # set -e does not apply inside this function: the loop calls it from `if`.
   # disk_ok passed just before this, so the cache dir is on the work disk.
-  bound_sccache_tree
-  if ! install -d -o "${RUNNER_UID}" -m 0700 "${SCCACHE_HOST_DIR}"; then
-    echo "refusing to start a job: could not create ${SCCACHE_HOST_DIR}" >&2
+  bound_zccache_tree
+  if ! install -d -o "${RUNNER_UID}" -m 0700 "${ZCCACHE_HOST_DIR}"; then
+    echo "refusing to start a job: could not create ${ZCCACHE_HOST_DIR}" >&2
     return 1
   fi
   if ! docker network create --label aap-crrr-job=1 "${net}"; then
@@ -1223,9 +1228,10 @@ run_one() {
         --device-write-iops "${IO_DEVICE}:$((SLOT_IO_MBPS * IO_IOPS_PER_MB))")
     fi
   fi
-  # One bind mount, the sccache dir on the work disk. No -v, no /mnt.
+  # One bind mount, the zccache dir on the work disk. No -v, no /mnt.
   # assert_no_mnt_mounts rejects a source under /mnt even if the daemon adds
-  # one. /mnt/wsl is the shared docker-desktop tmpfs.
+  # one. /mnt/wsl is the shared docker-desktop tmpfs. No compiler wrapper:
+  # the workflow opts in after zccache is installed.
   if ! docker create \
     --runtime=sysbox-runc \
     --interactive \
@@ -1241,10 +1247,8 @@ run_one() {
     --env "AAP_RUNNER_GROUP=${AAP_RUNNER_GROUP}" \
     --env "AAP_WORK_DISK_GIB=${AAP_WORK_DISK_GIB}" \
     --env "AAP_DISK_FLOOR_GB=${AAP_DISK_FLOOR_GB}" \
-    --mount "type=bind,source=${SCCACHE_HOST_DIR},target=${SCCACHE_CONTAINER_DIR}" \
-    --env "RUSTC_WRAPPER=sccache" \
-    --env "SCCACHE_DIR=${SCCACHE_CONTAINER_DIR}/default" \
-    --env "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE}" \
+    --mount "type=bind,source=${ZCCACHE_HOST_DIR},target=${ZCCACHE_CONTAINER_DIR}" \
+    --env "ZCCACHE_CACHE_SIZE_BYTES=${ZCCACHE_CACHE_SIZE_BYTES}" \
     "${AAP_RUNNER_IMAGE}"; then
     docker network rm "${net}" || true
     return 1
@@ -1805,14 +1809,14 @@ self_check() {
     return 1
   fi
   sc_dir=$(mktemp -d)
-  SCCACHE_HOST_DIR=${sc_dir}
+  ZCCACHE_HOST_DIR=${sc_dir}
   mkdir -p "${sc_dir}/repo"
   head -c 2097152 /dev/zero > "${sc_dir}/repo/old"
   head -c 2097152 /dev/zero > "${sc_dir}/repo/new"
   touch -d '2020-01-01 00:00:00' "${sc_dir}/repo/old"
   touch -d '2024-01-01 00:00:00' "${sc_dir}/repo/new"
-  SCCACHE_TREE_MAX_MB=3
-  bound_sccache_tree
+  ZCCACHE_TREE_MAX_MB=3
+  bound_zccache_tree
   [[ -d "${sc_dir}" ]]
   [[ ! -e "${sc_dir}/repo/old" ]]
   [[ -f "${sc_dir}/repo/new" ]]

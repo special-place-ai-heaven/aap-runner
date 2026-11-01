@@ -143,19 +143,19 @@ n=$(zq_corrupt "${tmp}/store2" artifact "x $(printf abc | sha256sum | cut -d' ' 
 mkdir -p "${tmp}/w/cache-ok/crashes" "${tmp}/w/cache-error"; : > "${tmp}/w/cache-ok/crashes/dump.bin"
 [[ "$(zq_crash_dumps "${tmp}/w")" == '{"cache-error":0,"cache-ok":1}' || "$(zq_crash_dumps "${tmp}/w")" == '{"cache-ok":1,"cache-error":0}' ]] &&
   ok "counts crash dumps per cache root" || no "counts crash dumps per cache root: $(zq_crash_dumps "${tmp}/w")"
-mkdir -p "${tmp}/w/cache-ok/v1.15.6/crashes" "${tmp}/w/cache-ok/v1.15.6/artifacts" "${tmp}/w/cache-error/v1.15.6/crash-spool"
-: > "${tmp}/w/cache-ok/v1.15.6/crashes/d.dmp"; : > "${tmp}/w/cache-ok/v1.15.6/artifacts/x"
-: > "${tmp}/w/cache-error/v1.15.6/crash-spool/pending-1-2-a.rpcrash"; printf 'r' > "${tmp}/w/cache-error/v1.15.6/crash-spool/pending-3-4-b.rpcrash"
+mkdir -p "${tmp}/w/cache-ok/v1.15.11/crashes" "${tmp}/w/cache-ok/v1.15.11/artifacts" "${tmp}/w/cache-error/v1.15.11/crash-spool"
+: > "${tmp}/w/cache-ok/v1.15.11/crashes/d.dmp"; : > "${tmp}/w/cache-ok/v1.15.11/artifacts/x"
+: > "${tmp}/w/cache-error/v1.15.11/crash-spool/pending-1-2-a.rpcrash"; printf 'r' > "${tmp}/w/cache-error/v1.15.11/crash-spool/pending-3-4-b.rpcrash"
 [[ "$(zq_crash_dumps "${tmp}/w" | jq -c -S .)" == '{"cache-error":1,"cache-ok":2}' ]] &&
-  ok "counts crash dumps and filled crash-spool records in zccache's v1.15.6 state folder, not empty pending ones" ||
+  ok "counts crash dumps and filled crash-spool records in zccache's v1.15.11 state folder, not empty pending ones" ||
   no "counts crash dumps and filled crash-spool records: $(zq_crash_dumps "${tmp}/w")"
 out=$(export ZQ_WORK=/w; zq_phase() { echo "phase $4" >> "${tmp}/poison-steps"; echo '{"exit":0}'; }
   zq_corrupt() { echo "corrupt $1" >> "${tmp}/poison-steps"; echo 1; }; zq_stop_daemons() { echo "stop $1" >> "${tmp}/poison-steps"; echo true; }
   zq_poison /s /w/cache-poison-artifact artifact h)
-[[ "$(cat "${tmp}/poison-steps")" == $'phase ok-prime-artifact\nstop /w\ncorrupt /w/cache-poison-artifact/v1.15.6/artifacts\nphase ok-poisoned-artifact' &&
+[[ "$(cat "${tmp}/poison-steps")" == $'phase ok-prime-artifact\nstop /w\ncorrupt /w/cache-poison-artifact/v1.15.11/artifacts\nphase ok-poisoned-artifact' &&
   "$(jq -c . <<<"${out}")" == '{"exit":0,"prime_exit":0,"daemon_stopped":true,"corrupted_files":1}' ]] &&
-  ok "poisons zccache's store in the v1.15.6 state folder after stopping the daemons" ||
-  no "poisons zccache's store in the v1.15.6 state folder: $(cat "${tmp}/poison-steps") ${out}"
+  ok "poisons zccache's store in the v1.15.11 state folder after stopping the daemons" ||
+  no "poisons zccache's store in the v1.15.11 state folder: $(cat "${tmp}/poison-steps") ${out}"
 out=$(export ZQ_WORK=/w; zq_phase() { echo "phase $4" >> "${tmp}/control-steps"; echo '{"exit":0}'; }
   zq_stop_daemons() { echo "stop $1" >> "${tmp}/control-steps"; echo true; }
   zq_control /s /w/cache-control)
@@ -168,17 +168,17 @@ out=$(export ZQ_COMPILER=gcc ZQ_INVOCATION=debug-pdb ZQ_CC="${tmp}/run/cc" ZQ_LO
 [[ "$(jq -c '[.exit, .argv, .primary_present, .cache_dir, .journal]' <<<"${out}" 2> /dev/null)" == '[0,["-g","-c","hello.c","-o","out/hello.o"],true,null,null]' ]] &&
   ok "a run entry records an argv that starts with options" || no "a run entry records an argv that starts with options: ${out}"
 [[ "$(zq_os | jq -r '.kernel_release | length > 0')" == true ]] && ok "records the kernel release" || no "records the kernel release"
-for c in "/w/bin/zccache|bin" "/w/bin/sub/x|bin" "/w/cache-ok/v1.15.6/zccache-daemon|root" "/w/cache-poison-marker/v1.15.6/zccache-daemon|root" \
-  "/w/cache-ok/v1.15.6/zccache|" "/w/cache-ok/v1.15.5/zccache-daemon|" "/w/cache-ok/x/v1.15.6/zccache-daemon|" "/w/src/v1.15.6/zccache-daemon|" \
-  "/w/cache-ok/zccache-daemon|" "/w/cache-ok/v1.15.6/zccache-daemon.old|" "/wx/bin/zccache|" "/other/bin/zccache|"; do
+for c in "/w/bin/zccache|bin" "/w/bin/sub/x|bin" "/w/cache-ok/v1.15.11/zccache-daemon|root" "/w/cache-poison-marker/v1.15.11/zccache-daemon|root" \
+  "/w/cache-ok/v1.15.11/zccache|" "/w/cache-ok/v1.15.5/zccache-daemon|" "/w/cache-ok/x/v1.15.11/zccache-daemon|" "/w/src/v1.15.11/zccache-daemon|" \
+  "/w/cache-ok/zccache-daemon|" "/w/cache-ok/v1.15.11/zccache-daemon.old|" "/wx/bin/zccache|" "/other/bin/zccache|"; do
   [[ "$(zq_owner /w "${c%%|*}")" == "${c#*|}" ]] && ok "owner of ${c%%|*} is '${c#*|}'" || no "owner of ${c%%|*}: $(zq_owner /w "${c%%|*}")"
 done
-dw="${tmp}/dw"; mkdir -p "${dw}/bin" "${dw}/cache-ok/v1.15.6" "${dw}/cache-ok/v9.9.9"
+dw="${tmp}/dw"; mkdir -p "${dw}/bin" "${dw}/cache-ok/v1.15.11" "${dw}/cache-ok/v9.9.9"
 # Copies of bash, not sleep: a multi-call coreutils (uutils) refuses to run under another file name.
-for x in bin/zccache-sleep cache-ok/v1.15.6/zccache-daemon cache-ok/v9.9.9/zccache-daemon; do cp "$(command -v bash)" "${dw}/${x}"; done
+for x in bin/zccache-sleep cache-ok/v1.15.11/zccache-daemon cache-ok/v9.9.9/zccache-daemon; do cp "$(command -v bash)" "${dw}/${x}"; done
 loop='while :; do sleep 1; done'
 "${dw}/bin/zccache-sleep" -c "${loop}" & bg+=($!)
-"${dw}/cache-ok/v1.15.6/zccache-daemon" -c "${loop}" & bg+=($!)
+"${dw}/cache-ok/v1.15.11/zccache-daemon" -c "${loop}" & bg+=($!)
 "${dw}/cache-ok/v9.9.9/zccache-daemon" -c "${loop}" & decoy=$!; bg+=("${decoy}")
 sleep 0.3
 d=$(zq_daemons "${dw}")
@@ -214,7 +214,7 @@ input=$(jq -c -n --argjson j "${J}" --argjson h "${H}" --argjson a "${A}" --arg 
     zccache_env: (if $jr == null then ["ZCCACHE_MODE"] else ["ZCCACHE_CACHE_DIR", "ZCCACHE_MODE", "ZCCACHE_SESSION_ID"] end), journal: $jr};
   {meta: {platform: "linux-x86_64", command: "qualify.sh clang 18.1.3 compile-object x",
           tool_versions: {compiler: "Ubuntu clang version 18.1.3 (1ubuntu1)", compiler_path: "/usr/bin/clang-18",
-                          compiler_sha256: ("c" * 64), zccache: "zccache 1.15.6", zccache_sha256: $zs, "zccache-fp_sha256": $fs,
+                          compiler_sha256: ("c" * 64), zccache: "zccache 1.15.11", zccache_sha256: $zs, "zccache-fp_sha256": $fs,
                           jq: "jq-1.7.1"},
           os: {kernel_release: "6.8.0-45-generic", os_release: "Ubuntu 24.04.5 LTS", image_os: "ubuntu24", image_version: "20261012.334.1"},
           env: {set: {ZCCACHE_MODE: "COPY"}, removed: []},
@@ -275,7 +275,7 @@ for bad in '{}' '[]' '{"meta":5,"runs":"x","errors":[1]}'; do
   [[ "$(verdict "${bad}" | jq -r '"\(.harness_pass)|\([.checks[] | select(. == true)] | length)"')" == "false|0" ]] &&
     ok "input ${bad} fails every check without a jq error" || no "input ${bad} fails every check without a jq error"
 done
-r=$(verdict "$(jq -c '.meta.daemons[0] |= (.in_private_bin = false | .in_cache_root = true | .exe = "/w/cache-ok/v1.15.6/zccache-daemon")' <<<"${input}")")
+r=$(verdict "$(jq -c '.meta.daemons[0] |= (.in_private_bin = false | .in_cache_root = true | .exe = "/w/cache-ok/v1.15.11/zccache-daemon")' <<<"${input}")")
 [[ "$(jq -r '"\(.harness_pass)|\(.checks.daemons_pinned)"' <<<"${r}")" == "true|true" ]] && ok "a pinned daemon deployed into a cache root passes" || no "a pinned daemon deployed into a cache root passes"
 dbg=$(jq -c '.meta.invocation = "debug-pdb" | .runs.relocated_direct = (.runs.uncached | .artifacts = {"hello.o": "b"})
   | .runs.relocated = (.runs.cold | .artifacts = {"hello.o": "b"})' <<<"${input}")

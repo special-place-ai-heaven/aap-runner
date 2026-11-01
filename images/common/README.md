@@ -122,10 +122,10 @@ until P19 locks `D:\aap-runner`, so evidence for accepted files made here before
 
 ## What the manifest covers
 
-- **Entries (22):** the zccache 1.15.6 `SHA256SUMS` and four archives, Android command-line tools (Windows and Linux), the MySQL Visual C++ redistributable, the Docker CE install helper, the Docker engine zip, Docker Compose and its checksum file, Service Fabric runtime and SDK, Cobertura, Pester 5.9.0, `libicu70`, `containernetworking-plugins`, and (P03.1, 2026-10-21) the `actions/runner-images` source archives at the pinned build commits `aee0669` (Windows zip) and `7e7dc1b` (Ubuntu release-tag tar.gz), the Ubuntu 24.04 point-release checksum list and the Ubuntu 24.04.5 live-server ISO.
+- **Entries (22):** the zccache 1.15.11 `SHA256SUMS` and four archives, Android command-line tools (Windows and Linux), the MySQL Visual C++ redistributable, the Docker CE install helper, the Docker engine zip, Docker Compose and its checksum file, Service Fabric runtime and SDK, Cobertura, Pester 5.9.0, `libicu70`, `containernetworking-plugins`, and (P03.1, 2026-10-21) the `actions/runner-images` source archives at the pinned build commits `aee0669` (Windows zip) and `7e7dc1b` (Ubuntu release-tag tar.gz), the Ubuntu 24.04 point-release checksum list and the Ubuntu 24.04.5 live-server ISO.
 - **Script coverage is self-declared.** The `scripts` list of an entry or blocker says which P01 scripts it serves, as the manifest author declares it. One record can cover a whole script: `Install-Docker.ps1` is served by the Docker engine zip and the Docker CE helper, and the `moby/moby` source that script also names (`github:moby/moby` in the P01 inputs) has no record of its own. The runner-images archive entries serve every script of their profile, because the archive is the source of the scripts themselves. The coverage test proves that every script with an external source appears in some record, not that every source inside it has its own.
 - **Not reproducible (26 blockers):** each is listed with a reason class, the owner action and the upstream scripts it concerns (licensed media, Azure-only base images, moving channels and feeds, inputs with no hash, version rules, remote install scripts, package-manager installs). They are returned as `BLOCKER` lines and never acquired.
-- **Deliberately not acquired** (zccache 1.15.6 release files that the baseline names but the manifest does not carry):
+- **Deliberately not acquired** (zccache 1.15.11 release files that the baseline names but the manifest does not carry):
 
 | File | Why it is not acquired |
 |---|---|
@@ -135,7 +135,7 @@ until P19 locks `D:\aap-runner`, so evidence for accepted files made here before
 
 ## Licence note
 
-zccache is AGPL-3.0-only (Cargo.toml, README and LICENSE at commit 15ec953). Copyleft: redistributing an image that contains the
+zccache is AGPL-3.0-only (Cargo.toml, README and LICENSE at commit e5bc38b). Copyleft: redistributing an image that contains the
 binary carries source-offer duties, including for network use (AGPL section 13). Internal use on the owner's runners is fine; decide
 compliance before any image with zccache leaves the owner's hosts (P04, P21, P22). Other unknown licences keep `unknown` with a reason in the manifest.
 

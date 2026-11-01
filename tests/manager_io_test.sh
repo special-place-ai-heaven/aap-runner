@@ -111,7 +111,7 @@ AAP_RUNNER_COUNT=3
 finish_runner_count
 AAP_RUNNER_IMAGE=aap-crrr-runner:local
 RUNNER_UID=$(id -u)
-SCCACHE_HOST_DIR="${work}/sccache"
+ZCCACHE_HOST_DIR="${work}/zccache"
 
 # create_args COUNT PERCENT: run_one 1 after finish_io_limits on /dev/sde.
 create_args() {

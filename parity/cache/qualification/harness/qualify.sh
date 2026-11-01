@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# zccache 1.15.6 qualification harness, Linux x86_64. LAB ONLY (P13/P22), see ../README.md.
+# zccache 1.15.11 qualification harness, Linux x86_64. LAB ONLY (P13/P22), see ../README.md.
 #
 # Runs one (compiler, invocation) pair through method steps 1-6: uncached, cold and warm builds,
 # a relocated build for debug-pdb, a control build (prime, stop the daemon, rebuild with nothing
@@ -19,8 +19,8 @@
 # Builds and zccache run under `env -i` with only the ZQ_ENV_KEEP variables.
 set -u
 
-ZQ_BINARY_SHA256=f97ae874042ab5c80fc2e35342e406972437f1fd45ec81372be33c0f5cbb18cc
-ZQ_FP_SHA256=df637b927954093a6fd5c7cc34afc3dd9470a855ec3e03e0342ee9ea9e49f058
+ZQ_BINARY_SHA256=fd9fc89ee8273a03f7dabce8459abf41ddf5ab8a27cd9db552384ac9a77af980
+ZQ_FP_SHA256=e57cdc72f35b9b597ea24fcfd2859126eac8654c6291a72cc10995e5bf8e962b
 ZQ_EVIDENCE_RE='^parity/cache/qualification/[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$'
 # Variable names that look like credentials (the zccache daemon and its crash dumps inherit them).
 # pat and auth only as whole words (GH_PAT, SSH_AUTH_SOCK, NPM_CONFIG__AUTH, not PATH or
@@ -34,10 +34,10 @@ ZQ_URL_CREDENTIAL_RE='://[^/@[:space:]]*:[^/@[:space:]]*@'
 ZQ_ENV_KEEP=(PATH HOME PWD TMPDIR LANG LC_ALL CARGO_HOME RUSTUP_HOME RUSTUP_TOOLCHAIN
   ZCCACHE_MODE ZCCACHE_CACHE_DIR ZCCACHE_SESSION_ID)
 ZQ_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# zccache 1.15.6 keeps its state one level below the root ZCCACHE_CACHE_DIR names, in v1.15.6/: the
+# zccache 1.15.11 keeps its state one level below the root ZCCACHE_CACHE_DIR names, in v1.15.11/: the
 # artifact store, crashes/, crash-spool/, and the copy of itself it deploys and runs as the daemon,
-# v1.15.6/zccache-daemon (resolve.rs versioned_subdir, cli/runtime/deploy.rs 106-125 at the pin).
-ZQ_STATE=v1.15.6
+# v1.15.11/zccache-daemon (resolve.rs versioned_subdir, cli/runtime/deploy.rs 106-125 at the pin).
+ZQ_STATE=v1.15.11
 
 zq_pairs() {
   case "$1" in
@@ -71,7 +71,7 @@ zq_url_credential_names() { # names only; the values are never printed
   for n in $(compgen -e); do [[ "${!n-}" =~ ${ZQ_URL_CREDENTIAL_RE} ]] && echo "${n}"; done | sort -u
 }
 
-# stdin is /dev/null: the zccache 1.15.6 client reads its stdin, and one started from a shell whose
+# stdin is /dev/null: the zccache 1.15.11 client reads its stdin, and one started from a shell whose
 # stdin stays open (a pipe or a terminal) waited on it forever before compiling (seen in WSL, P04.1).
 zq_run() { # CMD... -> CMD under `env -i` with the ZQ_ENV_KEEP variables that are set
   local n
@@ -226,7 +226,7 @@ zq_corrupt() { # STORE artifact|same-size|marker [HASHES]
 zq_work_ok() { [[ "$1" == /?* ]] || { echo "zq: refusing work path '$1'; it must be absolute" >&2; return 1; }; }
 
 # Where an executable runs from: "bin" (the private copy, WORK/bin), "root" (the daemon copy zccache
-# deployed into one of the harness's cache roots, exactly WORK/cache-*/v1.15.6/zccache-daemon) or "".
+# deployed into one of the harness's cache roots, exactly WORK/cache-*/v1.15.11/zccache-daemon) or "".
 zq_owner() { # WORK EXE
   local rel=${2#"$1"/}
   if [[ "${rel}" == "$2" ]]; then echo ""
@@ -274,7 +274,7 @@ zq_stop_daemons() { # WORK -> prints true when nothing the harness owns runs any
 }
 
 # Counts every file in a crashes/ folder and every non-empty one in a crash-spool/ folder below a
-# root: README 433-434 names <root>/crashes; at the pin they are <root>/v1.15.6/crashes and
+# root: README 433-434 names <root>/crashes; at the pin they are <root>/v1.15.11/crashes and
 # crash-spool, where each live process keeps an empty pending-*.rpcrash that a crash fills
 # (crash.rs 24-34). No link is followed.
 zq_crash_dumps() { # WORK -> JSON object {cache root: crash files below it}; dumps never leave the VM
@@ -388,8 +388,8 @@ zq_main() {
   ZQ_ZC="${ZQ_BIN}/zccache"
   zsha=$(sha256sum "${ZQ_ZC}" | cut -d' ' -f1)
   fpsha=$(sha256sum "${ZQ_BIN}/zccache-fp" | cut -d' ' -f1)
-  [[ "${zsha}" == "${ZQ_BINARY_SHA256}" ]] || { echo "BINARY: ${zc} is ${zsha}, not the pinned 1.15.6 zccache" >&2; return 4; }
-  [[ "${fpsha}" == "${ZQ_FP_SHA256}" ]] || { echo "BINARY: ${fp} is ${fpsha}, not the pinned 1.15.6 zccache-fp" >&2; return 4; }
+  [[ "${zsha}" == "${ZQ_BINARY_SHA256}" ]] || { echo "BINARY: ${zc} is ${zsha}, not the pinned 1.15.11 zccache" >&2; return 4; }
+  [[ "${fpsha}" == "${ZQ_FP_SHA256}" ]] || { echo "BINARY: ${fp} is ${fpsha}, not the pinned 1.15.11 zccache-fp" >&2; return 4; }
   trap 'zq_stop_daemons "${ZQ_WORK}" > /dev/null' EXIT
 
   export ZCCACHE_MODE=COPY  # contract rule 6; hardlink and reflink need their own proof

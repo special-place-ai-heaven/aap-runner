@@ -58,7 +58,7 @@ BeforeAll {
         $meta = [ordered]@{
             platform = 'windows-x86_64'; command = 'qualify.ps1 -Compiler clang-cl'
             tool_versions = [ordered]@{ compiler = 'clang version 20.1.8'; compiler_path = 'C:\Program Files\LLVM\bin\clang-cl.exe'; compiler_sha256 = ('c' * 64)
-                zccache = 'zccache 1.15.6'; zccache_sha256 = $ZqBinarySha256; 'zccache-fp_sha256' = $ZqFpSha256; jq = 'jq-1.8.1' }
+                zccache = 'zccache 1.15.11'; zccache_sha256 = $ZqBinarySha256; 'zccache-fp_sha256' = $ZqFpSha256; jq = 'jq-1.8.1' }
             os = [ordered]@{ os_version = 'Microsoft Windows Server 2025 10.0.26100.6584'; image_os = 'win25'; image_version = '20261007.264.1' }
             env = [ordered]@{ set = [ordered]@{ ZCCACHE_MODE = 'COPY' }; removed = @() }
             daemons = @([ordered]@{ pid = 42; exe = 'C:\w\bin\zccache.exe'; in_private_bin = $true; sha256 = $ZqBinarySha256 })
@@ -366,10 +366,10 @@ Describe 'Journal, files, environment and corruption' {
     It 'owns only the private copy and the daemon copy zccache deploys into one of its cache roots' {
         $cases = [ordered]@{
             'C:\w\bin\zccache.exe' = 'bin'; 'c:\W\BIN\zccache-fp.exe' = 'bin'
-            'C:\w\cache-ok\v1.15.6\zccache-daemon.exe' = 'root'; 'C:\w\cache-poison-marker\v1.15.6\zccache-daemon.exe' = 'root'
-            'C:\w\cache-ok\v1.15.6\zccache.exe' = ''; 'C:\w\cache-ok\v1.15.5\zccache-daemon.exe' = ''
-            'C:\w\cache-ok\x\v1.15.6\zccache-daemon.exe' = ''; 'C:\w\src\v1.15.6\zccache-daemon.exe' = ''
-            'C:\w\cache-ok\zccache-daemon.exe' = ''; 'C:\w\cache-ok\v1.15.6\zccache-daemon.exe.old' = ''
+            'C:\w\cache-ok\v1.15.11\zccache-daemon.exe' = 'root'; 'C:\w\cache-poison-marker\v1.15.11\zccache-daemon.exe' = 'root'
+            'C:\w\cache-ok\v1.15.11\zccache.exe' = ''; 'C:\w\cache-ok\v1.15.5\zccache-daemon.exe' = ''
+            'C:\w\cache-ok\x\v1.15.11\zccache-daemon.exe' = ''; 'C:\w\src\v1.15.11\zccache-daemon.exe' = ''
+            'C:\w\cache-ok\zccache-daemon.exe' = ''; 'C:\w\cache-ok\v1.15.11\zccache-daemon.exe.old' = ''
             'C:\wx\bin\zccache.exe' = ''; 'C:\other\bin\zccache.exe' = ''
         }
         foreach ($k in $cases.Keys) { Get-ZqOwner 'C:\w' $k | Should -Be $cases[$k] -Because $k }
@@ -380,7 +380,7 @@ Describe 'Journal, files, environment and corruption' {
         $procs = @()
         try {
             # Copies of ping.exe stand in for zccache: the helpers look only at process names and paths.
-            $paths = @('bin\zccache.exe', 'cache-ok\v1.15.6\zccache-daemon.exe', 'cache-ok\v9.9.9\zccache-daemon.exe') | ForEach-Object { Join-Path $w $_ }
+            $paths = @('bin\zccache.exe', 'cache-ok\v1.15.11\zccache-daemon.exe', 'cache-ok\v9.9.9\zccache-daemon.exe') | ForEach-Object { Join-Path $w $_ }
             foreach ($p in $paths) {
                 $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent $p)
                 Copy-Item -LiteralPath (Join-Path $env:SystemRoot 'System32\PING.EXE') -Destination $p
@@ -404,26 +404,26 @@ Describe 'Journal, files, environment and corruption' {
             Remove-Item -LiteralPath $w -Recurse -Force
         }
     }
-    It 'counts crash dumps and filled crash-spool records in zccache''s v1.15.6 state folder, not empty pending ones' {
+    It 'counts crash dumps and filled crash-spool records in zccache''s v1.15.11 state folder, not empty pending ones' {
         $w = New-TempDir
         try {
-            foreach ($f in 'cache-ok\crashes\a.txt', 'cache-ok\v1.15.6\crashes\b.txt', 'cache-ok\v1.15.6\artifacts\x', 'cache-error\v1.15.6\crash-spool\pending-1-2-a.rpcrash') {
+            foreach ($f in 'cache-ok\crashes\a.txt', 'cache-ok\v1.15.11\crashes\b.txt', 'cache-ok\v1.15.11\artifacts\x', 'cache-error\v1.15.11\crash-spool\pending-1-2-a.rpcrash') {
                 $null = New-Item -ItemType Directory -Force -Path (Split-Path -Parent (Join-Path $w $f))
                 [IO.File]::WriteAllText((Join-Path $w $f), '')
             }
-            [IO.File]::WriteAllText((Join-Path $w 'cache-error\v1.15.6\crash-spool\pending-3-4-b.rpcrash'), 'r')
+            [IO.File]::WriteAllText((Join-Path $w 'cache-error\v1.15.11\crash-spool\pending-3-4-b.rpcrash'), 'r')
             $c = Get-ZqCrashDump $w
             $c['cache-ok'] | Should -Be 2
             $c['cache-error'] | Should -Be 1
         } finally { Remove-Item -LiteralPath $w -Recurse -Force }
     }
-    It 'poisons zccache''s store in the v1.15.6 state folder after stopping the daemons' {
+    It 'poisons zccache''s store in the v1.15.11 state folder after stopping the daemons' {
         $script:Steps = [Collections.Generic.List[string]]::new()
         Mock Invoke-ZqPhase { $script:Steps.Add("phase $Name"); [ordered]@{ exit = 0 } }
         Mock Invoke-ZqCorrupt { $script:Steps.Add("corrupt $Store $Variant"); 1 }
         Mock Stop-ZqDaemon { $script:Steps.Add("stop $Work"); $true }
         $p = Invoke-ZqPoison @{} 'C:\w\src' 'C:\w\cache-poison-artifact' 'artifact' @('h') 'C:\w'
-        $script:Steps -join '|' | Should -Be 'phase ok-prime-artifact|stop C:\w|corrupt C:\w\cache-poison-artifact\v1.15.6\artifacts artifact|phase ok-poisoned-artifact'
+        $script:Steps -join '|' | Should -Be 'phase ok-prime-artifact|stop C:\w|corrupt C:\w\cache-poison-artifact\v1.15.11\artifacts artifact|phase ok-poisoned-artifact'
         $p.prime_exit | Should -Be 0
         $p.daemon_stopped | Should -BeTrue
         $p.corrupted_files | Should -Be 1
@@ -513,7 +513,7 @@ Describe 'Verdict (record.jq): the harness never emits qualified' {
     }
     It 'accepts a pinned daemon that runs from the copy zccache deployed into a cache root' {
         $in = New-PassingInput
-        $in.meta.daemons[0] = [ordered]@{ pid = 43; exe = 'C:\w\cache-ok\v1.15.6\zccache-daemon.exe'; in_private_bin = $false; in_cache_root = $true; sha256 = $ZqBinarySha256 }
+        $in.meta.daemons[0] = [ordered]@{ pid = 43; exe = 'C:\w\cache-ok\v1.15.11\zccache-daemon.exe'; in_private_bin = $false; in_cache_root = $true; sha256 = $ZqBinarySha256 }
         $r = Get-Record $in
         $r.checks.daemons_pinned | Should -BeTrue
         $r.harness_pass | Should -BeTrue

@@ -298,7 +298,7 @@ AAP_RUNNER_COUNT=1
 finish_runner_count
 AAP_RUNNER_IMAGE=aap-crrr-runner:local
 RUNNER_UID=$(id -u)
-SCCACHE_HOST_DIR="${RUN_DIR}/sccache"
+ZCCACHE_HOST_DIR="${RUN_DIR}/zccache"
 rc=0
 run_one 1 > /dev/null 2>&1 || rc=$?
 [[ "${rc}" -eq 143 ]] || fail "run_one returned ${rc}; want docker start's 143"

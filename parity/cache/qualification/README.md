@@ -1,4 +1,4 @@
-# zccache 1.15.6 qualification (P04)
+# zccache 1.15.11 qualification (P04)
 
 **State: static qualification and harness only. No row is qualified. Every row is `direct`.**
 This host runs the live production pool, and the authorized lab (gate D2) does not exist yet. So
@@ -96,8 +96,8 @@ Line citations refer to the upstream files at the pinned commit, fetched 2026-10
 
 | File | URL | SHA-256 |
 |---|---|---|
-| README | <https://github.com/zackees/zccache/blob/15ec9537af0d219e07b72ce2b3f97d5f68d72b5e/README.md> | `6d8450dc07e621383da62a9aef854d7c1bc9d1e66d55415c77dddd786746bb71` (equal to the copy in both archives) |
-| FEATURE-MATRIX | <https://github.com/zackees/zccache/blob/15ec9537af0d219e07b72ce2b3f97d5f68d72b5e/docs/FEATURE-MATRIX.md> | `4f80dce50c9e15fb250e9534c7f388c87e6aff57d7a647d17be71b98206391cf` |
+| README | <https://github.com/forge-ci/zccache/blob/e5bc38be49dbd88963167e343256b31cca8c1678/README.md> | `6d8450dc07e621383da62a9aef854d7c1bc9d1e66d55415c77dddd786746bb71` (equal to the copy in both archives) |
+| FEATURE-MATRIX | <https://github.com/forge-ci/zccache/blob/e5bc38be49dbd88963167e343256b31cca8c1678/docs/FEATURE-MATRIX.md> | `4f80dce50c9e15fb250e9534c7f388c87e6aff57d7a647d17be71b98206391cf` |
 
 Run in a disposable lab VM built from the P06 or P07 image, never on the owner's host or the live
 distro. Use the archive verified per [artifacts.md](artifacts.md). One harness call covers steps
@@ -129,15 +129,15 @@ Before any build, the harness does the following:
   `cache-poison-same-size` and `cache-poison-marker`. It never deletes a cache root.
 - It runs every build with the working directory at the fixture tree.
 
-zccache keeps its state one level below the root that `ZCCACHE_CACHE_DIR` names, in `v1.15.6/`
+zccache keeps its state one level below the root that `ZCCACHE_CACHE_DIR` names, in `v1.15.11/`
 (`resolve.rs` `versioned_subdir` at the pin; observed in WSL). That folder holds the artifact
 store, `crashes/`, `crash-spool/` and a copy of the `zccache` binary that zccache deploys as
-`v1.15.6/zccache-daemon` and runs as the root's daemon (`cli/runtime/deploy.rs` 106-125). The
+`v1.15.11/zccache-daemon` and runs as the root's daemon (`cli/runtime/deploy.rs` 106-125). The
 README's root layout (README 433-436) leaves the version folder out.
 
 After the builds, the harness lists every visible `zccache*` process with its executable path and
 SHA-256. It marks whether each runs from the private copy or from a deployed daemon copy at exactly
-`<work>/cache-<case>/v1.15.6/zccache-daemon`. Then it stops every process running from the private
+`<work>/cache-<case>/v1.15.11/zccache-daemon`. Then it stops every process running from the private
 copy or a deployed copy, also after a failure, gracefully first (on Linux a `TERM`, then a kill; on
 Windows a window close that a console daemon without a window ignores, then a kill) and records the
 stop's result. Crash dumps are counted after the stop, so a daemon that dumps while being stopped is
@@ -167,7 +167,7 @@ themselves never leave the VM. They can hold process memory and environment.
    every poisoned build miss for the restart's sake, and all three poison checks would pass without
    exercising corruption detection, so `record.jq`'s `rejected()` requires the control build. Each
    poison variant then gets its own root. The harness primes the root with one build through
-   zccache, stops the daemons, corrupts regular files under `<root>/v1.15.6/artifacts/` (never
+   zccache, stops the daemons, corrupts regular files under `<root>/v1.15.11/artifacts/` (never
    following a link or junction) and builds again in a journaled session, so a fresh daemon reads
    the poisoned store from disk. In WSL the daemon alive since priming served a hit with correct
    bytes after every store file was replaced, which says nothing about the store.
@@ -307,7 +307,7 @@ directory, never a shared `/tmp` path or a fixed folder like `C:\zq`.
 export AAP_ZCCACHE_LAB=1   # only inside the disposable lab VM
 work=$(mktemp -d "${XDG_RUNTIME_DIR:-$HOME}/zq.XXXXXX")
 parity/cache/qualification/harness/qualify.sh clang /usr/bin/clang-18 18.1.3 compile-object \
-  "$HOME/zccache-1.15.6/zccache" "${work}.json" \
+  "$HOME/zccache-1.15.11/zccache" "${work}.json" \
   parity/cache/qualification/evidence/linux-x86_64/clang-18.1.3-compile-object.json "${work}"
 ```
 
@@ -315,7 +315,7 @@ parity/cache/qualification/harness/qualify.sh clang /usr/bin/clang-18 18.1.3 com
 $env:AAP_ZCCACHE_LAB = '1'   # only inside the disposable lab VM
 $work = Join-Path $env:LOCALAPPDATA ('zq-' + [guid]::NewGuid().ToString('N'))
 .\parity\cache\qualification\harness\qualify.ps1 -Compiler clang-cl -CompilerPath 'C:\Program Files\LLVM\bin\clang-cl.exe' `
-  -CompilerVersion 20.1.8 -Invocation compile-object -Zccache "$env:LOCALAPPDATA\zccache-1.15.6\zccache.exe" -Out "$work.json" `
+  -CompilerVersion 20.1.8 -Invocation compile-object -Zccache "$env:LOCALAPPDATA\zccache-1.15.11\zccache.exe" -Out "$work.json" `
   -EvidenceRef parity/cache/qualification/evidence/windows-x86_64/clang-cl-20.1.8-compile-object.json -Work $work
 ```
 
@@ -364,7 +364,7 @@ five defects, fixed here:
 
 - the daemons ran from the deployed copy in each root, so `daemons_pinned` always failed and no
   daemon was stopped;
-- the store and the crash folders sit in `v1.15.6/`, so the poison step corrupted nothing and the
+- the store and the crash folders sit in `v1.15.11/`, so the poison step corrupted nothing and the
   crash-dump count was always zero;
 - the poisoned build was served by the daemon still alive from priming;
 - a compiler argv that starts with `-c`, `-g` or `-x` broke the record's `jq` call, because jq

@@ -14,7 +14,7 @@ planning candidate only. Both toolset versions remain under each profile's `sour
 | `hosted-reference.md` | How to capture the real "Set up job" image identity. Status: captured 2026-10-19 (both profiles). |
 | `reference-workflows/` | Inert reference copies of the two capture workflows. The merged, manual (`workflow_dispatch`), hosted-runner-only versions live in `.github/workflows`. |
 | `consumers.md` | Consumer census from this repository's documents. Incomplete. |
-| `zccache.md` | zccache 1.15.6 pin, release assets, pinned compiler statements, daemon and retention interface. |
+| `zccache.md` | forge-ci/zccache 1.15.11 pin, release assets, pinned compiler statements, daemon and retention interface. |
 | `tools/` | Python scripts that build and verify the inventories (`python -I`, standard library only). |
 
 ## Findings

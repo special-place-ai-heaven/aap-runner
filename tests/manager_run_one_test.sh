@@ -1,8 +1,8 @@
 #!/bin/bash
 # run_one with docker, the token mint, and the wall clock stubbed: the
-# docker create argv carries the runtime, per-slot limits, slot label, cache
-# mount and cache env, and the token goes to stdin, never to argv. Also the
-# cache tree cap.
+# docker create argv carries the runtime, per-slot limits, slot label, zccache
+# mount and size, and the token goes to stdin, never to argv. No compiler
+# wrapper. Also the cache tree cap.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -58,7 +58,7 @@ AAP_WORK_DISK_GIB=100
 AAP_DISK_FLOOR_GB=55
 AAP_RUNNER_IMAGE=aap-crrr-runner:local
 RUNNER_UID=$(id -u)
-SCCACHE_HOST_DIR="${work}/sccache"
+ZCCACHE_HOST_DIR="${work}/zccache"
 
 run_one 2 >/dev/null || fail "run_one returned non-zero with every docker call stubbed to succeed"
 
@@ -88,10 +88,11 @@ pair --pids-limit 8192
 pair --cpu-shares 512
 pair --label aap-crrr-job=1
 pair --label aap-crrr-slot=2
-pair --mount "type=bind,source=${SCCACHE_HOST_DIR},target=/var/cache/aap-sccache"
-pair --env RUSTC_WRAPPER=sccache
-pair --env SCCACHE_DIR=/var/cache/aap-sccache/default
-pair --env SCCACHE_CACHE_SIZE=10G
+pair --mount "type=bind,source=${ZCCACHE_HOST_DIR},target=/var/cache/aap-zccache"
+pair --env ZCCACHE_CACHE_SIZE_BYTES=10737418240
+for a in "${argv[@]}"; do
+  [[ "${a}" != *sccache* && "${a}" != *SCCACHE* && "${a}" != *RUSTC_WRAPPER* && "${a}" != *ZCCACHE_CACHE_DIR* ]] || fail "docker create injects a wrapper or a shared cache dir: ${a}"
+done
 [[ "${argv[-1]}" == aap-crrr-runner:local ]] || fail "image is not the last argument: ${argv[-1]}"
 name=""
 for ((i = 0; i < ${#argv[@]} - 1; i++)); do
@@ -107,8 +108,8 @@ if grep -q test-registration-token "${calls}"; then
   fail "the registration token appeared in a docker argv"
 fi
 [[ "$(cat "${stdin_seen}")" == test-registration-token ]] || fail "the token was not on docker start's stdin"
-[[ -d "${SCCACHE_HOST_DIR}" ]] || fail "run_one did not create the cache dir"
-[[ "$(stat -c '%a %u' "${SCCACHE_HOST_DIR}")" == "700 ${RUNNER_UID}" ]] || fail "cache dir is not mode 700 owned by the runner uid"
+[[ -d "${ZCCACHE_HOST_DIR}" ]] || fail "run_one did not create the cache dir"
+[[ "$(stat -c '%a %u' "${ZCCACHE_HOST_DIR}")" == "700 ${RUNNER_UID}" ]] || fail "cache dir is not mode 700 owned by the runner uid"
 if grep -q 'prune' "${calls}"; then
   fail "run_one ran a label-wide prune: $(grep prune "${calls}")"
 fi
@@ -116,36 +117,36 @@ grep -qx "rm -f -v ${name}" "${calls}" || fail "run_one did not remove its own c
 grep -qx "network rm ${name}" "${calls}" || fail "run_one did not remove its own network"
 echo "token, cache dir, and per-job cleanup ok"
 
-mkdir -p "${SCCACHE_HOST_DIR}/repo"
-head -c 2097152 /dev/zero > "${SCCACHE_HOST_DIR}/repo/new"
-touch -d '2024-01-01 00:00:00' "${SCCACHE_HOST_DIR}/repo/new"
-SCCACHE_TREE_MAX_MB=8
-bound_sccache_tree 2>/dev/null
-[[ -f "${SCCACHE_HOST_DIR}/repo/new" ]] || fail "a tree under the cap was trimmed"
-head -c 2097152 /dev/zero > "${SCCACHE_HOST_DIR}/repo/old"
-touch -d '2020-01-01 00:00:00' "${SCCACHE_HOST_DIR}/repo/old"
-SCCACHE_TREE_MAX_MB=3
-bound_sccache_tree 2>/dev/null
-[[ -d "${SCCACHE_HOST_DIR}" ]] || fail "the trim removed the top cache dir"
-[[ -f "${SCCACHE_HOST_DIR}/repo/new" ]] || fail "the newest cache file was trimmed"
-[[ ! -e "${SCCACHE_HOST_DIR}/repo/old" ]] || fail "the oldest cache file was kept"
+mkdir -p "${ZCCACHE_HOST_DIR}/repo"
+head -c 2097152 /dev/zero > "${ZCCACHE_HOST_DIR}/repo/new"
+touch -d '2024-01-01 00:00:00' "${ZCCACHE_HOST_DIR}/repo/new"
+ZCCACHE_TREE_MAX_MB=8
+bound_zccache_tree 2>/dev/null
+[[ -f "${ZCCACHE_HOST_DIR}/repo/new" ]] || fail "a tree under the cap was trimmed"
+head -c 2097152 /dev/zero > "${ZCCACHE_HOST_DIR}/repo/old"
+touch -d '2020-01-01 00:00:00' "${ZCCACHE_HOST_DIR}/repo/old"
+ZCCACHE_TREE_MAX_MB=3
+bound_zccache_tree 2>/dev/null
+[[ -d "${ZCCACHE_HOST_DIR}" ]] || fail "the trim removed the top cache dir"
+[[ -f "${ZCCACHE_HOST_DIR}/repo/new" ]] || fail "the newest cache file was trimmed"
+[[ ! -e "${ZCCACHE_HOST_DIR}/repo/old" ]] || fail "the oldest cache file was kept"
 echo "cache tree cap ok"
 
 # With RUN_DIR, the trim runs under a non-blocking lock: a caller that does
 # not get it skips the trim and returns 0, so slots starting together trim once.
 RUN_DIR="${work}/run"
 mkdir -p "${RUN_DIR}"
-head -c 2097152 /dev/zero > "${SCCACHE_HOST_DIR}/repo/old"
-touch -d '2020-01-01 00:00:00' "${SCCACHE_HOST_DIR}/repo/old"
-exec 9> "${RUN_DIR}/sccache-trim.lock"
+head -c 2097152 /dev/zero > "${ZCCACHE_HOST_DIR}/repo/old"
+touch -d '2020-01-01 00:00:00' "${ZCCACHE_HOST_DIR}/repo/old"
+exec 9> "${RUN_DIR}/zccache-trim.lock"
 flock -n 9 || fail "could not take the trim lock in the test"
-bound_sccache_tree 2>/dev/null || fail "a trim that lost the lock did not return 0"
-[[ -f "${SCCACHE_HOST_DIR}/repo/old" ]] || fail "a trim ran while another held the lock"
+bound_zccache_tree 2>/dev/null || fail "a trim that lost the lock did not return 0"
+[[ -f "${ZCCACHE_HOST_DIR}/repo/old" ]] || fail "a trim ran while another held the lock"
 flock -u 9
 exec 9>&-
-bound_sccache_tree 2>/dev/null
-[[ ! -e "${SCCACHE_HOST_DIR}/repo/old" ]] || fail "the trim did not run once the lock was free"
-[[ -f "${SCCACHE_HOST_DIR}/repo/new" ]] || fail "the locked trim removed the newest file"
+bound_zccache_tree 2>/dev/null
+[[ ! -e "${ZCCACHE_HOST_DIR}/repo/old" ]] || fail "the trim did not run once the lock was free"
+[[ -f "${ZCCACHE_HOST_DIR}/repo/new" ]] || fail "the locked trim removed the newest file"
 RUN_DIR=/run/aap-runner
 echo "cache trim lock ok"
 

@@ -176,7 +176,7 @@ finish_job_limits
 finish_runner_count
 AAP_RUNNER_IMAGE=aap-crrr-runner:local
 RUNNER_UID=$(id -u)
-SCCACHE_HOST_DIR="${RUN_DIR}/sccache"
+ZCCACHE_HOST_DIR="${RUN_DIR}/zccache"
 rm -f "${RUN_DIR}"/slot-[1-9]
 rc=0
 out=$(run_one 1 2>/dev/null) || rc=$?

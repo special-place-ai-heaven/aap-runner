@@ -48,9 +48,11 @@ AAP_JOB_IO_PERCENT=90
 # gets a hard 1/count share. Slice falls back to fixed unless docker uses the
 # systemd cgroup driver. See Pool sharing in README.md.
 AAP_POOL_SHARING=slice
-# Every job mounts /var/lib/ghrunner/sccache (owner the image's runner uid,
-# mode 0700) at /var/cache/aap-sccache, with RUSTC_WRAPPER=sccache and
-# SCCACHE_CACHE_SIZE=10G. ci.yml sets SCCACHE_DIR to one subdirectory per
-# repository; that is a convention, not an isolation boundary. Each directory
-# counts against AAP_DISK_FLOOR_GB. Over 15% of the disk, oldest files are
-# removed until the tree is at 80% of that bound.
+# Every job mounts /var/lib/ghrunner/zccache (owner the image's runner uid,
+# mode 0700) at /var/cache/aap-zccache. The runner does not set RUSTC_WRAPPER.
+# It does set ZCCACHE_CACHE_SIZE_BYTES=10737418240 (10 GiB). A workflow that
+# opts in with forge-ci/zccache sets ZCCACHE_CACHE_DIR to one subdirectory per
+# repository and creates it; that is a convention, not an isolation boundary.
+# Each directory counts against AAP_DISK_FLOOR_GB. Over 15% of the disk, oldest
+# files are removed until the tree is at 80% of that bound. An old sccache
+# directory on the work disk is not removed.

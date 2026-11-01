@@ -22,8 +22,10 @@ list and to supply or authorize read access to each workflow file.
   `Swatinem/rust-cache`, `dtolnay/rust-toolchain` and `mozilla-actions/sccache-action` (sccache version
   `v0.18.0`) (S3). P23 and P27 must remove the sccache coupling for zccache and must not let a rename
   float the pins.
-- **The sccache wrapper is injected by the manager.** `distro/manager.sh` sets `RUSTC_WRAPPER=sccache` in
-  the job container (S2). The zccache migration must cover that injection as well as the workflows.
+- **The runner does not inject a compiler wrapper.** `distro/manager.sh` bind-mounts
+  `${WORK_MOUNT}/zccache` at `/var/cache/aap-zccache` and sets `ZCCACHE_CACHE_SIZE_BYTES`. It does
+  not set `RUSTC_WRAPPER` or `ZCCACHE_CACHE_DIR`. A workflow opts in with `forge-ci/zccache` and
+  points `ZCCACHE_CACHE_DIR` at a per-repository subdirectory of that mount.
 - **Hosted workflows rely on `sudo`.** The current Linux job image rejects sudo (S2). An Ubuntu hosted
   profile must provide passwordless sudo inside the disposable guest, not on the owner's desktop.
 - **Concurrency.** The plan allows at most five runner slots across both operating systems.

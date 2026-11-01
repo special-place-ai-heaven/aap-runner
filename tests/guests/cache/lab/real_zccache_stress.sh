@@ -7,7 +7,7 @@
 # zccache ever exit 0 without delivering an output (the shim's delivery check would fall back and say so), and do
 # concurrent hits and misses on one entry ever hand out a bad object?
 #   bash real_zccache_stress.sh ARCHIVE ITERATIONS [CALLS] [STAGGER_MS] [LOAD] [TEAR] [DEP]
-# ARCHIVE: zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz, checked against guests/cache/wrappers.json by install.
+# ARCHIVE: zccache-v1.15.11-x86_64-unknown-linux-musl.tar.gz, checked against guests/cache/wrappers.json by install.
 # STAGGER_MS: call k starts (k-1)*STAGGER_MS after the first, so later calls hit while earlier ones still store.
 # LOAD=1: everything pinned to CPUs 0-3 with four busy loops on them.
 # TEAR=1 (sensitivity): after init the installed zccache becomes a wrapper that runs the real one and then cuts 1 in 8
@@ -53,7 +53,7 @@ jq --arg v "${ver}" '.platforms["linux-x86_64"].qualified = [
     {compiler: "gcc", compiler_version: $v, invocation: "depfile", evidence_ref: "lab-only"}]' \
   "${REPO}/guests/cache/wrappers.json" > "${W}/wrappers.json"
 jq -n --arg s "$(zc_sha "${ARCHIVE}")" --arg f "${ARCHIVE##*/}" '{schema: "aap-provenance/1", name: "zccache-x86_64-unknown-linux-musl",
-  version: "1.15.6", file_name: $f, outcome: "accepted", staging_check: "strict", sha256: $s, hash: {verified: true}}' > "${W}/prov.json"
+  version: "1.15.11", file_name: $f, outcome: "accepted", staging_check: "strict", sha256: $s, hash: {verified: true}}' > "${W}/prov.json"
 jq -n --arg v "${ver}" '{toolchains: [{compiler: "gcc", compiler_version: $v, path: "/usr/bin/gcc"}]}' > "${W}/tc.json"
 bash "${SCRIPT}" install "${ARCHIVE}" "${W}/prov.json" "${W}/install" "${W}/tc.json" "${W}/wrappers.json" > /dev/null || { echo "install failed"; exit 1; }
 "${PIN[@]}" bash "${SCRIPT}" init "${W}/install" "${W}/job" 4294967296 > /dev/null || { echo "init failed"; exit 1; }

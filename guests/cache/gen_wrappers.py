@@ -19,30 +19,30 @@ REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "guests" / "cache" / "wrappers.json"
 VALIDATE = REPO / "parity" / "contracts" / "validate.py"
 ACQUIRE = REPO / "images" / "common" / "artifacts.manifest.json"
-VERSION = "1.15.6"
-COMMIT = "15ec9537af0d219e07b72ce2b3f97d5f68d72b5e"
+VERSION = "1.15.11"
+COMMIT = "e5bc38be49dbd88963167e343256b31cca8c1678"
 
 # Archive members, from parity/cache/qualification/artifacts.md ("Archive members"). The zccache
 # member must equal the matrix binary_sha256, so the two sources cannot drift apart silently.
 PLATFORMS = {
     "linux-x86_64": {
         "acquisition_entry": "zccache-x86_64-unknown-linux-musl",
-        "archive_bytes": 12389072,
+        "archive_bytes": 12330509,
         "members": [
-            {"name": "zccache", "path": "zccache-v1.15.6-x86_64-unknown-linux-musl/zccache", "bytes": 27876808,
-             "sha256": "f97ae874042ab5c80fc2e35342e406972437f1fd45ec81372be33c0f5cbb18cc"},
-            {"name": "zccache-fp", "path": "zccache-v1.15.6-x86_64-unknown-linux-musl/zccache-fp", "bytes": 4881816,
-             "sha256": "df637b927954093a6fd5c7cc34afc3dd9470a855ec3e03e0342ee9ea9e49f058"},
+            {"name": "zccache", "path": "zccache-v1.15.11-x86_64-unknown-linux-musl/zccache", "bytes": 27744784,
+             "sha256": "fd9fc89ee8273a03f7dabce8459abf41ddf5ab8a27cd9db552384ac9a77af980"},
+            {"name": "zccache-fp", "path": "zccache-v1.15.11-x86_64-unknown-linux-musl/zccache-fp", "bytes": 5010776,
+             "sha256": "e57cdc72f35b9b597ea24fcfd2859126eac8654c6291a72cc10995e5bf8e962b"},
         ],
     },
     "windows-x86_64": {
         "acquisition_entry": "zccache-x86_64-pc-windows-msvc",
-        "archive_bytes": 10545387,
+        "archive_bytes": 10443043,
         "members": [
-            {"name": "zccache.exe", "path": "zccache-v1.15.6-x86_64-pc-windows-msvc/zccache.exe", "bytes": 24359040,
-             "sha256": "41de068f3024a1bcbfea8ad488455c648ee07903e09e9fca4d663436789d0731"},
-            {"name": "zccache-fp.exe", "path": "zccache-v1.15.6-x86_64-pc-windows-msvc/zccache-fp.exe", "bytes": 3931776,
-             "sha256": "4c0892e47244fdc38a6542ed3b05d2d9f26d312bce505984e6a9f6766c66c987"},
+            {"name": "zccache.exe", "path": "zccache-v1.15.11-x86_64-pc-windows-msvc/zccache.exe", "bytes": 23944832,
+             "sha256": "4b5dc2468efeca37604b6bb25c07e7fc3d5585b30ebd6217efd56b633baa86da"},
+            {"name": "zccache-fp.exe", "path": "zccache-v1.15.11-x86_64-pc-windows-msvc/zccache-fp.exe", "bytes": 4047488,
+             "sha256": "6ee0ed900b9d6195f22e2ed233b0c6f7821199e07d0ec78876673182db982025"},
         ],
     },
 }

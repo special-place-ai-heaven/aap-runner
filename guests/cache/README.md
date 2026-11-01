@@ -1,6 +1,6 @@
 # zccache guest integration (P13)
 
-Packages the pinned zccache 1.15.6 into the Windows and Ubuntu guest images and decides, per compiler call, whether a
+Packages the pinned zccache 1.15.11 into the Windows and Ubuntu guest images and decides, per compiler call, whether a
 build goes through zccache or straight to the compiler. Contract:
 [cache-qualification.md](../../parity/contracts/cache-qualification.md) (revision 2; rule 6 as amended on 2026-10-20:
 `workflow_dispatch` is untrusted, untrusted jobs get a private per-job root only). Requirements:
@@ -15,7 +15,7 @@ compiler; the tests use the doubles in `tests/guests/cache/fakes`.
 
 ## Licence: internal use only
 
-zccache is **AGPL-3.0-only** (Cargo.toml, README and LICENSE at commit `15ec953`). Running it on the owner's runners
+zccache is **AGPL-3.0-only** (Cargo.toml, README and LICENSE at commit `e5bc38b`). Running it on the owner's runners
 is internal use. An image that contains the binary must not leave the owner's hosts (no export, sharing or publication
 of a generation) until the owner records a compliance decision; AGPL section 13 adds source-offer duties for network
 use. P13 does not make that decision. P21 carries the constraint into the image catalog.
@@ -114,7 +114,7 @@ use. P13 does not make that decision. P21 carries the constraint into the image 
    `unknown` with a printable detail of at most 200 characters (the `status.v5.json` `cache` object) and byte counts
    per root, artifacts separate from everything else, plus the shim's own bytes.
 
-Daemon discovery: zccache 1.15.6 deploys a copy of itself into the root, `<root>/v1.15.6/zccache-daemon[.exe]`, and
+Daemon discovery: zccache 1.15.11 deploys a copy of itself into the root, `<root>/v1.15.11/zccache-daemon[.exe]`, and
 runs its daemon from there (`cli/runtime/deploy.rs:106-125`); only when that copy fails does it run the daemon in
 place from the installed `bin` folder. After priming a root, the daemon is the one process running from either that
 belongs to the root. Linux reads it from the process environment (`ZCCACHE_CACHE_DIR` equal to the root). Windows
@@ -127,7 +127,7 @@ an exact match on Windows.
 **The deployed copy is not hash-checked.** The installer and every boot check the installed `bin` members against the
 pin, but the copy zccache deploys into the root is zccache's own and nothing here hashes it: a root a job can write
 could hold a substituted `zccache-daemon` that zccache then runs. A private root is the job's own; before any shared
-root (MEDIUM), P22 adds the check: hash `<root>/v1.15.6/zccache-daemon[.exe]` against the pinned member before priming
+root (MEDIUM), P22 adds the check: hash `<root>/v1.15.11/zccache-daemon[.exe]` against the pinned member before priming
 and delete it or refuse the root otherwise.
 
 Invocation classes come from the arguments (response files are expanded one level; a nested one is not classified):
@@ -207,7 +207,7 @@ same repository gets the private root.
 | A well-formed malicious entry in a root | out of reach of any integrity check (README 1123); bounded by the trust rule: only equally trusted writers share a root |
 | A corrupted entry, a crashing or hung daemon | any zccache failure is answered by the direct compiler; a call past its bound is killed; the root is marked degraded |
 | zccache exits 0 without its outputs (a bug, a full disk, an interrupted copy, a hostile entry), or a stale output from an earlier build | the shim removes the outputs it can name before the call and requires each to be a non-empty regular file after it; otherwise the root is marked `delivery` and the compiler runs directly; rustc and unnamed sidecars rely on zccache (residual above) |
-| A substituted daemon copy in a root (`<root>/v1.15.6/zccache-daemon`, deployed by zccache and run from there) | not checked yet: a private root is the job's own; before any shared root P22 hashes the copy against the pinned member before priming and deletes it or refuses the root (MEDIUM) |
+| A substituted daemon copy in a root (`<root>/v1.15.11/zccache-daemon`, deployed by zccache and run from there) | not checked yet: a private root is the job's own; before any shared root P22 hashes the copy against the pinned member before priming and deletes it or refuses the root (MEDIUM) |
 | A compile client recorded as the shared root's daemon | daemon discovery takes only the root's own process (Linux: its environment names the root; Windows: compile clients excluded) and refuses ambiguity |
 | Credentials reaching the daemon or its crash dumps | daemons start from the guest agent before Actions (Linux: `env -i` with an allowlist); every zccache call drops credential-shaped names, URL-credential values and inherited `ZCCACHE_*` variables |
 | Daemon PID reuse | liveness compares PID and process start time |
@@ -233,7 +233,7 @@ hosted Ubuntu job is a coordinator change (INTEGRATION.md).
 ## To confirm in the lab (P22, gate D2)
 
 - The daemon start: an empty `session-start`/`session-end` starts the daemon on demand, from
-  `<root>/v1.15.6/zccache-daemon` (seen on Linux with the real archive, P13.3). Confirm it on Windows and record its
+  `<root>/v1.15.11/zccache-daemon` (`versioned_subdir` is `v` plus the pinned version; P13.3 saw `v1.15.6`). Confirm it on Windows and record its
   command line, so Windows can match it exactly instead of excluding compile clients.
 - Whether zccache's daemon spawn inherits a client's stdio handles (a wrapped call that restarts the daemon must not
   hang the build), and whether zccache passes the client's environment to the compiler.

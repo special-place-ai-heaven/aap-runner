@@ -240,9 +240,9 @@ class MatrixTests(unittest.TestCase):
         sh = (QUAL / "harness" / "qualify.sh").read_text(encoding="utf-8")
         ps = (QUAL / "harness" / "qualify.ps1").read_text(encoding="utf-8")
         self.assertIn("ZQ_BINARY_SHA256=" + load("linux-x86_64")["zccache"]["binary_sha256"], sh)
-        self.assertIn("ZQ_FP_SHA256=" + member("zccache-v1.15.6-x86_64-unknown-linux-musl/zccache-fp"), sh)
+        self.assertIn("ZQ_FP_SHA256=" + member("zccache-v1.15.11-x86_64-unknown-linux-musl/zccache-fp"), sh)
         self.assertIn("$ZqBinarySha256 = '" + load("windows-x86_64")["zccache"]["binary_sha256"] + "'", ps)
-        self.assertIn("$ZqFpSha256 = '" + member("zccache-v1.15.6-x86_64-pc-windows-msvc/zccache-fp.exe") + "'", ps)
+        self.assertIn("$ZqFpSha256 = '" + member("zccache-v1.15.11-x86_64-pc-windows-msvc/zccache-fp.exe") + "'", ps)
 
 
 if __name__ == "__main__":

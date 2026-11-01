@@ -1,43 +1,44 @@
-# zccache 1.15.6 pin
+# zccache 1.15.11 pin
 
-Pinned candidate for the sccache replacement (plan, "Baselines, zccache and provenance"). Facts were
-fetched on 2026-10-19 through the GitHub API and raw file URLs. **No release binary was downloaded,
-unpacked or executed.** `install.sh` and `install.ps1` were not downloaded. The owner's benchmark
-directory was not touched.
+Pinned release is `forge-ci/zccache` 1.15.11 (not `zackees/zccache`). Checked 2026-11-01.
+`SHA256SUMS`, `manifest.json`, and the four archives this repository pins were downloaded and
+hashed. The two non-debug archives were unpacked in a scratch directory and their members hashed.
+They were not executed. `install.sh` and `install.ps1` were not downloaded; the hashes below are
+the lines in the downloaded `SHA256SUMS`, and those lines match the release API digests. The
+owner's benchmark directory was not touched.
 
 ## Identity
 
 | Item | Value | Source |
 |---|---|---|
-| Repository | `zackees/zccache` | Z1 |
-| Git tag | `1.15.6` (no `v` prefix) | Z1 |
-| Tag resolves to commit | `15ec9537af0d219e07b72ce2b3f97d5f68d72b5e` (a commit object, not an annotated tag) | Z2 |
-| Commit date and subject | 2026-10-17T22:19:05Z, `fix(pch): preserve shared input timestamps with private compiler views (#1958)` | Z3 |
-| Release `zccache 1.15.6` | published 2026-10-17T22:36:57Z, not draft, not prerelease, `target_commitish` is `main` | Z4 |
-| Matches the plan's pin | yes, the commit equals the plan value | PLAN.md |
+| Repository | `forge-ci/zccache` | Z1 |
+| Git tag | `1.15.11` (no `v` prefix) | Z1 |
+| Tag resolves to commit | `e5bc38be49dbd88963167e343256b31cca8c1678` (a commit object, not an annotated tag) | Z2 |
+| Commit date and subject | 2026-10-31T10:19:06Z, `Merge pull request #2031 from forge-ci/chore/release-1.15.11` | Z3 |
+| Release `zccache 1.15.11` | published 2026-10-31T10:56:41Z, not draft, not prerelease, `target_commitish` is `main` | Z4 |
+| Previous pin | `zackees/zccache` 1.15.6, commit `15ec9537af0d219e07b72ce2b3f97d5f68d72b5e` | this file, before this pin |
 
 ## Release assets
 
-Sizes and SHA-256 values come from the release API `digest` field. They match the published
-`SHA256SUMS` file for every archive and install script, and with `manifest.json` for the six release
-archives (compared by script on 2026-10-19, see "Cross-check"). The downloaded `SHA256SUMS` and `manifest.json`
-text files themselves hash to their API digests. Download URL pattern: `https://github.com/zackees/zccache/releases/download/1.15.6/<asset>`.
+Sizes and SHA-256 values below are the SHA-256 of the downloaded bytes. They match the release
+API `digest` field, the published `SHA256SUMS` lines (skipping that file's first line), and
+`manifest.json` for the six release archives. Download URL pattern: `https://github.com/forge-ci/zccache/releases/download/1.15.11/<asset>`.
 
 ### Linux x86_64 musl and Windows x86_64 (the two target families)
 
 | Asset | Bytes | SHA-256 |
 |---|---:|---|
-| `zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz` | 12389072 | `885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7` |
-| `zccache-v1.15.6-x86_64-unknown-linux-musl-debug.tar.gz` | 29806744 | `6eccf0034b23df2fa9f6f523e43a5c2335847e6eb956de8b2e2a284651afaecd` |
-| `zccache-v1.15.6-x86_64-pc-windows-msvc.zip` | 10545387 | `a9e2b079946d00757a56fea3dacd8a47f9cb4bcbfe8c427ffd719ced59fd949b` |
-| `zccache-v1.15.6-x86_64-pc-windows-msvc-debug.zip` | 34900341 | `619e41467ea832454c0a5fa8ab009497274279f8bbfe8ad4a39bc18784901ceb` |
+| `zccache-v1.15.11-x86_64-unknown-linux-musl.tar.gz` | 12330509 | `b79cac8a521056ef66de3f903546648f21a6da3d3880af33463f66200143949b` |
+| `zccache-v1.15.11-x86_64-unknown-linux-musl-debug.tar.gz` | 29899750 | `58db574afb2c2ad261a8ff35b5e96368ac7143dc587c555e13eb1e4ac4675909` |
+| `zccache-v1.15.11-x86_64-pc-windows-msvc.zip` | 10443043 | `4b33feb8da02f2564a1f5c9846d03a7a5af8ab0ab2f2b10560a11f30e5bbef81` |
+| `zccache-v1.15.11-x86_64-pc-windows-msvc-debug.zip` | 34956910 | `f354e89622fbf40fb2fd0fccb6016dbadbf0fbcd05a101d69f048d076042b1dd` |
 
 ### Release support files
 
 | Asset | Bytes | SHA-256 |
 |---|---:|---|
-| `SHA256SUMS` | 1636 | `6b5c2b96c99ab876814cedf3c6c1801d80dc2491fb823fcd8b58f3662c0231c3` |
-| `manifest.json` | 2006 | `ed7f2aaf46ec7c6a1abc777625a03c8e4d9e6fa153be9dfe334edb37ccb71500` |
+| `SHA256SUMS` | 1648 | `98501a80bb111e932a8eb843d56520aa97308b465cb02b18c8eb279698352864` |
+| `manifest.json` | 2032 | `c632df4cac59a1ab661766d676156d95304ac123243af110cf2b6b0eb45bcb16` |
 | `install.sh` | 6470 | `31a62a81f95f83ae4eba8abde6cf14e843eb71c1e569018f24533102dc1ad95a` |
 | `install.ps1` | 5462 | `56bfe5ed3841f97873439a8f5b504c6904ccd4e61854bc89fe9ee3f09137748d` |
 
@@ -50,19 +51,22 @@ each as a release archive and a `-debug` archive. The full list is in `SHA256SUM
 
 - `manifest.json` lists six release archives (no debug archives) with the same hashes as `SHA256SUMS` (Z5, Z6).
   `SHA256SUMS` covers the two install scripts and all twelve archives. It does not list `manifest.json`.
-  Result of the script comparison: all 14 archives and install scripts match `SHA256SUMS`; the six manifest entries match; `SHA256SUMS` and `manifest.json` match their API digests by direct hashing.
+  On 2026-11-01 the downloaded `SHA256SUMS` and `manifest.json` matched their API digests. The four
+  archives this repository pins were downloaded and matched both `SHA256SUMS` and the API digest.
+  The other eight archive lines and the two install-script lines match the API digest; those files
+  were not downloaded.
 - The first line of `SHA256SUMS` hashes the file itself as the empty string
   (`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`, the SHA-256 of zero bytes).
   It is not a valid self-hash. Consumers must skip that line and must not treat it as a pass.
 - The checksum file, the manifest and the API digest all come from the same release, so they prove
   transport integrity only. They are not an independent signature. No signature or provenance
   attestation asset exists in the release.
-- The plan records an owner-tested Linux musl binary (27,876,808 bytes, SHA-256
-  `f97ae874042ab5c80fc2e35342e406972437f1fd45ec81372be33c0f5cbb18cc`). That is the unpacked
-  binary, not the archive above. **NOT VERIFIED** against the release: matching requires unpacking the
-  archive, which this task does not do. P04 must unpack in a scratch directory and compare.
+- The unpacked Linux `zccache` member is 27,744,784 bytes, SHA-256
+  `fd9fc89ee8273a03f7dabce8459abf41ddf5ab8a27cd9db552384ac9a77af980` (mode 0755). That is not the
+  1.15.6 benchmark binary (`f97ae874...cb18cc`, 27,876,808 bytes). Member hashes are in
+  [parity/cache/qualification/artifacts.md](../cache/qualification/artifacts.md).
 
-## Pinned compiler and tool statements (FEATURE-MATRIX.md at tag 1.15.6)
+## Pinned compiler and tool statements (FEATURE-MATRIX.md at tag 1.15.11)
 
 All rows are in `docs/FEATURE-MATRIX.md` at the tag (Z7). The file states that it is generated from
 `docs/feature-matrix.yaml` and that sccache claims are best effort.
@@ -86,7 +90,7 @@ Consequence recorded for P04 (plan, "Baselines"): native `cl.exe` and `link.exe`
 fully supported. Each compiler and invocation mode needs its own qualification. Unqualified modes use
 direct compilation with caching disabled. Full build parity must work without a wrapper.
 
-## Daemon and retention interface (README at tag 1.15.6)
+## Daemon and retention interface (README at tag 1.15.11)
 
 Statements from the README (Z8). Names and defaults are as documented. None of this was run.
 
@@ -115,15 +119,18 @@ Statements from the README (Z8). Names and defaults are as documented. None of t
   Compile journal is JSONL (Z7 line 56).
 - **Kill switches.** `ZCCACHE_DISABLE=1`, `ZCCACHE_STAGED_ARTIFACTS=off`, `ZCCACHE_QUIET=1`.
 - **Maturity.** The README "Status" section still says "Early development - architecture and scaffolding
-  phase" (README 1300-1302) while the release is 1.15.6. Treat qualification evidence as the only truth.
+  phase" (README 1300-1302) while the release is 1.15.11. `docs/FEATURE-MATRIX.md` and `README.md`
+  at this commit are byte-identical to the 1.15.6 copies (SHA-256 `4f80dce5...6391cf` and
+  `6d8450dc...46bb71`). `versioned_subdir()` is still `v` plus the crate version, so state lives in
+  `v1.15.11/`. Treat qualification evidence as the only truth.
 
 ## Sources
 
-- Z1: <https://github.com/zackees/zccache/releases/tag/1.15.6>.
-- Z2: <https://api.github.com/repos/zackees/zccache/git/ref/tags/1.15.6>, object type `commit`, sha `15ec9537af0d219e07b72ce2b3f97d5f68d72b5e`.
-- Z3: <https://github.com/zackees/zccache/commit/15ec9537af0d219e07b72ce2b3f97d5f68d72b5e>.
-- Z4: <https://api.github.com/repos/zackees/zccache/releases/tags/1.15.6>, read 2026-10-19.
-- Z5: <https://github.com/zackees/zccache/releases/download/1.15.6/SHA256SUMS>.
-- Z6: <https://github.com/zackees/zccache/releases/download/1.15.6/manifest.json>.
-- Z7: <https://github.com/zackees/zccache/blob/15ec9537af0d219e07b72ce2b3f97d5f68d72b5e/docs/FEATURE-MATRIX.md> (same content as the `1.15.6` tag path).
-- Z8: <https://github.com/zackees/zccache/blob/15ec9537af0d219e07b72ce2b3f97d5f68d72b5e/README.md>.
+- Z1: <https://github.com/forge-ci/zccache/releases/tag/1.15.11>.
+- Z2: <https://api.github.com/repos/forge-ci/zccache/git/ref/tags/1.15.11>, object type `commit`, sha `e5bc38be49dbd88963167e343256b31cca8c1678`.
+- Z3: <https://github.com/forge-ci/zccache/commit/e5bc38be49dbd88963167e343256b31cca8c1678>.
+- Z4: <https://api.github.com/repos/forge-ci/zccache/releases/tags/1.15.11>, read 2026-11-01.
+- Z5: <https://github.com/forge-ci/zccache/releases/download/1.15.11/SHA256SUMS>.
+- Z6: <https://github.com/forge-ci/zccache/releases/download/1.15.11/manifest.json>.
+- Z7: <https://github.com/forge-ci/zccache/blob/e5bc38be49dbd88963167e343256b31cca8c1678/docs/FEATURE-MATRIX.md> (same content as the `1.15.11` tag path).
+- Z8: <https://github.com/forge-ci/zccache/blob/e5bc38be49dbd88963167e343256b31cca8c1678/README.md>.

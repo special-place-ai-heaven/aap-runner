@@ -1,4 +1,4 @@
-# zccache 1.15.6 qualification harness, Windows x86_64. LAB ONLY (P13/P22), see ../README.md.
+# zccache 1.15.11 qualification harness, Windows x86_64. LAB ONLY (P13/P22), see ../README.md.
 #
 # Runs one (compiler, invocation) pair through method steps 1-6: uncached, cold and warm builds,
 # a relocated build for debug-pdb, a control build (prime, stop the daemon, rebuild with nothing
@@ -29,8 +29,8 @@ param(
     [string[]]$ExtraMarkerRoot  # tests only: more roots to probe for live-install markers
 )
 
-$ZqBinarySha256 = '41de068f3024a1bcbfea8ad488455c648ee07903e09e9fca4d663436789d0731'
-$ZqFpSha256 = '4c0892e47244fdc38a6542ed3b05d2d9f26d312bce505984e6a9f6766c66c987'
+$ZqBinarySha256 = '4b5dc2468efeca37604b6bb25c07e7fc3d5585b30ebd6217efd56b633baa86da'
+$ZqFpSha256 = '6ee0ed900b9d6195f22e2ed233b0c6f7821199e07d0ec78876673182db982025'
 $ZqPairs = @{
     'rustc'    = @('rustc-wrapper', 'link', 'path-with-spaces', 'debug-pdb')
     'clang'    = @('compile-object', 'compile-pch', 'response-file', 'depfile', 'path-with-spaces')
@@ -48,10 +48,10 @@ $ZqSecretName = '(?i)token|secret|pass|credential|jit|jwt|private_?key|(^|_)(api
 # A value carrying URL credentials, scheme://user:password@host, whatever the variable is called.
 $ZqUrlCredential = '://[^/@\s]*:[^/@\s]*@'
 $ZqHere = $PSScriptRoot
-# zccache 1.15.6 keeps its state one level below the root ZCCACHE_CACHE_DIR names, in v1.15.6\: the
+# zccache 1.15.11 keeps its state one level below the root ZCCACHE_CACHE_DIR names, in v1.15.11\: the
 # artifact store, crashes\, crash-spool\, and the copy of itself it deploys and runs as the daemon,
-# v1.15.6\zccache-daemon.exe (resolve.rs versioned_subdir, cli/runtime/deploy.rs 106-125 at the pin).
-$ZqState = 'v1.15.6'
+# v1.15.11\zccache-daemon.exe (resolve.rs versioned_subdir, cli/runtime/deploy.rs 106-125 at the pin).
+$ZqState = 'v1.15.11'
 
 function Get-ZqMarkerPath([string[]]$Roots) {
     # The live pool on the owner's host: installer, supervisor data and the WSL distro root.
@@ -275,7 +275,7 @@ function Assert-ZqWork([string]$Work) {
 }
 
 # Where an executable runs from: 'bin' (the private copy, <work>\bin), 'root' (the daemon copy
-# zccache deployed into one of the harness's cache roots, exactly <work>\cache-*\v1.15.6\zccache-daemon.exe)
+# zccache deployed into one of the harness's cache roots, exactly <work>\cache-*\v1.15.11\zccache-daemon.exe)
 # or ''.
 function Get-ZqOwner([string]$Work, [string]$Path) {
     $prefix = $Work.TrimEnd('\') + '\'
@@ -323,7 +323,7 @@ function Stop-ZqDaemon([string]$Work) {
 }
 
 # Every file in a crashes\ folder and every non-empty one in a crash-spool\ folder below each cache
-# root: README 433-434 names <root>\crashes; at the pin they are <root>\v1.15.6\crashes and
+# root: README 433-434 names <root>\crashes; at the pin they are <root>\v1.15.11\crashes and
 # crash-spool, where each live process keeps an empty pending-*.rpcrash that a crash fills
 # (crash.rs 24-34; seen on Linux, to confirm on Windows in the lab). The dumps never leave the VM.
 function Get-ZqCrashDump([string]$Work) {
@@ -365,7 +365,7 @@ function Resolve-ZqWork([string]$Work) {
     Join-Path $d.FullName ($parts -join '\')
 }
 
-# stdin is empty (@() piped in): the zccache 1.15.6 client reads its stdin, and on Linux one that
+# stdin is empty (@() piped in): the zccache 1.15.11 client reads its stdin, and on Linux one that
 # inherited a shell's open stdin waited on it forever before compiling (seen in WSL, P04.1).
 function Invoke-ZqRun([string]$Exe, [string[]]$Argv, [string]$Log, [string]$Cwd) {
     $prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
@@ -471,8 +471,8 @@ function Invoke-ZqMain {
     $zc = Join-Path $bin 'zccache.exe'
     $zsha = Get-ZqSha256 $zc
     $fpsha = Get-ZqSha256 (Join-Path $bin 'zccache-fp.exe')
-    if ($zsha -ne $ZqBinarySha256) { throw "BINARY: $zcSource is $zsha, not the pinned 1.15.6 zccache.exe" }
-    if ($fpsha -ne $ZqFpSha256) { throw "BINARY: $fpSource is $fpsha, not the pinned 1.15.6 zccache-fp.exe" }
+    if ($zsha -ne $ZqBinarySha256) { throw "BINARY: $zcSource is $zsha, not the pinned 1.15.11 zccache.exe" }
+    if ($fpsha -ne $ZqFpSha256) { throw "BINARY: $fpSource is $fpsha, not the pinned 1.15.11 zccache-fp.exe" }
 
     try {
         $env:ZCCACHE_MODE = 'COPY'   # contract rule 6; hardlink and reflink need their own proof

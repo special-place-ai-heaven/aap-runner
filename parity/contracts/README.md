@@ -56,7 +56,7 @@ names the error it must produce, so it cannot pass for the wrong reason.
    forbidden; the runner starts as `Runner.Listener` directly.
 8. Immutable catalog generations tied to the P01 baselines, one active per profile, one retained
    rollback, quarantine is final.
-9. zccache 1.15.6 only, per-pair qualification, direct compilation otherwise, no sccache.
+9. zccache 1.15.11 only, per-pair qualification, direct compilation otherwise, no sccache.
 10. `status.json` stays schema 4; schema 5 is `status.v5.json`; settings schema 3 is written only
     when advertised; unknown future schemas are rejected safely on both sides.
 11. Evidence record and both receipt shapes, with independent verifiers and observed absence;

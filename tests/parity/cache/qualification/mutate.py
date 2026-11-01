@@ -33,9 +33,9 @@ JQ = "parity/cache/qualification/harness/record.jq"
 
 # ID: (suite, test name, [(file, old, new), ...]); every variant must be KILLED. `old` occurs exactly once.
 MUTATIONS = {
-    "LNX-DAEMON-ROOT": ("bash", "owner of /w/cache-ok/v1.15.6/zccache-daemon",
+    "LNX-DAEMON-ROOT": ("bash", "owner of /w/cache-ok/v1.15.11/zccache-daemon",
                         [(SH, 'then echo root', 'then echo ""')]),
-    "LNX-DAEMON-EXACT": ("bash", "owner of /w/cache-ok/x/v1.15.6/zccache-daemon",
+    "LNX-DAEMON-EXACT": ("bash", "owner of /w/cache-ok/x/v1.15.11/zccache-daemon",
                          [(SH, '"${rel#*/}" == "${ZQ_STATE}/zccache-daemon"', '"${rel}" == */"${ZQ_STATE}"/zccache-daemon')]),
     "LNX-DAEMON-STOP": ("bash", "stops the private copy and the deployed daemon",
                         [(SH, '[[ -n "$(zq_owner "$1" "${exe}")" ]] && echo', '[[ "$(zq_owner "$1" "${exe}")" == bin ]] && echo')]),
@@ -43,9 +43,9 @@ MUTATIONS = {
                         [(SH, """find "${root}" -type f \\( -path '*/crashes/*' -o \\( -path '*/crash-spool/*' -size +0 \\) \\)""",
                           """find "${root}/crashes" -type f"""),
                          (SH, "-path '*/crash-spool/*' -size +0", "-path '*/crash-spool/*'")]),
-    "LNX-POISON-STORE": ("bash", "poisons zccache's store in the v1.15.6 state folder",
+    "LNX-POISON-STORE": ("bash", "poisons zccache's store in the v1.15.11 state folder",
                          [(SH, 'zq_corrupt "$2/${ZQ_STATE}/artifacts"', 'zq_corrupt "$2/artifacts"')]),
-    "LNX-POISON-RESTART": ("bash", "poisons zccache's store in the v1.15.6 state folder",
+    "LNX-POISON-RESTART": ("bash", "poisons zccache's store in the v1.15.11 state folder",
                            [(SH, '  stop=$(zq_stop_daemons "${ZQ_WORK}") || return 1\n  n=$(zq_corrupt', '  n=$(zq_corrupt')]),
     "LNX-CONTROL-STOP": ("bash", "the control phase primes, stops the daemon and rebuilds without corruption",
                          [(SH, '  stop=$(zq_stop_daemons "${ZQ_WORK}") || return 1\n  p=$(zq_phase "$1" ok "$2" ok-control) || return 1',
