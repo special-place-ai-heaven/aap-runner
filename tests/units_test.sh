@@ -58,6 +58,10 @@ if command -v systemd-analyze >/dev/null 2>&1; then
     "${sd}/aap-runner-manager.service" "${sd}/aap-workdisk.service" \
     "${sd}/docker.service" "${sd}/sysbox.service" "${sd}/sysbox-mgr.service" 2>&1) || rc=$?
   rm -rf "${sd}"
+  # verify also walks units we do not ship. systemd 258 warns that CPUAccounting=
+  # is ignored on those host units and exits 0. Drop only lines that name them.
+  # Any output about the units under test still fails.
+  out=$(grep -v '/usr/lib/systemd/' <<< "${out}" || true)
   [[ "${rc}" -eq 0 && -z "${out}" ]] || fail "systemd-analyze verify (exit ${rc}): ${out}"
   echo "systemd-analyze verify ok"
 else
