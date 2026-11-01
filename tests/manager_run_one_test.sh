@@ -132,6 +132,26 @@ bound_zccache_tree 2>/dev/null
 [[ ! -e "${ZCCACHE_HOST_DIR}/repo/old" ]] || fail "the oldest cache file was kept"
 echo "cache tree cap ok"
 
+# A symlink inside the tree must not be followed. The outside file is older
+# and large enough that a trim which followed the link would delete it and
+# leave the cache file. The directory link is the case rm would follow.
+outside=$(mktemp -d)
+head -c 2097152 /dev/zero > "${outside}/precious"
+touch -d '2019-01-01 00:00:00' "${outside}/precious"
+ln -s "${outside}/precious" "${ZCCACHE_HOST_DIR}/repo/to-precious"
+ln -s "${outside}" "${ZCCACHE_HOST_DIR}/via-dir"
+head -c 2097152 /dev/zero > "${ZCCACHE_HOST_DIR}/repo/old"
+touch -d '2020-01-01 00:00:00' "${ZCCACHE_HOST_DIR}/repo/old"
+ZCCACHE_TREE_MAX_MB=3
+bound_zccache_tree 2>/dev/null
+[[ -f "${outside}/precious" ]] || fail "the trim followed a symlink out of the cache"
+[[ -f "${ZCCACHE_HOST_DIR}/repo/new" ]] || fail "the symlink trim removed the newest cache file"
+[[ ! -e "${ZCCACHE_HOST_DIR}/repo/old" ]] || fail "the symlink trim did not remove the oldest cache file"
+[[ -L "${ZCCACHE_HOST_DIR}/repo/to-precious" ]] || fail "the trim deleted the symlink instead of leaving it"
+[[ -L "${ZCCACHE_HOST_DIR}/via-dir" ]] || fail "the trim deleted the directory symlink"
+rm -rf "${outside}"
+echo "cache trim does not follow symlinks"
+
 # With RUN_DIR, the trim runs under a non-blocking lock: a caller that does
 # not get it skips the trim and returns 0, so slots starting together trim once.
 RUN_DIR="${work}/run"

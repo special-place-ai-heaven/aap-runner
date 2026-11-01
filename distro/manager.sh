@@ -1054,10 +1054,53 @@ bound_zccache_tree() {
   ) 9> "${RUN_DIR}/zccache-trim.lock"
 }
 
+# find for the cache trim. -P and -xdev are required on every call: a job can
+# write this tree, and a symlink must not be followed out of it. As root, run
+# as RUNNER_UID so the trim also cannot unlink a file that uid cannot unlink.
+zccache_find() {
+  if [[ "$(id -u)" -eq 0 && "${RUNNER_UID}" =~ ^[1-9][0-9]*$ ]]; then
+    setpriv --reuid="${RUNNER_UID}" --regid="${RUNNER_UID}" --clear-groups --inh-caps=-all \
+      find "$@"
+  else
+    find "$@"
+  fi
+}
+
+# Unlink these inodes with one -P -xdev walk and -delete. -delete unlinks
+# through the directory fd find holds, so a directory swapped for a symlink
+# between the listing and the unlink is not followed. -type f skips symlinks.
+zccache_delete_inode_batch() {
+  local -a expr=()
+  local ino
+  for ino in "$@"; do
+    ((${#expr[@]})) && expr+=(-o)
+    expr+=(-inum "${ino}")
+  done
+  zccache_find -P "${ZCCACHE_HOST_DIR}" -xdev \( "${expr[@]}" \) -type f -delete
+}
+
+zccache_delete_inodes() {
+  local -a batch=()
+  local ino
+  for ino in "$@"; do
+    batch+=("${ino}")
+    if ((${#batch[@]} >= 50)); then
+      zccache_delete_inode_batch "${batch[@]}"
+      batch=()
+    fi
+  done
+  if ((${#batch[@]})); then
+    zccache_delete_inode_batch "${batch[@]}"
+  fi
+}
+
 # Bytes, not du -sm. Over the cap, delete oldest regular files until the tree
-# is at or under 80% of the cap. The directory stays.
+# is at or under 80% of the cap. The directory stays. Symlinks are not
+# followed and are not deleted.
 trim_zccache_tree() {
-  local used bound target need sz path
+  local used bound target need sz ino
+  local -a inodes=()
+  local -A trimmed_ino=()
   [[ -d "${ZCCACHE_HOST_DIR}" ]] || return 0
   [[ "${ZCCACHE_TREE_MAX_MB}" =~ ^[0-9]+$ ]] || return 0
   bound=$(( ZCCACHE_TREE_MAX_MB * 1024 * 1024 ))
@@ -1066,14 +1109,19 @@ trim_zccache_tree() {
   target=$(( bound * 80 / 100 ))
   echo "zccache tree ${ZCCACHE_HOST_DIR} is ${used} bytes, over ${bound}; trimming oldest files to ${target}" >&2
   need=$(( used - target ))
-  while IFS=$'\t' read -r _ sz path; do
-    [[ -n "${path}" && -f "${path}" ]] || continue
-    rm -f -- "${path}" || true
+  while IFS=$'\t' read -r -d '' _ sz ino; do
+    [[ "${ino}" =~ ^[0-9]+$ ]] || continue
+    [[ -z "${trimmed_ino[${ino}]+x}" ]] || continue
+    trimmed_ino[${ino}]=1
+    inodes+=("${ino}")
     if [[ "${sz}" =~ ^[0-9]+$ ]]; then
       need=$(( need - sz ))
     fi
     (( need > 0 )) || break
-  done < <(find "${ZCCACHE_HOST_DIR}" -type f -printf '%T@\t%s\t%p\n' | sort -n)
+  done < <(zccache_find -P "${ZCCACHE_HOST_DIR}" -xdev -type f -printf '%T@\t%s\t%i\0' | sort -z -n)
+  if ((${#inodes[@]})); then
+    zccache_delete_inodes "${inodes[@]}"
+  fi
 }
 
 # A marker is named after the cleaner's pid. One whose process is gone (a
