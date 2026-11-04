@@ -773,6 +773,8 @@ inside_packages() {
   copy_staged "${SYSBOX_NAME}" "/var/lib/aap-runner/${SYSBOX_NAME}"
   copy_staged Dockerfile /var/lib/aap-runner/image/Dockerfile
   copy_staged ephemeral-entry.sh /var/lib/aap-runner/image/ephemeral-entry.sh
+  copy_staged aap-zccache.sh /var/lib/aap-runner/image/aap-zccache.sh
+  copy_staged zccache-wrappers.json /var/lib/aap-runner/image/zccache-wrappers.json
   copy_staged manager.sh /usr/local/sbin/aap-runner-manager
   copy_staged labels.sh /usr/local/sbin/labels.sh
   copy_staged evidence.sh /usr/local/sbin/aap-runner-evidence
@@ -2692,7 +2694,8 @@ outside() {
     "${SCRIPT_DIR}/aap-runner-manager.service" "${SCRIPT_DIR}/nftables.conf" \
     "${SCRIPT_DIR}/wsl.conf" "${SCRIPT_DIR}/manager.conf.example" \
     "${SCRIPT_DIR}/evidence.sh" "${SCRIPT_DIR}/bootstrap.sh" \
-    "${SCRIPT_DIR}/labels.sh" "${SCRIPT_DIR}/stage-into-distro.sh"     "${SCRIPT_DIR}/staging.sha256" "${STAGE}/"
+    "${SCRIPT_DIR}/labels.sh" "${SCRIPT_DIR}/stage-into-distro.sh"     "${SCRIPT_DIR}/staging.sha256" \
+    "${SCRIPT_DIR}/aap-zccache.sh" "${SCRIPT_DIR}/zccache-wrappers.json" "${STAGE}/"
 
   # --exec does not join the command into the distro shell. The stage path
   # and the disk size are positional arguments of stage-into-distro.sh.

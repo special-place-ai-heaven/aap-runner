@@ -82,19 +82,16 @@ DEREG_NAMES=()
 # systemd restarts the whole pool.
 SLOT_MAX_FAILS=5
 SLOT_FAST_SECONDS=120
-# Shared rustc cache on the work disk, bind-mounted into every job. sccache's
-# local disk cache is built for concurrent readers and writers (separate
-# sccache servers, one per job), so parallel slots can share it. ci.yml sets
-# SCCACHE_DIR to a per-repository subdirectory; "default" is for jobs that do not.
-SCCACHE_HOST_DIR=${WORK_MOUNT}/sccache
-SCCACHE_CONTAINER_DIR=/var/cache/aap-sccache
-SCCACHE_CACHE_SIZE=10G
-# SCCACHE_CACHE_SIZE bounds one directory, and any job can create another.
-# Before each job the whole tree is measured. Over 15% of the disk, the oldest
-# files are removed until the tree is at 80% of that bound. finish_disk_bounds
-# sets the cap from AAP_WORK_DISK_GIB. 9216 MiB is 15% of the default 60 GiB.
-SCCACHE_TREE_MAX_MB=9216
-RUNNER_UID=""
+# Compile cache: zccache 1.15.6, installed in the image (guests/cache). Each job
+# has its own private root inside its container, and the container filesystem
+# is on the work disk. Shared roots stay off until the lab proof
+# (guests/cache/INTEGRATION.md), so nothing is shared between jobs and no host
+# directory is mounted. The entrypoint gives the root this budget; at the
+# budget the shim stops using the root, it never deletes cache files. The root
+# goes with `docker rm -f -v`. finish_disk_bounds sets the budget to 15% of
+# AAP_WORK_DISK_GIB, at most 10240 MiB (the old per-directory limit);
+# 9216 MiB is 15% of the default 60 GiB.
+ZCCACHE_BUDGET_MB=9216
 # Interface for the Windows-side supervisor (wsl -d aap-runner -u root --).
 # ${RUN_DIR}/drain stops new jobs; ${RUN_DIR}/status.json reports the pool.
 # /run is a tmpfs. Not a systemd RuntimeDirectory, which is deleted when the
@@ -326,7 +323,10 @@ finish_disk_bounds() {
     WORK_DISK_MIN_GB=1
   fi
   WORK_DISK_MAX_GB=$((AAP_WORK_DISK_GIB + 4))
-  SCCACHE_TREE_MAX_MB=$(( AAP_WORK_DISK_GIB * 1024 * 15 / 100 ))
+  ZCCACHE_BUDGET_MB=$(( AAP_WORK_DISK_GIB * 1024 * 15 / 100 ))
+  if (( ZCCACHE_BUDGET_MB > 10240 )); then
+    ZCCACHE_BUDGET_MB=10240
+  fi
 }
 
 # Absent keys use the defaults. A present value that is not this grammar is refused.
@@ -1037,40 +1037,6 @@ cleanup_job() {
   docker network rm "${net}" || true
 }
 
-# One trim at a time: five slots starting together trim once. A caller that
-# does not get the lock skips the trim and returns 0; the holder's pass
-# covers it. Without RUN_DIR (self-check, tests) there is no lock file and
-# the trim just runs.
-bound_sccache_tree() {
-  [[ -d "${RUN_DIR}" ]] || { trim_sccache_tree; return 0; }
-  (
-    flock -n 9 || exit 0
-    trim_sccache_tree
-  ) 9> "${RUN_DIR}/sccache-trim.lock"
-}
-
-# Bytes, not du -sm. Over the cap, delete oldest regular files until the tree
-# is at or under 80% of the cap. The directory stays.
-trim_sccache_tree() {
-  local used bound target need sz path
-  [[ -d "${SCCACHE_HOST_DIR}" ]] || return 0
-  [[ "${SCCACHE_TREE_MAX_MB}" =~ ^[0-9]+$ ]] || return 0
-  bound=$(( SCCACHE_TREE_MAX_MB * 1024 * 1024 ))
-  used=$(du -sb "${SCCACHE_HOST_DIR}" 2>/dev/null | awk '{ print $1 }')
-  [[ "${used}" =~ ^[0-9]+$ && "${used}" -gt "${bound}" ]] || return 0
-  target=$(( bound * 80 / 100 ))
-  echo "sccache tree ${SCCACHE_HOST_DIR} is ${used} bytes, over ${bound}; trimming oldest files to ${target}" >&2
-  need=$(( used - target ))
-  while IFS=$'\t' read -r _ sz path; do
-    [[ -n "${path}" && -f "${path}" ]] || continue
-    rm -f -- "${path}" || true
-    if [[ "${sz}" =~ ^[0-9]+$ ]]; then
-      need=$(( need - sz ))
-    fi
-    (( need > 0 )) || break
-  done < <(find "${SCCACHE_HOST_DIR}" -type f -printf '%T@\t%s\t%p\n' | sort -n)
-}
-
 # A marker is named after the cleaner's pid. One whose process is gone (a
 # killed cleaner, a marker from before a restart) does not count, so
 # "cleaning" never sticks. stop_pool and run_pool clear the directory too.
@@ -1162,11 +1128,9 @@ reclaim_pool_cache() {
   echo "cache: reclaimed $((bytes / 1048576)) MiB of cold page cache from ${POOL_SLICE}"
 }
 
-# After every job, and once when a start is under the floor. The cache trim
-# is included because that tree is on this disk.
+# After every job, and once when a start is under the floor.
 clean_after_job() {
   begin_cleaning
-  bound_sccache_tree || true
   prune_job_docker
   reclaim_pool_cache || true
   maybe_daily_clean
@@ -1197,12 +1161,6 @@ run_one() {
   name=$(job_name "${slot}")
   net="${name}"
   # set -e does not apply inside this function: the loop calls it from `if`.
-  # disk_ok passed just before this, so the cache dir is on the work disk.
-  bound_sccache_tree
-  if ! install -d -o "${RUNNER_UID}" -m 0700 "${SCCACHE_HOST_DIR}"; then
-    echo "refusing to start a job: could not create ${SCCACHE_HOST_DIR}" >&2
-    return 1
-  fi
   if ! docker network create --label aap-crrr-job=1 "${net}"; then
     return 1
   fi
@@ -1223,7 +1181,7 @@ run_one() {
         --device-write-iops "${IO_DEVICE}:$((SLOT_IO_MBPS * IO_IOPS_PER_MB))")
     fi
   fi
-  # One bind mount, the sccache dir on the work disk. No -v, no /mnt.
+  # No bind mounts, no -v, no /mnt: the zccache root is inside the container.
   # assert_no_mnt_mounts rejects a source under /mnt even if the daemon adds
   # one. /mnt/wsl is the shared docker-desktop tmpfs.
   if ! docker create \
@@ -1241,10 +1199,7 @@ run_one() {
     --env "AAP_RUNNER_GROUP=${AAP_RUNNER_GROUP}" \
     --env "AAP_WORK_DISK_GIB=${AAP_WORK_DISK_GIB}" \
     --env "AAP_DISK_FLOOR_GB=${AAP_DISK_FLOOR_GB}" \
-    --mount "type=bind,source=${SCCACHE_HOST_DIR},target=${SCCACHE_CONTAINER_DIR}" \
-    --env "RUSTC_WRAPPER=sccache" \
-    --env "SCCACHE_DIR=${SCCACHE_CONTAINER_DIR}/default" \
-    --env "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE}" \
+    --env "AAP_ZCCACHE_BUDGET_BYTES=$((ZCCACHE_BUDGET_MB * 1024 * 1024))" \
     "${AAP_RUNNER_IMAGE}"; then
     docker network rm "${net}" || true
     return 1
@@ -1804,19 +1759,6 @@ self_check() {
     echo "wall clock was still running after disarm" >&2
     return 1
   fi
-  sc_dir=$(mktemp -d)
-  SCCACHE_HOST_DIR=${sc_dir}
-  mkdir -p "${sc_dir}/repo"
-  head -c 2097152 /dev/zero > "${sc_dir}/repo/old"
-  head -c 2097152 /dev/zero > "${sc_dir}/repo/new"
-  touch -d '2020-01-01 00:00:00' "${sc_dir}/repo/old"
-  touch -d '2024-01-01 00:00:00' "${sc_dir}/repo/new"
-  SCCACHE_TREE_MAX_MB=3
-  bound_sccache_tree
-  [[ -d "${sc_dir}" ]]
-  [[ ! -e "${sc_dir}/repo/old" ]]
-  [[ -f "${sc_dir}/repo/new" ]]
-  rm -rf "${sc_dir}"
   # Dead sysbox directories go. A live id and a non-id stay. docker is stubbed.
   (
     sys=$(mktemp -d)
@@ -1890,30 +1832,6 @@ self_check() {
   fi
   [[ "${cleaned}" == 0 ]]
   echo "disk floor self-check ok"
-}
-
-runner_uid_ok() {
-  [[ "$1" =~ ^[1-9][0-9]*$ ]]
-}
-
-# The cache dir is owned by the image's runner uid, mode 0700. Sysbox mounts
-# host binds ID-mapped, so that host uid is the same uid inside the job.
-# Mode 1777 would let any distro account, ghrunner included, plant cache
-# objects, and so would a runner uid that a distro account also has.
-# Read once at startup with the default runtime and no network.
-resolve_runner_uid() {
-  local out="" account
-  out=$(docker run --rm --pull never --network none --entrypoint id "${AAP_RUNNER_IMAGE}" -u runner 2>/dev/null) || out=""
-  if ! runner_uid_ok "${out}"; then
-    echo "refusing: runner uid in ${AAP_RUNNER_IMAGE} is '${out}', not a plain non-zero integer" >&2
-    return 1
-  fi
-  account=$(getent passwd "${out}" | cut -d: -f1 || true)
-  if [[ -n "${account}" ]]; then
-    echo "refusing: runner uid ${out} is distro account ${account}; the cache would be writable from the distro" >&2
-    return 1
-  fi
-  RUNNER_UID=${out}
 }
 
 # A dead slot's job container keeps running and holds its cpus and memory.
@@ -2241,7 +2159,6 @@ main() {
 
   load_config
   check_key
-  resolve_runner_uid
   remove_job_containers
   resolve_io_device
   setup_pool_sharing
