@@ -1,0 +1,40 @@
+name: runner-image-check
+# Manual check of the Linux runner image on the pool: run it after the image is rebuilt. It prints the tools the image
+# promises, the runner version, the job's cpu limits and a zombie check. It never checks out or runs repository code
+# (no checkout, no action, no workflow input), because it runs on the self-hosted pool.
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, fresh]
+    timeout-minutes: 10
+    steps:
+      - name: Tools
+        run: |
+          jq --version
+          node --version
+          npm --version
+      - name: zccache
+        run: |
+          /usr/local/libexec/aap-guest/cache/bin/zccache --version
+          /usr/local/libexec/aap-guest/cache/aap-zccache.sh state /var/cache/aap-zccache
+          echo "RUSTC_WRAPPER=${RUSTC_WRAPPER:-<unset>}"
+          # Unset while no compiler pair is qualified (rustc then builds directly); otherwise the zccache shim.
+          case "${RUSTC_WRAPPER:-}" in
+            "") echo "RUSTC_WRAPPER is unset: rustc builds directly" ;;
+            */zcshim) echo "RUSTC_WRAPPER is the zccache shim" ;;
+            *) echo "RUSTC_WRAPPER is neither unset nor the zccache shim"; exit 1 ;;
+          esac
+          if command -v sccache; then echo "sccache is on PATH"; exit 1; fi
+      - name: Runner
+        run: /opt/actions-runner/bin/Runner.Listener --version
+      - name: Limits
+        run: |
+          nproc
+          cat /sys/fs/cgroup/cpu.max
+      - name: Zombie check
+        # No -e: awk exits 2 when the killed process is gone, which is the passing case.
+        shell: bash {0}
+        run: |
+          sh -c 'sleep 300 & echo $! > /tmp/p'; sleep 1; kill -9 $(cat /tmp/p); sleep 1; s=$(awk '{print $3}' /proc/$(cat /tmp/p)/stat 2>/dev/null); test -z "$s" || { echo "process state $s"; exit 1; }
