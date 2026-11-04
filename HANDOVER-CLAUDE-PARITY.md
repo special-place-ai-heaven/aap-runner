@@ -314,7 +314,7 @@ PowerShell, if supervisor/ or installer/ changes:
   installer/install-host.Tests.ps1 as required by the existing CI contract
 ```
 
-The Rust toolchain is pinned to `1.99.0` in rust-toolchain.toml; read actual current
+The Rust toolchain is pinned to `1.99.1` in rust-toolchain.toml; read actual current
 files rather than silently changing versions. Git Bash is insufficient for the
 Linux suite because it lacks required setsid/flock behavior. Do not run that suite
 by starting the active aap-runner distro. Do not install host-wide test dependencies
