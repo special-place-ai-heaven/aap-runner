@@ -1228,6 +1228,7 @@ run_one() {
   # one. /mnt/wsl is the shared docker-desktop tmpfs.
   if ! docker create \
     --runtime=sysbox-runc \
+    --init \
     --interactive \
     --name "${name}" \
     --network "${net}" \
