@@ -124,9 +124,9 @@ SYSBOX_URL=https://github.com/nestybox/sysbox/releases/download/v0.7.1/sysbox-ce
 SYSBOX_SHA256=9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5
 SYSBOX_NAME=sysbox-ce_0.7.1.linux_amd64.deb
 
-RUNNER_URL=https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz
-RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
-RUNNER_NAME=actions-runner-linux-x64-2.338.0.tar.gz
+RUNNER_URL=https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz
+RUNNER_SHA256=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
+RUNNER_NAME=actions-runner-linux-x64-2.338.2.tar.gz
 
 verify_sha256() {
   local file="$1" expected="$2" actual

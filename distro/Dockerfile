@@ -62,7 +62,7 @@ RUN apt-get update \
        fi
 
 COPY ephemeral-entry.sh /opt/aap-runner/ephemeral-entry.sh
-COPY actions-runner-linux-x64-2.338.0.tar.gz /tmp/actions-runner.tar.gz
+COPY actions-runner-linux-x64-2.338.2.tar.gz /tmp/actions-runner.tar.gz
 
 RUN mkdir -p /opt/actions-runner \
     && tar -xzf /tmp/actions-runner.tar.gz -C /opt/actions-runner \
