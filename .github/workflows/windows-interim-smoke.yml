@@ -1,0 +1,30 @@
+name: windows-interim-smoke
+# Proves the interim Windows host runner (FRESH-win-interim) takes a job. Manual
+# trigger only: this job runs unisolated on the owner's PC, so nothing starts it
+# but a person. It prints identity and tool versions and writes nothing outside
+# the runner's _work folder.
+on: workflow_dispatch
+permissions: {}
+jobs:
+  smoke:
+    runs-on:
+      group: aap-win-interim
+      labels: [windows-host-interim]
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Runner identity
+        run: |
+          "runner_name=$env:RUNNER_NAME"
+          "RUNNER_OS=$env:RUNNER_OS RUNNER_ARCH=$env:RUNNER_ARCH"
+          whoami
+          [System.Environment]::OSVersion.VersionString
+          "pwsh=" + $PSVersionTable.PSVersion.ToString()
+
+      - name: Toolchain on PATH
+        run: |
+          foreach ($t in 'rustc', 'cargo', 'git') {
+            if (Get-Command $t -ErrorAction SilentlyContinue) { & $t --version } else { "$t: not on PATH" }
+          }
