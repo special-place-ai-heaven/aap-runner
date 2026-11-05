@@ -1,6 +1,6 @@
 #!/bin/bash
-# Wall-clock probe for the runner VM. Samples CLOCK_REALTIME ($EPOCHREALTIME) and
-# CLOCK_BOOTTIME (/proc/uptime) every 100 ms and reports backward realtime
+# Wall-clock probe for the runner VM. Samples CLOCK_REALTIME and CLOCK_BOOTTIME
+# (python3, straight from the kernel) every 100 ms and reports backward realtime
 # steps and the largest change of realtime minus boottime. A clean clock has
 # no backward step and a drift change well under 100 ms: an NTP slew moves both
 # clocks together, a step moves only realtime.
@@ -38,18 +38,17 @@ analyse() {
 }
 
 sample() { # SECONDS
-  local end now up
-  end=$(($(date +%s) + $1))
-  while :; do
-    # bash's own microsecond clock, read right before /proc/uptime: forking date
-    # here put up to tens of ms between the two reads on a loaded runner.
-    now=${EPOCHREALTIME//[!0-9]/}000
-    read -r up _ < /proc/uptime
-    # /proc/uptime has two decimals: 10 ms resolution, enough for a 100 ms limit.
-    printf '%s %s\n' "${now}" "$((${up%.*} * 1000000000 + 10#${up#*.} * 10000000))"
-    ((now / 1000000000 >= end)) && break
-    sleep 0.1
-  done
+  # Both clocks from the kernel in one process, back to back. Not /proc/uptime:
+  # inside a Sysbox runner container sysbox-fs serves that file itself.
+  python3 -c '
+import sys, time
+end = time.monotonic() + int(sys.argv[1])
+while True:
+    print(time.clock_gettime_ns(time.CLOCK_REALTIME), time.clock_gettime_ns(time.CLOCK_BOOTTIME), flush=True)
+    if time.monotonic() >= end:
+        break
+    time.sleep(0.1)
+' "$1"
 }
 
 main() {
