@@ -672,6 +672,14 @@ fn scripts() -> &'static [Embedded] {
             text: include_str!("../../../distro/wsl.conf"),
         },
         Embedded {
+            rel: "distro/aap-zccache.sh",
+            text: include_str!("../../../distro/aap-zccache.sh"),
+        },
+        Embedded {
+            rel: "distro/zccache-wrappers.json",
+            text: include_str!("../../../distro/zccache-wrappers.json"),
+        },
+        Embedded {
             rel: "helper-run.ps1",
             text: include_str!("../../../installer/helper-run.ps1"),
         },

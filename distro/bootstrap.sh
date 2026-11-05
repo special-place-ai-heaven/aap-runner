@@ -124,9 +124,9 @@ SYSBOX_URL=https://github.com/nestybox/sysbox/releases/download/v0.7.1/sysbox-ce
 SYSBOX_SHA256=9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5
 SYSBOX_NAME=sysbox-ce_0.7.1.linux_amd64.deb
 
-RUNNER_URL=https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz
-RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
-RUNNER_NAME=actions-runner-linux-x64-2.338.0.tar.gz
+RUNNER_URL=https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz
+RUNNER_SHA256=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
+RUNNER_NAME=actions-runner-linux-x64-2.338.2.tar.gz
 
 verify_sha256() {
   local file="$1" expected="$2" actual
@@ -773,6 +773,8 @@ inside_packages() {
   copy_staged "${SYSBOX_NAME}" "/var/lib/aap-runner/${SYSBOX_NAME}"
   copy_staged Dockerfile /var/lib/aap-runner/image/Dockerfile
   copy_staged ephemeral-entry.sh /var/lib/aap-runner/image/ephemeral-entry.sh
+  copy_staged aap-zccache.sh /var/lib/aap-runner/image/aap-zccache.sh
+  copy_staged zccache-wrappers.json /var/lib/aap-runner/image/zccache-wrappers.json
   copy_staged manager.sh /usr/local/sbin/aap-runner-manager
   copy_staged labels.sh /usr/local/sbin/labels.sh
   copy_staged evidence.sh /usr/local/sbin/aap-runner-evidence
@@ -994,7 +996,7 @@ inside_runtime() {
 
   # Preflight is the gate. Phase 1 passed on kernel 6.18.35.2 with idmapped
   # mounts and no shiftfs. A failure here still stops the install.
-  docker create --runtime=sysbox-runc --name aap-sysbox-preflight \
+  docker create --runtime=sysbox-runc --init --name aap-sysbox-preflight \
     --entrypoint /opt/aap-runner/ephemeral-entry.sh \
     aap-crrr-runner:local --preflight
   if ! /usr/local/sbin/aap-runner-manager --assert-mounts aap-sysbox-preflight; then
@@ -2692,7 +2694,8 @@ outside() {
     "${SCRIPT_DIR}/aap-runner-manager.service" "${SCRIPT_DIR}/nftables.conf" \
     "${SCRIPT_DIR}/wsl.conf" "${SCRIPT_DIR}/manager.conf.example" \
     "${SCRIPT_DIR}/evidence.sh" "${SCRIPT_DIR}/bootstrap.sh" \
-    "${SCRIPT_DIR}/labels.sh" "${SCRIPT_DIR}/stage-into-distro.sh"     "${SCRIPT_DIR}/staging.sha256" "${STAGE}/"
+    "${SCRIPT_DIR}/labels.sh" "${SCRIPT_DIR}/stage-into-distro.sh"     "${SCRIPT_DIR}/staging.sha256" \
+    "${SCRIPT_DIR}/aap-zccache.sh" "${SCRIPT_DIR}/zccache-wrappers.json" "${STAGE}/"
 
   # --exec does not join the command into the distro shell. The stage path
   # and the disk size are positional arguments of stage-into-distro.sh.
