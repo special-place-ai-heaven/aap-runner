@@ -15,7 +15,7 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `aap-runner-manager.service` | systemd unit for that loop. Requires docker and `aap-workdisk.service`, wants sysbox. Exit 143 after SIGTERM is a clean stop |
 | `nftables.conf` | Best-effort egress drop for LAN, link-local, CGNAT, and the other non-global ranges |
 | `manager.conf.example` | Schema for `/etc/aap-runner/manager.conf`. No secrets |
-| `Dockerfile` | Job image: inner dockerd 27.3.1, build-essential, mysql-client, no sudo |
+| `Dockerfile` | Job image: inner dockerd 27.3.1, build-essential, mysql-client, jq, Node.js 26.13.0 LTS, no sudo |
 | `ephemeral-entry.sh` | Starts inner dockerd, registers ephemeral, runs one job |
 | `create-work-vhdx.ps1` | Fixed VHDX: `New-VHD -Fixed`, or diskpart when that cmdlet is absent or errors |
 | `mount-work-vhdx.ps1` | Operator logon task: `wsl --mount --vhd <path> --bare`, log appended under `C:\wsl` |

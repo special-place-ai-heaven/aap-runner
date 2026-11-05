@@ -81,6 +81,7 @@ pair() {
 }
 
 has --runtime=sysbox-runc
+has --init
 pair --cpus 8
 pair --memory 24g
 pair --memory-swap 24g

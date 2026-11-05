@@ -6,3 +6,5 @@ target/
 
 # SymForge MCP index (local tool state).
 /.symforge/
+.supervisor/
+.claude/autoharness/

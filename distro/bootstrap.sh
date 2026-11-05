@@ -994,7 +994,7 @@ inside_runtime() {
 
   # Preflight is the gate. Phase 1 passed on kernel 6.18.35.2 with idmapped
   # mounts and no shiftfs. A failure here still stops the install.
-  docker create --runtime=sysbox-runc --name aap-sysbox-preflight \
+  docker create --runtime=sysbox-runc --init --name aap-sysbox-preflight \
     --entrypoint /opt/aap-runner/ephemeral-entry.sh \
     aap-crrr-runner:local --preflight
   if ! /usr/local/sbin/aap-runner-manager --assert-mounts aap-sysbox-preflight; then
