@@ -56,6 +56,8 @@ pub struct SettingsPanel {
     tier: Tier,
     /// The tray may write settings schema 4 (`settings::tiers_writable`).
     tiers: bool,
+    /// A fresh status lists settings schema 4, so the supervisor numbers the slots by tier.
+    numbered: bool,
     windows: u32,
     io_percent: u32,
     sharing: Sharing,
@@ -87,6 +89,7 @@ impl SettingsPanel {
             heavy: stored.linux_heavy_count,
             tier: Tier::Light,
             tiers: settings::tiers_writable(base),
+            numbered: lists_v4(base),
             windows: stored.windows_runner_count,
             io_percent: stored.io_percent,
             sharing: stored.sharing,
@@ -100,6 +103,7 @@ impl SettingsPanel {
         let follow = self.changes() == 0;
         self.stored = settings::read_with_windows_choice(base);
         self.tiers = settings::tiers_writable(base);
+        self.numbered = lists_v4(base);
         if !self.tiers {
             self.tier = Tier::Light;
         }
@@ -113,11 +117,16 @@ impl SettingsPanel {
         self.stored.windows_runner_count
     }
 
-    /// The stored light and heavy counts, and whether they are tiers (a stored schema 4 file):
-    /// the Linux tiles show them.
+    /// The stored light and heavy counts, and whether they are tiers: a stored schema 4 file and a
+    /// fresh status that lists 4. Without the second, the supervisor may still number the slots
+    /// 1..N untiered, so the tiles keep the untiered numbering.
     pub fn linux_counts(&self) -> (u32, u32, bool) {
         let s = &self.stored;
-        (s.runner_count, s.linux_heavy_count, s.schema >= 4)
+        (
+            s.runner_count,
+            s.linux_heavy_count,
+            s.schema >= 4 && self.numbered,
+        )
     }
 
     fn revert(&mut self) {
@@ -666,6 +675,12 @@ struct WindowsLine {
     tip: String,
 }
 
+/// A fresh `status.v5.json` lists settings schema 4.
+fn lists_v4(base: &Path) -> bool {
+    crate::state::read_status_v5(base, std::time::SystemTime::now())
+        .is_some_and(|v| v.takes_settings_v4())
+}
+
 fn windows_line(edit: &Settings, windows: u32, vm: &VmLimit) -> WindowsLine {
     if windows == 0 {
         return WindowsLine {
@@ -987,6 +1002,9 @@ mod tests {
         let mut panel = SettingsPanel::load(&base);
         panel.vm = VmLimit::ASSUMED;
         assert!(panel.tiers);
+        // No status lists 4 yet: the supervisor may still number the slots untiered.
+        assert_eq!(panel.linux_counts(), (4, 1, false));
+        panel.numbered = true;
         assert_eq!(panel.linux_counts(), (4, 1, true));
         assert_eq!(
             (panel.linux, panel.heavy, panel.windows, panel.changes()),

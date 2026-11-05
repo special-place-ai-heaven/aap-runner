@@ -134,6 +134,8 @@ struct LinuxTile {
     n: u32,
     slot: Option<u32>,
     chosen: bool,
+    /// Settings schema 4 is in force; before it a light tile is just `Linux n`.
+    tiered: bool,
 }
 
 /// Heavy 1..2 then light 1..10, whatever the counts: every slot is drawn, the unchosen dimmed.
@@ -144,12 +146,14 @@ fn linux_tiles(light: u32, heavy: u32, tiered: bool) -> Vec<LinuxTile> {
         n,
         slot: tiered.then_some(n),
         chosen: tiered && n <= heavy,
+        tiered,
     });
     let light_tiles = (1..=*crate::settings::LIGHT.end()).map(|n| LinuxTile {
         tier: Tier::Light,
         n,
         slot: Some(if tiered { heavy_max + n } else { n }),
         chosen: n <= light,
+        tiered,
     });
     heavy_tiles.chain(light_tiles).collect()
 }
@@ -164,9 +168,13 @@ fn tile_look(t: LinuxTile, reported: bool) -> (bool, &'static str) {
     }
 }
 
-/// `Heavy 1`, `Light 10`.
+/// `Heavy 1`, `Light 10`; before settings schema 4 the untiered slots are `Linux 1..5` (today's
+/// manager labels them all alike, so calling them light would be wrong).
 fn tile_name(t: LinuxTile) -> String {
-    format!("{} {}", t.tier.name(), t.n)
+    match (t.tiered, t.tier) {
+        (false, Tier::Light) => format!("Linux {}", t.n),
+        _ => format!("{} {}", t.tier.name(), t.n),
+    }
 }
 
 /// What a tile's slot may use: the tier table under settings schema 4 (a heavy slot's
@@ -1521,8 +1529,10 @@ impl Dash {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
                     paint_os(ui.painter(), rect, Os::Linux, ink, fill);
-                    let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
-                    paint_tier(ui.painter(), rect, t.tier, ink, fill);
+                    if t.tiered || t.tier == Tier::Heavy {
+                        let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                        paint_tier(ui.painter(), rect, t.tier, ink, fill);
+                    }
                     let color = if on { p.text } else { p.muted };
                     ui.label(
                         RichText::new(&name)
@@ -3051,8 +3061,9 @@ mod tests {
             let tiles = linux_tiles(light, heavy, tiered);
             assert_eq!(tiles.len(), 12, "{light} {heavy} {tiered}");
             let names: Vec<String> = tiles.iter().map(|t| tile_name(*t)).collect();
-            assert_eq!(names[..3], ["Heavy 1", "Heavy 2", "Light 1"]);
-            assert_eq!(names[11], "Light 10");
+            let word = if tiered { "Light" } else { "Linux" };
+            assert_eq!(names[..3], ["Heavy 1", "Heavy 2", &format!("{word} 1")]);
+            assert_eq!(names[11], format!("{word} 10"));
         }
         // Schema 4: the tier table's fixed slot numbers.
         let tiered = linux_tiles(4, 1, true);
