@@ -73,8 +73,9 @@ start_zccache
 rm -rf /opt/actions-runner/_work
 install -d -o runner -g runner /opt/actions-runner/_work
 
-# runuser -u keeps this environment (only --login would reset it), so
-# config.sh sees the names docker passed in and the token exported here.
+# runuser -u keeps this environment except HOME, SHELL, USER and LOGNAME
+# (only --login resets it), so config.sh sees the names docker passed in
+# and the token exported here.
 # The registration token stays out of argv; it is unset before run.sh.
 export AAP_RUNNER_REG_TOKEN="${reg_token}"
 # Names in this script expand in the runner user's shell, not this one.
@@ -82,7 +83,7 @@ export AAP_RUNNER_REG_TOKEN="${reg_token}"
 runuser -u runner -- bash -c '
   set -euo pipefail
   cd /opt/actions-runner
-  ./config.sh --unattended --ephemeral --disableupdate=false \
+  ./config.sh --unattended --ephemeral --disableupdate \
     --url "https://github.com/${AAP_GITHUB_ORG}" \
     --token "${AAP_RUNNER_REG_TOKEN}" \
     --labels "${AAP_RUNNER_LABELS}" \

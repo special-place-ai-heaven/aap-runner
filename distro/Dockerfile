@@ -90,7 +90,7 @@ RUN archive=zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz \
     && /usr/local/libexec/aap-guest/cache/bin/zccache --version
 
 COPY ephemeral-entry.sh /opt/aap-runner/ephemeral-entry.sh
-COPY actions-runner-linux-x64-2.338.0.tar.gz /tmp/actions-runner.tar.gz
+COPY actions-runner-linux-x64-2.338.2.tar.gz /tmp/actions-runner.tar.gz
 
 RUN mkdir -p /opt/actions-runner \
     && tar -xzf /tmp/actions-runner.tar.gz -C /opt/actions-runner \
@@ -111,6 +111,18 @@ RUN mkdir -p /opt/actions-runner \
            echo 'runner sudo listing was not a denial after installdependencies' >&2; exit 1; \
          fi; \
        fi
+
+# Node.js LTS, system-wide, so `node` and `npm` are on PATH for the runner
+# user. Any checksum mismatch fails the build.
+RUN curl --fail --silent --show-error --location --output /tmp/node.tar.xz \
+      https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz \
+    && echo 'd28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997  /tmp/node.tar.xz' | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
+      --anchored --exclude=node-v26.13.0-linux-x64/CHANGELOG.md \
+      --exclude=node-v26.13.0-linux-x64/LICENSE --exclude=node-v26.13.0-linux-x64/README.md \
+    && rm -f /tmp/node.tar.xz \
+    && node --version \
+    && npm --version
 
 USER root
 ENTRYPOINT ["/opt/aap-runner/ephemeral-entry.sh"]

@@ -1183,10 +1183,12 @@ run_one() {
     fi
   fi
   # No bind mounts, no -v, no /mnt: the zccache root is inside the container.
+  # --init adds docker-init, which is not under /mnt.
   # assert_no_mnt_mounts rejects a source under /mnt even if the daemon adds
   # one. /mnt/wsl is the shared docker-desktop tmpfs.
   if ! docker create \
     --runtime=sysbox-runc \
+    --init \
     --interactive \
     --name "${name}" \
     --network "${net}" \
@@ -1854,7 +1856,7 @@ remove_slot_containers() {
 # The old sccache tree the manager kept on the work disk before zccache. Nothing
 # mounts it any more; it is a cache, so it is removed, once, at pool start.
 remove_legacy_sccache_tree() {
-  local dir=${WORK_MOUNT}/sccache # the old tree
+  local dir=${WORK_MOUNT}/sccache
   [[ -d "${dir}" ]] || return 0
   echo "removing the old sccache tree ${dir}; zccache keeps a private root per job"
   rm -rf --one-file-system "${dir}" || echo "could not remove ${dir} fully; it is no longer used" >&2

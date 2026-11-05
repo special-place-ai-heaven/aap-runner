@@ -15,7 +15,7 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `aap-runner-manager.service` | systemd unit for that loop. Requires docker and `aap-workdisk.service`, wants sysbox. Exit 143 after SIGTERM is a clean stop |
 | `nftables.conf` | Best-effort egress drop for LAN, link-local, CGNAT, and the other non-global ranges |
 | `manager.conf.example` | Schema for `/etc/aap-runner/manager.conf`. No secrets |
-| `Dockerfile` | Job image: inner dockerd 27.3.1, build-essential, mysql-client, no sudo |
+| `Dockerfile` | Job image: inner dockerd 27.3.1, build-essential, mysql-client, jq, Node.js 26.13.0 LTS, no sudo |
 | `ephemeral-entry.sh` | Starts inner dockerd, registers ephemeral, runs one job |
 | `create-work-vhdx.ps1` | Fixed VHDX: `New-VHD -Fixed`, or diskpart when that cmdlet is absent or errors |
 | `mount-work-vhdx.ps1` | Operator logon task: `wsl --mount --vhd <path> --bare`, log appended under `C:\wsl` |
@@ -79,11 +79,11 @@ For each job the manager:
 Labels passed to `config.sh` are `self-hosted,linux` plus `AAP_RUNNER_BASE_LABEL`, plus `AAP_RUNNER_EXTRA_LABELS` when that host sets it. The base is required and is `crrr` or `fresh`. An empty or missing base stops the manager, bootstrap, and evidence. CRRR sets `crrr` and registers `self-hosted,linux,crrr`. Fresh sets `fresh` and `heavy`, and registers `self-hosted,linux,fresh,heavy`. GitHub compares labels without regard to case, so the base and every extra label must already match `^[a-z0-9][a-z0-9._-]*$`. That charset check runs before the reserved-label check (`crrr`, `fresh`, `self-hosted`, `linux`) and before the duplicate check. `CRRR`, `Crrr`, `FRESH`, `LINUX`, `Self-Hosted`, and `Heavy` are refused. The manager, bootstrap, and evidence all source `labels.sh` for this. `labels.sh` stamps `AAP_RUNNER_LABELS_VERSION`. Each of those three scripts requires that exact value and exits if the sourced file differs, so a partial copy of the scripts does not run. The manager logs `runner labels:` before it mints a registration token. `ci.yml` stays on `[self-hosted, linux, crrr]`, so Fresh does not take those jobs. A later heavy job will target `fresh`.
 
 ```text
-config.sh --unattended --ephemeral --disableupdate=false \
+config.sh --unattended --ephemeral --disableupdate \
   --labels self-hosted,linux,crrr --runnergroup aap-crrr
 ```
 
-`--url` and `--token` are required for that command to register. `--disableupdate=false` leaves runner self-update on, as specified.
+`--url` and `--token` are required for that command to register. `--disableupdate` keeps the baked runner from updating itself mid-job; to move to a newer runner, change the pin and rebuild the image.
 4. Waits for the ephemeral runner to exit after one job.
 5. `docker rm -f` the container and deletes its network. The workspace lives only in the container, so removing the container wipes it. There is no host workspace directory. After the job the manager prunes dangling images, build cache, and stopped containers and networks labelled `aap-crrr-job` that are older than one hour, then evicts the pool slice's cold page cache (`inactive_file` from `memory.stat` written to `memory.reclaim`, followed by `compact_memory`) so the freed pages can return to Windows; the files stay on the work disk and are re-read on the next use. Once a day it runs `journalctl --vacuum-size=200M` and removes `/var/lib/ghrunner/sysbox` directories of containers Docker no longer has. If a start is under the free-space floor, that cleanup runs once and the free space is checked again before the job is refused.
 
@@ -344,7 +344,7 @@ The script downloads three pinned artifacts and checks sha256 before it uses the
 |---|---|---|
 | Ubuntu 24.04 WSL rootfs | `https://cloud-images.ubuntu.com/wsl/releases/noble/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz` | `8251e27ffff381a4af5f41dcb94d867de3e0d9774a9241908ab34555d99315ea` |
 | Sysbox CE 0.7.1 amd64 | `https://github.com/nestybox/sysbox/releases/download/v0.7.1/sysbox-ce_0.7.1.linux_amd64.deb` | `9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5` |
-| actions-runner 2.338.0 linux-x64 | `https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz` | `af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32` |
+| actions-runner 2.338.2 linux-x64 | `https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz` | `baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40` |
 
 The rootfs tarball is downloaded into the staging directory beside the VHDX (`C:\wsl\staging` on a normal install). That directory is locked to SYSTEM and Administrators after `staging.sha256` matches, and the tarball sha256 is checked on that copy. `wsl --import` receives that `C:\` path. Importing from `\\wsl.localhost\<the operator distro>\...` stalls, so that path is refused. Staging stays in place so a re-run can hash it again. The import prints `importing aap-runner (this takes ~1-2 min)...` and is limited to 15 minutes; a timeout stops the install. The distro VHDX is created at `C:\aap-runner` (override with `-InstallDir`). That path is outside the Windows user profile. After import the distro cannot mount it back.
 
@@ -423,7 +423,7 @@ wsl.exe -d aap-runner -u root -- tee "${img}/ephemeral-entry.sh" < distro/epheme
 wsl.exe -d aap-runner -u root -- docker build -t aap-crrr-runner:local "${img}"
 ```
 
-The build runs `apt full-upgrade` for the unpinned packages (`curl`, `git`, `openssl`, `mysql-client`, `ca-certificates`). `docker-ce` stays at the Dockerfile pin `5:27.3.1` until that pin is changed on purpose. The actions-runner tarball is pinned too; `--disableupdate=false` still lets the runner binary update when a job starts. After the build, run the Sysbox preflight above before the manager takes another job. Rebuilding the image does not recreate the VHDX and does not unregister the distro.
+The build runs `apt full-upgrade` for the unpinned packages (`curl`, `git`, `openssl`, `mysql-client`, `ca-certificates`). `docker-ce` stays at the Dockerfile pin `5:27.3.1` until that pin is changed on purpose. The actions-runner tarball is pinned too; `--disableupdate` stops the runner binary updating itself when a job starts, so the pin has to be moved to a version GitHub still accepts. After the build, run the Sysbox preflight above before the manager takes another job. Rebuilding the image does not recreate the VHDX and does not unregister the distro.
 
 ## Evidence
 

@@ -58,7 +58,12 @@ if command -v systemd-analyze >/dev/null 2>&1; then
     "${sd}/aap-runner-manager.service" "${sd}/aap-workdisk.service" \
     "${sd}/docker.service" "${sd}/sysbox.service" "${sd}/sysbox-mgr.service" 2>&1) || rc=$?
   rm -rf "${sd}"
-  [[ "${rc}" -eq 0 && -z "${out}" ]] || fail "systemd-analyze verify (exit ${rc}): ${out}"
+  # The OS's own units get checked too, and newer systemd prints deprecation
+  # warnings about them (CPUAccounting= on xfs_scrub, walinuxagent). Those lines
+  # start with the OS unit directory; they are not ours and are dropped. Anything
+  # else, including every message about our units, still fails.
+  ours=$(printf '%s\n' "${out}" | grep -Ev '^(/usr)?/lib/systemd/|^/etc/systemd/' || true)
+  [[ "${rc}" -eq 0 && -z "${ours}" ]] || fail "systemd-analyze verify (exit ${rc}): ${ours}"
   echo "systemd-analyze verify ok"
 else
   echo "systemd-analyze verify skipped: systemd-analyze is not installed"
