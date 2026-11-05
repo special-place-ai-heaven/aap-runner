@@ -1,0 +1,24 @@
+name: runner-clock-probe
+# Manual check of the runner VM's wall clock: samples realtime and boottime every 100 ms for
+# 30 minutes on every pool slot at once and fails on any backward realtime step or a drift
+# change of 100 ms or more (distro/clock-probe.sh). All aap-crrr-* containers share the WSL2
+# VM's one kernel clock, so the slots also load the VM while it is measured. Dispatch only:
+# it checks out this repository's own default branch, never pull request code.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3, 4, 5]
+    runs-on: [self-hosted, linux, x64, fresh]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Clock probe (30 minutes)
+        run: bash distro/clock-probe.sh 1800
