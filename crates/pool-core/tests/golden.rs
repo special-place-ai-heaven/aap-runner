@@ -15,7 +15,8 @@ fn field<'a>(header: &'a [(&'a str, &'a str)], key: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no {key}"))
 }
 
-/// Fields are parsed in the order manager.sh checks them, so the first refusal matches. A bad
+/// Fields are parsed in the order manager.sh validates them, so among field refusals the first
+/// one matches. Split and IO refusals come from `docker_args`, after every field parsed. A bad
 /// measurement or device is no cap, as in the `aap-pool limits` command line.
 fn settings(header: &[(&str, &str)]) -> Result<PoolSettings, LimitsError> {
     let opt = |key: &str| Some(field(header, key)).filter(|v| *v != "none");
@@ -45,8 +46,9 @@ fn kind(e: &LimitsError) -> &'static str {
         LimitsError::MemoryTooLargeToSplit(_) => "memory-too-large",
         LimitsError::SlotTooSmall { .. } => "slot",
         LimitsError::SlotIoTooLow { .. } => "slot-io",
-        // Parsed leniently above; never a refusal.
-        LimitsError::InvalidDiskMibps(_) | LimitsError::InvalidIoDevice(_) => "lenient",
+        LimitsError::InvalidDiskMibps(_) | LimitsError::InvalidIoDevice(_) => {
+            unreachable!("parsed leniently in settings(), never a refusal")
+        }
     }
 }
 

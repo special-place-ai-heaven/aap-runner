@@ -23,8 +23,7 @@ source "${here}/../distro/manager.sh"
 bound_sccache_tree() { :; }
 install() { :; }
 fake_src=""
-findmnt() { printf '%s
-' "${fake_src}"; }
+findmnt() { printf '%s\n' "${fake_src}"; }
 lsblk() { :; }
 docker() {
   [[ "$1" == create ]] || return 0
@@ -134,7 +133,8 @@ generate() {
     done
   done
   # Cpu extremes and invalid cpu values.
-  for cpus in 0 0.0 0.000001 000006 0000000006 6.0000000 0000999999999.9999990 999999999     999999999.999999; do
+  for cpus in 0 0.0 0.000001 000006 0000000006 6.0000000 0000999999999.9999990 999999999 \
+    999999999.999999; do
     for n in 1 2 3 5; do
       for sharing in slice fixed; do
         run_case "${n}" "${cpus}" 1024g 4096 "${sharing}" 90 none none

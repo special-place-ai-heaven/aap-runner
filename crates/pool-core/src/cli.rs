@@ -19,7 +19,7 @@ USAGE:
 limits prints the docker resource arguments of one job container, one argument per
 line, exactly as distro/manager.sh passes them to `docker create`. From bash, check the
 exit code before using the output (a process substitution would hide a refusal):
-    out=$(aap-pool limits --runners 2 --sharing fixed) || return 1
+    out=$(aap-pool limits --runners 2 --sharing fixed) || return 1  # exit 1 outside a function
     mapfile -t lim <<< \"${out}\"
 
 OPTIONS (defaults are the manager.sh defaults):
@@ -41,6 +41,7 @@ OPTIONS (defaults are the manager.sh defaults):
 
 EXIT: 0 success; 2 invalid option or value, or the pool is refused (slot under
 1 cpu or 1g, slot under 10 MiB/s); one line on stderr, nothing on stdout; 1 stdout write failed.
+A bad --disk-mibps or --io-device still exits 0 and prints one 'io cap disabled' line on stderr.
 ";
 
 /// Runs the command line (without the program name) and returns the exit code.
@@ -61,7 +62,7 @@ fn limits<I>(args: I, out: &mut impl Write, err: &mut impl Write) -> u8
 where
     I: Iterator<Item = String>,
 {
-    let settings = match parse_limits_args(args) {
+    let settings = match parse_limits_args(args, err) {
         Ok(None) => return write_or_exit(out, HELP),
         Ok(Some(s)) => s,
         Err(msg) => return fail(err, &msg),
@@ -76,7 +77,7 @@ where
 }
 
 /// The settings, or `None` when help was asked for.
-fn parse_limits_args<I>(mut args: I) -> Result<Option<PoolSettings>, String>
+fn parse_limits_args<I>(mut args: I, err: &mut impl Write) -> Result<Option<PoolSettings>, String>
 where
     I: Iterator<Item = String>,
 {
@@ -94,12 +95,26 @@ where
             "--sharing" => s.sharing = value()?.parse().map_err(bad)?,
             "--io-percent" => s.io.percent = value()?.parse().map_err(bad)?,
             // manager.sh drops the IO cap, never the pool, for a bad measurement or device.
-            "--disk-mibps" => s.io.disk_mibps = value()?.parse().ok(),
-            "--io-device" => s.io.device = value()?.parse().ok(),
+            "--disk-mibps" => s.io.disk_mibps = io_input(&value()?, err),
+            "--io-device" => s.io.device = io_input(&value()?, err),
             other => return Err(format!("unknown option '{other}'; try --help")),
         }
     }
     Ok(Some(s))
+}
+
+/// A bad IO input drops the cap and says so on stderr, as manager.sh logs "io cap disabled".
+fn io_input<T>(raw: &str, err: &mut impl Write) -> Option<T>
+where
+    T: std::str::FromStr<Err = crate::limits::LimitsError>,
+{
+    match raw.parse() {
+        Ok(v) => Some(v),
+        Err(e) => {
+            let _ = writeln!(err, "aap-pool: io cap disabled: {e}");
+            None
+        }
+    }
 }
 
 fn write_or_exit(out: &mut impl Write, text: &str) -> u8 {
@@ -163,11 +178,7 @@ mod tests {
     #[test]
     fn a_stray_word_is_an_unknown_option() {
         let (_, _, err) = run_args(&["limits", "foo"]);
-        assert_eq!(
-            err,
-            "aap-pool: unknown option 'foo'; try --help
-"
-        );
+        assert_eq!(err, "aap-pool: unknown option 'foo'; try --help\n");
     }
 
     #[test]
@@ -188,8 +199,16 @@ mod tests {
             &["--disk-mibps", "1000", "--io-device", "tmpfs"],
             &["--disk-mibps", "1000", "--io-device", ""],
         ] {
-            let got = run_args(&[&["limits"][..], &capped, extra].concat());
-            assert_eq!(got, no_cap, "{extra:?}");
+            let (code, out, err) = run_args(&[&["limits"][..], &capped, extra].concat());
+            assert_eq!(
+                (code, out.as_str()),
+                (no_cap.0, no_cap.1.as_str()),
+                "{extra:?}"
+            );
+            assert!(
+                err.starts_with("aap-pool: io cap disabled: ") && err.matches('\n').count() == 1,
+                "{extra:?}: {err}"
+            );
         }
         let (code, out, _) = run_args(
             &[
@@ -200,14 +219,7 @@ mod tests {
             .concat(),
         );
         assert_eq!(code, 0);
-        assert!(
-            out.contains(
-                "--device-read-bps
-/dev/sde:500mb
-"
-            ),
-            "{out}"
-        );
+        assert!(out.contains("--device-read-bps\n/dev/sde:500mb\n"), "{out}");
     }
 
     #[test]
