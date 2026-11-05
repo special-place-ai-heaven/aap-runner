@@ -1,0 +1,18 @@
+[package]
+name = "aap-pool-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+description = "Control-plane logic for the AAP runner pool, ported from distro/manager.sh one verified slice at a time."
+
+[lib]
+name = "aap_pool_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aap-pool"
+path = "src/main.rs"
+
+# std only: the first slice is pure arithmetic and string grammar.
+[dependencies]
