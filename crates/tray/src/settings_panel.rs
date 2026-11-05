@@ -564,11 +564,15 @@ fn windows_line(
     host: Option<&ProfileV5>,
 ) -> WindowsLine {
     if let Some(h) = host {
+        // The line keeps only the state word ("stopped"); the reason, up to 200 characters,
+        // goes to the hover tip so it cannot widen the column.
+        let state = h.host_state();
+        let word = state.split(':').next().unwrap_or_default();
         return WindowsLine {
-            text: format!("{HOST_RUNNER_NAME} \u{b7} {}", h.host_state()),
+            text: format!("{HOST_RUNNER_NAME} \u{b7} {word}"),
             tip: format!(
-                "{HOST_RUNNER_WARNING} It is outside the counts above, which wait for the native \
-                 Windows backend."
+                "{state}. {HOST_RUNNER_WARNING} It is outside the counts above, which wait for \
+                 the native Windows backend."
             ),
         };
     }
@@ -942,8 +946,30 @@ mod tests {
         for windows in [0, 2] {
             let w = windows_line(&e, windows, &vm, v.windows_host());
             assert_eq!(w.text, "interim runner on this PC \u{b7} busy");
-            assert!(w.tip.starts_with(HOST_RUNNER_WARNING), "{}", w.tip);
+            assert!(w.tip.starts_with("busy. "), "{}", w.tip);
+            assert!(w.tip.contains(HOST_RUNNER_WARNING), "{}", w.tip);
         }
+    }
+
+    #[test]
+    fn a_stopped_reason_goes_to_the_tip_not_the_line() {
+        let vm = VmLimit::ASSUMED;
+        let e = edited(&Settings::default(), 3, 0, false, &vm);
+        let reason = "x".repeat(200);
+        let json = crate::state::fixture("status-v5/valid/windows-host-busy.json");
+        let now = crate::state::parse_rfc3339("2026-10-19T18:01:00Z").unwrap();
+        let mut v = crate::state::parse_status_v5(&json, now).unwrap();
+        let host = v
+            .profiles
+            .iter_mut()
+            .find(|p| p.backend == "windows-host")
+            .unwrap();
+        host.available = false;
+        host.host_runner = Some("stopped".into());
+        host.unavailable_reason = reason.clone();
+        let w = windows_line(&e, 0, &vm, v.windows_host());
+        assert_eq!(w.text, "interim runner on this PC \u{b7} stopped");
+        assert!(w.tip.contains(&reason), "{}", w.tip);
     }
 
     #[test]
