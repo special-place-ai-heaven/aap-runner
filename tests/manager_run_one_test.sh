@@ -86,7 +86,8 @@ pair --pids-limit 8192
 pair --cpu-shares 512
 pair --label aap-crrr-job=1
 pair --label aap-crrr-slot=2
-pair --env AAP_ZCCACHE_BUDGET_BYTES=9663676416
+# 9216 MiB pool budget over AAP_RUNNER_COUNT=3 slots.
+pair --env AAP_ZCCACHE_BUDGET_BYTES=3221225472
 for a in "${argv[@]}"; do
   [[ "${a}" != --mount && "${a}" != --mount=* ]] || fail "docker create has a bind mount"
   [[ "${a}" != *SCCACHE* && "${a}" != *sccache* && "${a}" != RUSTC_WRAPPER* && "${a}" != *=RUSTC_WRAPPER* ]] || fail "docker create still carries sccache wiring: ${a}"

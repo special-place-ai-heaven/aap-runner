@@ -42,7 +42,7 @@ done
 echo "staging ok"
 
 # No maintained sccache wiring: the image, the manager and the entrypoint.
-if grep -niE 'sccache' "${dockerfile}" "${root}/distro/manager.sh" "${root}/distro/ephemeral-entry.sh" "${root}/distro/manager.conf.example" | grep -viE 'is not installed|the old'; then
+if grep -niE 'sccache' "${dockerfile}" "${root}/distro/manager.sh" "${root}/distro/ephemeral-entry.sh" "${root}/distro/manager.conf.example" | grep -viE 'is not installed|the old|remove_legacy_sccache_tree'; then
   fail "sccache is still mentioned in the distro runtime files"
 fi
 echo "no sccache wiring ok"

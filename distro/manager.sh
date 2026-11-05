@@ -88,9 +88,10 @@ SLOT_FAST_SECONDS=120
 # (guests/cache/INTEGRATION.md), so nothing is shared between jobs and no host
 # directory is mounted. The entrypoint gives the root this budget; at the
 # budget the shim stops using the root, it never deletes cache files. The root
-# goes with `docker rm -f -v`. finish_disk_bounds sets the budget to 15% of
-# AAP_WORK_DISK_GIB, at most 10240 MiB (the old per-directory limit);
-# 9216 MiB is 15% of the default 60 GiB.
+# goes with `docker rm -f -v`. finish_disk_bounds sets the pool's budget to
+# 15% of AAP_WORK_DISK_GIB, at most 10240 MiB (the old shared-tree limit);
+# 9216 MiB is 15% of the default 60 GiB. Each job root gets 1/AAP_RUNNER_COUNT
+# of it, so all the slots together stay inside the 15%.
 ZCCACHE_BUDGET_MB=9216
 # Interface for the Windows-side supervisor (wsl -d aap-runner -u root --).
 # ${RUN_DIR}/drain stops new jobs; ${RUN_DIR}/status.json reports the pool.
@@ -1199,7 +1200,7 @@ run_one() {
     --env "AAP_RUNNER_GROUP=${AAP_RUNNER_GROUP}" \
     --env "AAP_WORK_DISK_GIB=${AAP_WORK_DISK_GIB}" \
     --env "AAP_DISK_FLOOR_GB=${AAP_DISK_FLOOR_GB}" \
-    --env "AAP_ZCCACHE_BUDGET_BYTES=$((ZCCACHE_BUDGET_MB * 1024 * 1024))" \
+    --env "AAP_ZCCACHE_BUDGET_BYTES=$((ZCCACHE_BUDGET_MB / AAP_RUNNER_COUNT * 1024 * 1024))" \
     "${AAP_RUNNER_IMAGE}"; then
     docker network rm "${net}" || true
     return 1
@@ -1850,6 +1851,15 @@ remove_slot_containers() {
   done < <(docker ps -aq --filter label=aap-crrr-job=1 --filter "label=aap-crrr-slot=$1")
 }
 
+# The old sccache tree the manager kept on the work disk before zccache. Nothing
+# mounts it any more; it is a cache, so it is removed, once, at pool start.
+remove_legacy_sccache_tree() {
+  local dir=${WORK_MOUNT}/sccache # the old tree
+  [[ -d "${dir}" ]] || return 0
+  echo "removing the old sccache tree ${dir}; zccache keeps a private root per job"
+  rm -rf --one-file-system "${dir}" || echo "could not remove ${dir} fully; it is no longer used" >&2
+}
+
 remove_job_containers() {
   local stale
   while IFS= read -r stale; do
@@ -2160,6 +2170,7 @@ main() {
   load_config
   check_key
   remove_job_containers
+  remove_legacy_sccache_tree
   resolve_io_device
   setup_pool_sharing
   echo "runner pool: ${AAP_RUNNER_COUNT} slot(s), sharing ${AAP_POOL_SHARING}, share --cpus ${SLOT_CPUS} --memory ${SLOT_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT} io ${SLOT_IO_MBPS:-0} MiB/s on ${IO_DEVICE:-none}"

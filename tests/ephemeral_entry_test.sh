@@ -64,7 +64,14 @@ echo "missing budget ok"
 if grep -qiE 'sccache|RUSTC_WRAPPER' "${entry}"; then
   fail "ephemeral-entry.sh still mentions sccache or RUSTC_WRAPPER"
 fi
-grep -q -- '--whitelist-environment=AAP_WORK_DISK_GIB,AAP_DISK_FLOOR_GB \\$' "${entry}" || fail "the run.sh whitelist is not the two disk bounds"
+# --whitelist-environment only filters with --login; runuser -u keeps the environment.
+if grep -q -- '--whitelist-environment' "${entry}"; then
+  fail "ephemeral-entry.sh passes --whitelist-environment, which does nothing without --login"
+fi
+unset_line=$(grep -n '^unset reg_token AAP_RUNNER_REG_TOKEN$' "${entry}" | cut -d: -f1)
+run_line=$(grep -n '^exec runuser -u runner -- bash -c' "${entry}" | cut -d: -f1)
+[[ -n "${unset_line}" && -n "${run_line}" && "${unset_line}" -lt "${run_line}" ]] \
+  || fail "the token is not unset before run.sh inherits the environment"
 grep -qF "' bash \"\${ZC_ROOT}/state/runner.env\"" "${entry}" || fail "run.sh is not started with runner.env"
 grep -qF '. "$1"' "${entry}" || fail "runner.env is not loaded before run.sh"
 echo "runner environment ok"
