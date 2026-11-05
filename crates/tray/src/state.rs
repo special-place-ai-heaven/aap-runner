@@ -451,8 +451,8 @@ pub struct CapacityV5 {
     pub host: Res,
 }
 
-/// One runner profile: `linux` or `windows`, its backend (`wsl-legacy`, `hyperv-vm` or `none`),
-/// its count and share, and the caps the allocator gives it.
+/// One runner profile: `linux` or `windows`, its backend (`wsl-legacy`, `hyperv-vm`,
+/// `windows-host` or `none`), its count and share, and the caps the allocator gives it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ProfileV5 {
     pub profile: String,
@@ -466,6 +466,26 @@ pub struct ProfileV5 {
     pub generation_state: Option<String>,
     pub available: bool,
     pub unavailable_reason: String,
+    /// `online`, `busy` or `stopped`, present exactly with `backend: windows-host`.
+    #[serde(default)]
+    pub host_runner: Option<String>,
+}
+
+/// The Windows row's name for `backend: windows-host` (status-settings.md, Windows host).
+pub const HOST_RUNNER_NAME: &str = "interim runner on this PC";
+/// The one warning line beside it.
+pub const HOST_RUNNER_WARNING: &str =
+    "Unisolated: jobs run directly on this PC (owner accepted 2026-10-20).";
+
+impl ProfileV5 {
+    /// The interim runner's state: `online`, `busy`, or `stopped` and the missing piece.
+    pub fn host_state(&self) -> String {
+        match self.host_runner.as_deref() {
+            Some(s @ ("online" | "busy")) => s.into(),
+            _ if self.unavailable_reason.is_empty() => "stopped".into(),
+            _ => format!("stopped: {}", self.unavailable_reason),
+        }
+    }
 }
 
 /// One slot of any backend. `run_url` and `job_url` go through [`valid_run_url`] and
@@ -502,6 +522,12 @@ pub struct StatusV5 {
 impl StatusV5 {
     pub fn profile(&self, name: &str) -> Option<&ProfileV5> {
         self.profiles.iter().find(|p| p.profile == name)
+    }
+
+    /// The Windows profile while it is the interim runner on this PC.
+    pub fn windows_host(&self) -> Option<&ProfileV5> {
+        self.profile("windows")
+            .filter(|p| p.backend == "windows-host")
     }
 
     /// The supervisor reads settings schema 3, so the tray may write it.
@@ -1018,6 +1044,7 @@ mod tests {
             "mixed-five-slots",
             "storage-missing-and-untrusted",
             "storage-unconfigured",
+            "windows-host-busy",
         ] {
             let v = parse_status_v5(&fixture(&format!("status-v5/valid/{name}.json")), now)
                 .expect(name);
@@ -1041,6 +1068,39 @@ mod tests {
         assert_eq!(v.slots[3].os, "Windows");
         assert_eq!(v.slots[3].backend, "hyperv-vm");
         assert!(valid_run_url(&v.slots[0].run_url));
+        assert!(
+            v.windows_host().is_none(),
+            "a VM profile is not the interim runner"
+        );
+    }
+
+    #[test]
+    fn status_v5_reads_the_interim_windows_runner() {
+        let now = at("2026-10-19T18:01:00Z");
+        let good = fixture("status-v5/valid/windows-host-busy.json");
+        let v = parse_status_v5(&good, now).unwrap();
+        let h = v.windows_host().expect("windows-host");
+        assert_eq!((h.count, h.available), (0, true));
+        assert_eq!(h.host_runner.as_deref(), Some("busy"));
+        assert_eq!(h.host_state(), "busy");
+        let online = good.replace(r#""host_runner": "busy""#, r#""host_runner": "online""#);
+        assert_eq!(
+            parse_status_v5(&online, now)
+                .unwrap()
+                .windows_host()
+                .unwrap()
+                .host_state(),
+            "online"
+        );
+        let stopped = good.replace(
+            "\"unavailable_reason\": \"\",\n      \"host_runner\": \"busy\"",
+            "\"unavailable_reason\": \"runner listener not running\",\n      \"host_runner\": \"stopped\"",
+        );
+        let v = parse_status_v5(&stopped, now).unwrap();
+        assert_eq!(
+            v.windows_host().unwrap().host_state(),
+            "stopped: runner listener not running"
+        );
     }
 
     #[test]

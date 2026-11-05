@@ -9,9 +9,12 @@ use crate::mark::Sym;
 use crate::settings::{
     self, HOST_CPUS, HOST_GIB, IO_PERCENT, Os, Settings, Sharing, VmLimit, WINDOWS_BACKEND,
 };
-use crate::state::{Applied, Desired, Snapshot, Status};
+use crate::state::{
+    Applied, Desired, HOST_RUNNER_NAME, HOST_RUNNER_WARNING, ProfileV5, Snapshot, Status,
+};
 use eframe::egui::{self, Align, FontId, Key, Layout, RichText, Sense, Stroke, StrokeKind, vec2};
 use std::path::Path;
+use std::time::SystemTime;
 
 /// Left-column label width ("Windows", "Sharing").
 const LABEL_W: f32 = 64.0;
@@ -33,6 +36,8 @@ pub struct SettingsPanel {
     sharing: Sharing,
     vm: VmLimit,
     write_error: Option<String>,
+    /// The Windows profile while `status.v5.json` reports the interim runner on this PC.
+    host: Option<ProfileV5>,
 }
 
 /// What the window needs from the left column for keyboard focus (F6, `--settings`).
@@ -61,6 +66,7 @@ impl SettingsPanel {
             sharing: stored.sharing,
             vm: VmLimit::read(),
             write_error: None,
+            host: read_host(base),
         }
     }
 
@@ -68,9 +74,15 @@ impl SettingsPanel {
     pub fn reload(&mut self, base: &Path) {
         let follow = self.changes() == 0;
         self.stored = settings::read_with_windows_choice(base);
+        self.host = read_host(base);
         if follow {
             self.revert();
         }
+    }
+
+    /// The interim Windows runner on this PC, while the supervisor reports it.
+    pub fn host(&self) -> Option<&ProfileV5> {
+        self.host.as_ref()
     }
 
     /// The stored Windows count (the cards show it; nothing runs it yet).
@@ -250,7 +262,7 @@ impl SettingsPanel {
         // after the input event.
         let edit = self.edit();
         let linux = linux_line(&edit, &vm);
-        let windows = windows_line(&edit, self.windows, &vm);
+        let windows = windows_line(&edit, self.windows, &vm, self.host.as_ref());
         // A stored schema 3 file is the supervisor's word that it runs Windows: Linux may be 0.
         let backend = WINDOWS_BACKEND || self.stored.schema >= 3;
         let fits_linux = settings::count_range(Os::Linux, self.windows, backend);
@@ -529,7 +541,15 @@ fn linux_line(edit: &Settings, vm: &VmLimit) -> LinuxLine {
     }
 }
 
-/// The Windows line: `not installed`, and with Windows runners chosen the prospective even
+/// `status.v5.json`'s Windows profile while it is the interim runner on this PC.
+fn read_host(base: &Path) -> Option<ProfileV5> {
+    crate::state::read_status_v5(base, SystemTime::now())?
+        .windows_host()
+        .cloned()
+}
+
+/// The Windows line: the interim runner and its state while the supervisor reports it, else
+/// `not installed`, and with Windows runners chosen the prospective even
 /// share each would get, `not installed · 5 CPU 14 GiB`. Prospective only: nothing is written
 /// for Windows and the Linux pool keeps the whole caps while no backend exists.
 struct WindowsLine {
@@ -537,7 +557,21 @@ struct WindowsLine {
     tip: String,
 }
 
-fn windows_line(edit: &Settings, windows: u32, vm: &VmLimit) -> WindowsLine {
+fn windows_line(
+    edit: &Settings,
+    windows: u32,
+    vm: &VmLimit,
+    host: Option<&ProfileV5>,
+) -> WindowsLine {
+    if let Some(h) = host {
+        return WindowsLine {
+            text: format!("{HOST_RUNNER_NAME} \u{b7} {}", h.host_state()),
+            tip: format!(
+                "{HOST_RUNNER_WARNING} It is outside the counts above, which wait for the native \
+                 Windows backend."
+            ),
+        };
+    }
     if windows == 0 {
         return WindowsLine {
             text: "not installed".into(),
@@ -887,15 +921,29 @@ mod tests {
             (l.each, l.total),
             ("8.7 CPU 24 GiB".into(), "of 26/72".into())
         );
-        let w = windows_line(&e, 2, &vm);
+        let w = windows_line(&e, 2, &vm, None);
         assert_eq!(w.text, "not installed \u{b7} 5 CPU 14 GiB");
         assert!(w.tip.starts_with("Prospective"), "{}", w.tip);
         assert!(w.tip.contains("10 CPU 28 GiB of 26/72"), "{}", w.tip);
-        let w = windows_line(&e, 0, &vm);
+        let w = windows_line(&e, 0, &vm, None);
         assert_eq!(
             (w.text.as_str(), w.tip.as_str()),
             ("not installed", WINDOWS_INERT)
         );
+    }
+
+    #[test]
+    fn windows_line_names_the_interim_runner_and_warns() {
+        let vm = VmLimit::ASSUMED;
+        let e = edited(&Settings::default(), 3, 2, false, &vm);
+        let json = crate::state::fixture("status-v5/valid/windows-host-busy.json");
+        let now = crate::state::parse_rfc3339("2026-10-19T18:01:00Z").unwrap();
+        let v = crate::state::parse_status_v5(&json, now).unwrap();
+        for windows in [0, 2] {
+            let w = windows_line(&e, windows, &vm, v.windows_host());
+            assert_eq!(w.text, "interim runner on this PC \u{b7} busy");
+            assert!(w.tip.starts_with(HOST_RUNNER_WARNING), "{}", w.tip);
+        }
     }
 
     #[test]

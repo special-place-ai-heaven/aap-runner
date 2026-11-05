@@ -1,4 +1,4 @@
-# Status and settings contract (settings schema 3 and status schema 5, revision 3)
+# Status and settings contract (settings schema 3 and status schema 5, revision 4)
 
 Owners: **P12** (supervisor side, `supervisor/README.md`, both-side tests) and **P20** (tray).
 Readers: P19, P22. Schemas: [`settings-v3.schema.json`](settings-v3.schema.json),
@@ -11,6 +11,10 @@ compatibility rules below. The versioned docs are `supervisor/README.md` (Contra
 
 Revision 2 (P02.2, 2026-10-20): `status.v5.json` reports the storage tiers; settings schema 3 is
 unchanged and carries no path.
+
+Revision 4 (R2 slice 1, 2026-11-05): the Windows profile may report `backend: windows-host`, the
+interim runner installed on this PC itself (`docs/ROADMAP.md`, R2); see Windows host below. Report
+only: settings schema 3 is unchanged and nothing starts or stops it.
 
 ## Before P12 (what an older supervisor or tray still does)
 
@@ -102,6 +106,24 @@ with the codes `owner`, `acl`, `reparse`, `ancestor`, `drive-type`, `volume`, `m
 (schema-enforced). It never carries an ACE dump or a path; the full reason goes to
 `logs\supervisor.log`. The tray reads at most 64 KiB of `status.v5.json`.
 
+## Windows host in status schema 5 (revision 4)
+
+The interim runner (`FRESH-win-interim`, group `aap-win-interim`) runs from its install folder on
+this PC under the owner's limited, non-elevated logon task `\AAP-Win-Interim-Runner`, unisolated
+(owner accepted 2026-10-20). While its install folder exists and no Windows VM backend is loaded, the
+supervisor reports the Windows profile as `backend: windows-host` with `host_runner`, which is present
+exactly then:
+
+| `host_runner` | Meaning | `available` |
+|---|---|---|
+| `online` | the logon task is running and `Runner.Listener.exe` from the install folder runs; no job | true |
+| `busy` | as `online`, and `Runner.Worker.exe` from the install folder runs a job | true |
+| `stopped` | the task is missing or not running, or no listener runs; `unavailable_reason` names the missing piece | false |
+
+`count` and `share_percent` stay what the settings give: the interim runner is outside the five
+pool slots, so it adds no slot and no count. With no install folder the Windows profile reports what
+it did before revision 4. `windows-host` is never the Linux profile's backend.
+
 ## Allocator reasons in status detail (DECIDED, P09 review 2026-10-20)
 
 When the allocator holds back, the top-level `detail` of `status.v5.json` starts with a fixed
@@ -140,4 +162,5 @@ below the floor reported `ok`, a UNC root, unconfigured storage that lists tiers
 twice or not at all, a `missing` tier with free space, a tier above the floor reported `low`, an
 overall `ok` beside a `low` tier, and a storage detail carrying an ACE dump. Valid storage examples:
 unconfigured (VM profile unavailable), and `missing` with an `untrusted` tier that reports free
-space and one that cannot. Tray-local: count 5, schema 2, a string, a missing count.
+space and one that cannot. Windows host (revision 4): `windows-host` on the Linux profile, `host_runner` beside
+another backend, a `stopped` runner reported available; valid: a busy interim runner. Tray-local: count 5, schema 2, a string, a missing count.
