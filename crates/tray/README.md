@@ -48,6 +48,14 @@ admin-written.
   that times the Linux count (3 Linux + 2 Windows on 26 / 72 caps: 5 CPUs and 14 GiB each, Linux
   15 / 42). The window shows that even share for Windows now, marked prospective. With Windows 0
   the file is exactly what it was before.
+- Settings schema 4 (R1 tiers, [`settings-v4.schema.json`](../../parity/contracts/settings-v4.schema.json)):
+  over a stored valid schema 4 file, or while a fresh `status.v5.json` lists 4, Apply and
+  Pause/Resume write schema 4 (`linux_light_count` 0..10, `linux_heavy_count` 0..2 instead of
+  `runner_count`, every other schema 3 key kept as below; the totals stay as stored, they are the
+  Windows runners' and the tiers carry the Linux limits); never schema 3 or 2 over a stored schema 4
+  file. Otherwise the tray writes exactly what it wrote before: the Light count is the schema 2/3
+  Linux count (1..5 with Windows, at most 5 together) and a Heavy count is refused. A schema 3 file is
+  carried into schema 4 (its Linux count as the light count) once `status.v5.json` lists 4.
 - Settings schema 3: over a stored schema 3 file, or while a fresh `status.v5.json` lists 3 (a
   supervisor with the capacity module), Apply and Pause/Resume write schema 3 instead, with every
   key; never schema 2 over a stored schema 3 file, also while `status.v5.json` is stale (a
@@ -108,9 +116,14 @@ addendum of the design doc.
 
 - **Left column:** `Power On/Off` (the desired state from `inbox\state.json`), `Start`/`Stop` and
   `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Then the edits: Linux
-  `0 | 1 | 2 | 3 | 4 | 5` with one line `Each 8.7 CPU 24 GiB of 26/72` (each runner's share and
-  the written totals; the tooltip shows the totals against the caps and that the host keeps
-  2 CPU 8 GiB) and a muted `now 3 · 8.7 CPU 24 GiB` line from `status.json`; Windows
+  `Light | Heavy` (which tier the picker edits; Heavy is greyed with a tooltip until the tray may
+  write settings schema 4) with a muted `now 3` from `status.json` (the tooltip has
+  `now 3 · 8.7 CPU 24 GiB`), the one count picker under it, labelled with the tier's glyph and name
+  (light `0 | 1 | … | 10`, heavy `0 | 1 | 2`; before schema 4 light cells above the budget the
+  Windows row leaves are greyed as before), and one line `Each 8.7 CPU 24 GiB of 26/72` (each
+  runner's share and the written totals; the tooltip shows the totals against the caps and that the
+  host keeps 2 CPU 8 GiB), under schema 4 the tier table instead (`Each 1 CPU 3 GiB cap 4/8`,
+  `Each 8 CPU 20 GiB may burst`); Windows
   `0 | … | 5` with one amber line `not installed · 5 CPU 14 GiB` (the prospective even share; the
   tooltip says it is prospective and that nothing starts), the row's tooltip carrying the full
   `Windows backend not installed — coming with the native Windows runner` note. Cells above the
@@ -125,11 +138,13 @@ addendum of the design doc.
   `IO cap N pool` / `IO cap M each` (one cap known), `sampled N s ago`) with narrower tracks.
   All rows are fixed height; there is no scroll area in the left column. The footer
   (Verify/Repair/Open logs) follows in the normal top-down flow after a fixed gap.
-  `SIZE[1]` = `MIN_SIZE[1]` = 760 px = max(left worst case 760, five-card right 702); a test keeps
+  `SIZE[1]` = `MIN_SIZE[1]` = 760 px = max(left worst case 760, tile grid right 524); a test keeps
   the left worst case at most 780 pt (1080p at 125 %);
   a new left-column row that does not fit grows SIZE[1], never adds a scrollbar.
 - **Profile identity:** Linux is a Tux-style penguin glyph in green, Windows the four-pane window
-  in blue (both painted, both themes; no image assets). The glyph and colour mark the row labels,
+  in blue (both painted, both themes; no image assets). The Linux tiers have their own painted
+  glyphs beside the penguin, also green: a kettlebell for heavy, a feather for light (picker label
+  and every tile). The glyph and colour mark the row labels,
   the header, the selected cell of each count row, and every card, which also has a 3 px left
   edge in its profile's colour. Every usage bar (pool Cores/Memory/Disk, card CPU/Mem, the
   60-minute Cores/Memory columns) stacks a green Linux segment then a blue Windows segment, with a
@@ -141,11 +156,16 @@ addendum of the design doc.
   status line for the current Verify/Repair job (format: `Verify · failed · exit 1` on failure,
   `Repair · running…` while active, `Verify · ok` on success; with a `· Open log`
   CollapsingHeader when log lines are available; log panel keyed on a fixed id, not the label text).
-  Then one compact card per runner, titled `Linux 1`… (every reported slot is the Linux manager's;
-  state and elapsed; `title · repo` on one line with the full
-  text in a tooltip and a copy button; CPU and Mem bars side by side), then one `Windows 1`…
-  placeholder per chosen Windows runner, same height, `Not installed` and `Starts nothing`, never
-  shown as running; five cards at most. Five cards fit the default window height without scrolling. The last 60 minutes follows below (scrolls at small sizes).
+  Then the Linux tiles, every slot always drawn, all one fixed size (60 px, two per row, six rows):
+  `Heavy 1`, `Heavy 2`, `Light 1` … `Light 10`, each with the penguin and tier glyphs, state and
+  elapsed on one row and `title · repo` (full text in a tooltip, copy button) or `Waiting for a job`
+  on the second; CPU and Mem against the slot's limit are in the state row's tooltip while a job
+  runs. A tile shows the status slot of the same number (status-settings.md Tiers: heavy 1..2,
+  light 3..12 under settings schema 4; before it slot N is `Light N` and the heavy tiles show none).
+  A tile no stored count chooses and no runner reports is fully grey and dim (`Not chosen`, or
+  `Needs settings schema 4` on the heavy tiles before it). Then one `Windows 1`… placeholder per
+  chosen Windows runner (unchanged, 102 px), `Not installed` and `Starts nothing`, never shown as
+  running. The tiles fit a 768 px work area; with two Windows cards they fit the default height. The last 60 minutes follows below (scrolls at small sizes).
 - **Error panel:** replaces the right column's cards, with `< Back to runners` on top. It opens by itself
   when the state enters an error class; the `1 problem` button, an error symbol, `--dashboard --problem`
   and a left click in an error state reopen it. It holds the one-liner, raw detail and since, the class's

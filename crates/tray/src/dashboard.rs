@@ -8,7 +8,7 @@
 use crate::history::{History, Sample, secs};
 use crate::mark::Sym;
 use crate::problem::{self, Action, Class};
-use crate::settings::Os;
+use crate::settings::{Os, Tier};
 use crate::settings_panel::SettingsPanel;
 use crate::state::{self, Desired, Slot, Snapshot, Status};
 use eframe::egui::{
@@ -118,9 +118,69 @@ fn cards_to_draw(slot_count: usize) -> usize {
     slot_count.min(*crate::settings::RUNNERS.end() as usize)
 }
 
-/// Windows placeholder cards after `linux` runner cards: the stored count, within five cards.
-fn windows_cards_to_draw(linux: usize, windows: u32) -> u32 {
-    windows.min(crate::settings::MAX_RUNNERS.saturating_sub(linux as u32))
+/// Windows placeholder cards after the Linux tiles: the stored count, at most five. The Linux
+/// tiles have their own grid, so they no longer take Windows room.
+fn windows_cards_to_draw(_linux: usize, windows: u32) -> u32 {
+    windows.min(*crate::settings::WINDOWS.end())
+}
+
+/// One always-drawn Linux tile: its tier and number in the tier, the status slot number it
+/// shows (status-settings.md Tiers: heavy 1..2, light 3..12 under settings schema 4; before it
+/// every slot is untiered and drawn as light 1..5, and the heavy tiles show none), and whether the
+/// stored counts choose it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LinuxTile {
+    tier: Tier,
+    n: u32,
+    slot: Option<u32>,
+    chosen: bool,
+}
+
+/// Heavy 1..2 then light 1..10, whatever the counts: every slot is drawn, the unchosen dimmed.
+fn linux_tiles(light: u32, heavy: u32, tiered: bool) -> Vec<LinuxTile> {
+    let heavy_max = *crate::settings::HEAVY.end();
+    let heavy_tiles = (1..=heavy_max).map(|n| LinuxTile {
+        tier: Tier::Heavy,
+        n,
+        slot: tiered.then_some(n),
+        chosen: tiered && n <= heavy,
+    });
+    let light_tiles = (1..=*crate::settings::LIGHT.end()).map(|n| LinuxTile {
+        tier: Tier::Light,
+        n,
+        slot: Some(if tiered { heavy_max + n } else { n }),
+        chosen: n <= light,
+    });
+    heavy_tiles.chain(light_tiles).collect()
+}
+
+/// Whether a tile is live (a count chooses it or a runner reports its slot; else grey and dim),
+/// and its second line while no job shows there.
+fn tile_look(t: LinuxTile, reported: bool) -> (bool, &'static str) {
+    match (t.chosen || reported, t.slot) {
+        (true, _) => (true, "Waiting for a job"),
+        (false, None) => (false, "Needs settings schema 4"),
+        (false, Some(_)) => (false, "Not chosen"),
+    }
+}
+
+/// `Heavy 1`, `Light 10`.
+fn tile_name(t: LinuxTile) -> String {
+    format!("{} {}", t.tier.name(), t.n)
+}
+
+/// What a tile's slot may use: the tier table under settings schema 4 (a heavy slot's
+/// reservation, it may burst; a light slot's hard cap), else the even share of the pool.
+fn tile_share(
+    t: LinuxTile,
+    tiered: bool,
+    even: (Option<f64>, Option<f64>),
+) -> (Option<f64>, Option<f64>) {
+    match (tiered, t.tier) {
+        (false, _) => even,
+        (true, Tier::Heavy) => (Some(8.0), Some(20.0)),
+        (true, Tier::Light) => (Some(4.0), Some(8.0)),
+    }
 }
 
 /// Per-profile usage `[linux, windows]` as fractions of `share`, stacked Linux first and
@@ -194,16 +254,28 @@ fn card_height() -> f32 {
         + 2.0 // frame border 1 px each side
 }
 
-fn right_column_height(slots: usize) -> f32 {
-    let n = cards_to_draw(slots);
+/// One Linux tile: the state row and the title row (both floored to INTERACT_H), the tile's
+/// margins and border. Every tile has this height, chosen or not.
+fn tile_height() -> f32 {
+    INTERACT_H + CARD_ITEM_GAP + CARD_TITLE_H + 2.0 * TILE_MARGIN_V as f32 + 2.0
+}
+
+/// The Linux grid: twelve tiles in two columns, six rows, `CARD_ITEM_GAP` apart.
+fn linux_grid_height() -> f32 {
+    let rows = 12_u32.div_ceil(TILE_COLUMNS) as f32;
+    rows * tile_height() + (rows - 1.0) * CARD_ITEM_GAP
+}
+
+/// The right column with the Linux grid and `windows` Windows cards below it.
+fn right_column_height(windows: u32) -> f32 {
     PAD // frame top inner margin
         + HEADER_H + CARD_ITEM_GAP // header row + auto spacing
         + AFTER_HEADER // explicit add_space(AFTER_HEADER)
         + JOB_LINE_H + CARD_ITEM_GAP // job status line + auto spacing
         + JOB_STEP_H + CARD_ITEM_GAP // step / reason row (always allocated) + auto spacing
         + PAUSED_LINE_H + 4.0 + 2.0 * CARD_ITEM_GAP // Paused label + add_space(4) + gaps
-        + n as f32 * card_height() // runner cards
-        + n.saturating_sub(1) as f32 * (CARD_ITEM_GAP + CARD_GAP_SPACE) // inter-card gaps
+        + linux_grid_height()
+        + windows as f32 * (CARD_ITEM_GAP + CARD_GAP_SPACE + card_height()) // Windows cards
         + PAD // frame bottom inner margin
 }
 
@@ -248,6 +320,12 @@ const CARD_TITLE_H: f32 = 24.0;
 const CARD_BARS_H: f32 = 18.0;
 /// Frame vertical inner-margin (each side) on a runner card.
 const CARD_MARGIN_V: i8 = 10;
+/// Frame vertical inner-margin (each side) on a compact Linux tile.
+const TILE_MARGIN_V: i8 = 3;
+/// Linux tiles per grid row.
+const TILE_COLUMNS: u32 = 2;
+/// Opacity of a tile the counts leave out: grey and dim, still legible.
+const TILE_DIM: f32 = 0.45;
 /// egui item_spacing.y, set explicitly in the right column for deterministic layout.
 const CARD_ITEM_GAP: f32 = 4.0;
 /// Explicit add_space between adjacent cards (CARD_ITEM_GAP auto-added on top).
@@ -277,7 +355,7 @@ pub(crate) const CAP_ERROR_H: f32 = 32.0;
 /// Minimum inner window size: tall enough for both columns to show without clipping.
 /// Height = left_column_height(true).max(right_column_height(5)) -- computed, never a literal.
 fn min_size() -> [f32; 2] {
-    [680.0, left_column_height(true).max(right_column_height(5))]
+    [680.0, left_column_height(true).max(right_column_height(0))]
 }
 
 const SCHTASKS: &str = r"C:\Windows\System32\schtasks.exe";
@@ -954,6 +1032,51 @@ pub fn os_glyph(ui: &mut egui::Ui, p: &Palette, os: Os, size: f32, hole: Color32
     a11y(&r, os.name().into());
 }
 
+/// A Linux tier glyph, painted like `paint_os` beside it: a kettlebell (handle ring over a round
+/// body) for heavy, a feather (vane with a `hole`-coloured shaft, quill below) for light.
+fn paint_tier(pt: &egui::Painter, rect: Rect, tier: Tier, color: Color32, hole: Color32) {
+    let s = rect.width();
+    let c = rect.center();
+    let at = |dx: f32, dy: f32| pos2(c.x + dx * s, c.y + dy * s);
+    match tier {
+        Tier::Heavy => {
+            pt.circle_stroke(
+                at(0.0, -0.24),
+                0.17 * s,
+                Stroke::new((0.09 * s).max(1.2), color),
+            );
+            pt.circle_filled(at(0.0, 0.14), 0.3 * s, color);
+            pt.rect_filled(
+                Rect::from_center_size(at(0.0, 0.42), vec2(0.4 * s, 0.08 * s)),
+                0.0,
+                color,
+            );
+        }
+        Tier::Light => {
+            let vane = vec![
+                at(-0.26, 0.26),
+                at(-0.2, -0.04),
+                at(0.02, -0.28),
+                at(0.4, -0.42),
+                at(0.28, -0.04),
+                at(0.04, 0.2),
+            ];
+            pt.add(Shape::convex_polygon(vane, color, Stroke::NONE));
+            let line = Stroke::new((0.07 * s).max(1.0), hole);
+            pt.line_segment([at(-0.2, 0.2), at(0.3, -0.32)], line);
+            let quill = Stroke::new((0.07 * s).max(1.0), color);
+            pt.line_segment([at(-0.42, 0.42), at(-0.24, 0.24)], quill);
+        }
+    }
+}
+
+/// The tier glyph in the Linux colour, `size` square, over a `hole`-coloured background.
+pub fn tier_glyph(ui: &mut egui::Ui, p: &Palette, tier: Tier, size: f32, hole: Color32) {
+    let (rect, r) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    paint_tier(ui.painter(), rect, tier, p.os(Os::Linux), hole);
+    a11y(&r, tier.name().into());
+}
+
 /// One state symbol, painted (never a font glyph): `s` = size, stroke `max(1.5, s/12)`.
 fn paint_sym(p: &egui::Painter, rect: Rect, sym: Sym, color: Color32, hole: Color32) {
     let s = rect.width();
@@ -1161,48 +1284,6 @@ impl Dash {
         );
     }
 
-    /// Half of a compact card's bar row: `CPU [track] 6.2/8`, `w` wide in all.
-    #[allow(clippy::too_many_arguments)]
-    fn mini_bar(
-        &self,
-        ui: &mut egui::Ui,
-        id: egui::Id,
-        label: &str,
-        used: Option<f64>,
-        share: Option<f64>,
-        cores: bool,
-        w: f32,
-        name: String,
-    ) {
-        ui.allocate_ui_with_layout(
-            vec2(w, CARD_BARS_H),
-            Layout::left_to_right(Align::Center),
-            |ui| {
-                ui.set_min_width(w);
-                fixed_label_w(ui, label, 32.0, 18.0);
-                let (text, over) = match used {
-                    Some(u) => compact_numbers(u, share, cores),
-                    None => ("no sample".into(), false),
-                };
-                let track_w = (ui.available_width() - 64.0).max(16.0);
-                let r = self.track(ui, id, linux_only(used), share, over, track_w);
-                let spoken = text.replace('/', " of ");
-                a11y(
-                    &r,
-                    if over {
-                        format!("{name} {spoken} over share")
-                    } else {
-                        format!("{name} {spoken}")
-                    },
-                );
-                let color = self.number_color(used, over);
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(RichText::new(text).color(color).small());
-                });
-            },
-        );
-    }
-
     /// The pinned row: symbol, state, `N/M busy`, then `All OK` or the `1 problem` button.
     fn header_row(&mut self, ui: &mut egui::Ui) {
         let p = self.pal();
@@ -1392,77 +1473,111 @@ impl Dash {
         r.on_hover_cursor(egui::CursorIcon::PointingHand)
     }
 
-    /// Three rows: name, symbol, state and elapsed; `title · repo` on one line with the copy
-    /// button; Cores and Memory side by side against this slot's share.
-    fn card(&mut self, ui: &mut egui::Ui, slot: &Slot, share: (Option<f64>, Option<f64>)) {
-        let p = self.pal();
-        let fresh = self.fresh();
-        // Every reported slot is the Linux manager's.
-        let name = card_name(Os::Linux, slot.slot);
-        let frame = card_frame(&p).show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                os_glyph(ui, &p, Os::Linux, 16.0, p.card);
-                ui.label(RichText::new(&name).font(FontId::new(13.0, semibold())));
-                ui.add_space(8.0);
-                let error = slot.state == Sym::Error && self.problem.is_some();
-                let r = sym_widget(
-                    ui,
-                    CARD_SYM_H,
-                    slot.state,
-                    &p,
-                    p.card,
-                    error,
-                    format!("{name}, {}", slot.state.label()),
-                );
-                if r.clicked() && error {
-                    self.show_panel();
-                }
-                ui.label(RichText::new(slot.state.label()).color(p.state(slot.state)));
-                if let Some(start) = slot.started_at.filter(|_| slot.busy()) {
-                    let d = SystemTime::now().duration_since(start).unwrap_or_default();
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(elapsed(d));
-                    });
-                }
-            });
-            if slot.busy() || !slot.job.is_empty() {
-                self.title_row(ui, slot);
-            } else {
-                ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
-                    ui.label(RichText::new("Waiting for a job").color(p.muted));
-                });
-            }
-            let idle = !slot.busy();
-            let used = |v: Option<f64>| if idle { Some(0.0) } else { v.filter(|_| fresh) };
-            let gap = 12.0;
-            let half = (ui.available_width() - gap) / 2.0;
+    /// The twelve Linux tiles, two per row, every one the same size whether chosen or not.
+    fn linux_grid(&mut self, ui: &mut egui::Ui, slots: &[Slot], even: (Option<f64>, Option<f64>)) {
+        let (light, heavy, tiered) = self.settings.linux_counts();
+        let gap = 8.0;
+        let w = ((ui.available_width() - gap) / TILE_COLUMNS as f32).floor();
+        for row in linux_tiles(light, heavy, tiered).chunks(TILE_COLUMNS as usize) {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
-                self.mini_bar(
-                    ui,
-                    egui::Id::new(("slot-cores", slot.slot)),
-                    "CPU",
-                    used(slot.cpu_cores),
-                    share.0,
-                    true,
-                    half,
-                    format!("{name} cores"),
-                );
-                self.mini_bar(
-                    ui,
-                    egui::Id::new(("slot-mem", slot.slot)),
-                    "Mem",
-                    used(slot.mem_gib),
-                    share.1,
-                    false,
-                    half,
-                    format!("{name} memory"),
-                );
+                for t in row {
+                    let slot = t.slot.and_then(|n| slots.iter().find(|s| s.slot == n));
+                    self.tile(ui, *t, slot, tile_share(*t, tiered, even), w);
+                }
             });
+        }
+    }
+
+    /// One compact tile: glyphs, `Heavy 1`, state and elapsed; then `title · repo` with the copy
+    /// button, or a waiting line. A slot no count chooses (and no runner reports) is grey and dim.
+    fn tile(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: LinuxTile,
+        slot: Option<&Slot>,
+        share: (Option<f64>, Option<f64>),
+        w: f32,
+    ) {
+        let p = self.pal();
+        let (on, idle_line) = tile_look(t, slot.is_some());
+        let name = tile_name(t);
+        let ink = if on { p.os(Os::Linux) } else { p.muted };
+        let fill = if on { p.card } else { p.bg };
+        let fresh = self.fresh();
+        let frame = egui::Frame::new()
+            .fill(fill)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(4)
+            .inner_margin(egui::Margin::symmetric(10, TILE_MARGIN_V));
+        let frame = ui.allocate_ui(vec2(w, tile_height()), |ui| {
+            if !on {
+                ui.set_opacity(TILE_DIM);
+            }
+            frame.show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
+                ui.set_width(ui.available_width());
+                let row = ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                    paint_os(ui.painter(), rect, Os::Linux, ink, fill);
+                    let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
+                    paint_tier(ui.painter(), rect, t.tier, ink, fill);
+                    let color = if on { p.text } else { p.muted };
+                    ui.label(
+                        RichText::new(&name)
+                            .font(FontId::new(13.0, semibold()))
+                            .color(color),
+                    );
+                    let Some(slot) = slot else {
+                        let word = if on { "Waiting" } else { "Off" };
+                        ui.label(RichText::new(word).color(p.muted));
+                        return;
+                    };
+                    let error = slot.state == Sym::Error && self.problem.is_some();
+                    let r = sym_widget(
+                        ui,
+                        16.0,
+                        slot.state,
+                        &p,
+                        fill,
+                        error,
+                        format!("{name}, {}", slot.state.label()),
+                    );
+                    if r.clicked() && error {
+                        self.show_panel();
+                    }
+                    ui.label(RichText::new(slot.state.label()).color(p.state(slot.state)));
+                    if let Some(start) = slot.started_at.filter(|_| slot.busy()) {
+                        let d = SystemTime::now().duration_since(start).unwrap_or_default();
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.label(RichText::new(elapsed(d)).small());
+                        });
+                    }
+                });
+                if let Some(slot) = slot.filter(|s| s.busy()) {
+                    let numbers = |v: Option<f64>, s: Option<f64>, cores: bool| {
+                        v.filter(|_| fresh)
+                            .map_or("no sample".into(), |u| compact_numbers(u, s, cores).0)
+                    };
+                    row.response.on_hover_text(format!(
+                        "{name}: CPU {} \u{b7} Mem {} GiB",
+                        numbers(slot.cpu_cores, share.0, true),
+                        numbers(slot.mem_gib, share.1, false)
+                    ));
+                }
+                match slot {
+                    Some(slot) if slot.busy() || !slot.job.is_empty() => self.title_row(ui, slot),
+                    _ => {
+                        ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
+                            ui.label(RichText::new(idle_line).color(p.muted).small());
+                        });
+                    }
+                }
+            })
         });
-        card_edge(ui, frame.response.rect, p.os(Os::Linux));
+        let edge = if on { p.os(Os::Linux) } else { p.border };
+        card_edge(ui, frame.inner.response.rect, edge);
     }
 
     /// A chosen Windows runner while no Windows backend exists: the card's three rows at the
@@ -2364,12 +2479,7 @@ impl Dash {
                 );
                 let slots = self.snap.slots.clone();
                 let linux = cards_to_draw(slots.len());
-                for (i, slot) in slots.iter().take(linux).enumerate() {
-                    if i > 0 {
-                        ui.add_space(CARD_GAP_SPACE);
-                    }
-                    self.card(ui, slot, share);
-                }
+                self.linux_grid(ui, &slots, share);
                 if slots.is_empty() && self.problem.is_none() {
                     ui.label(RichText::new("No runner slots reported.").color(p.muted));
                 }
@@ -2618,8 +2728,8 @@ fn left_column_height(job_line: bool) -> f32 {
     // settings (show_top) -- 15 items, 14 auto-gaps
     let settings = 2.0 * INTERACT_H          // Power: label row + Start/Stop row
         + 12.0                                // add_space(12)
-        + INTERACT_H + INTERACT_H             // Linux control + Linux Each line
-        + INTERACT_H                          // now-linux (count and share, one line)
+        + INTERACT_H + INTERACT_H             // Linux toggle (+ now count) + picker
+        + INTERACT_H                          // Linux Each line (share or tier table)
         + 4.0 + INTERACT_H + INTERACT_H       // add_space(4) + Windows control + Windows line
         + 4.0 + INTERACT_H + INTERACT_H      // add_space(4) + IO cap + now-io
         + 4.0 + INTERACT_H + INTERACT_H      // add_space(4) + Sharing + now-sharing
@@ -2897,10 +3007,13 @@ mod tests {
             )
         );
         assert_eq!(windows_cards_to_draw(3, 2), 2);
-        assert_eq!(windows_cards_to_draw(5, 2), 0, "never more than five cards");
-        assert_eq!(windows_cards_to_draw(4, 2), 1);
+        assert_eq!(
+            windows_cards_to_draw(5, 2),
+            2,
+            "the Linux tiles have their own grid"
+        );
         assert_eq!(windows_cards_to_draw(0, 4), 4);
-        assert_eq!(windows_cards_to_draw(9, 1), 0);
+        assert_eq!(windows_cards_to_draw(12, 9), 5, "never more than five");
         for p in [DARK, LIGHT] {
             let (linux, windows) = (p.os(Os::Linux), p.os(Os::Windows));
             assert_ne!(linux, windows);
@@ -2922,7 +3035,67 @@ mod tests {
         // 102 = 24 + 4 + 24 + 4 + 24 + 20 + 2: each ui.horizontal row is floored to
         // INTERACT_H = 24 (interact_size.y). Computed from floor rules, not from the fn body.
         assert_eq!(card_height(), 102.0);
-        assert!(right_column_height(5) <= clamped_window_height(1080.0, 32.0));
+    }
+
+    #[test]
+    fn every_linux_tile_is_drawn_with_one_fixed_size() {
+        // 60 = 24 state row + 4 gap + 24 title row + 2 x 3 margin + 2 border.
+        assert_eq!(tile_height(), 60.0);
+        assert!(
+            tile_height() < card_height(),
+            "compact: shorter than a card"
+        );
+        // Six rows of two, 4 apart, whatever the counts.
+        assert_eq!(linux_grid_height(), 6.0 * 60.0 + 5.0 * 4.0);
+        for (light, heavy, tiered) in [(0, 0, false), (3, 0, false), (10, 2, true), (1, 0, true)] {
+            let tiles = linux_tiles(light, heavy, tiered);
+            assert_eq!(tiles.len(), 12, "{light} {heavy} {tiered}");
+            let names: Vec<String> = tiles.iter().map(|t| tile_name(*t)).collect();
+            assert_eq!(names[..3], ["Heavy 1", "Heavy 2", "Light 1"]);
+            assert_eq!(names[11], "Light 10");
+        }
+        // Schema 4: the tier table's fixed slot numbers.
+        let tiered = linux_tiles(4, 1, true);
+        let slots: Vec<Option<u32>> = tiered.iter().map(|t| t.slot).collect();
+        assert_eq!(slots[0], Some(1));
+        assert_eq!(slots[1], Some(2));
+        assert_eq!(slots[2], Some(3), "slot 3 is always the first light slot");
+        assert_eq!(slots[11], Some(12));
+        let chosen: Vec<bool> = tiered.iter().map(|t| t.chosen).collect();
+        assert_eq!(
+            chosen,
+            [
+                true, false, true, true, true, true, false, false, false, false, false, false
+            ]
+        );
+        // Before schema 4: every slot is untiered, drawn as light 1..5; heavy shows no slot.
+        let legacy = linux_tiles(3, 0, false);
+        assert_eq!((legacy[0].slot, legacy[1].slot), (None, None));
+        assert_eq!(legacy[2].slot, Some(1));
+        assert_eq!(legacy[4].slot, Some(3));
+        assert!(!legacy[0].chosen && legacy[4].chosen && !legacy[5].chosen);
+    }
+
+    #[test]
+    fn unchosen_tiles_are_grey_and_dim_unless_a_runner_reports() {
+        let tiles = linux_tiles(2, 0, false);
+        assert_eq!(tile_look(tiles[2], false), (true, "Waiting for a job"));
+        assert_eq!(tile_look(tiles[5], false), (false, "Not chosen"));
+        assert_eq!(
+            tile_look(tiles[0], false),
+            (false, "Needs settings schema 4"),
+            "heavy waits for a supervisor that reads the tiers"
+        );
+        // A runner still draining after the count dropped stays live.
+        assert_eq!(tile_look(tiles[5], true), (true, "Waiting for a job"));
+        let tiered = linux_tiles(0, 2, true);
+        assert!(tile_look(tiered[1], false).0);
+        assert_eq!(tile_look(tiered[2], false), (false, "Not chosen"));
+        // The tier table under schema 4, the even share before it.
+        let even = (Some(5.2), Some(14.4));
+        assert_eq!(tile_share(tiered[0], true, even), (Some(8.0), Some(20.0)));
+        assert_eq!(tile_share(tiered[2], true, even), (Some(4.0), Some(8.0)));
+        assert_eq!(tile_share(tiered[2], false, even), even);
     }
 
     #[test]
@@ -2961,19 +3134,17 @@ mod tests {
     }
 
     #[test]
-    fn five_cards_fit_clamped_height() {
-        let h = right_column_height(5);
-        // 1080 px work area: clamps to SIZE[1] = 760.
+    fn the_linux_grid_fits_clamped_height() {
+        // 1080 px work area: clamps to SIZE[1] = 760. All twelve tiles and two Windows cards.
         let h_1080 = clamped_window_height(1080.0, 32.0);
         assert_eq!(h_1080, SIZE[1], "sanity: 1080p clamps to default size");
-        assert!(
-            h <= h_1080,
-            "five cards overflow 1080p: {h:.0} > {h_1080:.0}"
-        );
-        // 768 px work area (laptop): clamps below SIZE[1].
+        let h = right_column_height(2);
+        assert!(h <= h_1080, "grid overflows 1080p: {h:.0} > {h_1080:.0}");
+        // 768 px work area (laptop): clamps below SIZE[1]; all twelve tiles still fit.
         let h_768 = clamped_window_height(768.0, 32.0);
         assert!(h_768 < SIZE[1]);
-        assert!(h <= h_768, "five cards overflow 768p: {h:.0} > {h_768:.0}");
+        let h = right_column_height(0);
+        assert!(h <= h_768, "grid overflows 768p: {h:.0} > {h_768:.0}");
     }
 
     #[test]
@@ -3018,9 +3189,9 @@ mod tests {
             INTERACT_H, // Power label row
             INTERACT_H, // Power Start/Stop . Pause/Resume row
             12.0_f32,   // add_space(12)
-            INTERACT_H, // Linux control
-            INTERACT_H, // Linux Each line (share, total, tooltip with the host reserve)
-            INTERACT_H, // ui.horizontal in now(): now-linux
+            INTERACT_H, // Linux: Light | Heavy toggle and the muted now count
+            INTERACT_H, // Linux count picker (light 0..10 or heavy 0..2)
+            INTERACT_H, // Linux Each line (share or tier table, tooltip)
             4.0_f32,    // add_space(4)
             INTERACT_H, // Windows control
             INTERACT_H, // Windows line: "not installed" and the prospective share
@@ -3064,9 +3235,9 @@ mod tests {
             expected,
             "left_column_height formula drifted from the row inventory"
         );
-        // The right column with 5 cards must fit the clamped window heights.
+        // The right column with the twelve Linux tiles must fit the clamped window heights.
         let title = 32.0;
-        let rh = right_column_height(5);
+        let rh = right_column_height(0);
         assert!(
             rh <= clamped_window_height(1080.0, title),
             "right column overflows 1080p: {rh:.0} > {}",
@@ -3090,10 +3261,10 @@ mod tests {
             left_column_height(true)
         );
         assert!(
-            ms[1] >= right_column_height(5),
-            "min_size[1]={} < right column 5 cards={}",
+            ms[1] >= right_column_height(0),
+            "min_size[1]={} < right column with the tiles={}",
             ms[1],
-            right_column_height(5)
+            right_column_height(0)
         );
         // 1080p at 125 % leaves about 780 pt of inner height; the left column never scrolls.
         assert!(
