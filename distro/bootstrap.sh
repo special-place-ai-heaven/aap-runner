@@ -127,8 +127,6 @@ SYSBOX_NAME=sysbox-ce_0.7.1.linux_amd64.deb
 RUNNER_URL=https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz
 RUNNER_SHA256=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
 RUNNER_NAME=actions-runner-linux-x64-2.338.2.tar.gz
-CHRONY_DEFAULTS=/etc/default/chrony
-CHRONY_CONF=/etc/chrony/chrony.conf
 
 verify_sha256() {
   local file="$1" expected="$2" actual
@@ -633,32 +631,23 @@ half_install_refusal() {
   printf '%s\n' "That command does not unregister any other distro."
 }
 
-# One time-sync authority, chrony, allowed to set the clock. The WSL2 VM's
-# uncorrected clock rate can change at runtime by several percent (seen
-# 2026-11-05: +4.4% in the morning, +17 ppm in the afternoon, same boot), and
-# systemd-timesyncd, which can only slew 500 ppm, stepped the clock back about
-# 1.3 s every 32 s. chrony corrects up to 8% through the kernel tick and steps
-# only in its first three updates (Ubuntu's 'makestep 1 3'). Ubuntu's chrony
-# starter adds -x (never touch the clock) in a container, and WSL counts as one,
-# so SYNC_IN_CONTAINER is set. Ubuntu's 'maxupdateskew 100' froze chrony's
-# frequency estimate for hours after such a rate change (source skew stayed at
-# 240-585 ppm, so no new estimate was taken), so it goes back to chrony's
-# default 1000; the last occurrence wins, which is why chrony.conf is edited
-# and not conf.d (included first). Installing chrony removes systemd-timesyncd.
-# The clock is the whole WSL2 VM's: every distro on this PC shares it.
+# No time-sync daemon in this distro. The clock is the whole WSL2 VM's (every
+# distro on this PC shares it), and WSL already runs one chronyd outside all
+# distros that follows the Hyper-V host clock (refclock PHC0, /dev/ptp0). A
+# second daemon here fights it: on 2026-11-05 Ubuntu's systemd-timesyncd stepped
+# the clock back about 1.3 s every 32 s, and a chrony on NTP pools ran its
+# frequency estimate away to thousands of ppm. Both are masked, so a package
+# upgrade cannot start them again.
 configure_time_sync() {
-  sed -i 's/^SYNC_IN_CONTAINER=.*/SYNC_IN_CONTAINER="yes"/' "${CHRONY_DEFAULTS}"
-  sed -i 's/^maxupdateskew .*/maxupdateskew 1000/' "${CHRONY_CONF}"
-  if ! grep -qx 'SYNC_IN_CONTAINER="yes"' "${CHRONY_DEFAULTS}"; then
-    echo "refusing: ${CHRONY_DEFAULTS} has no SYNC_IN_CONTAINER line; chrony would not set the clock" >&2
-    exit 1
-  fi
-  systemctl enable chrony
-  systemctl restart chrony
-  if systemctl is-active --quiet systemd-timesyncd; then
-    echo "refusing: systemd-timesyncd is still active beside chrony; two clock authorities step each other" >&2
-    exit 1
-  fi
+  local unit
+  systemctl mask systemd-timesyncd.service chrony.service
+  systemctl stop systemd-timesyncd.service chrony.service 2> /dev/null || true
+  for unit in systemd-timesyncd chrony ntp ntpsec openntpd; do
+    if systemctl is-active --quiet "${unit}"; then
+      echo "refusing: ${unit} is active; WSL already keeps this VM's clock and a second time daemon fights it" >&2
+      exit 1
+    fi
+  done
 }
 
 copy_staged() {
@@ -758,7 +747,6 @@ inside_packages() {
   apt-get install -y --no-install-recommends \
     adduser \
     ca-certificates \
-    chrony \
     curl \
     dbus \
     e2fsprogs \
@@ -772,7 +760,6 @@ inside_packages() {
     sudo \
     systemd \
     systemd-sysv
-  configure_time_sync
   if dpkg -s docker.io >/dev/null 2>&1; then
     apt-get purge -y docker.io
   fi
@@ -993,6 +980,7 @@ inside_runtime() {
   esac
 
   systemctl daemon-reload
+  configure_time_sync
   systemctl enable aap-workdisk
   systemctl stop docker containerd sysbox sysbox-mgr sysbox-fs >/dev/null 2>&1 || true
   /usr/local/sbin/aap-mount-work-disk

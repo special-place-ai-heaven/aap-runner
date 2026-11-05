@@ -278,16 +278,24 @@ Nothing is qualified at the pin (`guests/cache/wrappers.json` lists no qualified
 
 ## Clock
 
-Every `aap-crrr-*` runner is a Sysbox container in the `aap-runner` distro, and a container has no clock of its own: all of them read the WSL2 VM's one kernel clock, which every distro on the PC shares. The single time-sync authority is **chrony** in this distro (`configure_time_sync` in `bootstrap.sh`; installing it removes `systemd-timesyncd`). It steps only during its first three updates (`makestep 1 3`) and slews afterwards. `/etc/default/chrony` has `SYNC_IN_CONTAINER="yes"`, because Ubuntu's chrony starter otherwise runs `chronyd -x` (never touch the clock) in WSL. `/etc/chrony/chrony.conf` has `maxupdateskew 1000` (chrony's default) instead of Ubuntu's 100. Hyper-V adds no periodic correction (it can step the clock only when the guest falls behind the host, `hv_utils.timesync_implicit`).
+Every `aap-crrr-*` runner is a Sysbox container in the `aap-runner` distro, and a container has no clock of its own. All of them read the WSL2 VM's one kernel clock, which every distro on the PC shares.
 
-Why, measured 2026-11-05 on one VM boot:
-- **Morning:** the VM's kernel clock ran **4.4% fast** against Windows (62.710 s per 60.092 s). `systemd-timesyncd` can slew only 500 ppm, so it stepped the clock back about 1.3 s every 32-second poll; journald logged 100 backward jumps between 10:00 and 12:38 UTC. That broke wall-clock tests in jobs.
-- **Afternoon:** the uncorrected clock, `CLOCK_MONOTONIC_RAW`, ran **+17 ppm** against NTP, with ±1.3 ms residual over 600 s. The Windows clock was 29 ms off NTP and steady.
-- **Cause:** the rate changed at runtime, from outside the distro, and the trigger is not known. Another distro starting was ruled out: Ubuntu-24.04 runs no time daemon, and starting it left the clock untouched.
+The single time-sync authority is **WSL's own chronyd**:
+- It runs outside every distro, and no distro's `ps` lists it.
+- It follows the Hyper-V host clock (`refclock PHC0`, `/dev/ptp0`) at an 8 s poll. `chronyc tracking` there reported stratum 1 and an offset of a few µs (WSL 3.0.3, kernel 6.18.54.1).
+- The guest clock is therefore the Windows clock. Keep the Windows Time service syncing if wall-clock accuracy matters; the runners need only a clock that never jumps.
 
-chrony follows such a change because it slews up to 8% through the kernel tick, with no backward step. With Ubuntu's `maxupdateskew 100`, however, it kept its stale frequency estimate for about three hours after the change: source skew stayed at 240–585 ppm, so every new estimate was discarded and the offset swung by more than 1 s. With chrony's default of 1000 the estimate keeps updating.
+This distro runs **no** time daemon: `configure_time_sync` in `bootstrap.sh` masks `systemd-timesyncd` and `chrony` and refuses while any NTP daemon is active. Hyper-V adds a backstop only: it steps the clock forward when the guest is 5 s or more behind the host (`hv_utils.timesync_implicit=1`, always on in WSL).
 
-Re-verify on the host, inside the distro: `bash distro/clock-probe.sh 600` (exit 0: no backward step and a drift change under 100 ms), and `chronyc tracking` (one authority, small offset). On the runners: dispatch `.github/workflows/runner-clock-probe.yml`, which runs the same probe for 30 minutes on all five slots at once.
+What a second daemon did, measured 2026-11-05 on one VM boot:
+- **systemd-timesyncd (Ubuntu's default):** it stepped the clock back about 1.3 s every 32-second poll toward NTP, and WSL's chronyd slewed it forward again toward the host clock. `/proc/uptime` ran 4.4% fast against Windows; journald logged 100 backward jumps between 10:00 and 12:38 UTC. That broke wall-clock tests in jobs.
+- **chrony on NTP pools:** with WSL's chronyd writing the same kernel clock about every 2 s, its frequency estimate ran away from 17 to over 4,000 ppm within an hour, and offsets swung by more than 1 s. With it stopped, kernel tracing (`do_adjtimex`) shows WSL's chronyd as the only writer.
+- **The hardware clock was fine:** `CLOCK_MONOTONIC_RAW` ran +17 ppm against NTP, with ±1.3 ms residual over 600 s.
+
+Re-verify:
+- **Host, inside the distro:** `bash distro/clock-probe.sh 600`. Exit 0 means no backward step and a drift change under 100 ms.
+- **Authority, from Windows:** `wsl --system -u root -- chronyc -n tracking` reaches WSL's chronyd over the shared localhost; the reference must be `PHC0`.
+- **Runners:** dispatch `.github/workflows/runner-clock-probe.yml`, which runs the same probe for 30 minutes on all five slots at once.
 
 ## Threat model
 

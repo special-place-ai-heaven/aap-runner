@@ -1,9 +1,8 @@
 #!/bin/bash
 # The runner clock: distro/clock-probe.sh --analyse passes a clean series and
-# fails a backward step or a drift jump; bootstrap's configure_time_sync lets
-# chrony set the clock (SYNC_IN_CONTAINER=yes) and keep its frequency estimate
-# moving (maxupdateskew 1000), refuses a defaults file it
-# cannot fix, and refuses when systemd-timesyncd is still active beside it.
+# fails a backward step or a drift jump; bootstrap's configure_time_sync masks
+# the distro's own time daemons (WSL keeps the VM clock) and refuses while any
+# NTP daemon is still active.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -61,38 +60,33 @@ echo "probe arguments ok"
 # --- configure_time_sync ----------------------------------------------------
 fn=$(sed -n '/^configure_time_sync() {/,/^}/p' "${here}/../distro/bootstrap.sh")
 [[ -n "${fn}" ]] || fail "bootstrap.sh has no configure_time_sync"
-grep -qE '^    chrony \\$' "${here}/../distro/bootstrap.sh" || fail "chrony is not in bootstrap's package list"
+grep -qE '^    chrony \\$' "${here}/../distro/bootstrap.sh" && fail "bootstrap installs chrony, a second clock authority"
 grep -qx '  configure_time_sync' "${here}/../distro/bootstrap.sh" || fail "bootstrap never calls configure_time_sync"
 
 calls="${work}/calls"
-timesyncd_active=1
+active=""
 # shellcheck disable=SC2317
 systemctl() {
   echo "systemctl $*" >> "${calls}"
-  [[ "$*" == "is-active --quiet systemd-timesyncd" ]] && return "${timesyncd_active}"
+  if [[ "${1-} ${2-}" == "is-active --quiet" ]]; then
+    [[ " ${active} " == *" $3 "* ]]
+    return
+  fi
   return 0
 }
 eval "${fn}"
 
-CHRONY_DEFAULTS="${work}/chrony"
-CHRONY_CONF="${work}/chrony.conf"
-printf 'DAEMON_OPTS="-F 1"\nSYNC_IN_CONTAINER="no"\n' > "${CHRONY_DEFAULTS}"
-printf 'confdir /etc/chrony/conf.d\nmaxupdateskew 100.0\nmakestep 1 3\n' > "${CHRONY_CONF}"
 : > "${calls}"
-(configure_time_sync) || fail "configure_time_sync failed on a stock defaults file"
-grep -qx 'SYNC_IN_CONTAINER="yes"' "${CHRONY_DEFAULTS}" || fail "SYNC_IN_CONTAINER was not set to yes"
-grep -qx 'DAEMON_OPTS="-F 1"' "${CHRONY_DEFAULTS}" || fail "the other defaults lines were changed"
-grep -qx 'maxupdateskew 1000' "${CHRONY_CONF}" || fail "maxupdateskew was not raised to 1000"
-grep -qx 'makestep 1 3' "${CHRONY_CONF}" || fail "the other chrony.conf lines were changed"
-grep -qx 'systemctl restart chrony' "${calls}" || fail "chrony was not restarted"
-echo "chrony may set the clock ok"
+(configure_time_sync) || fail "configure_time_sync failed with no time daemon active"
+grep -qx 'systemctl mask systemd-timesyncd.service chrony.service' "${calls}" || fail "timesyncd and chrony were not masked"
+grep -q '^systemctl stop systemd-timesyncd.service chrony.service' "${calls}" || fail "timesyncd and chrony were not stopped"
+echo "no time daemon in the distro ok"
 
-printf 'DAEMON_OPTS="-F 1"\n' > "${CHRONY_DEFAULTS}"
-(configure_time_sync) > /dev/null 2>&1 && fail "a defaults file without SYNC_IN_CONTAINER was accepted"
-
-printf 'SYNC_IN_CONTAINER="no"\n' > "${CHRONY_DEFAULTS}"
-timesyncd_active=0
-(configure_time_sync) > /dev/null 2>&1 && fail "chrony beside an active systemd-timesyncd was accepted"
-echo "time sync refusals ok"
+for unit in systemd-timesyncd chrony ntp ntpsec openntpd; do
+  active="${unit}"
+  (configure_time_sync) > /dev/null 2>&1 && fail "an active ${unit} was accepted"
+done
+active=""
+echo "time daemon refusals ok"
 
 echo "clock tests ok"
