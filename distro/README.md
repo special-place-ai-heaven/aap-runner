@@ -280,8 +280,8 @@ Nothing is qualified at the pin (`guests/cache/wrappers.json` lists no qualified
 
 | Actor | What we assume | What limits them |
 |---|---|---|
-| CI job code | Can run whatever the workflow runs, inside one container. A job's zccache root is private to its container, so a job cannot plant objects that a later job of any repository will link. Fork PRs never run here | No host mount, no host docker socket, inner dockerd only, container and its volumes deleted after the job, fork jobs are not scheduled |
-| Fork PR | Must not get a runner | Job `if` skips foreign `pull_request` heads. No `pull_request_target`. Org setting keeps fork workflows off. The runner group disallows public repos |
+| CI job code | Can run whatever the workflow runs, inside one container. A job's zccache root is private to its container, so a job cannot plant objects that a later job of any repository will link. A fork PR runs only after the owner approves it | No host mount, no host docker socket, inner dockerd only, container and its volumes deleted after the job, fork jobs are not scheduled |
+| Fork PR | Can reach a public repo the group serves. Must not run without the owner's approval | Org setting requires approval for all outside collaborators. This repo's jobs skip foreign `pull_request` heads with `if`, and no workflow uses `pull_request_target`. An approved fork job is still one ephemeral container: no host mount, no secret, no App key, LAN dropped by nftables. A public repo the owner adds must follow the same workflow rules |
 | Stolen App private key | Attacker can mint registration tokens until the key is revoked | The App has org permission **Self-hosted runners: Read and write** and nothing else. It cannot change branch protection, collaborators, or repo settings. The runner group lists selected repos, so a registered runner is not offered to the rest of the org |
 | `ghrunner` (uid 1002) | Can log in to the distro | No sudo, not in the `docker` group, no Windows filesystem, no Windows PATH |
 | WSLInterop binfmt | Registered VM-wide, including inside this distro | With `interop` off, vsock accept fails, so the binfmt cannot launch a Windows exe. It is left registered because it is not per-distro. It is not a way out |
@@ -295,20 +295,20 @@ Any future deploy secret goes in a GitHub Environment with required reviewers. I
 
 ## Scope decision
 
-The runner group is an **org** group named `aap-crrr`, restricted to the selected AAP private repositories. Public repositories are disallowed.
+The runner group is an **org** group named `aap-crrr`, restricted to the repositories the owner selects. Owner decision 2026-11-05: it serves any public repository the owner configures it for, so "Allow public repositories" is on. Fork PRs to those repositories need the owner's approval (checklist below). The interim Windows host runner (`aap-win-interim`) is not covered by this: it runs as the owner's account and can read the App key, so it serves no public repository.
 
 An org-scoped GitHub App needs only **Self-hosted runners: Read and write**. Repo-scoped ephemeral registration needs repo **Administration: Read and write**, which can change branch protection, collaborators, and settings. That is a strictly larger blast radius if the key leaks. Repo restriction is enforced by the group's selected-repos list. This is the more secure option, so it is the one we use.
 
-`special-place-ai-heaven/symforge` is checked out as a public sibling. It is not a repository that should be selected in this group. Workflows run only on the AAP private repos in the list.
+`special-place-ai-heaven/symforge` is checked out as a public sibling. Selecting a repository in this group is the owner's call; the group runs only the repos in its list.
 
 ## Org settings checklist
 
 Do this in the org that owns the private AAP repos before starting the manager. The App is created by a human. The private key is delivered out of band. It is not committed.
 
 - [ ] Runner group `aap-crrr` exists.
-- [ ] Group access is **Selected repositories**, and the list is the AAP private repos that should run this CI. Public repositories are not selected.
-- [ ] "Allow public repositories" is off for the group.
-- [ ] Fork pull request workflows from outside collaborators are off (not "require approval").
+- [ ] Group access is **Selected repositories**, and the list is the repositories the owner chose, private or public.
+- [ ] "Allow public repositories" is on for the group (owner decision 2026-11-05), and off for `aap-win-interim`.
+- [ ] Fork pull request workflows: private repositories off; public repositories **Require approval for all outside collaborators**.
 - [ ] GitHub App is org-owned. Organization permission is **Self-hosted runners: Read and write** only. No Administration, Contents, Secrets, or Actions write on the App.
 - [ ] App is installed on the org. Installation id and App id go in `/etc/aap-runner/manager.conf`.
 - [ ] Private key is `/etc/aap-runner/app.pem`, owner root, mode `0400`. `ls -l` is the check.
