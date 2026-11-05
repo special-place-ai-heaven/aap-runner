@@ -22,6 +22,7 @@ RUN apt-get update \
       git \
       gnupg \
       iptables \
+      jq \
       libdbus-1-dev \
       mysql-client \
       openssl \
