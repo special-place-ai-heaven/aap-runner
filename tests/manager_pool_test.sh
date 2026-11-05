@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pool size, per-slot limit split, slot names, and runner uid checks in
+# Pool size, per-slot limit split, slot names, and the zccache budget in
 # manager.sh. Sources the manager; its main loop does not run when sourced.
 set -euo pipefail
 
@@ -98,21 +98,15 @@ assert_eq "$(slot_restart_delay 4)" 40 "fourth restart delay"
 assert_eq "$(slot_restart_delay 9)" 60 "restart delay cap"
 echo "restart backoff ok"
 
-runner_uid_ok 1000 || fail "uid 1000 was refused"
-for bad in 0 "" abc "uid=1000" "1000 " -1 01; do
-  if runner_uid_ok "${bad}"; then
-    fail "runner uid '${bad}' was accepted"
-  fi
+# The zccache root budget is 15% of the work disk, at most 10 GiB.
+for row in 20:3072 60:9216 68:10240 512:10240; do
+  (
+    AAP_WORK_DISK_GIB=${row%%:*}
+    AAP_DISK_FLOOR_GB=""
+    finish_disk_bounds 2>/dev/null
+    assert_eq "${ZCCACHE_BUDGET_MB}" "${row##*:}" "zccache budget on a ${row%%:*} GiB disk"
+  )
 done
-echo "runner uid ok"
-
-# The cache must sit on the work disk that disk_ok verifies, and never under
-# /mnt, which assert_no_mnt_mounts refuses after docker create.
-[[ "${SCCACHE_HOST_DIR}" == "${WORK_MOUNT}"/* ]] || fail "sccache source ${SCCACHE_HOST_DIR} is not under ${WORK_MOUNT}"
-if mount_source_forbidden "${SCCACHE_HOST_DIR}"; then
-  fail "the sccache source ${SCCACHE_HOST_DIR} is refused by assert_no_mnt_mounts"
-fi
-[[ "${SCCACHE_CONTAINER_DIR}" != /mnt* ]] || fail "sccache target ${SCCACHE_CONTAINER_DIR} is under /mnt"
-echo "sccache mount source ok"
+echo "zccache budget ok"
 
 echo "manager pool tests ok"

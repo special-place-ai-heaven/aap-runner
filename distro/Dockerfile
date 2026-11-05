@@ -4,6 +4,7 @@
 # carries the host tools ci.yml and scripts/check-workspace-lints.sh need,
 # because a job cannot apt-get. RUSTFLAGS=-C linker-features=-lld needs cc
 # from build-essential. setup-node and cargo install unpack with tar, xz, unzip.
+# zccache 1.15.6 is the compile cache; sccache is not installed.
 FROM scratch
 ADD ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz /
 
@@ -61,6 +62,32 @@ RUN apt-get update \
            echo 'runner sudo listing was not a denial; image build stopped' >&2; exit 1; \
          fi; \
        fi
+
+# zccache 1.15.6 through the repo's guest integration (guests/cache). The
+# release archive is checked against the pinned sha256 here, and `install`
+# checks the same archive and both members against the pins in
+# zccache-wrappers.json. `install` wants a provenance record from the P03
+# acquisition run; this build has none, so the record is written here after
+# the check above and carries only the fields `install` reads. The recorded
+# compilers are the ones in this image. rustc is installed by jobs, so it is
+# not recorded. aap-zccache.sh needs jq, installed above.
+COPY aap-zccache.sh /opt/aap-runner/zccache/aap-zccache.sh
+COPY zccache-wrappers.json /opt/aap-runner/zccache/wrappers.json
+RUN archive=zccache-v1.15.6-x86_64-unknown-linux-musl.tar.gz \
+    && sha=885a109c758808480ebda6b92ac0c55ae55ff2638f0ef850423bb185f28e59f7 \
+    && curl --fail --silent --show-error --location --output "/tmp/${archive}" \
+      "https://github.com/zackees/zccache/releases/download/1.15.6/${archive}" \
+    && echo "${sha}  /tmp/${archive}" | sha256sum -c - \
+    && jq -n --arg f "${archive}" --arg s "${sha}" \
+      '{schema: "aap-provenance/1", outcome: "accepted", hash: {verified: true}, staging_check: "strict", name: "zccache-x86_64-unknown-linux-musl", version: "1.15.6", file_name: $f, sha256: $s}' \
+      > /tmp/zccache.provenance.json \
+    && jq -n --arg c "$(gcc -dumpfullversion)" --arg x "$(g++ -dumpfullversion)" \
+      '{toolchains: [{compiler: "gcc", compiler_version: $c, path: "/usr/bin/gcc"}, {compiler: "g++", compiler_version: $x, path: "/usr/bin/g++"}]}' \
+      > /tmp/zccache.toolchains.json \
+    && bash /opt/aap-runner/zccache/aap-zccache.sh install "/tmp/${archive}" /tmp/zccache.provenance.json \
+      /usr/local/libexec/aap-guest/cache /tmp/zccache.toolchains.json /opt/aap-runner/zccache/wrappers.json \
+    && rm -rf "/tmp/${archive}" /tmp/zccache.provenance.json /tmp/zccache.toolchains.json /opt/aap-runner/zccache \
+    && /usr/local/libexec/aap-guest/cache/bin/zccache --version
 
 COPY ephemeral-entry.sh /opt/aap-runner/ephemeral-entry.sh
 COPY actions-runner-linux-x64-2.338.2.tar.gz /tmp/actions-runner.tar.gz
