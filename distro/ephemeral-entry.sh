@@ -61,7 +61,7 @@ runuser -u runner \
   -- bash -c '
   set -euo pipefail
   cd /opt/actions-runner
-  ./config.sh --unattended --ephemeral --disableupdate=false \
+  ./config.sh --unattended --ephemeral --disableupdate \
     --url "https://github.com/${AAP_GITHUB_ORG}" \
     --token "${AAP_RUNNER_REG_TOKEN}" \
     --labels "${AAP_RUNNER_LABELS}" \
