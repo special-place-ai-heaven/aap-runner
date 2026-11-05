@@ -1,5 +1,5 @@
 #!/bin/bash
-# Wall-clock probe for the runner VM. Samples CLOCK_REALTIME (date +%s%N) and
+# Wall-clock probe for the runner VM. Samples CLOCK_REALTIME ($EPOCHREALTIME) and
 # CLOCK_BOOTTIME (/proc/uptime) every 100 ms and reports backward realtime
 # steps and the largest change of realtime minus boottime. A clean clock has
 # no backward step and a drift change well under 100 ms: an NTP slew moves both
@@ -41,7 +41,9 @@ sample() { # SECONDS
   local end now up
   end=$(($(date +%s) + $1))
   while :; do
-    now=$(date +%s%N)
+    # bash's own microsecond clock, read right before /proc/uptime: forking date
+    # here put up to tens of ms between the two reads on a loaded runner.
+    now=${EPOCHREALTIME//[!0-9]/}000
     read -r up _ < /proc/uptime
     # /proc/uptime has two decimals: 10 ms resolution, enough for a 100 ms limit.
     printf '%s %s\n' "${now}" "$((${up%.*} * 1000000000 + 10#${up#*.} * 10000000))"

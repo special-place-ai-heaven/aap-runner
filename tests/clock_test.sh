@@ -1,7 +1,8 @@
 #!/bin/bash
 # The runner clock: distro/clock-probe.sh --analyse passes a clean series and
 # fails a backward step or a drift jump; bootstrap's configure_time_sync lets
-# chrony set the clock (SYNC_IN_CONTAINER=yes), refuses a defaults file it
+# chrony set the clock (SYNC_IN_CONTAINER=yes) and keep its frequency estimate
+# moving (maxupdateskew 1000), refuses a defaults file it
 # cannot fix, and refuses when systemd-timesyncd is still active beside it.
 set -euo pipefail
 
@@ -74,11 +75,15 @@ systemctl() {
 eval "${fn}"
 
 CHRONY_DEFAULTS="${work}/chrony"
+CHRONY_CONF="${work}/chrony.conf"
 printf 'DAEMON_OPTS="-F 1"\nSYNC_IN_CONTAINER="no"\n' > "${CHRONY_DEFAULTS}"
+printf 'confdir /etc/chrony/conf.d\nmaxupdateskew 100.0\nmakestep 1 3\n' > "${CHRONY_CONF}"
 : > "${calls}"
 (configure_time_sync) || fail "configure_time_sync failed on a stock defaults file"
 grep -qx 'SYNC_IN_CONTAINER="yes"' "${CHRONY_DEFAULTS}" || fail "SYNC_IN_CONTAINER was not set to yes"
 grep -qx 'DAEMON_OPTS="-F 1"' "${CHRONY_DEFAULTS}" || fail "the other defaults lines were changed"
+grep -qx 'maxupdateskew 1000' "${CHRONY_CONF}" || fail "maxupdateskew was not raised to 1000"
+grep -qx 'makestep 1 3' "${CHRONY_CONF}" || fail "the other chrony.conf lines were changed"
 grep -qx 'systemctl restart chrony' "${calls}" || fail "chrony was not restarted"
 echo "chrony may set the clock ok"
 
