@@ -295,7 +295,7 @@ Any future deploy secret goes in a GitHub Environment with required reviewers. I
 
 ## Scope decision
 
-The runner group is an **org** group named `aap-crrr`, restricted to the repositories the owner selects. Owner decision 2026-11-05: it serves any public repository the owner configures it for, so "Allow public repositories" is on. Fork PRs to those repositories need the owner's approval (checklist below). The interim Windows host runner (`aap-win-interim`) is not covered by this: it runs as the owner's account and can read the App key, so it serves no public repository.
+The runner group is an **org** group named `aap-crrr`, restricted to the repositories the owner selects. Owner decision 2026-11-05: it serves any public repository the owner configures it for, so "Allow public repositories" is on. Fork PRs to those repositories need the owner's approval (checklist below). The interim Windows host runner group (`aap-win-interim`) allows public repositories too (owner, 2026-11-05). That runner is not isolated: a job there runs as the owner's Windows account and can read the App key, so the outside-collaborator approval is its only gate. Approve a fork PR there only for code you would run as yourself.
 
 An org-scoped GitHub App needs only **Self-hosted runners: Read and write**. Repo-scoped ephemeral registration needs repo **Administration: Read and write**, which can change branch protection, collaborators, and settings. That is a strictly larger blast radius if the key leaks. Repo restriction is enforced by the group's selected-repos list. This is the more secure option, so it is the one we use.
 
@@ -307,7 +307,7 @@ Do this in the org that owns the private AAP repos before starting the manager. 
 
 - [ ] Runner group `aap-crrr` exists.
 - [ ] Group access is **Selected repositories**, and the list is the repositories the owner chose, private or public.
-- [ ] "Allow public repositories" is on for the group (owner decision 2026-11-05), and off for `aap-win-interim`.
+- [ ] "Allow public repositories" is on for the group and for `aap-win-interim` (owner decision 2026-11-05).
 - [ ] Fork pull request workflows: private repositories off; public repositories **Require approval for all outside collaborators**.
 - [ ] GitHub App is org-owned. Organization permission is **Self-hosted runners: Read and write** only. No Administration, Contents, Secrets, or Actions write on the App.
 - [ ] App is installed on the org. Installation id and App id go in `/etc/aap-runner/manager.conf`.
