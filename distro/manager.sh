@@ -1223,7 +1223,8 @@ run_one() {
         --device-write-iops "${IO_DEVICE}:$((SLOT_IO_MBPS * IO_IOPS_PER_MB))")
     fi
   fi
-  # One bind mount, the sccache dir on the work disk. No -v, no /mnt.
+  # One bind mount, the sccache dir on the work disk; --init adds docker-init,
+  # which is not under /mnt. No -v, no /mnt.
   # assert_no_mnt_mounts rejects a source under /mnt even if the daemon adds
   # one. /mnt/wsl is the shared docker-desktop tmpfs.
   if ! docker create \
