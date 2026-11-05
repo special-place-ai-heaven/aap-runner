@@ -1,7 +1,7 @@
-# Status and settings contract (settings schema 3 and status schema 5, revision 3)
+# Status and settings contract (settings schemas 3 and 4, status schema 5, revision 5)
 
 Owners: **P12** (supervisor side, `supervisor/README.md`, both-side tests) and **P20** (tray).
-Readers: P19, P22. Schemas: [`settings-v3.schema.json`](settings-v3.schema.json),
+Readers: P19, P22. Schemas: [`settings-v3.schema.json`](settings-v3.schema.json), [`settings-v4.schema.json`](settings-v4.schema.json),
 [`status-v5.schema.json`](status-v5.schema.json), [`tray-windows-choice.schema.json`](tray-windows-choice.schema.json).
 P12 landed both (revision 3, 2026-10-21): the supervisor reads settings schema 3 and writes
 `status.v5.json` when the capacity module is deployed beside it, and writes `status.v5.json` with
@@ -11,6 +11,10 @@ compatibility rules below. The versioned docs are `supervisor/README.md` (Contra
 
 Revision 2 (P02.2, 2026-10-20): `status.v5.json` reports the storage tiers; settings schema 3 is
 unchanged and carries no path.
+
+Revision 5 (R1 step 1, 2026-11-05; revision 4 is R2 slice 1, PR #103): the tiered Linux pool
+(`docs/ROADMAP.md`, R1). Settings schema 4 replaces `runner_count` with two tier counts; status
+schema 5 gains a slot `tier`, fixed tier slot numbers and the 17-slot maxima. See Tiers below.
 
 ## Before P12 (what an older supervisor or tray still does)
 
@@ -48,6 +52,46 @@ Same keys as schema 2 with the same meaning, plus `linux_backend`, `host_reserve
   control for it and writes back the value `status.v5.json` reports. Only the cutover item (P27)
   flips it, and the supervisor refuses `hyperv-vm` (keeping the last valid settings) unless an
   Ubuntu generation is `active` in the catalog.
+
+## Tiers: settings schema 4 and the tiered status (revision 5)
+
+One Linux backend, two tiers, slice sharing kept (owner, 2026-11-04):
+
+| Tier | Count | Labels (exact line) | Per slot | Slot numbers |
+|---|---|---|---|---|
+| heavy | `linux_heavy_count` 0..2 | `self-hosted,linux,x64,fresh,heavy` | reservation 8 CPU / 20 GiB, may burst to the pool, CPU weight 4x a light slot's | 1, 2 |
+| light | `linux_light_count` 0..10 | `self-hosted,linux,x64,fresh,light` | reservation 1 CPU / 3 GiB, hard cap 4 CPU / 8 GiB | 3..12 |
+| Windows | `windows_runner_count` 0..5 | unchanged | `job_cpus` / `job_memory_gib` as in schema 3 | 13..17 |
+
+Labels are additive: `fresh` stays, so a job asking for `fresh` may take any slot and a job asking
+for `heavy` only a heavy slot; no other repository's workflow changes. Reservations total
+2 x 20 + 10 x 3 = 70 GiB of the 72 GiB pool.
+
+**Settings schema 4** ([`settings-v4.schema.json`](settings-v4.schema.json)): every schema 3 key,
+all required, except `runner_count`, which is replaced by `linux_light_count` and
+`linux_heavy_count`; a file with `runner_count` is not schema 4. Rules (`validate.py`
+`sem_settings_v4`): light + heavy + Windows at least 1, no other sum limit; the shares follow schema 3
+with the Linux count = light + heavy (a profile has share 0 exactly when its count is 0). The Linux
+per-slot limits come only from the tier table above, never from the file; `job_cpus` and
+`job_memory_gib` keep their ranges and apply to the Windows runners only.
+
+**Status schema 5 while settings schema 4 is applied** (`applied_settings_schema` 4, which needs 4 in
+`settings_schemas`; `validate.py` `_tiers`): `capacity.max_slots` is 17 (else 5), the Linux profile
+`count` (light + heavy) is 0..12 and Windows 0..5, at least 1 together; every Linux slot carries
+`tier` (`heavy` or `light`) and its slot number is fixed by tier (table above) whatever the counts, so
+slot 3 is always the first light slot; Windows slots carry no tier (absent or null) and use 13..17.
+Under any other applied schema no slot carries a tier and the five-slot rules hold. `tier` is optional
+in the JSON schema so a supervisor before R1 step 3 stays valid. `legacy_pool.runner_count` and
+`status.json` `runner_count` report light + heavy (0..12), and `status.json` `slots[]` use the same
+fixed numbers; `status.json` itself gains no key, so an older tray still reads it (it draws at most
+five cards).
+
+**Who writes what:** the supervisor lists 4 in `settings_schemas` only when it can apply schema 4
+(the manager runs the two tiers, R1 steps 2 and 3); it keeps accepting 1, 2 and 3. The tray writes
+schema 4 only over a stored valid schema 4 file or while a fresh `status.v5.json` lists 4 (same
+freshness as schema 3), never schema 3 or 2 over a stored schema 4 file, and otherwise writes exactly
+what revision 3 says, with the light count as the schema 2/3 Linux count and the heavy count 0. The
+manager (R1 step 2) numbers its slots by the table and registers each tier with its exact label line.
 
 ## Status schema 5: a new file, not a new `status.json`
 
@@ -126,6 +170,8 @@ exit" holds only when desired is off or both counts are 0. P12 writes this into
 |---|---|
 | New tray, old supervisor | no `status.v5.json`, so the tray writes schema 2 and keeps the Windows count tray-local (P20.0 behaviour) |
 | New tray, new supervisor | tray writes schema 3 when the stored `settings.json` is a valid schema 3 file (keeping its keys the window has no control for, whatever `status.v5.json` says: a supervisor restart or a long block makes it stale), or when `status.v5.json` is fresh (at most 180 s old, not in the future) and lists 3 in `settings_schemas`; it never writes schema 2 over a stored schema 3 file, and it checks what it writes against the schema it writes. With schema 3 stored it shows that file's two counts and stops reading its tray-local file (it may delete it) |
+| New tray, supervisor with schema 4 (revision 5) | tray writes schema 4 over a stored valid schema 4 file, or while a fresh `status.v5.json` lists 4; from a stored schema 3 file it carries the kept keys over and the edited light count, heavy count and Windows count; never schema 3 or 2 over a stored schema 4 file |
+| New tray, supervisor without schema 4 | as the two rows above: schema 2 or 3, `runner_count` = the light count (at most 5 with Windows), heavy 0; the Heavy control is greyed |
 | Old tray, new supervisor | old tray reads schema 4 `status.json` and writes schema 2; supervisor keeps accepting 1 and 2 forever (`settings_schemas` must contain 2) |
 | Downgrade of the supervisor | an old supervisor rejects schema 3 with one warning and keeps the last valid settings; the new tray keeps writing schema 3 over the stored schema 3 file, which that supervisor keeps rejecting, until the owner removes `settings.json` (then the tray writes schema 2 again) |
 | Unknown future schema | supervisor: settings with `schema` above its maximum are rejected, last valid settings kept, one warning, status `detail` names it. Tray: `status.v5.json` with schema above 5 is ignored and the tray falls back to `status.json`; never shows readiness from a file it cannot read |
@@ -140,4 +186,4 @@ below the floor reported `ok`, a UNC root, unconfigured storage that lists tiers
 twice or not at all, a `missing` tier with free space, a tier above the floor reported `low`, an
 overall `ok` beside a `low` tier, and a storage detail carrying an ACE dump. Valid storage examples:
 unconfigured (VM profile unavailable), and `missing` with an `untrusted` tier that reports free
-space and one that cannot. Tray-local: count 5, schema 2, a string, a missing count.
+space and one that cannot. Tiers (revision 5): settings schema 4 with light 11, heavy 3, Windows 6, all zero, `runner_count` kept, the heavy count missing, schema 3, a Linux share with no Linux runner; status: a heavy tier on slot 3, a tier on a Windows slot, a Linux slot without a tier, a Windows slot in the light range, a tier while schema 3 is applied, `max_slots` 17 without schema 4, applied 4 that `settings_schemas` does not list, a Linux count of 13; six slots is now more slots than `max_slots`; valid: heavy and light slots under schema 4. Tray-local: count 5, schema 2, a string, a missing count.
