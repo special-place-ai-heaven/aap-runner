@@ -17,6 +17,7 @@ The acceptance gate is a parity run on this runner whose failure names are exact
 | `manager.conf.example` | Schema for `/etc/aap-runner/manager.conf`. No secrets |
 | `Dockerfile` | Job image: inner dockerd 27.3.1, build-essential, mysql-client, jq, Node.js 26.13.0 LTS, no sudo |
 | `ephemeral-entry.sh` | Starts inner dockerd, registers ephemeral, runs one job |
+| `accept-image.sh` | Image acceptance before a rollout: `assemble` stages a context whose files match `staging.sha256` and the bootstrap pins; `verify` builds it as `aap-accept:<name>` and checks it in temporary Sysbox containers with `--init` (preflight with `--assert-mounts`, pinned runner/Node/zccache versions, jq, no sccache, no sudo, zccache init). No registration, no pool label; the tag is untagged afterwards. It cannot prove a runner stays registered after a job (that is the rollout canary) |
 | `create-work-vhdx.ps1` | Fixed VHDX: `New-VHD -Fixed`, or diskpart when that cmdlet is absent or errors |
 | `mount-work-vhdx.ps1` | Operator logon task: `wsl --mount --vhd <path> --bare`, log appended under `C:\wsl` |
 | `mount-work-vhdx-task.xml` | That operator's SID, `InteractiveToken`, `HighestAvailable`, logon trigger. Installed as UTF-16 LE |
