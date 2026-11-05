@@ -110,7 +110,8 @@ with the codes `owner`, `acl`, `reparse`, `ancestor`, `drive-type`, `volume`, `m
 
 The interim runner (`FRESH-win-interim`, group `aap-win-interim`) runs from its install folder on
 this PC under the owner's limited, non-elevated logon task `\AAP-Win-Interim-Runner`, unisolated
-(owner accepted 2026-10-20). While its install folder exists and no Windows VM backend is loaded, the
+(owner accepted 2026-10-20). While its install folder exists, no Windows VM backend is loaded and no
+Windows VM reservation is live, the
 supervisor reports the Windows profile as `backend: windows-host` with `host_runner`, which is present
 exactly then:
 

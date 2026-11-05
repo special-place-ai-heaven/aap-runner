@@ -519,4 +519,4 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 
 - Prerequisites: P12, P20.0 (COMPLETE). Ownership: `parity/contracts/status-settings.md`, `status-v5.schema.json`, `validate.py` and fixtures, `supervisor/aap-runner-supervisor.ps1` and its tests, `crates/tray/src/{state,settings_panel,dashboard}.rs`.
 - Deliverable: status-settings revision 4: the Windows profile reports `backend: windows-host` with `host_runner` (`online`, `busy`, `stopped`) while the interim runner is installed and no Windows VM backend is loaded; the supervisor detects it read-only (logon task, listener and worker processes); the tray names it and its state with one warning line. Report only: no start or stop, no JIT registration (later R2 slices).
-- Closure: as every item. Current state: PR_OPEN (branch `feat/windows-host-backend`).
+- Closure: as every item. Current state: PR_OPEN (PR #103, branch `feat/windows-host-backend`).
