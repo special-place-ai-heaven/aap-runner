@@ -17,18 +17,26 @@ USAGE:
     aap-pool --help
 
 limits prints the docker resource arguments of one job container, one argument per
-line, exactly as distro/manager.sh passes them to `docker create`. From bash:
-    mapfile -t lim < <(aap-pool limits --runners 2 --sharing fixed)
+line, exactly as distro/manager.sh passes them to `docker create`. From bash, check the
+exit code before using the output (a process substitution would hide a refusal):
+    out=$(aap-pool limits --runners 2 --sharing fixed) || return 1
+    mapfile -t lim <<< \"${out}\"
 
 OPTIONS (defaults are the manager.sh defaults):
     --runners <1..5>         parallel job containers                      [1]
-    --cpus <n[.f]>           pool cpu total, greater than 0               [6]
-    --memory <n[b|k|m|g]>    pool memory total, docker suffixes           [12g]
+    --cpus <n[.f]>           pool cpu total, greater than 0, at most 9    [6]
+                             integer and 6 decimal digits not counting
+                             leading and trailing zeros
+    --memory <n[suffix]>     pool memory total, suffix b|k|m|g, any case  [12g]
     --pids-limit <n>         --pids-limit per container                   [4096]
     --sharing <slice|fixed>  slice shares the pool caps, fixed splits it  [slice]
     --io-percent <0..100>    share of the disk given to the pool, 0 = off [90]
-    --disk-mibps <n>         measured work-disk MiB/s; absent = no cap
-    --io-device <path>       whole block device, /dev/<name>; absent = no cap flags
+    --disk-mibps <n>         measured work-disk MiB/s, 1..999999999; absent or
+                             anything else = no cap, as manager.sh treats a
+                             missing or bad measurement
+    --io-device <path>       whole block device, /dev/<name>; absent or anything
+                             else = no cap flags, as manager.sh treats a mount
+                             without a block device
     -h, --help               print this help
 
 EXIT: 0 success; 2 invalid option or value, or the pool is refused (slot under
@@ -54,8 +62,8 @@ where
     I: Iterator<Item = String>,
 {
     let settings = match parse_limits_args(args) {
-        Ok(Parsed::Help) => return write_or_exit(out, HELP),
-        Ok(Parsed::Settings(s)) => s,
+        Ok(None) => return write_or_exit(out, HELP),
+        Ok(Some(s)) => s,
         Err(msg) => return fail(err, &msg),
     };
     match docker_args(&settings) {
@@ -67,35 +75,31 @@ where
     }
 }
 
-enum Parsed {
-    Help,
-    Settings(Box<PoolSettings>),
-}
-
-fn parse_limits_args<I>(mut args: I) -> Result<Parsed, String>
+/// The settings, or `None` when help was asked for.
+fn parse_limits_args<I>(mut args: I) -> Result<Option<PoolSettings>, String>
 where
     I: Iterator<Item = String>,
 {
     let mut s = PoolSettings::default();
     while let Some(flag) = args.next() {
-        if flag == "-h" || flag == "--help" {
-            return Ok(Parsed::Help);
-        }
-        let value = args.next().ok_or_else(|| format!("{flag} needs a value"))?;
+        // Taken only once the flag is known, so a stray word reports itself, not "needs a value".
+        let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
         let bad = |e: crate::limits::LimitsError| e.to_string();
         match flag.as_str() {
-            "--runners" => s.runners = value.parse().map_err(bad)?,
-            "--cpus" => s.cpus = value.parse().map_err(bad)?,
-            "--memory" => s.memory = value.parse().map_err(bad)?,
-            "--pids-limit" => s.pids_limit = value.parse().map_err(bad)?,
-            "--sharing" => s.sharing = value.parse().map_err(bad)?,
-            "--io-percent" => s.io.percent = value.parse().map_err(bad)?,
-            "--disk-mibps" => s.io.disk_mibps = Some(value.parse().map_err(bad)?),
-            "--io-device" => s.io.device = Some(value.parse().map_err(bad)?),
+            "-h" | "--help" => return Ok(None),
+            "--runners" => s.runners = value()?.parse().map_err(bad)?,
+            "--cpus" => s.cpus = value()?.parse().map_err(bad)?,
+            "--memory" => s.memory = value()?.parse().map_err(bad)?,
+            "--pids-limit" => s.pids_limit = value()?.parse().map_err(bad)?,
+            "--sharing" => s.sharing = value()?.parse().map_err(bad)?,
+            "--io-percent" => s.io.percent = value()?.parse().map_err(bad)?,
+            // manager.sh drops the IO cap, never the pool, for a bad measurement or device.
+            "--disk-mibps" => s.io.disk_mibps = value()?.parse().ok(),
+            "--io-device" => s.io.device = value()?.parse().ok(),
             other => return Err(format!("unknown option '{other}'; try --help")),
         }
     }
-    Ok(Parsed::Settings(Box::new(s)))
+    Ok(Some(s))
 }
 
 fn write_or_exit(out: &mut impl Write, text: &str) -> u8 {
@@ -141,6 +145,7 @@ mod tests {
             &["limits", "--runners", "6"][..],
             &["limits", "--runners"],
             &["limits", "--bogus", "1"],
+            &["limits", "foo"],
             &["limits", "--runners", "5", "--cpus", "4"],
             &["nope"],
             &[],
@@ -153,6 +158,56 @@ mod tests {
                 "{args:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_stray_word_is_an_unknown_option() {
+        let (_, _, err) = run_args(&["limits", "foo"]);
+        assert_eq!(
+            err,
+            "aap-pool: unknown option 'foo'; try --help
+"
+        );
+    }
+
+    #[test]
+    fn a_bad_measurement_or_device_drops_only_the_io_cap() {
+        let capped = [
+            "--runners",
+            "2",
+            "--sharing",
+            "fixed",
+            "--io-percent",
+            "100",
+        ];
+        let no_cap = run_args(&[&["limits"][..], &capped].concat());
+        for extra in [
+            &["--disk-mibps", "abc", "--io-device", "/dev/sde"][..],
+            &["--disk-mibps", "", "--io-device", "/dev/sde"],
+            &["--disk-mibps", "0", "--io-device", "/dev/sde"],
+            &["--disk-mibps", "1000", "--io-device", "tmpfs"],
+            &["--disk-mibps", "1000", "--io-device", ""],
+        ] {
+            let got = run_args(&[&["limits"][..], &capped, extra].concat());
+            assert_eq!(got, no_cap, "{extra:?}");
+        }
+        let (code, out, _) = run_args(
+            &[
+                &["limits"][..],
+                &capped,
+                &["--disk-mibps", "1000", "--io-device", "/dev/sde"],
+            ]
+            .concat(),
+        );
+        assert_eq!(code, 0);
+        assert!(
+            out.contains(
+                "--device-read-bps
+/dev/sde:500mb
+"
+            ),
+            "{out}"
+        );
     }
 
     #[test]

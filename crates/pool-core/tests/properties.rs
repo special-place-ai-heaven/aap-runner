@@ -56,8 +56,20 @@ fn slot_totals_stay_within_the_pool_and_floor_exactly() {
                         sharing,
                         ..Default::default()
                     };
-                    let Ok(args) = docker_args(&s) else { continue };
                     let ctx = format!("{cpus} {memory} x{runners} {sharing:?}");
+                    let args = match docker_args(&s) {
+                        Ok(args) => args,
+                        Err(e) => {
+                            // Only a real under-1-cpu or under-1g share may refuse.
+                            let pool_whole: u128 = cpus.split('.').next().unwrap().parse().unwrap();
+                            assert!(
+                                runners > 1
+                                    && (pool_whole / runners < 1 || mib(memory) / runners < 1024),
+                                "{ctx}: refused without cause: {e}"
+                            );
+                            continue;
+                        }
+                    };
                     checked += 1;
                     let pool_mib = mib(memory);
                     assert_eq!(

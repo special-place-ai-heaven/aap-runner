@@ -6,7 +6,8 @@
 //! original string because bash passes the pool totals verbatim (one slot, and slice mode);
 //! only the split for two or more slots is computed.
 //!
-//! Ceilings bash does not have: cpus take at most 9 integer and 6 fractional digits. bash divides
+//! Ceilings bash does not have: cpus take at most 9 significant integer and 6 significant
+//! fractional digits (leading and trailing zeros do not count). bash divides
 //! in awk doubles, so beyond about 15 significant digits its answer depends on float rounding and
 //! on the awk build; inside the ceiling the exact integer division here is identical.
 
@@ -110,12 +111,6 @@ fn is_positive_uint(s: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunnerCount(u8);
 
-impl RunnerCount {
-    pub fn get(self) -> u8 {
-        self.0
-    }
-}
-
 impl Default for RunnerCount {
     fn default() -> Self {
         Self(1)
@@ -143,12 +138,6 @@ pub struct Cpus {
     whole: u32,
 }
 
-impl Cpus {
-    pub fn as_str(&self) -> &str {
-        &self.raw
-    }
-}
-
 impl Default for Cpus {
     fn default() -> Self {
         Self {
@@ -171,8 +160,8 @@ impl FromStr for Cpus {
         if int.is_empty()
             || !digits(int)
             || !frac_ok
-            || int.len() > MAX_CPU_INT_DIGITS
-            || frac.len() > MAX_CPU_FRAC_DIGITS
+            || int.trim_start_matches('0').len() > MAX_CPU_INT_DIGITS
+            || frac.trim_end_matches('0').len() > MAX_CPU_FRAC_DIGITS
             || !int.bytes().chain(frac.bytes()).any(|b| b != b'0')
         {
             return Err(bad());
@@ -195,10 +184,6 @@ pub struct MemoryLimit {
 }
 
 impl MemoryLimit {
-    pub fn as_str(&self) -> &str {
-        &self.raw
-    }
-
     /// Whole MiB per slot, rounded down: `num * mult / count / 1 MiB`, left to right like bash.
     fn split_mib(&self, runners: RunnerCount) -> Result<u64, LimitsError> {
         let too_large = || LimitsError::MemoryTooLargeToSplit(self.raw.clone());
@@ -552,6 +537,9 @@ mod tests {
             "999999999",
             "0.000001",
             "999999999.999999",
+            "0000000006",
+            "6.0000000",
+            "0000999999999.9999990000",
         ] {
             assert!(s.parse::<Cpus>().is_ok(), "{s}");
         }
