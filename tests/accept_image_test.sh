@@ -125,11 +125,13 @@ ACCEPT_MANAGER=${work}/manager
 export ACCEPT_TEST_LOG=${log}
 
 # shellcheck disable=SC2317
-systemctl() { [[ "${manager_running}" == 1 ]]; }
+systemctl() {
+  if [[ "${manager_running}" == 1 ]]; then echo active; else echo "${manager_state-inactive}"; return 3; fi
+}
 # shellcheck disable=SC2317
 timeout() {
-  [[ "$1" == --foreground ]] || fail "timeout without --foreground: $*"
-  shift 2
+  [[ "$1 $2" == "--foreground -k" ]] || fail "timeout without --foreground -k: $*"
+  shift 4
   "$@"
 }
 # shellcheck disable=SC2317
@@ -164,9 +166,20 @@ assert_cleaned() { # TAG
 
 manager_running=1
 run_verify aap-accept:t0
-[[ "${rc}" -eq 2 && "${out}" == *"aap-runner-manager is active"* ]] || fail "verify ran beside an active manager (rc ${rc}): ${out}"
+[[ "${rc}" -eq 2 && "${out}" == *"aap-runner-manager is 'active'"* ]] || fail "verify ran beside an active manager (rc ${rc}): ${out}"
 ! grep -q '^docker build' "${log}" || fail "a build ran beside an active manager"
 manager_running=0
+for manager_state in deactivating activating unknown ""; do
+  run_verify aap-accept:tm
+  [[ "${rc}" -eq 2 ]] || fail "verify ran beside a manager that is '${manager_state}' (rc ${rc}): ${out}"
+done
+manager_state=failed
+run_verify aap-accept:tf
+[[ "${rc}" -eq 0 ]] || fail "verify refused a failed (stopped) manager (rc ${rc}): ${out}"
+manager_state=inactive manager_running=1 ACCEPT_ALLOW_LIVE_POOL=1
+run_verify aap-accept:to
+[[ "${rc}" -eq 0 ]] || fail "ACCEPT_ALLOW_LIVE_POOL=1 did not override (rc ${rc}): ${out}"
+manager_running=0 ACCEPT_ALLOW_LIVE_POOL=0
 
 run_verify aap-crrr-runner:local
 [[ "${rc}" -eq 2 ]] || fail "the live tag was accepted (rc ${rc})"
@@ -187,6 +200,7 @@ run_verify aap-accept:t1
 [[ "${rc}" -eq 0 ]] || fail "a run after a leftover failed (rc ${rc}): ${out}"
 grep -qx 'docker rm -f stale-container' "${log}" || fail "a leftover container was not removed"
 grep -qx 'docker rmi aap-accept:old' "${log}" || fail "a leftover tag was not untagged"
+[[ "${out}" == *"untagged leftover aap-accept:old"* ]] || fail "a removed leftover tag was not announced: ${out}"
 echo "leftovers ok"
 
 run_verify aap-accept:t2
@@ -200,7 +214,7 @@ grep -qE -- '^docker create --pull=never --runtime=sysbox-runc --init --name aap
 grep -q '^manager --assert-mounts aap-accept-preflight-' "${log}" || fail "the preflight mounts were not asserted"
 grep -q -- '^docker run --rm --pull=never --runtime=sysbox-runc --init --name aap-accept-probe-' "${log}" || fail "the probe is not Sysbox with --init"
 ! grep -q 'aap-crrr-job' "${log}" || fail "an acceptance container carries the pool label"
-! grep -qE 'docker (create|run).* (-e|--env|--env-file|-v|--volume|--mount)[ =]' "${log}" || fail "an acceptance container was given an environment or a mount"
+! grep -qE 'docker (create|run).* (-e|--env|--env-file|-v|--volume|--mount|--tmpfs|--device|--privileged|--cap-add)([ =]|$)' "${log}" || fail "an acceptance container was given an environment or a mount"
 grep -q '^docker rm -f aap-accept-preflight-' "${log}" || fail "the preflight container was not removed"
 assert_cleaned aap-accept:t2
 echo "verify pass, pool invisibility and cleanup ok"

@@ -13,10 +13,15 @@
 # verify never touches the live pool: TAG must be aap-accept:<name>, the
 # containers are named aap-accept-* and carry no aap-crrr-job label and no
 # environment or mount, nothing registers (no token is ever given), and TAG is
-# untagged, never force-removed. It refuses while aap-runner-manager is
-# active: the manager prunes dangling images after every job, which breaks a
-# build in progress (seen live 2026-11-05). Drain the pool and let the manager
-# exit first; ACCEPT_ALLOW_LIVE_POOL=1 overrides. ACCEPT_KEEP=1 keeps the tag.
+# untagged, never force-removed. It runs only while aap-runner-manager is
+# inactive or failed: the manager prunes dangling images after every job,
+# which breaks a build in progress (seen live 2026-11-05). Drain the pool,
+# let the manager exit, and keep it stopped (the supervisor restarts it on
+# resume, undrain or a limits change) until verify returns;
+# ACCEPT_ALLOW_LIVE_POOL=1 overrides. ACCEPT_KEEP=1 keeps the tag until the
+# next run, which removes every aap-accept:* tag it finds and says so.
+# The zccache-init check expects "direct", true while zccache-wrappers.json
+# qualifies no compiler; a qualified pair needs this check updated.
 #
 # It proves: the image builds; --init runs as PID 1 under Sysbox; the
 # preflight (inner dockerd) passes with --assert-mounts; the runner, Node and
@@ -33,8 +38,8 @@ ACCEPT_BUILD_TIMEOUT=${ACCEPT_BUILD_TIMEOUT:-2700}
 ACCEPT_RUN_TIMEOUT=${ACCEPT_RUN_TIMEOUT:-300}
 ACCEPT_TMP=${ACCEPT_TMP:-/tmp}
 ACCEPT_FILES=(Dockerfile ephemeral-entry.sh aap-zccache.sh zccache-wrappers.json)
-# The image's zccache install dir; tests point it at a stub.
-ZC_DIR=${ACCEPT_ZC_DIR:-/usr/local/libexec/aap-guest/cache}
+# The image's zccache install dir.
+ZC_DIR=/usr/local/libexec/aap-guest/cache
 # A real budget: 0 makes init report "disabled", not "direct".
 ZC_PROBE_BUDGET=1073741824
 
@@ -93,7 +98,7 @@ assemble() { # SRC CONTEXT
     copy_checked "${src}/${f}" "${ctx}/${f}" "${want}" || return 1
   done
   # The pins are read from a checked copy of bootstrap.sh, outside the context.
-  boot=$(mktemp)
+  boot=$(mktemp "${ACCEPT_TMP}/aap-accept-boot.XXXXXX")
   want=$(staged_sha "${src}/staging.sha256" bootstrap.sh) || { rm -f "${boot}"; return 1; }
   copy_checked "${src}/bootstrap.sh" "${boot}" "${want}" || { rm -f "${boot}"; return 1; }
   ub_name=$(pin "${boot}" UBUNTU_NAME '[A-Za-z0-9._-]+\.tar\.gz') &&
@@ -123,10 +128,14 @@ dockerfile_pin() { # DOCKERFILE SED_EXPR
 remove_leftovers() {
   local c t
   for c in $(docker ps -aq --filter name=^aap-accept- 2> /dev/null); do
-    docker rm -f "${c}" > /dev/null 2>&1 || true
+    docker rm -f "${c}" > /dev/null 2>&1 && say "removed leftover container ${c}"
   done
   for t in $(docker images --format '{{.Repository}}:{{.Tag}}' 2> /dev/null | grep '^aap-accept:'); do
-    docker rmi "${t}" > /dev/null 2>&1 || say "could not untag leftover ${t}"
+    if docker rmi "${t}" > /dev/null 2>&1; then
+      say "untagged leftover ${t}"
+    else
+      say "could not untag leftover ${t}"
+    fi
   done
 }
 
@@ -157,7 +166,7 @@ preflight() { # TAG
     return 0
   fi
   check mounts ok "no mount under /mnt, with --init"
-  if timeout --foreground "${ACCEPT_RUN_TIMEOUT}" docker start --attach "${name}" > "${work}/preflight.log" 2>&1; then
+  if timeout --foreground -k 30 "${ACCEPT_RUN_TIMEOUT}" docker start --attach "${name}" > "${work}/preflight.log" 2>&1; then
     check preflight ok "inner dockerd under Sysbox and --init"
   else
     check preflight fail "$(tail -n 3 "${work}/preflight.log" | tr '\n' ' ')"
@@ -169,7 +178,7 @@ probe() { # TAG
   local name="aap-accept-probe-$$"
   containers+=("${name}")
   # shellcheck disable=SC2016
-  timeout --foreground "${ACCEPT_RUN_TIMEOUT}" docker run --rm --pull=never --runtime=sysbox-runc --init --name "${name}" \
+  timeout --foreground -k 30 "${ACCEPT_RUN_TIMEOUT}" docker run --rm --pull=never --runtime=sysbox-runc --init --name "${name}" \
     --entrypoint /bin/bash "$1" -c '
     echo "pid1=$(cat /proc/1/comm)"
     echo "runner=$(runuser -u runner -- /opt/actions-runner/bin/Runner.Listener --version 2>&1 | head -n 1)"
@@ -205,9 +214,15 @@ verify() { # CONTEXT [TAG]
   df=${ctx}/Dockerfile
   [[ -f "${df}" ]] || { echo "refusing: ${ctx} has no Dockerfile" >&2; return 2; }
   [[ "${tag}" =~ ^aap-accept:[a-z0-9._-]+$ ]] || { echo "refusing: tag ${tag} is not aap-accept:<name>" >&2; return 2; }
-  if [[ "${ACCEPT_ALLOW_LIVE_POOL:-0}" != 1 ]] && systemctl is-active --quiet aap-runner-manager.service 2> /dev/null; then
-    echo "refusing: aap-runner-manager is active; its per-job image prune breaks a build. Drain and let it exit first" >&2
-    return 2
+  # Fail closed: only a stopped manager is safe (deactivating, auto-restart
+  # and an unreachable systemd all refuse).
+  if [[ "${ACCEPT_ALLOW_LIVE_POOL:-0}" != 1 ]]; then
+    local mstate
+    mstate=$(systemctl is-active aap-runner-manager.service 2> /dev/null) || true
+    if [[ "${mstate}" != inactive && "${mstate}" != failed ]]; then
+      echo "refusing: aap-runner-manager is '${mstate:-unknown}'; its per-job image prune breaks a build. Drain, let it exit, keep it stopped" >&2
+      return 2
+    fi
   fi
   exec 9> "${ACCEPT_LOCK}"
   flock -n 9 || { echo "refusing: another acceptance run holds ${ACCEPT_LOCK}" >&2; return 2; }
@@ -220,7 +235,7 @@ verify() { # CONTEXT [TAG]
   trap cleanup EXIT
 
   built_tag=${tag}
-  if ! timeout --foreground "${ACCEPT_BUILD_TIMEOUT}" docker build -q -t "${tag}" "${ctx}" > "${work}/build.log" 2>&1; then
+  if ! timeout --foreground -k 30 "${ACCEPT_BUILD_TIMEOUT}" docker build -q -t "${tag}" "${ctx}" > "${work}/build.log" 2>&1; then
     check build fail "$(tail -n 5 "${work}/build.log" | tr '\n' ' ')"
     say "FAIL (${failures}); log ${work}"
     return 1
