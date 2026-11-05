@@ -514,3 +514,9 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Deliverable: Reconcile every task/consumer child, reference/candidate certificate, merge/review identity, cleanup receipt, retained product asset and update/rollback runbook. Remove all disposable planning/execution resources by their manifests and publish the verified service profile.
 - Acceptance: Every required task accepted, agent-merged where applicable and CLEANUP_VERIFIED; no orphan worktree/target/process/temp artifact. Explicit product images/cache/evidence remain accounted. No deferred mandatory parity gate or unsupported claim.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+
+## R1.1 — Tiered Linux pool contract and tray (roadmap R1, steps 1 and 4)
+
+- Prerequisites: P12, P20.0 (COMPLETE); owner brief R1 (2026-11-04). Ownership: `parity/contracts/status-settings.md`, `settings-v4.schema.json`, `status-v5.schema.json`, `validate.py` and fixtures, `distro/README.md` (label lines only), `crates/tray/**`.
+- Deliverable: status-settings revision 5: settings schema 4 (`linux_light_count` 0..10, `linux_heavy_count` 0..2 instead of `runner_count`), status slots carry `tier` with fixed tier slot numbers and 17-slot maxima while schema 4 is applied; the tray's Light | Heavy count picker, compact always-drawn Linux cards (disabled slots grey) and painted tier icons, writing schema 4 only when a stored schema 4 file or a fresh `status.v5.json` allows it. Manager (step 2) and supervisor (step 3) tiers are separate items.
+- Closure: as every item. Current state: PR_OPEN (branch `feat/tray-tiers`).
