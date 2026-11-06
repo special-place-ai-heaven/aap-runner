@@ -40,7 +40,7 @@
       "note": "contract revision only; hosted CI 4/4 SUCCESS on the head; no independent review recorded"
     }
   ],
-  "cleanup_barrier_state": "CLOSED (ledger reconcile 2026-11-06): three merged parity cleanup receipts in the evidence store read verifier \"pending (no independent read-only verifier has run on this cleanup yet)\": P02.5-attempt-1 (PR #79, merge c7ee17a, verified on main), P02.4-attempt-1 (PR #80, merge 79d1feb, verified on main) and coord-ledger-close-6-attempt-1 (coordinator PR #81, merge 437ce96, verified on main). WORKTREES.md allows no new dispatch while a merged item lacks an independent verifier verdict. R1.1 (PR #104) and R2.1 (PR #103) merged with no cleanup receipt at all and are MERGED_CLEANUP_REQUIRED; the other product PRs merged since close 6 (#88-#102, see coordinator_prs) were not run through the parity worktree lifecycle and have no receipts. The barrier reopens when an independent verifier signs the three pending receipts and the R1.1/R2.1 cleanups are receipted and verified.",
+  "cleanup_barrier_state": "OPEN (2026-11-06): the independent read-only verifier pass C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md (batches 1 and 2) signed the five receipts that were pending or missing at the first 2026-11-06 reconcile, all CLEAN-WITH-NOTES: P02.4-attempt-1 (PR #80), P02.5-attempt-1 (PR #79), coord-ledger-close-6-attempt-1 (PR #81), R2.1-attempt-1 (PR #103) and R1.1-attempt-1 (PR #104). No merged parity item now lacks a verifier verdict. The R receipts validate only with PR #107 (receipt item and branch patterns widened), which is open; the product PRs #88-#102 and CI-wiring PRs from #88 on are outside the parity lifecycle and carry no receipt by rule.",
   "tasks": [
     {
       "id": "P00",
@@ -1559,12 +1559,12 @@
         "accepted_head": "aebc7976b1cf5f9080e4fc969fe3580cccf0e26d",
         "merge_sha": "79d1febe66531a29c0eb206ff045d7c44e3369f4"
       },
-      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P02.4-attempt-1.receipt.json (verifier pending)",
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P02.4-attempt-1.receipt.json (verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 1: stale main-state statements; no registry manifest to compare)",
       "decisions": [
         "Design decision recorded at ledger close 6 (2026-10-22), the clone isolation control the owner chose per PR #80: L2 isolation between clones is a permanent host neighbour entry per guest (a static MAC from the range 02-A0-98-xx-xx-xx plus New-NetNeighbor -State Permanent) plus the source pin; private VLAN is an optional lab add-on only and the shared check keeps refusing VlanMode Private; the per-guest switch stays the documented alternative. The contract revision is PR #80 (open, not merged). Open lab questions: whether the permanent entry holds against gratuitous ARP and ARP replies from a guest, and whether a static MAC survives Windows Setup and cloud-init. This item stays NOT_STARTED: the lab proof is gated on P02.1 and the owner."
       ],
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/80",
-      "note": "Ledger reconcile 2026-11-06: the contract revision (host network module contract revision 2, the per-guest permanent neighbour entry) merged as PR #80 at 79d1feb on 2026-10-22; its cleanup receipt has no independent verifier verdict yet. The lab proof (clone isolation against gratuitous ARP and ARP replies, static MAC through Windows Setup and cloud-init) is not done and stays gated on P02.1 and the owner. Not COMPLETE."
+      "note": "Ledger reconcile 2026-11-06: the contract revision (host network module contract revision 2, the per-guest permanent neighbour entry) merged as PR #80 at 79d1feb on 2026-10-22; its cleanup receipt was verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md). The lab proof (clone isolation against gratuitous ARP and ARP replies, static MAC through Windows Setup and cloud-init) is not done and stays gated on P02.1 and the owner. Not COMPLETE."
     },
     {
       "id": "P08.2",
@@ -1636,10 +1636,10 @@
         "accepted_head": "d621e9a686a96074d8de50663875d6c0ccaedeb8",
         "merge_sha": "c7ee17a877b6041de85d8842fce48630d0ec59c7"
       },
-      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P02.5-attempt-1.receipt.json (verifier pending)",
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P02.5-attempt-1.receipt.json (verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 1: registry manifest not listed as retained after a rebase; stale main-state statements; file touched ~1.5 min after it was written)",
       "why": "The Highs from the cross-family review need a guest-side binding of vm_id/reservation/lease_generation to the clone; KVP-on leaks the host name.",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/79",
-      "note": "Ledger reconcile 2026-11-06: owner approval Q6 is recorded (2026-10-21/22); the contract revision (guest-transport revision 2) merged as PR #79 at c7ee17a on 2026-10-22; its cleanup receipt has no independent verifier verdict yet. Conformance: the Linux side (P11 seed, P15) is PR #84, open, with pester-backends failing on its head; the Windows side (P10 WriteUnattend, P14) has no PR; the independent security review is not recorded. Not COMPLETE."
+      "note": "Ledger reconcile 2026-11-06: owner approval Q6 is recorded (2026-10-21/22); the contract revision (guest-transport revision 2) merged as PR #79 at c7ee17a on 2026-10-22; its cleanup receipt was verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md). Conformance: the Linux side (P11 seed, P15) is PR #84, open, with pester-backends failing on its head; the Windows side (P10 WriteUnattend, P14) has no PR; the independent security review is not recorded. Not COMPLETE."
     },
     {
       "id": "P22.2",
@@ -1780,7 +1780,7 @@
         "crates/tray/src/dashboard.rs"
       ],
       "lane": "Claude (coordinator)",
-      "delivery_state": "MERGED_CLEANUP_REQUIRED",
+      "delivery_state": "COMPLETE",
       "deliverable": "status-settings revision 4: the Windows profile reports backend windows-host with host_runner (online, busy, stopped) while the interim runner is installed and no Windows VM backend is loaded; the supervisor detects it read-only; the tray names it and its state with one warning line. Report only.",
       "acceptance": "As LEDGER.md R2.1.",
       "merge_proof": {
@@ -1789,10 +1789,10 @@
         "accepted_head": "5b55b9fe33d22d9fc361fe98cbf09b049898b1da",
         "merge_sha": "279eed414107bb94edf1b3cc292cb4472beb4b56"
       },
-      "cleanup_receipt": null,
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\R2.1-attempt-1.receipt.json (verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 2: stale base-clone statements; no registry manifest; the ecc:orch-review APPROVE is recorded in-session only)",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/103",
       "branch": "feat/windows-host-backend",
-      "note": "Merged 2026-11-06 at 279eed4. MERGED_CLEANUP_REQUIRED: merged on main, but no parity cleanup receipt exists and no independent verifier has signed one, so it is not COMPLETE."
+      "note": "Merged 2026-11-06 at 279eed4 (PR #103); hosted CI green on the recorded head before the merge; cleanup receipt R2.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 2). Schema dependency: the receipt validates with parity/contracts/validate.py only once PR #107 (cleanup receipts accept roadmap items and feat/ branches) merges; origin/main's validator still rejects it."
     },
     {
       "id": "R1.1",
@@ -1811,7 +1811,7 @@
         "crates/tray/**"
       ],
       "lane": "Claude (coordinator)",
-      "delivery_state": "MERGED_CLEANUP_REQUIRED",
+      "delivery_state": "COMPLETE",
       "deliverable": "status-settings revision 5: settings schema 4 (linux_light_count 0..10, linux_heavy_count 0..2), tiered status slots; the tray Light | Heavy picker, compact always-drawn Linux cards and tier icons. Manager (R1 step 2) and supervisor (R1 step 3) tiers are separate items.",
       "acceptance": "As LEDGER.md R1.1.",
       "merge_proof": {
@@ -1820,10 +1820,10 @@
         "accepted_head": "3bc41c4fa8042cbc0f2861bb5ef31a47ba156390",
         "merge_sha": "b5c946b99f435d921f55bd87f451e3688054356b"
       },
-      "cleanup_receipt": null,
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\R1.1-attempt-1.receipt.json (verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 2: stale base-clone statements; no registry manifest; the ecc:orch-review APPROVE is recorded in-session only)",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/104",
       "branch": "feat/tray-tiers",
-      "note": "Merged 2026-11-06 at b5c946b (origin/main at this reconcile). MERGED_CLEANUP_REQUIRED: merged on main, but no parity cleanup receipt exists and no independent verifier has signed one, so it is not COMPLETE."
+      "note": "Merged 2026-11-06 at b5c946b (PR #104); hosted CI green on the recorded head before the merge; cleanup receipt R1.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 2). Schema dependency: the receipt validates with parity/contracts/validate.py only once PR #107 (cleanup receipts accept roadmap items and feat/ branches) merges; origin/main's validator still rejects it."
     }
   ],
   "authorization": {
@@ -1978,12 +1978,13 @@
       "reviewed_head": "daa1a1445593483d68f2cc24b50cb0836ffad18d",
       "merge_sha": "437ce96174896e2977f36cdfcb2ff6f74caed207",
       "what": "ledger close 6 (docs/parity/LEDGER.md and docs/parity/ledger.json only)",
-      "cleanup": "receipt coord-ledger-close-6-attempt-1.receipt.json; verifier pending (no independent verdict as of 2026-11-06)"
+      "cleanup": "receipt coord-ledger-close-6-attempt-1.receipt.json verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 1: no registry manifest; stale main-state statements)"
     },
     {
       "item": "product-prs-2026-11-05",
       "what": "Merged outside the parity worktree lifecycle (no parity receipts): #88 PRODUCT.md (6ad2c70), #89 systemd-analyze test (c354f58), #90 docs/ROADMAP.md (4006352), #91 job containers under --init (5a2c3a1), #92 jq in the image (7edbd9a), #93 Node.js 26.13.0 in the image (a1753a7), #94 runner 2.338.2 pinned (d9a9d10), #95 Rust 1.99.1 (5d91d13), #96 pool-core limits crate (55914b3), #98 manual runner image check workflow (047b6fd), #99 zccache replaces sccache (03ae663, P16 part), #100 image acceptance (3ec4cbf), #101 runner group settings docs (cfca6df), #102 one clock authority (2826471), #103 R2.1 (279eed4), #104 R1.1 (b5c946b). Closed unmerged 2026-11-06: #85, #86, #87 (stale or superseded), #97 (superseded by #99).",
-      "cleanup": "none recorded"
+      "cleanup": "none recorded",
+      "note": "From #88 onward, CI-wiring PRs (#89, #98 and the open #105 included) are not ledger items and get no coordinator receipt; a reconcile does not flag them."
     }
   ],
   "owner_decisions_queued": [
@@ -2049,7 +2050,7 @@
       "status": "APPROVED",
       "decided": "2026-10-21/22 (owner decision session)",
       "answer": "APPROVED: the host writes an offline per-clone guest identity record into the Windows unattend/answer file and the Linux cloud-init seed (fields vm_id, reservation_id, lease_generation, expected scratch disk size/identity); Hyper-V KVP stays off; the SMBIOS UUID alternative is rejected.",
-      "still_open": "The contract revision merged as PR #79 (c7ee17a, 2026-10-22; cleanup receipt verifier pending). Conformance: the Linux side (P11 seed, P15) is PR #84, open, pester-backends failing on its head; the Windows side (P10 WriteUnattend, P14) has no PR; the independent security review is not recorded. P02.5 is IN_PROGRESS."
+      "still_open": "The contract revision merged as PR #79 (c7ee17a, 2026-10-22; cleanup receipt verified CLEAN-WITH-NOTES 2026-11-06). Conformance: the Linux side (P11 seed, P15) is PR #84, open, pester-backends failing on its head; the Windows side (P10 WriteUnattend, P14) has no PR; the independent security review is not recorded. P02.5 is IN_PROGRESS."
     }
   ]
 }
