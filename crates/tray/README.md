@@ -52,7 +52,7 @@ admin-written.
   over a stored valid schema 4 file, or while a fresh `status.v5.json` lists 4, Apply and
   Pause/Resume write schema 4 (`linux_light_count` 0..10, `linux_heavy_count` 0..2 instead of
   `runner_count`, every other schema 3 key kept as below; the totals stay as stored, they are the
-  Windows runners' and the tiers carry the Linux limits); never schema 3 or 2 over a stored schema 4
+  WSL pool totals and the supervisor refuses tiers whose heavy x 20 + light x 3 GiB exceed the memory total); never schema 3 or 2 over a stored schema 4
   file. Otherwise the tray writes exactly what it wrote before: the Light count is the schema 2/3
   Linux count (1..5 with Windows, at most 5 together) and a Heavy count is refused. A schema 3 file is
   carried into schema 4 (its Linux count as the light count) once `status.v5.json` lists 4.

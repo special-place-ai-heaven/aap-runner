@@ -7,7 +7,12 @@
 # Bump this when the label contract changes. The manager, bootstrap, and
 # evidence each call require_labels_version with the value they were
 # written against and exit if this stamp differs.
-AAP_RUNNER_LABELS_VERSION=1
+AAP_RUNNER_LABELS_VERSION=2
+
+# The label line of every slot in a tiered Linux pool (manager.sh finish_tiers).
+# Code constants, never read from a config file.
+AAP_LABELS_HEAVY=self-hosted,linux,x64,fresh,heavy
+AAP_LABELS_LIGHT=self-hosted,linux,x64,fresh,light
 
 require_labels_version() {
   local expected="$1"
@@ -91,6 +96,9 @@ compose_runner_labels() {
 
 labels_line_ok() {
   local line="$1" base="$2"
+  if [[ "${base}" == fresh && ("${line}" == "${AAP_LABELS_HEAVY}" || "${line}" == "${AAP_LABELS_LIGHT}") ]]; then
+    return 0
+  fi
   [[ "${line}" == "self-hosted,linux,${base}" || "${line}" == "self-hosted,linux,${base},"* ]] || return 1
   [[ "${line}" =~ ^self-hosted,linux,(crrr|fresh)(,[a-z0-9][a-z0-9._-]*)*$ ]]
 }
@@ -152,6 +160,23 @@ labels_self_check() {
   fi
   [[ "$(compose_runner_labels crrr "")" == "self-hosted,linux,crrr" ]]
   [[ "$(compose_runner_labels fresh heavy)" == "self-hosted,linux,fresh,heavy" ]]
+  [[ "${AAP_RUNNER_LABELS_VERSION}" == 2 ]]
+  [[ "${AAP_LABELS_HEAVY}" == "self-hosted,linux,x64,fresh,heavy" ]]
+  [[ "${AAP_LABELS_LIGHT}" == "self-hosted,linux,x64,fresh,light" ]]
+  labels_line_ok "${AAP_LABELS_HEAVY}" fresh
+  labels_line_ok "${AAP_LABELS_LIGHT}" fresh
+  for name in "${AAP_LABELS_HEAVY}" "${AAP_LABELS_LIGHT}"; do
+    if labels_line_ok "${name}" crrr; then
+      echo "tier labels ${name} were accepted for base crrr" >&2
+      return 1
+    fi
+  done
+  for name in "self-hosted,linux,x64,fresh" "self-hosted,linux,x64,fresh,other" "self-hosted,linux,x64,fresh,heavy,light"; do
+    if labels_line_ok "${name}" fresh; then
+      echo "label line ${name} was accepted" >&2
+      return 1
+    fi
+  done
   require_labels_version "${AAP_RUNNER_LABELS_VERSION}"
   rc=0
   err=$(require_labels_version "not-${AAP_RUNNER_LABELS_VERSION}" 2>&1) || rc=$?

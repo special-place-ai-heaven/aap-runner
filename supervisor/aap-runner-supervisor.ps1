@@ -30,7 +30,11 @@
 #   runner_count stays the Linux count. Schema 3 (only with the capacity
 #   module, below) has every key of parity/contracts/settings-v3.schema.json:
 #   Linux 0..5 and Windows 0..5 (together 1..5), shares and host reserve.
-#   A schema above the newest accepted one is refused and named in the
+#   Schema 4 (tiered Linux pool; only without the capacity module and for a
+#   manager that knows the tier keys) replaces runner_count by
+#   linux_light_count 0..10 and linux_heavy_count 0..2 (parity/contracts/
+#   settings-v4.schema.json); limits.conf then says AAP_LINUX_HEAVY_COUNT and
+#   AAP_LINUX_LIGHT_COUNT. A schema above the newest accepted one is refused and named in the
 #   status detail. Missing =
 #   no override, not paused. Invalid = one logged warning, the last valid
 #   content stays. Both files are parsed strictly. Only validated values
@@ -118,6 +122,11 @@ $AapJobUrlPattern = '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/action
 $AapSlotStates = @('idle', 'running', 'draining', 'starting', 'error')
 $AapV3Keys = @('schema', 'linux_backend', 'runner_count', 'windows_runner_count', 'job_cpus', 'job_memory_gib', 'paused', 'io_percent', 'sharing',
     'host_reserve_percent', 'share_mode', 'linux_share_percent', 'windows_share_percent', 'lease_wall_clock_hours')
+# Schema 4 (tiered Linux pool): schema 3's keys with runner_count replaced by the two tier counts.
+$AapV4Keys = @($AapV3Keys | ForEach-Object { if ($_ -ceq 'runner_count') { 'linux_light_count'; 'linux_heavy_count' } else { $_ } })
+# Tier reservations the manager checks against the pool memory (status-settings.md, Tiers).
+$AapHeavyGib = 20
+$AapLightGib = 3
 $AapOs = @{ linux = 'Linux'; windows = 'Windows' }
 # The backend modules a VM profile is driven by; the supervisor calls Invoke-Aap<Kind>Step and the
 # other exported functions of backends\<folder>\Aap<Kind>Backend.psm1 by these names.
@@ -179,6 +188,8 @@ function Initialize-AapRuntime {
     $AapRt.Effective = $null
     $AapRt.VmWarned = $false
     $AapRt.ManagerOk = $null
+    # The installed manager knows the tier keys (Test-AapManagerTiers); $null until probed.
+    $AapRt.ManagerTiers = $null
     $AapRt.ProbedAt = [DateTimeOffset]::MinValue
     $AapRt.Status = $null
     $AapRt.StatusAt = [DateTimeOffset]::MinValue
@@ -215,12 +226,16 @@ function Get-AapLimitsKey($Limits) {
     $key = '{0},{1},{2}' -f $Limits.RunnerCount, $Limits.JobCpus, $Limits.JobMemoryGib
     if ($null -ne $Limits.IoPercent) { $key += ",io=$($Limits.IoPercent)" }
     if ($null -ne $Limits.Sharing) { $key += ",sharing=$($Limits.Sharing)" }
+    if ($null -ne $Limits.Heavy) { $key += ",h=$($Limits.Heavy),l=$($Limits.Light)" }
     return $key
 }
 
-# limits.conf text. The two schema 2 keys only when the settings set them.
+# limits.conf text. The two schema 2 keys only when the settings set them; a
+# tiered pool (schema 4) says its two counts instead of AAP_RUNNER_COUNT.
 function Get-AapLimitsContent($Limits) {
-    $c = "AAP_RUNNER_COUNT=$([int]$Limits.RunnerCount)`nAAP_JOB_CPUS=$([int]$Limits.JobCpus)`nAAP_JOB_MEMORY=$([int]$Limits.JobMemoryGib)g`n"
+    $count = "AAP_RUNNER_COUNT=$([int]$Limits.RunnerCount)`n"
+    if ($null -ne $Limits.Heavy) { $count = "AAP_LINUX_HEAVY_COUNT=$([int]$Limits.Heavy)`nAAP_LINUX_LIGHT_COUNT=$([int]$Limits.Light)`n" }
+    $c = "${count}AAP_JOB_CPUS=$([int]$Limits.JobCpus)`nAAP_JOB_MEMORY=$([int]$Limits.JobMemoryGib)g`n"
     if ($null -ne $Limits.IoPercent) { $c += "AAP_JOB_IO_PERCENT=$([int]$Limits.IoPercent)`n" }
     if ($Limits.Sharing -ceq 'slice' -or $Limits.Sharing -ceq 'fixed') { $c += "AAP_POOL_SHARING=$($Limits.Sharing)`n" }
     return $c
@@ -352,8 +367,10 @@ function Read-AapDesired {
 # and not returned, so it never reaches limits.conf or restarts the manager.
 # Profiles is what the allocator gets: for schema 1 and 2 the Linux count,
 # Windows 0, even shares, reserve 10. Schema 3 (ConvertFrom-AapSettingsV3) is
-# accepted only with the capacity module; a newer schema is refused and kept
-# in SettingsWhy for the status detail.
+# accepted only with the capacity module; schema 4 (ConvertFrom-AapSettingsV4)
+# only without it and only while the installed manager knows the tier keys
+# (ManagerTiers). A newer schema, and a schema 4 file this supervisor cannot
+# run, is refused and kept in SettingsWhy for the status detail.
 function Read-AapSettingsFile {
     $obj = Read-AapJsonFile 'settings.json'
     $warn = $null
@@ -368,17 +385,19 @@ function Read-AapSettingsFile {
         $optional = @('schema', 'io_percent', 'sharing', 'windows_runner_count')
         $schema = $null
         if ($names -ccontains 'schema') { $schema = $obj.schema }
-        $max = 2
-        if ($AapRt.Cap) { $max = 3 }
+        $accepted = @(1, 2)
+        if ($AapRt.Cap) { $accepted = @(1, 2, 3) } elseif ($AapRt.ManagerTiers -eq $true) { $accepted = @(1, 2, 4) }
         $whole = ($schema -is [int] -or $schema -is [long])
-        if ($whole -and $schema -gt $max) {   # check:settings-newer
-            $warn = "settings.json schema $schema is newer than this supervisor accepts ($((1..$max) -join ', '))"
+        if ($whole -and $schema -gt 2 -and $accepted -notcontains $schema) {   # check:settings-newer
+            $warn = "settings.json schema $schema is newer than this supervisor accepts ($($accepted -join ', '))"
             $newer = $warn
-        } elseif ($whole -and $schema -eq 3) {
-            $warn = ConvertFrom-AapSettingsV3 $obj
+        } elseif ($whole -and ($schema -eq 3 -or $schema -eq 4)) {
+            if ($schema -eq 3) { $warn = ConvertFrom-AapSettingsV3 $obj } else { $warn = ConvertFrom-AapSettingsV4 $obj }
             if ($warn -isnot [string]) {
                 $AapRt.Settings = $warn
                 $warn = $null
+            } elseif ($schema -eq 4) {
+                $newer = $warn
             }
         } elseif (@($want | Where-Object { $names -cnotcontains $_ }).Count -gt 0 -or
             @($names | Where-Object { $want -cnotcontains $_ -and $optional -cnotcontains $_ }).Count -gt 0) {
@@ -467,6 +486,58 @@ function ConvertFrom-AapSettingsV3($Obj) {
         Profiles = @{ Linux = $linux; Windows = $windows; ShareMode = [string]$Obj.share_mode; LinuxShare = $shares[0]; WindowsShare = $shares[1]
             Reserve = $reserve; LinuxBackend = [string]$Obj.linux_backend; LeaseHours = [int]$Obj.lease_wall_clock_hours }
         Schema   = 3
+    }
+}
+
+# Schema 4 (settings-v4.schema.json and validate.py sem_settings_v4): schema 3's
+# rules with the Linux count = light (0..10) + heavy (0..2). Only this supervisor
+# without the capacity module reads it, so Linux must be 1 or more (no Windows VM
+# runs here) and linux_backend stays wsl-legacy. job_cpus and job_memory_gib stay
+# the WSL pool totals; the manager refuses a pool whose tier reservations exceed
+# the pool memory, so the same inequality refuses the file here. Returns the
+# settings (Limits has Heavy and Light, which Get-AapLimitsContent writes as the
+# tier keys), or a warning string.
+function ConvertFrom-AapSettingsV4($Obj) {
+    $names = @($Obj.PSObject.Properties.Name)
+    if (@($AapV4Keys | Where-Object { $names -cnotcontains $_ }).Count -gt 0 -or @($names | Where-Object { $AapV4Keys -cnotcontains $_ }).Count -gt 0) {   # check:v4-keys
+        return "settings.json schema 4 must have exactly $($AapV4Keys -join ', ')"
+    }
+    foreach ($k in @(@('linux_light_count', 0, 10), @('linux_heavy_count', 0, 2), @('windows_runner_count', 0, 5), @('job_cpus', 1, 28), @('job_memory_gib', 1, 80),
+            @('io_percent', 0, 100), @('host_reserve_percent', 10, 90), @('lease_wall_clock_hours', 1, 72))) {
+        $v = $Obj.($k[0])
+        if (-not ($v -is [int] -or $v -is [long]) -or $v -lt $k[1] -or $v -gt $k[2]) { return "settings.json $($k[0]) must be an integer $($k[1])..$($k[2])" }
+    }
+    $light = [int]$Obj.linux_light_count
+    $heavy = [int]$Obj.linux_heavy_count
+    $linux = $light + $heavy
+    $windows = [int]$Obj.windows_runner_count
+    if ($linux -lt 1) { return 'settings.json schema 4 needs at least one Linux runner (light + heavy 1..12); this supervisor runs no Windows VM' }   # check:v4-counts
+    if (-not ($Obj.paused -is [bool])) { return 'settings.json paused must be true or false' }
+    foreach ($k in @(@('sharing', 'slice', 'fixed'), @('linux_backend', 'wsl-legacy', 'hyperv-vm'), @('share_mode', 'even', 'per_profile'))) {
+        $v = $Obj.($k[0])
+        if (-not ($v -is [string] -and ($v -ceq $k[1] -or $v -ceq $k[2]))) { return "settings.json $($k[0]) must be `"$($k[1])`" or `"$($k[2])`"" }
+    }
+    $reserve = [int]$Obj.host_reserve_percent
+    $shares = @($Obj.linux_share_percent, $Obj.windows_share_percent)
+    if ($Obj.share_mode -ceq 'even') {
+        if ($null -ne $shares[0] -or $null -ne $shares[1]) { return 'settings.json share_mode even takes null shares' }
+    } else {
+        foreach ($v in $shares) {
+            if (-not ($v -is [int] -or $v -is [long]) -or $v -lt 0 -or $v -gt 90) { return 'settings.json per_profile shares must be integers 0..90' }
+        }
+        if ($shares[0] + $shares[1] + $reserve -ne 100) { return 'settings.json shares plus host_reserve_percent must be 100' }
+        if (($linux -eq 0) -ne ($shares[0] -eq 0) -or ($windows -eq 0) -ne ($shares[1] -eq 0)) { return 'settings.json a share is 0 exactly when its count is 0' }
+        $shares = @([int]$shares[0], [int]$shares[1])
+    }
+    if ($Obj.linux_backend -ceq 'hyperv-vm') { return 'settings.json linux_backend hyperv-vm needs the capacity module and an active Ubuntu generation' }   # check:v4-linux-vm
+    $need = $heavy * $AapHeavyGib + $light * $AapLightGib
+    if ($need -gt [int]$Obj.job_memory_gib) { return "settings.json tier reservations (heavy x $AapHeavyGib + light x $AapLightGib GiB = $need) exceed job_memory_gib $([int]$Obj.job_memory_gib)" }   # check:v4-memory
+    return @{
+        Limits   = @{ RunnerCount = $linux; Heavy = $heavy; Light = $light; JobCpus = [int]$Obj.job_cpus; JobMemoryGib = [int]$Obj.job_memory_gib; IoPercent = [int]$Obj.io_percent; Sharing = [string]$Obj.sharing }
+        Paused   = [bool]$Obj.paused
+        Profiles = @{ Linux = $linux; Windows = $windows; ShareMode = [string]$Obj.share_mode; LinuxShare = $shares[0]; WindowsShare = $shares[1]
+            Reserve = $reserve; LinuxBackend = [string]$Obj.linux_backend; LeaseHours = [int]$Obj.lease_wall_clock_hours }
+        Schema   = 4
     }
 }
 
@@ -566,13 +637,16 @@ function Test-AapGranted($R) {
 }
 
 # One slots[] entry. M is a mirrored manager slot (already checked by
-# ConvertFrom-AapManagerStatus) for a legacy slot, else $null.
-function New-AapV5Slot([int]$Slot, [string]$Profile, [string]$Backend, [string]$Lifecycle, [string]$Generation, $M) {
+# ConvertFrom-AapManagerStatus) for a legacy slot, else $null. Tier is
+# heavy or light for a Linux slot of a tiered pool, else empty.
+function New-AapV5Slot([int]$Slot, [string]$Profile, [string]$Backend, [string]$Lifecycle, [string]$Generation, $M, [string]$Tier = '') {
     $s = [ordered]@{
         slot = $Slot; profile = $Profile; os = $AapOs[$Profile]; backend = $Backend; lifecycle = $Lifecycle
         image_generation = (Format-AapV5Text $Generation 80); job = ''; repo = ''; run_url = ''; job_url = $null
         started_at = $null; cpu_cores = $null; mem_gib = $null
     }
+    # Only while settings schema 4 is applied (status-settings.md, Tiers).
+    if ($Tier) { $s.tier = $Tier }
     if ($M) {
         $s.job = Format-AapText ([string]$M.job -replace '[\x7f\u200e\u200f\u202a-\u202e\u2066-\u2069]', ' ') 200
         $s.repo = [string]$M.repo
@@ -718,6 +792,9 @@ function Get-AapHostRunner {
 # validated state and the storage document the backends validated.
 function Get-AapStatusV5([string]$State, [string]$Detail, $Mirror, [DateTimeOffset]$Now) {
     $mirrored = ($Mirror -and @('idle', 'running', 'draining') -contains $State)
+    # Settings schema 4 applied (it needs no capacity module): 17 slots, tiers on the Linux ones.
+    $tiered = ($AapRt.Settings.Schema -eq 4)
+    $maxSlots = $(if ($tiered) { 17 } else { 5 })
     $mslots = @()
     if ($mirrored) { $mslots = @($Mirror.Slots) }
     $doc = $null
@@ -742,9 +819,17 @@ function Get-AapStatusV5([string]$State, [string]$Detail, $Mirror, [DateTimeOffs
         }
     } else {
         $n = 0
-        foreach ($m in @($mslots | Select-Object -First 5)) {
+        foreach ($m in @($mslots | Select-Object -First $maxSlots)) {
             $n++
-            $slots.Add((New-AapV5Slot $n 'linux' 'wsl-legacy' (ConvertTo-AapLifecycle ([string]$m.state)) $AapLegacyGeneration $m))
+            if ($tiered) {
+                # The manager numbers its slots by tier (1-2 heavy, 3-12 light) and the number stays.
+                if ($m.slot -isnot [int] -and $m.slot -isnot [long]) { continue }
+                if ($m.slot -lt 1 -or $m.slot -gt 12) { continue }
+                $tier = $(if ($m.slot -le 2) { 'heavy' } else { 'light' })
+                $slots.Add((New-AapV5Slot ([int]$m.slot) 'linux' 'wsl-legacy' (ConvertTo-AapLifecycle ([string]$m.state)) $AapLegacyGeneration $m $tier))
+            } else {
+                $slots.Add((New-AapV5Slot $n 'linux' 'wsl-legacy' (ConvertTo-AapLifecycle ([string]$m.state)) $AapLegacyGeneration $m))
+            }
         }
     }
     $storage = Get-AapStorageView (Get-AapStorageTiers)
@@ -766,7 +851,7 @@ function Get-AapStatusV5([string]$State, [string]$Detail, $Mirror, [DateTimeOffs
             $mode = $AapRt.Settings.Profiles.ShareMode
         }
         $capacity = [ordered]@{
-            max_slots = 5; used_slots = $slots.Count; free_slots = 5 - $slots.Count; host_reserve_percent = $reserve; share_mode = $mode
+            max_slots = $maxSlots; used_slots = $slots.Count; free_slots = $maxSlots - $slots.Count; host_reserve_percent = $reserve; share_mode = $mode
             host = [ordered]@{ cpus = (Get-AapV5Int $h.cpu_cores 1024 -Clamp); mem_gib = (Get-AapV5Int $h.mem_gib 4096 -Clamp) }
         }
     }
@@ -778,7 +863,7 @@ function Get-AapStatusV5([string]$State, [string]$Detail, $Mirror, [DateTimeOffs
         }
         $eff = $AapRt.Effective
         if ($eff -and -not $AapRt.ManagerStopped) {
-            $legacy.runner_count = Get-AapV5Int $eff.RunnerCount 5
+            $legacy.runner_count = Get-AapV5Int $eff.RunnerCount $(if ($tiered) { 12 } else { 5 })
             $legacy.job_cpus = Get-AapV5Int $eff.JobCpus 1024
             $legacy.job_memory_gib = Get-AapV5Int $eff.JobMemoryGib 4096
         }
@@ -792,7 +877,7 @@ function Get-AapStatusV5([string]$State, [string]$Detail, $Mirror, [DateTimeOffs
         }
     }
     $schemas = @(1, 2)
-    if ($AapRt.Cap) { $schemas = @(1, 2, 3) }
+    if ($AapRt.Cap) { $schemas = @(1, 2, 3) } elseif ($AapRt.ManagerTiers -eq $true -or $tiered) { $schemas = @(1, 2, 4) }
     return [ordered]@{
         schema = 5; state = $v5state; updated = $Now.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
         detail = (Format-AapV5Text $Detail 300); settings_schemas = $schemas; applied_settings_schema = $AapRt.Settings.Schema
@@ -863,8 +948,8 @@ function Invoke-AapRoot([string[]]$Argv, $StdIn = $null) {
 # /run/aap-runner/status.json from the manager. State is $null unless the
 # Windows contract knows it. Limits are $null unless all three parse.
 # Repo and RunUrl are '' unless they match exactly; the tray opens RunUrl.
-# Schema 3 adds sampled_at, pool, slots (an array; at most 5 objects are
-# kept), job_io_mbps and sharing; an older manager's slots count gives [].
+# Schema 3 adds sampled_at, pool, slots (an array; at most 17 objects are
+# kept: 5 untiered, 12 with the tiered pool), job_io_mbps and sharing; an older manager's slots count gives [].
 # Schema 4 adds work_disk_gib, work_disk_free_gb, work_disk_floor_gb and
 # cleaning. A manager file without them leaves the sizes null and cleaning false.
 function ConvertFrom-AapManagerStatus([string]$Text) {
@@ -883,7 +968,7 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
     if (-not ($pool -is [Management.Automation.PSCustomObject])) { $pool = [pscustomobject]@{} }
     $slots = @()
     if ($obj.slots -is [array]) {
-        $slots = @(@($obj.slots | Where-Object { $_ -is [Management.Automation.PSCustomObject] } | Select-Object -First 5) | ForEach-Object {
+        $slots = @(@($obj.slots | Where-Object { $_ -is [Management.Automation.PSCustomObject] } | Select-Object -First 17) | ForEach-Object {
                 $n = $_.slot
                 if (-not ($n -is [int] -or $n -is [long]) -or $n -lt 0 -or $n -gt 64) { $n = $null }
                 $st = $_.state
@@ -1032,9 +1117,24 @@ function Test-AapManagerFlag {
         $r = Invoke-AapRoot @('/bin/grep', '-q', '--', '--undrain', $AapManager)
         $AapRt.ManagerOk = ($r.Code -eq 0)
         $AapRt.ProbedAt = Get-AapNow
-        if (-not $AapRt.ManagerOk) { Write-AapLog "WARN probe exit $($r.Code): $AapOldManager" }
+        if (-not $AapRt.ManagerOk) { Write-AapLog "WARN probe exit $($r.Code): $AapOldManager" } else { [void](Test-AapManagerTiers) }
     }
     return $AapRt.ManagerOk
+}
+
+# Whether the installed manager runs the two Linux tiers (settings schema 4).
+# Same passive grep as the flag probe, run only after that probe passed, and
+# cached the same way (cleared wherever ManagerOk is). Never --version. Not
+# probed with the capacity module: it refuses schema 4 anyway (the allocator
+# is built for 5 slots).
+function Test-AapManagerTiers {
+    if ($AapRt.Cap -or $AapRt.ManagerOk -ne $true) { return $false }
+    if ($null -eq $AapRt.ManagerTiers) {
+        $r = Invoke-AapRoot @('/bin/grep', '-q', '--', 'AAP_LINUX_HEAVY_COUNT', $AapManager)
+        $AapRt.ManagerTiers = ($r.Code -eq 0)
+        if (-not $AapRt.ManagerTiers) { Write-AapLog "manager has no tier keys (grep exit $($r.Code)); settings schema 4 is not accepted" }
+    }
+    return $AapRt.ManagerTiers
 }
 
 # systemctl start, then is-active on the same units. A unit that is not
@@ -1069,6 +1169,9 @@ function Invoke-AapOn {
         return
     }
     Invoke-AapKeepAlive
+    # The tier probe has to run before the settings are read: schema 4 is only
+    # accepted once the manager is known to run the tiers.
+    [void](Test-AapManagerFlag)
     [void](Read-AapSettingsFile)
     if (Test-AapLegacyWanted) {
         if (Test-AapManagerFlag) {
@@ -1097,6 +1200,7 @@ function Invoke-AapHealth {
     Set-AapVmPriority
     if ($AapRt.ManagerOk -eq $false -and ((Get-AapNow) - $AapRt.ProbedAt).TotalSeconds -ge 30) {
         $AapRt.ManagerOk = $null
+        $AapRt.ManagerTiers = $null
         [void](Test-AapManagerFlag)
     }
     $r = Invoke-AapRoot @('/bin/systemctl', 'is-active', 'sysbox', 'aap-runner-manager')
@@ -1202,6 +1306,11 @@ function Invoke-AapLimitChange($Limits) {
         $AapRt.Refused = $key
         $AapRt.RefusedWhy = "limits $key refused: $why"
         Write-AapLog "$($AapRt.RefusedWhy); previous limits.conf restored"
+        # A refused tier file may mean the manager is not the one probed: look again.
+        if ($null -ne $Limits.Heavy) {
+            $AapRt.ManagerTiers = $null
+            [void](Test-AapManagerTiers)
+        }
         Write-AapStatus 'error' '' $AapRt.RefusedWhy
         return
     }
@@ -1946,6 +2055,7 @@ function Invoke-AapOff {
     $AapRt.Applied = $null
     $AapRt.Effective = $null
     $AapRt.ManagerOk = $null
+    $AapRt.ManagerTiers = $null
     $AapRt.ManagerStopped = $false
     # The next On initializes and reconciles again.
     $AapRt.CapReady = $false

@@ -65,7 +65,8 @@ Describe 'requests' {
             @{ ReservationId = 'r-1a2b3c4d' }, @{ LeaseGeneration = 0 }, @{ LeaseGeneration = 1000000000 }, @{ Slot = 6 }, @{ Slot = 0 },
             @{ RunnerProfile = 'windows-latest' }, @{ RunnerProfile = 'WIN25-VS2026-X64' },
             @{ ImageGeneration = 'ubuntu-24.04-x64/20261007.264.1-aap.1' }, @{ ImageGeneration = 'win25-vs2026-x64/latest' },
-            @{ Distro = 'aap-runner -u root --exec /bin/sh' }, @{ TimeoutSeconds = 0 }
+            @{ Distro = 'aap-runner -u root --exec /bin/sh' }, @{ TimeoutSeconds = 0 },
+            @{ TimeoutSeconds = 59 }, @{ TimeoutSeconds = 601 }
         )
         foreach ($b in $bad) {
             $a = @{} + $script:LeaseArgs

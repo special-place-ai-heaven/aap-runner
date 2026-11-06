@@ -95,8 +95,8 @@ Describe 'workload definitions' {
 
 Describe 'oracle citations' {
     BeforeAll {
-        $script:Inv = Get-Content -Raw -LiteralPath (Join-Path $Base 'inventory.json') | ConvertFrom-Json
-        $script:Log = (Get-Content -Raw -LiteralPath (Join-Path $Base 'sources\hosted-capture-39303666617.log')).Replace('\\', '\')
+        $script:Inv = Get-Content -Raw -LiteralPath (Join-Path $Base 'inventory-20261103.298.json') | ConvertFrom-Json
+        $script:Log = (Get-Content -Raw -LiteralPath (Join-Path $Base 'sources\hosted-capture-42235377195.log')).Replace('\\', '\')
         $script:Readme = Get-Content -Raw -LiteralPath (Join-Path $Base 'README.md')
         $script:Leaves = New-Object Collections.ArrayList
         function script:Walk($o, [string]$path) {

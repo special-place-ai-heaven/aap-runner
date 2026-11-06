@@ -26,6 +26,17 @@ Describe 'aap-runner host supervisor' {
             return $text
         }
 
+        # A schema 4 file: the 2 heavy + 10 light full pool with every override applied on top.
+        function Get-AapV4Text([hashtable]$Over = @{}) {
+            $o = [ordered]@{
+                schema = 4; linux_backend = 'wsl-legacy'; lease_wall_clock_hours = 6; linux_light_count = 10; linux_heavy_count = 2
+                windows_runner_count = 0; job_cpus = 19; job_memory_gib = 72; paused = $false; io_percent = 90; sharing = 'slice'
+                host_reserve_percent = 10; share_mode = 'even'; linux_share_percent = $null; windows_share_percent = $null
+            }
+            foreach ($k in $Over.Keys) { $o[$k] = $Over[$k] }
+            return (ConvertTo-Json $o -Compress)
+        }
+
         function Get-AapV5File {
             return Get-Content -Raw -LiteralPath (Join-Path $AapCfg.DataDir 'status.v5.json') | ConvertFrom-Json
         }
@@ -219,6 +230,7 @@ Describe 'aap-runner host supervisor' {
                 'sleep 2'
                 'wsl -d aap-runner --exec /bin/sleep infinity'
                 'wsl -d aap-runner -u root -- /bin/grep -q -- --undrain /usr/local/sbin/aap-runner-manager'
+                'wsl -d aap-runner -u root -- /bin/grep -q -- AAP_LINUX_HEAVY_COUNT /usr/local/sbin/aap-runner-manager'
                 'wsl -d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --undrain'
                 'wsl -d aap-runner -u root -- /bin/systemctl start sysbox aap-runner-manager'
                 'wsl -d aap-runner -u root -- /bin/systemctl is-active sysbox aap-runner-manager'
@@ -464,11 +476,11 @@ Describe 'aap-runner host supervisor' {
             @($s.pool.PSObject.Properties.Name) -join ',' | Should -Be 'cpu_cores,mem_gib,io_mbps'
         }
 
-        It 'keeps at most 5 slots' {
-            $six = (1..6 | ForEach-Object { '{"slot":' + $_ + ',"state":"idle"}' }) -join ','
-            $s = Invoke-AapMirror ('{"state":"idle","job":"","slots":[' + $six + ']}')
-            @($s.slots).Count | Should -Be 5
-            $s.slots[4].slot | Should -Be 5
+        It 'keeps at most 17 slots' {
+            $many = (1..18 | ForEach-Object { '{"slot":' + $_ + ',"state":"idle"}' }) -join ','
+            $s = Invoke-AapMirror ('{"state":"idle","job":"","slots":[' + $many + ']}')
+            @($s.slots).Count | Should -Be 17
+            $s.slots[16].slot | Should -Be 17
         }
 
         It 'reads runner_count 5' {
@@ -1209,6 +1221,410 @@ Describe 'aap-runner host supervisor' {
             $w.backend | Should -BeExactly 'none'
             $w.PSObject.Properties.Name | Should -Not -Contain 'host_runner'
             Should -Invoke Get-AapHostRunnerProcesses -Times 0 -Exactly
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+    }
+
+    Describe 'settings.json schema 4 (tiered Linux pool)' {
+        BeforeEach {
+            $AapRt.ManagerOk = $true
+            $AapRt.ManagerTiers = $true
+            Write-AapSettingsFile '{"runner_count":3,"job_cpus":12,"job_memory_gib":48,"paused":true}'
+            [void](Read-AapSettingsFile)
+        }
+
+        It 'accepts the valid contract fixture <name>' -TestCases @(
+            @{ name = 'full-pool-even'; key = '12,19,72,io=90,sharing=slice,h=2,l=10'; linux = 12; windows = 5 }
+            @{ name = 'one-heavy-only'; key = '1,19,57,io=90,sharing=slice,h=1,l=0'; linux = 1; windows = 0 }
+            @{ name = 'tiers-per-profile'; key = '5,19,57,io=90,sharing=slice,h=1,l=4'; linux = 5; windows = 2 }
+        ) {
+            Write-AapSettingsFile (Get-AapFixture "settings-v4\valid\$name.json")
+            $s = Read-AapSettingsFile
+            Get-AapLimitsKey $s.Limits | Should -Be $key
+            $s.Schema | Should -Be 4
+            $s.Profiles.Linux | Should -Be $linux
+            $s.Profiles.Windows | Should -Be $windows
+            $s.Limits.RunnerCount | Should -Be $linux
+            Get-AapLogText | Should -Not -Match 'WARN'
+        }
+
+        It 'accepts 2 heavy and 10 light with no Windows runner' {
+            Write-AapSettingsFile (Get-AapV4Text)
+            $s = Read-AapSettingsFile
+            $s.Limits.Heavy | Should -Be 2
+            $s.Limits.Light | Should -Be 10
+            $s.Limits.JobMemoryGib | Should -Be 72
+            $s.Profiles.Windows | Should -Be 0
+        }
+
+        It 'applies the shares to Linux = light + heavy' {
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_light_count = 0; linux_heavy_count = 1; share_mode = 'per_profile'; linux_share_percent = 90; windows_share_percent = 0 })
+            $s = Read-AapSettingsFile
+            $s.Profiles.ShareMode | Should -Be 'per_profile'
+            $s.Profiles.LinuxShare | Should -Be 90
+            $s.Profiles.Linux | Should -Be 1
+        }
+
+        It 'refuses the invalid contract fixture <name> and keeps the last valid settings' -TestCases @(
+            @{ name = 'all-zero' }
+            @{ name = 'heavy-three' }
+            @{ name = 'keeps-runner-count' }
+            @{ name = 'light-eleven' }
+            @{ name = 'missing-heavy-count' }
+            @{ name = 'schema-3' }
+            @{ name = 'share-for-zero-linux' }
+            @{ name = 'windows-six' }
+            @{ name = 'tier-reservations-over-memory' }
+        ) {
+            Write-AapSettingsFile (Get-AapFixture "settings-v4\invalid\$name.json")
+            $s = Read-AapSettingsFile
+            Get-AapLimitsKey $s.Limits | Should -Be '3,12,48'
+            $s.Schema | Should -Be 1
+            Get-AapLogText | Should -Match 'WARN settings.json'
+        }
+
+        It 'refuses a file with runner_count' -Tag 'v4-keys' {
+            $o = (Get-AapV4Text) | ConvertFrom-Json
+            $o | Add-Member -NotePropertyName runner_count -NotePropertyValue 5
+            Write-AapSettingsFile (ConvertTo-Json $o -Compress)
+            Get-AapLimitsKey (Read-AapSettingsFile).Limits | Should -Be '3,12,48'
+            Get-AapLogText | Should -Match 'schema 4 must have exactly'
+        }
+
+        It 'refuses all zero counts' -Tag 'v4-counts' {
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_light_count = 0; linux_heavy_count = 0 })
+            Get-AapLimitsKey (Read-AapSettingsFile).Limits | Should -Be '3,12,48'
+            Get-AapLogText | Should -Match 'at least one Linux runner'
+        }
+
+        It 'refuses Windows only: this supervisor runs no Windows VM' -Tag 'v4-counts' {
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_light_count = 0; linux_heavy_count = 0; windows_runner_count = 1 })
+            Get-AapLimitsKey (Read-AapSettingsFile).Limits | Should -Be '3,12,48'
+            Get-AapLogText | Should -Match 'at least one Linux runner'
+        }
+
+        It 'refuses linux_backend hyperv-vm' -Tag 'v4-linux-vm' {
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_backend = 'hyperv-vm' })
+            Get-AapLimitsKey (Read-AapSettingsFile).Limits | Should -Be '3,12,48'
+            Get-AapLogText | Should -Match 'hyperv-vm'
+        }
+
+        It 'refuses 2 heavy + 10 light at job_memory_gib 64 and names the reason in the detail' -Tag 'v4-memory' {
+            Write-AapSettingsFile (Get-AapV4Text @{ job_memory_gib = 64 })
+            $s = Read-AapSettingsFile
+            Get-AapLimitsKey $s.Limits | Should -Be '3,12,48'
+            $s.Schema | Should -Be 1
+            $AapRt.SettingsWhy | Should -Match 'tier reservations \(heavy x 20 \+ light x 3 GiB = 70\) exceed job_memory_gib 64'
+            Get-AapDetail | Should -Match 'exceed job_memory_gib 64'
+        }
+
+        It 'accepts the reservations exactly at job_memory_gib and clears the reason' -Tag 'v4-memory' {
+            Write-AapSettingsFile (Get-AapV4Text @{ job_memory_gib = 64 })
+            [void](Read-AapSettingsFile)
+            Write-AapSettingsFile (Get-AapV4Text @{ job_memory_gib = 70 })
+            $s = Read-AapSettingsFile
+            $s.Schema | Should -Be 4
+            $AapRt.SettingsWhy | Should -BeNullOrEmpty
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_light_count = 0; linux_heavy_count = 1; job_memory_gib = 19 })
+            [void](Read-AapSettingsFile)
+            $AapRt.SettingsWhy | Should -Match 'exceed job_memory_gib 19'
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_light_count = 0; linux_heavy_count = 1; job_memory_gib = 20 })
+            (Read-AapSettingsFile).Schema | Should -Be 4
+        }
+
+        It 'refuses schema 4 as newer while the capacity module is loaded' -Tag 'settings-newer' {
+            $AapRt.Cap = $true
+            Write-AapSettingsFile (Get-AapV4Text)
+            $s = Read-AapSettingsFile
+            Get-AapLimitsKey $s.Limits | Should -Be '3,12,48'
+            $AapRt.SettingsWhy | Should -BeExactly 'settings.json schema 4 is newer than this supervisor accepts (1, 2, 3)'
+        }
+
+        It 'refuses schema 4 as newer with an untiered manager and keeps the last valid settings' -Tag 'settings-newer' {
+            $AapRt.ManagerTiers = $false
+            Write-AapSettingsFile (Get-AapV4Text)
+            $s = Read-AapSettingsFile
+            Get-AapLimitsKey $s.Limits | Should -Be '3,12,48'
+            $AapRt.SettingsWhy | Should -BeExactly 'settings.json schema 4 is newer than this supervisor accepts (1, 2)'
+        }
+
+        It 'still refuses schema 3 as newer with a tiered manager and no capacity module' -Tag 'settings-newer' {
+            Write-AapSettingsFile (Get-AapFixture 'settings-v3\valid\owner-example-per-profile.json')
+            Get-AapLimitsKey (Read-AapSettingsFile).Limits | Should -Be '3,12,48'
+            $AapRt.SettingsWhy | Should -BeExactly 'settings.json schema 3 is newer than this supervisor accepts (1, 2, 4)'
+        }
+    }
+
+    Describe 'manager tier probe' {
+        BeforeEach {
+            $script:W = 'wsl -d aap-runner -u root -- '
+            $script:flagProbe = $script:W + '/bin/grep -q -- --undrain /usr/local/sbin/aap-runner-manager'
+            $script:tierProbe = $script:W + '/bin/grep -q -- AAP_LINUX_HEAVY_COUNT /usr/local/sbin/aap-runner-manager'
+            $script:tierCode = 0
+            $script:flagCode = 0
+            $script:responder = {
+                param($line)
+                if ($line -like '*/bin/grep -q -- --undrain *') { return (Get-AapFakeResult $script:flagCode '') }
+                if ($line -like '*/bin/grep -q -- AAP_LINUX_HEAVY_COUNT *') { return (Get-AapFakeResult $script:tierCode '') }
+                return (& $script:healthy $line)
+            }
+        }
+
+        It 'greps for the tier key once, after the flag probe passes, and caches it' {
+            Test-AapManagerFlag | Should -BeTrue
+            @($script:calls) | Should -Be @($script:flagProbe, $script:tierProbe)
+            $AapRt.ManagerTiers | Should -BeTrue
+            Test-AapManagerFlag | Should -BeTrue
+            Test-AapManagerTiers | Should -BeTrue
+            $script:calls.Count | Should -Be 2
+        }
+
+        It 'caches a missing tier key as untiered' {
+            $script:tierCode = 1
+            Test-AapManagerFlag | Should -BeTrue
+            $AapRt.ManagerTiers | Should -BeFalse
+            Test-AapManagerTiers | Should -BeFalse
+            $script:calls.Count | Should -Be 2
+        }
+
+        It 'never greps for tiers when the flag probe fails' {
+            $script:flagCode = 1
+            Test-AapManagerFlag | Should -BeFalse
+            $AapRt.ManagerTiers | Should -BeNullOrEmpty
+            Test-AapManagerTiers | Should -BeFalse
+            @($script:calls) | Should -Be @($script:flagProbe)
+        }
+
+        It 'does not probe with the capacity module loaded' {
+            $AapRt.Cap = $true
+            Test-AapManagerFlag | Should -BeTrue
+            Test-AapManagerTiers | Should -BeFalse
+            @($script:calls) | Should -Be @($script:flagProbe)
+        }
+
+        It 'probes in the On sequence before the settings are read, and again after Off' {
+            Write-AapStateFile '{"desired":"on"}'
+            Write-AapSettingsFile (Get-AapV4Text)
+            Invoke-AapCycle
+            $AapRt.ManagerTiers | Should -BeTrue
+            $AapRt.Settings.Schema | Should -Be 4
+            Get-AapLogText | Should -Not -Match 'WARN'
+            @($script:calls | Where-Object { $_ -eq $script:tierProbe }).Count | Should -Be 1
+            Write-AapStateFile '{"desired":"off"}'
+            Invoke-AapCycle
+            $AapRt.Mode | Should -Be 'off'
+            $AapRt.ManagerTiers | Should -BeNullOrEmpty
+            Write-AapStateFile '{"desired":"on"}'
+            Invoke-AapCycle
+            @($script:calls | Where-Object { $_ -eq $script:tierProbe }).Count | Should -Be 2
+        }
+    }
+
+    Describe 'tiered limits apply' {
+        BeforeEach {
+            $AapRt.Mode = 'on'
+            $AapRt.ManagerOk = $true
+            $AapRt.ManagerTiers = $true
+            $AapRt.KeepAlive = Get-AapFakeProcess
+            $AapRt.NextHealth = $script:clock.Now.AddHours(1)
+            Write-AapStateFile '{"desired":"on"}'
+            Write-AapSettingsFile (Get-AapV4Text)
+            $script:W = 'wsl -d aap-runner -u root -- '
+            $script:writeLine = $script:W + '/bin/sh -c ' + $AapWriteLimits
+            $script:tierProbe = $script:W + '/bin/grep -q -- AAP_LINUX_HEAVY_COUNT /usr/local/sbin/aap-runner-manager'
+            $script:old = "AAP_RUNNER_COUNT=4`nAAP_JOB_CPUS=28`nAAP_JOB_MEMORY=72g`n"
+            $script:checkCode = 0
+            $script:tierCode = 0
+            $script:activeLeft = 1
+            $script:responder = {
+                param($line)
+                if ($line -eq '-d aap-runner -u root -- /bin/cat /etc/aap-runner/limits.conf') { return (Get-AapFakeResult 0 $script:old) }
+                if ($line -like '*--check-limits') {
+                    if ($script:checkCode -ne 0) { return (Get-AapFakeResult 1 "AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT cannot both be 0`n") }
+                    return (Get-AapFakeResult 0 '')
+                }
+                if ($line -like '*/bin/grep -q -- AAP_LINUX_HEAVY_COUNT *') { return (Get-AapFakeResult $script:tierCode '') }
+                if ($line -like '*is-active aap-runner-manager') {
+                    if ($script:activeLeft -gt 0) { $script:activeLeft--; return (Get-AapFakeResult 0 'active') }
+                    return (Get-AapFakeResult 3 'inactive')
+                }
+                return (Get-AapFakeResult 0 '')
+            }
+        }
+
+        It 'writes the tier counts instead of AAP_RUNNER_COUNT and the pool totals verbatim' {
+            Invoke-AapCycle
+            $script:stdin[0] | Should -BeExactly "AAP_LINUX_HEAVY_COUNT=2`nAAP_LINUX_LIGHT_COUNT=10`nAAP_JOB_CPUS=19`nAAP_JOB_MEMORY=72g`nAAP_JOB_IO_PERCENT=90`nAAP_POOL_SHARING=slice`n"
+            $script:calls | Should -Contain ($script:W + '/usr/local/sbin/aap-runner-manager --check-limits')
+            $script:calls | Should -Contain ($script:W + '/usr/local/sbin/aap-runner-manager --drain')
+            $script:calls | Should -Contain ($script:W + '/bin/systemctl start aap-runner-manager')
+            $AapRt.Applied | Should -Be '12,19,72,io=90,sharing=slice,h=2,l=10'
+        }
+
+        It 'writes AAP_JOB_MEMORY equal to job_memory_gib' -ForEach @(
+            @{ mem = 70 }
+            @{ mem = 80 }
+        ) {
+            Write-AapSettingsFile (Get-AapV4Text @{ job_memory_gib = $mem })
+            Invoke-AapCycle
+            $script:stdin[0] | Should -Match "AAP_JOB_MEMORY=${mem}g`n"
+        }
+
+        It 'gives H1/L2 and H2/L1 different keys, and the untiered key stays as it was' {
+            $a = @{ RunnerCount = 3; Heavy = 1; Light = 2; JobCpus = 19; JobMemoryGib = 72; IoPercent = $null; Sharing = $null }
+            $b = @{ RunnerCount = 3; Heavy = 2; Light = 1; JobCpus = 19; JobMemoryGib = 72; IoPercent = $null; Sharing = $null }
+            Get-AapLimitsKey $a | Should -Be '3,19,72,h=1,l=2'
+            Get-AapLimitsKey $b | Should -Be '3,19,72,h=2,l=1'
+            Get-AapLimitsKey @{ RunnerCount = 3; JobCpus = 19; JobMemoryGib = 72; IoPercent = $null; Sharing = $null } | Should -Be '3,19,72'
+        }
+
+        It 'applies H1/L2 after H2/L1' {
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_heavy_count = 2; linux_light_count = 1 })
+            Invoke-AapCycle
+            $AapRt.Applied | Should -Be '3,19,72,io=90,sharing=slice,h=2,l=1'
+            $script:calls.Clear()
+            $script:activeLeft = 1
+            $AapRt.NextHealth = $script:clock.Now.AddHours(1)
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_heavy_count = 1; linux_light_count = 2 })
+            Invoke-AapCycle
+            $AapRt.Applied | Should -Be '3,19,72,io=90,sharing=slice,h=1,l=2'
+            $script:stdin[-1] | Should -Match "AAP_LINUX_HEAVY_COUNT=1`nAAP_LINUX_LIGHT_COUNT=2`n"
+        }
+
+        It 'counts an identical limits.conf as applied after a supervisor start' {
+            $script:old = "AAP_LINUX_HEAVY_COUNT=2`nAAP_LINUX_LIGHT_COUNT=10`nAAP_JOB_CPUS=19`nAAP_JOB_MEMORY=72g`nAAP_JOB_IO_PERCENT=90`nAAP_POOL_SHARING=slice`n"
+            Invoke-AapCycle
+            @($script:calls) | Should -Be @(($script:W + '/bin/cat /etc/aap-runner/limits.conf'))
+            $AapRt.Applied | Should -Be '12,19,72,io=90,sharing=slice,h=2,l=10'
+        }
+
+        It 'puts the previous limits.conf back when check-limits refuses, then probes the tier key again' {
+            $script:checkCode = 1
+            Invoke-AapCycle
+            $want = @(
+                ($script:W + '/bin/cat /etc/aap-runner/limits.conf')
+                $script:writeLine
+                ($script:W + '/usr/local/sbin/aap-runner-manager --check-limits')
+                $script:writeLine
+                $script:tierProbe
+            )
+            @($script:calls) | Should -Be $want
+            $script:stdin[1] | Should -BeExactly $script:old
+            $s = Get-AapStatusFile
+            $s.state | Should -Be 'error'
+            $s.detail | Should -Match 'refused: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT cannot both be 0'
+            $AapRt.ManagerTiers | Should -BeTrue
+            $script:calls.Clear()
+            Invoke-AapCycle
+            $script:calls.Count | Should -Be 0
+        }
+
+        It 'drops the tier flag when the probe after a refusal fails' {
+            $script:checkCode = 1
+            $script:tierCode = 1
+            Invoke-AapCycle
+            $AapRt.ManagerTiers | Should -BeFalse
+        }
+
+        It 'does not touch the probe when an untiered limits file is refused' {
+            Write-AapSettingsFile '{"runner_count":2,"job_cpus":8,"job_memory_gib":32,"paused":false}'
+            $script:checkCode = 1
+            Invoke-AapCycle
+            $script:calls | Should -Not -Contain $script:tierProbe
+        }
+    }
+
+    Describe 'status.v5.json with a tiered manager' {
+        BeforeEach {
+            $script:tierCode = 0
+            $script:slotJson = '{"slot":1,"state":"running","job":"j","repo":"o/r"},{"slot":2,"state":"idle"},{"slot":3,"state":"idle"},{"slot":4,"state":"idle"},{"slot":5,"state":"idle"},{"slot":6,"state":"idle"},{"slot":7,"state":"idle"}'
+            $script:managerJson = '{"schema":4,"state":"running","job":"j","runner_count":7,"job_cpus":19,"job_memory":"72g","sharing":"slice","sampled_at":1760436000,"slots":[' + $script:slotJson + ']}'
+            $script:responder = {
+                param($line)
+                if ($line -like '*cat /run/aap-runner/status.json') { return (Get-AapFakeResult 0 $script:managerJson) }
+                if ($line -like '*/bin/grep -q -- AAP_LINUX_HEAVY_COUNT *') { return (Get-AapFakeResult $script:tierCode '') }
+                return (& $script:healthy $line)
+            }
+            Write-AapStateFile '{"desired":"on"}'
+        }
+
+        It 'lists 4, applies it and mirrors all 7 slots with their tiers' -Tag 'v5' {
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_light_count = 5; linux_heavy_count = 2 })
+            Invoke-AapCycle
+            $v = Get-AapV5File
+            @($v.settings_schemas) -join ',' | Should -Be '1,2,4'
+            $v.applied_settings_schema | Should -Be 4
+            $v.capacity.max_slots | Should -Be 17
+            $v.capacity.used_slots | Should -Be 7
+            $v.capacity.free_slots | Should -Be 10
+            $v.profiles[0].count | Should -Be 7
+            $v.legacy_pool.runner_count | Should -Be 7
+            @($v.slots).Count | Should -Be 7
+            (@($v.slots | ForEach-Object { $_.slot }) -join ',') | Should -Be '1,2,3,4,5,6,7'
+            (@($v.slots | ForEach-Object { $_.tier }) -join ',') | Should -Be 'heavy,heavy,light,light,light,light,light'
+            $v.slots[0].lifecycle | Should -BeExactly 'busy'
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'keeps the manager slot number and takes the tier from it (slots 1, 3 and 12)' -Tag 'v5' {
+            $script:managerJson = '{"schema":4,"state":"idle","job":"","runner_count":3,"job_cpus":19,"job_memory":"72g","slots":[{"slot":1,"state":"idle"},{"slot":3,"state":"idle"},{"slot":12,"state":"idle"}]}'
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_light_count = 10; linux_heavy_count = 2 })
+            Invoke-AapCycle
+            $v = Get-AapV5File
+            (@($v.slots | ForEach-Object { $_.slot }) -join ',') | Should -Be '1,3,12'
+            (@($v.slots | ForEach-Object { $_.tier }) -join ',') | Should -Be 'heavy,light,light'
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'mirrors slots 1..12 of a full pool' -Tag 'v5' {
+            $all = (1..12 | ForEach-Object { '{"slot":' + $_ + ',"state":"idle"}' }) -join ','
+            $script:managerJson = '{"schema":4,"state":"idle","job":"","runner_count":12,"job_cpus":19,"job_memory":"72g","slots":[' + $all + ']}'
+            Write-AapSettingsFile (Get-AapV4Text)
+            Invoke-AapCycle
+            $v = Get-AapV5File
+            @($v.slots).Count | Should -Be 12
+            $v.slots[11].slot | Should -Be 12
+            $v.slots[11].tier | Should -BeExactly 'light'
+            $v.profiles[0].count | Should -Be 12
+            $v.legacy_pool.runner_count | Should -Be 12
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'puts no tier on a slot while schema 2 is applied, and keeps max_slots 5' -Tag 'v5' {
+            $script:managerJson = '{"schema":4,"state":"running","job":"j","runner_count":2,"job_cpus":16,"job_memory":"32g","slots":[{"slot":1,"state":"running","job":"j"},{"slot":2,"state":"idle"}]}'
+            Write-AapSettingsFile '{"schema":2,"runner_count":2,"job_cpus":16,"job_memory_gib":32,"paused":false}'
+            Invoke-AapCycle
+            $v = Get-AapV5File
+            $v.applied_settings_schema | Should -Be 2
+            @($v.settings_schemas) -join ',' | Should -Be '1,2,4'
+            $v.capacity.max_slots | Should -Be 5
+            @($v.slots).Count | Should -Be 2
+            $v.slots[0].PSObject.Properties.Name | Should -Not -Contain 'tier'
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'lists only 1 and 2 with an untiered manager' -Tag 'v5' {
+            $script:tierCode = 1
+            $script:managerJson = '{"schema":4,"state":"idle","job":"","runner_count":2,"job_cpus":16,"job_memory":"32g","slots":[{"slot":1,"state":"idle"},{"slot":2,"state":"idle"}]}'
+            Write-AapSettingsFile (Get-AapV4Text)
+            Invoke-AapCycle
+            $v = Get-AapV5File
+            @($v.settings_schemas) -join ',' | Should -Be '1,2'
+            $v.applied_settings_schema | Should -BeNullOrEmpty
+            $v.detail | Should -Match 'schema 4 is newer'
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'keeps 4 listed while it is applied, also after Off' -Tag 'v5' {
+            Write-AapSettingsFile (Get-AapV4Text @{ linux_light_count = 5; linux_heavy_count = 2 })
+            Invoke-AapCycle
+            Write-AapStateFile '{"desired":"off"}'
+            Invoke-AapCycle
+            $AapRt.Mode | Should -Be 'off'
+            $AapRt.ManagerTiers | Should -BeNullOrEmpty
+            $v = Get-AapV5File
+            @($v.settings_schemas) -join ',' | Should -Be '1,2,4'
+            $v.applied_settings_schema | Should -Be 4
             Test-AapV5Contract | Should -Be 'ok'
         }
     }

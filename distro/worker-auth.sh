@@ -6,8 +6,9 @@
 # with no arguments: one request JSON on stdin (at most 4096 bytes), one
 # response JSON on stdout (at most 20 KiB), exit 0. Exit 2 means an argument,
 # or stdin that is not one JSON object with a request kind and a lease id.
-# Every other failure (config, key, lock, a ledger write, a tool) exits 1: the
-# exit trap maps any other status to 1. Neither prints anything on stdout, and
+# Every other failure (not root, config, key, lock, a ledger write, a tool)
+# exits 1: from main for the root check, and from the exit trap, which maps any
+# other status to 1, for the rest. Neither 1 nor 2 prints anything on stdout, and
 # the supervisor treats both as an unavailable broker.
 #
 # Requests carry ids, numbers and enums only. The runner name, labels, group
@@ -56,7 +57,7 @@ curl() {
 }
 
 BROKER_DIR=/var/lib/aap-runner/broker
-AUDIT_LOG=/var/log/aap-runner/broker-audit.jsonl
+AUDIT_LOG=${BROKER_DIR}/broker-audit.jsonl
 AUDIT_MAX_BYTES=5242880
 REQUEST_MAX_BYTES=4096
 SKEW_SECONDS=300
@@ -569,9 +570,10 @@ handle_lease() {
     : > "${BROKER_DIR}/open/${LEASE_ID}" || die "the lease ledger could not be written"
   fi
   # noclobber: O_CREAT|O_EXCL. A failed write leaves no lease file; nothing was
-  # answered, so the lease id is not spent.
+  # answered, so the lease id is not spent. Only an empty file is removed: one
+  # with content is another writer's record, and the create did not make it.
   if ! (set -C && printf '%s\n' "${rec}" > "${lease_file}") 2>/dev/null; then
-    rm -f "${lease_file}"
+    [[ -s "${lease_file}" ]] || rm -f "${lease_file}"
     die "the lease ledger could not be written"
   fi
   if [[ "${verdict}" != ok ]]; then
@@ -638,7 +640,7 @@ handle_lease() {
 # Mandatory at every teardown. Deletes only the runner the ledger names: the
 # recorded id, or for a lease still pending the runner with the derived name.
 handle_release() {
-  local r id
+  local r id rbusy
   L_RES=- L_GEN=- L_PROFILE=- L_IMAGE=-
   if ! ledger_read "${LEASE_ID}"; then
     release_answer refused not_found - -
@@ -660,14 +662,21 @@ handle_release() {
     release_answer retry github_error "${LRID}" "${LNAME}"
     return 0
   fi
+  # Read the runner right before the DELETE: one that is busy, or whose state
+  # cannot be read, keeps its lease (retry) and is not deleted.
   if [[ "${LS}" == issued ]]; then
-    r=$(delete_runner "${LRID}")
+    r=$(runner_by_id "${LRID}")
+    [[ "${r}" != absent ]] || r=already_gone
   else
     r=$(runner_by_name "${LNAME}")
-    if [[ "${r}" == "found "* ]]; then
-      read -r _ id _ _ <<< "${r}"
+  fi
+  if [[ "${r}" == "found "* ]]; then
+    read -r _ id _ rbusy <<< "${r}"
+    if [[ "${rbusy}" == false ]]; then
       LRID=${id}
       r=$(delete_runner "${id}")
+    else
+      r="error github_error"
     fi
   fi
   case "${r}" in

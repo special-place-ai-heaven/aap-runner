@@ -1,10 +1,10 @@
 {
   "schema": 1,
   "profile": "windows-2025-vs2026",
-  "note": "Oracle for the P17 workloads. Every value cites its source: 'inventory:<category>|<name>' is parity/baselines/windows-2025-vs2026-x64/inventory.json, 'capture:<text>' is a line of sources/hosted-capture-39303666617.log, 'readme:<text>' is that profile's README.md, 'docs:<url>' is GitHub's published runner behaviour. 'hosted:<run>/<file>:<text>' is a line of oracle/hosted-runs/<run>/<file>, stored evidence from a parity-workloads.yml run on the hosted image. tests/parity/workloads/windows checks every inventory, capture, hosted and readme citation.",
+  "note": "Oracle for the P17 workloads. Every value cites its source: 'inventory:<category>|<name>' is parity/baselines/windows-2025-vs2026-x64/inventory-20261103.298.json, 'capture:<text>' is a line of sources/hosted-capture-42235377195.log, 'readme:<text>' is that profile's README.md, 'docs:<url>' is GitHub's published runner behaviour. 'hosted:<run>/<file>:<text>' is a line of oracle/hosted-runs/<run>/<file>, stored evidence from a parity-workloads.yml run on the hosted image. tests/parity/workloads/windows checks every inventory, capture, hosted and readme citation. Refresh for the 2026-11 hosted image roll (win25-vs2026/20261103.298.1): inventory:, capture: and capture-list: now cite inventory-20261103.298.json (built by tools/build_inventory.py from the Readme at the release commit 0471fcb) and sources/hosted-capture-42235377195.log (hosted-reference-windows-2025-vs2026 run); the frozen inventory.json and the 39303666617 capture stay as the baseline the image plans hash. dotnet.sdk_in_baseline still expects true: the roll moved the SDKs forward (8.0.425 to 8.0.427, 10.0.401 to 10.0.403, all listed in the new inventory), it did not drop any from the baseline.",
   "hosted_validation": {
-    "run": "39437386210",
-    "note": "parity-workloads.yml on windows-2025-vs2026 20261007.264.1, head 717d1ba: 47 of 47 definitions pass (24 positives, 23 negative controls with their named first error). oracle/hosted-runs/39437386210/results.json pins every definition (def_sha256), report hash and first error, and its summary.json the tree manifest (tree_manifest.py); tests/parity/workloads/windows/check_hosted_run.py checks the checkout still matches both. Runs 39351642738 and 39352919500 keep only the logs that hosted: citations point at."
+    "run": "42239311263",
+    "note": "parity-workloads.yml on windows-2025-vs2026 20261103.298.1, head 46c1f00: 47 of 47 definitions pass (24 positives, 23 negative controls with their named first error). oracle/hosted-runs/42239311263/results.json pins every definition (def_sha256), report hash and first error, and its summary.json the tree manifest (tree_manifest.py); tests/parity/workloads/windows/check_hosted_run.py checks the checkout still matches both. Runs 39351642738 and 39352919500 keep only the logs that hosted: citations point at. Refresh for the 2026-11 hosted image roll; previous run 39437386210 (windows-2025-vs2026 20261007.264.1, head 717d1ba, 47 of 47), whose directory stays as history. Iteration 1 of the refresh, run 42236989549 (45 of 47), found the java build and the expected first error of the tool-cache negative control that names a rolled version."
   },
   "image": {
     "ImageOS": {
@@ -12,13 +12,13 @@
       "src": "capture:ImageOS=win25-vs2026"
     },
     "ImageVersion": {
-      "v": "20261007.264.1",
+      "v": "20261103.298.1",
       "src": "inventory:identity|Image Version"
     }
   },
   "visual_studio": {
     "installationVersion": {
-      "v": "18.10.12224.181",
+      "v": "18.11.12328.437",
       "src": "inventory:Visual Studio Enterprise 2026|Visual Studio Enterprise 2026"
     },
     "installationPath": {
@@ -93,7 +93,7 @@
     },
     "node_dir": {
       "v": "C:\\Program Files\\nodejs",
-      "src": "capture:056 C:\\Program Files\\nodejs"
+      "src": "capture:058 C:\\Program Files\\nodejs"
     }
   },
   "versions": {
@@ -102,7 +102,7 @@
       "src": "inventory:Language and Runtime|LLVM"
     },
     "cmake": {
-      "v": "4.4.4",
+      "v": "4.4.5",
       "src": "inventory:Tools|CMake"
     },
     "ninja": {
@@ -110,19 +110,19 @@
       "src": "inventory:Tools|Ninja"
     },
     "rustc": {
-      "v": "1.99.0",
+      "v": "1.99.1",
       "src": "inventory:Rust Tools|Rust"
     },
     "cargo": {
-      "v": "1.99.0",
+      "v": "1.99.1",
       "src": "inventory:Rust Tools|Cargo"
     },
     "rustup": {
-      "v": "1.29.1",
+      "v": "1.29.3",
       "src": "inventory:Rust Tools|Rustup"
     },
     "node": {
-      "v": "22.23.3",
+      "v": "22.23.4",
       "src": "inventory:Language and Runtime|Node"
     },
     "npm": {
@@ -134,28 +134,28 @@
       "src": "inventory:Language and Runtime|Python"
     },
     "pip": {
-      "v": "26.2.1",
+      "v": "26.3",
       "src": "inventory:Package Management|pip"
     },
     "java": {
-      "v": "17.0.20.1+1",
-      "src": "hosted:39351642738/windows__toolchain-versions.log:observed '17.0.20.1+1'",
-      "note": "the inventory lists Java 17.0.20+101 (inventory:Java|Java, the tool-cache folder 17.0.20-101); the default JDK there reports build 17.0.20.1+1 on the hosted image (run 39351642738)"
+      "v": "17.0.21+9",
+      "src": "inventory:Java|Java",
+      "note": "the inventory lists Java 17.0.21+9 (inventory:Java|Java, the tool-cache folder 17.0.21-9) and the default JDK reports the same build on the 20261103.298.1 image; the previous image reported 17.0.20.1+1 against an inventory 17.0.20+101 (run 39351642738)"
     },
     "go": {
       "v": "1.24.13",
       "src": "inventory:Language and Runtime|Go"
     },
     "pwsh": {
-      "v": "7.6.6",
+      "v": "7.6.9",
       "src": "inventory:PowerShell Tools|PowerShell"
     },
     "windows_powershell": {
-      "v": "5.1.26100.33438",
-      "src": "capture:5.1.26100.33438"
+      "v": "5.1.26100.33648",
+      "src": "capture:5.1.26100.33648"
     },
     "git": {
-      "v": "2.56.0.windows.2",
+      "v": "2.56.0.windows.4",
       "src": "inventory:Tools|Git"
     },
     "bash": {
@@ -171,7 +171,7 @@
       "src": "inventory:Tools|InnoSetup"
     },
     "7zip": {
-      "v": "26.04",
+      "v": "26.05",
       "src": "inventory:Tools|7zip"
     },
     "vswhere": {
@@ -180,17 +180,17 @@
     },
     "dotnet_sdks": {
       "v": [
-        "8.0.131",
+        "8.0.133",
         "8.0.206",
         "8.0.319",
-        "8.0.425",
-        "9.0.121",
+        "8.0.427",
+        "9.0.123",
         "9.0.205",
-        "9.0.318",
-        "10.0.112",
+        "9.0.320",
+        "10.0.114",
         "10.0.204",
         "10.0.303",
-        "10.0.401"
+        "10.0.403"
       ],
       "src": "inventory:.NET Core Tools|.NET Core SDK"
     }
@@ -201,8 +201,8 @@
       "src": "capture:ImageOS=win25-vs2026"
     },
     "ImageVersion": {
-      "v": "20261007.264.1",
-      "src": "capture:ImageVersion=20261007.264.1"
+      "v": "20261103.298.1",
+      "src": "capture:ImageVersion=20261103.298.1"
     },
     "AGENT_TOOLSDIRECTORY": {
       "v": "C:\\hostedtoolcache\\windows",
@@ -217,12 +217,12 @@
       "src": "capture:ACTIONS_RUNNER_ACTION_ARCHIVE_CACHE=C:\\actionarchivecache\\"
     },
     "JAVA_HOME": {
-      "v": "C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.20-101\\x64",
-      "src": "capture:JAVA_HOME=C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.20-101\\x64"
+      "v": "C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.21-9\\x64",
+      "src": "capture:JAVA_HOME=C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.21-9\\x64"
     },
     "JAVA_HOME_17_X64": {
-      "v": "C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.20-101\\x64",
-      "src": "capture:JAVA_HOME_17_X64=C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.20-101\\x64"
+      "v": "C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.21-9\\x64",
+      "src": "capture:JAVA_HOME_17_X64=C:\\hostedtoolcache\\windows\\Java_Temurin-Hotspot_jdk\\17.0.21-9\\x64"
     },
     "GOROOT_1_24_X64": {
       "v": "C:\\hostedtoolcache\\windows\\go\\1.24.13\\x64",
@@ -432,28 +432,28 @@
   },
   "tool_cache": {
     "v": [
-      "CodeQL/2.27.1",
+      "CodeQL/2.27.4",
       "go/1.24.13",
       "go/1.25.14",
-      "go/1.26.8",
+      "go/1.26.10",
       "Java_Temurin-Hotspot_jdk/11.0.32-101",
-      "Java_Temurin-Hotspot_jdk/17.0.20-101",
-      "Java_Temurin-Hotspot_jdk/21.0.12-101.0",
-      "Java_Temurin-Hotspot_jdk/25.0.4-101.0",
+      "Java_Temurin-Hotspot_jdk/17.0.21-9",
+      "Java_Temurin-Hotspot_jdk/21.0.13-9.0",
+      "Java_Temurin-Hotspot_jdk/25.0.5-8.0",
       "Java_Temurin-Hotspot_jdk/8.0.504-1",
-      "node/22.23.3",
-      "node/24.21.0",
+      "node/22.23.4",
+      "node/24.22.2",
       "PyPy/3.10.16",
       "PyPy/3.9.19",
-      "Python/3.10.11",
       "Python/3.11.9",
       "Python/3.12.10",
-      "Python/3.13.16",
-      "Python/3.14.8",
+      "Python/3.13.17",
+      "Python/3.14.10",
+      "Python/3.15.2",
       "Ruby/3.2.11",
-      "Ruby/3.3.12",
-      "Ruby/3.4.11",
-      "Ruby/4.0.7",
+      "Ruby/3.3.13",
+      "Ruby/3.4.12",
+      "Ruby/4.0.9",
       "stack/3.11.1"
     ],
     "src": "capture-list:Tool cache layout step (Get-ChildItem $env:AGENT_TOOLSDIRECTORY), one line per entry"
