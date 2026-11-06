@@ -593,6 +593,6 @@ NOT_STARTED items whose prerequisites are all COMPLETE (the barrier is open): P0
 Remaining blockers:
 - P02.1 (the lab proof, gate D2 and the owner) blocks P10.0 and P02.4, and through P10.0 blocks P10.4, P10.5 and P12.1.
 - P16 is R1 step 5 (the allocator adopts the Linux pool as its first backend) and is IN_PROGRESS: broker support and coordinator-controlled legacy reservations remain. P19 waits on P16, P22 waits on P16 (and on P20 and P21), and the chain P20 (via P19), P23, P24, P25, P26, P27 and P28 waits behind them. Nothing waits on R1 step 4: the tray work is in R1.1, COMPLETE.
-- P13.5 waits on P13.5c (#83, open, CI green, independent review not recorded), and P13.5b waits on P13.5.
+- P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
 - P10.6 and P11.3 are ready but their contract revision #82 is unmerged; P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
 - Pending on the live install: the canary job and finalize for the 2026-11-06 rollout.
