@@ -612,6 +612,12 @@ def sem_status_v5(doc):
             raise Invalid(f"profile {p['profile']} reports os {p['os']}")
         if (p["image_generation"] is None) != (p["generation_state"] is None):
             raise Invalid(f"profile {p['profile']}: generation_state is null exactly when image_generation is null")
+        if p["backend"] == "windows-host" and p["profile"] != "windows":
+            raise Invalid(f"profile {p['profile']}: windows-host is the windows profile's backend only")
+        if ("host_runner" in p) != (p["backend"] == "windows-host"):
+            raise Invalid(f"profile {p['profile']}: host_runner is reported exactly when the backend is windows-host")
+        if "host_runner" in p and p["available"] != (p["host_runner"] != "stopped"):
+            raise Invalid(f"profile {p['profile']}: a windows-host profile is available exactly when its runner is not stopped")
     slots = [s["slot"] for s in doc["slots"]]
     if len(slots) != len(set(slots)):
         raise Invalid("duplicate slot number")
