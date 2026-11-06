@@ -69,7 +69,9 @@ One Linux backend, two tiers, slice sharing kept (owner, 2026-11-04):
 
 Labels are additive: `fresh` stays, so a job asking for `fresh` may take any slot and a job asking
 for `heavy` only a heavy slot; no other repository's workflow changes. Reservations total
-2 x 20 + 10 x 3 = 70 GiB of the 72 GiB pool.
+2 x 20 + 10 x 3 = 70 GiB of the 72 GiB pool. The manager refuses a Linux pool whose reservation
+total (heavy x 20 + light x 3 GiB) exceeds the pool memory, so the supervisor must refuse settings
+that break that rule; the JSON schema cannot express this cross-field rule.
 
 **Settings schema 4** ([`settings-v4.schema.json`](settings-v4.schema.json)): every schema 3 key,
 all required, except `runner_count`, which is replaced by `linux_light_count` and
