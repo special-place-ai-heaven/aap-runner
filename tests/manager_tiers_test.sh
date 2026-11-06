@@ -378,6 +378,24 @@ rm -f "${RUN_DIR}/drain"
 [[ ! -e "${RUN_DIR}/slot-4" ]] || fail "slot-4 was left after the drain"
 echo "drain reaches slot 4 of a 1+2 pool ok"
 
+# Stop (SIGTERM) a 1+2 pool: the job containers are removed, slot 4's status
+# file goes and slot 4's runner is deregistered with the others.
+: > "${log}"
+: > "${err}"
+rm -f "${RUN_DIR}"/slot-*
+(run_pool) 2> "${err}" &
+pool=$!
+wait_for_slots 1 3 4
+kill -TERM "${pool}"
+rc=0
+wait "${pool}" || rc=$?
+[[ "${rc}" -eq 143 ]] || fail "SIGTERM of a 1+2 pool exited ${rc}; want 143: $(cat "${err}")"
+grep -qx removed "${log}" || fail "stop did not remove the job containers: $(cat "${log}")"
+[[ "$(grep -E '^deregister ' "${log}" | sort | tr '\n' ' ')" == "deregister aap-crrr-hostc1 deregister aap-crrr-hostc3 deregister aap-crrr-hostc4 " ]] \
+  || fail "stop did not deregister slot 4's runner: $(cat "${log}")"
+[[ -z "$(find "${RUN_DIR}" -maxdepth 1 -name 'slot-*')" ]] || fail "stop left slot files: $(ls "${RUN_DIR}")"
+echo "stop reaches slot 4 of a 1+2 pool ok"
+
 # Stop a 2+10 pool with stale files above slot 9: run_pool clears them at
 # start, stop_pool clears the slot-10..12 files and deregisters slot 12's runner.
 accepted 2 10
@@ -443,6 +461,51 @@ reap_ghost_runners > /dev/null 2>&1
 rm -f "${RUN_DIR}/slot-12"
 echo "ghost reap sees slot 12's container ok"
 
+# --- Container names and slot labels for slots 10..12 ---------------------------
+# Containers are found by the exact label aap-crrr-slot=<N> (docker matches the
+# whole value), runners by hostname, usage by the slot file: nothing parses the
+# slot out of a name. Slot 12's container must be removed with slot 12, never
+# with slot 1, and by the label-wide removal. The real functions run in a
+# subshell, past the stubs above.
+(
+  # shellcheck source=SCRIPTDIR/../distro/manager.sh
+  source "${here}/../distro/manager.sh"
+  slog="${work}/slotlog"
+  : > "${slog}"
+  # c1 is slot 1's container and c12 slot 12's; --filter label=K=V is an exact match.
+  # shellcheck disable=SC2317
+  docker() {
+    local a want="" ids
+    case "$1" in
+      ps)
+        for a in "$@"; do
+          [[ "${a}" == label=aap-crrr-slot=* ]] && want=${a#label=aap-crrr-slot=}
+        done
+        ids=$'c1:1\nc12:12'
+        while IFS=: read -r id slot; do
+          [[ -z "${want}" || "${want}" == "${slot}" ]] && echo "${id}"
+        done <<< "${ids}"
+        ;;
+      inspect) [[ "$4" == c12 ]] && echo /aap-crrr-12-1-1 || echo /aap-crrr-1-1-1 ;;
+      *) echo "docker $*" >> "${slog}" ;;
+    esac
+  }
+  remove_slot_containers 12
+  [[ "$(cat "${slog}")" == $'docker rm -f -v c12\ndocker network rm aap-crrr-12-1-1' ]] \
+    || { echo "FAIL: remove_slot_containers 12: $(cat "${slog}")" >&2; exit 1; }
+  : > "${slog}"
+  remove_slot_containers 1
+  [[ "$(cat "${slog}")" == $'docker rm -f -v c1\ndocker network rm aap-crrr-1-1-1' ]] \
+    || { echo "FAIL: remove_slot_containers 1 touched another slot: $(cat "${slog}")" >&2; exit 1; }
+  : > "${slog}"
+  remove_job_containers
+  grep -qx 'docker rm -f c12' "${slog}" && grep -qx 'docker rm -f c1' "${slog}" \
+    || { echo "FAIL: remove_job_containers missed a container: $(cat "${slog}")" >&2; exit 1; }
+  [[ "$(job_name 12)" =~ ^aap-crrr-12-[0-9]+-[0-9]+$ ]] \
+    || { echo "FAIL: job_name 12: $(job_name 12)" >&2; exit 1; }
+) || fail "slot 12 container matching"
+echo "slot 12 containers matched and removed ok"
+
 # --- --check-limits ------------------------------------------------------------
 conf="${work}/manager.conf"
 limits="${work}/limits.conf"
@@ -501,6 +564,56 @@ limits_refused "AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT must both be set
 limits_refused "cannot be combined with AAP_RUNNER_COUNT" 'AAP_RUNNER_COUNT=2' 'AAP_LINUX_HEAVY_COUNT=1' 'AAP_LINUX_LIGHT_COUNT=1'
 limits_refused "cannot both be 0" 'AAP_LINUX_HEAVY_COUNT=0' 'AAP_LINUX_LIGHT_COUNT=0'
 limits_refused "tier reservations 70g exceed AAP_JOB_MEMORY=64g" 'AAP_LINUX_HEAVY_COUNT=2' 'AAP_LINUX_LIGHT_COUNT=10' 'AAP_JOB_MEMORY=64g'
+# The count/tier exclusion is per file, and limits.conf's form replaces
+# manager.conf's: a manager.conf with AAP_RUNNER_COUNT does not stop limits.conf
+# from asking for tiers, and a manager.conf with tiers does not stop it from
+# asking for a count. Both forms in one file are refused, in either file.
+check_slots() {
+  bash -c '
+    source "$1"
+    CONFIG_PATH=$2
+    LIMITS_PATH=$3
+    WORK_DISK_MBPS_FILE=$4
+    id() { echo 0; }
+    stat() {
+      if [[ "$2" == "%u" ]]; then echo 0; else command stat "$@"; fi
+    }
+    load_config
+    echo "${AAP_RUNNER_COUNT}:${POOL_SLOTS[*]}:${AAP_LINUX_HEAVY_COUNT-unset}:${AAP_LINUX_LIGHT_COUNT-unset}"
+  ' _ "${here}/../distro/manager.sh" "${conf}" "${limits}" "${mbps_file}" 2>&1
+}
+conf_base=$(cat "${conf}")
+write_conf() {
+  chmod 0600 "${conf}"
+  { printf '%s\n' "${conf_base}"; printf '%s\n' "$@"; } > "${conf}"
+  chmod 0400 "${conf}"
+}
+write_conf 'AAP_RUNNER_COUNT=1'
+write_limits 'AAP_LINUX_HEAVY_COUNT=1' 'AAP_LINUX_LIGHT_COUNT=2' 'AAP_JOB_CPUS=28' 'AAP_JOB_MEMORY=80g'
+out=$(check_limits) || fail "limits.conf tiers over a manager.conf count were refused: ${out}"
+[[ "${out}" == $'AAP_RUNNER_COUNT=3\nAAP_LINUX_HEAVY_COUNT=1\nAAP_LINUX_LIGHT_COUNT=2\nAAP_JOB_CPUS=28\nAAP_JOB_MEMORY=80g\nAAP_JOB_IO_PERCENT=90\nAAP_JOB_IO_MBPS=300\nAAP_POOL_SHARING=slice' ]] \
+  || fail "tiers over a manager.conf count, --check-limits: ${out}"
+assert_eq "$(check_slots)" "3:1 3 4:1:2" "tiers over a manager.conf count"
+write_conf 'AAP_LINUX_HEAVY_COUNT=1' 'AAP_LINUX_LIGHT_COUNT=2' 'AAP_JOB_CPUS=28' 'AAP_JOB_MEMORY=80g'
+write_limits 'AAP_RUNNER_COUNT=2'
+out=$(check_limits) || fail "limits.conf count over manager.conf tiers was refused: ${out}"
+[[ "${out}" == $'AAP_RUNNER_COUNT=2\nAAP_JOB_CPUS=28\nAAP_JOB_MEMORY=80g\nAAP_JOB_IO_PERCENT=90\nAAP_JOB_IO_MBPS=450\nAAP_POOL_SHARING=slice' ]] \
+  || fail "count over manager.conf tiers, --check-limits: ${out}"
+assert_eq "$(check_slots)" "2:1 2:unset:unset" "count over manager.conf tiers"
+# manager.conf tiers and no limits.conf: the pool is tiered.
+rm -f "${limits}"
+assert_eq "$(check_slots)" "3:1 3 4:1:2" "manager.conf tiers alone"
+write_conf 'AAP_RUNNER_COUNT=1'
+limits_refused "cannot be combined with AAP_RUNNER_COUNT in the same file" 'AAP_LINUX_HEAVY_COUNT=1' 'AAP_LINUX_LIGHT_COUNT=2' 'AAP_RUNNER_COUNT=3'
+limits_refused "cannot be combined with AAP_RUNNER_COUNT in the same file" 'AAP_RUNNER_COUNT=3' 'AAP_LINUX_HEAVY_COUNT=1'
+write_conf 'AAP_RUNNER_COUNT=2' 'AAP_LINUX_HEAVY_COUNT=1' 'AAP_LINUX_LIGHT_COUNT=2'
+limits_refused "cannot be combined with AAP_RUNNER_COUNT in the same file" 'AAP_JOB_CPUS=28'
+rm -f "${limits}"
+out=$(check_limits) && fail "a manager.conf with both forms was accepted: ${out}"
+[[ "${out}" == *"cannot be combined with AAP_RUNNER_COUNT in the same file"* ]] || fail "manager.conf both forms: ${out}"
+write_conf
+echo "per-file exclusion ok"
+
 # An untiered limits.conf prints the six lines it always did.
 write_limits 'AAP_RUNNER_COUNT=2'
 out=$(check_limits) || fail "an untiered limits.conf was refused: ${out}"

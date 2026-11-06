@@ -248,6 +248,10 @@ load_config() {
   while IFS= read -r line || [[ -n "${line}" ]]; do
     apply_config_line "${line}"
   done < "${CONFIG_PATH}"
+  if [[ -n "${AAP_RUNNER_COUNT+x}" && (-n "${AAP_LINUX_HEAVY_COUNT+x}" || -n "${AAP_LINUX_LIGHT_COUNT+x}") ]]; then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT cannot be combined with AAP_RUNNER_COUNT in the same file (${CONFIG_PATH})" >&2
+    exit 1
+  fi
   load_limits
   [[ "${AAP_GITHUB_ORG}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
   [[ "${AAP_GITHUB_APP_ID}" =~ ^[0-9]+$ ]]
@@ -272,7 +276,7 @@ load_config() {
 # It holds no App ids and no secrets. Any other key, an empty value, a file
 # that is not root's, or a group or world writable mode is refused.
 load_limits() {
-  local perms owner line key
+  local perms owner line key lim_count=0 lim_tier=0
   [[ -e "${LIMITS_PATH}" ]] || return 0
   if [[ ! -f "${LIMITS_PATH}" ]]; then
     echo "refusing: ${LIMITS_PATH} is not a regular file" >&2
@@ -304,7 +308,21 @@ load_limits() {
       echo "refusing: ${LIMITS_PATH} line for ${key}" >&2
       exit 1
     fi
+    case "${key}" in
+      AAP_RUNNER_COUNT) lim_count=1 ;;
+      AAP_LINUX_HEAVY_COUNT | AAP_LINUX_LIGHT_COUNT) lim_tier=1 ;;
+    esac
   done < "${LIMITS_PATH}"
+  # The exclusion is per file, and this file's form replaces manager.conf's.
+  if ((lim_count && lim_tier)); then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT cannot be combined with AAP_RUNNER_COUNT in the same file (${LIMITS_PATH})" >&2
+    exit 1
+  fi
+  if ((lim_tier)); then
+    unset AAP_RUNNER_COUNT
+  elif ((lim_count)); then
+    unset AAP_LINUX_HEAVY_COUNT AAP_LINUX_LIGHT_COUNT
+  fi
 }
 
 # AAP_WORK_DISK_GIB is this host's VHDX size. Absent means 60, which is CRRR.
