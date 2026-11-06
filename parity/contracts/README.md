@@ -199,10 +199,10 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 - **P04.1** (done 2026-10-21): the Linux `debug-pdb` (`-g`) rows for every compiler version (8
   more rows, Linux matrix revision 2), and `retention.md` requirement 4 now follows rule 6's job
   trust class.
-- **P05.1**: write waivers into the evidence record's `waivers` field and stop appending them to
-  `command`; until then `parity-report.json` and `verdict.json` stay authoritative. Nit: the
-  harness's `re.match(...$)` checks for workload ids and SHAs accept one trailing newline (Python
-  `$`); `validate.py` now rejects such values in the records.
+- **P05.1** (done): the harness writes waivers into the evidence record's `waivers` field and no
+  longer appends them to `command`; the record's `exit_status` is the validated integer exit code
+  (a bool or float `exit_code` in a results file fails the row); the workload id and SHA checks
+  use `\Z` instead of `$`, so a trailing newline is rejected.
 - **P07, P11**: match the hosted Ubuntu kernel, `read_ahead_kb` and mount options, or justify each
   difference with a reviewed allowlist entry (image-catalog.md, Acceptance input).
 - **P09**: `allocator.json` schema 2 (per-volume disk budgets, reservation `clone_gib` and
