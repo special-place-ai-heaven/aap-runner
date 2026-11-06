@@ -640,7 +640,7 @@ handle_lease() {
 # Mandatory at every teardown. Deletes only the runner the ledger names: the
 # recorded id, or for a lease still pending the runner with the derived name.
 handle_release() {
-  local r id
+  local r id rbusy
   L_RES=- L_GEN=- L_PROFILE=- L_IMAGE=-
   if ! ledger_read "${LEASE_ID}"; then
     release_answer refused not_found - -
@@ -662,14 +662,21 @@ handle_release() {
     release_answer retry github_error "${LRID}" "${LNAME}"
     return 0
   fi
+  # Read the runner right before the DELETE: one that is busy, or whose state
+  # cannot be read, keeps its lease (retry) and is not deleted.
   if [[ "${LS}" == issued ]]; then
-    r=$(delete_runner "${LRID}")
+    r=$(runner_by_id "${LRID}")
+    [[ "${r}" != absent ]] || r=already_gone
   else
     r=$(runner_by_name "${LNAME}")
-    if [[ "${r}" == "found "* ]]; then
-      read -r _ id _ _ <<< "${r}"
+  fi
+  if [[ "${r}" == "found "* ]]; then
+    read -r _ id _ rbusy <<< "${r}"
+    if [[ "${rbusy}" == false ]]; then
       LRID=${id}
       r=$(delete_runner "${id}")
+    else
+      r="error github_error"
     fi
   fi
   case "${r}" in
