@@ -7,7 +7,7 @@
 use crate::dashboard::{CAP_ERROR_H, Palette, button, primary_button, ring, semibold};
 use crate::mark::Sym;
 use crate::settings::{
-    self, HOST_CPUS, HOST_GIB, IO_PERCENT, Os, Settings, Sharing, VmLimit, WINDOWS_BACKEND,
+    self, HOST_CPUS, HOST_GIB, IO_PERCENT, Os, Settings, Sharing, Tier, VmLimit, WINDOWS_BACKEND,
 };
 use crate::state::{
     Applied, Desired, HOST_RUNNER_NAME, HOST_RUNNER_WARNING, ProfileV5, Snapshot, Status,
@@ -27,10 +27,40 @@ pub const WINDOWS_INERT: &str =
 
 const COUNTS: [(u32, &str); 6] = [(0, "0"), (1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")];
 
+/// The Linux picker's cells: light 0..10; heavy uses the first three.
+const TIER_COUNTS: [(u32, &str); 11] = [
+    (0, "0"),
+    (1, "1"),
+    (2, "2"),
+    (3, "3"),
+    (4, "4"),
+    (5, "5"),
+    (6, "6"),
+    (7, "7"),
+    (8, "8"),
+    (9, "9"),
+    (10, "10"),
+];
+
+const TIER_TIP: &str = "Light: 1 CPU 3 GiB reserved, capped at 4 CPU 8 GiB, labels fresh + light. \
+     Heavy: 8 CPU 20 GiB reserved, may burst, labels fresh + heavy. Jobs asking for heavy get \
+     only heavy slots.";
+
+/// Shown on the greyed Heavy cell while the supervisor cannot read the tiers.
+const TIERS_LATER: &str = "Heavy runners need a supervisor that reads settings schema 4.";
+
 pub struct SettingsPanel {
     /// `settings.json` as last read.
     stored: Settings,
+    /// The light (before schema 4: untiered) Linux count, and the heavy one.
     linux: u32,
+    heavy: u32,
+    /// Which tier the Linux picker edits.
+    tier: Tier,
+    /// The tray may write settings schema 4 (`settings::tiers_writable`).
+    tiers: bool,
+    /// A fresh status lists settings schema 4, so the supervisor numbers the slots by tier.
+    numbered: bool,
     windows: u32,
     io_percent: u32,
     sharing: Sharing,
@@ -61,6 +91,10 @@ impl SettingsPanel {
         SettingsPanel {
             stored,
             linux: stored.runner_count,
+            heavy: stored.linux_heavy_count,
+            tier: Tier::Light,
+            tiers: settings::tiers_writable(base),
+            numbered: lists_v4(base),
             windows: stored.windows_runner_count,
             io_percent: stored.io_percent,
             sharing: stored.sharing,
@@ -74,6 +108,11 @@ impl SettingsPanel {
     pub fn reload(&mut self, base: &Path) {
         let follow = self.changes() == 0;
         self.stored = settings::read_with_windows_choice(base);
+        self.tiers = settings::tiers_writable(base);
+        self.numbered = lists_v4(base);
+        if !self.tiers {
+            self.tier = Tier::Light;
+        }
         self.host = read_host(base);
         if follow {
             self.revert();
@@ -90,8 +129,21 @@ impl SettingsPanel {
         self.stored.windows_runner_count
     }
 
+    /// The stored light and heavy counts, and whether they are tiers: a stored schema 4 file and a
+    /// fresh status that lists 4. Without the second, the supervisor may still number the slots
+    /// 1..N untiered, so the tiles keep the untiered numbering.
+    pub fn linux_counts(&self) -> (u32, u32, bool) {
+        let s = &self.stored;
+        (
+            s.runner_count,
+            s.linux_heavy_count,
+            s.schema >= 4 && self.numbered,
+        )
+    }
+
     fn revert(&mut self) {
         self.linux = self.stored.runner_count;
+        self.heavy = self.stored.linux_heavy_count;
         self.windows = self.stored.windows_runner_count;
         self.io_percent = self.stored.io_percent;
         self.sharing = self.stored.sharing;
@@ -102,24 +154,39 @@ impl SettingsPanel {
     /// rewrites only that).
     fn edit(&self) -> Settings {
         let keep = Settings {
-            schema: self.stored.schema,
+            schema: if self.tiers { 4 } else { self.stored.schema },
             io_percent: self.io_percent,
             sharing: self.sharing,
             ..Settings::default()
         };
-        edited(
+        let derived = edited(
             &keep,
             self.linux,
             self.windows,
             self.stored.paused,
             &self.vm,
-        )
+        );
+        if !self.tiers {
+            return Settings {
+                linux_heavy_count: self.heavy,
+                ..derived
+            };
+        }
+        // Schema 4: the tiers carry the Linux limits; the totals are the Windows runners' and
+        // the window has no control for them, so they stay as stored.
+        Settings {
+            linux_heavy_count: self.heavy,
+            job_cpus: self.stored.job_cpus,
+            job_memory_gib: self.stored.job_memory_gib,
+            ..derived
+        }
     }
 
     /// Inputs that differ from the file.
     fn changes(&self) -> usize {
         [
             self.linux != self.stored.runner_count,
+            self.heavy != self.stored.linux_heavy_count,
             self.windows != self.stored.windows_runner_count,
             self.io_percent != self.stored.io_percent,
             self.sharing != self.stored.sharing,
@@ -261,23 +328,66 @@ impl SettingsPanel {
         // From before the inputs: a change shows on the next frame, which egui paints right
         // after the input event.
         let edit = self.edit();
-        let linux = linux_line(&edit, &vm);
+        let linux = if self.tiers {
+            tier_line(self.tier, self.linux, self.heavy)
+        } else {
+            linux_line(&edit, &vm)
+        };
         let windows = windows_line(&edit, self.windows, &vm, self.host.as_ref());
         // A stored schema 3 file is the supervisor's word that it runs Windows: Linux may be 0.
         let backend = WINDOWS_BACKEND || self.stored.schema >= 3;
-        let fits_linux = settings::count_range(Os::Linux, self.windows, backend);
-        let fits_windows = settings::count_range(Os::Windows, self.linux, backend);
+        let (fits_linux, fits_windows) = if self.tiers {
+            let others = |a: u32, b: u32| u32::from(a + b == 0);
+            (
+                others(self.heavy, self.windows)..=*settings::LIGHT.end(),
+                others(self.linux, self.heavy)..=*settings::WINDOWS.end(),
+            )
+        } else {
+            (
+                settings::count_range(Os::Linux, self.windows, backend),
+                settings::count_range(Os::Windows, self.linux, backend),
+            )
+        };
+        let fits_heavy = u32::from(self.linux + self.windows == 0)..=*settings::HEAVY.end();
+        let tiers = self.tiers;
         ui.horizontal(|ui| {
             os_label(ui, p, Os::Linux);
             segmented(
                 ui,
                 p,
-                &mut self.linux,
-                &COUNTS,
-                |n| fits_linux.contains(&n),
+                &mut self.tier,
+                &[(Tier::Light, "Light"), (Tier::Heavy, "Heavy")],
+                |t| tiers || t == Tier::Light,
                 p.os(Os::Linux),
                 focus,
-            );
+            )
+            .on_hover_text(if tiers { TIER_TIP } else { TIERS_LATER });
+            let fixed = snap.sharing.as_deref() == Some("fixed");
+            ui.label(RichText::new(now_runners(running)).color(p.muted).small())
+                .on_hover_text(now_linux(running, fixed));
+        });
+        ui.horizontal(|ui| {
+            tier_label(ui, p, self.tier);
+            match self.tier {
+                Tier::Light => segmented(
+                    ui,
+                    p,
+                    &mut self.linux,
+                    &TIER_COUNTS,
+                    |n| fits_linux.contains(&n),
+                    p.os(Os::Linux),
+                    focus,
+                ),
+                Tier::Heavy => segmented(
+                    ui,
+                    p,
+                    &mut self.heavy,
+                    &TIER_COUNTS[..3],
+                    |n| fits_heavy.contains(&n),
+                    p.os(Os::Linux),
+                    focus,
+                ),
+            };
         });
         ui.horizontal(|ui| {
             label(ui, "Each");
@@ -286,11 +396,6 @@ impl SettingsPanel {
         })
         .response
         .on_hover_text(linux.tip);
-        now(
-            ui,
-            p,
-            now_linux(running, snap.sharing.as_deref() == Some("fixed")),
-        );
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             os_label(ui, p, Os::Windows);
@@ -407,6 +512,20 @@ fn os_label(ui: &mut egui::Ui, p: &Palette, os: Os) {
     );
 }
 
+/// The picker's label: the selected tier's glyph and name, in the Linux colour.
+fn tier_label(ui: &mut egui::Ui, p: &Palette, tier: Tier) {
+    ui.allocate_ui_with_layout(
+        vec2(LABEL_W, 24.0),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.set_min_size(vec2(LABEL_W, 24.0));
+            ui.spacing_mut().item_spacing.x = 3.0;
+            crate::dashboard::tier_glyph(ui, p, tier, 12.0, p.bg);
+            ui.label(RichText::new(tier.name()).color(p.os(Os::Linux)));
+        },
+    );
+}
+
 /// A muted `now …` line, indented under the input.
 fn now(ui: &mut egui::Ui, p: &Palette, text: String) {
     ui.horizontal(|ui| {
@@ -453,7 +572,7 @@ fn segmented<T: Copy + PartialEq>(
                 ui.painter()
                     .layout_no_wrap((*text).into(), FontId::proportional(13.0), color);
             let w = galley.size().x;
-            let size = vec2((w + 20.0).max(32.0).min(fit.max(w + 8.0)), 24.0);
+            let size = vec2((w + 20.0).max(32.0).min(fit.max(w + 4.0)), 24.0);
             let sense = if selected {
                 Sense::click()
             } else if ok {
@@ -541,6 +660,25 @@ fn linux_line(edit: &Settings, vm: &VmLimit) -> LinuxLine {
     }
 }
 
+/// The Linux line under settings schema 4: what one slot of the picked tier gets (the tier
+/// table, status-settings.md Tiers), and both counts.
+fn tier_line(tier: Tier, light: u32, heavy: u32) -> LinuxLine {
+    LinuxLine {
+        each: match tier {
+            Tier::Light => "1 CPU 3 GiB".into(),
+            Tier::Heavy => "8 CPU 20 GiB".into(),
+        },
+        total: match tier {
+            Tier::Light => "cap 4/8".into(),
+            Tier::Heavy => "may burst".into(),
+        },
+        tip: format!(
+            "{light} light and {heavy} heavy. Reserved per slot; light is capped at 4 CPU \
+             8 GiB, heavy may burst to the pool with 4x the CPU weight."
+        ),
+    }
+}
+
 /// `status.v5.json`'s Windows profile while it is the interim runner on this PC.
 fn read_host(base: &Path) -> Option<ProfileV5> {
     crate::state::read_status_v5(base, SystemTime::now())?
@@ -555,6 +693,12 @@ fn read_host(base: &Path) -> Option<ProfileV5> {
 struct WindowsLine {
     text: String,
     tip: String,
+}
+
+/// A fresh `status.v5.json` lists settings schema 4.
+fn lists_v4(base: &Path) -> bool {
+    crate::state::read_status_v5(base, std::time::SystemTime::now())
+        .is_some_and(|v| v.takes_settings_v4())
 }
 
 fn windows_line(
@@ -882,6 +1026,70 @@ mod tests {
             (s.schema, s.runner_count, s.windows_runner_count),
             (3, 0, 3)
         );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_schema_four_file_shows_and_applies_both_tiers() {
+        let base = crate::state::temp_base("settings-panel-v4");
+        std::fs::write(
+            crate::state::inbox(&base).join("settings.json"),
+            crate::state::fixture("settings-v4/valid/tiers-per-profile.json"),
+        )
+        .unwrap();
+        let mut panel = SettingsPanel::load(&base);
+        panel.vm = VmLimit::ASSUMED;
+        assert!(panel.tiers);
+        // No status lists 4 yet: the supervisor may still number the slots untiered.
+        assert_eq!(panel.linux_counts(), (4, 1, false));
+        panel.numbered = true;
+        assert_eq!(panel.linux_counts(), (4, 1, true));
+        assert_eq!(
+            (panel.linux, panel.heavy, panel.windows, panel.changes()),
+            (4, 1, 2, 0)
+        );
+        assert!(!panel.pending(), "the stored file is what the window shows");
+        panel.heavy = 2;
+        panel.linux = 10;
+        assert_eq!(panel.changes(), 2);
+        assert_eq!(panel.edit().validate(&panel.vm), Ok(()));
+        assert!(panel.apply(&base), "{:?}", panel.write_error);
+        let s = settings::read_settings(&base);
+        assert_eq!(
+            (
+                s.schema,
+                s.runner_count,
+                s.linux_heavy_count,
+                s.windows_runner_count
+            ),
+            (4, 10, 2, 2)
+        );
+        assert_eq!(tier_line(Tier::Heavy, 10, 2).each, "8 CPU 20 GiB");
+        assert_eq!(tier_line(Tier::Light, 10, 2).total, "cap 4/8");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn without_schema_four_heavy_is_greyed_and_light_keeps_five() {
+        let base = crate::state::temp_base("settings-panel-no-v4");
+        let mut panel = SettingsPanel::load(&base);
+        panel.vm = VmLimit::ASSUMED;
+        assert!(!panel.tiers, "no status.v5.json lists 4");
+        assert_eq!(panel.linux_counts(), (1, 0, false));
+        panel.heavy = 1;
+        assert!(
+            panel.edit().validate(&panel.vm).is_err(),
+            "heavy needs schema 4"
+        );
+        panel.heavy = 0;
+        panel.linux = 6;
+        assert!(
+            panel.edit().validate(&panel.vm).is_err(),
+            "schema 2 keeps 1..5"
+        );
+        panel.linux = 5;
+        assert!(panel.apply(&base), "{:?}", panel.write_error);
+        assert_eq!(settings::read_settings(&base).schema, 2);
         std::fs::remove_dir_all(&base).unwrap();
     }
 

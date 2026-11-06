@@ -1,5 +1,5 @@
 {
-  "expect": "more than 5 items",
+  "expect": "more slots than max_slots",
   "instance": {
     "schema": 5,
     "state": "running",
@@ -146,7 +146,7 @@
         "mem_gib": 0.4
       },
       {
-        "slot": 5,
+        "slot": 6,
         "profile": "linux",
         "os": "Linux",
         "backend": "wsl-legacy",

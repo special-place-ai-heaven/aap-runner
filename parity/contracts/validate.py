@@ -601,11 +601,51 @@ def sem_settings_v3(doc):
             [(doc["runner_count"], doc["linux_share_percent"]), (doc["windows_runner_count"], doc["windows_share_percent"])])
 
 
+def sem_settings_v4(doc):
+    linux = doc["linux_light_count"] + doc["linux_heavy_count"]
+    if linux + doc["windows_runner_count"] < 1:
+        raise Invalid("light + heavy + windows runner counts must be at least 1")
+    _shares(doc["share_mode"], doc["host_reserve_percent"],
+            [(linux, doc["linux_share_percent"]), (doc["windows_runner_count"], doc["windows_share_percent"])])
+
+
+# R1 tier slot numbers while settings schema 4 is applied (status-settings.md, Tiers).
+TIER_SLOTS = {"heavy": range(1, 3), "light": range(3, 13), None: range(13, 18)}
+
+
+def _tiers(doc):
+    """Settings schema 4 applied: fixed slot numbers per tier, max_slots 17, Linux 0..12 and
+    Windows 0..5. Otherwise no slot has a tier and the five-slot rules hold."""
+    tiered = doc["applied_settings_schema"] == 4
+    if tiered and 4 not in doc["settings_schemas"]:
+        raise Invalid("applied_settings_schema 4 is not in settings_schemas")
+    if doc["capacity"]["max_slots"] != (17 if tiered else 5):
+        raise Invalid("max_slots is 17 exactly while settings schema 4 is applied, else 5")
+    if len(doc["slots"]) > doc["capacity"]["max_slots"]:
+        raise Invalid("more slots than max_slots")
+    count = {p["profile"]: p["count"] for p in doc["profiles"]}
+    if tiered:
+        if count["linux"] > 12 or count["windows"] > 5 or count["linux"] + count["windows"] < 1:
+            raise Invalid("linux runner count must be 0..12 and windows 0..5, at least 1 together")
+    else:
+        _counts(count["linux"], count["windows"])
+    for s in doc["slots"]:
+        tier = s.get("tier")
+        if not tiered:
+            if tier is not None:
+                raise Invalid(f"slot {s['slot']}: a tier only while settings schema 4 is applied")
+            continue
+        if (s["profile"] == "linux") != (tier is not None):
+            raise Invalid(f"slot {s['slot']}: every linux slot and no windows slot has a tier")
+        if s["slot"] not in TIER_SLOTS[tier]:
+            raise Invalid(f"slot {s['slot']}: not a {tier or 'windows'} slot number")
+
+
 def sem_status_v5(doc):
     names = [p["profile"] for p in doc["profiles"]]
     if sorted(names) != ["linux", "windows"]:
         raise Invalid("profiles lists linux and windows exactly once")
-    _counts(*(p["count"] for p in sorted(doc["profiles"], key=lambda p: p["profile"])))
+    _tiers(doc)
     os_of = {"linux": "Linux", "windows": "Windows"}
     for p in doc["profiles"]:
         if p["os"] != os_of[p["profile"]]:
@@ -776,6 +816,7 @@ SEMANTIC = {
     "image-catalog": sem_image_catalog,
     "cache-qualification": sem_cache_qualification,
     "settings-v3": sem_settings_v3,
+    "settings-v4": sem_settings_v4,
     "status-v5": sem_status_v5,
     "tray-windows-choice": None,
     "evidence-bundle": sem_evidence_bundle,

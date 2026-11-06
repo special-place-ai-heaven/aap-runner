@@ -534,6 +534,11 @@ impl StatusV5 {
     pub fn takes_settings_v3(&self) -> bool {
         self.settings_schemas.contains(&3)
     }
+
+    /// The supervisor reads settings schema 4 (the tiers), so the tray may write it.
+    pub fn takes_settings_v4(&self) -> bool {
+        self.settings_schemas.contains(&4)
+    }
 }
 
 /// `status.v5.json`, or `None` when it is missing, over 64 KiB, unparseable, stale (over 180 s

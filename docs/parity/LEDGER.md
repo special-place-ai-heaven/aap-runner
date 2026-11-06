@@ -520,3 +520,9 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Prerequisites: P12, P20.0 (COMPLETE). Ownership: `parity/contracts/status-settings.md`, `status-v5.schema.json`, `validate.py` and fixtures, `supervisor/aap-runner-supervisor.ps1` and its tests, `crates/tray/src/{state,settings_panel,dashboard}.rs`.
 - Deliverable: status-settings revision 4: the Windows profile reports `backend: windows-host` with `host_runner` (`online`, `busy`, `stopped`) while the interim runner is installed and no Windows VM backend is loaded; the supervisor detects it read-only (logon task, listener and worker processes); the tray names it and its state with one warning line. Report only: no start or stop, no JIT registration (later R2 slices).
 - Closure: as every item. Current state: PR_OPEN (PR #103, branch `feat/windows-host-backend`).
+
+## R1.1 — Tiered Linux pool contract and tray (roadmap R1, steps 1 and 4)
+
+- Prerequisites: P12, P20.0 (COMPLETE); owner brief R1 (2026-11-04). Ownership: `parity/contracts/status-settings.md`, `settings-v4.schema.json`, `status-v5.schema.json`, `validate.py` and fixtures, `distro/README.md` (label lines only), `crates/tray/**`.
+- Deliverable: status-settings revision 5: settings schema 4 (`linux_light_count` 0..10, `linux_heavy_count` 0..2 instead of `runner_count`), status slots carry `tier` with fixed tier slot numbers and 17-slot maxima while schema 4 is applied; the tray's Light | Heavy count picker, compact always-drawn Linux cards (disabled slots grey) and painted tier icons, writing schema 4 only when a stored schema 4 file or a fresh `status.v5.json` allows it. Manager (step 2) and supervisor (step 3) tiers are separate items.
+- Closure: as every item. Current state: PR_OPEN (PR #104, branch `feat/tray-tiers`).

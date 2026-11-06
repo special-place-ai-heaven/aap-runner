@@ -51,7 +51,8 @@
         "enum": [
           1,
           2,
-          3
+          3,
+          4
         ]
       }
     },
@@ -60,7 +61,8 @@
         null,
         1,
         2,
-        3
+        3,
+        4
       ]
     },
     "capacity": {
@@ -76,17 +78,21 @@
       ],
       "properties": {
         "max_slots": {
-          "const": 5
+          "enum": [
+            5,
+            17
+          ],
+          "description": "5 (settings schema 1..3 applied: Linux + Windows at most 5); 17 while settings schema 4 is applied (Linux heavy 2 + light 10, Windows 5)."
         },
         "used_slots": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 5
+          "maximum": 17
         },
         "free_slots": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 5
+          "maximum": 17
         },
         "host_reserve_percent": {
           "type": "integer",
@@ -114,7 +120,7 @@
     },
     "slots": {
       "type": "array",
-      "maxItems": 5,
+      "maxItems": 17,
       "items": {
         "$ref": "#/$defs/slot"
       }
@@ -224,7 +230,7 @@
                 "null"
               ],
               "minimum": 0,
-              "maximum": 5
+              "maximum": 12
             },
             "job_cpus": {
               "type": [
@@ -360,7 +366,7 @@
         "count": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 5
+          "maximum": 12
         },
         "share_percent": {
           "type": [
@@ -456,7 +462,7 @@
         "slot": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 5
+          "maximum": 17
         },
         "profile": {
           "enum": [
@@ -535,6 +541,14 @@
           ],
           "minimum": 0,
           "maximum": 4096
+        },
+        "tier": {
+          "enum": [
+            "heavy",
+            "light",
+            null
+          ],
+          "description": "R1 tier. Present on every Linux slot (heavy or light) exactly while settings schema 4 is applied, null or absent otherwise and on every Windows slot. Optional in the schema so a supervisor before R1 step 3 stays valid."
         }
       }
     },
