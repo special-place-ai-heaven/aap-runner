@@ -515,7 +515,9 @@ function Assert-AapBrokerArgument([bool]$Ok, [string]$Name) {
 function Assert-AapBrokerCommon([string]$LeaseId, [string]$Distro, [int]$TimeoutSeconds) {
     Assert-AapBrokerArgument ($LeaseId -cmatch $script:Pattern.lease_id) 'LeaseId'
     Assert-AapBrokerArgument ($Distro -cmatch $script:Pattern.distro) 'Distro'
-    Assert-AapBrokerArgument ($TimeoutSeconds -ge 1 -and $TimeoutSeconds -le 600) 'TimeoutSeconds'
+    # The floor is the broker's own budget: a run may take up to 55 s (RUN_LIMIT_SECONDS
+    # in worker-auth.sh), so a shorter wait kills wsl.exe mid-request and strands the lease.
+    Assert-AapBrokerArgument ($TimeoutSeconds -ge 60 -and $TimeoutSeconds -le 600) 'TimeoutSeconds'
 }
 
 function New-AapBrokerResult([string]$LeaseId, [string]$Outcome, $Reason, $ExitCode) {

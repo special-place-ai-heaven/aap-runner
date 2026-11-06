@@ -14,7 +14,7 @@ marker, not a credential).
   `wsl.exe -d aap-runner -u root --exec /usr/local/sbin/aap-runner-broker`, no further
   arguments. The request is one JSON document on stdin, at most 4096 bytes; the response is one
   JSON document on stdout, at most 20 KiB. Any other output, size or exit code is a refusal.
-  Timeout: 60 s per call.
+  Timeout: 60 s per call; the client accepts 60 to 600 s, never less (the broker's own run limit is 55 s).
 - No socket, port, named pipe or file drop. Guests cannot reach the distro (network rule,
   ARCHITECTURE.md boundary 4).
 - **Access is not controlled by the broker** (security review M1): WSL sessions belong to the
@@ -97,7 +97,7 @@ the inbox, status, an image, a log or evidence. A registration token (`POST .../
 
 ## Audit record
 
-One `audit` line per request in `/var/log/aap-runner/broker-audit.jsonl`, root 0600, rotated at
+One `audit` line per request in `/var/lib/aap-runner/broker/broker-audit.jsonl`, root 0600, rotated at
 5 MB with one `.1`. Fields: time, op (`lease`, `release`, `status`, `expire`), lease and
 reservation ids, generation, profile, image generation, outcome, reason, runner id and name. The
 schema forbids any other field, and `validate.py` rejects secret-shaped field names in it.
