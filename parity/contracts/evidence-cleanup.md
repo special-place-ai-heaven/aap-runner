@@ -32,9 +32,9 @@ waiver can still be a pass; P24 and P26 list every waiver they find, rebuild the
 from `parity/workloads/**` at the record's `head_sha`, and reject a record whose waivers differ
 (missing or extra). Records keep `schema` 1, so every revision-1 record stays valid.
 
-Until **P05.1** moves the writer to this field, `tools/parity-certify` still appends
-` [waiver compare_artifacts=names: <reason>]` to `command`, cut to fit its 500 characters, and its
-`parity-report.json` and `verdict.json` remain the authoritative waiver record.
+Since **P05.1**, `tools/parity-certify` writes each waiver into this field (`definition_id` is the
+workload's own id, `reason` is the definition's `compare_artifacts_reason`) and no longer appends
+anything to `command`; `parity-report.json` and `verdict.json` list the same waivers.
 
 ## Cleanup receipt (DECIDED: both shapes in use are accepted)
 

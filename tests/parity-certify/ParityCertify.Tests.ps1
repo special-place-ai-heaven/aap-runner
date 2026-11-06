@@ -423,6 +423,31 @@ Describe 'Identity pins: source, workflow, action and image SHAs' {
         (Full $WinRef (Join-Path $T 'cand.json') $p $GoodRes 'pinbad').Code | Should -Be 2
         Test-Path (Join-Path $T 'nopin\verdict.json') | Should -BeFalse
     }
+    It 'a pin value with a trailing newline is refused (exit 2), not accepted by a $ anchor' {
+        Mut $WinRef (Join-Path $T 'cand.json') 'copy'
+        $good = @{ image_version = '20261007.264.1'; runner_version = '2.337.0'; source_sha = $Sha; workflow_sha = $Wsha; action_shas = @($Act) }
+        $cases = @{
+            source_sha = ($Sha + "`n"); workflow_sha = ($Wsha + "`n"); image_version = "20261007.264.1`n"
+            runner_version = "2.337.0`n"; action_shas = @(($Act + "`n"))
+        }
+        foreach ($k in $cases.Keys) {
+            $pin = $good.Clone()
+            $pin[$k] = $cases[$k]
+            $p = Join-Path $T "pin-nl-$k.json"
+            WriteJson $pin $p
+            $r = Full $WinRef (Join-Path $T 'cand.json') $p $GoodRes "pinnl-$k"
+            $r.Code | Should -Be 2 -Because $k
+            Test-Path (Join-Path $r.Dir 'verdict.json') | Should -BeFalse -Because $k
+        }
+    }
+    It 'a --head-sha with a trailing newline is refused (exit 2)' {
+        Mut $WinRef (Join-Path $T 'cand.json') 'copy'
+        $o = Join-Path $T 'headnl'
+        $r = Cert @('certify', '--reference', $WinRef, '--candidate', (Join-Path $T 'cand.json'), '--allowlist', $Allow, '--out', $o,
+            '--pin', $WinPin, '--defs', $GoodDefs, '--results', $GoodRes, '--head-sha', ($Sha + "`n"))
+        $r.Code | Should -Be 2 -Because $r.Out
+        $r.Out | Should -Match 'head-sha'
+    }
     It 'a reference with no recorded identity (null SHAs) fails certification even against a full pin' {
         $noid = Join-Path $T 'win-ref-noid.json'
         (Cert @('parse-hosted-log', $WinLog, '--out', $noid)).Code | Should -Be 0
@@ -443,6 +468,12 @@ Describe 'Workload runner' {
             $r = RunWl $d $Name
             $r | Add-Member -NotePropertyName Res -NotePropertyValue ((J $r.ResFile).results[0]) -PassThru
         }
+    }
+    It 'a workload id with a trailing newline is refused (exit 2)' {
+        $d = NewDefs 'idnl' @((PyDef ("w/nl`n") 'pass'))
+        $r = RunWl $d 'idnl'
+        $r.Code | Should -Be 2 -Because $r.Out
+        $r.Out | Should -Match 'bad workload id'
     }
     It 'the shipped fixture workloads pass, with exit code, artifact hash and first causal error captured' {
         $res = (J $FixRes).results
@@ -659,6 +690,23 @@ Describe 'Certify recomputes behaviour from the definitions; results.json status
         $r.Code | Should -Be 1
         (Report $r.Dir).behaviour.results | Where-Object { $_.id -eq 'fixture/py-hello' } | ForEach-Object { $_.reasons -join ';' } | Should -Match 'log missing or does not match'
     }
+    It 'an exit_code that is not an integer (false, 0.0) is not exit code 0: the row fails and the record binds no exit_status' {
+        foreach ($forged in 'false', '0.0') {
+            $p = CopyResults "exitcode-$forged"
+            $txt = Get-Content -Raw -LiteralPath $p
+            $new = $txt -replace '"exit_code":\s*0(?=[,\s}])', ('"exit_code": ' + $forged)
+            $new | Should -Not -BeExactly $txt -Because 'the forgery must change the file'
+            [IO.File]::WriteAllText($p, $new)
+            $r = Full $WinRef $Cand $WinPin $p "exitcode-$forged"
+            $r.Code | Should -Be 1 -Because "$forged : $($r.Out)"
+            $rows = @((Report $r.Dir).behaviour.results | Where-Object { $_.status -ne 'pass' })
+            $rows.Count | Should -BeGreaterThan 0 -Because $forged
+            ($rows[0].reasons -join ';') | Should -Match 'exit code .* not an integer'
+            $rec = J (Join-Path $r.Dir 'evidence\workload__fixture__py-hello.json')
+            $rec.exit_status | Should -BeNullOrEmpty
+            $rec.result | Should -Not -Be 'pass'
+        }
+    }
     It 'a fallback variant never certifies on its own; it can only certify when the reference ran the same variant' {
         $d = NewDefs 'fallback' @(@{ id = 'fb/needs-compiler'; variants = @(
                     @{ requires = 'aap-no-such-compiler-xyz'; commands = @(, @('aap-no-such-compiler-xyz', '--version')) },
@@ -782,13 +830,27 @@ Describe 'compare_artifacts is validated and every waiver stays visible' {
         $rep.behaviour.waivers[0].reason | Should -Be $Why
         (Verdict $r.Dir).waivers[0].reason | Should -Be $Why
         $rec = J (Join-Path $r.Dir 'evidence\workload__cmp__random.json')
-        $rec.command | Should -Match 'waiver compare_artifacts=names: random bytes differ on every run'
-        $rec.command.Length | Should -BeLessOrEqual 500
+        $rec.command | Should -Not -Match 'waiver'
+        @($rec.waivers).Count | Should -Be 1
+        $rec.waivers[0].kind | Should -Be 'compare_artifacts'
+        $rec.waivers[0].definition_id | Should -Be 'cmp/random'
+        $rec.waivers[0].reason | Should -Be $Why
         $rec.result | Should -Be 'pass'
+        # the waiver is bound to its own workload: the contract rejects the same waiver on any other fixture
+        $rec.fixture_id | Should -Be 'workload/cmp/random'
+        $other = J (Join-Path $r.Dir 'evidence\workload__cmp__random.json')
+        $other.waivers[0].definition_id = 'cmp/other'
+        $op = Join-Path $T 'waiver-unbound.json'
+        WriteJson $other $op
+        $val = Run @('-I', $Validate, 'evidence-bundle', $op)
+        $val.Code | Should -Not -Be 0
+        $val.Out | Should -Match 'only its own workload'
         # a definition with no waiver carries none
         $plain = Report (Join-Path $T 'ok1')
         @($plain.behaviour.waivers).Count | Should -Be 0
-        (J (Join-Path $T 'ok1\evidence\workload__fixture__py-hello.json')).command | Should -Not -Match 'waiver'
+        $pr = J (Join-Path $T 'ok1\evidence\workload__fixture__py-hello.json')
+        $pr.command | Should -Not -Match 'waiver'
+        $pr.PSObject.Properties.Name | Should -Not -Contain 'waivers'
     }
     It 'names mode still compares the artifact names' {
         $nameDefs = NewDefs 'cmpname2' @((PyDef 'cmp/named' $NameCode @{ artifact_globs = @('*.bin'); compare_artifacts = 'names'; compare_artifacts_reason = $Why }))
