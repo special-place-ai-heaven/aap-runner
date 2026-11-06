@@ -10,9 +10,11 @@ permissions:
   contents: read
 
 # Dogfood: pushes to main, manual runs and pull requests from branches in this repository run on the
-# owner's own runners (the Linux pool and the interim Windows runner). Pull requests from forks are
-# untrusted code and always run on GitHub-hosted runners (CLAUDE.md: never run untrusted PR code on
-# the self-hosted runners). The Linux jobs stay on hosted runners until the pool's runner image has
+# owner's own runners (the Linux pool and the interim Windows runner); pull requests from forks get
+# GitHub-hosted runners here. This routing is a convenience, not the security boundary: a fork PR runs
+# its own copy of this file and could name the self-hosted labels. What keeps untrusted code off the
+# owner's machines is the setting "Require approval for all outside collaborators" (keep it on) and
+# the runner groups' repository access (CLAUDE.md: never run untrusted PR code on self-hosted runners). The Linux jobs stay on hosted runners until the pool's runner image has
 # jq and a Rust toolchain (the live image predates #92 and ships no cargo).
 
 jobs:
