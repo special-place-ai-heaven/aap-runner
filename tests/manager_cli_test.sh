@@ -40,10 +40,10 @@ echo "unknown argument exits 2 without docker ok"
 
 rc=0
 out=$(cli --version) || rc=$?
-[[ "${rc}" -eq 0 && "${out}" == "aap-runner-manager 2" ]] || fail "--version exited ${rc}: ${out}"
+[[ "${rc}" -eq 0 && "${out}" == "aap-runner-manager 3" ]] || fail "--version exited ${rc}: ${out}"
 [[ ! -e "${work}/touched" ]] || fail "--version reached docker or the config"
 out=$(bash "${manager}" --version) || fail "--version as a plain user failed"
-[[ "${out}" == "aap-runner-manager 2" ]] || fail "--version as a plain user printed: ${out}"
+[[ "${out}" == "aap-runner-manager 3" ]] || fail "--version as a plain user printed: ${out}"
 echo "version marker ok"
 
 # --check-token: load_config and check_key run, one token is minted and

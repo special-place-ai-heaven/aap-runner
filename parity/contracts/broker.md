@@ -80,7 +80,10 @@ The broker derives:
   (`DELETE /orgs/{org}/actions/runners/{id}`) and answers `deregistered`; a 404 or no match is
   `already_gone`. Both close the lease and are accepted as the teardown proof's runner part. Its
   `nonce` must be new for that lease. Only the ledger-recorded runner is ever deleted; a request
-  cannot name a different one. `retry` means GitHub failed; the slot stays `deleting`.
+  cannot name a different one. Immediately before the DELETE the broker reads the runner once
+  more: one GitHub reports `busy`, or whose state cannot be read, is not deleted, the lease stays
+  open and the answer is `retry`/`github_error`. `retry` means GitHub failed or the runner is
+  not idle; the slot stays `deleting`.
 - `status_request` is read-only: it looks up the ledger-recorded runner id and reports its GitHub
   `status` (`online`, `offline`) and `busy`, or `absent`; the allocator uses it to decide when a heartbeat-quarantined slot may be destroyed.
 - The ledger never stores the JIT config, a token, a JWT or a hash of them.
