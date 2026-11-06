@@ -12,11 +12,12 @@ permissions:
 # Dogfood: pushes to main, manual runs and pull requests from branches in this repository run on the
 # owner's own runners (the Linux pool and the interim Windows runner). Pull requests from forks are
 # untrusted code and always run on GitHub-hosted runners (CLAUDE.md: never run untrusted PR code on
-# the self-hosted runners).
+# the self-hosted runners). The Linux jobs stay on hosted runners until the pool's runner image has
+# jq and a Rust toolchain (the live image predates #92 and ships no cargo).
 
 jobs:
   bash:
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","fresh"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: bash distro/bootstrap.sh --self-check
@@ -54,7 +55,12 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/install-host.Tests.ps1
       - shell: powershell
         run: |
-          Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -eq '5.7.1')) {
+            if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
+              Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
+            }
+            Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          }
           Import-Module Pester -RequiredVersion 5.7.1
           $c = New-PesterConfiguration
           $c.Run.Path = @('supervisor', 'tests/parity-work', 'tests/capacity', 'tests/broker', 'tests/images/common', 'tests/parity-certify', 'tests/network', 'tests/common')
@@ -68,7 +74,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - shell: powershell
         run: |
-          Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -eq '5.7.1')) {
+            if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
+              Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
+            }
+            Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          }
           Import-Module Pester -RequiredVersion 5.7.1
           $c = New-PesterConfiguration
           $c.Run.Path = @('tests/backends/windows', 'tests/backends/linux', 'tests/guests/cache', 'tests/images/windows', 'tests/parity/workloads/windows', 'tests/images/ubuntu-24.04', 'tests/guests/windows')
@@ -79,7 +90,7 @@ jobs:
   # crates/pool-core is also covered workspace-wide by the tray job on Windows. This job runs it on
   # Linux, where the code will run, and proves the static musl build the distro will ship.
   pool-core:
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","fresh"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: cargo fmt --all --check
