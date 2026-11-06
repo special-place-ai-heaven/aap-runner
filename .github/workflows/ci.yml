@@ -4,10 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# A newer run of the same PR (a push, or a ci-hosted label change) cancels the older one; pushes to
+# main and manual runs each get their own group and are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 # Dogfood: pushes to main, manual runs and pull requests from branches in this repository run on the
 # owner's own runners (the Linux pool and the interim Windows runner); pull requests from forks get
@@ -16,6 +23,8 @@ permissions:
 # owner's machines is the setting "Require approval for all outside collaborators" (keep it on) and
 # the runner groups' repository access (CLAUDE.md: never run untrusted PR code on self-hosted runners). The Linux jobs stay on hosted runners until the pool's runner image has
 # jq and a Rust toolchain (the live image predates #92 and ships no cargo).
+# A same-repo PR labelled ci-hosted runs its Windows jobs on windows-latest instead: one interim
+# runner serializes the queue (~60 min per PR), so low-priority PRs take the hosted lane.
 
 jobs:
   bash:
@@ -50,7 +59,7 @@ jobs:
       - run: $RUNNER_TEMP/shellcheck-v0.11.0/shellcheck -S warning distro/*.sh tests/*.sh tests/parity/cache/qualification/*.sh parity/cache/qualification/harness/*.sh tools/parity-certify/probe/linux.sh parity/workloads/linux/*.sh parity/workloads/linux/*/*.sh parity/workloads/actions/linux/*/*.sh parity/workloads/xwin/*.sh tests/parity/workloads/linux/*.sh guests/cache/linux/*.sh tests/guests/cache/zccache_test.sh tests/guests/cache/fakes/fake-cc tests/guests/cache/fakes/fake-zccache images/ubuntu-24.04/guest/*.sh tests/images/ubuntu-24.04/*.sh guests/linux/*.sh tests/guests/linux/*.sh
 
   pester:
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - shell: powershell
@@ -71,7 +80,7 @@ jobs:
           Invoke-Pester -Configuration $c
 
   pester-backends:
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - shell: powershell
@@ -113,7 +122,7 @@ jobs:
           test "$(wc -l < "$RUNNER_TEMP/err")" -eq 1
 
   tray:
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: cargo fmt --all --check
