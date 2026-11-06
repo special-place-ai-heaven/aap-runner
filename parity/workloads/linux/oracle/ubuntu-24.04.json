@@ -38,7 +38,7 @@
     "yarn": {"v": "1.22.22", "src": "inventory:Package Management|Yarn"},
     "python": {"v": "3.12.3", "src": "inventory:Language and Runtime|Python"},
     "pip": {"v": "24.0", "src": "inventory:Package Management|Pip"},
-    "java": {"v": "17.0.20.1+1", "src": "hosted:39450814977/linux__toolchain-versions.log:OpenJDK Runtime Environment Temurin-17.0.20.1+1 (build 17.0.20.1+1)"},
+    "java": {"v": "17.0.21+9", "src": "inventory:Java|Java"},
     "maven": {"v": "3.10.0", "src": "inventory:Project Management|Maven"},
     "gradle": {"v": "9.8.2", "src": "inventory:Project Management|Gradle"},
     "ant": {"v": "1.10.14", "src": "inventory:Project Management|Ant"},

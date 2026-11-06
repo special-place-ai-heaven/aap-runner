@@ -138,9 +138,9 @@
       "src": "inventory:Package Management|pip"
     },
     "java": {
-      "v": "17.0.20.1+1",
-      "src": "hosted:39351642738/windows__toolchain-versions.log:observed '17.0.20.1+1'",
-      "note": "the inventory lists Java 17.0.20+101 (inventory:Java|Java, the tool-cache folder 17.0.20-101); the default JDK there reports build 17.0.20.1+1 on the hosted image (run 39351642738)"
+      "v": "17.0.21+9",
+      "src": "inventory:Java|Java",
+      "note": "the inventory lists Java 17.0.21+9 (inventory:Java|Java, the tool-cache folder 17.0.21-9) and the default JDK reports the same build on the 20261103.298.1 image; the previous image reported 17.0.20.1+1 against an inventory 17.0.20+101 (run 39351642738)"
     },
     "go": {
       "v": "1.24.13",
