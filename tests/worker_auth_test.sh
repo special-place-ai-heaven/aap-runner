@@ -229,6 +229,12 @@ LOCK_WAIT_SECONDS=${TEST_LOCK_WAIT:-20}
 AUDIT_MAX_BYTES=${TEST_AUDIT_MAX:-${AUDIT_MAX_BYTES}}
 SWEEP_SECONDS=${TEST_SWEEP_SECONDS:-${SWEEP_SECONDS}}
 RUN_LIMIT_SECONDS=${TEST_RUN_LIMIT:-${RUN_LIMIT_SECONDS}}
+# A competing writer takes the lease file between the replay check and the
+# create: the create's own subshell (set -C) plants TEST_PLANT_LEASE there first.
+if [[ -n "${TEST_PLANT_LEASE+x}" ]]; then
+  set -T
+  trap '[[ "${BASH_COMMAND}" != "set -C" ]] || printf "%s" "${TEST_PLANT_LEASE}" > "${BROKER_DIR}/leases/${LEASE_ID}.json"' DEBUG
+fi
 load_config() {
   echo load_config >> "${T}/called"
   if [[ -n "${TEST_CONF_FAIL:-}" ]]; then
@@ -1050,6 +1056,28 @@ done
 [[ -f "${T}/log/broker-audit.jsonl.1" && "$(stat -c %a "${T}/log/broker-audit.jsonl.1")" == 600 ]] || fail "the audit log was not rotated to .1"
 [[ ! -e "${T}/log/broker-audit.jsonl.2" ]] || fail "more than one rotated audit log"
 echo "audit rotation ok"
+
+# ---- audit log location -----------------------------------------------------
+# The audit log is broker state: under the broker directory, not /var/log.
+dflt=$(bash -c 'source "$1" && printf %s "${AUDIT_LOG}"' _ "${broker}")
+[[ "${dflt}" == /var/lib/aap-runner/broker/broker-audit.jsonl ]] || fail "the audit log defaults to ${dflt}"
+echo "audit log location ok"
+
+# ---- a lease create that fails ----------------------------------------------
+# A competing writer holds the lease file when the exclusive create runs: exit 1,
+# no response. A file with content is theirs and stays; an empty one is removed.
+reset
+lid=$(new_lease)
+run_broker "$(lease_req "${lid}" 1 1 "$(new_res)")" TEST_PLANT_LEASE='{"planted":1}'
+[[ "${RC}" -eq 1 && -z "${OUT}" ]] || fail "a failed lease create gave exit ${RC} and output ${OUT}"
+[[ "$(cat "${T}/state/leases/${lid}.json" 2>/dev/null)" == '{"planted":1}' ]] \
+  || fail "a failed create removed or changed a lease file that was not empty"
+reset
+lid=$(new_lease)
+run_broker "$(lease_req "${lid}" 1 1 "$(new_res)")" TEST_PLANT_LEASE=
+[[ "${RC}" -eq 1 && -z "${OUT}" ]] || fail "a failed lease create over an empty file gave exit ${RC} and output ${OUT}"
+[[ ! -e "${T}/state/leases/${lid}.json" ]] || fail "a failed create left an empty lease file"
+echo "failed lease create ok"
 
 # ---- secrets ---------------------------------------------------------------
 rm -f "${T}/sampling"
