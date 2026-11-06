@@ -9,6 +9,14 @@ on:
 permissions:
   contents: read
 
+# Dogfood: pushes to main, manual runs and pull requests from branches in this repository run on the
+# owner's own runners (the Linux pool and the interim Windows runner); pull requests from forks get
+# GitHub-hosted runners here. This routing is a convenience, not the security boundary: a fork PR runs
+# its own copy of this file and could name the self-hosted labels. What keeps untrusted code off the
+# owner's machines is the setting "Require approval for all outside collaborators" (keep it on) and
+# the runner groups' repository access (CLAUDE.md: never run untrusted PR code on self-hosted runners). The Linux jobs stay on hosted runners until the pool's runner image has
+# jq and a Rust toolchain (the live image predates #92 and ships no cargo).
+
 jobs:
   bash:
     runs-on: ubuntu-latest
@@ -42,14 +50,19 @@ jobs:
       - run: $RUNNER_TEMP/shellcheck-v0.11.0/shellcheck -S warning distro/*.sh tests/*.sh tests/parity/cache/qualification/*.sh parity/cache/qualification/harness/*.sh tools/parity-certify/probe/linux.sh parity/workloads/linux/*.sh parity/workloads/linux/*/*.sh parity/workloads/actions/linux/*/*.sh parity/workloads/xwin/*.sh tests/parity/workloads/linux/*.sh guests/cache/linux/*.sh tests/guests/cache/zccache_test.sh tests/guests/cache/fakes/fake-cc tests/guests/cache/fakes/fake-zccache images/ubuntu-24.04/guest/*.sh tests/images/ubuntu-24.04/*.sh guests/linux/*.sh tests/guests/linux/*.sh
 
   pester:
-    runs-on: windows-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/install-host.Tests.ps1
       - shell: powershell
         run: |
-          Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -eq '5.7.1')) {
+            if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
+              Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
+            }
+            Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          }
           Import-Module Pester -RequiredVersion 5.7.1
           $c = New-PesterConfiguration
           $c.Run.Path = @('supervisor', 'tests/parity-work', 'tests/capacity', 'tests/broker', 'tests/images/common', 'tests/parity-certify', 'tests/network', 'tests/common')
@@ -58,12 +71,17 @@ jobs:
           Invoke-Pester -Configuration $c
 
   pester-backends:
-    runs-on: windows-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - shell: powershell
         run: |
-          Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -eq '5.7.1')) {
+            if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
+              Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
+            }
+            Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          }
           Import-Module Pester -RequiredVersion 5.7.1
           $c = New-PesterConfiguration
           $c.Run.Path = @('tests/backends/windows', 'tests/backends/linux', 'tests/guests/cache', 'tests/images/windows', 'tests/parity/workloads/windows', 'tests/images/ubuntu-24.04', 'tests/guests/windows')
@@ -95,7 +113,7 @@ jobs:
           test "$(wc -l < "$RUNNER_TEMP/err")" -eq 1
 
   tray:
-    runs-on: windows-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: cargo fmt --all --check

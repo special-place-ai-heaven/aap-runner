@@ -469,7 +469,9 @@ Describe 'a full build with fakes' {
         $script:Ev.media.sha256 | Should -Be $w.MediaSha
         $script:Ev.media.edition | Should -Match 'Evaluation'
         $script:Ev.evaluation.days | Should -Be 180
-        ([DateTime]$script:Ev.evaluation.expires_at - [DateTime]$script:Ev.evaluation.installed_at).TotalDays | Should -Be 180
+        # DateTimeOffset, not DateTime: a DateTime cast turns the UTC stamps into local time, and on a host
+        # whose 180 days cross a daylight-saving change the difference is 180 days and one hour.
+        ([DateTimeOffset]$script:Ev.evaluation.expires_at - [DateTimeOffset]$script:Ev.evaluation.installed_at).TotalDays | Should -Be 180
         @($script:Ev.waivers | ForEach-Object { $_.id }) | Should -Contain 'windows-updates-level'
         @($script:Ev.waivers | ForEach-Object { $_.id }) | Should -Not -Contain 'windows-server-2025-media'
         @($script:Ev.waivers | ForEach-Object { $_.approver } | Sort-Object -Unique) | Should -Be @('chair (test)')
