@@ -1,5 +1,5 @@
 #!/bin/bash
-# /etc/aap-runner/limits.conf: five keys override manager.conf and then pass
+# /etc/aap-runner/limits.conf: seven keys override manager.conf and then pass
 # the normal checks; anything else is refused. Each case runs
 # aap-runner-manager --check-limits in a new bash, so set -e acts as under
 # systemd. id and stat's owner are stubbed so no root is needed. No docker.
@@ -97,7 +97,7 @@ out=$(check_limits) || fail "AAP_POOL_SHARING=fixed in limits.conf was refused: 
 echo "limits.conf override ok"
 
 write_limits 0644 'AAP_RUNNER_COUNT=2' 'AAP_GITHUB_APP_ID=999'
-refused "key AAP_GITHUB_APP_ID is not"
+refused "key AAP_GITHUB_APP_ID is not AAP_RUNNER_COUNT, AAP_LINUX_HEAVY_COUNT, AAP_LINUX_LIGHT_COUNT, AAP_JOB_CPUS, AAP_JOB_MEMORY, AAP_JOB_IO_PERCENT, or AAP_POOL_SHARING"
 write_limits 0644 'AAP_JOB_PIDS_LIMIT=100'
 refused "key AAP_JOB_PIDS_LIMIT is not"
 echo "unknown key refused ok"

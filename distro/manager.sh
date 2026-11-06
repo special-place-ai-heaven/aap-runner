@@ -8,12 +8,12 @@ set -euo pipefail
 # shellcheck source=labels.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.sh"
 # Exact match for AAP_RUNNER_LABELS_VERSION in labels.sh.
-require_labels_version 1 || exit 1
+require_labels_version 2 || exit 1
 
 # `aap-runner-manager --version` prints this. The Windows supervisor reads it
 # to tell this manager (drain, status, limits) from one that would treat an
 # unknown argument as "start the pool".
-MANAGER_VERSION="aap-runner-manager 2"
+MANAGER_VERSION="aap-runner-manager 3"
 # The tray helper's identity verb points this at manager.conf.tmp for one
 # --check-limits before it swaps the file in. Root sets it; nothing else does.
 CONFIG_PATH="${AAP_MANAGER_CONF:-/etc/aap-runner/manager.conf}"
@@ -47,6 +47,13 @@ AAP_JOB_IO_PERCENT=""
 AAP_POOL_SHARING=""
 # Unset means absent (one slot). A present but empty value is refused.
 unset AAP_RUNNER_COUNT
+# Tiered Linux pool: heavy 0..2 and light 0..10, both or neither, in place of
+# AAP_RUNNER_COUNT. Unset means the untiered pool. finish_tiers sets
+# AAP_RUNNER_COUNT to their sum.
+unset AAP_LINUX_HEAVY_COUNT AAP_LINUX_LIGHT_COUNT
+# The slot numbers of the pool, set by finish_runner_count: 1..N untiered;
+# heavy 1..H and light 3..2+L tiered, so the slot number is the tier.
+POOL_SLOTS=()
 # Per-slot docker create limits, set by finish_runner_count.
 SLOT_CPUS=""
 SLOT_MEMORY=""
@@ -221,6 +228,8 @@ apply_config_line() {
     AAP_JOB_IO_PERCENT) AAP_JOB_IO_PERCENT=${val} ;;
     AAP_POOL_SHARING) AAP_POOL_SHARING=${val} ;;
     AAP_RUNNER_COUNT) AAP_RUNNER_COUNT=${val} ;;
+    AAP_LINUX_HEAVY_COUNT) AAP_LINUX_HEAVY_COUNT=${val} ;;
+    AAP_LINUX_LIGHT_COUNT) AAP_LINUX_LIGHT_COUNT=${val} ;;
     *)
       echo "unknown config key: ${key}" >&2
       return 1
@@ -258,7 +267,7 @@ load_config() {
   finish_runner_labels
 }
 
-# limits.conf overrides five manager.conf keys, then the same checks run on
+# limits.conf overrides seven manager.conf keys, then the same checks run on
 # the result (count 1..5, the per-slot split, the memory and cpu grammar).
 # It holds no App ids and no secrets. Any other key, an empty value, a file
 # that is not root's, or a group or world writable mode is refused.
@@ -281,9 +290,9 @@ load_limits() {
     esac
     key=${line%%=*}
     case "${key}" in
-      AAP_RUNNER_COUNT | AAP_JOB_CPUS | AAP_JOB_MEMORY | AAP_JOB_IO_PERCENT | AAP_POOL_SHARING) ;;
+      AAP_RUNNER_COUNT | AAP_LINUX_HEAVY_COUNT | AAP_LINUX_LIGHT_COUNT | AAP_JOB_CPUS | AAP_JOB_MEMORY | AAP_JOB_IO_PERCENT | AAP_POOL_SHARING) ;;
       *)
-        echo "refusing: ${LIMITS_PATH} key ${key} is not AAP_RUNNER_COUNT, AAP_JOB_CPUS, AAP_JOB_MEMORY, AAP_JOB_IO_PERCENT, or AAP_POOL_SHARING" >&2
+        echo "refusing: ${LIMITS_PATH} key ${key} is not AAP_RUNNER_COUNT, AAP_LINUX_HEAVY_COUNT, AAP_LINUX_LIGHT_COUNT, AAP_JOB_CPUS, AAP_JOB_MEMORY, AAP_JOB_IO_PERCENT, or AAP_POOL_SHARING" >&2
         exit 1
         ;;
     esac
@@ -378,8 +387,43 @@ finish_runner_labels() {
   AAP_RUNNER_LABELS="${expect},${seen}"
 }
 
+# heavy or light for a slot of a tiered pool; empty for an untiered pool or no
+# slot. Heavy is slot 1..2, light is slot 3 and up: the slot number is the tier.
+slot_tier() {
+  [[ -n "${AAP_LINUX_HEAVY_COUNT+x}" && "${1:-}" =~ ^[0-9]+$ ]] || return 0
+  if (($1 <= 2)); then
+    echo heavy
+  else
+    echo light
+  fi
+}
+
+# The label line the slot's runner registers with.
+slot_labels() {
+  case "$(slot_tier "${1:-}")" in
+    heavy) printf '%s\n' "${AAP_LABELS_HEAVY}" ;;
+    light) printf '%s\n' "${AAP_LABELS_LIGHT}" ;;
+    *) printf '%s\n' "${AAP_RUNNER_LABELS}" ;;
+  esac
+}
+
+# Untiered: the line the journal always had. Tiered: the slot's own line.
 log_runner_labels() {
-  echo "runner labels: ${AAP_RUNNER_LABELS}"
+  if [[ -n "$(slot_tier "${1:-}")" ]]; then
+    echo "slot ${1}: runner labels: $(slot_labels "$1")"
+  else
+    echo "runner labels: ${AAP_RUNNER_LABELS}"
+  fi
+}
+
+# The slot numbers, one per line: POOL_SLOTS once finish_runner_count ran, else
+# 1..AAP_RUNNER_COUNT (tests that set the count without it).
+pool_slots() {
+  if ((${#POOL_SLOTS[@]} > 0 && ${#POOL_SLOTS[@]} == ${AAP_RUNNER_COUNT:-1})); then
+    printf '%s\n' "${POOL_SLOTS[@]}"
+  else
+    seq 1 "${AAP_RUNNER_COUNT:-1}"
+  fi
 }
 
 finish_job_limits() {
@@ -411,11 +455,16 @@ finish_job_limits() {
 # configured values verbatim. Runs after finish_job_limits validated them.
 finish_runner_count() {
   local num unit mult mib cpus
+  if [[ -n "${AAP_LINUX_HEAVY_COUNT+x}" || -n "${AAP_LINUX_LIGHT_COUNT+x}" ]]; then
+    finish_tiers
+    return
+  fi
   [[ -z "${AAP_RUNNER_COUNT+x}" ]] && AAP_RUNNER_COUNT=1
   if [[ ! "${AAP_RUNNER_COUNT}" =~ ^[1-5]$ ]]; then
     echo "refusing: AAP_RUNNER_COUNT=${AAP_RUNNER_COUNT} is not 1..5" >&2
     return 1
   fi
+  mapfile -t POOL_SLOTS < <(seq 1 "${AAP_RUNNER_COUNT}")
   if [[ "${AAP_RUNNER_COUNT}" -eq 1 ]]; then
     SLOT_CPUS=${AAP_JOB_CPUS}
     SLOT_MEMORY=${AAP_JOB_MEMORY}
@@ -446,6 +495,76 @@ finish_runner_count() {
   else
     SLOT_MEMORY="${mib}m"
   fi
+}
+
+# A tiered Linux pool: AAP_LINUX_HEAVY_COUNT (0..2) heavy slots, numbered 1..H,
+# and AAP_LINUX_LIGHT_COUNT (0..10) light slots, numbered 3..2+L. Both keys or
+# neither, integers only, not with AAP_RUNNER_COUNT, not 0+0. The labels and
+# the per-tier limits are constants in this file (heavy: 20g reserved, 8 cpus
+# fixed; light: 3g reserved, 8g and 4 cpus in slice mode, 4 cpus fixed), and
+# the reservations of all the slots must fit AAP_JOB_MEMORY. Fixed-mode caps
+# equal the reservations, so a fixed pool never overcommits memory. Sets
+# AAP_RUNNER_COUNT to H+L, so the IO and zccache splits work on the count.
+finish_tiers() {
+  local h l num unit mult need pool i
+  if [[ -n "${AAP_RUNNER_COUNT+x}" ]]; then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT cannot be combined with AAP_RUNNER_COUNT" >&2
+    return 1
+  fi
+  if [[ -z "${AAP_LINUX_HEAVY_COUNT+x}" || -z "${AAP_LINUX_LIGHT_COUNT+x}" ]]; then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT must both be set" >&2
+    return 1
+  fi
+  h=${AAP_LINUX_HEAVY_COUNT}
+  l=${AAP_LINUX_LIGHT_COUNT}
+  if [[ ! "${h}" =~ ^[0-2]$ ]]; then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT=${h} is not 0..2" >&2
+    return 1
+  fi
+  if [[ ! "${l}" =~ ^([0-9]|10)$ ]]; then
+    echo "refusing: AAP_LINUX_LIGHT_COUNT=${l} is not 0..10" >&2
+    return 1
+  fi
+  if ((h + l == 0)); then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT cannot both be 0" >&2
+    return 1
+  fi
+  if [[ "${AAP_RUNNER_BASE_LABEL}" != fresh ]]; then
+    echo "refusing: tiers need AAP_RUNNER_BASE_LABEL=fresh" >&2
+    return 1
+  fi
+  if [[ -n "${AAP_RUNNER_EXTRA_LABELS}" && "${AAP_RUNNER_EXTRA_LABELS}" != heavy ]]; then
+    echo "refusing: tiers allow AAP_RUNNER_EXTRA_LABELS only empty or heavy" >&2
+    return 1
+  fi
+  num=${AAP_JOB_MEMORY%[bBkKmMgG]}
+  unit=${AAP_JOB_MEMORY#"${num}"}
+  case "${unit}" in
+    k | K) mult=1024 ;;
+    m | M) mult=$((1024 * 1024)) ;;
+    g | G) mult=$((1024 * 1024 * 1024)) ;;
+    *) mult=1 ;;
+  esac
+  if [[ "${#num}" -gt 18 ]] || ((num > (1 << 62) / mult)); then
+    echo "refusing: AAP_JOB_MEMORY=${AAP_JOB_MEMORY} is too large to split" >&2
+    return 1
+  fi
+  pool=$((num * mult / (1024 * 1024)))
+  need=$((h * 20 + l * 3))
+  if ((need * 1024 > pool)); then
+    echo "refusing: tier reservations ${need}g exceed AAP_JOB_MEMORY=${AAP_JOB_MEMORY}" >&2
+    return 1
+  fi
+  AAP_RUNNER_COUNT=$((h + l))
+  POOL_SLOTS=()
+  for ((i = 1; i <= h; i++)); do
+    POOL_SLOTS+=("${i}")
+  done
+  for ((i = 3; i <= 2 + l; i++)); do
+    POOL_SLOTS+=("${i}")
+  done
+  SLOT_CPUS=""
+  SLOT_MEMORY=""
 }
 
 # AAP_JOB_IO_PERCENT (0..100, default 90, 0 = no cap) of the measured work
@@ -865,7 +984,7 @@ reap_ghost_runners() {
     echo "warning: ghost reap: docker ps failed; reaping nothing" >&2
     return 0
   fi
-  for f in "${RUN_DIR}"/slot-[1-9]; do
+  for f in "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9][0-9]; do
     [[ -f "${f}" ]] && body+=$'\n'$(slot_container "${f##*slot-}")
   done
   while IFS= read -r id; do
@@ -918,7 +1037,7 @@ tick_reap() {
 usage_lines() {
   local f name cpu mem
   local -A slot_of=()
-  for f in "${RUN_DIR}"/slot-[1-9]; do
+  for f in "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9][0-9]; do
     name=""
     { read -r _ _ name _ < "${f}"; } 2>/dev/null || true
     [[ -n "${name}" && "${name}" != - ]] && slot_of[${name}]=${f##*-}
@@ -1158,7 +1277,9 @@ job_name() {
 
 run_one() {
   local slot="$1" token="" name net rc=1 killer="" seconds=0 runner="" errf="" try
+  local tier shares=${CPU_SHARES}
   local -a lim=()
+  tier=$(slot_tier "${slot}")
   name=$(job_name "${slot}")
   net="${name}"
   # set -e does not apply inside this function: the loop calls it from `if`.
@@ -1167,14 +1288,43 @@ run_one() {
   fi
   # slice: the pool totals are the slice's caps; each container may use up to
   # all of them, with an equal soft memory share. fixed: hard 1/count shares.
+  # A tiered pool replaces the shares with the tier's: heavy reserves 20g and
+  # weighs 2048, light reserves 3g and weighs 512; fixed caps equal the
+  # reservations, so a fixed pool never overcommits memory.
+  case "${tier}" in
+    heavy) shares=2048 ;;
+    light) shares=512 ;;
+  esac
   if [[ "${AAP_POOL_SHARING}" == slice ]]; then
-    lim=(--cgroup-parent "${POOL_SLICE}"
-      --memory "${AAP_JOB_MEMORY}"
-      --memory-swap "${AAP_JOB_MEMORY}"
-      --memory-reservation "${SLOT_MEMORY}"
-      --cpus "${AAP_JOB_CPUS}")
+    case "${tier}" in
+      heavy)
+        lim=(--cgroup-parent "${POOL_SLICE}"
+          --memory "${AAP_JOB_MEMORY}"
+          --memory-swap "${AAP_JOB_MEMORY}"
+          --memory-reservation 20g
+          --cpus "${AAP_JOB_CPUS}")
+        ;;
+      light)
+        lim=(--cgroup-parent "${POOL_SLICE}"
+          --memory 8g
+          --memory-swap 8g
+          --memory-reservation 3g
+          --cpus 4)
+        ;;
+      *)
+        lim=(--cgroup-parent "${POOL_SLICE}"
+          --memory "${AAP_JOB_MEMORY}"
+          --memory-swap "${AAP_JOB_MEMORY}"
+          --memory-reservation "${SLOT_MEMORY}"
+          --cpus "${AAP_JOB_CPUS}")
+        ;;
+    esac
   else
-    lim=(--memory "${SLOT_MEMORY}" --memory-swap "${SLOT_MEMORY}" --cpus "${SLOT_CPUS}")
+    case "${tier}" in
+      heavy) lim=(--memory 20g --memory-swap 20g --memory-reservation 20g --cpus 8) ;;
+      light) lim=(--memory 3g --memory-swap 3g --memory-reservation 3g --cpus 4) ;;
+      *) lim=(--memory "${SLOT_MEMORY}" --memory-swap "${SLOT_MEMORY}" --cpus "${SLOT_CPUS}") ;;
+    esac
     if ((SLOT_IO_MBPS > 0)) && [[ -n "${IO_DEVICE}" ]]; then
       lim+=(--device-read-bps "${IO_DEVICE}:${SLOT_IO_MBPS}mb"
         --device-write-bps "${IO_DEVICE}:${SLOT_IO_MBPS}mb"
@@ -1193,12 +1343,12 @@ run_one() {
     --name "${name}" \
     --network "${net}" \
     "${lim[@]}" \
-    --cpu-shares "${CPU_SHARES}" \
+    --cpu-shares "${shares}" \
     --pids-limit "${AAP_JOB_PIDS_LIMIT}" \
     --label aap-crrr-job=1 \
     --label "aap-crrr-slot=${slot}" \
     --env "AAP_GITHUB_ORG=${AAP_GITHUB_ORG}" \
-    --env "AAP_RUNNER_LABELS=${AAP_RUNNER_LABELS}" \
+    --env "AAP_RUNNER_LABELS=$(slot_labels "${slot}")" \
     --env "AAP_RUNNER_GROUP=${AAP_RUNNER_GROUP}" \
     --env "AAP_WORK_DISK_GIB=${AAP_WORK_DISK_GIB}" \
     --env "AAP_DISK_FLOOR_GB=${AAP_DISK_FLOOR_GB}" \
@@ -1211,7 +1361,7 @@ run_one() {
     cleanup_job "${name}" "${net}"
     return 1
   fi
-  log_runner_labels
+  log_runner_labels "${slot}"
   # Drain: the container is created but not started, so nothing registered.
   if draining; then
     cleanup_job "${name}" "${net}"
@@ -1402,7 +1552,8 @@ discover_job_run() {
 # state: draining while the drain file exists, else running while a slot has
 # a job, else idle once a slot listens, else starting. job: the most
 # recently started running job, or "". repo and run_url: that job's, once
-# discover_job_run found them, else "". runner_count: AAP_RUNNER_COUNT. job_cpus and job_memory: the pool totals as configured,
+# discover_job_run found them, else "". runner_count: AAP_RUNNER_COUNT (heavy plus light in a tiered pool,
+# whose slot numbers are 1..H and 3..2+L: the slot number carries the tier). job_cpus and job_memory: the pool totals as configured,
 # after limits.conf. job_io_mbps: the per-slot IO share in MiB/s, 0 for none.
 # sharing: slice or fixed, as the pool runs (fixed after a fallback).
 # job_cpus is a JSON number and may be fractional (2.5)
@@ -1423,7 +1574,7 @@ status_json() {
   local busy=0 idle=0 best=-1 job="" state=starting sampled="" u n c g
   local rns rrepo rurl repo="" run_url=""
   local dsize="" dfree="" floor="" cleaning=false
-  local -a args=()
+  local -a args=() slots=()
   local -A uname_of=() ucpu_of=() umem_of=()
   {
     read -r sampled
@@ -1434,7 +1585,8 @@ status_json() {
     done
   } 2>/dev/null < "${RUN_DIR}/usage" || true
   [[ "${sampled}" =~ ^[0-9]+$ ]] || sampled=""
-  for ((slot = 1; slot <= ${AAP_RUNNER_COUNT:-1}; slot++)); do
+  mapfile -t slots < <(pool_slots)
+  for slot in "${slots[@]}"; do
     f="${RUN_DIR}/slot-${slot}"
     st="" ns="" cname="" name="" sjob="" srepo="" srun="" started="" cpu="" mem=""
     { read -r st ns cname name < "${f}"; } 2>/dev/null || true
@@ -1991,7 +2143,7 @@ stop_pool() {
   DEREG_PIDS=()
   DEREG_NAMES=()
   deregister_runners "${runners[@]}"
-  rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}/usage"
+  rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9][0-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}"/slot-[1-9][0-9].run "${RUN_DIR}/usage"
   rm -rf "${RUN_DIR}/cleaning.d"
 }
 
@@ -2000,12 +2152,14 @@ stop_pool() {
 # matches a retired PID again. wait -n -p needs bash 5.1. Ubuntu 24.04 ships 5.2.
 run_pool() {
   local slot i died now rc
+  local -a slots=()
   trap 'stop_pool; exit 143' TERM INT
   trap stop_pool EXIT
-  rm -f "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}/usage"
+  rm -f "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9][0-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}"/slot-[1-9][0-9].run "${RUN_DIR}/usage"
   rm -rf "${RUN_DIR}/cleaning.d"
   write_status
-  for ((slot = 1; slot <= AAP_RUNNER_COUNT; slot++)); do
+  mapfile -t slots < <(pool_slots)
+  for slot in "${slots[@]}"; do
     SLOT_FAILS[slot]=0
     start_slot "${slot}" 0
   done
@@ -2121,8 +2275,12 @@ main() {
   # effective limits printed, nothing started and no docker call.
   if [[ "${1:-}" == "--check-limits" ]]; then
     load_config
-    printf 'AAP_RUNNER_COUNT=%s\nAAP_JOB_CPUS=%s\nAAP_JOB_MEMORY=%s\nAAP_JOB_IO_PERCENT=%s\nAAP_JOB_IO_MBPS=%s\nAAP_POOL_SHARING=%s\n' \
-      "${AAP_RUNNER_COUNT}" "${AAP_JOB_CPUS}" "${AAP_JOB_MEMORY}" "${AAP_JOB_IO_PERCENT}" "${SLOT_IO_MBPS}" "${AAP_POOL_SHARING}"
+    printf 'AAP_RUNNER_COUNT=%s\n' "${AAP_RUNNER_COUNT}"
+    if [[ -n "${AAP_LINUX_HEAVY_COUNT+x}" ]]; then
+      printf 'AAP_LINUX_HEAVY_COUNT=%s\nAAP_LINUX_LIGHT_COUNT=%s\n' "${AAP_LINUX_HEAVY_COUNT}" "${AAP_LINUX_LIGHT_COUNT}"
+    fi
+    printf 'AAP_JOB_CPUS=%s\nAAP_JOB_MEMORY=%s\nAAP_JOB_IO_PERCENT=%s\nAAP_JOB_IO_MBPS=%s\nAAP_POOL_SHARING=%s\n' \
+      "${AAP_JOB_CPUS}" "${AAP_JOB_MEMORY}" "${AAP_JOB_IO_PERCENT}" "${SLOT_IO_MBPS}" "${AAP_POOL_SHARING}"
     exit 0
   fi
 
@@ -2175,7 +2333,11 @@ main() {
   remove_legacy_sccache_tree
   resolve_io_device
   setup_pool_sharing
-  echo "runner pool: ${AAP_RUNNER_COUNT} slot(s), sharing ${AAP_POOL_SHARING}, share --cpus ${SLOT_CPUS} --memory ${SLOT_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT} io ${SLOT_IO_MBPS:-0} MiB/s on ${IO_DEVICE:-none}"
+  if [[ -n "${AAP_LINUX_HEAVY_COUNT+x}" ]]; then
+    echo "runner pool: ${AAP_LINUX_HEAVY_COUNT} heavy + ${AAP_LINUX_LIGHT_COUNT} light slot(s) (${POOL_SLOTS[*]}), sharing ${AAP_POOL_SHARING}, pool --cpus ${AAP_JOB_CPUS} --memory ${AAP_JOB_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT} io ${SLOT_IO_MBPS:-0} MiB/s on ${IO_DEVICE:-none}"
+  else
+    echo "runner pool: ${AAP_RUNNER_COUNT} slot(s), sharing ${AAP_POOL_SHARING}, share --cpus ${SLOT_CPUS} --memory ${SLOT_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT} io ${SLOT_IO_MBPS:-0} MiB/s on ${IO_DEVICE:-none}"
+  fi
   run_pool
 }
 

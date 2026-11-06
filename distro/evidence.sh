@@ -9,7 +9,7 @@ set -euo pipefail
 # shellcheck source=labels.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.sh"
 # Exact match for AAP_RUNNER_LABELS_VERSION in labels.sh.
-require_labels_version 1 || exit 1
+require_labels_version 2 || exit 1
 
 route_gateway() {
   local gw_hex="$1"
