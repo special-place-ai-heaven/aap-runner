@@ -6,7 +6,7 @@
   "linux_heavy_count": 2,
   "windows_runner_count": 5,
   "job_cpus": 19,
-  "job_memory_gib": 57,
+  "job_memory_gib": 72,
   "paused": false,
   "io_percent": 90,
   "sharing": "slice",

@@ -78,8 +78,12 @@ all required, except `runner_count`, which is replaced by `linux_light_count` an
 `linux_heavy_count`; a file with `runner_count` is not schema 4. Rules (`validate.py`
 `sem_settings_v4`): light + heavy + Windows at least 1, no other sum limit; the shares follow schema 3
 with the Linux count = light + heavy (a profile has share 0 exactly when its count is 0). The Linux
-per-slot limits come only from the tier table above, never from the file; `job_cpus` and
-`job_memory_gib` keep their ranges and apply to the Windows runners only.
+per-slot limits come only from the tier table above, never from the file. `job_cpus` and
+`job_memory_gib` keep their ranges and remain the legacy WSL pool totals exactly as in schema 3 (the
+slice cap and the reservation check); the supervisor writes them to `limits.conf` unchanged and
+refuses a file whose heavy x 20 + light x 3 exceeds `job_memory_gib` (`validate.py` checks the same
+inequality; the manager refuses the same pool). The tray carries both values forward from the
+stored file, so the live pool stays at its current total.
 
 **Status schema 5 while settings schema 4 is applied** (`applied_settings_schema` 4, which needs 4 in
 `settings_schemas`; `validate.py` `_tiers`): `capacity.max_slots` is 17 (else 5), the Linux profile
@@ -93,7 +97,12 @@ fixed numbers; `status.json` itself gains no key, so an older tray still reads i
 five cards).
 
 **Who writes what:** the supervisor lists 4 in `settings_schemas` only when it can apply schema 4
-(the manager runs the two tiers, R1 steps 2 and 3); it keeps accepting 1, 2 and 3. The tray writes
+(the manager runs the two tiers, R1 steps 2 and 3); it keeps accepting 1 and 2 (3 only with the
+capacity module). R1 step 3 (supervisor): it finds out with a passive `grep` of the installed manager for
+`AAP_LINUX_HEAVY_COUNT` (never `--version`), accepts schema 4 only without the capacity module (the allocator is built for five slots; with
+the module schema 4 is refused as newer, until P16 lifts that) and writes `AAP_LINUX_HEAVY_COUNT` and
+`AAP_LINUX_LIGHT_COUNT` to `limits.conf` instead of `AAP_RUNNER_COUNT`. Without the capacity module it
+also needs at least one Linux runner, because no Windows VM runs under it. The tray writes
 schema 4 only over a stored valid schema 4 file or while a fresh `status.v5.json` lists 4 (same
 freshness as schema 3), never schema 3 or 2 over a stored schema 4 file, and otherwise writes exactly
 what revision 3 says, with the light count as the schema 2/3 Linux count and the heavy count 0. The

@@ -605,6 +605,8 @@ def sem_settings_v4(doc):
     linux = doc["linux_light_count"] + doc["linux_heavy_count"]
     if linux + doc["windows_runner_count"] < 1:
         raise Invalid("light + heavy + windows runner counts must be at least 1")
+    if doc["linux_heavy_count"] * 20 + doc["linux_light_count"] * 3 > doc["job_memory_gib"]:
+        raise Invalid("tier reservations (heavy x 20 + light x 3 GiB) exceed job_memory_gib")
     _shares(doc["share_mode"], doc["host_reserve_percent"],
             [(linux, doc["linux_share_percent"]), (doc["windows_runner_count"], doc["windows_share_percent"])])
 
