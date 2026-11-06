@@ -37,14 +37,14 @@ def leaves(o, path=""):
 def capture_lines():
     # each line is 'capture<TAB>step<TAB><timestamp> <text>'; keep the text
     out = []
-    for ln in (BASE / "sources/hosted-capture-39305649952.log").read_text(encoding="utf-8-sig").splitlines():
+    for ln in (BASE / "sources/hosted-capture-42235370098.log").read_text(encoding="utf-8-sig").splitlines():
         text = ln.split("\t", 2)[-1]
         out.append(re.sub(r"^﻿?\d{4}-\d\d-\d\dT[\d:.]+Z ?", "", text))
     return out
 
 
 class Oracle(unittest.TestCase):
-    inv = json.loads((BASE / "inventory.json").read_text(encoding="utf-8"))
+    inv = json.loads((BASE / "inventory-20261101.360.json").read_text(encoding="utf-8"))
     log = capture_lines()
     readme = (BASE / "README.md").read_text(encoding="utf-8")
     items = list(leaves({k: v for k, v in ORACLE.items() if k not in ("schema", "profile", "note", "hosted_validation")}))
