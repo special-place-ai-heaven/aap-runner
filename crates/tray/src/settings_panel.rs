@@ -1049,9 +1049,19 @@ mod tests {
             (4, 1, 2, 0)
         );
         assert!(!panel.pending(), "the stored file is what the window shows");
+        // The stored 57 GiB total is carried forward: 2 heavy + 10 light need 70 GiB, so the
+        // supervisor would refuse it. Apply says so and leaves the file alone.
         panel.heavy = 2;
         panel.linux = 10;
         assert_eq!(panel.changes(), 2);
+        assert!(!panel.apply(&base));
+        assert_eq!(
+            panel.write_error.as_deref(),
+            Some("Could not save: Heavy 2 + Light 10 need 70 GiB; total memory is 57 GiB")
+        );
+        assert_eq!(settings::read_settings(&base).runner_count, 4);
+        // 2 heavy + 5 light need 55 GiB and fit.
+        panel.linux = 5;
         assert_eq!(panel.edit().validate(&panel.vm), Ok(()));
         assert!(panel.apply(&base), "{:?}", panel.write_error);
         let s = settings::read_settings(&base);
@@ -1062,7 +1072,7 @@ mod tests {
                 s.linux_heavy_count,
                 s.windows_runner_count
             ),
-            (4, 10, 2, 2)
+            (4, 5, 2, 2)
         );
         assert_eq!(tier_line(Tier::Heavy, 10, 2).each, "8 CPU 20 GiB");
         assert_eq!(tier_line(Tier::Light, 10, 2).total, "cap 4/8");

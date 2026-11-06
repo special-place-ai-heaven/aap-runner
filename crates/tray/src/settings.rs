@@ -30,6 +30,10 @@ pub const WINDOWS_BACKEND: bool = false;
 /// Light slots in settings schema 4, and heavy slots.
 pub const LIGHT: RangeInclusive<u32> = 0..=10;
 pub const HEAVY: RangeInclusive<u32> = 0..=2;
+/// The memory a heavy and a light slot reserve (status-settings.md, Tiers). Their sum over the
+/// slots must fit the memory total, as the manager and the supervisor require.
+pub const HEAVY_GIB: u32 = 20;
+pub const LIGHT_GIB: u32 = 3;
 /// Windows runners in settings schema 4.
 pub const WINDOWS: RangeInclusive<u32> = 0..=5;
 
@@ -346,8 +350,10 @@ impl Settings {
         Ok(())
     }
 
-    /// Schema 4's shape: the tier and Windows ranges, at least one runner, the totals' ranges
-    /// (they apply to the Windows runners only; the tiers carry their own limits).
+    /// Schema 4's shape: the tier and Windows ranges, at least one Linux runner (the supervisor
+    /// that lists schema 4 runs no Windows VM), the totals' ranges, and the tier reservations
+    /// within the memory total. The totals stay the WSL pool totals as in schema 3; the Linux
+    /// per-slot limits come from the tier table.
     fn check_tiers(&self) -> Result<(), String> {
         let within = |name: &str, v: u32, r: RangeInclusive<u32>| {
             if r.contains(&v) {
@@ -359,11 +365,18 @@ impl Settings {
         within("Light runners", self.runner_count, LIGHT)?;
         within("Heavy runners", self.linux_heavy_count, HEAVY)?;
         within("Windows runners", self.windows_runner_count, WINDOWS)?;
-        if self.runner_count + self.linux_heavy_count + self.windows_runner_count == 0 {
-            return Err("At least one runner, light, heavy or Windows".into());
+        if self.runner_count + self.linux_heavy_count == 0 {
+            return Err("Schema 4 needs at least one Linux runner, light or heavy".into());
         }
         within("Total CPUs", self.job_cpus, CPUS)?;
         within("Total memory GiB", self.job_memory_gib, MEMORY_GIB)?;
+        let need = self.linux_heavy_count * HEAVY_GIB + self.runner_count * LIGHT_GIB;
+        if need > self.job_memory_gib {
+            return Err(format!(
+                "Heavy {} + Light {} need {need} GiB; total memory is {} GiB",
+                self.linux_heavy_count, self.runner_count, self.job_memory_gib
+            ));
+        }
         within("IO cap percent", self.io_percent, IO_PERCENT)
     }
 
@@ -1606,6 +1619,7 @@ mod tests {
             "missing-heavy-count",
             "schema-3",
             "share-for-zero-linux",
+            "tier-reservations-over-memory",
             "windows-six",
         ] {
             assert!(
@@ -1616,6 +1630,46 @@ mod tests {
         // A schema 4 file is not schema 3, and schema 3 is not 4.
         assert!(parse_v3(&fixture("settings-v4/valid/tiers-per-profile.json")).is_none());
         assert!(parse_v4(&fixture("settings-v3/valid/owner-example-per-profile.json")).is_none());
+    }
+
+    fn tiered(light: u32, heavy: u32, windows: u32, gib: u32) -> Settings {
+        Settings {
+            schema: 4,
+            runner_count: light,
+            linux_heavy_count: heavy,
+            windows_runner_count: windows,
+            job_memory_gib: gib,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn schema_four_refuses_tier_reservations_over_the_memory_total() {
+        // The same inequality as validate.py sem_settings_v4 and the supervisor: heavy x 20 + light x 3.
+        let err = tiered(10, 2, 0, 64).check_shape().unwrap_err();
+        assert_eq!(
+            err,
+            "Heavy 2 + Light 10 need 70 GiB; total memory is 64 GiB"
+        );
+        let err = tiered(0, 1, 0, 19).check_shape().unwrap_err();
+        assert_eq!(err, "Heavy 1 + Light 0 need 20 GiB; total memory is 19 GiB");
+        // Exactly at the total is accepted.
+        assert_eq!(tiered(10, 2, 0, 70).check_shape(), Ok(()));
+        assert_eq!(tiered(0, 1, 0, 20).check_shape(), Ok(()));
+        // The written file's check() says the same, and the write path surfaces it.
+        let kept = parse_v4(&fixture("settings-v4/valid/tiers-per-profile.json")).unwrap();
+        let v4 = SettingsV4::edited(&tiered(10, 2, 0, 64), kept, true);
+        assert!(v4.check().unwrap_err().contains("need 70 GiB"));
+    }
+
+    #[test]
+    fn schema_four_refuses_no_linux_runner() {
+        // Windows alone is not a schema 4 pool: the supervisor that lists 4 runs no Windows VM.
+        let err = tiered(0, 0, 0, 72).check_shape().unwrap_err();
+        assert!(err.contains("one Linux runner"), "{err}");
+        let err = tiered(0, 0, 2, 72).check_shape().unwrap_err();
+        assert!(err.contains("one Linux runner"), "{err}");
+        assert_eq!(tiered(0, 1, 0, 72).check_shape(), Ok(()));
     }
 
     #[test]
