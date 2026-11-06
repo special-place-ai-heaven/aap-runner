@@ -9,9 +9,14 @@ on:
 permissions:
   contents: read
 
+# Dogfood: pushes to main, manual runs and pull requests from branches in this repository run on the
+# owner's own runners (the Linux pool and the interim Windows runner). Pull requests from forks are
+# untrusted code and always run on GitHub-hosted runners (CLAUDE.md: never run untrusted PR code on
+# the self-hosted runners).
+
 jobs:
   bash:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","fresh"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: bash distro/bootstrap.sh --self-check
@@ -42,7 +47,7 @@ jobs:
       - run: $RUNNER_TEMP/shellcheck-v0.11.0/shellcheck -S warning distro/*.sh tests/*.sh tests/parity/cache/qualification/*.sh parity/cache/qualification/harness/*.sh tools/parity-certify/probe/linux.sh parity/workloads/linux/*.sh parity/workloads/linux/*/*.sh parity/workloads/actions/linux/*/*.sh parity/workloads/xwin/*.sh tests/parity/workloads/linux/*.sh guests/cache/linux/*.sh tests/guests/cache/zccache_test.sh tests/guests/cache/fakes/fake-cc tests/guests/cache/fakes/fake-zccache images/ubuntu-24.04/guest/*.sh tests/images/ubuntu-24.04/*.sh guests/linux/*.sh tests/guests/linux/*.sh
 
   pester:
-    runs-on: windows-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - shell: powershell
@@ -58,7 +63,7 @@ jobs:
           Invoke-Pester -Configuration $c
 
   pester-backends:
-    runs-on: windows-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - shell: powershell
@@ -74,7 +79,7 @@ jobs:
   # crates/pool-core is also covered workspace-wide by the tray job on Windows. This job runs it on
   # Linux, where the code will run, and proves the static musl build the distro will ship.
   pool-core:
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","linux","x64","fresh"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: cargo fmt --all --check
@@ -95,7 +100,7 @@ jobs:
           test "$(wc -l < "$RUNNER_TEMP/err")" -eq 1
 
   tray:
-    runs-on: windows-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: cargo fmt --all --check
