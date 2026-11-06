@@ -56,12 +56,13 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 28,
-      "description": "Windows runners only in schema 4 (the Linux per-slot limits come from the tier table, not from settings); same range as schema 3."
+      "description": "The legacy WSL pool CPU total, as in schema 3 (the Linux per-slot limits come from the tier table, not from settings); same range as schema 3."
     },
     "job_memory_gib": {
       "type": "integer",
       "minimum": 1,
-      "maximum": 80
+      "maximum": 80,
+      "description": "The legacy WSL pool memory total, as in schema 3. Heavy x 20 + light x 3 GiB must not exceed it (validate.py sem_settings_v4)."
     },
     "paused": {
       "type": "boolean"
