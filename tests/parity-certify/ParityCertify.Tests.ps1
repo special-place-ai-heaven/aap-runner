@@ -437,7 +437,7 @@ Describe 'Identity pins: source, workflow, action and image SHAs' {
             WriteJson $pin $p
             $r = Full $WinRef (Join-Path $T 'cand.json') $p $GoodRes "pinnl-$k"
             $r.Code | Should -Be 2 -Because $k
-            Test-Path (Join-Path $T "pinnl-$kerdict.json") | Should -BeFalse -Because $k
+            Test-Path (Join-Path $r.Dir 'verdict.json') | Should -BeFalse -Because $k
         }
     }
     It 'a --head-sha with a trailing newline is refused (exit 2)' {
