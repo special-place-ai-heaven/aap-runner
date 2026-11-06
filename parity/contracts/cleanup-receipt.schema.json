@@ -301,7 +301,7 @@
         },
         "branch": {
           "type": "string",
-          "pattern": "^(parity|feat|fix|docs|ci)/[a-z0-9._/-]+$"
+          "pattern": "^((parity|feat|fix|docs|ci)/[a-z0-9._/-]+|coord-[a-z0-9-]+)$"
         },
         "base_sha": {
           "$ref": "#/$defs/sha1"
