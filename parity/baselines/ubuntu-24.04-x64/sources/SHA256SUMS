@@ -3,3 +3,4 @@
 5b8a5f29c33d9c98a0368c0e3109eba9dc566ce8091aa412de56fc93518d1adf *./pin/build.ubuntu-24_04.pkr.hcl
 9de904fe6c77708d0c22506ae61411f61bd97e036f405569f32c7616d15958cf *./pin/locals.ubuntu.pkr.hcl
 72d25917a42635cf9be9105f7d6056b6d56ffcdf63ddc24f82fe6cdf526c6c84 *./pin/toolset-2404.json
+72d25917a42635cf9be9105f7d6056b6d56ffcdf63ddc24f82fe6cdf526c6c84 *./release-add4380/toolset-2404.json
