@@ -95,6 +95,10 @@ $AapCfg = @{
     # The always-on control VM's memory, paid before any slot. An estimate
     # until P22 measures the WSL VM without legacy jobs.
     ControlDistroMemGib = 2
+    # The interim Windows runner on this PC (R2, status-settings.md, Windows
+    # host): its install folder and the owner's limited logon task. Report only.
+    HostRunnerDir       = 'C:\aap-win-interim\runner'
+    HostRunnerTask      = 'AAP-Win-Interim-Runner'
 }
 $AapRt = @{}
 
@@ -664,9 +668,48 @@ function New-AapV5Profile([string]$Profile, $Doc, $St, $Live, [string]$StorageSt
     } else {
         $o.unavailable_reason = $AapRt.VmWhy[$Profile]
     }
+    # The interim runner stands in while no Windows VM backend is loaded and no
+    # Windows VM slot is live (status-settings.md, Windows host).
+    if ($Profile -ceq 'windows' -and -not $AapRt.Vm.windows -and -not $mine.Count) {
+        $h = Get-AapHostRunner
+        if ($h) {
+            $o.backend = 'windows-host'
+            $o.image_generation = $null
+            $o.generation_state = $null
+            $o.available = $h.State -cne 'stopped'
+            $o.unavailable_reason = $h.Why
+            $o.host_runner = $h.State
+        }
+    }
     if ($o.image_generation) { $o.image_generation = Format-AapV5Text $o.image_generation 80 }
     $o.unavailable_reason = Format-AapV5Text $o.unavailable_reason 200
     return $o
+}
+
+# Runner.Listener.exe and Runner.Worker.exe on this PC: name and path only.
+function Get-AapHostRunnerProcesses {
+    return @(Get-CimInstance -ClassName Win32_Process -Filter "Name='Runner.Listener.exe' OR Name='Runner.Worker.exe'" -ErrorAction SilentlyContinue |
+            ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Path = [string]$_.ExecutablePath } })
+}
+
+# The interim Windows runner (status-settings.md, Windows host): $null without
+# its install folder, else @{ State = online|busy|stopped; Why = the missing
+# piece }. Only its processes under <folder>\bin count. Reads the task and the
+# process list; never starts or stops anything and reads no file of the runner.
+# ponytail: one task and one process query per status write; cache them if a
+# tick ever gets slow.
+function Get-AapHostRunner {
+    if (-not [IO.Directory]::Exists($AapCfg.HostRunnerDir)) { return $null }
+    $name = $AapCfg.HostRunnerTask
+    $task = Get-ScheduledTask -TaskPath '\' -TaskName $name -ErrorAction SilentlyContinue
+    if (-not $task) { return @{ State = 'stopped'; Why = "logon task \$name not found" } }   # check:host-runner-task
+    $state = ([string]$task.State).ToLowerInvariant()
+    if ($state -cne 'running') { return @{ State = 'stopped'; Why = "logon task \$name is $state, not running" } }   # check:host-runner-task
+    $bin = (Join-Path $AapCfg.HostRunnerDir 'bin') + '\'
+    $mine = @(Get-AapHostRunnerProcesses | Where-Object { $_.Path.StartsWith($bin, [StringComparison]::OrdinalIgnoreCase) })
+    if (-not @($mine | Where-Object { $_.Name -eq 'Runner.Listener.exe' }).Count) { return @{ State = 'stopped'; Why = 'runner listener not running' } }   # check:host-runner-listener
+    if (@($mine | Where-Object { $_.Name -eq 'Runner.Worker.exe' }).Count) { return @{ State = 'busy'; Why = '' } }   # check:host-runner-busy
+    return @{ State = 'online'; Why = '' }
 }
 
 # status.v5.json (parity/contracts/status-v5.schema.json): status.json's state

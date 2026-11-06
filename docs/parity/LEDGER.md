@@ -515,6 +515,12 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Acceptance: Every required task accepted, agent-merged where applicable and CLEANUP_VERIFIED; no orphan worktree/target/process/temp artifact. Explicit product images/cache/evidence remain accounted. No deferred mandatory parity gate or unsupported claim.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
 
+## R2.1 — Report the interim Windows runner (roadmap R2, slice 1)
+
+- Prerequisites: P12, P20.0 (COMPLETE). Ownership: `parity/contracts/status-settings.md`, `status-v5.schema.json`, `validate.py` and fixtures, `supervisor/aap-runner-supervisor.ps1` and its tests, `crates/tray/src/{state,settings_panel,dashboard}.rs`.
+- Deliverable: status-settings revision 4: the Windows profile reports `backend: windows-host` with `host_runner` (`online`, `busy`, `stopped`) while the interim runner is installed and no Windows VM backend is loaded; the supervisor detects it read-only (logon task, listener and worker processes); the tray names it and its state with one warning line. Report only: no start or stop, no JIT registration (later R2 slices).
+- Closure: as every item. Current state: PR_OPEN (PR #103, branch `feat/windows-host-backend`).
+
 ## R1.1 — Tiered Linux pool contract and tray (roadmap R1, steps 1 and 4)
 
 - Prerequisites: P12, P20.0 (COMPLETE); owner brief R1 (2026-11-04). Ownership: `parity/contracts/status-settings.md`, `settings-v4.schema.json`, `status-v5.schema.json`, `validate.py` and fixtures, `distro/README.md` (label lines only), `crates/tray/**`.

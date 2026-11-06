@@ -358,8 +358,10 @@
           "enum": [
             "wsl-legacy",
             "hyperv-vm",
+            "windows-host",
             "none"
-          ]
+          ],
+          "description": "windows-host (Windows profile only): the interim runner installed on this PC itself, unisolated (owner accepted 2026-10-20), reported until the hyperv-vm profile is certified."
         },
         "count": {
           "type": "integer",
@@ -427,6 +429,14 @@
           "type": "string",
           "maxLength": 200,
           "pattern": "^[ -~]*$"
+        },
+        "host_runner": {
+          "enum": [
+            "online",
+            "busy",
+            "stopped"
+          ],
+          "description": "Present exactly when backend is windows-host: online (logon task running, listener up, no job), busy (a job runs), stopped (the reason names the missing piece)."
         }
       }
     },

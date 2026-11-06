@@ -10,7 +10,7 @@ use crate::mark::Sym;
 use crate::problem::{self, Action, Class};
 use crate::settings::{Os, Tier};
 use crate::settings_panel::SettingsPanel;
-use crate::state::{self, Desired, Slot, Snapshot, Status};
+use crate::state::{self, Desired, HOST_RUNNER_WARNING, ProfileV5, Slot, Snapshot, Status};
 use eframe::egui::{
     self, Align, Align2, Color32, FontFamily, FontId, Key, Layout, Rect, RichText, Sense, Shape,
     Stroke, StrokeKind, Theme, pos2, vec2,
@@ -225,11 +225,32 @@ fn card_name(os: Os, n: u32) -> String {
     format!("{} {n}", os.name())
 }
 
-/// `Linux 0/3 busy`, and `Windows 2 not installed` while Windows runners are chosen.
-fn header_counts(busy: usize, linux: usize, windows: u32) -> (String, Option<String>) {
-    // ponytail: no Windows backend yet; it brings its own busy count.
-    let windows = (windows > 0).then(|| format!("Windows {windows} not installed"));
+/// `Linux 0/3 busy`; `Windows interim online` while the interim runner on this PC reports,
+/// else `Windows 2 not installed` while Windows runners are chosen.
+fn header_counts(
+    busy: usize,
+    linux: usize,
+    windows: u32,
+    host: Option<&ProfileV5>,
+) -> (String, Option<String>) {
+    let windows = match host {
+        Some(h) => Some(format!(
+            "Windows interim {}",
+            h.host_runner.as_deref().unwrap_or("stopped")
+        )),
+        // ponytail: no native Windows backend yet; it brings its own busy count.
+        None => (windows > 0).then(|| format!("Windows {windows} not installed")),
+    };
     (format!("Linux {busy}/{linux} busy"), windows)
+}
+
+/// The interim runner card's state symbol and word.
+fn host_sym(h: &ProfileV5) -> (Sym, &'static str) {
+    match h.host_runner.as_deref() {
+        Some("online") => (Sym::Idle, "Online"),
+        Some("busy") => (Sym::Running, "Busy"),
+        _ => (Sym::Off, "Stopped"),
+    }
 }
 
 fn card_frame(p: &Palette) -> egui::Frame {
@@ -1319,16 +1340,21 @@ impl Dash {
                 self.snap.status,
                 Status::NotInstalled | Status::Off | Status::Unknown
             ) {
+                let host = self.settings.host();
                 let (linux, windows) = header_counts(
                     self.snap.busy(),
                     self.snap.runners(),
                     self.settings.windows(),
+                    host,
                 );
                 os_glyph(ui, &p, Os::Linux, 14.0, p.bg);
                 ui.label(linux);
                 if let Some(windows) = windows {
                     os_glyph(ui, &p, Os::Windows, 14.0, p.bg);
-                    ui.label(RichText::new(windows).color(p.muted));
+                    let r = ui.label(RichText::new(windows).color(p.muted));
+                    if host.is_some() {
+                        r.on_hover_text(HOST_RUNNER_WARNING);
+                    }
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1623,6 +1649,46 @@ impl Dash {
                             .color(p.muted)
                             .small(),
                     );
+                });
+            });
+        });
+        card_edge(ui, frame.response.rect, p.os(Os::Windows));
+    }
+
+    /// The interim Windows runner on this PC: the runner card's three rows at the same height,
+    /// its state, its backend (or what is missing) and the one warning line.
+    fn host_card(&mut self, ui: &mut egui::Ui, h: &ProfileV5) {
+        let p = self.pal();
+        let (sym, word) = host_sym(h);
+        let what = if h.unavailable_reason.is_empty() {
+            "Interim runner on this PC".to_string()
+        } else {
+            h.unavailable_reason.clone()
+        };
+        let frame = card_frame(&p).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                os_glyph(ui, &p, Os::Windows, 16.0, p.card);
+                ui.label(RichText::new("Windows").font(FontId::new(13.0, semibold())));
+                ui.add_space(8.0);
+                sym_widget(
+                    ui,
+                    CARD_SYM_H,
+                    sym,
+                    &p,
+                    p.card,
+                    false,
+                    format!("Windows, {word}"),
+                );
+                ui.label(RichText::new(word).color(p.state(sym)));
+            });
+            ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
+                ui.add(egui::Label::new(RichText::new(what).color(p.muted)).truncate());
+            });
+            ui.horizontal(|ui| {
+                ui.allocate_ui(vec2(ui.available_width(), CARD_BARS_H), |ui| {
+                    ui.label(RichText::new(HOST_RUNNER_WARNING).color(p.over).small());
                 });
             });
         });
@@ -2493,9 +2559,17 @@ impl Dash {
                 if slots.is_empty() && self.problem.is_none() {
                     ui.label(RichText::new("No runner slots reported.").color(p.muted));
                 }
-                for n in 1..=windows_cards_to_draw(linux, self.settings.windows()) {
-                    ui.add_space(CARD_GAP_SPACE);
-                    self.windows_card(ui, n);
+                if let Some(h) = self.settings.host().cloned() {
+                    // One card, after the Linux grid.
+                    if windows_cards_to_draw(linux, 1) == 1 {
+                        ui.add_space(CARD_GAP_SPACE);
+                        self.host_card(ui, &h);
+                    }
+                } else {
+                    for n in 1..=windows_cards_to_draw(linux, self.settings.windows()) {
+                        ui.add_space(CARD_GAP_SPACE);
+                        self.windows_card(ui, n);
+                    }
                 }
                 self.history(ui);
                 self.note_line(ui);
@@ -2984,6 +3058,120 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
     }
 
+    /// status.v5.json from the contract fixture with `updated` now and `host_runner` set.
+    fn write_host_v5(base: &std::path::Path, host: &str) {
+        let now = chrono_free_now();
+        let json = state::fixture("status-v5/valid/windows-host-busy.json")
+            .replace("2026-10-19T18:00:00Z", &now)
+            .replace(
+                r#""host_runner": "busy""#,
+                &format!(r#""host_runner": "{host}""#),
+            );
+        std::fs::write(base.join("status.v5.json"), json).unwrap();
+    }
+
+    /// Now as `YYYY-MM-DDTHH:MM:SSZ`, by the same civil-date rule the tray parses with.
+    fn chrono_free_now() -> String {
+        let secs = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+        // Howard Hinnant's civil_from_days.
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = yoe + era * 400 + i64::from(m <= 2);
+        format!(
+            "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+            rem / 3600,
+            rem / 60 % 60,
+            rem % 60
+        )
+    }
+
+    #[test]
+    fn left_column_names_the_interim_windows_runner_within_the_column() {
+        let base = state::temp_base("dash-host");
+        std::fs::write(
+            state::inbox(&base).join("settings.json"),
+            r#"{"runner_count":5,"job_cpus":26,"job_memory_gib":72}"#,
+        )
+        .unwrap();
+        write_host_v5(&base, "online");
+        let mut panel = SettingsPanel::load(&base);
+        assert_eq!(
+            panel.host().map(|h| h.host_state()).as_deref(),
+            Some("online")
+        );
+        let snap = Snapshot::bare(Status::Idle);
+        let mut desired = Desired::On;
+        let context = egui::Context::default();
+        context.set_fonts(fonts());
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            egui::Panel::left("l").exact_size(LEFT_W).show(ui, |ui| {
+                panel.show_top(ui, &DARK, &base, &snap, &mut desired);
+            });
+        });
+        let texts: Vec<(String, f32)> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => {
+                    Some((t.galley.text().to_string(), t.pos.x + t.galley.size().x))
+                }
+                _ => None,
+            })
+            .collect();
+        output.textures_delta.clear();
+        let line = texts
+            .iter()
+            .find(|(t, _)| t == "interim runner on this PC \u{b7} online")
+            .unwrap_or_else(|| panic!("no interim line: {texts:?}"));
+        assert!(
+            line.1 <= LEFT_W,
+            "the line ends at {} past the {LEFT_W} column",
+            line.1
+        );
+        assert!(
+            !texts.iter().any(|(t, _)| t.contains("not installed")),
+            "{texts:?}"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn header_and_card_state_the_interim_runner() {
+        let json = state::fixture("status-v5/valid/windows-host-busy.json");
+        let now = state::parse_rfc3339("2026-10-19T18:01:00Z").unwrap();
+        let v = state::parse_status_v5(&json, now).unwrap();
+        let mut h = v.windows_host().unwrap().clone();
+        assert_eq!(
+            header_counts(0, 5, 2, Some(&h)),
+            ("Linux 0/5 busy".into(), Some("Windows interim busy".into())),
+            "the interim runner replaces the not-installed count"
+        );
+        assert_eq!(host_sym(&h), (Sym::Running, "Busy"));
+        h.host_runner = Some("online".into());
+        assert_eq!(host_sym(&h), (Sym::Idle, "Online"));
+        h.host_runner = Some("stopped".into());
+        assert_eq!(host_sym(&h), (Sym::Off, "Stopped"));
+        assert_eq!(
+            header_counts(0, 5, 0, Some(&h)).1.as_deref(),
+            Some("Windows interim stopped")
+        );
+        // The Linux tiles have their own grid (R1), so the interim runner's card is drawn
+        // whatever the Linux count.
+        for linux in [0, 4, 5] {
+            assert_eq!(windows_cards_to_draw(linux, 1), 1, "{linux} Linux slots");
+        }
+    }
+
     #[test]
     fn bars_stack_linux_then_windows_within_the_share() {
         assert_eq!(stacked([3.0, 1.0], Some(8.0)), [0.375, 0.125]);
@@ -3008,9 +3196,12 @@ mod tests {
     fn cards_and_header_name_each_profile() {
         assert_eq!(card_name(Os::Linux, 2), "Linux 2");
         assert_eq!(card_name(Os::Windows, 1), "Windows 1");
-        assert_eq!(header_counts(0, 3, 0), ("Linux 0/3 busy".into(), None));
         assert_eq!(
-            header_counts(1, 3, 2),
+            header_counts(0, 3, 0, None),
+            ("Linux 0/3 busy".into(), None)
+        );
+        assert_eq!(
+            header_counts(1, 3, 2, None),
             (
                 "Linux 1/3 busy".into(),
                 Some("Windows 2 not installed".into())

@@ -21,7 +21,7 @@ admin-written.
 | `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code` |
 | `jobs\<id>\log.txt`, `exit.txt` | elevated helper | live log and the process exit code |
 | `status.json` | supervisor, never the tray | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"…","updated":"<RFC3339>","detail":"…","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/…/actions/runs/N"}` (the last five optional; `repo` and `run_url` may be `""`). Schema 4 adds `work_disk_gib`, `work_disk_free_gb`, `work_disk_floor_gb` and `cleaning`; schema 3 still reads, with no disk sample and cleaning false. A schema above 4 is rejected. |
-| `status.v5.json` | supervisor, never the tray | [`status-v5.schema.json`](../../parity/contracts/status-v5.schema.json): both profiles, every backend's slots, storage, the legacy pool. Read at most 64 KiB; missing, unparseable, stale (over 180 s old, or `updated` in the future), a `schema` other than 5, or not exactly the Linux and Windows profiles = not there, and the tray keeps to `status.json` and settings schema 2 |
+| `status.v5.json` | supervisor, never the tray | [`status-v5.schema.json`](../../parity/contracts/status-v5.schema.json): both profiles, every backend's slots, storage, the legacy pool. Read at most 64 KiB; missing, unparseable, stale (over 180 s old, or `updated` in the future), a `schema` other than 5, or not exactly the Linux and Windows profiles = not there, and the tray keeps to `status.json` and settings schema 2. A Windows profile with `backend: windows-host` (the interim runner on this PC) replaces the window's Windows "not installed" text, see below |
 | `logs\` | supervisor | opened by "Open logs" via `C:\Windows\explorer.exe` (absolute path) |
 
 - `inbox\` missing: `Not installed`; Start/Stop/Restart, Pause/Resume and Settings are disabled.
@@ -125,7 +125,10 @@ addendum of the design doc.
   host keeps 2 CPU 8 GiB), under schema 4 the tier table instead (`Each 1 CPU 3 GiB cap 4/8`,
   `Each 8 CPU 20 GiB may burst`); Windows
   `0 | … | 5` with one amber line `not installed · 5 CPU 14 GiB` (the prospective even share; the
-  tooltip says it is prospective and that nothing starts), the row's tooltip carrying the full
+  tooltip says it is prospective and that nothing starts; `interim runner on this PC · online`,
+  `busy` or `stopped: <reason>` instead while `status.v5.json` reports `backend: windows-host`,
+  its tooltip the warning `Unisolated: jobs run directly on this PC (owner accepted 2026-10-20).`,
+  and a Windows card with the same state and warning in the room the Linux slots leave), the row's tooltip carrying the full
   `Windows backend not installed — coming with the native Windows runner` note. Cells above the
   budget the other row leaves are greyed and inert (Linux 0 too, until a Windows backend exists).
   Each row label carries its OS glyph and colour. IO cap 0..100 % in steps of 5, Sharing
@@ -151,7 +154,9 @@ addendum of the design doc.
   `Linux`/`Windows` legend on the pool's `sampled` row and the `Last 60 min` title. All observed
   usage is the Linux manager's, so the Windows segment stays empty while no backend exists.
 - **Right column:** only observed values. A pinned header row (symbol, state, `Linux N/M busy`, and
-  `Windows N not installed` while Windows runners are chosen, `All OK` or
+  `Windows N not installed` while Windows runners are chosen (`Windows interim online`, `busy` or
+  `stopped` while `status.v5.json` reports the interim runner on this PC, with the warning as its
+  tooltip), `All OK` or
   the `1 problem` button). Below the header (in every state including Off and Not installed): one
   status line for the current Verify/Repair job (format: `Verify · failed · exit 1` on failure,
   `Repair · running…` while active, `Verify · ok` on success; with a `· Open log`

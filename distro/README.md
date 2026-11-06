@@ -276,6 +276,27 @@ The compile cache is zccache 1.15.6, installed in the image under `/usr/local/li
 
 Nothing is qualified at the pin (`guests/cache/wrappers.json` lists no qualified pair), so `init` reports `direct`, starts no daemon and writes an empty `runner.env`: no `RUSTC_WRAPPER` is set and every compiler runs directly. Only a qualified rustc pair makes `init` set `RUSTC_WRAPPER` to `zcshim`. The qualification evidence covers rustc 1.99.0 only, and the image does not record any rustc (jobs install their own); a compiler or version without evidence, such as 1.99.1, is never given to zccache: the shim runs it as it is, a build never fails because the cache declined a compiler, and `ephemeral-entry.sh` prints the `zccache:` state line at job start while the shim logs `direct <compiler> <reason>` to `shim/shim.log` in the root. sccache is not installed, and neither `RUSTC_WRAPPER=sccache` nor any `SCCACHE_*` variable is set; a repository that still installs sccache with `mozilla-actions/sccache-action` must drop that step. The manager passes the root's budget, `AAP_ZCCACHE_BUDGET_BYTES`: the pool's budget (15% of `AAP_WORK_DISK_GIB`, at most 10240 MiB, so 9216 MiB on the default 60 GiB disk) divided by `AAP_RUNNER_COUNT`, so all the slots together stay inside it. At pool start the manager removes the old `${WORK_MOUNT}/sccache` tree once. At the budget the shim stops using the root and compiles directly; it never deletes cache files, and the manager no longer trims a host tree. `aap-zccache.sh state /var/cache/aap-zccache` (as `runner`) prints the state.
 
+## Clock
+
+Every `aap-crrr-*` runner is a Sysbox container in the `aap-runner` distro, and a container has no clock of its own. All of them read the WSL2 VM's one kernel clock, which every distro on the PC shares.
+
+The single time-sync authority is **WSL's own chronyd**:
+- It runs outside every distro, and no distro's `ps` lists it.
+- It follows the Hyper-V host clock (`refclock PHC0`, `/dev/ptp0`) at an 8 s poll. `chronyc tracking` there reported stratum 1 and an offset of a few µs (WSL 3.0.3, kernel 6.18.54.1).
+- The guest clock is therefore the Windows clock. Keep the Windows Time service syncing if wall-clock accuracy matters; the runners need only a clock that never jumps.
+
+This distro runs **no** time daemon: `configure_time_sync` in `bootstrap.sh` masks `systemd-timesyncd` and `chrony` and refuses while any NTP daemon is active. Hyper-V adds a backstop only: it steps the clock forward when the guest is 5 s or more behind the host (`hv_utils.timesync_implicit=1`, always on in WSL).
+
+What a second daemon did, measured 2026-11-05 on one VM boot:
+- **systemd-timesyncd (Ubuntu's default):** it stepped the clock back about 1.3 s every 32-second poll toward NTP, and WSL's chronyd slewed it forward again toward the host clock. `/proc/uptime` ran 4.4% fast against Windows; journald logged 100 backward jumps between 10:00 and 12:38 UTC. That broke wall-clock tests in jobs.
+- **chrony on NTP pools:** with WSL's chronyd writing the same kernel clock about every 2 s, its frequency estimate ran away from 17 to over 4,000 ppm within an hour, and offsets swung by more than 1 s. With it stopped, kernel tracing (`do_adjtimex`) shows WSL's chronyd as the only writer.
+- **The hardware clock was fine:** `CLOCK_MONOTONIC_RAW` ran +17 ppm against NTP, with ±1.3 ms residual over 600 s.
+
+Re-verify:
+- **Host, inside the distro:** `bash distro/clock-probe.sh 600`. Exit 0 means no backward step and a drift change under 100 ms.
+- **Authority, from Windows:** `wsl --system -u root -- chronyc -n tracking` reaches WSL's chronyd over the shared localhost; the reference must be `PHC0`.
+- **Runners:** dispatch `.github/workflows/runner-clock-probe.yml`, which runs the same probe for 30 minutes on all five slots at once.
+
 ## Threat model
 
 | Actor | What we assume | What limits them |

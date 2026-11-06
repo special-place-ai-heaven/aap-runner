@@ -106,6 +106,15 @@ Describe 'aap-runner host supervisor' {
         Mock Start-ScheduledTask { $script:calls.Add("task $TaskName") }
         Mock Get-ScheduledTask { return [pscustomobject]@{ State = 'Ready' } }
         Mock Get-ScheduledTaskInfo { return [pscustomobject]@{ LastTaskResult = $script:mountResult } }
+        # No interim Windows runner unless a test creates its folder; its task and
+        # processes are these fakes, never the host's.
+        $AapCfg.HostRunnerDir = Join-Path $AapCfg.DataDir 'aap-win-interim\runner'
+        $script:hostTask = 'Running'
+        $script:hostProcs = @()
+        Mock Get-ScheduledTask -ParameterFilter { $TaskName -eq 'AAP-Win-Interim-Runner' } {
+            if ($script:hostTask) { return [pscustomobject]@{ State = $script:hostTask } }
+        }
+        Mock Get-AapHostRunnerProcesses { return $script:hostProcs }
         # Never touch the live vmmemWSL from a test.
         Mock Set-AapVmPriority { }
         # A fixed host: 32 logical CPUs, 96 GiB.
@@ -1160,6 +1169,50 @@ Describe 'aap-runner host supervisor' {
         }
     }
 
+    Describe 'status.v5.json with the interim Windows runner' {
+        BeforeEach {
+            New-Item -ItemType Directory -Force -Path $AapCfg.HostRunnerDir | Out-Null
+            $script:listener = [pscustomobject]@{ Name = 'Runner.Listener.exe'; Path = (Join-Path $AapCfg.HostRunnerDir 'bin\Runner.Listener.exe') }
+            $script:worker = [pscustomobject]@{ Name = 'Runner.Worker.exe'; Path = (Join-Path $AapCfg.HostRunnerDir 'bin\Runner.Worker.exe') }
+        }
+
+        It 'reports <want> with <why>' -Tag 'host-runner-task', 'host-runner-listener', 'host-runner-busy' -TestCases @(
+            @{ task = 'Running'; procs = 'listener'; want = 'online'; why = '' }
+            @{ task = 'Running'; procs = 'listener,worker'; want = 'busy'; why = '' }
+            @{ task = $null; procs = 'listener'; want = 'stopped'; why = 'logon task \AAP-Win-Interim-Runner not found' }
+            @{ task = 'Ready'; procs = ''; want = 'stopped'; why = 'logon task \AAP-Win-Interim-Runner is ready, not running' }
+            @{ task = 'Disabled'; procs = 'listener'; want = 'stopped'; why = 'logon task \AAP-Win-Interim-Runner is disabled, not running' }
+            @{ task = 'Running'; procs = ''; want = 'stopped'; why = 'runner listener not running' }
+            @{ task = 'Running'; procs = 'worker'; want = 'stopped'; why = 'runner listener not running' }
+            @{ task = 'Running'; procs = 'elsewhere'; want = 'stopped'; why = 'runner listener not running' }
+        ) {
+            $script:hostTask = $task
+            $script:hostProcs = @(foreach ($n in ($procs -split ',' | Where-Object { $_ })) {
+                    if ($n -eq 'elsewhere') { [pscustomobject]@{ Name = 'Runner.Listener.exe'; Path = 'C:\other-runner\bin\Runner.Listener.exe' } }
+                    else { Get-Variable -Name $n -Scope Script -ValueOnly }
+                })
+            Write-AapStatus 'idle' '' ''
+            $w = (Get-AapV5File).profiles[1]
+            $w.backend | Should -BeExactly 'windows-host'
+            $w.host_runner | Should -BeExactly $want
+            $w.available | Should -Be ($want -ne 'stopped')
+            $w.unavailable_reason | Should -BeExactly $why
+            $w.count | Should -Be 0 -Because 'the interim runner is outside the five pool slots'
+            @((Get-AapV5File).slots).Count | Should -Be 0
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'keeps backend none and asks nothing when the install folder is absent' -Tag 'v5' {
+            Remove-Item -LiteralPath $AapCfg.HostRunnerDir -Recurse -Force
+            Write-AapStatus 'idle' '' ''
+            $w = (Get-AapV5File).profiles[1]
+            $w.backend | Should -BeExactly 'none'
+            $w.PSObject.Properties.Name | Should -Not -Contain 'host_runner'
+            Should -Invoke Get-AapHostRunnerProcesses -Times 0 -Exactly
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+    }
+
     Describe 'settings.json schema 3' {
         BeforeEach {
             $AapRt.Cap = $true
@@ -1410,6 +1463,23 @@ Describe 'aap-runner host supervisor' {
             $v.profiles[0].generation_state | Should -BeExactly 'active'
             $v.profiles[1].unavailable_reason | Should -Match 'P10.0'
             @($v.slots | Where-Object { $_.job -eq 'job-1' }).Count | Should -Be 1
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
+        It 'reports the interim Windows runner while no Windows VM backend is loaded' -Tag 'v5' {
+            New-Item -ItemType Directory -Force -Path $AapCfg.HostRunnerDir | Out-Null
+            $script:hostProcs = @([pscustomobject]@{ Name = 'Runner.Listener.exe'; Path = (Join-Path $AapCfg.HostRunnerDir 'bin\Runner.Listener.exe') })
+            Reset-AapFakeDistro 3 27 72 @('running', 'idle', 'idle')
+            Write-AapSettingsFile '{"schema":2,"runner_count":3,"job_cpus":27,"job_memory_gib":72,"paused":false}'
+            Invoke-AapCycle
+            Invoke-AapMinute
+            $v = Get-AapV5File
+            @($v.settings_schemas) -join ',' | Should -Be '1,2,3'
+            $v.profiles[1].backend | Should -BeExactly 'windows-host'
+            $v.profiles[1].host_runner | Should -BeExactly 'online'
+            $v.profiles[1].available | Should -BeTrue
+            $v.profiles[1].image_generation | Should -BeNullOrEmpty
+            @($v.slots).Count | Should -Be 3
             Test-AapV5Contract | Should -Be 'ok'
         }
 

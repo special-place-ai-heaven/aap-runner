@@ -631,6 +631,25 @@ half_install_refusal() {
   printf '%s\n' "That command does not unregister any other distro."
 }
 
+# No time-sync daemon in this distro. The clock is the whole WSL2 VM's (every
+# distro on this PC shares it), and WSL already runs one chronyd outside all
+# distros that follows the Hyper-V host clock (refclock PHC0, /dev/ptp0). A
+# second daemon here fights it: on 2026-11-05 Ubuntu's systemd-timesyncd stepped
+# the clock back about 1.3 s every 32 s, and a chrony on NTP pools ran its
+# frequency estimate away to thousands of ppm. Both are masked, so a package
+# upgrade cannot start them again.
+configure_time_sync() {
+  local unit
+  systemctl mask systemd-timesyncd.service chrony.service
+  systemctl stop systemd-timesyncd.service chrony.service 2> /dev/null || true
+  for unit in systemd-timesyncd chrony ntp ntpsec openntpd; do
+    if systemctl is-active --quiet "${unit}"; then
+      echo "refusing: ${unit} is active; WSL already keeps this VM's clock and a second time daemon fights it" >&2
+      exit 1
+    fi
+  done
+}
+
 copy_staged() {
   local name="$1" dest="$2"
   cp "${STAGE}/${name}" "${dest}"
@@ -961,6 +980,7 @@ inside_runtime() {
   esac
 
   systemctl daemon-reload
+  configure_time_sync
   systemctl enable aap-workdisk
   systemctl stop docker containerd sysbox sysbox-mgr sysbox-fs >/dev/null 2>&1 || true
   /usr/local/sbin/aap-mount-work-disk
