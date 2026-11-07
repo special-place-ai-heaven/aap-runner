@@ -24,19 +24,34 @@ it.** The only reason is that WSL sessions belong to the logon session
   and other interactive apps win CPU contention against CI jobs. While the
   manager unit is active but the `updated` value in its `status.json` has not
   changed for 3 health ticks (180 s on the supervisor's clock), the status is
-  `starting` with detail `manager status stale`. The manager's clock is never
-  compared with Windows' (the WSL clock can drift); a file without `updated` is
-  never stale. A restart of a manager that is not paused or stopped runs
-  `--undrain` first, so a drain left by a failed undrain does not make it exit
-  at once.
-- **Failed drain steps:** a non-zero `--drain` or `--undrain` is logged. A
-  pause whose drain fails or whose wait times out is not `paused`: the status
-  says why and the next cycle pauses again. Resume starts the manager only
-  after `--undrain` succeeded. A limits change whose drain times out or whose
-  undrain fails puts the previous `limits.conf` back, undrains and tries again
-  next cycle. A failed `wsl --terminate` is checked with
-  `wsl --list --running`; while the distro may still run the status is
-  `error` and Off tries again next cycle.
+  `starting` with detail `manager status stale`; the change to stale and back
+  is logged once each. The manager's clock is never compared with Windows'
+  (the WSL clock can drift). A file without `updated`, or whose `updated` is
+  not a whole unix second, is never stale, nor is one that says `cleaning`
+  (the watch starts again after it). Pause and Off start the watch afresh. A
+  restart of a manager that is not paused or stopped runs `--undrain` first,
+  so a drain left by a failed undrain does not make it exit at once; if that
+  undrain fails the manager is not started, and the On sequence does the same.
+- **Failed drain steps:** a limits change whose drain fails or times out, or
+  whose undrain fails, a pause whose drain fails or times out, a manager start
+  (resume, or a granted legacy slot) whose `--undrain` fails, stopping the
+  legacy pool when its `--drain` fails, and an Off whose terminate cannot be
+  confirmed are each tried again with backoff 10, 30, 60, 120, then every
+  300 s. A failure is logged on each of the first 5 attempts and whenever its
+  message changes, and a success after failures logs `<step> recovered` once
+  and resets the backoff. A pause that did not drain is not `paused`: the
+  status is `error` (drain failed) or `draining` (job still running). A failed
+  resume is `error` with `resume: --undrain failed; retrying` until it works.
+  A limits change that did not finish puts back the `limits.conf` read before
+  it (cached until it is back, so a retry never re-reads the new file as the
+  old one) or removes the file if there was none; a file that could not be put
+  back is logged as `ERROR` and never counts as applied. A failed
+  `wsl --terminate` is checked with `wsl --list --running`; while the distro
+  still runs, or the list itself fails (its exit code and stderr are logged),
+  the status is `error` with `... and aap-runner still runs` or
+  `... and wsl --list --running failed (exit N)` and Off tries again. At
+  supervisor start a failing `--list --running` is logged as `WARN` and the
+  distro is treated as not known to run (no `wsl` call that would start it).
 - **Off:** runs `aap-runner-manager --drain`, waits up to 6 h for the manager
   to exit after its job, then `wsl.exe --terminate aap-runner`. Flipping back to
   on while draining undrains instead. A job still running after the 6 h is

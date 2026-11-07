@@ -194,6 +194,15 @@ function Initialize-AapRuntime {
     # The manager status.json updated value last seen, and when it last changed (this clock).
     $AapRt.MgrUpdated = $null
     $AapRt.MgrUpdatedAt = [DateTimeOffset]::MinValue
+    $AapRt.MgrStale = $false
+    # Failing steps that retry with backoff, by key (Register-AapRetryFailure).
+    $AapRt.Retry = @{}
+    # The limits.conf read before a change that has not been put back yet
+    # (LimitsDirty): every restore writes this one.
+    $AapRt.LimitsGood = $null
+    $AapRt.LimitsDirty = $false
+    # Set while a resume failed: the status says so, not paused.
+    $AapRt.ResumeWhy = $null
     $AapRt.Status = $null
     $AapRt.StatusAt = [DateTimeOffset]::MinValue
 }
@@ -211,6 +220,36 @@ function Get-AapBackoffDelay([int]$Failures) {
     $steps = @(10, 30, 60, 120, 300)
     $i = [Math]::Min([Math]::Max($Failures, 1), $steps.Count) - 1
     return $steps[$i]
+}
+
+# One retry gate for steps that fail and are tried again (limits change,
+# pause, manager start and stop, Off terminate): after a failure the step
+# waits 10, 30, 60, 120, then every 300 s. A failure is logged on each of the
+# first 5 attempts and whenever its message changes; a success after failures
+# logs once and resets the backoff.
+function Test-AapRetryDue([string]$Key) {
+    $r = $AapRt.Retry[$Key]
+    return ($null -eq $r -or (Get-AapNow) -ge $r.At)
+}
+
+function Register-AapRetryFailure([string]$Key, [string]$Message) {
+    $r = $AapRt.Retry[$Key]
+    if ($null -eq $r) {
+        $r = @{ Failures = 0; Msg = $null; At = $null }
+        $AapRt.Retry[$Key] = $r
+    }
+    $r.Failures++
+    $delay = Get-AapBackoffDelay $r.Failures
+    $r.At = (Get-AapNow).AddSeconds($delay)
+    if ($r.Failures -le 5 -or $r.Msg -cne $Message) { Write-AapLog "$Message; retry in $delay s (failure $($r.Failures))" }
+    $r.Msg = $Message
+}
+
+function Clear-AapRetry([string]$Key) {
+    $r = $AapRt.Retry[$Key]
+    if ($null -eq $r) { return }
+    $AapRt.Retry.Remove($Key)
+    Write-AapLog "$Key recovered after $($r.Failures) failures"
 }
 
 function Split-AapLine([string]$Text) {
@@ -998,7 +1037,9 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
     $cleaning = $false
     if ($obj.cleaning -is [bool] -and $obj.cleaning) { $cleaning = $true }
     $updated = $null
-    if (Get-AapTime $obj.updated) { $updated = [long]$obj.updated }
+    # A whole unix second only: a string (pwsh 7 makes RFC 3339 a [datetime]) or an out-of-range number is $null, never a throw.
+    $u = $obj.updated
+    if (($u -is [int] -or $u -is [long]) -and $u -gt 0 -and $u -lt 8589934592) { $updated = [long]$u }
     return @{
         State     = $state
         Job       = [string]$obj.job
@@ -1183,12 +1224,16 @@ function Invoke-AapOn {
     [void](Test-AapManagerFlag)
     [void](Read-AapSettingsFile)
     if (Test-AapLegacyWanted) {
-        if (Test-AapManagerFlag) {
-            $r = Invoke-AapRoot @($AapManager, '--undrain')
-            if ($r.Code -ne 0) { Write-AapLog "undrain exit $($r.Code): $(Format-AapText $r.Err)" }
+        $e = $null
+        if (Test-AapManagerFlag) { $e = Invoke-AapUndrain }
+        if ($e) {
+            # A drained manager would exit at once; the health loop undrains and starts it with backoff.
+            Write-AapLog "$e; the manager is not started"
+            [void](Invoke-AapUnitStart @('sysbox'))
+        } else {
+            # systemctl is safe on the old manager too.
+            [void](Invoke-AapUnitStart @('sysbox', 'aap-runner-manager'))
         }
-        # systemctl is safe on the old manager too.
-        [void](Invoke-AapUnitStart @('sysbox', 'aap-runner-manager'))
     } else {
         # Linux 0 (or Linux on VMs): the distro runs for the broker; the
         # manager is never started, and one a previous run left is drained.
@@ -1234,11 +1279,13 @@ function Invoke-AapHealth {
             Write-AapStatus 'error' '' $AapOldManager
         } elseif ($AapRt.CapError) {
             Write-AapStatus 'error' '' $detail
+        } elseif ($AapRt.Paused -and $AapRt.ResumeWhy) {
+            Write-AapStatus 'error' '' $AapRt.ResumeWhy
         } elseif ($AapRt.Paused) {
             Write-AapStatus 'paused' '' $detail
         } elseif ($AapRt.ManagerStopped) {
             Write-AapStatus 'idle' '' $detail
-        } elseif ($m -and $m.State -and (Test-AapManagerStale $m.Updated $now)) {
+        } elseif ($m -and $m.State -and (Test-AapManagerStale $m $now)) {
             Write-AapStatus 'starting' '' 'manager status stale'
         } elseif ($m -and $m.State) {
             Write-AapStatus $m.State $m.Job $detail $m.Repo $m.RunUrl $m
@@ -1259,8 +1306,9 @@ function Invoke-AapHealth {
     if (-not $stopped) {
         # Not paused or stopped, so no drain is meant: one left by a failed
         # undrain would make the manager exit at once.
-        if ($manager -ne 'active' -and $AapRt.ManagerOk) { [void](Invoke-AapUndrain) }
-        [void](Invoke-AapUnitStart @('aap-runner-manager'))
+        $e = $null
+        if ($manager -ne 'active' -and $AapRt.ManagerOk) { $e = Invoke-AapUndrain }
+        if ($e) { Write-AapLog "$e; the manager is not started" } else { [void](Invoke-AapUnitStart @('aap-runner-manager')) }
     }
     if ($AapRt.Failures -ge 5) {
         Write-AapStatus 'error' '' "$detail failed; retrying every $delay s"
@@ -1274,17 +1322,25 @@ function Invoke-AapHealth {
 # (rewritten every 5 s) has not moved for 3 health ticks of this clock. The
 # manager's clock is never compared with this one (WSL drifts). No updated
 # field is never stale.
-function Test-AapManagerStale($Updated, [DateTimeOffset]$Now) {
-    if ($null -eq $Updated) {
+# Cleanup may hold the status still: never stale while it says cleaning, and
+# the watch starts again after. The change to stale and back is logged once.
+function Test-AapManagerStale($M, [DateTimeOffset]$Now) {
+    $stale = $false
+    if ($null -eq $M.Updated) {
         $AapRt.MgrUpdated = $null
-        return $false
-    }
-    if ($Updated -ne $AapRt.MgrUpdated) {
-        $AapRt.MgrUpdated = $Updated
+    } elseif ($M.Updated -ne $AapRt.MgrUpdated -or $M.Cleaning) {
+        $AapRt.MgrUpdated = $M.Updated
         $AapRt.MgrUpdatedAt = $Now
-        return $false
+    } else {
+        $stale = (($Now - $AapRt.MgrUpdatedAt).TotalSeconds -ge 3 * $AapCfg.HealthSeconds)
     }
-    return (($Now - $AapRt.MgrUpdatedAt).TotalSeconds -ge 3 * $AapCfg.HealthSeconds)
+    if ($stale -and -not $AapRt.MgrStale) {
+        Write-AapLog "WARN manager status.json updated $($M.Updated) unchanged for $([int]($Now - $AapRt.MgrUpdatedAt).TotalSeconds) s while its unit is active"
+    } elseif ($AapRt.MgrStale -and -not $stale) {
+        Write-AapLog 'manager status.json updated moves again'
+    }
+    $AapRt.MgrStale = $stale
+    return $stale
 }
 
 # Drain, wait for the job to finish, keep the distro up. If Off arrives while
@@ -1294,23 +1350,35 @@ function Test-AapManagerStale($Updated, [DateTimeOffset]$Now) {
 # the next cycle pauses again.
 function Invoke-AapPause {
     Write-AapStatus 'draining' '' 'pausing'
-    if (-not (Invoke-AapDrain)) {
+    $e = Invoke-AapDrain
+    if ($e) {
+        Register-AapRetryFailure 'pause' "pause: --$e"
         Write-AapStatus 'error' '' 'pausing: aap-runner-manager --drain failed; retrying'
         return 'failed'
     }
     $r = Wait-AapManagerInactive 'off' 'pausing'
     if ($r -eq 'timeout') {
+        Register-AapRetryFailure 'pause' 'pause: the legacy pool still runs a job'
         Write-AapStatus 'draining' '' 'pausing: the legacy pool still runs a job; retrying'
         return $r
     }
+    Clear-AapRetry 'pause'
     $AapRt.Paused = $true
+    # A stopped manager's status does not move; the next run starts a fresh watch.
+    $AapRt.MgrUpdated = $null
+    $AapRt.MgrStale = $false
     if ($r -ne 'aborted') { Write-AapStatus 'paused' '' '' }
     return $r
 }
 
 function Invoke-AapResume {
     Write-AapLog 'resume'
-    if (-not $AapRt.ManagerStopped -and -not (Start-AapManager)) { return }
+    if (-not $AapRt.ManagerStopped -and -not (Start-AapManager)) {
+        $AapRt.ResumeWhy = 'resume: --undrain failed; retrying'
+        Write-AapStatus 'error' '' $AapRt.ResumeWhy
+        return
+    }
+    $AapRt.ResumeWhy = $null
     $AapRt.Paused = $false
     $AapRt.NextHealth = [DateTimeOffset]::MinValue
 }
@@ -1325,12 +1393,15 @@ function Invoke-AapLimitChange($Limits) {
     $key = Get-AapLimitsKey $Limits
     $content = Get-AapLimitsContent $Limits
     $prev = Invoke-AapRoot @('/bin/cat', $AapLimitsFile)
-    if ($null -eq $AapRt.Applied -and $prev.Code -eq 0 -and $prev.Out -ceq $content) {
+    # A file not yet put back is not the good one, nor already applied.
+    if (-not $AapRt.LimitsDirty) { $AapRt.LimitsGood = $prev }
+    if ($null -eq $AapRt.Applied -and -not $AapRt.LimitsDirty -and $prev.Code -eq 0 -and $prev.Out -ceq $content) {
         $AapRt.Applied = $key
         Write-AapLog "limits.conf already has $key"
         return
     }
     Write-AapLog "applying limits $key"
+    $AapRt.LimitsDirty = $true
     $w = Invoke-AapRoot @('/bin/sh', '-c', $AapWriteLimits) $content
     $check = $null
     if ($w.Code -eq 0) { $check = Invoke-AapRoot @($AapManager, '--check-limits') }
@@ -1340,10 +1411,11 @@ function Invoke-AapLimitChange($Limits) {
         } else {
             $why = Format-AapText (@(Split-AapLine ($check.Out + "`n" + $check.Err)) | Select-Object -First 1)
         }
-        Restore-AapLimitsFile $prev
+        $restored = Restore-AapLimitsFile
         $AapRt.Refused = $key
         $AapRt.RefusedWhy = "limits $key refused: $why"
-        Write-AapLog "$($AapRt.RefusedWhy); previous limits.conf restored"
+        Clear-AapRetry 'limits'
+        if ($restored) { Write-AapLog "$($AapRt.RefusedWhy); previous limits.conf restored" } else { Write-AapLog $AapRt.RefusedWhy }
         # A refused tier file may mean the manager is not the one probed: look again.
         if ($null -ne $Limits.Heavy) {
             $AapRt.ManagerTiers = $null
@@ -1357,48 +1429,60 @@ function Invoke-AapLimitChange($Limits) {
     $AapRt.RefusedWhy = $null
     if ($AapRt.Paused -or $AapRt.ManagerStopped) {
         $AapRt.Applied = $key
+        $AapRt.LimitsDirty = $false
+        Clear-AapRetry 'limits'
         Write-AapLog 'manager stopped; it picks up the limits when it starts'
         return
     }
     Write-AapStatus 'draining' '' "applying limits $key"
-    $w = 'drain failed'
-    if (Invoke-AapDrain) { $w = Wait-AapManagerInactive 'off' "applying limits $key" }
+    $e = Invoke-AapDrain
+    $w = $e
+    if (-not $e) { $w = Wait-AapManagerInactive 'off' "applying limits $key" }
     if ($w -eq 'aborted') { return }
-    $undrained = Invoke-AapUndrain
-    if ($w -ne 'inactive' -or -not $undrained) {
-        # Not restarted on the new file: put the old one back so the next
+    $u = Invoke-AapUndrain
+    if ($w -ne 'inactive' -or $u) {
+        # Not restarted on the new file: put the old one back so a later
         # cycle does the whole change again (Applied stays as it was).
-        Restore-AapLimitsFile $prev
-        Write-AapLog "limits $key not applied ($w, undrain $undrained); retrying"
+        [void](Restore-AapLimitsFile)
+        $why = @(@($w, $u) | Where-Object { $_ -and $_ -ne 'inactive' }) -join '; '
+        Register-AapRetryFailure 'limits' "limits $key not applied: $why"
         return
     }
     # A manager that does not come up is the health loop's to restart; it
     # reads the new limits.conf when it does.
     [void](Invoke-AapUnitStart @('aap-runner-manager'))
     $AapRt.Applied = $key
+    $AapRt.LimitsDirty = $false
+    Clear-AapRetry 'limits'
     $AapRt.NextHealth = [DateTimeOffset]::MinValue
 }
 
-# --drain / --undrain; a non-zero exit is logged and returns $false.
-function Invoke-AapDrain {
-    $r = Invoke-AapRoot @($AapManager, '--drain')
-    if ($r.Code -ne 0) { Write-AapLog "drain exit $($r.Code): $(Format-AapText $r.Err)" }
-    return ($r.Code -eq 0)
+# --drain / --undrain: $null on success, else the failure as one line. The
+# caller logs it (once, or through the retry gate).
+function Invoke-AapDrain { return (Invoke-AapManagerFlag '--drain') }
+function Invoke-AapUndrain { return (Invoke-AapManagerFlag '--undrain') }
+function Invoke-AapManagerFlag([string]$Flag) {
+    $r = Invoke-AapRoot @($AapManager, $Flag)
+    if ($r.Code -eq 0) { return $null }
+    return "$($Flag.TrimStart('-')) exit $($r.Code): $(Format-AapText $r.Err)"
 }
 
-function Invoke-AapUndrain {
-    $r = Invoke-AapRoot @($AapManager, '--undrain')
-    if ($r.Code -ne 0) { Write-AapLog "undrain exit $($r.Code): $(Format-AapText $r.Err)" }
-    return ($r.Code -eq 0)
-}
-
-# The limits.conf read before a change goes back (or is removed if there was none).
-function Restore-AapLimitsFile($Prev) {
-    if ($Prev.Code -eq 0) {
-        [void](Invoke-AapRoot @('/bin/sh', '-c', $AapWriteLimits) $Prev.Out)
+# Puts back the limits.conf from before the change (LimitsGood), or removes it
+# if there was none. $true when that worked; a failure is an ERROR and keeps
+# LimitsDirty, so the file is never mistaken for an applied one.
+function Restore-AapLimitsFile {
+    $prev = $AapRt.LimitsGood
+    if ($prev.Code -eq 0) {
+        $r = Invoke-AapRoot @('/bin/sh', '-c', $AapWriteLimits) $prev.Out
     } else {
-        [void](Invoke-AapRoot @('/bin/rm', '-f', $AapLimitsFile))
+        $r = Invoke-AapRoot @('/bin/rm', '-f', $AapLimitsFile)
     }
+    if ($r.Code -ne 0) {
+        Write-AapLog "ERROR could not restore limits.conf (exit $($r.Code): $(Format-AapText $r.Err)); it is not counted applied"
+        return $false
+    }
+    $AapRt.LimitsDirty = $false
+    return $true
 }
 
 # settings.json while On: pause or resume, then limits. Limits the manager
@@ -1410,6 +1494,7 @@ function Sync-AapSettingsFile {
     if (($s.Paused -or $null -ne $s.Limits -or $AapRt.Paused) -and -not (Test-AapManagerFlag)) { return }
     if ($s.Paused -and -not $AapRt.Paused) {
         # Pause covers the whole pool: no admission, and the VM slots drain too.
+        if (-not (Test-AapRetryDue 'pause')) { return }
         Invoke-AapVmDrain
         if ((Invoke-AapPause) -ne 'inactive') { return }
     } elseif (-not $s.Paused -and $AapRt.Paused) {
@@ -1425,6 +1510,7 @@ function Sync-AapSettingsFile {
 function Set-AapLimits($Limits) {
     $key = Get-AapLimitsKey $Limits
     if ($null -eq $key -or $key -eq $AapRt.Applied -or $key -eq $AapRt.Refused) { return }
+    if (-not (Test-AapRetryDue 'limits')) { return }
     if ($null -eq $AapRt.Applied -and $key -eq (Get-AapLimitsKey $AapRt.Effective)) {
         $AapRt.Applied = $key
         return
@@ -1935,7 +2021,7 @@ function Sync-AapLegacyPool($s) {
         $AapRt.HoldWhy = "grant_waits: the legacy slots keep $($limits.JobCpus) CPUs and $($limits.JobMemoryGib) GiB until they are granted again"
     }
     Set-AapLimits $limits
-    if ($AapRt.ManagerStopped -and -not $AapRt.Paused -and $AapRt.Applied -eq (Get-AapLimitsKey $limits)) { [void](Start-AapManager) }
+    if ($AapRt.ManagerStopped -and -not $AapRt.Paused -and $AapRt.Applied -eq (Get-AapLimitsKey $limits)) { [void](Start-AapManager) }   # a failure is retried with backoff inside
 }
 
 # The most the legacy totals may be: the settings' totals, or with no
@@ -1950,8 +2036,14 @@ function Get-AapLegacyCaps($s) {
 # $false when --undrain fails: the manager would start and exit at once, so it
 # is not started and the caller keeps its state to try again.
 function Start-AapManager {
+    if (-not (Test-AapRetryDue 'manager-start')) { return $false }
     Write-AapLog 'starting the manager'
-    if (-not (Invoke-AapUndrain)) { return $false }
+    $e = Invoke-AapUndrain
+    if ($e) {
+        Register-AapRetryFailure 'manager-start' "manager start: $e"
+        return $false
+    }
+    Clear-AapRetry 'manager-start'
     [void](Invoke-AapUnitStart @('aap-runner-manager'))
     $AapRt.ManagerStopped = $false
     $AapRt.NextHealth = [DateTimeOffset]::MinValue
@@ -1962,8 +2054,14 @@ function Start-AapManager {
 # its jobs finish, and keep it stopped. The distro, sysbox and the keep-alive
 # stay up while On: the broker lives there (status-settings.md).
 function Invoke-AapManagerStop {
+    if (-not (Test-AapRetryDue 'manager-stop')) { return }
     Write-AapStatus 'draining' '' 'stopping the legacy pool'
-    if (-not (Invoke-AapDrain)) { return }
+    $e = Invoke-AapDrain
+    if ($e) {
+        Register-AapRetryFailure 'manager-stop' "stopping the legacy pool: $e"
+        return
+    }
+    Clear-AapRetry 'manager-stop'
     if ((Wait-AapManagerInactive 'off' 'stopping the legacy pool') -ne 'inactive') { return }   # check:stop-inactive
     $AapRt.ManagerStopped = $true
     $AapRt.Effective = $null
@@ -2084,6 +2182,7 @@ function Test-AapManagerIdle {
 function Invoke-AapOff {
     # The VM slots drain beside the manager; the broker that releases their
     # runners lives in the distro, so it stops after them.
+    if (-not (Test-AapRetryDue 'off-terminate')) { return }
     if ($AapRt.Cap) { [void](Initialize-AapCapacity $AapRt.Settings) }
     Invoke-AapVmDrain
     if (Test-AapManagerFlag) {
@@ -2093,7 +2192,8 @@ function Invoke-AapOff {
         $w = Wait-AapManagerInactive 'on' 'stopping'
         if ($w -eq 'aborted') {
             Write-AapLog 'desired is on again during drain; undraining'
-            [void](Invoke-AapUndrain)
+            $e = Invoke-AapUndrain
+            if ($e) { Write-AapLog $e }
             $AapRt.Paused = $false
             $AapRt.NextHealth = [DateTimeOffset]::MinValue
             return
@@ -2113,7 +2213,7 @@ function Invoke-AapOff {
     $g = Wait-AapVmGone 'on'
     if ($g -eq 'aborted') {
         Write-AapLog 'desired is on again while VM slots drain; undraining'
-        if ($AapRt.ManagerOk) { [void](Invoke-AapUndrain) }
+        if ($AapRt.ManagerOk) { $e = Invoke-AapUndrain; if ($e) { Write-AapLog $e } }
         $AapRt.Paused = $false
         $AapRt.NextHealth = [DateTimeOffset]::MinValue
         return
@@ -2126,7 +2226,7 @@ function Invoke-AapOff {
     # right before the distro stops.
     if ((Read-AapDesired) -ne 'off') {   # check:off-recheck
         Write-AapLog 'desired is on again before terminate; undraining'
-        if ($AapRt.ManagerOk) { [void](Invoke-AapUndrain) }
+        if ($AapRt.ManagerOk) { $e = Invoke-AapUndrain; if ($e) { Write-AapLog $e } }
         $AapRt.Paused = $false
         $AapRt.NextHealth = [DateTimeOffset]::MinValue
         return
@@ -2136,11 +2236,20 @@ function Invoke-AapOff {
         Write-AapLog "terminate exit $($r.Code): $(Format-AapText $r.Err)"
         # Off only once the distro is gone; a list that fails proves nothing.
         $l = Invoke-AapWsl -Arguments @('--list', '--running', '--quiet')
-        if ($l.Code -ne 0 -or @(Split-AapLine $l.Out) -contains $AapCfg.Distro) {
-            Write-AapStatus 'error' '' "stopping: wsl --terminate failed (exit $($r.Code)) and $($AapCfg.Distro) may still run; retrying"
+        $why = $null
+        if ($l.Code -ne 0) {
+            Write-AapLog "wsl --list --running exit $($l.Code): $(Format-AapText $l.Err)"
+            $why = "wsl --list --running failed (exit $($l.Code))"
+        } elseif (@(Split-AapLine $l.Out) -contains $AapCfg.Distro) {
+            $why = "$($AapCfg.Distro) still runs"
+        }
+        if ($why) {
+            Register-AapRetryFailure 'off-terminate' "Off: wsl --terminate exit $($r.Code); $why"
+            Write-AapStatus 'error' '' "stopping: wsl --terminate failed (exit $($r.Code)) and $why; retrying"
             return
         }
     }
+    Clear-AapRetry 'off-terminate'
     Invoke-AapKeepAliveStop
     $AapRt.Mode = 'off'
     $AapRt.OnFailures = 0
@@ -2153,6 +2262,12 @@ function Invoke-AapOff {
     $AapRt.ManagerOk = $null
     $AapRt.ManagerTiers = $null
     $AapRt.ManagerStopped = $false
+    $AapRt.MgrUpdated = $null
+    $AapRt.MgrStale = $false
+    $AapRt.LimitsGood = $null
+    $AapRt.LimitsDirty = $false
+    $AapRt.ResumeWhy = $null
+    $AapRt.Retry = @{}
     # The next On initializes and reconciles again.
     $AapRt.CapReady = $false
     $AapRt.CapWhy = $null
@@ -2217,6 +2332,12 @@ function Invoke-AapCycle {
 function Initialize-AapMode {
     if ((Read-AapDesired) -ne 'off') { return }
     $r = Invoke-AapWsl -Arguments @('--list', '--running', '--quiet')
+    if ($r.Code -ne 0) {
+        # Unknown, not "not running". No guess at on: a wsl call into a
+        # stopped distro would start it just to drain it.
+        Write-AapLog "WARN wsl --list --running exit $($r.Code): $(Format-AapText $r.Err); cannot tell whether $($AapCfg.Distro) runs"
+        return
+    }
     if (@(Split-AapLine $r.Out) -contains $AapCfg.Distro) {
         Write-AapLog "$($AapCfg.Distro) is running while desired is off; will drain"
         $AapRt.Mode = 'on'

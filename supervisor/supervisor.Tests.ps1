@@ -246,7 +246,7 @@ Describe 'aap-runner host supervisor' {
             $s.job_memory_gib | Should -Be 72
         }
 
-        It 'logs a failing --undrain and continues' {
+        It 'logs a failing --undrain and starts sysbox but not the manager' -Tag 'on-undrain' {
             $script:responder = {
                 param($line)
                 if ($line -like '*--undrain') { return (Get-AapFakeResult 1 '') }
@@ -256,6 +256,8 @@ Describe 'aap-runner host supervisor' {
             Invoke-AapCycle
             $AapRt.Mode | Should -Be 'on'
             Get-AapLogText | Should -Match 'undrain exit 1'
+            $script:calls | Should -Contain 'wsl -d aap-runner -u root -- /bin/systemctl start sysbox'
+            $script:calls | Should -Not -Contain 'wsl -d aap-runner -u root -- /bin/systemctl start sysbox aap-runner-manager'
         }
 
         It 'mirrors a running job from the manager' {
@@ -643,10 +645,15 @@ Describe 'aap-runner host supervisor' {
                 $script:activeLeft = 0
                 $script:terminateCode = 1
                 $script:running = "aap-runner`n"
+                $script:listCode = 0
                 $script:responder = {
                     param($line)
                     if ($line -eq '--terminate aap-runner') { return (Get-AapFakeResult $script:terminateCode '') }
-                    if ($line -eq '--list --running --quiet') { return (Get-AapFakeResult 0 $script:running) }
+                    if ($line -eq '--list --running --quiet') {
+                        $r = Get-AapFakeResult $script:listCode $script:running
+                        if ($script:listCode -ne 0) { $r.Out = ''; $r.Err = 'Wsl/Service/E_UNEXPECTED' }
+                        return $r
+                    }
                     if ($line -like '*is-active aap-runner-manager') { return (Get-AapFakeResult 3 'inactive') }
                     return (Get-AapFakeResult 0 '')
                 }
@@ -657,11 +664,20 @@ Describe 'aap-runner host supervisor' {
                 $script:calls | Should -Contain 'wsl --list --running --quiet'
                 $AapRt.Mode | Should -Be 'on'
                 $script:keep.Killed | Should -BeFalse
-                (Get-AapStatusFile).state | Should -Be 'error'
+                $s = Get-AapStatusFile
+                $s.state | Should -Be 'error'
+                $s.detail | Should -Match 'aap-runner still runs'
                 Get-AapLogText | Should -Match 'terminate exit 1'
+                # Not before the backoff.
+                $script:calls.Clear()
+                Invoke-AapCycle
+                $script:calls | Should -Not -Contain 'wsl --terminate aap-runner'
                 $script:terminateCode = 0
+                $script:clock.Now = $script:clock.Now.AddSeconds(10)
                 Invoke-AapCycle
                 $AapRt.Mode | Should -Be 'off'
+                $script:keep.Killed | Should -BeTrue
+                $AapRt.KeepAlive | Should -BeNullOrEmpty
                 (Get-AapStatusFile).state | Should -Be 'off'
             }
 
@@ -671,6 +687,17 @@ Describe 'aap-runner host supervisor' {
                 $AapRt.Mode | Should -Be 'off'
                 $script:keep.Killed | Should -BeTrue
                 (Get-AapStatusFile).state | Should -Be 'off'
+            }
+
+            It 'says the list failed, with its exit code and stderr, and keeps Off pending' -Tag 'off-list' {
+                $script:listCode = 1
+                Invoke-AapCycle
+                $AapRt.Mode | Should -Be 'on'
+                $script:keep.Killed | Should -BeFalse
+                $s = Get-AapStatusFile
+                $s.state | Should -Be 'error'
+                $s.detail | Should -Match 'list --running failed \(exit 1\)'
+                Get-AapLogText | Should -Match 'list --running exit 1: Wsl/Service/E_UNEXPECTED'
             }
         }
     }
@@ -725,33 +752,65 @@ Describe 'aap-runner host supervisor' {
         }
 
         # The manager's clock is never compared with this one (WSL clock drift):
-        # only whether its updated value moves between health ticks.
+        # only whether its updated value moves between health ticks (60 s apart).
         It 'reports <name>' -Tag 'manager-stale' -TestCases @(
-            @{ name = 'stale once updated stays the same for 3 health ticks'; step = 0; base = 1760302800; states = @('idle', 'idle', 'idle', 'starting') }
-            @{ name = 'not stale while updated moves, even far in the past'; step = 5; base = 1000; states = @('idle', 'idle', 'idle', 'idle') }
-            @{ name = 'not stale while updated moves, even far in the future'; step = 5; base = 8000000000; states = @('idle', 'idle', 'idle', 'idle') }
-            @{ name = 'never stale without an updated field'; step = $null; base = 0; states = @('idle', 'idle', 'idle', 'idle') }
+            @{ name = 'stale once updated stays the same for 3 health ticks, live again when it moves'; values = @(1760302800, 1760302800, 1760302800, 1760302800, 1760302805); states = @('idle', 'idle', 'idle', 'starting', 'idle'); cleaning = $false; logs = 1 }
+            @{ name = 'not stale when updated moves before the third tick'; values = @(7, 7, 7, 8, 8, 8); states = @('idle', 'idle', 'idle', 'idle', 'idle', 'idle'); cleaning = $false; logs = 0 }
+            @{ name = 'not stale while updated moves, even far in the past'; values = @(1000, 1005, 1010, 1015); states = @('idle', 'idle', 'idle', 'idle'); cleaning = $false; logs = 0 }
+            @{ name = 'not stale while updated moves, even far in the future'; values = @(8000000000, 8000000005, 8000000010, 8000000015); states = @('idle', 'idle', 'idle', 'idle'); cleaning = $false; logs = 0 }
+            @{ name = 'never stale without an updated field'; values = @($null, $null, $null, $null); states = @('idle', 'idle', 'idle', 'idle'); cleaning = $false; logs = 0 }
+            @{ name = 'never stale while the manager is cleaning'; values = @(7, 7, 7, 7, 7); states = @('idle', 'idle', 'idle', 'idle', 'idle'); cleaning = $true; logs = 0 }
         ) {
-            $script:updated = $base
-            $script:step = $step
+            $script:values = $values
+            $script:tick = 0
+            $script:cleaningText = 'false'
+            if ($cleaning) { $script:cleaningText = 'true' }
             $script:responder = {
                 param($line)
                 if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 0 "active`nactive") }
                 if ($line -like '*cat /run/aap-runner/status.json') {
+                    $v = $script:values[$script:tick]
+                    $script:tick++
                     $u = ''
-                    if ($null -ne $script:step) { $u = ',"updated":' + $script:updated; $script:updated += $script:step }
-                    return (Get-AapFakeResult 0 ('{"state":"idle","job":""' + $u + ',"runner_count":3,"job_cpus":28,"job_memory":"72g"}'))
+                    if ($null -ne $v) { $u = ',"updated":' + $v }
+                    return (Get-AapFakeResult 0 ('{"state":"idle","job":""' + $u + ',"cleaning":' + $script:cleaningText + ',"runner_count":3,"job_cpus":28,"job_memory":"72g"}'))
                 }
                 return (Get-AapFakeResult 0 '')
             }
             $seen = @()
-            foreach ($i in 1..4) {
+            foreach ($i in 1..$values.Count) {
                 Invoke-AapCycle
-                $seen += (Get-AapStatusFile).state
+                $s = Get-AapStatusFile
+                $seen += $s.state
+                if ($s.state -eq 'starting') { $s.detail | Should -Be 'manager status stale' }
                 $script:clock.Now = $AapRt.NextHealth
             }
             $seen | Should -Be $states
-            if ($states[-1] -eq 'starting') { (Get-AapStatusFile).detail | Should -Be 'manager status stale' }
+            $log = (Get-AapLogText) -split "`n"
+            @($log | Where-Object { $_ -match 'manager status\.json updated .* unchanged for' }).Count | Should -Be $logs
+            @($log | Where-Object { $_ -match 'manager status\.json updated moves again' }).Count | Should -Be $logs
+        }
+
+        It 'is not stale right after a resume with the same updated value' -Tag 'manager-stale' {
+            $AapRt.ManagerOk = $true
+            $script:responder = {
+                param($line)
+                if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 0 "active`nactive") }
+                if ($line -like '*is-active aap-runner-manager') { return (Get-AapFakeResult 3 'inactive') }
+                if ($line -like '*cat /run/aap-runner/status.json') { return (Get-AapFakeResult 0 '{"state":"idle","job":"","updated":42,"runner_count":3,"job_cpus":28,"job_memory":"72g"}') }
+                return (Get-AapFakeResult 0 '')
+            }
+            Invoke-AapCycle
+            (Get-AapStatusFile).state | Should -Be 'idle'
+            Write-AapSettingsFile '{"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":true}'
+            $script:clock.Now = $script:clock.Now.AddSeconds(5)
+            Invoke-AapCycle
+            $AapRt.Paused | Should -BeTrue
+            $script:clock.Now = $script:clock.Now.AddSeconds(600)
+            Write-AapSettingsFile '{"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":false}'
+            Invoke-AapCycle
+            $AapRt.Paused | Should -BeFalse
+            (Get-AapStatusFile).state | Should -Be 'idle'
         }
 
         It 'undrains before restarting a manager the supervisor did not mean to drain' -Tag 'restart-undrain' {
@@ -766,12 +825,35 @@ Describe 'aap-runner host supervisor' {
             $s = [array]::IndexOf(@($script:calls), 'wsl -d aap-runner -u root -- /bin/systemctl start aap-runner-manager')
             $u | Should -BeGreaterOrEqual 0
             $u | Should -BeLessThan $s
+            $st = Get-AapStatusFile
+            $st.state | Should -Be 'starting'
+            $st.detail | Should -Be 'sysbox=active manager=inactive; restart 1'
         }
 
-        It 'does not undrain a paused manager on restart' -Tag 'restart-undrain' {
+        It 'does not start the manager on restart when its --undrain fails' -Tag 'restart-undrain' {
             $AapRt.ManagerOk = $true
-            $AapRt.Paused = $true
-            Write-AapSettingsFile '{"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":true}'
+            $script:responder = {
+                param($line)
+                if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 3 "active`ninactive") }
+                if ($line -like '*--undrain') { return (Get-AapFakeResult 1 '') }
+                return (Get-AapFakeResult 0 '')
+            }
+            Invoke-AapCycle
+            $script:calls | Should -Contain 'wsl -d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --undrain'
+            $script:calls | Should -Not -Contain 'wsl -d aap-runner -u root -- /bin/systemctl start aap-runner-manager'
+            Get-AapLogText | Should -Match 'undrain exit 1'
+        }
+
+        It 'does not undrain on restart when <name>' -Tag 'restart-undrain' -TestCases @(
+            @{ name = 'the manager is paused'; ok = $true; paused = $true; stopped = $false }
+            @{ name = 'the manager does not know --undrain'; ok = $false; paused = $false; stopped = $false }
+            @{ name = 'the legacy pool is stopped'; ok = $true; paused = $false; stopped = $true }
+        ) {
+            $AapRt.ManagerOk = $ok
+            $AapRt.ProbedAt = $script:clock.Now
+            $AapRt.Paused = $paused
+            $AapRt.ManagerStopped = $stopped
+            if ($paused) { Write-AapSettingsFile '{"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":true}' }
             $script:responder = {
                 param($line)
                 if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 3 "inactive`ninactive") }
@@ -881,6 +963,37 @@ Describe 'aap-runner host supervisor' {
             Write-AapStateFile '{"desired":"off"}'
             Initialize-AapMode
             $AapRt.Mode | Should -Be 'on'
+        }
+
+        # Unknown, not "not running"; still no guess at on, which would start the distro to drain it.
+        It 'logs a failing --list --running at startup and leaves the mode off' -Tag 'init-mode-list' {
+            $script:responder = {
+                param($line)
+                if ($line -eq '--list --running --quiet') { $r = Get-AapFakeResult 1 ''; $r.Err = 'E_UNEXPECTED'; return $r }
+                return (Get-AapFakeResult 0 '')
+            }
+            Write-AapStateFile '{"desired":"off"}'
+            Initialize-AapMode
+            $AapRt.Mode | Should -Be 'off'
+            Get-AapLogText | Should -Match 'WARN wsl --list --running exit 1: E_UNEXPECTED; cannot tell whether aap-runner runs'
+        }
+    }
+
+    Describe 'manager status updated field' {
+        It 'is $null for <name>, never a throw' -Tag 'updated-parse' -TestCases @(
+            @{ name = 'an RFC 3339 string'; v = '"2026-10-12T10:00:00Z"' }
+            @{ name = '0'; v = '0' }
+            @{ name = '-5'; v = '-5' }
+            @{ name = '8589934592'; v = '8589934592' }
+            @{ name = 'a fraction'; v = '1760302800.5' }
+        ) {
+            $m = ConvertFrom-AapManagerStatus ('{"state":"idle","updated":' + $v + '}')
+            $m.State | Should -Be 'idle'
+            $m.Updated | Should -BeNullOrEmpty
+        }
+
+        It 'keeps a whole unix second' -Tag 'updated-parse' {
+            (ConvertFrom-AapManagerStatus '{"state":"idle","updated":1760302800}').Updated | Should -Be 1760302800
         }
     }
 
@@ -1148,12 +1261,28 @@ Describe 'aap-runner host supervisor' {
             BeforeEach {
                 # limits.conf holds what was last written, so a retry is not mistaken for "already applied".
                 $script:file = $script:old
+                $script:catCode = 0
                 $script:undrainCode = 0
+                $script:restoreCode = 0
+                $script:rmCode = 0
+                $script:checkOk = $true
                 $script:responder = {
                     param($line)
-                    if ($line -eq '-d aap-runner -u root -- /bin/cat /etc/aap-runner/limits.conf') { return (Get-AapFakeResult 0 $script:file) }
-                    if ($line -like '*/bin/sh -c*') { $script:file = [string]$script:stdin[-1]; return (Get-AapFakeResult 0 '') }
-                    if ($line -like '*--check-limits') { return (Get-AapFakeResult 0 '') }
+                    if ($line -eq '-d aap-runner -u root -- /bin/cat /etc/aap-runner/limits.conf') {
+                        if ($script:catCode -ne 0) { return (Get-AapFakeResult $script:catCode '') }
+                        return (Get-AapFakeResult 0 $script:file)
+                    }
+                    if ($line -like '*/bin/sh -c*') {
+                        $in = [string]$script:stdin[-1]
+                        if ($in -ceq $script:old -and $script:restoreCode -ne 0) { return (Get-AapFakeResult $script:restoreCode '') }
+                        $script:file = $in
+                        return (Get-AapFakeResult 0 '')
+                    }
+                    if ($line -like '*/bin/rm -f /etc/aap-runner/limits.conf') { return (Get-AapFakeResult $script:rmCode '') }
+                    if ($line -like '*--check-limits') {
+                        if ($script:checkOk) { return (Get-AapFakeResult 0 '') }
+                        return (Get-AapFakeResult 1 "AAP_JOB_CPUS=8 exceeds 4 host cpus`n")
+                    }
                     if ($line -like '*--undrain') { return (Get-AapFakeResult $script:undrainCode '') }
                     if ($line -like '*is-active aap-runner-manager') {
                         if ($script:activeLeft -gt 0) { $script:activeLeft--; return (Get-AapFakeResult 0 'active') }
@@ -1174,6 +1303,7 @@ Describe 'aap-runner host supervisor' {
                 Get-AapLogText | Should -Match 'limits 2,8,32 not applied'
                 $script:calls.Clear()
                 $script:activeLeft = 0
+                $script:clock.Now = $script:clock.Now.AddSeconds(10)
                 Invoke-AapCycle
                 $script:calls | Should -Contain ($script:W + '/usr/local/sbin/aap-runner-manager --drain')
                 $script:calls | Should -Contain ($script:W + '/bin/systemctl start aap-runner-manager')
@@ -1190,9 +1320,46 @@ Describe 'aap-runner host supervisor' {
                 Get-AapLogText | Should -Match 'undrain exit 1'
                 $script:calls.Clear()
                 $script:undrainCode = 0
+                $script:clock.Now = $script:clock.Now.AddSeconds(10)
                 Invoke-AapCycle
                 $script:calls | Should -Contain ($script:W + '/bin/systemctl start aap-runner-manager')
                 $AapRt.Applied | Should -Be '2,8,32'
+            }
+
+            It 'restores the last good limits.conf, not a dirty one, and never counts a dirty one applied' -Tag 'limits-restore' {
+                $AapCfg.DrainTimeoutSeconds = 30
+                $script:activeLeft = 1000
+                $script:restoreCode = 1
+                Invoke-AapCycle
+                Get-AapLogText | Should -Match 'ERROR could not restore limits.conf'
+                $script:file | Should -Not -Be $script:old
+                # Still timing out; the restore works now and must write the cached good file.
+                $script:restoreCode = 0
+                $script:clock.Now = $script:clock.Now.AddSeconds(10)
+                Invoke-AapCycle
+                $AapRt.Applied | Should -BeNullOrEmpty
+                $script:file | Should -BeExactly $script:old
+                $script:activeLeft = 0
+                $script:clock.Now = $script:clock.Now.AddSeconds(30)
+                Invoke-AapCycle
+                $AapRt.Applied | Should -Be '2,8,32'
+                $script:calls | Should -Contain ($script:W + '/bin/systemctl start aap-runner-manager')
+                Get-AapLogText | Should -Not -Match 'already has'
+            }
+
+            It 'logs an ERROR instead of "restored" when <name> fails after a refusal' -Tag 'limits-restore' -TestCases @(
+                @{ name = 'writing the previous file back'; catCode = 0; restoreCode = 1; rmCode = 0 }
+                @{ name = 'removing a file that did not exist before'; catCode = 1; restoreCode = 0; rmCode = 1 }
+            ) {
+                $script:catCode = $catCode
+                $script:restoreCode = $restoreCode
+                $script:rmCode = $rmCode
+                $script:checkOk = $false
+                Invoke-AapCycle
+                $log = Get-AapLogText
+                $log | Should -Match 'ERROR could not restore limits.conf'
+                $log | Should -Not -Match 'previous limits.conf restored'
+                (Get-AapStatusFile).state | Should -Be 'error'
             }
         }
     }
@@ -1253,13 +1420,37 @@ Describe 'aap-runner host supervisor' {
                 $script:drainCode = 1
                 Invoke-AapCycle
                 $AapRt.Paused | Should -BeFalse
-                (Get-AapStatusFile).state | Should -Not -Be 'paused'
+                $s = Get-AapStatusFile
+                $s.state | Should -Be 'error'
+                $s.detail | Should -Be 'pausing: aap-runner-manager --drain failed; retrying'
                 $script:calls | Should -Not -Contain ($script:W + '/bin/systemctl is-active aap-runner-manager')
                 Get-AapLogText | Should -Match 'drain exit 1'
                 $script:drainCode = 0
+                $script:clock.Now = $script:clock.Now.AddSeconds(10)
                 Invoke-AapCycle
                 $AapRt.Paused | Should -BeTrue
                 (Get-AapStatusFile).state | Should -Be 'paused'
+            }
+
+            It 'backs a failing pause off 10 30 60 s, logs only those attempts, and resets on success' -Tag 'retry-backoff' {
+                $script:drainCode = 1
+                # 40 cycles 5 s apart (0-195 s): attempts at 0, 10, 40 and 100 s.
+                foreach ($i in 1..40) {
+                    Invoke-AapCycle
+                    $script:clock.Now = $script:clock.Now.AddSeconds(5)
+                }
+                @($script:calls | Where-Object { $_ -like '*aap-runner-manager --drain' }).Count | Should -Be 4
+                @((Get-AapLogText) -split "`n" | Where-Object { $_ -match 'pause: --drain exit 1' }).Count | Should -Be 4
+                # The fifth attempt is due 120 s after the fourth (220 s); 200 s is too early.
+                $script:calls.Clear()
+                Invoke-AapCycle
+                $script:calls | Should -Not -Contain ($script:W + '/usr/local/sbin/aap-runner-manager --drain')
+                $script:drainCode = 0
+                $script:clock.Now = $script:clock.Now.AddSeconds(20)
+                Invoke-AapCycle
+                $AapRt.Paused | Should -BeTrue
+                $AapRt.Retry['pause'] | Should -BeNullOrEmpty
+                Get-AapLogText | Should -Match 'pause recovered after 4 failures'
             }
 
             It 'stays draining after a pause wait timeout, and tries again' -Tag 'pause-timeout' {
@@ -1267,8 +1458,11 @@ Describe 'aap-runner host supervisor' {
                 $script:activeLeft = 1000
                 Invoke-AapCycle
                 $AapRt.Paused | Should -BeFalse
-                (Get-AapStatusFile).state | Should -Be 'draining'
+                $s = Get-AapStatusFile
+                $s.state | Should -Be 'draining'
+                $s.detail | Should -Be 'pausing: the legacy pool still runs a job; retrying'
                 $script:activeLeft = 0
+                $script:clock.Now = $script:clock.Now.AddSeconds(10)
                 Invoke-AapCycle
                 $AapRt.Paused | Should -BeTrue
                 (Get-AapStatusFile).state | Should -Be 'paused'
@@ -1283,9 +1477,32 @@ Describe 'aap-runner host supervisor' {
                 $AapRt.Paused | Should -BeTrue
                 Get-AapLogText | Should -Match 'undrain exit 1'
                 $script:undrainCode = 0
+                $script:clock.Now = $script:clock.Now.AddSeconds(10)
                 Invoke-AapCycle
                 $script:calls | Should -Contain ($script:W + '/bin/systemctl start aap-runner-manager')
                 $AapRt.Paused | Should -BeFalse
+            }
+
+            It 'reports a failed resume as an error, also after a health tick' -Tag 'resume-status' {
+                $AapRt.Paused = $true
+                $script:undrainCode = 1
+                Write-AapSettingsFile '{"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":false}'
+                $script:responder2 = $script:responder
+                $script:responder = {
+                    param($line)
+                    if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 3 "active`ninactive") }
+                    return (& $script:responder2 $line)
+                }
+                Invoke-AapCycle
+                $s = Get-AapStatusFile
+                $s.state | Should -Be 'error'
+                $s.detail | Should -Be 'resume: --undrain failed; retrying'
+                $AapRt.NextHealth = [DateTimeOffset]::MinValue
+                $script:clock.Now = $script:clock.Now.AddSeconds(5)
+                Invoke-AapCycle
+                $s = Get-AapStatusFile
+                $s.state | Should -Be 'error'
+                $s.detail | Should -Be 'resume: --undrain failed; retrying'
             }
         }
 
