@@ -31,11 +31,11 @@ BeforeAll {
         @(Get-ChildItem -LiteralPath (Join-Path $t.Root 'records') -File | Sort-Object Name | ForEach-Object { "$($_.Name)=$((Get-FileHash -LiteralPath $_.FullName).Hash)" }) -join ';'
     }
     # A record written straight into the journal, as another process of the module would have left it.
-    function Write-TestRecord($t, [string]$Id, [string]$Name, [string]$Address, [string]$State = 'attached') {
-        $d = [ordered]@{ schema = 1; kind = 'host_network_attach'; vm_id = $Id; vm_name = $Name; profile = 'windows'; subnet = '172.31.250.0/24'
-            gateway = '172.31.250.1'; address = $Address; resolvers = @('192.0.2.53', '198.51.100.53'); endpoints = @()
+    function Write-TestRecord($t, [string]$Id, [string]$Name, [string]$Address, [string]$State = 'attached', [string]$Mac = '02-A0-98-00-00-01') {
+        $d = [ordered]@{ schema = 2; kind = 'host_network_attach'; vm_id = $Id; vm_name = $Name; profile = 'windows'; subnet = '172.31.250.0/24'
+            gateway = '172.31.250.1'; address = $Address; mac = $Mac; resolvers = @('192.0.2.53', '198.51.100.53'); endpoints = @()
         }
-        $r = [ordered]@{ schema = 1; kind = 'host_network_record'; state = $State; declaration = $d; created = @([ordered]@{ kind = 'adapter'; name = "aap-guest-$Id" }) }
+        $r = [ordered]@{ schema = 2; kind = 'host_network_record'; state = $State; declaration = $d; created = @([ordered]@{ kind = 'adapter'; name = "aap-guest-$Id" }, [ordered]@{ kind = 'neighbor'; name = "aap-neighbor-$Id" }) }
         [IO.File]::WriteAllText((Join-Path $t.Root "records\$Id.json"), (ConvertTo-Json -InputObject $r -Depth 6))
     }
     # A consumer's read-back of the simulated adapter: the shared check without the host-specific targets.
@@ -54,6 +54,52 @@ BeforeAll {
         $out = @(& python -B -I $script:Validator 'host-network-module' @files 2>&1 | ForEach-Object { "$_" })
         @($out | ForEach-Object { ($_ -split '\s+')[0] })
     }
+    # The host's neighbour table, which the fake keys as the host does: one file per interface index and address.
+    function Get-TestEntryPath($t, [string]$Address = '172.31.250.2', [int]$Index = 31) { Join-Path $t.Root "neighbor\$Index-$Address.json" }
+    function Get-TestEntries($t) { @(Get-AapFakeHostNetworkNeighbor -Root $t.Root | ForEach-Object { "$($_.InterfaceIndex)|$($_.IPAddress)|$($_.LinkLayerAddress)|$($_.State)" }) }
+    # The table as it is on disk: each entry file with its hash.
+    function Get-TestTable($t) {
+        @(Get-ChildItem -LiteralPath (Join-Path $t.Root 'neighbor') -File | Sort-Object Name | ForEach-Object { "$($_.Name)=$((Get-FileHash -LiteralPath $_.FullName).Hash)" }) -join ';'
+    }
+    # A MAC hand-edited in a record and in the host's entry for its address, as a bug or an owner would leave the journal.
+    function Set-TestMac($t, [string]$Id, [string]$Mac) {
+        $p = Join-Path $t.Root "records\$Id.json"
+        $r = [IO.File]::ReadAllText($p) | ConvertFrom-Json
+        $e = Get-TestEntryPath $t ([string]$r.declaration.address)
+        $r.declaration.mac = $Mac
+        [IO.File]::WriteAllText($p, (ConvertTo-Json -InputObject $r -Depth 6))
+        if ([IO.File]::Exists($e)) { $x = [IO.File]::ReadAllText($e) | ConvertFrom-Json; $x.LinkLayerAddress = $Mac; [IO.File]::WriteAllText($e, (ConvertTo-Json -InputObject $x)) }
+    }
+    # A call of the module in a process of its own (a second process of the module, as the contract has it) that the test can hold
+    # between two steps: the child writes barrier\<Op>.started just before the call. -VmExists: what its Hyper-V hook answers.
+    function Start-TestCall($t, [string]$Op, [switch]$VmExists, [string]$Id = $script:WinId, [string]$Name = 'aap-w-1-3-1a2b3c4d') {
+        $child = Join-Path $t.Root "child-$Op.ps1"
+        [IO.File]::WriteAllText($child, @'
+param($Module, $Root, $Op, $VmExists, $Id, $Name)
+$ErrorActionPreference = 'Stop'
+Import-Module $Module
+$vm = if ($VmExists -eq '1') { { param($i) @{ State = 'Off'; Adapters = 0 } } } else { { param($i) $null } }
+$n = New-AapFakeHostNetwork -Root $Root -Vm $vm
+[void][IO.Directory]::CreateDirectory((Join-Path $Root 'barrier'))
+[IO.File]::WriteAllText((Join-Path $Root "barrier\$Op.started"), '')
+[void](& $n[$Op] @{ VmId = $Id; VmName = $Name; Profile = 'windows' })
+'ok'
+'@)
+        $psi = New-Object Diagnostics.ProcessStartInfo((Get-Process -Id $PID).Path)
+        $psi.Arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$child`" `"$script:Module`" `"$($t.Root)`" $Op $(if ($VmExists) { '1' } else { '0' }) $Id $Name"
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        [Diagnostics.Process]::Start($psi)
+    }
+    function Wait-TestFile([string]$Path, [int]$Seconds = 30) {
+        $until = [DateTime]::UtcNow.AddSeconds($Seconds)
+        while (-not [IO.File]::Exists($Path) -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 20 }
+        [IO.File]::Exists($Path)
+    }
+    # What a started call ended with: its exit code (0 when it printed ok) and what it wrote on stderr.
+    function Complete-TestCall($Process, [int]$Seconds = 60) {
+        if (-not $Process.WaitForExit($Seconds * 1000)) { $Process.Kill(); throw "the child did not finish within $Seconds s" }
+        [pscustomobject]@{ ExitCode = $Process.ExitCode; Out = $Process.StandardOutput.ReadToEnd().Trim(); Err = $Process.StandardError.ReadToEnd().Trim() }
+    }
 }
 
 Describe 'the shared host network fake' {
@@ -71,6 +117,7 @@ Describe 'the shared host network fake' {
             $d.vm_name | Should -Be 'aap-w-1-3-1a2b3c4d'
             $d.profile | Should -Be 'windows'
             @($d.subnet, $d.gateway, $d.address) | Should -Be @('172.31.250.0/24', '172.31.250.1', '172.31.250.2')
+            $d.mac | Should -Be '02-A0-98-00-00-01'   # the lowest of the module's range, as the addresses are
             @($d.resolvers) | Should -Be @('192.0.2.53', '198.51.100.53')
             @($d.endpoints).Count | Should -Be 0
             $nics = @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:WinId)
@@ -78,6 +125,7 @@ Describe 'the shared host network fake' {
             $n = $nics[0]
             @($n.SwitchName, $n.SwitchType, $n.DhcpGuard, $n.RouterGuard, $n.MacAddressSpoofing, $n.PortMirroringMode, $n.VlanMode, $n.StormLimit, $n.LegacyAcls) |
                 Should -Be @('aap-guests-win', 'Internal', 'On', 'On', 'Off', 'None', 'Untagged', '100', 0)
+            $n.MacAddress | Should -Be $d.mac
             @($n.Peers).Count | Should -Be 0
             @($n.Acls | Where-Object { $_.Stateful -ne 'False' -or $_.IsolationId -ne '0' }).Count | Should -Be 0
             @($n.Acls | Where-Object { $_.Action -eq 'Allow' } | ForEach-Object { "$($_.Direction) $($_.LocalAddress) $($_.RemoteAddress) $($_.Weight)" }) | Should -Be @('Outbound 172.31.250.2/32 0.0.0.0/0 5')
@@ -90,7 +138,7 @@ Describe 'the shared host network fake' {
             Get-TestReadback $t $d $script:WinId | Should -BeNullOrEmpty
             @(& $t.Net.Verify (Win)).Count | Should -Be 0
             @(Get-AapFakeHostNetworkRecord -Root $t.Root | ForEach-Object { $_.state }) | Should -Be @('attached')
-            @((Get-AapFakeHostNetworkRecord -Root $t.Root).created | ForEach-Object { "$($_.kind) $($_.name)" }) | Should -Be @("adapter aap-guest-$($script:WinId)")
+            @((Get-AapFakeHostNetworkRecord -Root $t.Root).created | ForEach-Object { "$($_.kind) $($_.name)" }) | Should -Be @("adapter aap-guest-$($script:WinId)", "neighbor aap-neighbor-$($script:WinId)")
         }
 
         It 'gives validate.py a declaration and a record, and the shared check a read-back, that they accept, for both profiles' -Tag contract {
@@ -148,6 +196,157 @@ Describe 'the shared host network fake' {
             (& $t.Net.Attach (Win)).address | Should -Be '172.31.250.2'
         }
 
+        It 'gives each attached VM a distinct static MAC of the module''s range, the lowest, and reuses one Detached' {
+            $t.Vms[$script:WinId] = Off; $t.Vms[$script:WinId2] = Off; $t.Vms[$script:WinId3] = Off
+            (& $t.Net.Attach (Win)).mac | Should -Be '02-A0-98-00-00-01'
+            (& $t.Net.Attach (Win 'aap-w-2-4-0f0e0d0c' $script:WinId2)).mac | Should -Be '02-A0-98-00-00-02'
+            $t.Vms.Remove($script:WinId)
+            & $t.Net.Detach (Win)
+            (& $t.Net.Attach (Win 'aap-w-3-1-01020304' $script:WinId3)).mac | Should -Be '02-A0-98-00-00-01' -Because 'the lowest of the range that no record holds'
+        }
+
+        It 'writes the host''s permanent neighbour entry in its act, with the adapter, and Detach removes it before the address is released' -Tag detach-neighbor {
+            $t.Vms[$script:WinId] = Off
+            $d = & $t.Net.Attach (Win)
+            $entryPath = Get-TestEntryPath $t $d.address
+            [IO.File]::Exists($entryPath) | Should -BeTrue
+            $e = [IO.File]::ReadAllText($entryPath) | ConvertFrom-Json
+            @($e.IPAddress, $e.LinkLayerAddress, $e.State, $e.InterfaceAlias, [string]$e.InterfaceIndex) | Should -Be @($d.address, $d.mac, 'Permanent', 'vEthernet (aap-guests-win)', '31')
+            # A repeated Attach (the re-Attach before every start) re-adds a missing entry: it completes what the record names.
+            [IO.File]::Delete($entryPath)
+            $null = & $t.Net.Attach (Win)
+            [IO.File]::Exists($entryPath) | Should -BeTrue -Because 'a repeated Attach re-adds a missing entry'
+            @(& $t.Net.Verify (Win)).Count | Should -Be 0
+            $t.Vms.Remove($script:WinId)
+            & $t.Net.Detach (Win)
+            [IO.File]::Exists($entryPath) | Should -BeFalse -Because 'Detach removes the entry with the record'
+        }
+
+        It 'refuses to overwrite an entry the host already holds for the guest''s address: it throws before it changes anything, and a retry once the entry is gone finishes: <Case>' -Tag attach-neighbor-foreign -TestCases @(
+            @{ Case = 'a dynamic entry'; Mac = '00-15-5D-8A-3B-7C'; State = 'Stale'; Index = 31 }
+            @{ Case = 'a permanent entry with another MAC'; Mac = '02-A0-98-00-00-07'; State = 'Permanent'; Index = 31 }
+            @{ Case = 'an entry on another interface'; Mac = '02-A0-98-00-00-01'; State = 'Permanent'; Index = 99 }) {
+            $t.Vms[$script:WinId] = Off
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.2 -LinkLayerAddress $Mac -State $State -InterfaceIndex $Index
+            $table = Get-TestTable $t
+            { & $t.Net.Attach (Win) } | Should -Throw "AAP_NetworkUntrusted: the host already holds an entry for 172.31.250.2 that is not the record's*"
+            # Only the intent record exists, and stays for Detach: no adapter, no entry of the module's, and never 'attached'.
+            (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).state | Should -Be 'attaching'
+            @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:WinId).Count | Should -Be 0
+            Get-TestTable $t | Should -Be $table -Because 'Attach never overwrites, replaces or removes an entry it did not add'
+            # The entry goes (it ages out, or its owner removes it): the retry finishes.
+            Remove-Item -LiteralPath (Get-TestEntryPath $t '172.31.250.2' $Index)
+            $d = & $t.Net.Attach (Win)
+            $d.address | Should -Be '172.31.250.2' -Because 'the record kept its address across the refused Attach'
+            (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).state | Should -Be 'attached'
+            @(& $t.Net.Verify (Win)).Count | Should -Be 0
+        }
+
+        It 'refuses a repeated Attach while the host''s entry for the address is not the record''s (<Tamper>), changes nothing, and succeeds again once it is identical' -Tag attach-neighbor-foreign -TestCases @(
+            @{ Tamper = 'neighbor-mac' }, @{ Tamper = 'neighbor-state' }, @{ Tamper = 'neighbor-interface' }) {
+            $t.Vms[$script:WinId] = Off
+            $first = Get-TestJson (& $t.Net.Attach (Win))
+            $before = Get-TestState $t
+            $table = Get-TestTable $t
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $Tamper
+            { & $t.Net.Attach (Win) } | Should -Throw "AAP_NetworkUntrusted: the host already holds an entry for 172.31.250.2 that is not the record's*"
+            Get-TestState $t | Should -Be $before -Because 'the record is as it was'
+            Get-TestTable $t | Should -Be $table -Because 'the module''s own entry was not rewritten'
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            Get-TestJson (& $t.Net.Attach (Win)) | Should -Be $first -Because 'an identical entry is idempotent success'
+            @(& $t.Net.Verify (Win)).Count | Should -Be 0
+        }
+
+        It 'refuses a repeated Attach while the host holds a second entry for the address on another interface, and touches neither' -Tag attach-neighbor-foreign {
+            $t.Vms[$script:WinId] = Off
+            $null = & $t.Net.Attach (Win)
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.2 -LinkLayerAddress 02-A0-98-00-00-01 -State Permanent -InterfaceIndex 99
+            $table = Get-TestTable $t
+            { & $t.Net.Attach (Win) } | Should -Throw "AAP_NetworkUntrusted: the host already holds an entry for 172.31.250.2 that is not the record's*"
+            Get-TestTable $t | Should -Be $table
+        }
+
+        It 'cannot look when the host''s neighbour table cannot be read: Attach throws before it changes anything' -Tag attach-neighbor-read, neighbor-unreadable {
+            $t.Vms[$script:WinId] = Off
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper neighbor-unreadable
+            { & $t.Net.Attach (Win) } | Should -Throw '*neighbour table*cannot look'
+            (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).state | Should -Be 'attaching'
+            @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:WinId).Count | Should -Be 0
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            $null = & $t.Net.Attach (Win)
+            @(& $t.Net.Verify (Win)).Count | Should -Be 0
+        }
+
+        It 'takes only exactly the record''s entry as the record''s, whatever else the host holds: <Case>' -Tag attach-neighbor-foreign -TestCases @(
+            @{ Case = 'the entry Attach writes'; Held = @('172.31.250.2|02-A0-98-00-00-01|Permanent|vEthernet (aap-guests-win)|31'); Same = $true }
+            @{ Case = 'no entry'; Held = @(); Same = $false }
+            @{ Case = 'another address'; Held = @('172.31.250.3|02-A0-98-00-00-01|Permanent|vEthernet (aap-guests-win)|31'); Same = $false }
+            @{ Case = 'another MAC'; Held = @('172.31.250.2|02-A0-98-00-00-02|Permanent|vEthernet (aap-guests-win)|31'); Same = $false }
+            @{ Case = 'the MAC in lower case'; Held = @('172.31.250.2|02-a0-98-00-00-01|Permanent|vEthernet (aap-guests-win)|31'); Same = $false }
+            @{ Case = 'a dynamic state'; Held = @('172.31.250.2|02-A0-98-00-00-01|Stale|vEthernet (aap-guests-win)|31'); Same = $false }
+            @{ Case = 'the state in lower case'; Held = @('172.31.250.2|02-A0-98-00-00-01|permanent|vEthernet (aap-guests-win)|31'); Same = $false }
+            @{ Case = 'another interface''s alias'; Held = @('172.31.250.2|02-A0-98-00-00-01|Permanent|Ethernet|31'); Same = $false }
+            @{ Case = 'another interface index wearing the switch adapter''s alias'; Held = @('172.31.250.2|02-A0-98-00-00-01|Permanent|vEthernet (aap-guests-win)|99'); Same = $false }
+            @{ Case = 'the entry twice'; Held = @('172.31.250.2|02-A0-98-00-00-01|Permanent|vEthernet (aap-guests-win)|31', '172.31.250.2|02-A0-98-00-00-01|Permanent|vEthernet (aap-guests-win)|31'); Same = $false }
+            @{ Case = 'the entry and another interface''s'; Held = @('172.31.250.2|02-A0-98-00-00-01|Permanent|vEthernet (aap-guests-win)|31', '172.31.250.2|02-A0-98-00-00-01|Permanent|Ethernet|5'); Same = $false }) {
+            # The decision Attach takes from what the host holds is the contract's: the one entry check 8 requires, nothing else.
+            $decl = [pscustomobject]@{ address = '172.31.250.2'; mac = '02-A0-98-00-00-01'; vm_name = 'aap-w-1-3-1a2b3c4d' }
+            $entries = @($Held | ForEach-Object { $f = $_ -split '\|'; [pscustomobject]@{ IPAddress = $f[0]; LinkLayerAddress = $f[1]; State = $f[2]; InterfaceAlias = $f[3]; InterfaceIndex = [int]$f[4] } })
+            $fake = Get-Module -Name AapHostNetworkFake | Select-Object -First 1
+            & $fake { param($e, $d) Test-AapFakeNetNeighborIsRecords $e $d } $entries $decl | Should -Be $Same
+        }
+
+        It 'a Detach that stops after the neighbour entry leaves the record, and a retry finishes' -Tag detach-neighbor {
+            $t.Vms[$script:WinId] = Off
+            $null = & $t.Net.Attach (Win)
+            $entryPath = Get-TestEntryPath $t
+            $t.Vms.Remove($script:WinId)
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Fail DetachAfterNeighbor
+            { & $t.Net.Detach (Win) } | Should -Throw '*Detach stopped after the neighbour entry'
+            [IO.File]::Exists($entryPath) | Should -BeFalse -Because 'the entry is gone before the fault'
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).Count | Should -Be 1 -Because 'the record stays, so nothing is released'
+            if ([IO.File]::Exists((Join-Path $t.Root 'released.json'))) { ([IO.File]::ReadAllText((Join-Path $t.Root 'released.json')) | ConvertFrom-Json | ForEach-Object { $_ }) | Should -BeNullOrEmpty }
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            & $t.Net.Detach (Win)
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).Count | Should -Be 0
+        }
+
+        It 'reads the table back after it adds the entry: an add the host does not show is a failed Attach, the record stays attaching, and a retry finishes' -Tag attach-neighbor-verify {
+            $t.Vms[$script:WinId] = Off
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper neighbor-add-lost
+            { & $t.Net.Attach (Win) } | Should -Throw "AAP_NetworkUntrusted: the host's table does not show the entry added for 172.31.250.2 as the record's"
+            (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).state | Should -Be 'attaching' -Because 'a failed Attach never says attached'
+            @(Get-AapFakeHostNetworkNeighbor -Root $t.Root).Count | Should -Be 0
+            @(& $t.Net.Verify (Win)) | Should -Be @("VM $($script:WinId) is not attached")
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            $null = & $t.Net.Attach (Win)
+            (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).state | Should -Be 'attached'
+            @(& $t.Net.Verify (Win)).Count | Should -Be 0
+        }
+
+        It 'refuses a repeated Attach of either VM while another record holds its MAC, however written, and changes nothing: <Case>' -Tag attach-mac-twin -TestCases @(
+            @{ Case = 'the same text'; Mac = '02-A0-98-00-00-01' }
+            @{ Case = 'lower case'; Mac = '02-a0-98-00-00-01' }
+            @{ Case = 'without separators'; Mac = '02A098000001' }
+            @{ Case = 'with colons'; Mac = '02:A0:98:00:00:01' }) {
+            $w2 = Win 'aap-w-2-4-0f0e0d0c' $script:WinId2
+            $t.Vms[$script:WinId] = Off; $t.Vms[$script:WinId2] = Off
+            $null = & $t.Net.Attach (Win)
+            $null = & $t.Net.Attach $w2
+            Set-TestMac $t $script:WinId2 $Mac
+            $state = Get-TestState $t
+            $table = Get-TestTable $t
+            foreach ($w in (Win), $w2) { { & $t.Net.Attach $w } | Should -Throw 'AAP_NetworkUntrusted: the MAC * is also held by *' -Because $w.VmName }
+            Get-TestState $t | Should -Be $state
+            Get-TestTable $t | Should -Be $table
+        }
+
+        It 'allocates a MAC no record holds, however the record writes it' {
+            $t.Vms[$script:WinId] = Off
+            Write-TestRecord $t $script:WinId2 'aap-w-2-4-0f0e0d0c' '172.31.250.9' 'attached' '02a098000001'
+            (& $t.Net.Attach (Win)).mac | Should -Be '02-A0-98-00-00-02'
+        }
+
         It 'refuses when every address of the subnet is held, and records nothing' -Tag attach-exhausted {
             $t.Vms[$script:WinId] = Off
             foreach ($i in 2..254) { Write-TestRecord $t ([guid]::NewGuid().ToString()) "aap-w-1-$i-0a0b0c0d" "172.31.250.$i" }
@@ -177,6 +376,58 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             $got = @(foreach ($p in $procs) { $o = $p.StandardOutput.ReadToEnd(); $e = $p.StandardError.ReadToEnd(); $p.WaitForExit(); $p.ExitCode | Should -Be 0 -Because $e; $o.Trim() })
             @($got | Sort-Object -Unique).Count | Should -Be 6 -Because "the children printed: $($got -join ', ')"
             @(Get-AapFakeHostNetworkRecord -Root $t.Root | ForEach-Object { $_.declaration.address } | Sort-Object -Unique).Count | Should -Be 6
+        }
+
+        It 'runs one VM''s Attach and Detach one at a time: a Detach that starts while a repeated Attach waits between its checks and its act waits for it, and nothing of the VM outlives the pair' -Tag vm-lifecycle-lock {
+            $t.Vms[$script:WinId] = Off
+            $d = & $t.Net.Attach (Win)
+            Remove-Item -LiteralPath (Get-TestEntryPath $t $d.address)      # the host lost the entry, so the repeated Attach has to add it again
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Pause AttachBeforeAct
+            $barrier = Join-Path $t.Root 'barrier'
+            [void][IO.Directory]::CreateDirectory($barrier)
+            $attach = Start-TestCall $t Attach -VmExists
+            $detach = $null
+            try {
+                Wait-TestFile (Join-Path $barrier 'AttachBeforeAct.reached') | Should -BeTrue -Because 'the repeated Attach has to reach its act'
+                $detach = Start-TestCall $t Detach           # Hyper-V no longer has the VM for this one
+                Wait-TestFile (Join-Path $barrier 'Detach.started') | Should -BeTrue
+                $detach.WaitForExit(3000) | Should -BeFalse -Because 'Detach waits for the Attach that holds the VM between its checks and its act'
+            } finally {
+                [IO.File]::WriteAllText((Join-Path $barrier 'AttachBeforeAct.go'), '')
+            }
+            $a = Complete-TestCall $attach
+            $x = Complete-TestCall $detach
+            $a.ExitCode | Should -Be 0 -Because $a.Err
+            $x.ExitCode | Should -Be 0 -Because $x.Err
+            # The Detach ran after the Attach, whole: the adapter, the entry and the record are gone and the address is free.
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root).Count | Should -Be 0
+            @(Get-AapFakeHostNetworkAdapter -Root $t.Root -VmId $script:WinId).Count | Should -Be 0
+            @(Get-AapFakeHostNetworkNeighbor -Root $t.Root).Count | Should -Be 0
+            @([IO.File]::ReadAllText((Join-Path $t.Root 'released.json')) | ConvertFrom-Json | ForEach-Object { $_ }) | Should -Be @($d.address)
+        }
+
+        It 'holds only the paused VM: while its Attach waits before its act, another VM attaches and Verify answers' -Tag vm-lifecycle-lock {
+            $w2 = Win 'aap-w-2-4-0f0e0d0c' $script:WinId2
+            $t.Vms[$script:WinId] = Off; $t.Vms[$script:WinId2] = Off
+            $d = & $t.Net.Attach (Win)
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Pause AttachBeforeAct
+            $barrier = Join-Path $t.Root 'barrier'
+            [void][IO.Directory]::CreateDirectory($barrier)
+            $attach = Start-TestCall $t Attach -VmExists
+            try {
+                Wait-TestFile (Join-Path $barrier 'AttachBeforeAct.reached') | Should -BeTrue -Because 'the repeated Attach has to reach its act'
+                $clock = [Diagnostics.Stopwatch]::StartNew()
+                $d2 = & $t.Net.Attach $w2                     # the pause holds the first Attach to reach it only
+                @(& $t.Net.Verify $w2).Count | Should -Be 0
+                @(& $t.Net.Verify (Win)).Count | Should -Be 0
+                $clock.Elapsed.TotalSeconds | Should -BeLessThan 10 -Because 'none of these waits for the paused Attach'
+            } finally {
+                [IO.File]::WriteAllText((Join-Path $barrier 'AttachBeforeAct.go'), '')
+            }
+            $a = Complete-TestCall $attach
+            $a.ExitCode | Should -Be 0 -Because $a.Err
+            $d2.address | Should -Not -Be $d.address
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root).Count | Should -Be 2
         }
 
         It 'returns the same declaration on a repeated Attach (before every start) and keeps one record and one adapter' {
@@ -344,6 +595,191 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             { & $t.Net.Detach (Win 'aap-wbuild-0123abcd') } | Should -Throw '*is recorded as aap-w-1-3-1a2b3c4d (windows)*'
             Get-TestState $t | Should -Be $before
         }
+
+        It 'removes only the record''s own entry: the address with another MAC on its interface, and its MAC on another interface, stay' -Tag detach-neighbor-scope {
+            $t.Vms[$script:WinId] = Off
+            $d = & $t.Net.Attach (Win)
+            # The host's entry for the address now carries another MAC (somebody else's), and another interface holds one with the record's MAC.
+            Remove-Item -LiteralPath (Get-TestEntryPath $t $d.address)
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress $d.address -LinkLayerAddress 00-15-5D-8A-3B-7C -State Permanent -InterfaceIndex 31
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress $d.address -LinkLayerAddress $d.mac -State Permanent -InterfaceIndex 99
+            $table = Get-TestTable $t
+            $t.Vms.Remove($script:WinId)
+            & $t.Net.Detach (Win)
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root).Count | Should -Be 0 -Because 'the record is detached and its address released'
+            Get-TestTable $t | Should -Be $table -Because 'neither entry is the record''s'
+        }
+
+        It 'reads the table back after the removal: an entry still there stops Detach, the record stays, nothing is released, and a retry finishes' -Tag detach-neighbor-verify, detach-neighbor {
+            $t.Vms[$script:WinId] = Off
+            $d = & $t.Net.Attach (Win)
+            $t.Vms.Remove($script:WinId)
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper neighbor-stuck
+            { & $t.Net.Detach (Win) } | Should -Throw "AAP_NetworkUntrusted: the host still holds the entry for $($d.address) ($($d.mac)) on interface 31 after its removal"
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).Count | Should -Be 1 -Because 'nothing is released while the entry is there'
+            [IO.File]::Exists((Join-Path $t.Root 'released.json')) | Should -BeFalse
+            [IO.File]::Exists((Get-TestEntryPath $t $d.address)) | Should -BeTrue
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            & $t.Net.Detach (Win)
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root).Count | Should -Be 0
+            @(Get-AapFakeHostNetworkNeighbor -Root $t.Root).Count | Should -Be 0
+            @([IO.File]::ReadAllText((Join-Path $t.Root 'released.json')) | ConvertFrom-Json | ForEach-Object { $_ }) | Should -Be @($d.address)
+        }
+
+        It 'the owner''s remedy for an unreadable record: remove the VM, remove the entry it left with the recovery op, then delete the record' -Tag detach-neighbor {
+            $t.Vms[$script:WinId] = Off
+            $d = & $t.Net.Attach (Win)
+            [IO.File]::WriteAllText((Join-Path $t.Root "records\$($script:WinId).json"), 'not json')
+            $t.Vms.Remove($script:WinId)
+            { & $t.Net.Detach (Win) } | Should -Throw '*is unreadable*'
+            # The damaged record names nothing: what it paired with the guest is an orphan on the host.
+            $o = @(Get-AapFakeHostNetworkOrphan -Root $t.Root)
+            $o.Count | Should -Be 1
+            @([string]$o[0].InterfaceIndex, $o[0].IPAddress, $o[0].LinkLayerAddress) | Should -Be @('31', $d.address, $d.mac)
+            Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress $o[0].IPAddress -LinkLayerAddress $o[0].LinkLayerAddress -InterfaceIndex $o[0].InterfaceIndex
+            @(Get-AapFakeHostNetworkNeighbor -Root $t.Root).Count | Should -Be 0
+            @(Get-AapFakeHostNetworkOrphan -Root $t.Root).Count | Should -Be 0
+            Remove-Item -LiteralPath (Join-Path $t.Root "records\$($script:WinId).json")
+            # The address and the MAC are free again, and the next VM finds the host clean: its own entry is added.
+            $w2 = Win 'aap-w-2-4-0f0e0d0c' $script:WinId2
+            $t.Vms[$script:WinId2] = Off
+            $d2 = & $t.Net.Attach $w2
+            @($d2.address, $d2.mac) | Should -Be @($d.address, $d.mac)
+            @(& $t.Net.Verify $w2).Count | Should -Be 0
+        }
+
+        It 'the owner''s remedy works for a record that is JSON but structurally damaged: both recovery ops list and remove what it left, then the record goes: <Case>' -Tag record-shape, detach-neighbor -TestCases @(
+            @{ Case = 'the declaration has no mac'; Damage = { param($r) $r.declaration.PSObject.Properties.Remove('mac') } }
+            @{ Case = 'the declaration has no address'; Damage = { param($r) $r.declaration.PSObject.Properties.Remove('address') } }
+            @{ Case = 'the mac is not text'; Damage = { param($r) $r.declaration.mac = 7 } }
+            @{ Case = 'the declaration holds nothing but the VM id'; Damage = { param($r) $r.declaration = [pscustomobject]@{ vm_id = $r.declaration.vm_id } } }) {
+            $t.Vms[$script:WinId] = Off
+            $d = & $t.Net.Attach (Win)
+            $path = Join-Path $t.Root "records\$($script:WinId).json"
+            $r = [IO.File]::ReadAllText($path) | ConvertFrom-Json
+            & $Damage $r
+            [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $r -Depth 6))
+            $record = Get-TestState $t
+            foreach ($op in 'Attach', 'Verify') { { & $t.Net[$op] (Win) } | Should -Throw '*the record of VM * is unreadable; it stays for an owner' -Because $op }
+            $t.Vms.Remove($script:WinId)
+            { & $t.Net.Detach (Win) } | Should -Throw '*is unreadable*'
+            Get-TestState $t | Should -Be $record -Because 'the record stays for an owner'
+            # The damaged record names nothing: what it paired with the guest is an orphan on the host, and both recovery ops work on it.
+            $o = @(Get-AapFakeHostNetworkOrphan -Root $t.Root)
+            $o.Count | Should -Be 1
+            @([string]$o[0].InterfaceIndex, $o[0].IPAddress, $o[0].LinkLayerAddress) | Should -Be @('31', $d.address, $d.mac)
+            Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress $o[0].IPAddress -LinkLayerAddress $o[0].LinkLayerAddress -InterfaceIndex $o[0].InterfaceIndex
+            @(Get-AapFakeHostNetworkNeighbor -Root $t.Root).Count | Should -Be 0
+            @(Get-AapFakeHostNetworkOrphan -Root $t.Root).Count | Should -Be 0
+            Remove-Item -LiteralPath $path
+            $w2 = Win 'aap-w-2-4-0f0e0d0c' $script:WinId2
+            $t.Vms[$script:WinId2] = Off
+            $d2 = & $t.Net.Attach $w2
+            @($d2.address, $d2.mac) | Should -Be @($d.address, $d.mac)
+            @(& $t.Net.Verify $w2).Count | Should -Be 0
+        }
+
+        It 'an entry left behind by a record deleted without that cleanup blocks the address until it is removed: Attach refuses, the recovery op removes it, the retry finishes' -Tag attach-neighbor-foreign, detach-neighbor {
+            $t.Vms[$script:WinId] = Off
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.2 -LinkLayerAddress 02-A0-98-00-00-07 -State Permanent -InterfaceIndex 31
+            { & $t.Net.Attach (Win) } | Should -Throw "AAP_NetworkUntrusted: the host already holds an entry for 172.31.250.2 that is not the record's*"
+            @(Get-AapFakeHostNetworkOrphan -Root $t.Root).Count | Should -Be 1
+            Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.2 -LinkLayerAddress 02-A0-98-00-00-07 -InterfaceIndex 31
+            (& $t.Net.Attach (Win)).address | Should -Be '172.31.250.2'
+            @(& $t.Net.Verify (Win)).Count | Should -Be 0
+        }
+
+        It 'the recovery op refuses an entry whose MAC is not of the module''s range, and removes nothing' -Tag recover-range {
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 00-15-5D-8A-3B-7C -State Permanent -InterfaceIndex 31
+            $table = Get-TestTable $t
+            { Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 00-15-5D-8A-3B-7C -InterfaceIndex 31 } | Should -Throw '*is not a MAC of the module''s range*'
+            Get-TestTable $t | Should -Be $table
+            @(Get-AapFakeHostNetworkOrphan -Root $t.Root).Count | Should -Be 0 -Because 'it is not the module''s kind of entry either'
+        }
+
+        It 'the recovery op refuses a tuple a readable record names: that record''s Detach removes it' -Tag recover-named {
+            $t.Vms[$script:WinId] = Off
+            $d = & $t.Net.Attach (Win)
+            $table = Get-TestTable $t
+            { Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress $d.address -LinkLayerAddress $d.mac -InterfaceIndex 31 } | Should -Throw '*a record names the entry for 172.31.250.2*'
+            Get-TestTable $t | Should -Be $table
+            @(& $t.Net.Verify (Win)).Count | Should -Be 0
+        }
+
+        It 'the recovery op removes exactly the tuple it is given: another MAC at the address, another address and another interface stay; an absent entry is done' -Tag recover-exact {
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -State Permanent -InterfaceIndex 31
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -State Permanent -InterfaceIndex 32
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.10 -LinkLayerAddress 02-A0-98-00-00-07 -State Permanent -InterfaceIndex 31
+            $table = Get-TestTable $t
+            { Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-08 -InterfaceIndex 31 } | Should -Throw '*carries another MAC*'
+            Get-TestTable $t | Should -Be $table
+            Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -InterfaceIndex 31
+            Get-TestEntries $t | Should -Be @('31|172.31.250.10|02-A0-98-00-00-07|Permanent', '32|172.31.250.9|02-A0-98-00-00-07|Permanent')
+            { Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -InterfaceIndex 31 } | Should -Not -Throw
+        }
+
+        It 'the recovery op reads the table back: an entry still there is a throw, and a retry finishes' -Tag detach-neighbor-verify {
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -State Permanent -InterfaceIndex 31
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper neighbor-stuck
+            { Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -InterfaceIndex 31 } | Should -Throw '*still holds the entry for 172.31.250.9*'
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -InterfaceIndex 31
+            @(Get-AapFakeHostNetworkNeighbor -Root $t.Root).Count | Should -Be 0
+        }
+
+        It 'lists as orphans only the permanent entries of the module''s MACs on its interfaces that no readable record names' {
+            $t.Vms[$script:WinId] = Off
+            $null = & $t.Net.Attach (Win)
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.50 -LinkLayerAddress 02-A0-98-00-00-07 -State Permanent -InterfaceIndex 31
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.51 -LinkLayerAddress 02-A0-98-00-00-07 -State Stale -InterfaceIndex 31
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.52 -LinkLayerAddress 00-15-5D-8A-3B-7C -State Permanent -InterfaceIndex 31
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.53 -LinkLayerAddress 02-A0-98-00-00-07 -State Permanent -InterfaceIndex 5
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.251.54 -LinkLayerAddress 02-A0-98-00-00-07 -State Permanent -InterfaceIndex 32
+            @(Get-AapFakeHostNetworkOrphan -Root $t.Root | ForEach-Object { "$($_.InterfaceIndex)|$($_.IPAddress)" }) | Should -Be @('31|172.31.250.50', '32|172.31.251.54')
+        }
+
+        It 'removes the record''s own entry in any state: a dynamic entry that pairs its address with its MAC on its interface goes with it' -Tag detach-neighbor {
+            $t.Vms[$script:WinId] = Off
+            $d = & $t.Net.Attach (Win)
+            # The host's permanent entry is gone and the host learned a dynamic one for the same pairing.
+            Remove-Item -LiteralPath (Get-TestEntryPath $t $d.address)
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress $d.address -LinkLayerAddress $d.mac -State Stale -InterfaceIndex 31
+            $t.Vms.Remove($script:WinId)
+            & $t.Net.Detach (Win)
+            @(Get-AapFakeHostNetworkNeighbor -Root $t.Root).Count | Should -Be 0
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root).Count | Should -Be 0
+        }
+
+        It 'cannot look when the host''s table cannot be read: Detach throws, never reads the entry as absent, and releases nothing' -Tag neighbor-table-read {
+            $t.Vms[$script:WinId] = Off
+            $d = & $t.Net.Attach (Win)
+            $t.Vms.Remove($script:WinId)
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper neighbor-unreadable
+            { & $t.Net.Detach (Win) } | Should -Throw '*neighbour table cannot be read: cannot look'
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).Count | Should -Be 1
+            [IO.File]::Exists((Join-Path $t.Root 'released.json')) | Should -BeFalse
+            [IO.File]::Exists((Get-TestEntryPath $t $d.address)) | Should -BeTrue
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            & $t.Net.Detach (Win)
+            @(Get-AapFakeHostNetworkRecord -Root $t.Root).Count | Should -Be 0
+            @(Get-AapFakeHostNetworkNeighbor -Root $t.Root).Count | Should -Be 0
+        }
+
+        It 'the recovery ops cannot look either when the table cannot be read: <Op>' -Tag neighbor-table-read -TestCases @(@{ Op = 'listing' }, @{ Op = 'removal' }) {
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -State Permanent -InterfaceIndex 31
+            $table = Get-TestTable $t
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper neighbor-unreadable
+            if ($Op -eq 'listing') { { Get-AapFakeHostNetworkOrphan -Root $t.Root } | Should -Throw '*neighbour table cannot be read: cannot look' }
+            else { { Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -InterfaceIndex 31 } | Should -Throw '*neighbour table cannot be read: cannot look' }
+            Get-TestTable $t | Should -Be $table
+        }
+
+        It 'the recovery op refuses an interface that is not the management adapter of one of the module''s switches, and removes nothing' -Tag recover-interface {
+            Add-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -State Permanent -InterfaceIndex 5
+            $table = Get-TestTable $t
+            { Remove-AapFakeHostNetworkNeighbor -Root $t.Root -IPAddress 172.31.250.9 -LinkLayerAddress 02-A0-98-00-00-07 -InterfaceIndex 5 } | Should -Throw '*is not the management adapter of one of the module''s switches*'
+            Get-TestTable $t | Should -Be $table
+        }
     }
 
     Describe 'Verify' {
@@ -372,6 +808,15 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             @{ Tamper = 'isolated-rule'; Want = @("rule 1 has isolation id '7', not 0", 'no unscoped Inbound deny for 10.0.0.0/8') }
             @{ Tamper = 'no-source-pin'; Want = @('there are 0 source pins, not 1') }
             @{ Tamper = 'extra-allow'; Want = @('rule 31: the Outbound allow 172.31.250.1/32 is not exactly a declared endpoint') }
+            @{ Tamper = 'adapter-mac'; Want = @("the adapter's MAC address is '00-15-5D-8A-3B-7C', not the declared 02-A0-98-00-00-01") }
+            @{ Tamper = 'neighbor-missing'; Want = @('the host holds 0 neighbour entries for 172.31.250.2, not 1') }
+            @{ Tamper = 'neighbor-mac'; Want = @("the neighbour entry's link-layer address is '02-A0-98-FF-FF-FE', not the declared 02-A0-98-00-00-01") }
+            @{ Tamper = 'neighbor-state'; Want = @("the neighbour entry's state is 'Stale', not Permanent") }
+            @{ Tamper = 'neighbor-interface'; Want = @("the neighbour entry is on interface 99 'vEthernet (aap-guests-win)', not the switch's management adapter 31 'vEthernet (aap-guests-win)'") }
+            @{ Tamper = 'peer-mac-clash'; Want = @('another adapter on aap-guests-win carries the declared MAC 02-A0-98-00-00-01') }
+            @{ Tamper = 'switch-extension'; Want = @('the switch aap-guests-win has an extension enabled beyond its baseline: Microsoft NDIS Capture') }
+            @{ Tamper = 'switch-extension-off'; Want = @('the switch aap-guests-win lacks the baseline extension Microsoft Windows Filtering Platform') }
+            @{ Tamper = 'hns-network'; Want = @('an HNS network uses the switch aap-guests-win: nat') }
             @{ Tamper = 'public-host'; Want = @("the host's 203.0.113.7/32 is public IPv4, outside the enforcement shape: not certified (contract, Limitations)") }) {
             Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $Tamper
             @(& $t.Net.Verify (Win)) | Should -Be $Want
@@ -387,6 +832,37 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
         It 'cannot look when host discovery finds <Tamper>' -Tag verify-discovery -TestCases @(@{ Tamper = 'host-empty' }, @{ Tamper = 'host-no-gateway' }, @{ Tamper = 'host-no-lan' }) {
             Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $Tamper
             { & $t.Net.Verify (Win) } | Should -Throw '*not the gateway 172.31.250.1 and a LAN address: cannot look'
+        }
+
+        It 'cannot look when the neighbour-table read fails, and a definitive no-match is a problem, never a throw' -Tag verify-neighbors, neighbor-unreadable, neighbor-missing {
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper neighbor-unreadable
+            { & $t.Net.Verify (Win) } | Should -Throw '*neighbour table*cannot look'
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper neighbor-missing
+            $addr = (Get-AapFakeHostNetworkRecord -Root $t.Root -VmId $script:WinId).declaration.address
+            @(& $t.Net.Verify (Win)) | Should -Be @("the host holds 0 neighbour entries for $addr, not 1")
+        }
+
+        It 'cannot look when the switch''s extensions cannot be read: a throw, never a pass' -Tag verify-switch-read {
+            Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper switch-unreadable
+            { & $t.Net.Verify (Win) } | Should -Throw '*the extensions of the switch aap-guests-win cannot be read: cannot look'
+            Set-AapFakeHostNetworkKnob -Root $t.Root
+            @(& $t.Net.Verify (Win)).Count | Should -Be 0
+        }
+
+        It 'passes the host targets, the neighbour entries, the management adapter and the peer MACs to the shared check, never without them, and runs the switch check' -Tag verify-neighbors {
+            # P10.0's own module asserts the same of itself when it exists; the fake stands in here.
+            $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'AapHostNetworkFake.psm1'), [ref]$null, [ref]$null)
+            $calls = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Get-AapHostNetworkAdapterProblems' }, $true))
+            $calls.Count | Should -BeGreaterThan 0
+            foreach ($c in $calls) {
+                $params = @($c.FindAll({ param($n) $n -is [Management.Automation.Language.CommandParameterAst] }, $true) | ForEach-Object { $_.ParameterName })
+                $params | Should -Contain 'HostDeny'
+                $params | Should -Contain 'HostLan'
+                $params | Should -Contain 'Neighbors' -Because 'Verify never calls the shared check without the neighbour entries'
+                $params | Should -Contain 'HostInterface' -Because 'the entry is held against the management adapter by identity'
+                $params | Should -Contain 'PeerMacs' -Because 'Verify lists every other adapter on the switch'
+            }
+            @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Get-AapHostNetworkSwitchProblems' }, $true)).Count | Should -BeGreaterThan 0
         }
 
         It 'reports nothing again once a tamper is gone, and never changes the journal' {
@@ -430,8 +906,31 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
         }
 
         It 'reports an address another record on the switch holds too' -Tag verify-address {
-            Write-TestRecord $t $script:WinId2 'aap-w-2-4-0f0e0d0c' '172.31.250.2'
+            Write-TestRecord $t $script:WinId2 'aap-w-2-4-0f0e0d0c' '172.31.250.2' 'attached' '02-A0-98-00-00-02'
             @(& $t.Net.Verify (Win)) | Should -Be @('the address 172.31.250.2 is also held by aap-w-2-4-0f0e0d0c')
+        }
+
+        It 'reports a MAC another record holds too, however its text is written, for both VMs: <Case>' -Tag verify-mac -TestCases @(
+            @{ Case = 'the same text'; Mac = '02-A0-98-00-00-01' }
+            @{ Case = 'lower case'; Mac = '02-a0-98-00-00-01' }
+            @{ Case = 'without separators'; Mac = '02A098000001' }
+            @{ Case = 'with colons'; Mac = '02:A0:98:00:00:01' }) {
+            $w2 = Win 'aap-w-2-4-0f0e0d0c' $script:WinId2
+            $t.Vms[$script:WinId2] = Off
+            $null = & $t.Net.Attach $w2
+            Set-TestMac $t $script:WinId2 $Mac
+            @(& $t.Net.Verify (Win)) | Should -Contain 'the MAC 02-A0-98-00-00-01 is also held by aap-w-2-4-0f0e0d0c'
+            @(& $t.Net.Verify $w2) | Should -Contain "the MAC $Mac is also held by aap-w-1-3-1a2b3c4d"
+        }
+
+        It 'reports a MAC another VM''s adapter carries as an adapter of the switch, beside the record that holds it, and a twin record with no adapter as the record alone' -Tag verify-mac {
+            $w2 = Win 'aap-w-2-4-0f0e0d0c' $script:WinId2
+            $t.Vms[$script:WinId2] = Off
+            $null = & $t.Net.Attach $w2
+            Set-TestMac $t $script:WinId2 '02-A0-98-00-00-01'
+            @(& $t.Net.Verify (Win)) | Should -Be @('the MAC 02-A0-98-00-00-01 is also held by aap-w-2-4-0f0e0d0c', 'another adapter on aap-guests-win carries the declared MAC 02-A0-98-00-00-01')
+            Remove-Item -LiteralPath (Join-Path $t.Root "host\$($script:WinId2)")
+            @(& $t.Net.Verify (Win)) | Should -Be @('the MAC 02-A0-98-00-00-01 is also held by aap-w-2-4-0f0e0d0c')
         }
 
         It 'gives a consumer''s read-back every tamper but the host''s to reject; Verify reports all of them' -Tag contract {
@@ -443,8 +942,12 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
                 @(Get-TestReadback $t $decl $script:WinId).Count | Should -BeGreaterThan 0 -Because $x
             }
             Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper public-host
+            foreach ($x in 'neighbor-missing', 'neighbor-mac', 'neighbor-state', 'neighbor-interface', 'peer-mac-clash', 'switch-extension', 'switch-extension-off', 'hns-network') {
+                Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $x
+                @(& $t.Net.Verify (Win)).Count | Should -BeGreaterThan 0 -Because $x
+            }
             @(& $t.Net.Verify (Win)).Count | Should -BeGreaterThan 0
-            foreach ($x in 'public-host', 'host-empty', 'host-no-gateway', 'host-no-lan') {
+            foreach ($x in 'public-host', 'host-empty', 'host-no-gateway', 'host-no-lan', 'neighbor-missing', 'neighbor-mac', 'neighbor-state', 'neighbor-interface', 'peer-mac-clash', 'switch-extension', 'switch-extension-off', 'hns-network') {
                 Set-AapFakeHostNetworkKnob -Root $t.Root -Tamper $x
                 Get-TestReadback $t $decl $script:WinId | Should -BeNullOrEmpty -Because $x
             }
@@ -452,14 +955,19 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
     }
 
     Describe 'records, knobs and state' {
-        It 'an unreadable record makes all three calls for its VM throw, and it stays: <Case>' -Tag record-readable -TestCases @(
+        It 'an unreadable record makes all three calls for its VM throw, and it stays: <Case>' -Tag record-readable, record-shape -TestCases @(
             @{ Case = 'not JSON'; Text = 'not json' }
-            @{ Case = 'an unknown state'; Text = '{"schema":1,"kind":"host_network_record","state":"detaching","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest"}]}' }
-            @{ Case = 'a switch P19 owns'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"switch","name":"aap-guests-win"}]}' }
-            @{ Case = 'another VM''s rule'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"aap-guest-block-0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b"}]}' }
-            @{ Case = 'a host rule'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"FPS-SMB-In-TCP"}]}' }
-            @{ Case = 'a host rule ending in its own id'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"FPS-SMB-In-TCP-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"}]}' }
-            @{ Case = 'a name a culture compare would match (soft hyphen)'; Text = '{"schema":1,"kind":"host_network_record","state":"attached","declaration":{"schema":1,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b\u00ad"}]}' }) {
+            @{ Case = 'a declaration without its mac'; Text = '{"schema":2,"kind":"host_network_record","state":"attached","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"}]}' }
+            @{ Case = 'a declaration whose mac is not text'; Text = '{"schema":2,"kind":"host_network_record","state":"attached","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","mac":7,"resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"}]}' }
+            @{ Case = 'a declaration without its address'; Text = '{"schema":2,"kind":"host_network_record","state":"attached","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","mac":"02-A0-98-00-00-01","resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"}]}' }
+            @{ Case = 'a declaration with an empty VM name'; Text = '{"schema":2,"kind":"host_network_record","state":"attached","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","mac":"02-A0-98-00-00-01","resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"}]}' }
+            @{ Case = 'an unknown state'; Text = '{"schema":2,"kind":"host_network_record","state":"detaching","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","mac":"02-A0-98-00-00-01","resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"}]}' }
+            @{ Case = 'a switch P19 owns'; Text = '{"schema":2,"kind":"host_network_record","state":"attached","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","mac":"02-A0-98-00-00-01","resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"switch","name":"aap-guests-win"}]}' }
+            @{ Case = 'a switch P19 owns, named with the VM id'; Text = '{"schema":2,"kind":"host_network_record","state":"attached","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","mac":"02-A0-98-00-00-01","resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"switch","name":"aap-guests-win-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"}]}' }
+            @{ Case = 'another VM''s rule'; Text = '{"schema":2,"kind":"host_network_record","state":"attached","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","mac":"02-A0-98-00-00-01","resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"aap-guest-block-0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b"}]}' }
+            @{ Case = 'a host rule'; Text = '{"schema":2,"kind":"host_network_record","state":"attached","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","mac":"02-A0-98-00-00-01","resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"FPS-SMB-In-TCP"}]}' }
+            @{ Case = 'a host rule ending in its own id'; Text = '{"schema":2,"kind":"host_network_record","state":"attached","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","mac":"02-A0-98-00-00-01","resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"},{"kind":"firewall_rule","name":"FPS-SMB-In-TCP-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"}]}' }
+            @{ Case = 'a name a culture compare would match (soft hyphen)'; Text = '{"schema":2,"kind":"host_network_record","state":"attached","declaration":{"schema":2,"kind":"host_network_attach","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","vm_name":"aap-w-1-3-1a2b3c4d","profile":"windows","subnet":"172.31.250.0/24","gateway":"172.31.250.1","address":"172.31.250.2","mac":"02-A0-98-00-00-01","resolvers":["192.0.2.53","198.51.100.53"],"endpoints":[]},"created":[{"kind":"adapter","name":"aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b\u00ad"},{"kind":"neighbor","name":"aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"}]}' }) {
             $path = Join-Path $t.Root "records\$($script:WinId).json"
             [IO.File]::WriteAllText($path, $Text)
             $t.Vms[$script:WinId] = Off
@@ -503,8 +1011,8 @@ while (-not (Test-Path -LiteralPath (Join-Path $Root 'go'))) { Start-Sleep -Mill
             @(Get-ChildItem -LiteralPath $t.Root -Filter '*.tmp' -File -Recurse).Count | Should -Be 0
         }
 
-        It 'refuses an unknown tamper or fault name' -Tag knob-names -TestCases @(@{ K = @{ Tamper = 'extra-alow' } }, @{ K = @{ Fail = 'attach' } }) {
-            { Set-AapFakeHostNetworkKnob -Root $t.Root @K } | Should -Throw 'fake: unknown tamper or fault:*'
+        It 'refuses an unknown tamper, fault or pause name' -Tag knob-names -TestCases @(@{ K = @{ Tamper = 'extra-alow' } }, @{ K = @{ Fail = 'attach' } }, @{ K = @{ Pause = 'attachbeforeact' } }) {
+            { Set-AapFakeHostNetworkKnob -Root $t.Root @K } | Should -Throw 'fake: unknown tamper, fault or pause:*'
         }
 
         It 'makes a faulted <Op> throw and change nothing' -TestCases @(@{ Op = 'Attach' }, @{ Op = 'Detach' }, @{ Op = 'Verify' }) {

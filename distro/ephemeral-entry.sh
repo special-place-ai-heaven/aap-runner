@@ -4,6 +4,11 @@
 # mounted and is not in the environment.
 set -euo pipefail
 
+# zccache, installed by the Dockerfile. The job's private root lives in the
+# container (guests/cache/INTEGRATION.md, P15); no root is shared between jobs.
+ZC_DIR=/usr/local/libexec/aap-guest/cache
+ZC_ROOT=/var/cache/aap-zccache
+
 start_inner_dockerd() {
   local enabled
   if [[ -S /var/run/docker.sock ]]; then
@@ -29,6 +34,22 @@ start_inner_dockerd() {
   return 1
 }
 
+# Creates the job root and runs `init` as the runner user from a clean
+# environment, before the runner starts (INTEGRATION.md, P15 step 2). `init`
+# writes ${ZC_ROOT}/state/runner.env, which run.sh below loads. While no
+# compiler and invocation pair is qualified that file is empty, so compilers
+# run directly. A failed init also builds directly (contract rule 7); it never
+# fails the job.
+start_zccache() {
+  install -d -o runner -g runner -m 0700 "${ZC_ROOT}"
+  if ! runuser -u runner -- env -i PATH=/usr/bin:/bin HOME=/home/runner \
+    "${ZC_DIR}/aap-zccache.sh" init "${ZC_DIR}" "${ZC_ROOT}" "${AAP_ZCCACHE_BUDGET_BYTES:-0}" >/dev/null; then
+    echo "zccache: init failed; compilers run directly" >&2
+    return 0
+  fi
+  echo "zccache: $(runuser -u runner -- "${ZC_DIR}/aap-zccache.sh" state "${ZC_ROOT}" || true)"
+}
+
 if [[ "${1:-}" == "--preflight" ]]; then
   start_inner_dockerd
   docker info
@@ -47,21 +68,22 @@ if [[ -z "${reg_token}" ]]; then
 fi
 
 start_inner_dockerd
+start_zccache
 
 rm -rf /opt/actions-runner/_work
 install -d -o runner -g runner /opt/actions-runner/_work
 
-# runuser drops the environment. Whitelist the four names config.sh needs.
+# runuser -u keeps this environment except HOME, SHELL, USER and LOGNAME
+# (only --login resets it), so config.sh sees the names docker passed in
+# and the token exported here.
 # The registration token stays out of argv; it is unset before run.sh.
 export AAP_RUNNER_REG_TOKEN="${reg_token}"
 # Names in this script expand in the runner user's shell, not this one.
 # shellcheck disable=SC2016
-runuser -u runner \
-  --whitelist-environment=AAP_GITHUB_ORG,AAP_RUNNER_LABELS,AAP_RUNNER_GROUP,AAP_RUNNER_REG_TOKEN \
-  -- bash -c '
+runuser -u runner -- bash -c '
   set -euo pipefail
   cd /opt/actions-runner
-  ./config.sh --unattended --ephemeral --disableupdate=false \
+  ./config.sh --unattended --ephemeral --disableupdate \
     --url "https://github.com/${AAP_GITHUB_ORG}" \
     --token "${AAP_RUNNER_REG_TOKEN}" \
     --labels "${AAP_RUNNER_LABELS}" \
@@ -72,9 +94,17 @@ runuser -u runner \
 reg_token=""
 unset reg_token AAP_RUNNER_REG_TOKEN
 
-# run.sh is a second runuser, so the disk bounds and the sccache settings
-# docker passed in are dropped unless they are named here. config.sh above
-# keeps its own four names.
-exec runuser -u runner \
-  --whitelist-environment=AAP_WORK_DISK_GIB,AAP_DISK_FLOOR_GB,RUSTC_WRAPPER,SCCACHE_DIR,SCCACHE_CACHE_SIZE \
-  -- bash -c 'cd /opt/actions-runner && exec ./run.sh'
+# run.sh inherits this environment too, with the token unset above, so it
+# keeps the disk bounds docker passed in. The zccache settings come from
+# runner.env, which init wrote.
+# Names in this script expand in the runner user's shell, not this one.
+# shellcheck disable=SC2016
+exec runuser -u runner -- bash -c '
+  cd /opt/actions-runner
+  if [[ -s "$1" ]]; then
+    set -a
+    . "$1"
+    set +a
+  fi
+  exec ./run.sh
+' bash "${ZC_ROOT}/state/runner.env"

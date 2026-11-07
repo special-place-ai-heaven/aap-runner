@@ -24,7 +24,7 @@ INSTALLER_DIR=${SCRIPT_DIR}
 # shellcheck source=labels.sh
 source "${SCRIPT_DIR}/labels.sh"
 # Exact match for AAP_RUNNER_LABELS_VERSION in labels.sh.
-require_labels_version 1 || exit 1
+require_labels_version 2 || exit 1
 # AAP_WORK_DISK_GIB is this host's fixed VHDX size. Absent means 60 (CRRR).
 # diskpart maximum= is MiB (gib * 1024). PowerShell 1GB is 1024^3.
 WORK_VHDX=${AAP_WORK_VHDX:-/mnt/c/wsl/aap-runner-work.vhdx}
@@ -124,9 +124,9 @@ SYSBOX_URL=https://github.com/nestybox/sysbox/releases/download/v0.7.1/sysbox-ce
 SYSBOX_SHA256=9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5
 SYSBOX_NAME=sysbox-ce_0.7.1.linux_amd64.deb
 
-RUNNER_URL=https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz
-RUNNER_SHA256=af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32
-RUNNER_NAME=actions-runner-linux-x64-2.338.0.tar.gz
+RUNNER_URL=https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz
+RUNNER_SHA256=baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40
+RUNNER_NAME=actions-runner-linux-x64-2.338.2.tar.gz
 
 verify_sha256() {
   local file="$1" expected="$2" actual
@@ -631,6 +631,25 @@ half_install_refusal() {
   printf '%s\n' "That command does not unregister any other distro."
 }
 
+# No time-sync daemon in this distro. The clock is the whole WSL2 VM's (every
+# distro on this PC shares it), and WSL already runs one chronyd outside all
+# distros that follows the Hyper-V host clock (refclock PHC0, /dev/ptp0). A
+# second daemon here fights it: on 2026-11-05 Ubuntu's systemd-timesyncd stepped
+# the clock back about 1.3 s every 32 s, and a chrony on NTP pools ran its
+# frequency estimate away to thousands of ppm. Both are masked, so a package
+# upgrade cannot start them again.
+configure_time_sync() {
+  local unit
+  systemctl mask systemd-timesyncd.service chrony.service
+  systemctl stop systemd-timesyncd.service chrony.service 2> /dev/null || true
+  for unit in systemd-timesyncd chrony ntp ntpsec openntpd; do
+    if systemctl is-active --quiet "${unit}"; then
+      echo "refusing: ${unit} is active; WSL already keeps this VM's clock and a second time daemon fights it" >&2
+      exit 1
+    fi
+  done
+}
+
 copy_staged() {
   local name="$1" dest="$2"
   cp "${STAGE}/${name}" "${dest}"
@@ -773,6 +792,8 @@ inside_packages() {
   copy_staged "${SYSBOX_NAME}" "/var/lib/aap-runner/${SYSBOX_NAME}"
   copy_staged Dockerfile /var/lib/aap-runner/image/Dockerfile
   copy_staged ephemeral-entry.sh /var/lib/aap-runner/image/ephemeral-entry.sh
+  copy_staged aap-zccache.sh /var/lib/aap-runner/image/aap-zccache.sh
+  copy_staged zccache-wrappers.json /var/lib/aap-runner/image/zccache-wrappers.json
   copy_staged manager.sh /usr/local/sbin/aap-runner-manager
   copy_staged labels.sh /usr/local/sbin/labels.sh
   copy_staged evidence.sh /usr/local/sbin/aap-runner-evidence
@@ -959,6 +980,7 @@ inside_runtime() {
   esac
 
   systemctl daemon-reload
+  configure_time_sync
   systemctl enable aap-workdisk
   systemctl stop docker containerd sysbox sysbox-mgr sysbox-fs >/dev/null 2>&1 || true
   /usr/local/sbin/aap-mount-work-disk
@@ -994,7 +1016,7 @@ inside_runtime() {
 
   # Preflight is the gate. Phase 1 passed on kernel 6.18.35.2 with idmapped
   # mounts and no shiftfs. A failure here still stops the install.
-  docker create --runtime=sysbox-runc --name aap-sysbox-preflight \
+  docker create --runtime=sysbox-runc --init --name aap-sysbox-preflight \
     --entrypoint /opt/aap-runner/ephemeral-entry.sh \
     aap-crrr-runner:local --preflight
   if ! /usr/local/sbin/aap-runner-manager --assert-mounts aap-sysbox-preflight; then
@@ -2692,7 +2714,8 @@ outside() {
     "${SCRIPT_DIR}/aap-runner-manager.service" "${SCRIPT_DIR}/nftables.conf" \
     "${SCRIPT_DIR}/wsl.conf" "${SCRIPT_DIR}/manager.conf.example" \
     "${SCRIPT_DIR}/evidence.sh" "${SCRIPT_DIR}/bootstrap.sh" \
-    "${SCRIPT_DIR}/labels.sh" "${SCRIPT_DIR}/stage-into-distro.sh"     "${SCRIPT_DIR}/staging.sha256" "${STAGE}/"
+    "${SCRIPT_DIR}/labels.sh" "${SCRIPT_DIR}/stage-into-distro.sh"     "${SCRIPT_DIR}/staging.sha256" \
+    "${SCRIPT_DIR}/aap-zccache.sh" "${SCRIPT_DIR}/zccache-wrappers.json" "${STAGE}/"
 
   # --exec does not join the command into the distro shell. The stage path
   # and the disk size are positional arguments of stage-into-distro.sh.

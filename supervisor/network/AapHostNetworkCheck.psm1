@@ -13,18 +13,28 @@ $ErrorActionPreference = 'Stop'
 $script:FixedDeny = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'ff00::/8', 'fe80::/10', 'fc00::/7', '255.255.255.255/32', '0.0.0.0/8', '127.0.0.0/8', '240.0.0.0/4', '::/0')
 # The fixed ranges a NAT routes unicast in: where a subnet and a private resolver may lie.
 $script:PrivateRanges = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10')
+# The 3-byte prefix of every static MAC the module gives a guest (contract, Attach; Open points, 1): locally administered,
+# outside every registered OUI and Hyper-V's dynamic pool. The one copy: validate.py reads it from here.
+$script:MacRange = '02-A0-98'
 $script:StormLimit = '100'   # broadcast, multicast and unknown unicast packets per second (contract, Rules and weights; D2)
 $script:Directions = @('Inbound', 'Outbound')   # an extended port ACL has no 'Both'
-$script:AdapterKeys = @('SwitchName', 'SwitchType', 'DhcpGuard', 'RouterGuard', 'MacAddressSpoofing', 'PortMirroringMode', 'VlanMode', 'StormLimit', 'LegacyAcls', 'Peers', 'Acls')
+$script:AdapterKeys = @('SwitchName', 'SwitchType', 'MacAddress', 'DhcpGuard', 'RouterGuard', 'MacAddressSpoofing', 'PortMirroringMode', 'VlanMode', 'StormLimit', 'LegacyAcls', 'Peers', 'Acls')
 $script:RuleKeys = @('Action', 'Direction', 'RemoteAddress', 'LocalAddress', 'Protocol', 'RemotePort', 'LocalPort', 'Weight', 'Stateful', 'IsolationId')
-$script:DeclarationKeys = @('schema', 'kind', 'vm_id', 'vm_name', 'profile', 'subnet', 'gateway', 'address', 'resolvers', 'endpoints')
+$script:DeclarationKeys = @('schema', 'kind', 'vm_id', 'vm_name', 'profile', 'subnet', 'gateway', 'address', 'mac', 'resolvers', 'endpoints')
 $script:EndpointKeys = @('address', 'protocol', 'port')
+$script:NeighborKeys = @('IPAddress', 'LinkLayerAddress', 'State', 'InterfaceAlias', 'InterfaceIndex')
 $script:GuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 $script:NameRe = '^aap-([wl])(-[1-5]-[0-9]{1,9}-|build-)[0-9a-f]{8}\z'
 
 function Get-AapHostNetworkFixedDeny {
     # The ranges every guest adapter denies, inbound and outbound, unscoped.
     $script:FixedDeny
+}
+
+function Get-AapHostNetworkMacRange {
+    <# The 3-byte prefix of the module's static-MAC range (contract, Attach): the range the module allocates a guest's
+       `mac` from, for the module and the shared fake. #>
+    $script:MacRange
 }
 
 function Get-AapHostNetworkSwitchName {
@@ -48,12 +58,39 @@ function Get-AapHostNetworkAdapterProblems {
        HostDeny: the host's addresses and prefixes (Verify check 5), which the host-specific denies must cover and no
        endpoint may lie in; only the module knows the host, so its Verify passes them and consumers do not. Given, it must
        hold the declaration's gateway and, as HostLan, at least one address of a host interface that is not a vEthernet
-       adapter (an empty or partial discovery cannot pass). Any line: AAP_NetworkUntrusted. #>
+       adapter (an empty or partial discovery cannot pass). Neighbors: the host's neighbour entries for the guest's address
+       (Verify check 8), each as Get-NetNeighbor shows it (IPAddress, LinkLayerAddress, State, InterfaceAlias, InterfaceIndex);
+       the module's own Verify passes them and a consumer never does. Given, exactly one entry, State Permanent, with the
+       declared `mac`, on the switch's management adapter is required. HostInterface is that adapter as the module resolved
+       it by identity, never by its name (@{ InterfaceIndex; InterfaceAlias }): the entry must carry both, and with no
+       resolved adapter the entry has nothing to be held against, which is a problem. PeerMacs: the MAC of every other adapter
+       on the VM's switch, the host's own among them (Verify check 2); given, it must list at least one (the host's own
+       adapter is always on the switch) and every entry must be a MAC (twelve hex digits: in pairs joined by dashes or colons,
+       or run together), and none may be the declared `mac` (compared as hex digits, however written): a null, empty or
+       malformed list is a discovery that failed and cannot establish uniqueness, so it is a problem, never "no other adapter".
+       Only the module reads every adapter and the host, so only its Verify passes these.
+       Any line: AAP_NetworkUntrusted. #>
     param([Parameter(Mandatory)][AllowNull()]$Declaration, [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][object[]]$Adapters,
-        [AllowEmptyCollection()][string[]]$HostDeny, [AllowEmptyCollection()][string[]]$HostLan)
+        [AllowEmptyCollection()][string[]]$HostDeny, [AllowEmptyCollection()][string[]]$HostLan, [AllowEmptyCollection()][object[]]$Neighbors,
+        [AllowNull()]$HostInterface, [AllowNull()][AllowEmptyCollection()][string[]]$PeerMacs)
     $targets = $null
     if ($PSBoundParameters.ContainsKey('HostDeny') -or $PSBoundParameters.ContainsKey('HostLan')) { $targets = [string[]]@($HostDeny) }
-    @(Get-AapNetAdapterProblem $Declaration $Adapters $targets ([string[]]@($HostLan))) | ForEach-Object { Format-AapNetText $_ 197 } | Select-Object -First 64
+    $entries = $null
+    if ($PSBoundParameters.ContainsKey('Neighbors')) { $entries = [object[]]@($Neighbors) }   # check:neighbor-given
+    $peers = $null
+    if ($PSBoundParameters.ContainsKey('PeerMacs')) {   # check:peer-given
+        if ($null -eq $PeerMacs) { $peers = [string[]]@() } else { $peers = [string[]]@($PeerMacs) }   # a supplied $null is an empty list, not an omitted one
+    }
+    @(Get-AapNetAdapterProblem $Declaration $Adapters $targets ([string[]]@($HostLan)) $entries $HostInterface $peers) | ForEach-Object { Format-AapNetText $_ 197 } | Select-Object -First 64
+}
+
+function Get-AapHostNetworkSwitchProblems {
+    <# The VM's switch (Verify check 9, contract Verify): the extensions enabled on it now are exactly the set P19 recorded for
+       it (Baseline), and no HNS network uses it (HnsNetworks). Only the module's Verify reads these, so a consumer never
+       calls this. A list that was not read ($null) is a problem, never an empty one. Any line: AAP_NetworkUntrusted. #>
+    param([AllowNull()][AllowEmptyString()][string]$SwitchName, [AllowNull()][AllowEmptyCollection()][string[]]$Baseline,
+        [AllowNull()][AllowEmptyCollection()][string[]]$Extensions, [AllowNull()][AllowEmptyCollection()][string[]]$HnsNetworks)
+    @(Get-AapNetSwitchProblem $SwitchName $Baseline $Extensions $HnsNetworks) | ForEach-Object { Format-AapNetText $_ 197 } | Select-Object -First 64
 }
 
 # ---- the declaration -----------------------------------------------------------------------------------------------------
@@ -61,7 +98,7 @@ function Get-AapHostNetworkAdapterProblems {
 function Get-AapNetDeclarationProblem($Request, $d) {
     if ((@(Get-AapNetNames $d | Sort-Object) -join ',') -cne (@($script:DeclarationKeys | Sort-Object) -join ',')) { return "the declaration's keys are not exactly $($script:DeclarationKeys -join ', ')" }   # check:decl-keys
     $schema = Get-AapNetField $d 'schema'
-    if (-not (Test-AapNetInt $schema) -or $schema -ne 1 -or [string](Get-AapNetField $d 'kind') -cne 'host_network_attach') { return 'the declaration is not a host_network_attach of schema 1' }   # check:decl-keys
+    if (-not (Test-AapNetInt $schema) -or $schema -ne 2 -or [string](Get-AapNetField $d 'kind') -cne 'host_network_attach') { return 'the declaration is not a host_network_attach of schema 2' }   # check:decl-keys
     $p = New-Object Collections.Generic.List[string]
     $id = [string](Get-AapNetField $d 'vm_id'); $name = [string](Get-AapNetField $d 'vm_name'); $prof = [string](Get-AapNetField $d 'profile')
     if ($id -cne [string](Get-AapNetField $Request 'VmId') -or $name -cne [string](Get-AapNetField $Request 'VmName') -or $prof -cne [string](Get-AapNetField $Request 'Profile')) {   # check:decl-echo
@@ -79,6 +116,11 @@ function Get-AapNetDeclarationProblem($Request, $d) {
     if (-not (Test-AapNetHost $net (Split-AapNetAddress $gw))) { $p.Add("the gateway $(Format-AapNetText $gw) is not a host address of $($net.Text)") }   # check:decl-gateway
     $addr = [string](Get-AapNetField $d 'address')
     if (-not (Test-AapNetHost $net (Split-AapNetAddress $addr)) -or $addr -ceq $gw) { $p.Add("the address $(Format-AapNetText $addr) is not a host address of $($net.Text) other than the gateway") }   # check:decl-address
+    # The static MAC Attach gives the adapter before its first start, of the module's range: the host's permanent neighbour
+    # entry pairs it with the guest's address, which is meant to keep a guest's ARP from moving the host's own entry for that
+    # address (host-neighbour poisoning protection: contract, Attach; Open points, 1; its lab proof is open).
+    $mac = [string](Get-AapNetField $d 'mac')
+    if (-not (Test-AapNetMac $mac)) { $p.Add("the mac $(Format-AapNetText $mac) is not one static MAC of the module's range $($script:MacRange)-xx-xx-xx") }   # check:decl-mac
     # The narrowed exceptions, none by default: one private resolver the owner chose, outside the subnet, as up to two
     # endpoints, UDP and TCP to port 53.
     $ends = Get-AapNetList $d 'endpoints'
@@ -115,7 +157,7 @@ function Get-AapNetDeclarationProblem($Request, $d) {
 
 # ---- the read-back -------------------------------------------------------------------------------------------------------
 
-function Get-AapNetAdapterProblem($d, $Adapters, $HostDeny, [string[]]$HostLan) {
+function Get-AapNetAdapterProblem($d, $Adapters, $HostDeny, [string[]]$HostLan, $Neighbors, $HostInterface, $PeerMacs) {
     $echo = @{ VmId = (Get-AapNetField $d 'vm_id'); VmName = (Get-AapNetField $d 'vm_name'); Profile = (Get-AapNetField $d 'profile') }
     $bad = @(Get-AapNetDeclarationProblem $echo $d)
     if ($bad.Count) { return @($bad | ForEach-Object { "declaration: $_" }) }   # check:adapter-declaration
@@ -125,15 +167,33 @@ function Get-AapNetAdapterProblem($d, $Adapters, $HostDeny, [string[]]$HostLan) 
     $missing = @($script:AdapterKeys | Where-Object { -not (Test-AapNetField $n $_) })
     if ($missing.Count) { return "the adapter read-back lacks $($missing -join ', ')" }   # check:adapter-keys
     $v = @{}
-    foreach ($k in 'SwitchName', 'SwitchType', 'DhcpGuard', 'RouterGuard', 'MacAddressSpoofing', 'PortMirroringMode', 'VlanMode', 'StormLimit', 'LegacyAcls') { $v[$k] = Format-AapNetText (Get-AapNetField $n $k) }
+    foreach ($k in 'SwitchName', 'SwitchType', 'MacAddress', 'DhcpGuard', 'RouterGuard', 'MacAddressSpoofing', 'PortMirroringMode', 'VlanMode', 'StormLimit', 'LegacyAcls') { $v[$k] = Format-AapNetText (Get-AapNetField $n $k) }
     $p = New-Object Collections.Generic.List[string]
     $sw = Get-AapHostNetworkSwitchName ([string](Get-AapNetField $d 'vm_name'))
     $addr = [string](Get-AapNetField $d 'address')
     $gw = [string](Get-AapNetField $d 'gateway')
+    $mac = [string](Get-AapNetField $d 'mac')
     if ([string](Get-AapNetField $n 'SwitchName') -cne $sw -or [string](Get-AapNetField $n 'SwitchType') -cne 'Internal') { $p.Add("the adapter is on '$($v.SwitchName)' ($($v.SwitchType)), not on the internal switch $sw") }   # check:switch
     if ([string](Get-AapNetField $n 'DhcpGuard') -cne 'On') { $p.Add("DHCP guard is '$($v.DhcpGuard)', not On") }   # check:dhcp-guard
     if ([string](Get-AapNetField $n 'RouterGuard') -cne 'On') { $p.Add("router guard is '$($v.RouterGuard)', not On") }   # check:router-guard
     if ([string](Get-AapNetField $n 'MacAddressSpoofing') -cne 'Off') { $p.Add("MAC address spoofing is '$($v.MacAddressSpoofing)', not Off") }   # check:mac-spoofing
+    # The adapter's MAC is the declared one: the permanent neighbour entry pins the guest's address to it (contract, Attach).
+    # Hyper-V's own text for a MAC (twelve hex digits, no separators) is normalised here, by the check: a provider passes it
+    # through as read, because its module cannot see this one's functions (contract, Read-back). Anything else compares as read.
+    if ((ConvertTo-AapNetMac ([string](Get-AapNetField $n 'MacAddress'))) -cne $mac) { $p.Add("the adapter's MAC address is '$($v.MacAddress)', not the declared $($mac)") }   # check:adapter-mac
+    # No other adapter on the switch carries the declared MAC (contract, Verify check 2): MAC address spoofing Off cannot tell
+    # two ports with one MAC apart, and the host's entry would pair the address with both. Only the module reads every
+    # adapter, so only its Verify passes -PeerMacs (a consumer's read-back passes none and nothing is compared). Given, it
+    # lists every other adapter on the switch, the host's own management adapter among them: an empty list, or an entry that
+    # is not a MAC, is a discovery that failed and certifies nothing. MACs compare as hex digits, however they are written.
+    if ($null -ne $PeerMacs) {
+        if ($PeerMacs.Count -eq 0) { $p.Add("no other adapter was listed on $($sw), where the host's own is always one: the peer MACs were not read") }   # check:peer-empty
+        $bad = @($PeerMacs | Where-Object { -not (Test-AapNetPeerMac ([string]$_)) })
+        if ($bad.Count) { $p.Add("$($bad.Count) of the $($PeerMacs.Count) peer MACs on $($sw) are not MACs, the first '$(Format-AapNetText $bad[0])'") }   # check:peer-malformed
+        $key = Get-AapNetMacKey $mac
+        $clash = @($PeerMacs | Where-Object { (Get-AapNetMacKey $_) -ceq $key })
+        if ($clash.Count) { $p.Add("another adapter on $sw carries the declared MAC $($mac)") }   # check:peer-mac-clash
+    }
     if ([string](Get-AapNetField $n 'PortMirroringMode') -cne 'None') { $p.Add("port mirroring is '$($v.PortMirroringMode)', not None") }   # check:mirroring
     if (@('Untagged', 'Access') -cnotcontains [string](Get-AapNetField $n 'VlanMode')) { $p.Add("the VLAN mode is '$($v.VlanMode)', not Untagged or Access") }   # check:vlan
     if ([string](Get-AapNetField $n 'StormLimit') -cne $script:StormLimit) { $p.Add("the storm limit is '$($v.StormLimit)', not $($script:StormLimit)") }   # check:storm-limit
@@ -143,6 +203,29 @@ function Get-AapNetAdapterProblem($d, $Adapters, $HostDeny, [string[]]$HostLan) 
     $build = $sw -clike 'aap-build-*'
     $odd = @(@(Get-AapNetField $n 'Peers') | Where-Object { $build -or (Get-AapHostNetworkSwitchName ([string]$_)) -cne $sw } | ForEach-Object { [string]$_ })
     if ($odd.Count) { $p.Add("$(if ($build) { 'the build VM' } else { 'the runner clone' }) shares $sw with $(Format-AapNetText ($odd -join ', ') 80)$(if (-not $build) { ', not only runner clones of its profile' })") }   # check:peers
+    # Host-neighbour poisoning protection (contract, Attach; Open points, 1): the host's permanent neighbour entry pairs the
+    # guest's address with its MAC, so no guest's ARP is meant to move the host's own entry for it. That protects what the host
+    # sends the guest and nothing else (contract, Limitations: clone-to-clone residuals); its lab proof is open. Only the module's own
+    # Verify passes -Neighbors (what it read from Get-NetNeighbor) and -HostInterface (the adapter it resolved); a consumer's
+    # read-back passes neither.
+    if ($null -ne $Neighbors) {   # check:neighbor-entries
+        $ifx = Get-AapNetHostInterface $HostInterface
+        if ($null -eq $ifx) { $p.Add("the switch's management adapter was not resolved: the neighbour entry has no interface to be held against") }   # check:neighbor-interface-given
+        if ($Neighbors.Count -ne 1) { $p.Add("the host holds $($Neighbors.Count) neighbour entries for $($addr), not 1") }   # check:neighbor-count
+        else {
+            $e = $Neighbors[0]
+            $missing = @($script:NeighborKeys | Where-Object { -not (Test-AapNetField $e $_) })
+            if ($missing.Count) { $p.Add("the neighbour entry read-back lacks $($missing -join ', ')") }   # check:neighbor-keys
+            else {
+                if ([string](Get-AapNetField $e 'IPAddress') -cne $addr) { $p.Add("the neighbour entry is for '$(Format-AapNetText (Get-AapNetField $e 'IPAddress'))', not the guest's $($addr)") }   # check:neighbor-address
+                if ([string](Get-AapNetField $e 'State') -cne 'Permanent') { $p.Add("the neighbour entry's state is '$(Format-AapNetText (Get-AapNetField $e 'State'))', not Permanent") }   # check:neighbor-state
+                if ([string](Get-AapNetField $e 'LinkLayerAddress') -cne $mac) { $p.Add("the neighbour entry's link-layer address is '$(Format-AapNetText (Get-AapNetField $e 'LinkLayerAddress'))', not the declared $($mac)") }   # check:neighbor-mac
+                # The adapter by identity: an alias is only a name another adapter can be given, so the entry must sit on the
+                # interface index the module resolved, and show that adapter's own alias.
+                if ($null -ne $ifx -and ([string](Get-AapNetField $e 'InterfaceIndex') -cne $ifx.Index -or [string](Get-AapNetField $e 'InterfaceAlias') -cne $ifx.Alias)) { $p.Add("the neighbour entry is on interface $(Format-AapNetText (Get-AapNetField $e 'InterfaceIndex')) '$(Format-AapNetText (Get-AapNetField $e 'InterfaceAlias'))', not the switch's management adapter $($ifx.Index) '$(Format-AapNetText $ifx.Alias)'") }   # check:neighbor-interface
+            }
+        }
+    }
 
     $rules = New-Object Collections.Generic.List[object]
     $i = 0
@@ -329,6 +412,57 @@ function Test-AapNetFixed($P) { @($script:FixedDeny | Where-Object { Test-AapNet
 # 192.168.0.0/16 or 100.64.0.0/10.
 function Test-AapNetPrivate($P) { $P.Width -eq 32 -and @($script:PrivateRanges | Where-Object { Test-AapNetCover (Split-AapNetPrefix $_) $P }).Count -gt 0 }
 
+# Whether $Text is one static MAC of the module's range (contract, Attach): canonical text, six pairs of uppercase hex
+# joined by dashes, inside the range the module owns and Allocate takes the lowest of. (The text Hyper-V itself reports an
+# adapter's MAC as is an open lab question; check 2 normalises it first, ConvertTo-AapNetMac.)
+function Test-AapNetMac([string]$Text) {
+    if ($Text -cnotmatch '^[0-9A-F]{2}(-[0-9A-F]{2}){5}\z') { return $false }   # check:mac-canonical
+    if ($Text -cnotlike "$($script:MacRange)-*") { return $false }   # check:mac-range
+    $true
+}
+
+# Hyper-V's adapter MAC text, twelve hex digits with no separators, as the contract's dashed uppercase form: what check 2
+# compares an adapter's MAC through (contract, Read-back), the one place it is normalised: a provider read-back passes the
+# text through as read. Anything that is not exactly twelve uppercase hex digits passes through unchanged, so the check
+# still fails closed on it; the exact text Hyper-V reports is a lab question (D2).
+function ConvertTo-AapNetMac([string]$Text) {
+    if ($Text -cmatch '^[0-9A-F]{12}\z') { ($Text -split '(.{2})' -ne '') -join '-' } else { $Text }   # check:adapter-mac-form
+}
+
+# A MAC as its hex digits in upper case, however it is written ('02-A0-98-00-00-01', '02a098000001', '02:A0:98:00:00:01'): what
+# two MACs are compared by when a clash matters more than the form (contract, Verify check 2); not what check 2 compares the
+# declared MAC by, which is exact.
+function Get-AapNetMacKey([string]$Text) { ([string]$Text -replace '[^0-9A-Fa-f]', '').ToUpperInvariant() }
+
+# Whether $Text is a MAC as an adapter's MAC is read: twelve hex digits, in pairs joined by dashes or by colons, or run
+# together (Hyper-V's own text). Anything else is not one.
+function Test-AapNetPeerMac([string]$Text) {
+    ($Text -cmatch '^([0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}\z') -or ($Text -cmatch '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\z') -or ($Text -cmatch '^[0-9A-Fa-f]{12}\z')
+}
+
+# The switch's management adapter as the module resolved it, @{ Index; Alias } in canonical text; nothing when it is not a
+# positive interface index (digits, no sign, no leading zero) with a printable alias.
+function Get-AapNetHostInterface($H) {
+    if ($null -eq $H) { return }
+    $i = [string](Get-AapNetField $H 'InterfaceIndex'); $a = [string](Get-AapNetField $H 'InterfaceAlias')
+    if ($i -cmatch '^[1-9][0-9]{0,9}\z' -and $a -cmatch '^[ -~]+\z') { @{ Index = $i; Alias = $a } }
+}
+
+# Verify check 9: the extensions enabled on the switch are exactly the baseline P19 recorded for it, and no HNS network uses it.
+# Names compare exactly. A baseline that was not recorded, or a list that was not read, certifies nothing.
+function Get-AapNetSwitchProblem($SwitchName, $Baseline, $Extensions, $Hns) {
+    $p = New-Object Collections.Generic.List[string]
+    $name = Format-AapNetText $SwitchName
+    if ($null -eq $Baseline) { $p.Add("no enabled-extension baseline is recorded for the switch $name"); return $p.ToArray() }   # check:switch-baseline
+    if ($null -eq $Extensions -or $null -eq $Hns) { $p.Add("the extensions or the HNS networks of the switch $name were not read"); return $p.ToArray() }   # check:switch-read
+    $extra = @($Extensions | Where-Object { $Baseline -cnotcontains [string]$_ } | ForEach-Object { [string]$_ })
+    $gone = @($Baseline | Where-Object { $Extensions -cnotcontains [string]$_ } | ForEach-Object { [string]$_ })
+    if ($extra.Count) { $p.Add("the switch $name has an extension enabled beyond its baseline: $(Format-AapNetText ($extra -join ', ') 80)") }   # check:switch-extension-extra
+    if ($gone.Count) { $p.Add("the switch $name lacks the baseline extension $(Format-AapNetText ($gone -join ', ') 80)") }   # check:switch-extension-missing
+    if (@($Hns).Count) { $p.Add("an HNS network uses the switch $name`: $(Format-AapNetText (@($Hns) -join ', ') 80)") }   # check:switch-hns
+    $p.ToArray()
+}
+
 # Whether prefix $P contains $T, an address or a prefix of the same family.
 function Test-AapNetCover($P, $T) {
     if ($P.Width -ne $T.Width -or $T.Bits -lt $P.Bits) { return $false }   # check:cover-width
@@ -352,4 +486,4 @@ function Format-AapNetText($Value, [int]$Max = 40) {
     if ($s.Length -gt $Max) { $s.Substring(0, $Max) + '...' } else { $s }
 }
 
-Export-ModuleMember -Function Get-AapHostNetworkFixedDeny, Get-AapHostNetworkSwitchName, Get-AapHostNetworkDeclarationProblems, Get-AapHostNetworkAdapterProblems
+Export-ModuleMember -Function Get-AapHostNetworkFixedDeny, Get-AapHostNetworkMacRange, Get-AapHostNetworkSwitchName, Get-AapHostNetworkDeclarationProblems, Get-AapHostNetworkAdapterProblems, Get-AapHostNetworkSwitchProblems

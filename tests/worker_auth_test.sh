@@ -229,6 +229,12 @@ LOCK_WAIT_SECONDS=${TEST_LOCK_WAIT:-20}
 AUDIT_MAX_BYTES=${TEST_AUDIT_MAX:-${AUDIT_MAX_BYTES}}
 SWEEP_SECONDS=${TEST_SWEEP_SECONDS:-${SWEEP_SECONDS}}
 RUN_LIMIT_SECONDS=${TEST_RUN_LIMIT:-${RUN_LIMIT_SECONDS}}
+# A competing writer takes the lease file between the replay check and the
+# create: the create's own subshell (set -C) plants TEST_PLANT_LEASE there first.
+if [[ -n "${TEST_PLANT_LEASE+x}" ]]; then
+  set -T
+  trap '[[ "${BASH_COMMAND}" != "set -C" ]] || printf "%s" "${TEST_PLANT_LEASE}" > "${BROKER_DIR}/leases/${LEASE_ID}.json"' DEBUG
+fi
 load_config() {
   echo load_config >> "${T}/called"
   if [[ -n "${TEST_CONF_FAIL:-}" ]]; then
@@ -717,6 +723,60 @@ jq -e --argjson a "${foreign}" --argjson b "${lookalike}" '[.[].id] | index($a) 
 [[ "$(grep -c . "${T}/gh/deleted")" -eq 2 ]] || fail "unexpected deletes: $(cat "${T}/gh/deleted")"
 echo "release by lease id only ok"
 
+# ---- release only an idle runner (P08.2) ------------------------------------
+# The release re-reads the runner right before the DELETE: a runner that is
+# busy, or whose state cannot be read, keeps its lease and is not deleted.
+reset
+b1=$(new_lease)
+run_broker "$(lease_req "${b1}" 1 1 "$(new_res)")"
+expect "lease for the idle re-check" issued ok
+br=$(out_field .runner_id)
+gh_set "${br}" online false
+run_broker "$(small_req status_request "${b1}")"
+expect "status before the runner turns busy" ok ok
+[[ "$(out_field .runner.busy)" == false ]] || fail "the runner was not idle at the first check: ${OUT}"
+# The runner takes a job between that check and the release.
+gh_set "${br}" online true
+run_broker "$(small_req release_request "${b1}")"
+expect "release of a runner that turned busy" retry github_error
+[[ "$(calls 'DELETE /orgs')" -eq 0 && ! -e "${T}/gh/deleted" ]] || fail "a busy runner was sent a release request"
+[[ "$(ledger "${b1}" .state)" == issued && -e "${T}/state/open/${b1}" && "$(runner_count)" -eq 1 ]] \
+  || fail "a busy runner lost its lease"
+[[ "$(last_audit '[.op, .outcome, .reason, .runner_id] | map(tostring) | join(" ")')" == "release retry github_error ${br}" ]] \
+  || fail "busy release audit"
+# Its state cannot be read: the lease stays.
+gh_set "${br}" offline false
+echo 500 > "${T}/gh/get_code"
+run_broker "$(small_req release_request "${b1}")"
+expect "release of a runner whose state is unreadable" retry github_error
+echo 403 > "${T}/gh/get_code"
+run_broker "$(small_req release_request "${b1}")"
+expect "release of a runner while GitHub rate limits the read" retry github_error
+rm -f "${T}/gh/get_code"
+[[ "$(calls 'DELETE /orgs')" -eq 0 && ! -e "${T}/gh/deleted" ]] || fail "an unreadable runner was sent a release request"
+[[ "$(ledger "${b1}" .state)" == issued && -e "${T}/state/open/${b1}" && "$(runner_count)" -eq 1 ]] \
+  || fail "an unreadable runner lost its lease"
+# Still idle (online but not busy): released as before.
+gh_set "${br}" online false
+run_broker "$(small_req release_request "${b1}")"
+expect "release of a runner that is still idle" deregistered ok
+[[ "$(cat "${T}/gh/deleted")" == "${br}" && "$(ledger "${b1}" .state)" == released && ! -e "${T}/state/open/${b1}" ]] \
+  || fail "an idle runner was not released and closed"
+# A lease still pending is found by its derived name: the same re-check.
+b2=l-00000000000000000000000000000002
+seed "${b2}" pending aap-w-1-8-00000002 - $(($(date -u +%s) + 600))
+pbr=$(gh_runner aap-w-1-8-00000002 online true)
+before=$(calls 'DELETE /orgs')
+run_broker "$(small_req release_request "${b2}")"
+expect "release of a pending lease whose runner is busy" retry github_error
+[[ "$(calls 'DELETE /orgs')" -eq "${before}" && "$(ledger "${b2}" .state)" == pending && -e "${T}/state/open/${b2}" ]] \
+  || fail "a busy pending runner was sent a release request or lost its lease"
+gh_set "${pbr}" online false
+run_broker "$(small_req release_request "${b2}")"
+expect "release of a pending lease whose runner is idle" deregistered ok
+[[ "$(tail -n 1 "${T}/gh/deleted")" == "${pbr}" ]] || fail "the idle pending runner was not deleted"
+echo "release only when idle ok"
+
 # ---- ledger writes that fail -------------------------------------------------
 # The nonce check, the nonce write and the close each fail once: exit 1, no
 # response, the lease still issued and open, no temp file left.
@@ -996,6 +1056,28 @@ done
 [[ -f "${T}/log/broker-audit.jsonl.1" && "$(stat -c %a "${T}/log/broker-audit.jsonl.1")" == 600 ]] || fail "the audit log was not rotated to .1"
 [[ ! -e "${T}/log/broker-audit.jsonl.2" ]] || fail "more than one rotated audit log"
 echo "audit rotation ok"
+
+# ---- audit log location -----------------------------------------------------
+# The audit log is broker state: under the broker directory, not /var/log.
+dflt=$(bash -c 'source "$1" && printf %s "${AUDIT_LOG}"' _ "${broker}")
+[[ "${dflt}" == /var/lib/aap-runner/broker/broker-audit.jsonl ]] || fail "the audit log defaults to ${dflt}"
+echo "audit log location ok"
+
+# ---- a lease create that fails ----------------------------------------------
+# A competing writer holds the lease file when the exclusive create runs: exit 1,
+# no response. A file with content is theirs and stays; an empty one is removed.
+reset
+lid=$(new_lease)
+run_broker "$(lease_req "${lid}" 1 1 "$(new_res)")" TEST_PLANT_LEASE='{"planted":1}'
+[[ "${RC}" -eq 1 && -z "${OUT}" ]] || fail "a failed lease create gave exit ${RC} and output ${OUT}"
+[[ "$(cat "${T}/state/leases/${lid}.json" 2>/dev/null)" == '{"planted":1}' ]] \
+  || fail "a failed create removed or changed a lease file that was not empty"
+reset
+lid=$(new_lease)
+run_broker "$(lease_req "${lid}" 1 1 "$(new_res)")" TEST_PLANT_LEASE=
+[[ "${RC}" -eq 1 && -z "${OUT}" ]] || fail "a failed lease create over an empty file gave exit ${RC} and output ${OUT}"
+[[ ! -e "${T}/state/leases/${lid}.json" ]] || fail "a failed create left an empty lease file"
+echo "failed lease create ok"
 
 # ---- secrets ---------------------------------------------------------------
 rm -f "${T}/sampling"

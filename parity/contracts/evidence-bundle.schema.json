@@ -221,7 +221,7 @@
     "waivers": {
       "type": "array",
       "maxItems": 16,
-      "description": "Optional (contract revision 2). Each waiver weakens the oracle of one workload definition; readers list every one. Until P05.1, tools/parity-certify writes waivers into `command` and parity-report.json / verdict.json stay authoritative.",
+      "description": "Optional (contract revision 2). Each waiver weakens the oracle of one workload definition; readers list every one. tools/parity-certify writes them here (since P05.1); parity-report.json / verdict.json list the same waivers.",
       "items": {
         "type": "object",
         "additionalProperties": false,

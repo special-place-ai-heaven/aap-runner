@@ -120,8 +120,9 @@ change.
    sidecars it does not check, and Windows device outputs) builds directly; rustc, link and
    clang-cl `/Fd` outputs rely on zccache's own delivery and P04's evidence. Accepted residuals
    (guests/cache/README.md): concurrent writers of one output path inside one VM, hard-linked outputs
-   on Windows (COPY mode is the control), and the daemon copy zccache deploys into a root, which is
-   not hash-checked until P22.
+   on Windows (COPY mode is the control). The daemon copy zccache deploys into a root is hashed
+   against the pinned zccache member before the root is primed (P22.1): any other file there is
+   deleted and the root is refused, so its calls build directly.
 
 ## Matrix template (both platforms)
 

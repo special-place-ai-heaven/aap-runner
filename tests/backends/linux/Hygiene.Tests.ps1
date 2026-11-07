@@ -26,7 +26,8 @@ Describe 'no secret anywhere' {
         $guest = New-LinGuest
         $spy = { param($Call) foreach ($k in @($Call.Keys)) { if ($Call[$k] -is [string]) { $seen.Add($Call[$k]) } }; & $guest $Call }.GetNewClosure()
         $B = New-AapLinBackend -Provider (New-LinProvider) -Network (New-LinNetwork) -Transport $spy -BrokerInvoker (New-LinBroker) -AllocatorRoot $w.Cap `
-            -JournalRoot $w.Journal -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue -Sleep { param($s) }
+            -JournalRoot $w.Journal -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue -Sleep { param($s) } `
+            -WatchdogClockPath (Join-Path $w.Fake 'watchdog\lifetime-clock.json')
         $r = New-LinReservation $w
         $rid = $r.reservation_id
         [void](Invoke-LinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })

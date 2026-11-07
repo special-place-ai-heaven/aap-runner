@@ -565,6 +565,13 @@ mod tests {
         assert!(parse_labels("a_b").is_err());
         assert!(parse_labels("a.b").is_err());
         assert!(parse_labels("a b").is_err());
+        // The two R1 tier label lines (status-settings.md, Tiers) pass unchanged.
+        for line in [
+            "self-hosted,linux,x64,fresh,heavy",
+            "self-hosted,linux,x64,fresh,light",
+        ] {
+            assert_eq!(parse_labels(line).unwrap().join(","), line);
+        }
     }
 
     #[test]

@@ -48,6 +48,58 @@ requests ([../windows/INTEGRATION.md](../windows/INTEGRATION.md)) apply here too
    `Get-AapWinBrokerStatus` for `windows` (the Linux one reads a journal with a `windows` record as unreadable and returns
    `$null`).
 7. **Wall clock, pause, off, resize, unknown VMs**: as the Windows twin (its INTEGRATION.md, P12 items 7-9).
+8. **Hard VM lifetime cap (P11.3, owner Q4; allocator.md L1 to L10; P12.3 wires it).** The backend enforces the cap
+   itself on every step; the supervisor supplies its inputs and reports what it returns:
+
+   ```powershell
+   $L = New-AapLinBackend ... -CapHours <effective vm_lifetime_cap_hours, 1..6> -WatchdogClockPath <P10.7's lifetime-clock.json> `
+       -ClockSafety <'' | 'host_reboot' | 'clock_unavailable'>   # L7, decided from the supervisor's own clock record at start
+   $L.CapHours = <n>          # a settings change applies at the next step; anything outside 1..6 counts as 6
+   Invoke-AapLinCapPass -Backend $L -Reservations <every live reservation>   # every tick, before any Invoke-AapLinStep (L3 rule 1)
+   ```
+
+   - **Decision**: `acquired_at` (persisted in allocator.json, so a restart decides again from it), the cap in force and
+     the backend's true time: the wall clock, never moved back within one process (a boot-bound `Stopwatch` counter
+     advances it while the wall clock is stepped back). Exactly the cap counts. Nothing from the guest, the broker or
+     GitHub enters it. Across a restart with a clock stepped back the supervisor's `lifetime-clock.json` is the only
+     source of true time: pass it as `-Clock` (a scriptblock returning that estimate) or the restart re-decides from the
+     wall clock. `-ClockSafety` caps every reservation whose VM exists at this context's first look at it, with that
+     trigger and the measured age (or `null`), never six invented hours.
+   - **Result**: every step of a capped reservation returns `LifetimeCap` (the `lifetime_cap` evidence object of
+     backend-lifecycle.schema.json: `cap_hours`, `started_utc`, `deadline_utc`, `elapsed_s`, `trigger`, `power_off_utc`,
+     `reason` `vm_lifetime_cap`; `$null` while it cannot be formed: no known start, or no power-off issued yet;
+     `power_off_utc` is the issuance, whether Stop-VM then returned or threw) and `Detail` (one bounded line: the error of a failed power-off, decision, allocator move or journal write,
+     never swallowed). `Code` is `vm_lifetime_cap` once torn down, the ordinary teardown code while it waits
+     (`release_pending`, `teardown_failed`, `retry_later`), `cap_breach` while the VM is not observed Off
+     (the destroy intent with the evidence, the durable latch, is written anyway, so a restart keeps the breach; the
+     journal's breach detail is the fixed `cap_breach`; report `error`,
+     `vm_lifetime_cap: cap_breach:` in `detail`, block new VM starts, keep the slot held), `enforcement_unavailable` when
+     the VM list or the decision itself failed (an unreadable start time, a failing clock, bad journal evidence: the VM
+     is powered off by id or derived name all the same, and `Invoke-AapLinCapPass` goes on with the other
+     reservations), `journal_unreadable` / `journal_unwritable` when only the journal failed (the VM is off). A start
+     time ahead of true time is capped as `clock_unavailable` with no measured age. Fill the slot's `vm_lifetime_cap`
+     object of `status.v5.json` from it and log one line per decision (reservation id, slot, the three times). An
+     invalid `CapHours` counts as 6 and is warned once per value.
+   - **Start gate**: `Action` `waiting` with `Code` `backstop_down` or `notes_unverified`; `Detail` names why:
+     `unconfigured` (no or not an absolute normalized `-WatchdogClockPath`), `boot_id_unreadable`, `untrusted` (the
+     record's folder fails the admin-only trust check or the file is writable by anyone else), `missing`, `invalid`
+     (over 64 KiB, not JSON, not a schema 1 watchdog record, `latched` not a list of objects), `other_boot`, `stale` (older
+     than 180 s or more than 60 s ahead), `breach` (the watchdog holds a `cap_breach`), `local_cap_breach` (this backend
+     holds one). The reservation stays `creating`; report `backstop_down:`. Without a valid watchdog record nothing
+     starts: no Linux VM boots before P10.7 is installed (B7, B8).
+   - **Recovery (L6 d)**: a boot an earlier supervisor journaled and never finished, whose VM is not running now, is
+     never started: it is given up (`boot` `failed` `retryable`) and destroyed.
+     Contract clarification requested: allocator.md L6 d reads more broadly (`a VM that is not running at supervisor
+     start is never started by recovery, whatever the journal says`); this backend reads it as a start an earlier
+     supervisor began, so a created VM whose first boot was never attempted still gets it.
+   - **Not here**: the durable clock latch and its `enforcement_stage` (`lifetime-clock.json`, P12.3), the E2 stage
+     (terminating the VM's `vmwp.exe`; `cap_breach` is reported right after a power-off that did not take), bounded and
+     killable Hyper-V calls (L3: every provider call still runs in-process), and the allocator edges below. Safe to defer:
+     no VM can start without a valid watchdog record.
+   - **Allocator requests (AapCapacity.psm1, P12.3)**: L4 asks for one direct edge `ready|busy|draining|collecting ->
+     deleting` with `cleanup_uncertain: true`; the backend walks the existing edges instead (`busy -> collecting ->
+     deleting`). `quarantined` with kind `heartbeat` or `crash` cannot reach `deleting` outside reconcile, so for those
+     the VM is powered off and torn down but the allocator state is left to reconcile.
 
 ## P15: Linux guest bootstrap and agent (what this backend expects of the image)
 
@@ -174,6 +226,10 @@ declaration's static addressing replaces it).
 - **Budgets**: the clone cap must hold the job's whole root file system growth (no scratch disk); measure with real jobs.
 - **Mount options and read-ahead**: confirm on the running clone that the root file system's options and `read_ahead_kb`
   are the image's (the backend adds none), for the P24 comparison.
+- **Lifetime cap (P11.3)**: `Set-VM -Notes` keeps the compact deadline record byte for byte and `Get-VM` reads it back;
+  `Stop-VM -TurnOff -Force` turns a busy Linux guest off with no guest cooperation and the VM is then observed `Off`;
+  the registry `PrefetchParameters\BootId` changes at every host boot and never with the wall clock (it is the boot id
+  the watchdog, P10.7, must use too); the 90 s bound from deadline to observed Off, with a real job running.
 
 ## Coordinator and CI
 
@@ -188,8 +244,8 @@ declaration's static addressing replaces it).
    `status`.
 2. **Seq persistence** is a host-side mark file in the clone's ssh folder (blocks of 1000). guest-transport.md's
    Sequence rule allows it (gaps are normal); a contract revision could name it.
-3. **Crash between `New-VM` and its record; teardown of a reservation that never got a VM; base re-hash cost; hard VM
-   lifetime cap**: as the Windows twin's requests 2, 4, 5 and 6.
+3. **Crash between `New-VM` and its record; teardown of a reservation that never got a VM; base re-hash cost**: as the
+   Windows twin's requests 2, 4 and 5. The hard VM lifetime cap is implemented (P12 item 8).
 4. **KVP for pinning** keeps the Key-Value Pair Exchange integration service on for Linux clones (host-to-guest items are
    never written). If P02.1 rejects it, the fallback is to pin the host key from the first SSH connection made before any
    job ran (the hvsocket endpoint is the VM itself, so there is no network to spoof); that needs a contract revision.

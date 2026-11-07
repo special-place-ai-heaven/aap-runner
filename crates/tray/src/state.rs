@@ -117,6 +117,8 @@ pub struct Slot {
     pub started_at: Option<SystemTime>,
     pub cpu_cores: Option<f64>,
     pub mem_gib: Option<f64>,
+    /// The manager gave up on this slot (`retired`); `state` is Error for the colour.
+    pub retired: bool,
 }
 
 impl Slot {
@@ -133,6 +135,20 @@ impl Slot {
 
     pub fn busy(&self) -> bool {
         matches!(self.state, Sym::Running | Sym::Draining)
+    }
+
+    /// The state word on the card.
+    pub fn word(&self) -> &'static str {
+        if self.retired {
+            "Retired"
+        } else {
+            self.state.label()
+        }
+    }
+
+    /// A line under the word, for a state that needs one.
+    pub fn note(&self) -> Option<&'static str> {
+        self.retired.then_some("gave up; restarts with the pool")
     }
 }
 
@@ -310,13 +326,14 @@ struct RawSlot {
     mem_gib: Option<f64>,
 }
 
-/// A slot state word. Anything else shows as Starting: the slot exists, its state says no more.
+/// A slot state word. `retired` (the manager gave up) shows as Error; anything else unknown shows
+/// as Starting: the slot exists, its state says no more.
 fn slot_sym(state: &str) -> Sym {
     match state {
         "idle" => Sym::Idle,
         "running" => Sym::Running,
         "draining" => Sym::Draining,
-        "error" => Sym::Error,
+        "error" | "retired" => Sym::Error,
         _ => Sym::Starting,
     }
 }
@@ -389,6 +406,7 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
             started_at: s.started_at.as_deref().and_then(parse_rfc3339),
             cpu_cores: s.cpu_cores,
             mem_gib: s.mem_gib,
+            retired: s.state.as_deref() == Some("retired"),
         })
         .collect();
     // No (or an empty) slots[]: one card from the top-level fields while the manager runs.
@@ -408,6 +426,7 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
             started_at: None,
             cpu_cores: None,
             mem_gib: None,
+            retired: false,
         }]
     } else {
         Vec::new()
@@ -451,8 +470,8 @@ pub struct CapacityV5 {
     pub host: Res,
 }
 
-/// One runner profile: `linux` or `windows`, its backend (`wsl-legacy`, `hyperv-vm` or `none`),
-/// its count and share, and the caps the allocator gives it.
+/// One runner profile: `linux` or `windows`, its backend (`wsl-legacy`, `hyperv-vm`,
+/// `windows-host` or `none`), its count and share, and the caps the allocator gives it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ProfileV5 {
     pub profile: String,
@@ -466,6 +485,26 @@ pub struct ProfileV5 {
     pub generation_state: Option<String>,
     pub available: bool,
     pub unavailable_reason: String,
+    /// `online`, `busy` or `stopped`, present exactly with `backend: windows-host`.
+    #[serde(default)]
+    pub host_runner: Option<String>,
+}
+
+/// The Windows row's name for `backend: windows-host` (status-settings.md, Windows host).
+pub const HOST_RUNNER_NAME: &str = "interim runner on this PC";
+/// The one warning line beside it.
+pub const HOST_RUNNER_WARNING: &str =
+    "Unisolated: jobs run directly on this PC (owner accepted 2026-10-20).";
+
+impl ProfileV5 {
+    /// The interim runner's state: `online`, `busy`, or `stopped` and the missing piece.
+    pub fn host_state(&self) -> String {
+        match self.host_runner.as_deref() {
+            Some(s @ ("online" | "busy")) => s.into(),
+            _ if self.unavailable_reason.is_empty() => "stopped".into(),
+            _ => format!("stopped: {}", self.unavailable_reason),
+        }
+    }
 }
 
 /// One slot of any backend. `run_url` and `job_url` go through [`valid_run_url`] and
@@ -504,9 +543,20 @@ impl StatusV5 {
         self.profiles.iter().find(|p| p.profile == name)
     }
 
+    /// The Windows profile while it is the interim runner on this PC.
+    pub fn windows_host(&self) -> Option<&ProfileV5> {
+        self.profile("windows")
+            .filter(|p| p.backend == "windows-host")
+    }
+
     /// The supervisor reads settings schema 3, so the tray may write it.
     pub fn takes_settings_v3(&self) -> bool {
         self.settings_schemas.contains(&3)
+    }
+
+    /// The supervisor reads settings schema 4 (the tiers), so the tray may write it.
+    pub fn takes_settings_v4(&self) -> bool {
+        self.settings_schemas.contains(&4)
     }
 }
 
@@ -757,6 +807,28 @@ mod tests {
         for (state, want) in cases {
             assert_eq!(status(&json(state, t), now), want, "{state}");
         }
+    }
+
+    #[test]
+    fn a_retired_slot_is_retired_and_other_unknown_words_still_start() {
+        let now = at("2026-10-12T08:01:00Z");
+        let json = r#"{"schema":4,"state":"running","job":"j","updated":"2026-10-12T08:00:00Z",
+            "slots":[{"slot":1,"state":"retired"},{"slot":2,"state":"bogus"},{"slot":3,"state":"idle"}]}"#;
+        let slots = parse_status(json, now).slots;
+        assert!(slots[0].retired && !slots[1].retired && !slots[2].retired);
+        assert_eq!((slots[0].word(), slots[0].state), ("Retired", Sym::Error));
+        assert!(
+            slots[0]
+                .note()
+                .is_some_and(|n| n.contains("restarts with the pool"))
+        );
+        assert!(!slots[0].busy());
+        assert_eq!(
+            (slots[1].word(), slots[1].state),
+            ("Starting", Sym::Starting)
+        );
+        assert_eq!(slots[1].note(), None);
+        assert_eq!(slots[2].word(), "Idle");
     }
 
     #[test]
@@ -1018,6 +1090,7 @@ mod tests {
             "mixed-five-slots",
             "storage-missing-and-untrusted",
             "storage-unconfigured",
+            "windows-host-busy",
         ] {
             let v = parse_status_v5(&fixture(&format!("status-v5/valid/{name}.json")), now)
                 .expect(name);
@@ -1041,6 +1114,39 @@ mod tests {
         assert_eq!(v.slots[3].os, "Windows");
         assert_eq!(v.slots[3].backend, "hyperv-vm");
         assert!(valid_run_url(&v.slots[0].run_url));
+        assert!(
+            v.windows_host().is_none(),
+            "a VM profile is not the interim runner"
+        );
+    }
+
+    #[test]
+    fn status_v5_reads_the_interim_windows_runner() {
+        let now = at("2026-10-19T18:01:00Z");
+        let good = fixture("status-v5/valid/windows-host-busy.json");
+        let v = parse_status_v5(&good, now).unwrap();
+        let h = v.windows_host().expect("windows-host");
+        assert_eq!((h.count, h.available), (0, true));
+        assert_eq!(h.host_runner.as_deref(), Some("busy"));
+        assert_eq!(h.host_state(), "busy");
+        let online = good.replace(r#""host_runner": "busy""#, r#""host_runner": "online""#);
+        assert_eq!(
+            parse_status_v5(&online, now)
+                .unwrap()
+                .windows_host()
+                .unwrap()
+                .host_state(),
+            "online"
+        );
+        let stopped = good.replace(
+            "\"unavailable_reason\": \"\",\n      \"host_runner\": \"busy\"",
+            "\"unavailable_reason\": \"runner listener not running\",\n      \"host_runner\": \"stopped\"",
+        );
+        let v = parse_status_v5(&stopped, now).unwrap();
+        assert_eq!(
+            v.windows_host().unwrap().host_state(),
+            "stopped: runner listener not running"
+        );
     }
 
     #[test]

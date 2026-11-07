@@ -65,7 +65,7 @@ one is a separate step allowed only when its tip equals the reviewed head alread
 merged (done once, P18). The base clone is never built in; its fast-forward of `main`
 is a standing HOLD while the owner's uncommitted `.gitignore` edit conflicts, and its
 dirty inventory is compared before and after every cleanup and left untouched.
-Concurrency in force: 3 workers, 2 compile-heavy, 1 full suite.
+Concurrency in force: 3 workers, 2 compile-heavy, 1 full suite, 1 image/IO-heavy job. These budgets are enforced at claim from `ledger.json`, not by convention.
 
 The registry and compact evidence must live outside disposable roots. A manifest
 records item/attempt, canonical root paths, branch and base SHA, registered worktree
@@ -81,7 +81,13 @@ manifest/lockfile modification without an explicit serialized owner. Add newly
 discovered files or child tasks to the ledger before touching them.
 
 At most three workers, two compile-heavy jobs, one full suite and one image/IO-heavy
-job run concurrently, subject to a stricter approved lab budget. Already busy live
+job run concurrently, subject to a stricter approved lab budget. The limits are the
+ledger fields `max_concurrent_workers`, `max_compile_heavy`, `max_full_test_suites` and
+`max_io_heavy` (the gate's defaults are 3, 2, 1 and 1 when a field is absent). Each
+claim takes one worker slot plus the `tokens` (`compile`, `suite`, `io`) that its
+`ledger.json` task declares; tokens stay held until the item's leases are released, an
+unknown token is refused at import, and a task without `tokens` takes a worker slot
+only. Every NOT_STARTED and IN_PROGRESS task declares its tokens. Already busy live
 runners are never implicitly borrowed as a test environment. Independent review
 can overlap implementation of disjoint ready leaves; it cannot certify an old head.
 

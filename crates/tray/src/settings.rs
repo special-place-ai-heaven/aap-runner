@@ -8,6 +8,9 @@
 //! Schema 3 (two counts 0..5, shares, host reserve) is written over a stored schema 3 file, or
 //! while a fresh `status.v5.json` says the supervisor reads it, never schema 2 over schema 3; its
 //! keys the window has no control for yet are kept as they are.
+//! Schema 4 (R1 tiers: light 0..10 and heavy 0..2 instead of `runner_count`) is written over a
+//! stored schema 4 file, or while a fresh `status.v5.json` lists 4; never 3 or 2 over 4. In memory
+//! `runner_count` is the light (or, before schema 4, the untiered) Linux count.
 
 use crate::state::{StatusV5, inbox, read_bounded, read_status_v5, write_atomic};
 use serde::{Deserialize, Serialize};
@@ -23,6 +26,32 @@ pub const MAX_RUNNERS: u32 = 5;
 /// A native Windows runner backend exists. Until it does the Windows count is a stored choice
 /// that starts nothing, and Linux keeps at least one runner so the pool runs something.
 pub const WINDOWS_BACKEND: bool = false;
+
+/// Light slots in settings schema 4, and heavy slots.
+pub const LIGHT: RangeInclusive<u32> = 0..=10;
+pub const HEAVY: RangeInclusive<u32> = 0..=2;
+/// The memory a heavy and a light slot reserve (status-settings.md, Tiers). Their sum over the
+/// slots must fit the memory total, as the manager and the supervisor require.
+pub const HEAVY_GIB: u32 = 20;
+pub const LIGHT_GIB: u32 = 3;
+/// Windows runners in settings schema 4.
+pub const WINDOWS: RangeInclusive<u32> = 0..=5;
+
+/// A Linux tier (status-settings.md, Tiers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    Light,
+    Heavy,
+}
+
+impl Tier {
+    pub fn name(self) -> &'static str {
+        match self {
+            Tier::Light => "Light",
+            Tier::Heavy => "Heavy",
+        }
+    }
+}
 
 /// A runner profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,6 +229,9 @@ pub struct Settings {
     /// exists (the window keeps it in `windows_choice_path`), and not when 0.
     #[serde(skip_serializing_if = "omit_windows")]
     pub windows_runner_count: u32,
+    /// Heavy Linux slots: only in a schema 4 file, never in a schema 2 one.
+    #[serde(skip)]
+    pub linux_heavy_count: u32,
 }
 
 impl Default for Settings {
@@ -213,6 +245,7 @@ impl Default for Settings {
             io_percent: 90,
             sharing: Sharing::Slice,
             windows_runner_count: 0,
+            linux_heavy_count: 0,
         }
     }
 }
@@ -265,6 +298,12 @@ impl Settings {
                 Err(format!("{name} must be {}..{}", r.start(), r.end()))
             }
         };
+        if self.schema >= 4 {
+            return self.check_tiers();
+        }
+        if self.linux_heavy_count > 0 {
+            return Err("Heavy runners need a supervisor that reads settings schema 4".into());
+        }
         // Schema 3 is the supervisor's word that it runs Windows: Linux may be 0.
         let v3 = self.schema >= 3;
         if !v3 {
@@ -309,6 +348,36 @@ impl Settings {
             ));
         }
         Ok(())
+    }
+
+    /// Schema 4's shape: the tier and Windows ranges, at least one Linux runner (the supervisor
+    /// that lists schema 4 runs no Windows VM), the totals' ranges, and the tier reservations
+    /// within the memory total. The totals stay the WSL pool totals as in schema 3; the Linux
+    /// per-slot limits come from the tier table.
+    fn check_tiers(&self) -> Result<(), String> {
+        let within = |name: &str, v: u32, r: RangeInclusive<u32>| {
+            if r.contains(&v) {
+                Ok(())
+            } else {
+                Err(format!("{name} must be {}..{}", r.start(), r.end()))
+            }
+        };
+        within("Light runners", self.runner_count, LIGHT)?;
+        within("Heavy runners", self.linux_heavy_count, HEAVY)?;
+        within("Windows runners", self.windows_runner_count, WINDOWS)?;
+        if self.runner_count + self.linux_heavy_count == 0 {
+            return Err("Schema 4 needs at least one Linux runner, light or heavy".into());
+        }
+        within("Total CPUs", self.job_cpus, CPUS)?;
+        within("Total memory GiB", self.job_memory_gib, MEMORY_GIB)?;
+        let need = self.linux_heavy_count * HEAVY_GIB + self.runner_count * LIGHT_GIB;
+        if need > self.job_memory_gib {
+            return Err(format!(
+                "Heavy {} + Light {} need {need} GiB; total memory is {} GiB",
+                self.linux_heavy_count, self.runner_count, self.job_memory_gib
+            ));
+        }
+        within("IO cap percent", self.io_percent, IO_PERCENT)
     }
 
     pub fn toggle_label(&self) -> &'static str {
@@ -408,6 +477,9 @@ pub fn read_settings(base: &Path) -> Settings {
     let Some(text) = read_bounded(&inbox(base).join("settings.json")) else {
         return Settings::default();
     };
+    if let Some(v4) = parse_v4(&text) {
+        return v4.settings();
+    }
     if let Some(v3) = parse_v3(&text) {
         return v3.settings();
     }
@@ -427,14 +499,22 @@ pub fn write_settings(base: &Path, s: &Settings, vm: &VmLimit) -> io::Result<()>
 
 fn write_settings_at(base: &Path, s: &Settings, vm: &VmLimit, now: SystemTime) -> io::Result<()> {
     let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
-    let bytes = match kept_v3(base, now) {
-        Some(kept) => {
+    let bytes = match (kept_v4(base, now), kept_v3(base, now)) {
+        (Some((kept, own_windows)), _) => {
+            let v4 = SettingsV4::edited(s, kept, own_windows);
+            v4.check().map_err(invalid)?;
+            serde_json::to_vec(&v4)?
+        }
+        (None, Some(kept)) => {
             let v3 = SettingsV3::edited(s, kept);
             v3.settings().validate(vm).map_err(invalid)?;
             v3.check().map_err(invalid)?;
+            if s.linux_heavy_count > 0 {
+                return Err(invalid("Heavy runners need settings schema 4".into()));
+            }
             serde_json::to_vec(&v3)?
         }
-        None => {
+        (None, None) => {
             let v2 = Settings {
                 schema: SETTINGS_SCHEMA,
                 ..*s
@@ -516,6 +596,7 @@ impl SettingsV3 {
             io_percent: self.io_percent,
             sharing: self.sharing,
             windows_runner_count: self.windows_runner_count,
+            linux_heavy_count: 0,
         }
     }
 
@@ -589,6 +670,11 @@ fn kept_v3(base: &Path, now: SystemTime) -> Option<SettingsV3> {
         return Some(v3);
     }
     let v5 = read_status_v5(base, now).filter(StatusV5::takes_settings_v3)?;
+    Some(v3_from_status(&v5))
+}
+
+/// The supervisor-side keys `v5` reports, and the defaults for the rest.
+fn v3_from_status(v5: &StatusV5) -> SettingsV3 {
     let d = Settings::default();
     let per_profile = v5.capacity.share_mode == "per_profile";
     let share = |name: &str| {
@@ -596,7 +682,7 @@ fn kept_v3(base: &Path, now: SystemTime) -> Option<SettingsV3> {
             .and_then(|p| p.share_percent)
             .filter(|_| per_profile)
     };
-    Some(SettingsV3 {
+    SettingsV3 {
         schema: 3,
         linux_backend: if v5
             .profile("linux")
@@ -622,6 +708,169 @@ fn kept_v3(base: &Path, now: SystemTime) -> Option<SettingsV3> {
         linux_share_percent: share("linux"),
         windows_share_percent: share("windows"),
         lease_wall_clock_hours: 6,
+    }
+}
+
+/// The tray may write schema 4: a stored valid schema 4 file, or a fresh `status.v5.json` that
+/// lists 4. The window offers the tiers only then.
+pub fn tiers_writable(base: &Path) -> bool {
+    tiers_writable_at(base, SystemTime::now())
+}
+
+fn tiers_writable_at(base: &Path, now: SystemTime) -> bool {
+    kept_v4(base, now).is_some()
+}
+
+/// `inbox\settings.json` schema 4 (parity/contracts/settings-v4.schema.json): schema 3's keys
+/// with the two tier counts instead of `runner_count`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SettingsV4 {
+    schema: u32,
+    linux_backend: LinuxBackend,
+    linux_light_count: u32,
+    linux_heavy_count: u32,
+    windows_runner_count: u32,
+    job_cpus: u32,
+    job_memory_gib: u32,
+    paused: bool,
+    io_percent: u32,
+    sharing: Sharing,
+    host_reserve_percent: u32,
+    share_mode: ShareMode,
+    linux_share_percent: Option<u32>,
+    windows_share_percent: Option<u32>,
+    lease_wall_clock_hours: u32,
+}
+
+impl SettingsV4 {
+    /// Schema 3's kept keys, its Linux count as the light count.
+    fn from_v3(v3: SettingsV3) -> SettingsV4 {
+        SettingsV4 {
+            schema: 4,
+            linux_backend: v3.linux_backend,
+            linux_light_count: v3.runner_count,
+            linux_heavy_count: 0,
+            windows_runner_count: v3.windows_runner_count,
+            job_cpus: v3.job_cpus,
+            job_memory_gib: v3.job_memory_gib,
+            paused: v3.paused,
+            io_percent: v3.io_percent,
+            sharing: v3.sharing,
+            host_reserve_percent: v3.host_reserve_percent,
+            share_mode: v3.share_mode,
+            linux_share_percent: v3.linux_share_percent,
+            windows_share_percent: v3.windows_share_percent,
+            lease_wall_clock_hours: v3.lease_wall_clock_hours,
+        }
+    }
+
+    /// The window's edit over the kept keys. The Windows count is the edit's when the kept keys
+    /// are a stored schema 3 or 4 file (the window read the count from it), else the reported
+    /// one, as in schema 3: a tray-local choice never reaches the supervisor.
+    fn edited(s: &Settings, kept: SettingsV4, own_windows: bool) -> SettingsV4 {
+        SettingsV4 {
+            linux_light_count: s.runner_count,
+            linux_heavy_count: s.linux_heavy_count,
+            windows_runner_count: if WINDOWS_BACKEND || own_windows {
+                s.windows_runner_count
+            } else {
+                kept.windows_runner_count
+            },
+            job_cpus: s.job_cpus,
+            job_memory_gib: s.job_memory_gib,
+            paused: s.paused,
+            io_percent: s.io_percent,
+            sharing: s.sharing,
+            ..kept
+        }
+    }
+
+    fn settings(&self) -> Settings {
+        Settings {
+            schema: 4,
+            runner_count: self.linux_light_count,
+            linux_heavy_count: self.linux_heavy_count,
+            job_cpus: self.job_cpus,
+            job_memory_gib: self.job_memory_gib,
+            paused: self.paused,
+            io_percent: self.io_percent,
+            sharing: self.sharing,
+            windows_runner_count: self.windows_runner_count,
+        }
+    }
+
+    /// The schema's ranges and validate.py's `sem_settings_v4`: tiers and Windows in range, at
+    /// least one runner, the kept keys' ranges, and schema 3's share rules over light + heavy.
+    fn check(&self) -> Result<(), String> {
+        if self.schema != 4 {
+            return Err("schema must be 4".into());
+        }
+        self.settings().check_shape()?;
+        let linux = self.linux_light_count + self.linux_heavy_count;
+        if !HOST_RESERVE_PERCENT.contains(&self.host_reserve_percent) {
+            return Err("Host reserve percent must be 10..90".into());
+        }
+        if !LEASE_HOURS.contains(&self.lease_wall_clock_hours) {
+            return Err("Lease hours must be 1..72".into());
+        }
+        shares_fit(
+            self.share_mode,
+            self.host_reserve_percent,
+            [
+                (linux, self.linux_share_percent),
+                (self.windows_runner_count, self.windows_share_percent),
+            ],
+        )
+    }
+}
+
+/// validate.py `_shares`: even has no shares; per_profile shares plus the reserve are 100 and a
+/// share is 0 exactly when its count is.
+fn shares_fit(
+    mode: ShareMode,
+    reserve: u32,
+    counts_and_shares: [(u32, Option<u32>); 2],
+) -> Result<(), String> {
+    match (mode, counts_and_shares) {
+        (ShareMode::Even, [(_, None), (_, None)]) => Ok(()),
+        (ShareMode::Even, _) => Err("even sharing has no profile shares".into()),
+        (ShareMode::PerProfile, [(lc, Some(l)), (wc, Some(w))]) => {
+            if l > 90 || w > 90 || l + w + reserve != 100 {
+                Err("profile shares plus the host reserve must be 100".into())
+            } else if (lc == 0) != (l == 0) || (wc == 0) != (w == 0) {
+                Err("a profile has share 0 exactly when its count is 0".into())
+            } else {
+                Ok(())
+            }
+        }
+        _ => Err("per-profile sharing needs both profile shares".into()),
+    }
+}
+
+/// A schema 4 file that has every key and passes `check`, else `None`.
+fn parse_v4(text: &str) -> Option<SettingsV4> {
+    let v: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()?;
+    // serde fills a missing Option with None; schema 4 requires every key.
+    if v.as_object()?.len() != 15 {
+        return None;
+    }
+    let s: SettingsV4 = serde_json::from_value(v).ok()?;
+    s.check().is_ok().then_some(s)
+}
+
+/// What schema 4 keeps: the stored schema 4 file; else, while a fresh `status.v5.json` lists 4,
+/// the stored schema 3 file's keys or what `status.v5.json` reports. `None`: not schema 4. The
+/// flag: the keys are a stored schema 3 or 4 file, so the window shows that file's Windows count.
+fn kept_v4(base: &Path, now: SystemTime) -> Option<(SettingsV4, bool)> {
+    let stored = read_bounded(&inbox(base).join("settings.json"));
+    if let Some(v4) = stored.as_deref().and_then(parse_v4) {
+        return Some((v4, true));
+    }
+    let v5 = read_status_v5(base, now).filter(StatusV5::takes_settings_v4)?;
+    Some(match stored.as_deref().and_then(parse_v3) {
+        Some(v3) => (SettingsV4::from_v3(v3), true),
+        None => (SettingsV4::from_v3(v3_from_status(&v5)), false),
     })
 }
 
@@ -1339,6 +1588,180 @@ mod tests {
         let err = write_settings_at(&base, &four, &VM, now()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(written(&base), want);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn schema_four_reads_the_contract_fixtures() {
+        for (name, light, heavy, windows) in [
+            ("tiers-per-profile", 4, 1, 2),
+            ("full-pool-even", 10, 2, 5),
+            ("one-heavy-only", 0, 1, 0),
+        ] {
+            let v4 = parse_v4(&fixture(&format!("settings-v4/valid/{name}.json"))).expect(name);
+            let s = v4.settings();
+            assert_eq!(
+                (
+                    s.schema,
+                    s.runner_count,
+                    s.linux_heavy_count,
+                    s.windows_runner_count
+                ),
+                (4, light, heavy, windows),
+                "{name}"
+            );
+        }
+        for name in [
+            "all-zero",
+            "heavy-three",
+            "keeps-runner-count",
+            "light-eleven",
+            "missing-heavy-count",
+            "schema-3",
+            "share-for-zero-linux",
+            "tier-reservations-over-memory",
+            "windows-six",
+        ] {
+            assert!(
+                parse_v4(&fixture(&format!("settings-v4/invalid/{name}.json"))).is_none(),
+                "{name}"
+            );
+        }
+        // A schema 4 file is not schema 3, and schema 3 is not 4.
+        assert!(parse_v3(&fixture("settings-v4/valid/tiers-per-profile.json")).is_none());
+        assert!(parse_v4(&fixture("settings-v3/valid/owner-example-per-profile.json")).is_none());
+    }
+
+    fn tiered(light: u32, heavy: u32, windows: u32, gib: u32) -> Settings {
+        Settings {
+            schema: 4,
+            runner_count: light,
+            linux_heavy_count: heavy,
+            windows_runner_count: windows,
+            job_memory_gib: gib,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn schema_four_refuses_tier_reservations_over_the_memory_total() {
+        // The same inequality as validate.py sem_settings_v4 and the supervisor: heavy x 20 + light x 3.
+        let err = tiered(10, 2, 0, 64).check_shape().unwrap_err();
+        assert_eq!(
+            err,
+            "Heavy 2 + Light 10 need 70 GiB; total memory is 64 GiB"
+        );
+        let err = tiered(0, 1, 0, 19).check_shape().unwrap_err();
+        assert_eq!(err, "Heavy 1 + Light 0 need 20 GiB; total memory is 19 GiB");
+        // Exactly at the total is accepted.
+        assert_eq!(tiered(10, 2, 0, 70).check_shape(), Ok(()));
+        assert_eq!(tiered(0, 1, 0, 20).check_shape(), Ok(()));
+        // The written file's check() says the same, and the write path surfaces it.
+        let kept = parse_v4(&fixture("settings-v4/valid/tiers-per-profile.json")).unwrap();
+        let v4 = SettingsV4::edited(&tiered(10, 2, 0, 64), kept, true);
+        assert!(v4.check().unwrap_err().contains("need 70 GiB"));
+    }
+
+    #[test]
+    fn schema_four_refuses_no_linux_runner() {
+        // Windows alone is not a schema 4 pool: the supervisor that lists 4 runs no Windows VM.
+        let err = tiered(0, 0, 0, 72).check_shape().unwrap_err();
+        assert!(err.contains("one Linux runner"), "{err}");
+        let err = tiered(0, 0, 2, 72).check_shape().unwrap_err();
+        assert!(err.contains("one Linux runner"), "{err}");
+        assert_eq!(tiered(0, 1, 0, 72).check_shape(), Ok(()));
+    }
+
+    #[test]
+    fn writes_schema_four_only_while_a_fresh_status_v5_lists_it() {
+        let base = temp_base("settings-v4-write");
+        let s = Settings {
+            schema: 4,
+            linux_heavy_count: 1,
+            ..Settings::derived(7, 0, false, &VM)
+        };
+        let _ = fs::remove_file(inbox(&base).join("settings.json"));
+        write_v5(&base, "[1,2,3,4]", FRESH);
+        write_settings_at(&base, &s, &VM, now()).unwrap();
+        let w = written(&base);
+        assert_eq!(
+            w.as_object().unwrap().len(),
+            15,
+            "exactly the schema 4 keys"
+        );
+        assert_eq!(
+            (w["schema"].clone(), w["linux_light_count"].clone()),
+            (4.into(), 7.into())
+        );
+        assert_eq!(w["linux_heavy_count"], 1);
+        assert_eq!(w["windows_runner_count"], 2, "the reported Windows count");
+        assert!(w.get("runner_count").is_none());
+        assert_eq!(parse_v4(&w.to_string()).map(|v| v.check()), Some(Ok(())));
+        let back = read_settings(&base);
+        assert_eq!((back.runner_count, back.linux_heavy_count), (7, 1));
+        // Stored schema 4: kept whatever status.v5.json says, never 3 or 2 over it.
+        for v5 in ["stale", "missing", "three"] {
+            let _ = fs::remove_file(base.join("status.v5.json"));
+            match v5 {
+                "stale" => write_v5(&base, "[1,2,3,4]", "2000-01-01T00:00:00Z"),
+                "three" => write_v5(&base, "[1,2,3]", FRESH),
+                _ => {}
+            }
+            let paused = Settings {
+                paused: true,
+                ..read_settings(&base)
+            };
+            write_settings_at(&base, &paused, &VM, now()).unwrap();
+            let mut want = w.clone();
+            want["paused"] = true.into();
+            assert_eq!(written(&base), want, "{v5}");
+            assert!(tiers_writable_at(&base, now()), "{v5}");
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn without_schema_four_heavy_is_refused_and_light_is_the_old_count() {
+        let base = temp_base("settings-v4-refused");
+        for schemas in ["[1,2]", "[1,2,3]"] {
+            let _ = fs::remove_file(inbox(&base).join("settings.json"));
+            write_v5(&base, schemas, FRESH);
+            assert!(!tiers_writable_at(&base, now()), "{schemas}");
+            let heavy = Settings {
+                linux_heavy_count: 1,
+                ..Settings::derived(2, 0, false, &VM)
+            };
+            let err = write_settings_at(&base, &heavy, &VM, now()).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{schemas}");
+            assert!(!inbox(&base).join("settings.json").exists(), "{schemas}");
+            // Light only: written as today's Linux count.
+            write_settings_at(&base, &Settings::derived(2, 0, false, &VM), &VM, now()).unwrap();
+            let w = written(&base);
+            assert_eq!(w["runner_count"], 2, "{schemas}");
+            assert!(w.get("linux_heavy_count").is_none(), "{schemas}");
+        }
+        // A schema 3 file is carried into schema 4 once the supervisor lists 4.
+        write_v5(&base, "[1,2,3,4]", FRESH);
+        fs::write(
+            inbox(&base).join("settings.json"),
+            fixture("settings-v3/valid/owner-example-per-profile.json"),
+        )
+        .unwrap();
+        let edit = Settings {
+            schema: 4,
+            ..read_settings(&base)
+        };
+        write_settings_at(&base, &edit, &VM, now()).unwrap();
+        let w = written(&base);
+        assert_eq!(
+            (
+                w["schema"].clone(),
+                w["linux_light_count"].clone(),
+                w["linux_heavy_count"].clone(),
+                w["linux_share_percent"].clone()
+            ),
+            (4.into(), 3.into(), 0.into(), 60.into())
+        );
         fs::remove_dir_all(&base).unwrap();
     }
 }

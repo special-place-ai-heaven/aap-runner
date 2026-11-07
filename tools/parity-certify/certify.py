@@ -23,9 +23,9 @@ ESC = r"(?:\x1b|\^\[)"
 ANSI = re.compile(ESC + r"\[[0-9;]*[A-Za-z]")
 TS = re.compile(r"^\d{4}-\d\d-\d\dT[\d:.]+Z ?")
 UNKNOWN = ("<denied>", None)
-SHA1 = re.compile(r"^[0-9a-f]{40}$")
-ACTION = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$")
-PIN_FORMAT = {"image_version": re.compile(r"^\d{8}\.\d+\.\d+$"), "runner_version": re.compile(r"^\d+\.\d+\.\d+$"),
+SHA1 = re.compile(r"^[0-9a-f]{40}\Z")  # \Z, not $: $ also accepts one trailing newline
+ACTION = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}\Z")
+PIN_FORMAT = {"image_version": re.compile(r"^\d{8}\.\d+\.\d+\Z"), "runner_version": re.compile(r"^\d+\.\d+\.\d+\Z"),
               "source_sha": SHA1, "workflow_sha": SHA1}
 
 
@@ -653,7 +653,7 @@ CLAIM_BAD = re.compile(r"(?i)(BUILD FAIL(?:ED|URE)|Job failed|result:\s*(?:fail|
 ERR = re.compile(r"(?i)(\berror(?:\[[A-Za-z0-9]+\]|\s+[A-Z]{1,4}\d+)?\s*:|##\[error\]|\bfatal error\b)")
 LOC = re.compile(r"^(?P<file>(?:[A-Za-z]:)?[^\s:()]+?)[:(](?P<line>\d+)")
 ARROW = re.compile(r"^\s*-->\s*(?P<file>.+?):(?P<line>\d+)(?::\d+)?\s*$")  # rustc puts the location on the next line
-ID_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,100}$")
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,100}\Z")
 
 
 def first_error(text):
@@ -802,6 +802,11 @@ class ProcessTree:
         self.pgids = []
 
 
+def exit_code_ok(code):
+    """A real integer exit status. bool and float are rejected: False == 0 and 0.0 == 0 would pass for exit code 0."""
+    return code is None or (isinstance(code, int) and not isinstance(code, bool))
+
+
 def evaluate(d, r, text):
     """Verdict on one result, recomputed from the definition, the recorded exit code and artifacts, and the log text
     (None = log missing or not matching its recorded hash). The result's own status/expected fields are never read."""
@@ -822,7 +827,10 @@ def evaluate(d, r, text):
         reasons.append("result was not produced from this definition")
     code = r.get("exit_code")
     timeout = r.get("observed") == "timeout" or code is None
-    if timeout:
+    if not exit_code_ok(code):
+        out["observed"] = "unknown"
+        reasons.append(f"exit code {code!r} is not an integer")
+    elif timeout:
         out["observed"] = "timeout"
         reasons.append("timeout")
     else:
@@ -1008,8 +1016,9 @@ def behaviour_section(defs, results_path, ref_path=None):
                    "observed": "skipped", "reasons": ["no result for this workload"]}
         else:
             ev = _judge(d, r, results_path)
+            code = r.get("exit_code")
             row = {"id": wid, "status": ev["status"], "reasons": list(ev["reasons"]), "expected": ev["expected"],
-                   "observed": ev["observed"], "exit_code": r.get("exit_code"), "variant": r.get("variant"),
+                   "observed": ev["observed"], "exit_code": code if exit_code_ok(code) else None, "variant": r.get("variant"),
                    "variant_index": r.get("variant_index")}
             if wid in dup:
                 _fail(row, "more than one result for this workload")
@@ -1050,12 +1059,11 @@ def _ascii(s, n):
     return re.sub(r"[^ -~]", "?", str(s))[:n]
 
 
-def _command(cmd, row):
-    """The record's command line. The evidence schema has no notes field, so a compare_artifacts waiver rides here."""
+def _waivers(d, row):
+    """The record's `waivers` (evidence contract revision 2): a compare_artifacts waiver, bound to its own workload."""
     if row.get("compare_artifacts") != "names":
-        return _ascii(cmd, 500)
-    suffix = _ascii(" [waiver compare_artifacts=names: " + row["compare_artifacts_reason"], 220) + "]"
-    return _ascii(cmd, 500 - len(suffix)) + suffix
+        return {}
+    return {"waivers": [{"kind": "compare_artifacts", "definition_id": d["id"], "reason": _ascii(row["compare_artifacts_reason"], 500)}]}
 
 
 def _art(path, name=None):
@@ -1095,8 +1103,8 @@ def build_records(a, ref, cand, pin, report, internal, defs, out):
         exp, obs, st = row["expected"], row["observed"], row["status"]
         fid = "workload/" + d["id"]
         if r is None or st == "skipped":
-            recs.append({**base, "fixture_id": fid, "command": _command("(not run)", row), "started_at": t, "ended_at": t, "exit_status": None,
-                         "oracle": {"expected": exp, "observed": "skipped"}, "result": "skipped", "artifacts": []})
+            recs.append({**base, "fixture_id": fid, "command": "(not run)", "started_at": t, "ended_at": t, "exit_status": None,
+                         "oracle": {"expected": exp, "observed": "skipped"}, "result": "skipped", "artifacts": [], **_waivers(d, row)})
             continue
         result = "pass" if st == "pass" else "timeout" if obs == "timeout" else "fail"
         if result == "fail" and obs == exp:
@@ -1110,9 +1118,9 @@ def build_records(a, ref, cand, pin, report, internal, defs, out):
         lp = os.path.join(os.path.dirname(os.path.abspath(a.results)), "logs", log_name(d["id"]))
         if os.path.isfile(lp) and sha256_file(lp) == r.get("log_sha256"):
             a2.append(_art(lp, log_name(d["id"])))
-        recs.append({**base, "fixture_id": fid, "command": _command(r.get("command") or "(none)", row),
-                     "started_at": r["started_at"], "ended_at": r["ended_at"], "exit_status": r.get("exit_code"),
-                     "oracle": {"expected": exp, "observed": obs}, "result": result, "artifacts": a2[:64]})
+        recs.append({**base, "fixture_id": fid, "command": _ascii(r.get("command") or "(none)", 500),
+                     "started_at": r["started_at"], "ended_at": r["ended_at"], "exit_status": row["exit_code"],
+                     "oracle": {"expected": exp, "observed": obs}, "result": result, "artifacts": a2[:64], **_waivers(d, row)})
     return recs
 
 

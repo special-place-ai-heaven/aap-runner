@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/special-place-ai-heaven/aap-runner/blob/main/parity/contracts/settings-v4.schema.json",
+  "title": "inbox\\settings.json schema 4 (R1): Linux heavy and light tier counts, Windows count, per-profile shares, host reserve",
+  "x-contract-version": 4,
+  "x-owner": "R1 step 1 (contract); R1 step 3 (supervisor reader); R1 step 4 (tray writer). Schema 3 stays the live contract until the supervisor lists 4 in status.v5.json settings_schemas",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "linux_backend",
+    "linux_light_count",
+    "linux_heavy_count",
+    "windows_runner_count",
+    "job_cpus",
+    "job_memory_gib",
+    "paused",
+    "io_percent",
+    "sharing",
+    "host_reserve_percent",
+    "share_mode",
+    "linux_share_percent",
+    "windows_share_percent",
+    "lease_wall_clock_hours"
+  ],
+  "properties": {
+    "schema": {
+      "const": 4
+    },
+    "linux_backend": {
+      "enum": [
+        "wsl-legacy",
+        "hyperv-vm"
+      ],
+      "description": "Supervisor-side; the tray writes back what status.v5.json reports and never changes it. Flipped only by the cutover item P27. Default wsl-legacy."
+    },
+    "linux_light_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10,
+      "description": "Light tier slots (labels self-hosted,linux,x64,fresh,light): reservation 1 CPU / 3 GiB, hard cap 4 CPU / 8 GiB each (docs/ROADMAP.md R1)."
+    },
+    "linux_heavy_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2,
+      "description": "Heavy tier slots (labels self-hosted,linux,x64,fresh,heavy): reservation 8 CPU / 20 GiB each, may burst to the pool, 4x CPU weight."
+    },
+    "windows_runner_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5,
+      "description": "0..5; not counted against the Linux tiers."
+    },
+    "job_cpus": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 28,
+      "description": "The legacy WSL pool CPU total, as in schema 3 (the Linux per-slot limits come from the tier table, not from settings); same range as schema 3."
+    },
+    "job_memory_gib": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 80,
+      "description": "The legacy WSL pool memory total, as in schema 3. Heavy x 20 + light x 3 GiB must not exceed it (validate.py sem_settings_v4)."
+    },
+    "paused": {
+      "type": "boolean"
+    },
+    "io_percent": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100
+    },
+    "sharing": {
+      "enum": [
+        "slice",
+        "fixed"
+      ]
+    },
+    "host_reserve_percent": {
+      "type": "integer",
+      "minimum": 10,
+      "maximum": 90
+    },
+    "share_mode": {
+      "enum": [
+        "even",
+        "per_profile"
+      ]
+    },
+    "linux_share_percent": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 90
+    },
+    "windows_share_percent": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 90
+    },
+    "lease_wall_clock_hours": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 72,
+      "description": "Host cap per VM lease, default 6. Past it a quarantined slot whose runner GitHub reports offline is destroyed; a runner GitHub reports busy is never destroyed, only flagged in status."
+    }
+  }
+}

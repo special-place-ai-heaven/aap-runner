@@ -1,7 +1,7 @@
 {
   "expect": "endpoints name 2 addresses, not one resolver",
   "instance": {
-    "schema": 1,
+    "schema": 2,
     "kind": "host_network_attach",
     "vm_id": "3c2b1a09-8f7e-4d6c-a5b4-c3d2e1f0a9b8",
     "vm_name": "aap-wbuild-1a2b3c4d",
@@ -9,6 +9,7 @@
     "subnet": "172.31.252.0/24",
     "gateway": "172.31.252.1",
     "address": "172.31.252.2",
+    "mac": "02-A0-98-00-00-01",
     "resolvers": [
       "192.168.1.53",
       "10.0.0.53"

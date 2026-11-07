@@ -4,10 +4,27 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+# A newer run of the same PR (a push, or a ci-hosted label change) cancels the older one; pushes to
+# main and manual runs each get their own group and are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+# Dogfood: pushes to main, manual runs and pull requests from branches in this repository run on the
+# owner's own runners (the Linux pool and the interim Windows runner); pull requests from forks get
+# GitHub-hosted runners here. This routing is a convenience, not the security boundary: a fork PR runs
+# its own copy of this file and could name the self-hosted labels. What keeps untrusted code off the
+# owner's machines is the setting "Require approval for all outside collaborators" (keep it on) and
+# the runner groups' repository access (CLAUDE.md: never run untrusted PR code on self-hosted runners). The Linux jobs stay on hosted runners until the pool's runner image has
+# jq and a Rust toolchain (the live image predates #92 and ships no cargo).
+# A same-repo PR labelled ci-hosted runs its Windows jobs on windows-latest instead: one interim
+# runner serializes the queue (~60 min per PR), so low-priority PRs take the hosted lane.
 
 jobs:
   bash:
@@ -42,14 +59,19 @@ jobs:
       - run: $RUNNER_TEMP/shellcheck-v0.11.0/shellcheck -S warning distro/*.sh tests/*.sh tests/parity/cache/qualification/*.sh parity/cache/qualification/harness/*.sh tools/parity-certify/probe/linux.sh parity/workloads/linux/*.sh parity/workloads/linux/*/*.sh parity/workloads/actions/linux/*/*.sh parity/workloads/xwin/*.sh tests/parity/workloads/linux/*.sh guests/cache/linux/*.sh tests/guests/cache/zccache_test.sh tests/guests/cache/fakes/fake-cc tests/guests/cache/fakes/fake-zccache images/ubuntu-24.04/guest/*.sh tests/images/ubuntu-24.04/*.sh guests/linux/*.sh tests/guests/linux/*.sh
 
   pester:
-    runs-on: windows-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File installer/install-host.Tests.ps1
       - shell: powershell
         run: |
-          Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -eq '5.7.1')) {
+            if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
+              Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
+            }
+            Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          }
           Import-Module Pester -RequiredVersion 5.7.1
           $c = New-PesterConfiguration
           $c.Run.Path = @('supervisor', 'tests/parity-work', 'tests/capacity', 'tests/broker', 'tests/images/common', 'tests/parity-certify', 'tests/network', 'tests/common')
@@ -58,12 +80,17 @@ jobs:
           Invoke-Pester -Configuration $c
 
   pester-backends:
-    runs-on: windows-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - shell: powershell
         run: |
-          Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          if (-not (Get-Module -ListAvailable Pester | Where-Object Version -eq '5.7.1')) {
+            if (-not (Get-PackageProvider -ListAvailable -Name NuGet -ErrorAction SilentlyContinue)) {
+              Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Scope CurrentUser -Force | Out-Null
+            }
+            Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -SkipPublisherCheck
+          }
           Import-Module Pester -RequiredVersion 5.7.1
           $c = New-PesterConfiguration
           $c.Run.Path = @('tests/backends/windows', 'tests/backends/linux', 'tests/guests/cache', 'tests/images/windows', 'tests/parity/workloads/windows', 'tests/images/ubuntu-24.04', 'tests/guests/windows')
@@ -71,8 +98,31 @@ jobs:
           $c.Run.Exit = $true
           Invoke-Pester -Configuration $c
 
+  # crates/pool-core is also covered workspace-wide by the tray job on Windows. This job runs it on
+  # Linux, where the code will run, and proves the static musl build the distro will ship.
+  pool-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p aap-pool-core --all-targets --locked -- -D warnings
+      - run: cargo test -p aap-pool-core --locked
+      - run: rustup target add x86_64-unknown-linux-musl
+      - run: cargo build -p aap-pool-core --bin aap-pool --release --locked --target x86_64-unknown-linux-musl
+      - name: aap-pool is a static binary and runs
+        run: |
+          set -euo pipefail
+          bin=target/x86_64-unknown-linux-musl/release/aap-pool
+          info=$(file "$bin")
+          echo "$info"
+          grep -Eq 'statically linked|static-pie linked' <<< "$info"
+          if grep -q 'dynamically linked' <<< "$info"; then exit 1; fi
+          test "$("$bin" limits --runners 2 --sharing fixed | tr '\n' ' ')" = '--memory 6g --memory-swap 6g --cpus 3 --cpu-shares 512 --pids-limit 4096 '
+          if "$bin" limits --runners 6 2> "$RUNNER_TEMP/err"; then exit 1; else test $? -eq 2; fi
+          test "$(wc -l < "$RUNNER_TEMP/err")" -eq 1
+
   tray:
-    runs-on: windows-latest
+    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","windows-host-interim"]') || 'windows-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: cargo fmt --all --check

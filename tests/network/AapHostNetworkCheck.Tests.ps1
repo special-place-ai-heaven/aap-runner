@@ -13,22 +13,50 @@ BeforeDiscovery {
                     Expect = $(if ($valid) { '' } else { [string](Get-Content -Raw -LiteralPath $_.FullName | ConvertFrom-Json).expect })
                 }
             })
+    # A peer MAC the check takes for no MAC (anything but twelve hex digits as dashed pairs, colon pairs or run together),
+    # and whether the declared MAC 02-A0-98-00-00-01 still shows through it once the non-hex characters are dropped (then the
+    # clash is reported too); First is the text as a problem shows it.
+    $malformed = @(
+        @{ Case = 'empty'; M = ''; Clash = $false; First = '' }
+        @{ Case = 'not-a-mac'; M = 'not-a-mac'; Clash = $false; First = 'not-a-mac' }
+        @{ Case = 'of eleven digits, dashed'; M = '02-A0-98-00-00-0'; Clash = $false; First = '02-A0-98-00-00-0' }
+        @{ Case = 'of thirteen digits, dashed'; M = '02-A0-98-00-00-01-0'; Clash = $false; First = '02-A0-98-00-00-01-0' }
+        @{ Case = 'of fourteen digits, dashed'; M = '02-A0-98-00-00-01-FF'; Clash = $false; First = '02-A0-98-00-00-01-FF' }
+        @{ Case = 'of eleven digits, run together'; M = '02A09800000'; Clash = $false; First = '02A09800000' }
+        @{ Case = 'of thirteen digits, run together'; M = '02A0980000010'; Clash = $false; First = '02A0980000010' }
+        @{ Case = 'with a non-hex digit'; M = '02-A0-98-00-00-0G'; Clash = $false; First = '02-A0-98-00-00-0G' }
+        @{ Case = 'with a non-hex digit in a pair'; M = '02-A0-98-00-00-G1'; Clash = $false; First = '02-A0-98-00-00-G1' }
+        @{ Case = 'with mixed separators'; M = '02-A0:98-00-00-01'; Clash = $true; First = '02-A0:98-00-00-01' }
+        @{ Case = 'with a separator before'; M = '-02-A0-98-00-00-01'; Clash = $true; First = '-02-A0-98-00-00-01' }
+        @{ Case = 'with a separator after'; M = '02-A0-98-00-00-01-'; Clash = $true; First = '02-A0-98-00-00-01-' }
+        @{ Case = 'with a colon before'; M = ':02:A0:98:00:00:01'; Clash = $true; First = ':02:A0:98:00:00:01' }
+        @{ Case = 'with a space before'; M = ' 02-A0-98-00-00-01'; Clash = $true; First = ' 02-A0-98-00-00-01' }
+        @{ Case = 'with a space after'; M = '02-A0-98-00-00-01 '; Clash = $true; First = '02-A0-98-00-00-01 ' }
+        @{ Case = 'with spaces between groups'; M = '02A0 9800 0001'; Clash = $true; First = '02A0 9800 0001' }
+        @{ Case = 'with dots'; M = '02.A0.98.00.00.01'; Clash = $true; First = '02.A0.98.00.00.01' }
+        @{ Case = 'dotted in fours'; M = '02A0.9800.0001'; Clash = $true; First = '02A0.9800.0001' }
+        @{ Case = 'with a newline after'; M = "02A098000001`n"; Clash = $true; First = '02A098000001?' }
+        @{ Case = 'with a tab inside'; M = "02-A0-98-00`t00-01"; Clash = $true; First = '02-A0-98-00?00-01' }
+        @{ Case = 'with a non-ASCII character'; M = "02-A0-98-00-00-0$([char]0x2603)"; Clash = $false; First = '02-A0-98-00-00-0?' }
+        @{ Case = 'of 50 characters'; M = ('a' * 50); Clash = $false; First = ('a' * 40) + '...' }
+    )
 }
 
 BeforeAll {
     $script:Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
     $script:Module = $(if ($env:AAP_NETCHECK_MODULE) { $env:AAP_NETCHECK_MODULE } else { Join-Path $script:Repo 'supervisor\network\AapHostNetworkCheck.psm1' })
-    Import-Module $script:Module -Force
+    $script:Imported = Import-Module $script:Module -Force -PassThru
     # The contract's fixed ranges, written out: the module's copy must equal them.
     $script:Fixed = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', '100.64.0.0/10', '224.0.0.0/4', 'ff00::/8', 'fe80::/10', 'fc00::/7', '255.255.255.255/32', '0.0.0.0/8', '127.0.0.0/8', '240.0.0.0/4', '::/0')
     $script:Fixed4 = @($script:Fixed | Where-Object { -not $_.Contains(':') })
     $script:Id = '6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b'
+    $script:Mac = '02-A0-98-00-00-01'   # of the module's range, as Attach allocates the lowest
 
     # A declaration as Attach returns it: the VM's static address .2 and the gateway .1 of its switch's subnet, and the one
     # kind of exception there is, a private resolver the owner chose (UDP and TCP 53), beside a public resolver.
     function New-Decl([string]$Name = 'aap-w-1-3-1a2b3c4d', [string]$Prof = 'windows', [string]$Net = '172.31.250') {
-        [ordered]@{ schema = 1; kind = 'host_network_attach'; vm_id = $script:Id; vm_name = $Name; profile = $Prof; subnet = "$Net.0/24"
-            gateway = "$Net.1"; address = "$Net.2"; resolvers = @('192.168.1.53', '192.0.2.53')
+        [ordered]@{ schema = 2; kind = 'host_network_attach'; vm_id = $script:Id; vm_name = $Name; profile = $Prof; subnet = "$Net.0/24"
+            gateway = "$Net.1"; address = "$Net.2"; mac = $script:Mac; resolvers = @('192.168.1.53', '192.0.2.53')
             endpoints = @([ordered]@{ address = '192.168.1.53'; protocol = 'UDP'; port = 53 }, [ordered]@{ address = '192.168.1.53'; protocol = 'TCP'; port = 53 })
         }
     }
@@ -49,7 +77,7 @@ BeforeAll {
             foreach ($r in $script:Fixed) { $acls.Add((New-Rule Deny $dir $r 10)) }
             foreach ($e in $D.endpoints) { $acls.Add((New-Rule Allow $dir $e.address 20 $e.protocol ([string]$e.port) "$($D.address)/32")) }
         }
-        @{ SwitchName = $Switch; SwitchType = 'Internal'; DhcpGuard = 'On'; RouterGuard = 'On'; MacAddressSpoofing = 'Off'; PortMirroringMode = 'None'
+        @{ SwitchName = $Switch; SwitchType = 'Internal'; MacAddress = [string]$D.mac; DhcpGuard = 'On'; RouterGuard = 'On'; MacAddressSpoofing = 'Off'; PortMirroringMode = 'None'
             VlanMode = 'Untagged'; StormLimit = '100'; LegacyAcls = 0; Peers = $Peers; Acls = $acls.ToArray()
         }
     }
@@ -153,6 +181,10 @@ Describe 'the shared host network check' {
             @(Get-AapHostNetworkFixedDeny) | Should -Be $script:Fixed
         }
 
+        It 'exports the six functions of the shared check and nothing else' {
+            @($script:Imported.ExportedFunctions.Keys | Sort-Object) | Should -Be @('Get-AapHostNetworkAdapterProblems', 'Get-AapHostNetworkDeclarationProblems', 'Get-AapHostNetworkFixedDeny', 'Get-AapHostNetworkMacRange', 'Get-AapHostNetworkSwitchName', 'Get-AapHostNetworkSwitchProblems')
+        }
+
         It 'names the switch of <N>' -TestCases @(
             @{ N = 'aap-w-1-3-1a2b3c4d'; S = 'aap-guests-win' }, @{ N = 'aap-l-5-123456789-0f0e0d0c'; S = 'aap-guests-linux' }
             @{ N = 'aap-wbuild-1a2b3c4d'; S = 'aap-build-win' }, @{ N = 'aap-lbuild-9f8e7d6c'; S = 'aap-build-linux' }
@@ -173,14 +205,14 @@ Describe 'the shared host network check' {
         }
 
         It 'reports a read-back without <K>' -Tag adapter-keys -TestCases @(
-            @{ K = 'SwitchName' }, @{ K = 'SwitchType' }, @{ K = 'DhcpGuard' }, @{ K = 'RouterGuard' }, @{ K = 'MacAddressSpoofing' }
+            @{ K = 'SwitchName' }, @{ K = 'SwitchType' }, @{ K = 'MacAddress' }, @{ K = 'DhcpGuard' }, @{ K = 'RouterGuard' }, @{ K = 'MacAddressSpoofing' }
             @{ K = 'PortMirroringMode' }, @{ K = 'VlanMode' }, @{ K = 'StormLimit' }, @{ K = 'LegacyAcls' }, @{ K = 'Peers' }, @{ K = 'Acls' }) {
             $a.Remove($K)
             Get-P $d $a | Should -Be @("the adapter read-back lacks $K")
         }
 
         It 'reports an empty adapter entry' -Tag adapter-keys {
-            @(Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @($null)) | Should -Be @('the adapter read-back lacks SwitchName, SwitchType, DhcpGuard, RouterGuard, MacAddressSpoofing, PortMirroringMode, VlanMode, StormLimit, LegacyAcls, Peers, Acls')
+            @(Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @($null)) | Should -Be @('the adapter read-back lacks SwitchName, SwitchType, MacAddress, DhcpGuard, RouterGuard, MacAddressSpoofing, PortMirroringMode, VlanMode, StormLimit, LegacyAcls, Peers, Acls')
         }
 
         It 'reports a runner clone on <S> (<T>)' -Tag switch -TestCases @(
@@ -244,6 +276,459 @@ Describe 'the shared host network check' {
         It 'reports a build VM beside <P>' -Tag peers -TestCases @(@{ P = 'aap-l-1-1-0a0b0c0d' }, @{ P = 'aap-lbuild-0badc0de' }) {
             $b = New-Decl 'aap-lbuild-9f8e7d6c' 'linux' '172.31.253'
             Get-P $b (New-Adapter $b 'aap-build-linux' @($P)) | Should -Be @("the build VM shares aap-build-linux with $P")
+        }
+
+        It 'reports the adapter MAC <V>' -Tag adapter-mac -TestCases @(
+            @{ V = '02-A0-98-00-00-0A' }, @{ V = '02-a0-98-00-00-01' }, @{ V = '00-15-5D-8A-3B-7C' }, @{ V = '02-A0-98-FF-FF-FF' },
+            @{ V = '02A09800000A' }, @{ V = '00155D8A3B7C' }, @{ V = '02-a0-98-00-00-1' }, @{ V = '' }, @{ V = $null }) {
+            # Hyper-V's twelve-digit text is normalised before it is compared, so a wrong MAC in that form is still wrong.
+            # Every problem shows the text as read.
+            $a.MacAddress = $V
+            $what = [string]$V
+            Get-P $d $a | Should -Be @("the adapter's MAC address is '$what', not the declared $($script:Mac)")
+        }
+
+        It 'takes the adapter MAC as <Case>: only Hyper-V''s own text for the declared MAC is read as it' -Tag adapter-mac-form -TestCases @(
+            @{ Case = 'the contract''s dashed form'; V = '02-A0-98-00-00-01'; Ok = $true }
+            @{ Case = 'twelve uppercase hex digits, no separators'; V = '02A098000001'; Ok = $true }
+            @{ Case = 'twelve lower-case hex digits'; V = '02a098000001'; Ok = $false }
+            @{ Case = 'eleven hex digits'; V = '02A09800000'; Ok = $false }
+            @{ Case = 'thirteen hex digits'; V = '02A0980000011'; Ok = $false }
+            @{ Case = 'twelve hex digits and a newline'; V = "02A098000001`n"; Ok = $false }
+            @{ Case = 'twelve hex digits and a space'; V = '02A098000001 '; Ok = $false }
+            @{ Case = 'twelve characters that are not all hex digits'; V = '02A09800000G'; Ok = $false }
+            @{ Case = 'colons'; V = '02:A0:98:00:00:01'; Ok = $false }) {
+            # Normalised, never widened: after it the check compares exactly, so anything but twelve uppercase hex digits fails
+            # closed as read (lower case too: what Hyper-V prints is a lab question, D2).
+            $a.MacAddress = $V
+            $want = $(if ($Ok) { '' } else { "the adapter's MAC address is '$($V -replace '[^ -~]', '?')', not the declared $($script:Mac)" })
+            (Get-P $d $a) -join ' | ' | Should -Be $want
+        }
+
+        It 'reads <Name> back in a clean session, where the check is out of its module''s sight, and check 2 takes Hyper-V''s own MAC text' -Tag adapter-mac-form, provider-readback -TestCases @(
+            @{ Name = 'the Windows image provider'; Kind = 'win-image'; VmName = 'aap-wbuild-1a2b3c4d'; Prof = 'windows'; Net = '172.31.252'; Sw = 'aap-build-win' }
+            @{ Name = 'the Ubuntu image provider'; Kind = 'ubuntu-image'; VmName = 'aap-lbuild-1a2b3c4d'; Prof = 'linux'; Net = '172.31.253'; Sw = 'aap-build-linux' }
+            @{ Name = 'the Windows backend provider'; Kind = 'win-backend'; VmName = 'aap-w-1-3-1a2b3c4d'; Prof = 'windows'; Net = '172.31.250'; Sw = 'aap-guests-win' }
+            @{ Name = 'the Linux backend provider'; Kind = 'lin-backend'; VmName = 'aap-l-1-3-1a2b3c4d'; Prof = 'linux'; Net = '172.31.251'; Sw = 'aap-guests-linux' }) {
+            # The production path, not a text match (P02.4 review r2, A): a provider module is a module of its own, the check
+            # is imported into the consumer module's scope, so a provider that called one of its functions would throw
+            # CommandNotFound. AapHostNetworkProviderReadBack.ps1 runs the real provider module in a fresh process beside a
+            # consumer module that holds the check (the one under test), against a faked Hyper-V that shows the adapter's MAC
+            # as twelve hex digits: the provider hands the text over as read, the check accepts it for the declared MAC and
+            # fails closed for another one's, and the rest of the read-back (a conformant adapter) passes.
+            $d = New-Decl $VmName $Prof $Net
+            $d.resolvers = @('192.0.2.53'); $d.endpoints = @()
+            $acls = @((New-Adapter $d $Sw).Acls | ForEach-Object {
+                    [ordered]@{ Action = $_.Action; Direction = $_.Direction; RemoteIPAddress = $_.RemoteAddress; LocalIPAddress = $_.LocalAddress; Protocol = $_.Protocol
+                        RemotePort = $_.RemotePort; LocalPort = $_.LocalPort; Weight = $_.Weight; Stateful = $false; IsolationID = 0 }
+                })
+            $state = Join-Path $TestDrive "state-$Kind.json"
+            [IO.File]::WriteAllText($state, ([ordered]@{ declaration = $d; switchName = $Sw; acls = $acls; macRead = ($script:Mac -replace '-', ''); macOther = '00155D8A3B7C' } | ConvertTo-Json -Depth 8))
+            # Windows PowerShell 5.1 turns a native command's stderr into a terminating error under 'Stop', which Pester sets:
+            # the child's own words must reach the assertion below.
+            $before = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try { $out = @(& (Get-Process -Id $PID).Path -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'AapHostNetworkProviderReadBack.ps1') -Repo $script:Repo -Check $script:Module -Provider $Kind -StatePath $state 2>&1 | ForEach-Object { "$_" }) } finally { $ErrorActionPreference = $before }
+            $LASTEXITCODE | Should -Be 0 -Because ($out -join ' | ')
+            # Only the harness's own result lines count: a host may print another line around them (a notice, a warning).
+            @($out | Where-Object { $_ -cmatch '^(ISOLATED|LEAKED|READ |GOOD|BAD)' }) | Should -Be @('ISOLATED', "READ $($script:Mac -replace '-', '')", 'GOOD ', 'READ 00155D8A3B7C', "BAD the adapter's MAC address is '00155D8A3B7C', not the declared $($script:Mac)")
+        }
+    }
+
+    Context 'the permanent neighbour entry (the module''s Verify)' {
+
+        BeforeAll {
+            # What the module's Verify passes as -Neighbors (check 8): the host's entries for the guest's address, each as
+            # Get-NetNeighbor shows it, and as -HostInterface the switch's management adapter it resolved by identity. A
+            # consumer's read-back passes neither and no entry is checked.
+            function New-Entry([string]$Address, [string]$Mac, [string]$State = 'Permanent', [string]$Alias = 'vEthernet (aap-guests-win)', $InterfaceIndex = 31) {
+                @{ IPAddress = $Address; LinkLayerAddress = $Mac; State = $State; InterfaceAlias = $Alias; InterfaceIndex = $InterfaceIndex }
+            }
+            # The resolved adapter is index 31 'vEthernet (aap-guests-win)' unless a test hands another (even none, $null) or
+            # leaves it out altogether.
+            function Get-NP($D, $A, $Entries, $HostInterface, [switch]$NoHostInterface) {
+                $given = @{ Declaration = $D; Adapters = @($A); Neighbors = $Entries }
+                if ($PSBoundParameters.ContainsKey('HostInterface')) { $given.HostInterface = $HostInterface }
+                elseif (-not $NoHostInterface) { $given.HostInterface = @{ InterfaceIndex = 31; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+                @(Get-AapHostNetworkAdapterProblems @given)
+            }
+            # The problem for an entry on interface $Idx '$Alias' against the resolved adapter, its values as a problem text shows them.
+            function Get-IfaceText($Idx, $Alias, $HostIdx = 31, $HostAlias = 'vEthernet (aap-guests-win)') {
+                $t = { param($v) $s = [string]$v -replace '[^ -~]', '?'; if ($s.Length -gt 40) { $s.Substring(0, 40) + '...' } else { $s } }
+                "the neighbour entry is on interface $(& $t $Idx) '$(& $t $Alias)', not the switch's management adapter $(& $t $HostIdx) '$(& $t $HostAlias)'"
+            }
+            $script:NotResolved = "the switch's management adapter was not resolved: the neighbour entry has no interface to be held against"
+        }
+
+        It 'passes the entry Attach adds, and the consumer read-back without one' -Tag neighbor-entries {
+            $e = New-Entry "$('172.31.250').2" $script:Mac
+            (Get-NP $d $a @($e)) -join ' | ' | Should -Be ''
+            (Get-P $d $a) -join ' | ' | Should -Be ''
+        }
+
+        It 'reports <C> neighbour entries' -Tag neighbor-count, neighbor-given, neighbor-entries -TestCases @(@{ C = 0; N = @() }, @{ C = 2; N = @('x', 'y') }) {
+            Get-NP $d $a @($N) | Should -Be @("the host holds $($C) neighbour entries for $('172.31.250').2, not 1")
+        }
+
+        It 'reports an entry that lacks <K>' -Tag neighbor-keys -TestCases @(
+            @{ K = 'IPAddress' }, @{ K = 'LinkLayerAddress' }, @{ K = 'State' }, @{ K = 'InterfaceAlias' }, @{ K = 'InterfaceIndex' }) {
+            $e = New-Entry "$('172.31.250').2" $script:Mac
+            $e.Remove($K)
+            Get-NP $d $a @($e) | Should -Be @("the neighbour entry read-back lacks $K")
+        }
+
+        It 'reports an entry that lacks several keys, in the order of the entry shape' -Tag neighbor-keys {
+            $e = New-Entry "$('172.31.250').2" $script:Mac
+            $e.Remove('InterfaceIndex'); $e.Remove('State')
+            Get-NP $d $a @($e) | Should -Be @('the neighbour entry read-back lacks State, InterfaceIndex')
+        }
+
+        It 'reports an entry that is nothing' -Tag neighbor-keys {
+            Get-NP $d $a @($null) | Should -Be @('the neighbour entry read-back lacks IPAddress, LinkLayerAddress, State, InterfaceAlias, InterfaceIndex')
+        }
+
+        It 'reports an entry for another address' -Tag neighbor-address {
+            $e = New-Entry "$('172.31.250').3" $script:Mac
+            Get-NP $d $a @($e) | Should -Be @("the neighbour entry is for '$('172.31.250').3', not the guest's $('172.31.250').2")
+        }
+
+        It 'reports an entry with the state <S>' -Tag neighbor-state -TestCases @(@{ S = 'Stale' }, @{ S = 'Reachable' }, @{ S = 'Permanent ' }, @{ S = 'permanent' }) {
+            $e = New-Entry "$('172.31.250').2" $script:Mac $S
+            Get-NP $d $a @($e) | Should -Be @("the neighbour entry's state is '$S', not Permanent")
+        }
+
+        It 'reports an entry with the link-layer address <M>' -Tag neighbor-mac -TestCases @(
+            @{ M = '02-A0-98-FF-FF-FE' }, @{ M = '02-a0-98-00-00-01' }, @{ M = '00-15-5D-8A-3B-7C' }, @{ M = '' }) {
+            $e = New-Entry "$('172.31.250').2" $M
+            Get-NP $d $a @($e) | Should -Be @("the neighbour entry's link-layer address is '$M', not the declared $($script:Mac)")
+        }
+
+        It 'reports an entry on interface 99 that shows the right alias: an alias is only a name' -Tag neighbor-interface {
+            $e = New-Entry "$('172.31.250').2" $script:Mac -InterfaceIndex 99
+            Get-NP $d $a @($e) | Should -Be @("the neighbour entry is on interface 99 'vEthernet (aap-guests-win)', not the switch's management adapter 31 'vEthernet (aap-guests-win)'")
+        }
+
+        It 'reports an entry on interface 31 under the alias <Case>' -Tag neighbor-interface -TestCases @(
+            @{ Case = 'of the Linux guest switch'; I = 'vEthernet (aap-guests-linux)' }, @{ Case = 'Ethernet'; I = 'Ethernet' }
+            @{ Case = 'with a trailing space'; I = 'vEthernet (aap-guests-win) ' }, @{ Case = 'lower case'; I = 'vethernet (aap-guests-win)' }, @{ Case = 'empty'; I = '' }
+            @{ Case = 'with a control character'; I = "vEthernet`t(aap-guests-win)" }, @{ Case = 'of 60 characters'; I = ('a' * 60) }) {
+            $e = New-Entry "$('172.31.250').2" $script:Mac 'Permanent' $I
+            Get-NP $d $a @($e) | Should -Be @(Get-IfaceText 31 $I)
+        }
+
+        It 'reports an entry on the wrong interface and under the wrong alias, once' -Tag neighbor-interface {
+            $e = New-Entry "$('172.31.250').2" $script:Mac 'Permanent' 'Ethernet' 7
+            Get-NP $d $a @($e) | Should -Be @("the neighbour entry is on interface 7 'Ethernet', not the switch's management adapter 31 'vEthernet (aap-guests-win)'")
+        }
+
+        It 'takes the entry''s interface index <Case>' -Tag neighbor-interface -TestCases @(
+            @{ Case = 'as the number 31'; X = 31; Ok = $true }, @{ Case = 'as the text 31'; X = '31'; Ok = $true }, @{ Case = 'as the long 31'; X = [long]31; Ok = $true }
+            @{ Case = 'as the text 031'; X = '031'; Ok = $false }, @{ Case = 'as the text " 31"'; X = ' 31'; Ok = $false }
+            @{ Case = 'as the text "31 "'; X = '31 '; Ok = $false }, @{ Case = 'as nothing'; X = $null; Ok = $false }
+            @{ Case = 'as 0'; X = 0; Ok = $false }, @{ Case = 'as -31'; X = -31; Ok = $false }, @{ Case = 'as 32'; X = 32; Ok = $false }
+            @{ Case = 'as the text 3.1'; X = '3.1'; Ok = $false }) {
+            $e = New-Entry "$('172.31.250').2" $script:Mac -InterfaceIndex $X
+            $want = $(if ($Ok) { @() } else { @(Get-IfaceText $X 'vEthernet (aap-guests-win)') })
+            @(Get-NP $d $a @($e)) | Should -Be $want
+        }
+
+        It 'holds the entry against the adapter as resolved, by index and by its own alias, not the guest switch''s name' -Tag neighbor-interface {
+            $renamed = @{ InterfaceIndex = 31; InterfaceAlias = 'Ethernet 9' }
+            $mine = New-Entry "$('172.31.250').2" $script:Mac 'Permanent' 'Ethernet 9' 31
+            (Get-NP $d $a @($mine) $renamed) -join ' | ' | Should -Be ''
+            $named = New-Entry "$('172.31.250').2" $script:Mac
+            Get-NP $d $a @($named) $renamed | Should -Be @(Get-IfaceText 31 'vEthernet (aap-guests-win)' 31 'Ethernet 9')
+            $moved = New-Entry "$('172.31.250').2" $script:Mac 'Permanent' 'Ethernet 9' 99
+            Get-NP $d $a @($moved) $renamed | Should -Be @(Get-IfaceText 99 'Ethernet 9' 31 'Ethernet 9')
+            $other = @{ InterfaceIndex = 7; InterfaceAlias = 'Ethernet 9' }
+            Get-NP $d $a @($mine) $other | Should -Be @(Get-IfaceText 31 'Ethernet 9' 7 'Ethernet 9')
+        }
+
+        It 'takes the resolved adapter as <Case>' -Tag neighbor-interface, neighbor-interface-given -TestCases @(
+            @{ Case = 'an index given as text'; H = @{ InterfaceIndex = '31'; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'an index given as a long'; H = @{ InterfaceIndex = [long]31; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'an object'; H = [pscustomobject]@{ InterfaceIndex = 31; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'an object that carries more'; H = [pscustomobject]@{ InterfaceIndex = 31; InterfaceAlias = 'vEthernet (aap-guests-win)'; Name = 'x' } }) {
+            $e = New-Entry "$('172.31.250').2" $script:Mac
+            (Get-NP $d $a @($e) $H) -join ' | ' | Should -Be ''
+            $wrong = New-Entry "$('172.31.250').2" $script:Mac -InterfaceIndex 99
+            Get-NP $d $a @($wrong) $H | Should -Be @(Get-IfaceText 99 'vEthernet (aap-guests-win)')
+        }
+
+        It 'cuts a long alias the same way on both sides of the problem' -Tag neighbor-interface {
+            $long = 'A' * 50
+            $h = @{ InterfaceIndex = 31; InterfaceAlias = $long }
+            $e = New-Entry "$('172.31.250').2" $script:Mac 'Permanent' $long
+            (Get-NP $d $a @($e) $h) -join ' | ' | Should -Be ''
+            $e2 = New-Entry "$('172.31.250').2" $script:Mac 'Permanent' $long 99
+            Get-NP $d $a @($e2) $h | Should -Be @("the neighbour entry is on interface 99 '$('A' * 40)...', not the switch's management adapter 31 '$('A' * 40)...'")
+        }
+
+        It 'reports no resolved management adapter, and only that, for an otherwise perfect entry: <Case>' -Tag neighbor-interface-given -TestCases @(
+            @{ Case = 'nothing'; H = $null }
+            @{ Case = 'an empty table'; H = @{} }
+            @{ Case = 'index 0'; H = @{ InterfaceIndex = 0; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'index 0 as text'; H = @{ InterfaceIndex = '0'; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'index 031'; H = @{ InterfaceIndex = '031'; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'index -1'; H = @{ InterfaceIndex = -1; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'index +31'; H = @{ InterfaceIndex = '+31'; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'index of 11 digits'; H = @{ InterfaceIndex = '12345678901'; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'index with a space'; H = @{ InterfaceIndex = '31 '; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'index nothing'; H = @{ InterfaceIndex = $null; InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'an empty alias'; H = @{ InterfaceIndex = 31; InterfaceAlias = '' } }
+            @{ Case = 'no alias value'; H = @{ InterfaceIndex = 31; InterfaceAlias = $null } }
+            @{ Case = 'an alias with a control character'; H = @{ InterfaceIndex = 31; InterfaceAlias = "vEthernet`t(aap-guests-win)" } }
+            @{ Case = 'an alias with a non-ASCII character'; H = @{ InterfaceIndex = 31; InterfaceAlias = "vEthernet $([char]0x2603)" } }
+            @{ Case = 'no index key'; H = @{ InterfaceAlias = 'vEthernet (aap-guests-win)' } }
+            @{ Case = 'no alias key'; H = @{ InterfaceIndex = 31 } }
+            @{ Case = 'an object without the pair'; H = [pscustomobject]@{ Name = 'vEthernet (aap-guests-win)' } }) {
+            $e = New-Entry "$('172.31.250').2" $script:Mac
+            Get-NP $d $a @($e) $H | Should -Be @($script:NotResolved)
+        }
+
+        It 'reports no resolved management adapter when none was passed at all' -Tag neighbor-interface-given {
+            $e = New-Entry "$('172.31.250').2" $script:Mac
+            Get-NP $d $a @($e) -NoHostInterface | Should -Be @($script:NotResolved)
+        }
+
+        It 'reports the unresolved adapter first, then what is wrong with the entries' -Tag neighbor-interface-given, neighbor-count {
+            Get-NP $d $a @() -NoHostInterface | Should -Be @($script:NotResolved, "the host holds 0 neighbour entries for $('172.31.250').2, not 1")
+            $e = New-Entry "$('172.31.250').3" $script:Mac 'Stale'
+            Get-NP $d $a @($e) $null | Should -Be @($script:NotResolved, "the neighbour entry is for '$('172.31.250').3', not the guest's $('172.31.250').2", "the neighbour entry's state is 'Stale', not Permanent")
+        }
+
+        It 'ignores the management adapter without -Neighbors, as a consumer''s read-back has none' -Tag neighbor-entries {
+            foreach ($h in @($null, @{}, @{ InterfaceIndex = 0; InterfaceAlias = '' }, @{ InterfaceIndex = 31; InterfaceAlias = 'vEthernet (aap-guests-win)' })) {
+                @(Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @($a) -HostInterface $h) | Should -BeNullOrEmpty
+            }
+            $a.DhcpGuard = 'Off'
+            @(Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @($a) -HostInterface @{ InterfaceIndex = 31; InterfaceAlias = 'vEthernet (aap-guests-win)' }) | Should -Be @("DHCP guard is 'Off', not On")
+        }
+    }
+
+    Context 'no other adapter on the switch carries the declared MAC (the module''s Verify)' {
+
+        BeforeAll {
+            # What the module's Verify passes as -PeerMacs (check 2): the MAC of every other adapter on the VM's switch, other
+            # VMs' and the host's own. A consumer's read-back passes none and nothing is compared.
+            function Get-PM($D, $A, $Peers) { @(Get-AapHostNetworkAdapterProblems -Declaration $D -Adapters @($A) -PeerMacs $Peers) }
+            $script:PeerEmpty = "no other adapter was listed on aap-guests-win, where the host's own is always one: the peer MACs were not read"
+        }
+
+        It 'compares nothing without -PeerMacs, which given as an empty list would be a problem' -Tag peer-given {
+            (Get-P $d $a) -join ' | ' | Should -Be ''
+            @(Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @($a) -PeerMacs @()).Count | Should -Be 1
+        }
+
+        It 'passes <Case>' -Tag peer-given -TestCases @(
+            @{ Case = 'only the host''s own adapter'; P = @('00-15-5D-0F-A0-01') }
+            @{ Case = 'another VM''s adapter'; P = @('02-A0-98-00-00-02') }
+            @{ Case = 'the host''s and other VMs'' adapters'; P = @('00-15-5D-0F-A0-01', '02-A0-98-00-00-02', '02A098000003', '02:A0:98:00:00:04', '00155d0fa001') }) {
+            (Get-PM $d $a $P) -join ' | ' | Should -Be ''
+        }
+
+        It 'reports another adapter with the declared MAC written as <Case>' -Tag peer-given, peer-mac-clash -TestCases @(
+            @{ Case = 'dashed upper case'; M = '02-A0-98-00-00-01' }
+            @{ Case = 'dashed lower case'; M = '02-a0-98-00-00-01' }
+            @{ Case = 'twelve digits, upper case'; M = '02A098000001' }
+            @{ Case = 'twelve digits, lower case'; M = '02a098000001' }
+            @{ Case = 'colons, upper case'; M = '02:A0:98:00:00:01' }
+            @{ Case = 'colons, lower case'; M = '02:a0:98:00:00:01' }) {
+            Get-PM $d $a @($M) | Should -Be @("another adapter on aap-guests-win carries the declared MAC $($script:Mac)")
+        }
+
+        It 'reports the clash once, among several peers and with several clashing' -Tag peer-given, peer-mac-clash {
+            $one = "another adapter on aap-guests-win carries the declared MAC $($script:Mac)"
+            Get-PM $d $a @('00-15-5D-0F-A0-01', '02-A0-98-00-00-02', '02a098000001') | Should -Be @($one)
+            Get-PM $d $a @('02a098000001', '00-15-5D-0F-A0-01', $script:Mac, '02:A0:98:00:00:01') | Should -Be @($one)
+        }
+
+        It 'names the build switch for a build VM' -Tag peer-given, peer-mac-clash {
+            $b = New-Decl 'aap-wbuild-0badc0de' 'windows' '172.31.252'
+            $ba = New-Adapter $b 'aap-build-win'
+            Get-PM $b $ba @('00-15-5D-0F-A0-01', '02a098000001') | Should -Be @("another adapter on aap-build-win carries the declared MAC $($script:Mac)")
+            (Get-PM $b $ba @('00-15-5D-0F-A0-01')) -join ' | ' | Should -Be ''
+        }
+
+        It 'does not count <Case> as the declared MAC, and takes it as a MAC' -Tag peer-given, peer-mac-clash, peer-malformed -TestCases @(
+            @{ Case = 'one hex digit different'; M = '02-A0-98-00-00-00' }
+            @{ Case = 'the first digit different'; M = '12-A0-98-00-00-01' }
+            @{ Case = 'the same digits in another order'; M = '20-A0-89-00-00-10' }
+            @{ Case = 'twelve digits run together, one different'; M = '02A098000010' }
+            @{ Case = 'colon pairs, one different'; M = '02:A0:98:00:00:02' }
+            @{ Case = 'dashed lower case, one different'; M = '02-a0-98-00-00-02' }) {
+            (Get-PM $d $a @($M)) -join ' | ' | Should -Be ''
+            (Get-PM $d $a @('00-15-5D-0F-A0-01', $M)) -join ' | ' | Should -Be ''
+        }
+
+        It 'lists the clash right after the adapter''s own MAC problem' -Tag peer-given, peer-mac-clash {
+            $a.MacAddress = '02-A0-98-00-00-0A'
+            $a.PortMirroringMode = 'Source'
+            Get-PM $d $a @('02A098000001') | Should -Be @(
+                "the adapter's MAC address is '02-A0-98-00-00-0A', not the declared $($script:Mac)"
+                "another adapter on aap-guests-win carries the declared MAC $($script:Mac)"
+                "port mirroring is 'Source', not None")
+        }
+
+        It 'reports a list that is empty or nothing, and only that: <Case>' -Tag peer-empty -TestCases @(
+            @{ Case = 'an empty list'; P = @() }, @{ Case = 'nothing'; P = $null }) {
+            Get-PM $d $a $P | Should -Be @($script:PeerEmpty)
+        }
+
+        It 'reports -PeerMacs given empty or as nothing, however it is written' -Tag peer-empty, peer-given {
+            @(Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @($a) -PeerMacs @()) | Should -Be @($script:PeerEmpty)
+            @(Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @($a) -PeerMacs $null) | Should -Be @($script:PeerEmpty)
+            @(Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @($a) -PeerMacs ([string[]]@())) | Should -Be @($script:PeerEmpty)
+            @(Get-AapHostNetworkAdapterProblems -Declaration $d -Adapters @($a) -PeerMacs ([string[]]$null)) | Should -Be @($script:PeerEmpty)
+            (Get-P $d $a) -join ' | ' | Should -Be ''
+        }
+
+        It 'names the build switch in the empty-list problem' -Tag peer-empty {
+            $b = New-Decl 'aap-wbuild-0badc0de' 'windows' '172.31.252'
+            Get-PM $b (New-Adapter $b 'aap-build-win') @() | Should -Be @("no other adapter was listed on aap-build-win, where the host's own is always one: the peer MACs were not read")
+        }
+
+        It 'lists the empty-list problem right after the adapter''s own MAC problem' -Tag peer-empty {
+            $a.MacAddress = '02-A0-98-00-00-0A'
+            $a.PortMirroringMode = 'Source'
+            Get-PM $d $a @() | Should -Be @(
+                "the adapter's MAC address is '02-A0-98-00-00-0A', not the declared $($script:Mac)"
+                $script:PeerEmpty
+                "port mirroring is 'Source', not None")
+        }
+
+        It 'reports the peer MAC <Case> as not a MAC, beside the host''s own good one' -Tag peer-malformed -TestCases $malformed {
+            $bad = "1 of the 1 peer MACs on aap-guests-win are not MACs, the first '$First'"
+            $clashText = "another adapter on aap-guests-win carries the declared MAC $($script:Mac)"
+            Get-PM $d $a @($M) | Should -Be @(if ($Clash) { $bad, $clashText } else { $bad })
+            $bad2 = "1 of the 2 peer MACs on aap-guests-win are not MACs, the first '$First'"
+            Get-PM $d $a @('00-15-5D-0F-A0-01', $M) | Should -Be @(if ($Clash) { $bad2, $clashText } else { $bad2 })
+        }
+
+        It 'reports a peer MAC that is a null element as not a MAC' -Tag peer-malformed {
+            Get-PM $d $a @($null) | Should -Be @("1 of the 1 peer MACs on aap-guests-win are not MACs, the first ''")
+        }
+
+        It 'counts every malformed peer MAC in one problem and shows the first in list order' -Tag peer-malformed {
+            Get-PM $d $a @('00-15-5D-0F-A0-01', 'bad-one', '02-A0-98-00-00-02', '', '02A09800000') | Should -Be @("3 of the 5 peer MACs on aap-guests-win are not MACs, the first 'bad-one'")
+            Get-PM $d $a @('', '00-15-5D-0F-A0-01', 'bad-one') | Should -Be @("2 of the 3 peer MACs on aap-guests-win are not MACs, the first ''")
+            Get-PM $d $a @('zz', 'zz', 'zz', 'zz') | Should -Be @("4 of the 4 peer MACs on aap-guests-win are not MACs, the first 'zz'")
+        }
+
+        It 'names the build switch in the malformed-list problem' -Tag peer-malformed {
+            $b = New-Decl 'aap-wbuild-0badc0de' 'windows' '172.31.252'
+            Get-PM $b (New-Adapter $b 'aap-build-win') @('00-15-5D-0F-A0-01', 'nope') | Should -Be @("1 of the 2 peer MACs on aap-build-win are not MACs, the first 'nope'")
+        }
+
+        It 'lists a malformed peer MAC and the clash beside it, the malformed one first, whatever their order in the list' -Tag peer-malformed, peer-mac-clash {
+            $clash = "another adapter on aap-guests-win carries the declared MAC $($script:Mac)"
+            Get-PM $d $a @('nonsense', '02a098000001') | Should -Be @("1 of the 2 peer MACs on aap-guests-win are not MACs, the first 'nonsense'", $clash)
+            Get-PM $d $a @('02a098000001', 'nonsense') | Should -Be @("1 of the 2 peer MACs on aap-guests-win are not MACs, the first 'nonsense'", $clash)
+        }
+
+        It 'lists the malformed peer MAC right after the adapter''s own MAC problem' -Tag peer-malformed {
+            $a.MacAddress = '02-A0-98-00-00-0A'
+            $a.PortMirroringMode = 'Source'
+            Get-PM $d $a @('00-15-5D-0F-A0-01', 'nope') | Should -Be @(
+                "the adapter's MAC address is '02-A0-98-00-00-0A', not the declared $($script:Mac)"
+                "1 of the 2 peer MACs on aap-guests-win are not MACs, the first 'nope'"
+                "port mirroring is 'Source', not None")
+        }
+    }
+
+    Context 'the switch (the module''s Verify, check 9)' {
+
+        BeforeAll {
+            $script:Sw = 'aap-guests-win'
+            function Get-SP($Name, $Baseline, $Extensions, $Hns) { @(Get-AapHostNetworkSwitchProblems -SwitchName $Name -Baseline $Baseline -Extensions $Extensions -HnsNetworks $Hns) }
+            $script:Wfp = 'Microsoft Windows Filtering Platform'
+            $script:Ndis = 'Microsoft NDIS Capture'
+        }
+
+        It 'passes the extensions of the baseline and no HNS network, in any order' -Tag switch-baseline, switch-read, switch-extension-extra, switch-extension-missing, switch-hns {
+            (Get-SP $script:Sw @($script:Wfp) @($script:Wfp) @()) -join ' | ' | Should -Be ''
+            (Get-SP $script:Sw @($script:Wfp, $script:Ndis, 'X') @('X', $script:Wfp, $script:Ndis) @()) -join ' | ' | Should -Be ''
+        }
+
+        It 'passes an empty baseline with no extension and no HNS network: empty is not unread' -Tag switch-baseline, switch-read {
+            (Get-SP $script:Sw @() @() @()) -join ' | ' | Should -Be ''
+        }
+
+        It 'reports no recorded baseline, and only that, whatever was read: <Case>' -Tag switch-baseline -TestCases @(
+            @{ Case = 'extensions and networks read'; E = @('A'); H = @('net') }
+            @{ Case = 'nothing enabled'; E = @(); H = @() }
+            @{ Case = 'nothing read'; E = $null; H = $null }
+            @{ Case = 'only the extensions read'; E = @('A'); H = $null }) {
+            Get-SP $script:Sw $null $E $H | Should -Be @("no enabled-extension baseline is recorded for the switch $script:Sw")
+        }
+
+        It 'reports lists that were not read, and only that: <Case>' -Tag switch-read -TestCases @(
+            @{ Case = 'both'; B = @('A'); E = $null; H = $null }
+            @{ Case = 'the extensions'; B = @('A'); E = $null; H = @() }
+            @{ Case = 'the HNS networks'; B = @('A'); E = @('A'); H = $null }
+            @{ Case = 'the HNS networks, with an empty baseline and no extension'; B = @(); E = @(); H = $null }
+            @{ Case = 'the extensions, with an empty baseline'; B = @(); E = $null; H = @() }
+            @{ Case = 'the HNS networks, with extra extensions'; B = @('A'); E = @('A', 'B'); H = $null }) {
+            Get-SP $script:Sw $B $E $H | Should -Be @("the extensions or the HNS networks of the switch $script:Sw were not read")
+        }
+
+        It 'reports an extension enabled beyond the baseline: <Case>' -Tag switch-extension-extra -TestCases @(
+            @{ Case = 'one'; B = @('A'); E = @('A', 'B'); N = 'B' }
+            @{ Case = 'two, in the order enabled'; B = @('A'); E = @('C', 'A', 'B'); N = 'C, B' }
+            @{ Case = 'with an empty baseline'; B = @(); E = @('A'); N = 'A' }) {
+            Get-SP $script:Sw $B $E @() | Should -Be @("the switch $script:Sw has an extension enabled beyond its baseline: $N")
+        }
+
+        It 'reports a baseline extension that is not enabled: <Case>' -Tag switch-extension-missing -TestCases @(
+            @{ Case = 'one'; B = @('A', 'B'); E = @('A'); N = 'B' }
+            @{ Case = 'two, in the order of the baseline'; B = @('C', 'A', 'B'); E = @('A'); N = 'C, B' }
+            @{ Case = 'with nothing enabled'; B = @('A'); E = @(); N = 'A' }) {
+            Get-SP $script:Sw $B $E @() | Should -Be @("the switch $script:Sw lacks the baseline extension $N")
+        }
+
+        It 'reports an HNS network on the switch: <Case>' -Tag switch-hns -TestCases @(
+            @{ Case = 'one'; H = @('Default Switch'); N = 'Default Switch' }
+            @{ Case = 'two'; H = @('net1', 'net2'); N = 'net1, net2' }) {
+            Get-SP $script:Sw @('A') @('A') $H | Should -Be @("an HNS network uses the switch $($script:Sw): $N")
+        }
+
+        It 'compares names exactly: <Case>' -Tag switch-extension-extra, switch-extension-missing -TestCases @(
+            @{ Case = 'another case'; B = @('Microsoft Windows Filtering Platform'); E = @('microsoft windows filtering platform'); X = 'microsoft windows filtering platform'; G = 'Microsoft Windows Filtering Platform' }
+            @{ Case = 'a trailing space'; B = @('A'); E = @('A '); X = 'A '; G = 'A' }
+            @{ Case = 'a name that holds the other'; B = @('A B'); E = @('A'); X = 'A'; G = 'A B' }) {
+            Get-SP $script:Sw $B $E @() | Should -Be @(
+                "the switch $script:Sw has an extension enabled beyond its baseline: $X"
+                "the switch $script:Sw lacks the baseline extension $G")
+        }
+
+        It 'lists the extra extension, the missing one and the HNS network, in that order' -Tag switch-extension-extra, switch-extension-missing, switch-hns {
+            Get-SP $script:Sw @($script:Wfp, 'A') @($script:Wfp, 'B') @('net1') | Should -Be @(
+                "the switch $script:Sw has an extension enabled beyond its baseline: B"
+                "the switch $script:Sw lacks the baseline extension A"
+                "an HNS network uses the switch $($script:Sw): net1")
+        }
+
+        It 'takes the baseline, what is enabled and the networks as lists, whatever the host returns for them' -Tag switch-extension-extra, switch-extension-missing, switch-hns {
+            # A one-element result is a single value in the pipeline: the check takes what the module reads either way.
+            Get-SP $script:Sw 'A' 'A' @() | Should -BeNullOrEmpty
+            Get-SP $script:Sw 'A' 'B' 'net1' | Should -Be @(
+                "the switch $script:Sw has an extension enabled beyond its baseline: B"
+                "the switch $script:Sw lacks the baseline extension A"
+                "an HNS network uses the switch $($script:Sw): net1")
+        }
+
+        It 'keeps every line printable and short, whatever the names are' -Tag switch-baseline, switch-extension-extra, switch-extension-missing, switch-hns {
+            $name = ('s' * 500) + "`t`n" + [char]0x2603
+            $long = "`t" + ('x' * 500) + [char]0x2603
+            $all = @(Get-SP $name @('base') @('base', $long) @("$([char]7)net"))
+            $all.Count | Should -Be 2
+            @($all | Where-Object { $_.Length -gt 200 -or $_ -cmatch '[^ -~]' }) | Should -BeNullOrEmpty
+            $all[0] | Should -Be ("the switch $('s' * 40)... has an extension enabled beyond its baseline: ?$('x' * 79)...")
+            $all[1] | Should -Be ("an HNS network uses the switch $('s' * 40)...: ?net")
+            $gone = @(Get-SP $name @($long) @() @())
+            $gone | Should -Be @("the switch $('s' * 40)... lacks the baseline extension ?$('x' * 79)...")
+            Get-SP $name $null @() @() | Should -Be @("no enabled-extension baseline is recorded for the switch $('s' * 40)...")
+            Get-SP $null $null @() @() | Should -Be @('no enabled-extension baseline is recorded for the switch ')
         }
     }
 
@@ -492,12 +977,12 @@ Describe 'the shared host network check' {
             @{ Case = 'an extra key'; Edit = { param($x) $x.extra = 1 } }, @{ Case = 'no gateway'; Edit = { param($x) $x.Remove('gateway') } }
             @{ Case = 'nothing'; Edit = $null }) {
             $x = $(if ($Edit) { & $Edit $d; $d } else { $null })
-            Get-DeclP $x (Get-Req $d) | Should -Be @("the declaration's keys are not exactly schema, kind, vm_id, vm_name, profile, subnet, gateway, address, resolvers, endpoints")
+            Get-DeclP $x (Get-Req $d) | Should -Be @("the declaration's keys are not exactly schema, kind, vm_id, vm_name, profile, subnet, gateway, address, mac, resolvers, endpoints")
         }
 
-        It 'reports <F> <V>' -Tag decl-keys -TestCases @(@{ F = 'schema'; V = 2 }, @{ F = 'schema'; V = '1' }, @{ F = 'kind'; V = 'host_network_record' }) {
+        It 'reports <F> <V>' -Tag decl-keys -TestCases @(@{ F = 'schema'; V = 3 }, @{ F = 'schema'; V = 1 }, @{ F = 'schema'; V = '2' }, @{ F = 'kind'; V = 'host_network_record' }) {
             $d[$F] = $V
-            Get-DeclP $d | Should -Be @('the declaration is not a host_network_attach of schema 1')
+            Get-DeclP $d | Should -Be @('the declaration is not a host_network_attach of schema 2')
         }
 
         It 'reports a declaration for another VM: <F>' -Tag decl-echo -TestCases @(
@@ -536,6 +1021,14 @@ Describe 'the shared host network check' {
             @{ V = '172.31.250.1' }, @{ V = '172.31.251.2' }, @{ V = '172.31.250.255' }, @{ V = '172.31.250.2/32' }, @{ V = 'fd00::2' }, @{ V = '' }) {
             $d.address = $V
             Get-DeclP $d | Should -Be @("the address $V is not a host address of 172.31.250.0/24 other than the gateway")
+        }
+
+        It 'reports the mac <V>' -Tag decl-mac, mac-canonical, mac-range -TestCases @(
+            @{ V = '02-a0-98-00-00-01' }, @{ V = '02:A0:98:00:00:01' }, @{ V = '02-A0-98-0-00-001' }, @{ V = '02-a0-98-00-00-1' }
+            @{ V = '00-15-5D-8A-3B-7C' }, @{ V = '02-A0-97-FF-FF-FF' }, @{ V = '02-A0-98' }, @{ V = '' }, @{ V = $null }, @{ V = 1 }) {
+            $d.mac = $V
+            $what = [string]$V
+            Get-DeclP $d | Should -Be @("the mac $what is not one static MAC of the module's range $(Get-AapHostNetworkMacRange)-xx-xx-xx")
         }
 
         It 'reports the endpoints <Case>' -Tag decl-endpoints, list-type -TestCases @(
@@ -611,8 +1104,8 @@ Describe 'the shared host network check' {
         }
 
         It 'stops the read-back at a declaration it refuses' -Tag adapter-declaration {
-            $d.schema = 2
-            Get-P $d $a | Should -Be @('declaration: the declaration is not a host_network_attach of schema 1')
+            $d.schema = 3
+            Get-P $d $a | Should -Be @('declaration: the declaration is not a host_network_attach of schema 2')
         }
     }
 

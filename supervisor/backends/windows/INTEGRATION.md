@@ -66,6 +66,20 @@ supervisor, the installer, the guest image, the network or CI yet. How the backe
    tier root that is not a reservation folder. When P11 lands, use one inventory for both profiles: union the folder and
    journal lists, keep one VM list. `destroy` and `replay` actions need no call of their own: the next
    `Invoke-AapWinStep` of that reservation carries them out.
+
+   Right after it, at the same cadence: `Remove-AapWinOrphanBuildVm -Backend $B` (P12.2). The image builder
+   (`images\windows`) holds `<staging>\build\<build id>.lock` (staging_root, else `<base_root>\staging`; the lock file is
+   never deleted) from before it creates its VM until it exits, and names the VM `aap-wbuild-<first 8 hex of SHA-256(build
+   id)>`. A crashed builder's handle goes but its `.lock` file stays, so a VM so named whose lock file exists and opens
+   exclusively is a dead builder's: the function stops it, removes it by id and detaches its network (`Detach` with
+   `Profile = 'windows'`), holding the lock meanwhile so a builder starting at that moment gets `AAP_BuildBusy`. It
+   returns `Name`, `VmId`, `Action` (`removed`, `held`, `unmatched`, `failed`) and `Detail` per VM. A `held` VM has a running
+   builder or an unreadable lock: left alone, not logged. An `unmatched` VM has no lock file carrying its tag (a staging
+   path that differs from the builder's, a wiped build folder, an absent build folder): left alone, and the supervisor logs
+   a `WARN` for it each reconcile; `removed` and `failed` are logged too.
+   Other VMs are never touched, `aap-wverify-*` included; a listing error throws. The build folder, disks and `state.json` stay for the next run of that build id, which cleans them under the
+   lock and detaches again by the id in `state.json`. A VM already removed whose `Detach` failed is not listed again;
+   that rerun is what retries it.
 7. **Wall clock.** The backend never destroys for the wall clock. The allocator's reconcile `Flags` name the slots past
    `lease_wall_clock_hours`; show them.
 8. **Pause, off, resize**: move `ready`/`busy` to `draining` with `Set-AapSlotState`; the backend stops idle runners and
@@ -173,11 +187,14 @@ host preparation.
 - Whether Hyper-V adds per-VM entries (`S-1-5-83-1-...`) to the ACL of `base.vhdx` or its folder when a VM starts. If it
   does, `Get-AapWinSealedProblem` refuses every later create of that generation (fail closed); decide in the lab whether
   to accept those entries.
-- That the supervisor can enumerate Hyper-V's runtime folders inside a clone folder: a `MeasureBytes` error is a broken
-  limit (fail closed: the VM is destroyed at its first step), so an unreadable runtime folder would end every job.
-- A crash inside `WriteUnattend` leaves `os.avhdx` mounted: the folder delete then fails and the slot ends
-  `teardown_failed` (fail closed). P02.1 decides whether destroy should `Dismount-VHD` first and create detect a stale
-  mount (a new provider op).
+- That the supervisor can enumerate Hyper-V's runtime folders inside a clone folder: a `MeasureBytes` error on three
+  walks in a row is a broken limit (fail closed: the VM is destroyed at that step), so an unreadable runtime folder
+  would end every job. One or two errors (a file Hyper-V deleted mid-walk) are walked again in the same step (P10.1).
+- A crash inside `WriteUnattend` (or `NewDisk`) leaves `os.avhdx` (or `scratch.vhdx`) mounted on the host. Destroy,
+  which reconcile's `destroy` action and every abandoned create end in, calls the provider op `DismountDisk` on both
+  disks after `Remove-VM` (P10.1): `Get-VHD` `.Attached`, then `Dismount-VHD`. The lab confirms `Attached` reads true for
+  such a host mount and false once the VM is removed; a dismount that fails still ends the slot `teardown_failed`.
+  Create itself does not look for a stale mount: a re-run create that finds one fails and is destroyed.
 - That a VM created with `New-VM -Path <clone>\<id>` and the smart paging and snapshot paths there leaves no file outside
   the clone folder (the backend checks the paths Hyper-V reports).
 

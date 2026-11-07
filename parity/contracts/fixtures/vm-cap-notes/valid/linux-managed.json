@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "kind": "aap-vm-cap",
+  "vm_id": "0b7e5d4c-3a2f-4e1d-9c8b-7a6f5e4d3c2b",
+  "vm_name": "aap-l-2-7-9c3d5e7f",
+  "reservation_id": "r-9c3d5e7f000000a2",
+  "started_utc": "2026-10-22T08:30:00Z",
+  "deadline_utc": "2026-10-22T14:30:00Z",
+  "check": "21c7fa8bd8477067ec986c81664e60f7"
+}

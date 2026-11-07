@@ -30,7 +30,11 @@
 #   runner_count stays the Linux count. Schema 3 (only with the capacity
 #   module, below) has every key of parity/contracts/settings-v3.schema.json:
 #   Linux 0..5 and Windows 0..5 (together 1..5), shares and host reserve.
-#   A schema above the newest accepted one is refused and named in the
+#   Schema 4 (tiered Linux pool; only without the capacity module and for a
+#   manager that knows the tier keys) replaces runner_count by
+#   linux_light_count 0..10 and linux_heavy_count 0..2 (parity/contracts/
+#   settings-v4.schema.json); limits.conf then says AAP_LINUX_HEAVY_COUNT and
+#   AAP_LINUX_LIGHT_COUNT. A schema above the newest accepted one is refused and named in the
 #   status detail. Missing =
 #   no override, not paused. Invalid = one logged warning, the last valid
 #   content stays. Both files are parsed strictly. Only validated values
@@ -95,6 +99,10 @@ $AapCfg = @{
     # The always-on control VM's memory, paid before any slot. An estimate
     # until P22 measures the WSL VM without legacy jobs.
     ControlDistroMemGib = 2
+    # The interim Windows runner on this PC (R2, status-settings.md, Windows
+    # host): its install folder and the owner's limited logon task. Report only.
+    HostRunnerDir       = 'C:\aap-win-interim\runner'
+    HostRunnerTask      = 'AAP-Win-Interim-Runner'
 }
 $AapRt = @{}
 
@@ -111,9 +119,14 @@ $AapSettingRanges = [ordered]@{ runner_count = 5; job_cpus = 28; job_memory_gib 
 $AapRepoPattern = '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z'
 $AapRunUrlPattern = '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+\z'
 $AapJobUrlPattern = '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+/job/[0-9]+\z'
-$AapSlotStates = @('idle', 'running', 'draining', 'starting', 'error')
+$AapSlotStates = @('idle', 'running', 'draining', 'starting', 'error', 'retired')
 $AapV3Keys = @('schema', 'linux_backend', 'runner_count', 'windows_runner_count', 'job_cpus', 'job_memory_gib', 'paused', 'io_percent', 'sharing',
     'host_reserve_percent', 'share_mode', 'linux_share_percent', 'windows_share_percent', 'lease_wall_clock_hours')
+# Schema 4 (tiered Linux pool): schema 3's keys with runner_count replaced by the two tier counts.
+$AapV4Keys = @($AapV3Keys | ForEach-Object { if ($_ -ceq 'runner_count') { 'linux_light_count'; 'linux_heavy_count' } else { $_ } })
+# Tier reservations the manager checks against the pool memory (status-settings.md, Tiers).
+$AapHeavyGib = 20
+$AapLightGib = 3
 $AapOs = @{ linux = 'Linux'; windows = 'Windows' }
 # The backend modules a VM profile is driven by; the supervisor calls Invoke-Aap<Kind>Step and the
 # other exported functions of backends\<folder>\Aap<Kind>Backend.psm1 by these names.
@@ -175,7 +188,23 @@ function Initialize-AapRuntime {
     $AapRt.Effective = $null
     $AapRt.VmWarned = $false
     $AapRt.ManagerOk = $null
+    # The installed manager knows the tier keys (Test-AapManagerTiers); $null until probed.
+    $AapRt.ManagerTiers = $null
     $AapRt.ProbedAt = [DateTimeOffset]::MinValue
+    # The manager status.json updated value last seen, and when it last changed (this clock).
+    $AapRt.MgrUpdated = $null
+    $AapRt.MgrUpdatedAt = [DateTimeOffset]::MinValue
+    $AapRt.MgrStale = $false
+    # Failing steps that retry with backoff, by key (Register-AapRetryFailure).
+    $AapRt.Retry = @{}
+    # The limits.conf read before a change that has not been put back yet
+    # (LimitsDirty): every restore writes this one.
+    $AapRt.LimitsGood = $null
+    $AapRt.LimitsDirty = $false
+    # Set while a resume failed: the status says so, not paused.
+    $AapRt.ResumeWhy = $null
+    # @{ State; Detail } while a pause did not drain: health keeps that status.
+    $AapRt.PauseWhy = $null
     $AapRt.Status = $null
     $AapRt.StatusAt = [DateTimeOffset]::MinValue
 }
@@ -195,6 +224,36 @@ function Get-AapBackoffDelay([int]$Failures) {
     return $steps[$i]
 }
 
+# One retry gate for steps that fail and are tried again (limits change,
+# pause, manager start and stop, Off terminate): after a failure the step
+# waits 10, 30, 60, 120, then every 300 s. A failure is logged on each of the
+# first 5 attempts and whenever its message changes; a success after failures
+# logs once and resets the backoff.
+function Test-AapRetryDue([string]$Key) {
+    $r = $AapRt.Retry[$Key]
+    return ($null -eq $r -or (Get-AapNow) -ge $r.At)
+}
+
+function Register-AapRetryFailure([string]$Key, [string]$Message) {
+    $r = $AapRt.Retry[$Key]
+    if ($null -eq $r) {
+        $r = @{ Failures = 0; Msg = $null; At = $null }
+        $AapRt.Retry[$Key] = $r
+    }
+    $r.Failures++
+    $delay = Get-AapBackoffDelay $r.Failures
+    $r.At = (Get-AapNow).AddSeconds($delay)
+    if ($r.Failures -le 5 -or $r.Msg -cne $Message) { Write-AapLog "$Message; retry in $delay s (failure $($r.Failures))" }
+    $r.Msg = $Message
+}
+
+function Clear-AapRetry([string]$Key) {
+    $r = $AapRt.Retry[$Key]
+    if ($null -eq $r) { return }
+    $AapRt.Retry.Remove($Key)
+    Write-AapLog "$Key recovered after $($r.Failures) failures"
+}
+
 function Split-AapLine([string]$Text) {
     return @(($Text -split "`r?`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
@@ -211,12 +270,16 @@ function Get-AapLimitsKey($Limits) {
     $key = '{0},{1},{2}' -f $Limits.RunnerCount, $Limits.JobCpus, $Limits.JobMemoryGib
     if ($null -ne $Limits.IoPercent) { $key += ",io=$($Limits.IoPercent)" }
     if ($null -ne $Limits.Sharing) { $key += ",sharing=$($Limits.Sharing)" }
+    if ($null -ne $Limits.Heavy) { $key += ",h=$($Limits.Heavy),l=$($Limits.Light)" }
     return $key
 }
 
-# limits.conf text. The two schema 2 keys only when the settings set them.
+# limits.conf text. The two schema 2 keys only when the settings set them; a
+# tiered pool (schema 4) says its two counts instead of AAP_RUNNER_COUNT.
 function Get-AapLimitsContent($Limits) {
-    $c = "AAP_RUNNER_COUNT=$([int]$Limits.RunnerCount)`nAAP_JOB_CPUS=$([int]$Limits.JobCpus)`nAAP_JOB_MEMORY=$([int]$Limits.JobMemoryGib)g`n"
+    $count = "AAP_RUNNER_COUNT=$([int]$Limits.RunnerCount)`n"
+    if ($null -ne $Limits.Heavy) { $count = "AAP_LINUX_HEAVY_COUNT=$([int]$Limits.Heavy)`nAAP_LINUX_LIGHT_COUNT=$([int]$Limits.Light)`n" }
+    $c = "${count}AAP_JOB_CPUS=$([int]$Limits.JobCpus)`nAAP_JOB_MEMORY=$([int]$Limits.JobMemoryGib)g`n"
     if ($null -ne $Limits.IoPercent) { $c += "AAP_JOB_IO_PERCENT=$([int]$Limits.IoPercent)`n" }
     if ($Limits.Sharing -ceq 'slice' -or $Limits.Sharing -ceq 'fixed') { $c += "AAP_POOL_SHARING=$($Limits.Sharing)`n" }
     return $c
@@ -348,8 +411,10 @@ function Read-AapDesired {
 # and not returned, so it never reaches limits.conf or restarts the manager.
 # Profiles is what the allocator gets: for schema 1 and 2 the Linux count,
 # Windows 0, even shares, reserve 10. Schema 3 (ConvertFrom-AapSettingsV3) is
-# accepted only with the capacity module; a newer schema is refused and kept
-# in SettingsWhy for the status detail.
+# accepted only with the capacity module; schema 4 (ConvertFrom-AapSettingsV4)
+# only without it and only while the installed manager knows the tier keys
+# (ManagerTiers). A newer schema, and a schema 4 file this supervisor cannot
+# run, is refused and kept in SettingsWhy for the status detail.
 function Read-AapSettingsFile {
     $obj = Read-AapJsonFile 'settings.json'
     $warn = $null
@@ -364,17 +429,19 @@ function Read-AapSettingsFile {
         $optional = @('schema', 'io_percent', 'sharing', 'windows_runner_count')
         $schema = $null
         if ($names -ccontains 'schema') { $schema = $obj.schema }
-        $max = 2
-        if ($AapRt.Cap) { $max = 3 }
+        $accepted = @(1, 2)
+        if ($AapRt.Cap) { $accepted = @(1, 2, 3) } elseif ($AapRt.ManagerTiers -eq $true) { $accepted = @(1, 2, 4) }
         $whole = ($schema -is [int] -or $schema -is [long])
-        if ($whole -and $schema -gt $max) {   # check:settings-newer
-            $warn = "settings.json schema $schema is newer than this supervisor accepts ($((1..$max) -join ', '))"
+        if ($whole -and $schema -gt 2 -and $accepted -notcontains $schema) {   # check:settings-newer
+            $warn = "settings.json schema $schema is newer than this supervisor accepts ($($accepted -join ', '))"
             $newer = $warn
-        } elseif ($whole -and $schema -eq 3) {
-            $warn = ConvertFrom-AapSettingsV3 $obj
+        } elseif ($whole -and ($schema -eq 3 -or $schema -eq 4)) {
+            if ($schema -eq 3) { $warn = ConvertFrom-AapSettingsV3 $obj } else { $warn = ConvertFrom-AapSettingsV4 $obj }
             if ($warn -isnot [string]) {
                 $AapRt.Settings = $warn
                 $warn = $null
+            } elseif ($schema -eq 4) {
+                $newer = $warn
             }
         } elseif (@($want | Where-Object { $names -cnotcontains $_ }).Count -gt 0 -or
             @($names | Where-Object { $want -cnotcontains $_ -and $optional -cnotcontains $_ }).Count -gt 0) {
@@ -463,6 +530,58 @@ function ConvertFrom-AapSettingsV3($Obj) {
         Profiles = @{ Linux = $linux; Windows = $windows; ShareMode = [string]$Obj.share_mode; LinuxShare = $shares[0]; WindowsShare = $shares[1]
             Reserve = $reserve; LinuxBackend = [string]$Obj.linux_backend; LeaseHours = [int]$Obj.lease_wall_clock_hours }
         Schema   = 3
+    }
+}
+
+# Schema 4 (settings-v4.schema.json and validate.py sem_settings_v4): schema 3's
+# rules with the Linux count = light (0..10) + heavy (0..2). Only this supervisor
+# without the capacity module reads it, so Linux must be 1 or more (no Windows VM
+# runs here) and linux_backend stays wsl-legacy. job_cpus and job_memory_gib stay
+# the WSL pool totals; the manager refuses a pool whose tier reservations exceed
+# the pool memory, so the same inequality refuses the file here. Returns the
+# settings (Limits has Heavy and Light, which Get-AapLimitsContent writes as the
+# tier keys), or a warning string.
+function ConvertFrom-AapSettingsV4($Obj) {
+    $names = @($Obj.PSObject.Properties.Name)
+    if (@($AapV4Keys | Where-Object { $names -cnotcontains $_ }).Count -gt 0 -or @($names | Where-Object { $AapV4Keys -cnotcontains $_ }).Count -gt 0) {   # check:v4-keys
+        return "settings.json schema 4 must have exactly $($AapV4Keys -join ', ')"
+    }
+    foreach ($k in @(@('linux_light_count', 0, 10), @('linux_heavy_count', 0, 2), @('windows_runner_count', 0, 5), @('job_cpus', 1, 28), @('job_memory_gib', 1, 80),
+            @('io_percent', 0, 100), @('host_reserve_percent', 10, 90), @('lease_wall_clock_hours', 1, 72))) {
+        $v = $Obj.($k[0])
+        if (-not ($v -is [int] -or $v -is [long]) -or $v -lt $k[1] -or $v -gt $k[2]) { return "settings.json $($k[0]) must be an integer $($k[1])..$($k[2])" }
+    }
+    $light = [int]$Obj.linux_light_count
+    $heavy = [int]$Obj.linux_heavy_count
+    $linux = $light + $heavy
+    $windows = [int]$Obj.windows_runner_count
+    if ($linux -lt 1) { return 'settings.json schema 4 needs at least one Linux runner (light + heavy 1..12); this supervisor runs no Windows VM' }   # check:v4-counts
+    if (-not ($Obj.paused -is [bool])) { return 'settings.json paused must be true or false' }
+    foreach ($k in @(@('sharing', 'slice', 'fixed'), @('linux_backend', 'wsl-legacy', 'hyperv-vm'), @('share_mode', 'even', 'per_profile'))) {
+        $v = $Obj.($k[0])
+        if (-not ($v -is [string] -and ($v -ceq $k[1] -or $v -ceq $k[2]))) { return "settings.json $($k[0]) must be `"$($k[1])`" or `"$($k[2])`"" }
+    }
+    $reserve = [int]$Obj.host_reserve_percent
+    $shares = @($Obj.linux_share_percent, $Obj.windows_share_percent)
+    if ($Obj.share_mode -ceq 'even') {
+        if ($null -ne $shares[0] -or $null -ne $shares[1]) { return 'settings.json share_mode even takes null shares' }
+    } else {
+        foreach ($v in $shares) {
+            if (-not ($v -is [int] -or $v -is [long]) -or $v -lt 0 -or $v -gt 90) { return 'settings.json per_profile shares must be integers 0..90' }
+        }
+        if ($shares[0] + $shares[1] + $reserve -ne 100) { return 'settings.json shares plus host_reserve_percent must be 100' }
+        if (($linux -eq 0) -ne ($shares[0] -eq 0) -or ($windows -eq 0) -ne ($shares[1] -eq 0)) { return 'settings.json a share is 0 exactly when its count is 0' }
+        $shares = @([int]$shares[0], [int]$shares[1])
+    }
+    if ($Obj.linux_backend -ceq 'hyperv-vm') { return 'settings.json linux_backend hyperv-vm needs the capacity module and an active Ubuntu generation' }   # check:v4-linux-vm
+    $need = $heavy * $AapHeavyGib + $light * $AapLightGib
+    if ($need -gt [int]$Obj.job_memory_gib) { return "settings.json tier reservations (heavy x $AapHeavyGib + light x $AapLightGib GiB = $need) exceed job_memory_gib $([int]$Obj.job_memory_gib)" }   # check:v4-memory
+    return @{
+        Limits   = @{ RunnerCount = $linux; Heavy = $heavy; Light = $light; JobCpus = [int]$Obj.job_cpus; JobMemoryGib = [int]$Obj.job_memory_gib; IoPercent = [int]$Obj.io_percent; Sharing = [string]$Obj.sharing }
+        Paused   = [bool]$Obj.paused
+        Profiles = @{ Linux = $linux; Windows = $windows; ShareMode = [string]$Obj.share_mode; LinuxShare = $shares[0]; WindowsShare = $shares[1]
+            Reserve = $reserve; LinuxBackend = [string]$Obj.linux_backend; LeaseHours = [int]$Obj.lease_wall_clock_hours }
+        Schema   = 4
     }
 }
 
@@ -562,13 +681,16 @@ function Test-AapGranted($R) {
 }
 
 # One slots[] entry. M is a mirrored manager slot (already checked by
-# ConvertFrom-AapManagerStatus) for a legacy slot, else $null.
-function New-AapV5Slot([int]$Slot, [string]$Profile, [string]$Backend, [string]$Lifecycle, [string]$Generation, $M) {
+# ConvertFrom-AapManagerStatus) for a legacy slot, else $null. Tier is
+# heavy or light for a Linux slot of a tiered pool, else empty.
+function New-AapV5Slot([int]$Slot, [string]$Profile, [string]$Backend, [string]$Lifecycle, [string]$Generation, $M, [string]$Tier = '') {
     $s = [ordered]@{
         slot = $Slot; profile = $Profile; os = $AapOs[$Profile]; backend = $Backend; lifecycle = $Lifecycle
         image_generation = (Format-AapV5Text $Generation 80); job = ''; repo = ''; run_url = ''; job_url = $null
         started_at = $null; cpu_cores = $null; mem_gib = $null
     }
+    # Only while settings schema 4 is applied (status-settings.md, Tiers).
+    if ($Tier) { $s.tier = $Tier }
     if ($M) {
         $s.job = Format-AapText ([string]$M.job -replace '[\x7f\u200e\u200f\u202a-\u202e\u2066-\u2069]', ' ') 200
         $s.repo = [string]$M.repo
@@ -587,6 +709,8 @@ function ConvertTo-AapLifecycle([string]$State) {
         'idle' { return 'ready' }
         'running' { return 'busy' }
         'draining' { return 'draining' }
+        # Retired after 5 fast deaths (distro/README.md): given up, not starting.
+        'retired' { return 'quarantined' }
     }
     return 'creating'
 }
@@ -664,9 +788,48 @@ function New-AapV5Profile([string]$Profile, $Doc, $St, $Live, [string]$StorageSt
     } else {
         $o.unavailable_reason = $AapRt.VmWhy[$Profile]
     }
+    # The interim runner stands in while no Windows VM backend is loaded and no
+    # Windows VM slot is live (status-settings.md, Windows host).
+    if ($Profile -ceq 'windows' -and -not $AapRt.Vm.windows -and -not $mine.Count) {
+        $h = Get-AapHostRunner
+        if ($h) {
+            $o.backend = 'windows-host'
+            $o.image_generation = $null
+            $o.generation_state = $null
+            $o.available = $h.State -cne 'stopped'
+            $o.unavailable_reason = $h.Why
+            $o.host_runner = $h.State
+        }
+    }
     if ($o.image_generation) { $o.image_generation = Format-AapV5Text $o.image_generation 80 }
     $o.unavailable_reason = Format-AapV5Text $o.unavailable_reason 200
     return $o
+}
+
+# Runner.Listener.exe and Runner.Worker.exe on this PC: name and path only.
+function Get-AapHostRunnerProcesses {
+    return @(Get-CimInstance -ClassName Win32_Process -Filter "Name='Runner.Listener.exe' OR Name='Runner.Worker.exe'" -ErrorAction SilentlyContinue |
+            ForEach-Object { [pscustomobject]@{ Name = [string]$_.Name; Path = [string]$_.ExecutablePath } })
+}
+
+# The interim Windows runner (status-settings.md, Windows host): $null without
+# its install folder, else @{ State = online|busy|stopped; Why = the missing
+# piece }. Only its processes under <folder>\bin count. Reads the task and the
+# process list; never starts or stops anything and reads no file of the runner.
+# ponytail: one task and one process query per status write; cache them if a
+# tick ever gets slow.
+function Get-AapHostRunner {
+    if (-not [IO.Directory]::Exists($AapCfg.HostRunnerDir)) { return $null }
+    $name = $AapCfg.HostRunnerTask
+    $task = Get-ScheduledTask -TaskPath '\' -TaskName $name -ErrorAction SilentlyContinue
+    if (-not $task) { return @{ State = 'stopped'; Why = "logon task \$name not found" } }   # check:host-runner-task
+    $state = ([string]$task.State).ToLowerInvariant()
+    if ($state -cne 'running') { return @{ State = 'stopped'; Why = "logon task \$name is $state, not running" } }   # check:host-runner-task
+    $bin = (Join-Path $AapCfg.HostRunnerDir 'bin') + '\'
+    $mine = @(Get-AapHostRunnerProcesses | Where-Object { $_.Path.StartsWith($bin, [StringComparison]::OrdinalIgnoreCase) })
+    if (-not @($mine | Where-Object { $_.Name -eq 'Runner.Listener.exe' }).Count) { return @{ State = 'stopped'; Why = 'runner listener not running' } }   # check:host-runner-listener
+    if (@($mine | Where-Object { $_.Name -eq 'Runner.Worker.exe' }).Count) { return @{ State = 'busy'; Why = '' } }   # check:host-runner-busy
+    return @{ State = 'online'; Why = '' }
 }
 
 # status.v5.json (parity/contracts/status-v5.schema.json): status.json's state
@@ -675,6 +838,9 @@ function New-AapV5Profile([string]$Profile, $Doc, $St, $Live, [string]$StorageSt
 # validated state and the storage document the backends validated.
 function Get-AapStatusV5([string]$State, [string]$Detail, $Mirror, [DateTimeOffset]$Now) {
     $mirrored = ($Mirror -and @('idle', 'running', 'draining') -contains $State)
+    # Settings schema 4 applied (it needs no capacity module): 17 slots, tiers on the Linux ones.
+    $tiered = ($AapRt.Settings.Schema -eq 4)
+    $maxSlots = $(if ($tiered) { 17 } else { 5 })
     $mslots = @()
     if ($mirrored) { $mslots = @($Mirror.Slots) }
     $doc = $null
@@ -699,9 +865,17 @@ function Get-AapStatusV5([string]$State, [string]$Detail, $Mirror, [DateTimeOffs
         }
     } else {
         $n = 0
-        foreach ($m in @($mslots | Select-Object -First 5)) {
+        foreach ($m in @($mslots | Select-Object -First $maxSlots)) {
             $n++
-            $slots.Add((New-AapV5Slot $n 'linux' 'wsl-legacy' (ConvertTo-AapLifecycle ([string]$m.state)) $AapLegacyGeneration $m))
+            if ($tiered) {
+                # The manager numbers its slots by tier (1-2 heavy, 3-12 light) and the number stays.
+                if ($m.slot -isnot [int] -and $m.slot -isnot [long]) { continue }
+                if ($m.slot -lt 1 -or $m.slot -gt 12) { continue }
+                $tier = $(if ($m.slot -le 2) { 'heavy' } else { 'light' })
+                $slots.Add((New-AapV5Slot ([int]$m.slot) 'linux' 'wsl-legacy' (ConvertTo-AapLifecycle ([string]$m.state)) $AapLegacyGeneration $m $tier))
+            } else {
+                $slots.Add((New-AapV5Slot $n 'linux' 'wsl-legacy' (ConvertTo-AapLifecycle ([string]$m.state)) $AapLegacyGeneration $m))
+            }
         }
     }
     $storage = Get-AapStorageView (Get-AapStorageTiers)
@@ -723,7 +897,7 @@ function Get-AapStatusV5([string]$State, [string]$Detail, $Mirror, [DateTimeOffs
             $mode = $AapRt.Settings.Profiles.ShareMode
         }
         $capacity = [ordered]@{
-            max_slots = 5; used_slots = $slots.Count; free_slots = 5 - $slots.Count; host_reserve_percent = $reserve; share_mode = $mode
+            max_slots = $maxSlots; used_slots = $slots.Count; free_slots = $maxSlots - $slots.Count; host_reserve_percent = $reserve; share_mode = $mode
             host = [ordered]@{ cpus = (Get-AapV5Int $h.cpu_cores 1024 -Clamp); mem_gib = (Get-AapV5Int $h.mem_gib 4096 -Clamp) }
         }
     }
@@ -735,7 +909,7 @@ function Get-AapStatusV5([string]$State, [string]$Detail, $Mirror, [DateTimeOffs
         }
         $eff = $AapRt.Effective
         if ($eff -and -not $AapRt.ManagerStopped) {
-            $legacy.runner_count = Get-AapV5Int $eff.RunnerCount 5
+            $legacy.runner_count = Get-AapV5Int $eff.RunnerCount $(if ($tiered) { 12 } else { 5 })
             $legacy.job_cpus = Get-AapV5Int $eff.JobCpus 1024
             $legacy.job_memory_gib = Get-AapV5Int $eff.JobMemoryGib 4096
         }
@@ -749,7 +923,7 @@ function Get-AapStatusV5([string]$State, [string]$Detail, $Mirror, [DateTimeOffs
         }
     }
     $schemas = @(1, 2)
-    if ($AapRt.Cap) { $schemas = @(1, 2, 3) }
+    if ($AapRt.Cap) { $schemas = @(1, 2, 3) } elseif ($AapRt.ManagerTiers -eq $true -or $tiered) { $schemas = @(1, 2, 4) }
     return [ordered]@{
         schema = 5; state = $v5state; updated = $Now.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
         detail = (Format-AapV5Text $Detail 300); settings_schemas = $schemas; applied_settings_schema = $AapRt.Settings.Schema
@@ -820,8 +994,8 @@ function Invoke-AapRoot([string[]]$Argv, $StdIn = $null) {
 # /run/aap-runner/status.json from the manager. State is $null unless the
 # Windows contract knows it. Limits are $null unless all three parse.
 # Repo and RunUrl are '' unless they match exactly; the tray opens RunUrl.
-# Schema 3 adds sampled_at, pool, slots (an array; at most 5 objects are
-# kept), job_io_mbps and sharing; an older manager's slots count gives [].
+# Schema 3 adds sampled_at, pool, slots (an array; at most 17 objects are
+# kept: 5 untiered, 12 with the tiered pool), job_io_mbps and sharing; an older manager's slots count gives [].
 # Schema 4 adds work_disk_gib, work_disk_free_gb, work_disk_floor_gb and
 # cleaning. A manager file without them leaves the sizes null and cleaning false.
 function ConvertFrom-AapManagerStatus([string]$Text) {
@@ -840,7 +1014,7 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
     if (-not ($pool -is [Management.Automation.PSCustomObject])) { $pool = [pscustomobject]@{} }
     $slots = @()
     if ($obj.slots -is [array]) {
-        $slots = @(@($obj.slots | Where-Object { $_ -is [Management.Automation.PSCustomObject] } | Select-Object -First 5) | ForEach-Object {
+        $slots = @(@($obj.slots | Where-Object { $_ -is [Management.Automation.PSCustomObject] } | Select-Object -First 17) | ForEach-Object {
                 $n = $_.slot
                 if (-not ($n -is [int] -or $n -is [long]) -or $n -lt 0 -or $n -gt 64) { $n = $null }
                 $st = $_.state
@@ -864,6 +1038,10 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
     if (-not ($sharing -is [string] -and ($sharing -ceq 'slice' -or $sharing -ceq 'fixed'))) { $sharing = $null }
     $cleaning = $false
     if ($obj.cleaning -is [bool] -and $obj.cleaning) { $cleaning = $true }
+    $updated = $null
+    # A whole unix second only: a string (pwsh 7 makes RFC 3339 a [datetime]) or an out-of-range number is $null, never a throw.
+    $u = $obj.updated
+    if (($u -is [int] -or $u -is [long]) -and $u -gt 0 -and $u -lt 8589934592) { $updated = [long]$u }
     return @{
         State     = $state
         Job       = [string]$obj.job
@@ -883,6 +1061,8 @@ function ConvertFrom-AapManagerStatus([string]$Text) {
         WorkDiskFreeGb  = Get-AapNumber $obj.work_disk_free_gb 1024
         WorkDiskFloorGb = Get-AapNumber $obj.work_disk_floor_gb 1024
         Cleaning        = $cleaning
+        # Unix seconds the manager last wrote the file; $null when missing or invalid.
+        Updated         = $updated
     }
 }
 
@@ -989,9 +1169,24 @@ function Test-AapManagerFlag {
         $r = Invoke-AapRoot @('/bin/grep', '-q', '--', '--undrain', $AapManager)
         $AapRt.ManagerOk = ($r.Code -eq 0)
         $AapRt.ProbedAt = Get-AapNow
-        if (-not $AapRt.ManagerOk) { Write-AapLog "WARN probe exit $($r.Code): $AapOldManager" }
+        if (-not $AapRt.ManagerOk) { Write-AapLog "WARN probe exit $($r.Code): $AapOldManager" } else { [void](Test-AapManagerTiers) }
     }
     return $AapRt.ManagerOk
+}
+
+# Whether the installed manager runs the two Linux tiers (settings schema 4).
+# Same passive grep as the flag probe, run only after that probe passed, and
+# cached the same way (cleared wherever ManagerOk is). Never --version. Not
+# probed with the capacity module: it refuses schema 4 anyway (the allocator
+# is built for 5 slots).
+function Test-AapManagerTiers {
+    if ($AapRt.Cap -or $AapRt.ManagerOk -ne $true) { return $false }
+    if ($null -eq $AapRt.ManagerTiers) {
+        $r = Invoke-AapRoot @('/bin/grep', '-q', '--', 'AAP_LINUX_HEAVY_COUNT', $AapManager)
+        $AapRt.ManagerTiers = ($r.Code -eq 0)
+        if (-not $AapRt.ManagerTiers) { Write-AapLog "manager has no tier keys (grep exit $($r.Code)); settings schema 4 is not accepted" }
+    }
+    return $AapRt.ManagerTiers
 }
 
 # systemctl start, then is-active on the same units. A unit that is not
@@ -1026,14 +1221,21 @@ function Invoke-AapOn {
         return
     }
     Invoke-AapKeepAlive
+    # The tier probe has to run before the settings are read: schema 4 is only
+    # accepted once the manager is known to run the tiers.
+    [void](Test-AapManagerFlag)
     [void](Read-AapSettingsFile)
     if (Test-AapLegacyWanted) {
-        if (Test-AapManagerFlag) {
-            $r = Invoke-AapRoot @($AapManager, '--undrain')
-            if ($r.Code -ne 0) { Write-AapLog "undrain exit $($r.Code): $(Format-AapText $r.Err)" }
+        $e = $null
+        if (Test-AapManagerFlag) { $e = Invoke-AapUndrain }
+        if ($e) {
+            # A drained manager would exit at once; the health loop undrains and starts it with backoff.
+            Write-AapLog "$e; the manager is not started"
+            [void](Invoke-AapUnitStart @('sysbox'))
+        } else {
+            # systemctl is safe on the old manager too.
+            [void](Invoke-AapUnitStart @('sysbox', 'aap-runner-manager'))
         }
-        # systemctl is safe on the old manager too.
-        [void](Invoke-AapUnitStart @('sysbox', 'aap-runner-manager'))
     } else {
         # Linux 0 (or Linux on VMs): the distro runs for the broker; the
         # manager is never started, and one a previous run left is drained.
@@ -1054,6 +1256,7 @@ function Invoke-AapHealth {
     Set-AapVmPriority
     if ($AapRt.ManagerOk -eq $false -and ((Get-AapNow) - $AapRt.ProbedAt).TotalSeconds -ge 30) {
         $AapRt.ManagerOk = $null
+        $AapRt.ManagerTiers = $null
         [void](Test-AapManagerFlag)
     }
     $r = Invoke-AapRoot @('/bin/systemctl', 'is-active', 'sysbox', 'aap-runner-manager')
@@ -1078,10 +1281,16 @@ function Invoke-AapHealth {
             Write-AapStatus 'error' '' $AapOldManager
         } elseif ($AapRt.CapError) {
             Write-AapStatus 'error' '' $detail
+        } elseif ($AapRt.PauseWhy) {
+            Write-AapStatus $AapRt.PauseWhy.State '' $AapRt.PauseWhy.Detail
+        } elseif ($AapRt.Paused -and $AapRt.ResumeWhy) {
+            Write-AapStatus 'error' '' $AapRt.ResumeWhy
         } elseif ($AapRt.Paused) {
             Write-AapStatus 'paused' '' $detail
         } elseif ($AapRt.ManagerStopped) {
             Write-AapStatus 'idle' '' $detail
+        } elseif ($m -and $m.State -and (Test-AapManagerStale $m $now)) {
+            Write-AapStatus 'starting' '' 'manager status stale'
         } elseif ($m -and $m.State) {
             Write-AapStatus $m.State $m.Job $detail $m.Repo $m.RunUrl $m
             # The legacy heartbeat reads the sample just written (allocator INTEGRATION.md, P12 item 4).
@@ -1097,8 +1306,16 @@ function Invoke-AapHealth {
     $delay = Get-AapBackoffDelay $AapRt.Failures
     $detail = "sysbox=$sysbox manager=$manager; restart $($AapRt.Failures)"
     Write-AapLog "unhealthy: $detail; next check in $delay s"
+    # A restarted manager rewrites status.json; until then its old updated is no sign of a wedge.
+    Reset-AapStaleWatch
     [void](Invoke-AapUnitStart @('sysbox'))
-    if (-not $stopped) { [void](Invoke-AapUnitStart @('aap-runner-manager')) }
+    if (-not $stopped) {
+        # Not paused or stopped, so no drain is meant: one left by a failed
+        # undrain would make the manager exit at once.
+        $e = $null
+        if ($manager -ne 'active' -and $AapRt.ManagerOk) { $e = Invoke-AapUndrain }
+        if ($e) { Write-AapLog "$e; the manager is not started" } else { [void](Invoke-AapUnitStart @('aap-runner-manager')) }
+    }
     if ($AapRt.Failures -ge 5) {
         Write-AapStatus 'error' '' "$detail failed; retrying every $delay s"
     } else {
@@ -1107,21 +1324,74 @@ function Invoke-AapHealth {
     $AapRt.NextHealth = $now.AddSeconds($delay)
 }
 
+# A wedged manager: its unit is active but the updated value in its status.json
+# (rewritten every 5 s) has not moved for 3 health ticks of this clock. The
+# manager's clock is never compared with this one (WSL drifts). No updated
+# field is never stale.
+function Reset-AapStaleWatch {
+    $AapRt.MgrUpdated = $null
+    $AapRt.MgrStale = $false
+}
+
+# Cleanup may hold the status still: never stale while it says cleaning, and
+# the watch starts again after. The change to stale and back is logged once.
+function Test-AapManagerStale($M, [DateTimeOffset]$Now) {
+    $stale = $false
+    if ($null -eq $M.Updated) {
+        $AapRt.MgrUpdated = $null
+    } elseif ($M.Updated -ne $AapRt.MgrUpdated -or $M.Cleaning) {
+        $AapRt.MgrUpdated = $M.Updated
+        $AapRt.MgrUpdatedAt = $Now
+    } else {
+        $stale = (($Now - $AapRt.MgrUpdatedAt).TotalSeconds -ge 3 * $AapCfg.HealthSeconds)
+    }
+    if ($stale -and -not $AapRt.MgrStale) {
+        Write-AapLog "WARN manager status.json updated $($M.Updated) unchanged for $([int]($Now - $AapRt.MgrUpdatedAt).TotalSeconds) s while its unit is active"
+    } elseif ($AapRt.MgrStale -and -not $stale) {
+        Write-AapLog 'manager status.json updated moves again'
+    }
+    $AapRt.MgrStale = $stale
+    return $stale
+}
+
 # Drain, wait for the job to finish, keep the distro up. If Off arrives while
 # waiting, Off takes over. The manager is drained either way, so Paused is
 # set and a later resume undrains it.
+# A failed --drain or a wait timeout is not paused: the status says so and
+# the next cycle pauses again.
 function Invoke-AapPause {
     Write-AapStatus 'draining' '' 'pausing'
-    [void](Invoke-AapRoot @($AapManager, '--drain'))
+    $e = Invoke-AapDrain
+    if ($e) {
+        Register-AapRetryFailure 'pause' "pause: --$e"
+        $AapRt.PauseWhy = @{ State = 'error'; Detail = 'pausing: aap-runner-manager --drain failed; retrying' }
+        Write-AapStatus $AapRt.PauseWhy.State '' $AapRt.PauseWhy.Detail
+        return 'failed'
+    }
     $r = Wait-AapManagerInactive 'off' 'pausing'
+    if ($r -eq 'timeout') {
+        Register-AapRetryFailure 'pause' 'pause: the legacy pool still runs a job'
+        $AapRt.PauseWhy = @{ State = 'draining'; Detail = 'pausing: the legacy pool still runs a job; retrying' }
+        Write-AapStatus $AapRt.PauseWhy.State '' $AapRt.PauseWhy.Detail
+        return $r
+    }
+    Clear-AapRetry 'pause'
+    $AapRt.PauseWhy = $null
     $AapRt.Paused = $true
+    # A stopped manager's status does not move; the next run starts a fresh watch.
+    Reset-AapStaleWatch
     if ($r -ne 'aborted') { Write-AapStatus 'paused' '' '' }
     return $r
 }
 
 function Invoke-AapResume {
     Write-AapLog 'resume'
-    if (-not $AapRt.ManagerStopped) { Start-AapManager }
+    if (-not $AapRt.ManagerStopped -and -not (Start-AapManager)) {
+        $AapRt.ResumeWhy = 'resume: --undrain failed; retrying'
+        Write-AapStatus 'error' '' $AapRt.ResumeWhy
+        return
+    }
+    $AapRt.ResumeWhy = $null
     $AapRt.Paused = $false
     $AapRt.NextHealth = [DateTimeOffset]::MinValue
 }
@@ -1136,12 +1406,15 @@ function Invoke-AapLimitChange($Limits) {
     $key = Get-AapLimitsKey $Limits
     $content = Get-AapLimitsContent $Limits
     $prev = Invoke-AapRoot @('/bin/cat', $AapLimitsFile)
-    if ($null -eq $AapRt.Applied -and $prev.Code -eq 0 -and $prev.Out -ceq $content) {
+    # A file not yet put back is not the good one, nor already applied.
+    if (-not $AapRt.LimitsDirty) { $AapRt.LimitsGood = $prev }
+    if ($null -eq $AapRt.Applied -and -not $AapRt.LimitsDirty -and $prev.Code -eq 0 -and $prev.Out -ceq $content) {
         $AapRt.Applied = $key
         Write-AapLog "limits.conf already has $key"
         return
     }
     Write-AapLog "applying limits $key"
+    $AapRt.LimitsDirty = $true
     $w = Invoke-AapRoot @('/bin/sh', '-c', $AapWriteLimits) $content
     $check = $null
     if ($w.Code -eq 0) { $check = Invoke-AapRoot @($AapManager, '--check-limits') }
@@ -1151,14 +1424,16 @@ function Invoke-AapLimitChange($Limits) {
         } else {
             $why = Format-AapText (@(Split-AapLine ($check.Out + "`n" + $check.Err)) | Select-Object -First 1)
         }
-        if ($prev.Code -eq 0) {
-            [void](Invoke-AapRoot @('/bin/sh', '-c', $AapWriteLimits) $prev.Out)
-        } else {
-            [void](Invoke-AapRoot @('/bin/rm', '-f', $AapLimitsFile))
-        }
+        $restored = Restore-AapLimitsFile
         $AapRt.Refused = $key
         $AapRt.RefusedWhy = "limits $key refused: $why"
-        Write-AapLog "$($AapRt.RefusedWhy); previous limits.conf restored"
+        Clear-AapRetry 'limits'
+        if ($restored) { Write-AapLog "$($AapRt.RefusedWhy); previous limits.conf restored" } else { Write-AapLog $AapRt.RefusedWhy }
+        # A refused tier file may mean the manager is not the one probed: look again.
+        if ($null -ne $Limits.Heavy) {
+            $AapRt.ManagerTiers = $null
+            [void](Test-AapManagerTiers)
+        }
         Write-AapStatus 'error' '' $AapRt.RefusedWhy
         return
     }
@@ -1167,16 +1442,60 @@ function Invoke-AapLimitChange($Limits) {
     $AapRt.RefusedWhy = $null
     if ($AapRt.Paused -or $AapRt.ManagerStopped) {
         $AapRt.Applied = $key
+        $AapRt.LimitsDirty = $false
+        Clear-AapRetry 'limits'
         Write-AapLog 'manager stopped; it picks up the limits when it starts'
         return
     }
     Write-AapStatus 'draining' '' "applying limits $key"
-    [void](Invoke-AapRoot @($AapManager, '--drain'))
-    if ((Wait-AapManagerInactive 'off' "applying limits $key") -eq 'aborted') { return }
-    [void](Invoke-AapRoot @($AapManager, '--undrain'))
+    $e = Invoke-AapDrain
+    $w = $e
+    if (-not $e) { $w = Wait-AapManagerInactive 'off' "applying limits $key" }
+    if ($w -eq 'aborted') { return }
+    $u = Invoke-AapUndrain
+    if ($w -ne 'inactive' -or $u) {
+        # Not restarted on the new file: put the old one back so a later
+        # cycle does the whole change again (Applied stays as it was).
+        [void](Restore-AapLimitsFile)
+        $why = @(@($w, $u) | Where-Object { $_ -and $_ -ne 'inactive' }) -join '; '
+        Register-AapRetryFailure 'limits' "limits $key not applied: $why"
+        return
+    }
+    # A manager that does not come up is the health loop's to restart; it
+    # reads the new limits.conf when it does.
     [void](Invoke-AapUnitStart @('aap-runner-manager'))
     $AapRt.Applied = $key
+    $AapRt.LimitsDirty = $false
+    Clear-AapRetry 'limits'
     $AapRt.NextHealth = [DateTimeOffset]::MinValue
+}
+
+# --drain / --undrain: $null on success, else the failure as one line. The
+# caller logs it (once, or through the retry gate).
+function Invoke-AapDrain { return (Invoke-AapManagerFlag '--drain') }
+function Invoke-AapUndrain { return (Invoke-AapManagerFlag '--undrain') }
+function Invoke-AapManagerFlag([string]$Flag) {
+    $r = Invoke-AapRoot @($AapManager, $Flag)
+    if ($r.Code -eq 0) { return $null }
+    return "$($Flag.TrimStart('-')) exit $($r.Code): $(Format-AapText $r.Err)"
+}
+
+# Puts back the limits.conf from before the change (LimitsGood), or removes it
+# if there was none. $true when that worked; a failure is an ERROR and keeps
+# LimitsDirty, so the file is never mistaken for an applied one.
+function Restore-AapLimitsFile {
+    $prev = $AapRt.LimitsGood
+    if ($prev.Code -eq 0) {
+        $r = Invoke-AapRoot @('/bin/sh', '-c', $AapWriteLimits) $prev.Out
+    } else {
+        $r = Invoke-AapRoot @('/bin/rm', '-f', $AapLimitsFile)
+    }
+    if ($r.Code -ne 0) {
+        Write-AapLog "ERROR could not restore limits.conf (exit $($r.Code): $(Format-AapText $r.Err)); it is not counted applied"
+        return $false
+    }
+    $AapRt.LimitsDirty = $false
+    return $true
 }
 
 # settings.json while On: pause or resume, then limits. Limits the manager
@@ -1186,10 +1505,13 @@ function Sync-AapSettingsFile {
     $s = Read-AapSettingsFile
     # Pause and limits need manager flags; an old manager ignores settings.
     if (($s.Paused -or $null -ne $s.Limits -or $AapRt.Paused) -and -not (Test-AapManagerFlag)) { return }
+    # A pause that is no longer wanted no longer explains the status.
+    if (-not $s.Paused) { $AapRt.PauseWhy = $null }
     if ($s.Paused -and -not $AapRt.Paused) {
         # Pause covers the whole pool: no admission, and the VM slots drain too.
+        if (-not (Test-AapRetryDue 'pause')) { return }
         Invoke-AapVmDrain
-        if ((Invoke-AapPause) -eq 'aborted') { return }
+        if ((Invoke-AapPause) -ne 'inactive') { return }
     } elseif (-not $s.Paused -and $AapRt.Paused) {
         Invoke-AapResume
     }
@@ -1201,8 +1523,13 @@ function Sync-AapSettingsFile {
 }
 
 function Set-AapLimits($Limits) {
+    # A limits.conf that could not be put back is tried again first, also for a refused key.
+    if ($AapRt.LimitsDirty -and $AapRt.LimitsGood -and (Test-AapRetryDue 'limits-restore')) {
+        if (Restore-AapLimitsFile) { Clear-AapRetry 'limits-restore' } else { Register-AapRetryFailure 'limits-restore' 'limits.conf still not restored' }
+    }
     $key = Get-AapLimitsKey $Limits
     if ($null -eq $key -or $key -eq $AapRt.Applied -or $key -eq $AapRt.Refused) { return }
+    if (-not (Test-AapRetryDue 'limits')) { return }
     if ($null -eq $AapRt.Applied -and $key -eq (Get-AapLimitsKey $AapRt.Effective)) {
         $AapRt.Applied = $key
         return
@@ -1545,6 +1872,21 @@ function Invoke-AapCapReconcile($s) {
         $AapRt.CapFlags = @($r.Flags)
         if ($r.Status -ceq 'ok') { Write-AapLog "reconcile: $(Format-AapText $r.Detail 600)" }
     }
+    Invoke-AapBuildVmReconcile
+}
+
+# P12.2: the Windows image builder's VMs (aap-wbuild-*) whose build lock nobody holds belong to a dead builder; the
+# backend stops, removes and detaches them. A builder that is running holds its lock: its VM is left and not logged.
+function Invoke-AapBuildVmReconcile {
+    $vm = $AapRt.Vm.windows
+    if (-not $vm -or -not (Get-Command "Remove-Aap$($vm.Kind)OrphanBuildVm" -ErrorAction SilentlyContinue)) { return }
+    try {
+        foreach ($b in @(& "Remove-Aap$($vm.Kind)OrphanBuildVm" -Backend $vm.B)) {
+            if ($b.Action -ceq 'removed') { Write-AapLog "orphan build VM $($b.Name) removed" }
+            elseif ($b.Action -ceq 'unmatched') { Write-AapLog "WARN orphan build VM $($b.Name) left alone: $(Format-AapText $b.Detail 300)" }
+            elseif ($b.Action -ceq 'failed') { Write-AapLog "WARN orphan build VM $($b.Name) not removed: $(Format-AapText $b.Detail 300)" }
+        }
+    } catch { Write-AapLog "WARN orphan build VM reconcile failed: $(Format-AapText $_.Exception.Message 300)" }
 }
 
 # At the first tick of an On session: create the allocator state once (never
@@ -1698,7 +2040,7 @@ function Sync-AapLegacyPool($s) {
         $AapRt.HoldWhy = "grant_waits: the legacy slots keep $($limits.JobCpus) CPUs and $($limits.JobMemoryGib) GiB until they are granted again"
     }
     Set-AapLimits $limits
-    if ($AapRt.ManagerStopped -and -not $AapRt.Paused -and $AapRt.Applied -eq (Get-AapLimitsKey $limits)) { Start-AapManager }
+    if ($AapRt.ManagerStopped -and -not $AapRt.Paused -and $AapRt.Applied -eq (Get-AapLimitsKey $limits)) { [void](Start-AapManager) }   # a failure is retried with backoff inside
 }
 
 # The most the legacy totals may be: the settings' totals, or with no
@@ -1710,22 +2052,38 @@ function Get-AapLegacyCaps($s) {
     return @{ JobCpus = $from.JobCpus; JobMemoryGib = $from.JobMemoryGib }
 }
 
+# $false when --undrain fails: the manager would start and exit at once, so it
+# is not started and the caller keeps its state to try again.
 function Start-AapManager {
+    if (-not (Test-AapRetryDue 'manager-start')) { return $false }
     Write-AapLog 'starting the manager'
-    [void](Invoke-AapRoot @($AapManager, '--undrain'))
-    [void](Invoke-AapUnitStart @('aap-runner-manager'))
+    $e = Invoke-AapUndrain
+    if ($e) {
+        Register-AapRetryFailure 'manager-start' "manager start: $e"
+        return $false
+    }
+    Clear-AapRetry 'manager-start'
+    if (Invoke-AapUnitStart @('aap-runner-manager')) { Reset-AapStaleWatch }
     $AapRt.ManagerStopped = $false
     $AapRt.NextHealth = [DateTimeOffset]::MinValue
+    return $true
 }
 
 # No legacy slot is granted (Linux 0, or Linux on VMs): drain the manager, let
 # its jobs finish, and keep it stopped. The distro, sysbox and the keep-alive
 # stay up while On: the broker lives there (status-settings.md).
 function Invoke-AapManagerStop {
+    if (-not (Test-AapRetryDue 'manager-stop')) { return }
     Write-AapStatus 'draining' '' 'stopping the legacy pool'
-    [void](Invoke-AapRoot @($AapManager, '--drain'))
+    $e = Invoke-AapDrain
+    if ($e) {
+        Register-AapRetryFailure 'manager-stop' "stopping the legacy pool: $e"
+        return
+    }
+    Clear-AapRetry 'manager-stop'
     if ((Wait-AapManagerInactive 'off' 'stopping the legacy pool') -ne 'inactive') { return }   # check:stop-inactive
     $AapRt.ManagerStopped = $true
+    Reset-AapStaleWatch
     $AapRt.Effective = $null
     $AapRt.Applied = $null
     Write-AapLog 'legacy pool stopped: no Linux slot is granted'
@@ -1844,6 +2202,7 @@ function Test-AapManagerIdle {
 function Invoke-AapOff {
     # The VM slots drain beside the manager; the broker that releases their
     # runners lives in the distro, so it stops after them.
+    if (-not (Test-AapRetryDue 'off-terminate')) { return }
     if ($AapRt.Cap) { [void](Initialize-AapCapacity $AapRt.Settings) }
     Invoke-AapVmDrain
     if (Test-AapManagerFlag) {
@@ -1853,7 +2212,8 @@ function Invoke-AapOff {
         $w = Wait-AapManagerInactive 'on' 'stopping'
         if ($w -eq 'aborted') {
             Write-AapLog 'desired is on again during drain; undraining'
-            [void](Invoke-AapRoot @($AapManager, '--undrain'))
+            $e = Invoke-AapUndrain
+            if ($e) { Write-AapLog $e }
             $AapRt.Paused = $false
             $AapRt.NextHealth = [DateTimeOffset]::MinValue
             return
@@ -1873,7 +2233,7 @@ function Invoke-AapOff {
     $g = Wait-AapVmGone 'on'
     if ($g -eq 'aborted') {
         Write-AapLog 'desired is on again while VM slots drain; undraining'
-        if ($AapRt.ManagerOk) { [void](Invoke-AapRoot @($AapManager, '--undrain')) }
+        if ($AapRt.ManagerOk) { $e = Invoke-AapUndrain; if ($e) { Write-AapLog $e } }
         $AapRt.Paused = $false
         $AapRt.NextHealth = [DateTimeOffset]::MinValue
         return
@@ -1886,13 +2246,30 @@ function Invoke-AapOff {
     # right before the distro stops.
     if ((Read-AapDesired) -ne 'off') {   # check:off-recheck
         Write-AapLog 'desired is on again before terminate; undraining'
-        if ($AapRt.ManagerOk) { [void](Invoke-AapRoot @($AapManager, '--undrain')) }
+        if ($AapRt.ManagerOk) { $e = Invoke-AapUndrain; if ($e) { Write-AapLog $e } }
         $AapRt.Paused = $false
         $AapRt.NextHealth = [DateTimeOffset]::MinValue
         return
     }
     $r = Invoke-AapWsl -Arguments @('--terminate', $AapCfg.Distro)
-    if ($r.Code -ne 0) { Write-AapLog "terminate exit $($r.Code): $(Format-AapText $r.Err)" }
+    if ($r.Code -ne 0) {
+        Write-AapLog "terminate exit $($r.Code): $(Format-AapText $r.Err)"
+        # Off only once the distro is gone; a list that fails proves nothing.
+        $d = Get-AapDistroState
+        $why = $null
+        if ($d.State -ceq 'unknown') {
+            Write-AapLog $d.Why
+            $why = "cannot tell whether $($AapCfg.Distro) runs: $($d.Why)"
+        } elseif ($d.State -ceq 'running') {
+            $why = "$($AapCfg.Distro) still runs"
+        }
+        if ($why) {
+            Register-AapRetryFailure 'off-terminate' "Off: wsl --terminate exit $($r.Code); $why"
+            Write-AapStatus 'error' '' "stopping: wsl --terminate failed (exit $($r.Code)) and $why; retrying"
+            return
+        }
+    }
+    Clear-AapRetry 'off-terminate'
     Invoke-AapKeepAliveStop
     $AapRt.Mode = 'off'
     $AapRt.OnFailures = 0
@@ -1903,7 +2280,14 @@ function Invoke-AapOff {
     $AapRt.Applied = $null
     $AapRt.Effective = $null
     $AapRt.ManagerOk = $null
+    $AapRt.ManagerTiers = $null
     $AapRt.ManagerStopped = $false
+    Reset-AapStaleWatch
+    $AapRt.LimitsGood = $null
+    $AapRt.LimitsDirty = $false
+    $AapRt.ResumeWhy = $null
+    $AapRt.PauseWhy = $null
+    $AapRt.Retry = @{}
     # The next On initializes and reconciles again.
     $AapRt.CapReady = $false
     $AapRt.CapWhy = $null
@@ -1961,14 +2345,58 @@ function Invoke-AapCycle {
     }
 }
 
+# Whether the distro runs. `wsl --list --running --quiet` prints names only,
+# so it reads the same in every Windows language: exit 0 means running exactly
+# when a line is the distro's name. It exits non-zero when nothing runs (and
+# when wsl is broken), so then `wsl --list --verbose` decides, whose header
+# and state words are English only. Invoke-AapWsl decodes both (WSL_UTF8,
+# NULs stripped). @{ State = 'running' | 'stopped' | 'unknown'; Why }: not
+# registered is stopped; a failing verbose call or output without the
+# NAME STATE VERSION header (another language) is unknown.
+function Get-AapDistroState {
+    $q = Invoke-AapWsl -Arguments @('--list', '--running', '--quiet')
+    if ($q.Code -eq 0) {
+        if (@(Split-AapLine $q.Out) -contains $AapCfg.Distro) { return @{ State = 'running'; Why = '' } }
+        return @{ State = 'stopped'; Why = '' }
+    }
+    $r = Invoke-AapWsl -Arguments @('--list', '--verbose')
+    if ($r.Code -ne 0) { return @{ State = 'unknown'; Why = "wsl --list --verbose exit $($r.Code): $(Format-AapText $r.Err)" } }
+    $state = ConvertFrom-AapWslList $r.Out $AapCfg.Distro
+    $why = ''
+    if ($state -ceq 'unknown') { $why = "unreadable wsl --list --verbose: $(Format-AapText $r.Out)" }
+    return @{ State = $state; Why = $why }
+}
+
+# One row per distro under a NAME STATE VERSION header; the default carries a
+# leading '*'. Running is running, Stopped or no row is stopped, any other
+# state word (Installing, Converting, ...) or no header is unknown.
+function ConvertFrom-AapWslList([string]$Text, [string]$Name) {
+    $lines = @(Split-AapLine $Text)
+    if (-not ($lines | Where-Object { $_ -match '^\*?\s*NAME\s+STATE\s+VERSION\s*$' })) { return 'unknown' }
+    foreach ($l in $lines) {
+        $f = @(($l -replace '^\s*\*?\s*', '') -split '\s+')
+        if ($f.Count -lt 2 -or $f[0] -cne $Name) { continue }
+        if ($f[1] -ceq 'Running') { return 'running' }
+        if ($f[1] -ceq 'Stopped') { return 'stopped' }
+        return 'unknown'
+    }
+    return 'stopped'
+}
+
 # A supervisor that was killed leaves the distro running (and its keep-alive
 # child). When desired is off at startup and the distro runs, treat it as On
 # so the next cycle drains and terminates it. When desired is on, the start
 # sequence is idempotent and simply runs again.
 function Initialize-AapMode {
     if ((Read-AapDesired) -ne 'off') { return }
-    $r = Invoke-AapWsl -Arguments @('--list', '--running', '--quiet')
-    if (@(Split-AapLine $r.Out) -contains $AapCfg.Distro) {
+    $d = Get-AapDistroState
+    if ($d.State -ceq 'unknown') {
+        # Unknown, not "not running". No guess at on: a wsl call into a
+        # stopped distro would start it just to drain it.
+        Write-AapLog "WARN cannot tell whether $($AapCfg.Distro) runs: $($d.Why)"
+        return
+    }
+    if ($d.State -ceq 'running') {
         Write-AapLog "$($AapCfg.Distro) is running while desired is off; will drain"
         $AapRt.Mode = 'on'
     }

@@ -14,7 +14,7 @@ tested against the contract's shared strict fake.
 
 | File | What it is |
 |---|---|
-| `AapWinBackend.psm1` | The lifecycle: `New-AapWinBackend`, `Invoke-AapWinStep`, the reconcile callbacks, the journal, the trust checks, the guest channel and its checks |
+| `AapWinBackend.psm1` | The lifecycle: `New-AapWinBackend`, `Invoke-AapWinStep`, the reconcile callbacks, `Remove-AapWinOrphanBuildVm`, the journal, the trust checks, the guest channel and its checks |
 | `AapWinBackend.HyperV.psm1` | The production provider: every Hyper-V, Storage and hash call, behind one hashtable of ops. NOT RUN |
 | `psdirect-call.ps1` | The capped call child: one guest command over PowerShell Direct per process. Only its input checks have run |
 
@@ -29,9 +29,9 @@ tick.
 | `creating` | **create**: trust-check the roots and the host (Enhanced Session Mode off, nobody but SYSTEM and Administrators in Hyper-V Administrators), check that the generation folder and `base.vhdx` are sealed read-only, re-hash the base against the pin through a read handle held until the differencing disk exists, the reservation folders, `os.avhdx` (differencing child of the base), `scratch.vhdx` (its maximum size inside `scratch_gib`), `New-VM` with no adapter and its id journaled at once (or the VM whose id the journal already recorded), read back and verify every VM setting, its disks and devices; then the guest network: `Attach` with the VM Off, the shared declaration check (`AAP_NetworkInvalid`), a fresh per-clone password and the declaration's static address, gateway and resolvers (DHCP off) written offline into the clone's answer file, `Verify` (every object it writes is a problem, a throw too) and the read-back of the adapter from Hyper-V through the provider against the declaration (`AAP_NetworkUntrusted`). No copy of the declaration is journaled. Then **boot**: with the VM Off, `Attach` again (the module returns the same declaration), the declaration check, `Verify` and the read-back, then `Start-VM`; that declaration stays in this process's memory only, for the read-back while the VM runs. Then **ready** (`probe` until `ready`, at most 15 minutes after boot) and `Set-AapSlotState ready` |
 | `ready` | **run_one**: `Invoke-AapBrokerLease`, `deliver_registration` with the JIT config on the call child's stdin, `start_runner` |
 | `ready`, `busy`, `draining` | **heartbeat**, at most every 30 s per reservation: guest `status` over this VM's own channel, broker status for `JobRunning`, `Update-AapHeartbeat`. A runner that GitHub reports gone ends the job (`collecting`); a draining runner that is idle is stopped; a busy one is never touched |
-| every state with a VM | **limits**, from the host on every step, with or without a guest channel, probing and `deleting` included (a drained VM kept for its pending release), before the once-a-minute retry gate: a paused VM or a clone folder over `clone_gib` (or one that cannot be measured) destroys the VM (`fatal`), the slot held until the teardown proof; and a running VM's network, `Verify` again at least every 60 s (the host's addresses may have changed; a non-terminating error it writes is a problem) and the read-back against the in-memory declaration (a VM this process did not start gets `Verify` only), a problem or a throw destroys it the same way |
+| every state with a VM | **limits**, from the host on every step, with or without a guest channel, probing and `deleting` included (a drained VM kept for its pending release), before the once-a-minute retry gate: a paused VM or a clone folder over `clone_gib` (or one that cannot be measured in three walks in a row: a file deleted under one walk is a race, not a broken limit) destroys the VM (`fatal`), the slot held until the teardown proof; and a running VM's network, `Verify` again at least every 60 s (the host's addresses may have changed; a non-terminating error it writes is a problem) and the read-back against the in-memory declaration (a VM this process did not start gets `Verify` only), a problem or a throw destroys it the same way |
 | `collecting` | **collect**: the agent's bounded summary (returned as `Summary`, never written), then `deleting` |
-| `deleting` | **destroy**: `Invoke-AapBrokerRelease` if a lease was ever asked for, `Stop-VM -TurnOff`, `Remove-VM`, P10.0 detach, delete both reservation folders without following links, observe absence, `Complete-AapTeardown` |
+| `deleting` | **destroy**: `Invoke-AapBrokerRelease` if a lease was ever asked for, `Stop-VM -TurnOff`, `Remove-VM`, `Dismount-VHD` of a clone or scratch disk a crash left mounted on the host, P10.0 detach, delete both reservation folders without following links, observe absence, `Complete-AapTeardown` |
 | `quarantined` | `heartbeat`: a validated reply plus a broker answer returns it; `hostile_guest`, `teardown_failed`, or a destroy already journaled: destroy again; `crash`, `unknown_vm`: held. The limits apply here too |
 
 There is no `reset`: destroy is the only way a VM leaves (security review M3).
@@ -164,14 +164,15 @@ with `parity/contracts/validate.py`).
 
 | File | Covers |
 |---|---|
-| `Lifecycle.Tests.ps1` | one job end to end; caps; boot deadline; drain; heartbeat binding; clone cap; paused VM; heartbeat quarantine recovery; a running guest's network (Verify problems, throws and errors, the read-back, the 60 s cadence) |
+| `Lifecycle.Tests.ps1` | one job end to end; caps; boot deadline; drain; heartbeat binding; clone cap (a file vanishing mid-walk is walked again); paused VM; heartbeat quarantine recovery; a running guest's network (Verify problems, throws and errors, the read-back, the 60 s cadence) |
 | `Transport.Tests.ps1` | every reply check; every hostile case end to end; hostile with a failing allocator; the real capped child (overflow, hang, memory flood, grandchild, exit code, stdin only) |
 | `Teardown.Tests.ps1` | release outcomes; a VM or folder that will not go; no slot reuse before the proof; links in clone folders |
 | `Create.Tests.ps1` | untrusted roots; the base pin; VM settings; the guest network against the shared fake (order, every tamper and fault, a lying module's Verify and declaration, the re-Attach and read-back before boot, a VM running at boot, an adapter the module did not make); storage document; offline disk helpers (the answer file's static addressing) |
-| `Recovery.Tests.ps1` | unreadable journals; lost credential; hostile records; restart with a busy runner; JIT delivery rule; inventory and reconcile callbacks; orphans |
+| `Recovery.Tests.ps1` | unreadable journals; lost credential; hostile records; restart with a busy runner; JIT delivery rule; inventory and reconcile callbacks; a disk left mounted on the host; orphans |
+| `BuildReconcile.Tests.ps1` | orphan `aap-wbuild-*` VMs of a dead image builder: lock not held (removed and detached), lock held (left), no lock file (left, reported unmatched), other names (never touched), a removal or Detach that fails (reported), the staging root |
 | `Crash.Tests.ps1` | a real process killed at every lifecycle boundary (19 points, plus a drain) and recovered |
 | `Hygiene.Tests.ps1` | no password or JIT config in any file; JIT never text; the password and answer-file bytes never a command's parameter (AST); antivirus patterns; AMSI compile |
-| `Invoke-AapWinMutations.ps1` | disables each `# check:` (in `AapWinBackend.psm1` and `psdirect-call.ps1`) in turn; every check must make a test fail |
+| `Invoke-AapWinMutations.ps1` | disables each `# check:` (in `AapWinBackend.psm1` and `psdirect-call.ps1`) in turn; every check must make a test fail, and each run must leave its own TEMP empty |
 
 ```powershell
 Invoke-Pester -Path tests/backends/windows             # both hosts

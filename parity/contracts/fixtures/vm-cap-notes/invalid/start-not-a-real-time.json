@@ -1,0 +1,13 @@
+{
+  "expect": "started_utc is not a real UTC time",
+  "instance": {
+    "schema": 1,
+    "kind": "aap-vm-cap",
+    "vm_id": "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b",
+    "vm_name": "aap-w-4-3-1a2b3c4d",
+    "reservation_id": "r-1a2b3c4d000000b1",
+    "started_utc": "2026-02-30T12:00:00Z",
+    "deadline_utc": "2026-02-30T18:00:00Z",
+    "check": "99b1f4476987118f82f40703753b3c69"
+  }
+}

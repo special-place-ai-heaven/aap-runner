@@ -47,7 +47,7 @@ namespace ParityWork
         const uint FILE_LIST_DIRECTORY = 0x1, FILE_TRAVERSE = 0x20;
         const uint FILE_READ_ATTRIBUTES = 0x80, FILE_WRITE_ATTRIBUTES = 0x100;
         const uint SHARE_READ = 1, SHARE_WRITE = 2, SHARE_DELETE = 4;
-        const uint FILE_OPEN = 1;
+        const uint FILE_OPEN = 1, FILE_CREATE = 2;
         const uint FILE_DIRECTORY_FILE = 0x1, FILE_SYNCHRONOUS_IO_NONALERT = 0x20;
         const uint FILE_NON_DIRECTORY_FILE = 0x40, FILE_READ_DATA = 0x1;
         const uint FILE_OPEN_REPARSE_POINT = 0x200000;
@@ -80,7 +80,38 @@ namespace ParityWork
 
         struct Entry { public string Name; public uint Attributes; }
 
+        // One directory of the explicit walk stack: its handle, relative path, entries and cursor.
+        sealed class Frame
+        {
+            public SafeFileHandle Handle; public string Rel; public List<Entry> Entries; public int Next;
+        }
+
+        // Test seam: called with "preflight:<rel>" or "delete:<rel>" after an entry is
+        // enumerated and before it is opened. Null in production.
+        public static Action<string> TestHook;
+
         // ---- public API -------------------------------------------------------
+
+        // Creates a new directory (FILE_CREATE: an existing object is never adopted) relative
+        // to its parent, which is reached without following any reparse point, and returns the
+        // identity read from the creating handle.
+        public static string CreateDirectory(string path)
+        {
+            string p = path == null ? "" : path.TrimEnd('\\');
+            int cut = p.LastIndexOf('\\');
+            if (cut < 3) throw new HoldException("PATH", ".", "not a directory below a drive root", false);
+            string name = p.Substring(cut + 1);
+            if (name.Length == 0 || name.Length > 255 || name == "." || name == ".." || name.IndexOf(':') >= 0)
+                throw new HoldException("PATH", name, "bad directory name", false);
+            List<SafeFileHandle> chain = OpenChain(p.Substring(0, cut), false);
+            try
+            {
+                using (SafeFileHandle h = Open(chain[chain.Count - 1], name, FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    SHARE_READ | SHARE_WRITE | SHARE_DELETE, FILE_DIRECTORY_FILE, name, true, FILE_CREATE))
+                    return Identity(h);
+            }
+            finally { CloseAll(chain); }
+        }
 
         // "volumeserial:fileid" of an existing directory reached without following any reparse point.
         public static string GetIdentity(string path)
@@ -110,8 +141,8 @@ namespace ParityWork
                     if (left.Count > 0)
                         throw new HoldException("NOT_EMPTY", left[0].Name, left.Count + " unregistered entr(y/ies) remain", false);
                 }
-                Walk(root, "", false);   // preflight: refuse before touching anything
-                Walk(root, "", true);    // the qualified delete; re-checks every object it opens
+                Walk(root, false);   // preflight: refuse before touching anything
+                Walk(root, true);    // the qualified delete; re-checks every object it opens
                 Dispose(root, ".");
                 return true;
             }
@@ -185,39 +216,82 @@ namespace ParityWork
             catch { CloseAll(chain); throw; }
         }
 
-        static void Walk(SafeFileHandle dir, string rel, bool delete)
+        // Depth-first, post-order, with an explicit stack (no recursion: depth is bounded
+        // only by the path length, not by the thread stack). Every open directory stays
+        // open until its children are done, exactly as in a recursive walk.
+        static void Walk(SafeFileHandle root, bool delete)
         {
-            foreach (Entry e in Enumerate(dir, rel == "" ? "." : rel))
+            string phase = delete ? "delete:" : "preflight:";
+            Stack<Frame> stack = new Stack<Frame>();
+            Frame top = new Frame();
+            top.Handle = root; top.Rel = ""; top.Entries = Enumerate(root, ".");
+            stack.Push(top);
+            try
             {
-                string crel = rel == "" ? e.Name : rel + "\\" + e.Name;
-                if (e.Name.IndexOf(':') >= 0)
-                    throw new HoldException("ADS", crel, "stream name", false);
-                if ((e.Attributes & ATTR_REPARSE) != 0)
-                    throw new HoldException("REPARSE", crel, "reparse point in tree", false);
-                bool isDir = (e.Attributes & ATTR_DIRECTORY) != 0;
-                uint access = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
-                if (isDir) access |= FILE_LIST_DIRECTORY | FILE_TRAVERSE;
-                if (delete) access |= DELETE | FILE_WRITE_ATTRIBUTES;
-                uint share = isDir ? SHARE_READ : SHARE_READ | SHARE_WRITE;
-                if (!delete) share = SHARE_READ | SHARE_WRITE | SHARE_DELETE;
-                SafeFileHandle h;
-                try { h = Open(dir, e.Name, access, share, isDir ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE, crel, false); }
-                catch (HoldException ex) { if (ex.Code == "NOT_FOUND") continue; throw; }
-                using (h)
+                while (stack.Count > 0)
                 {
-                    uint attrs = AttrTag(h, crel);
-                    if ((attrs & ATTR_REPARSE) != 0)
-                        throw new HoldException("REPARSE", crel, "object became a reparse point", false);
-                    if (((attrs & ATTR_DIRECTORY) != 0) != isDir)
-                        throw new HoldException("CHANGED", crel, "object type changed during walk", false);
-                    if (isDir) Walk(h, crel, delete);
-                    if (delete) Dispose(h, crel);
+                    Frame f = stack.Peek();
+                    if (f.Next >= f.Entries.Count)
+                    {
+                        stack.Pop();
+                        if (f.Handle != root)
+                        {
+                            try { if (delete) Dispose(f.Handle, f.Rel); }
+                            finally { f.Handle.Dispose(); }
+                        }
+                        continue;
+                    }
+                    Entry e = f.Entries[f.Next++];
+                    string crel = f.Rel == "" ? e.Name : f.Rel + "\\" + e.Name;
+                    if (e.Name.IndexOf(':') >= 0)
+                        throw new HoldException("ADS", crel, "stream name", false);
+                    if ((e.Attributes & ATTR_REPARSE) != 0)
+                        throw new HoldException("REPARSE", crel, "reparse point in tree", false);
+                    bool isDir = (e.Attributes & ATTR_DIRECTORY) != 0;
+                    uint access = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+                    if (isDir) access |= FILE_LIST_DIRECTORY | FILE_TRAVERSE;
+                    if (delete) access |= DELETE | FILE_WRITE_ATTRIBUTES;
+                    uint share = isDir ? SHARE_READ : SHARE_READ | SHARE_WRITE;
+                    if (!delete) share = SHARE_READ | SHARE_WRITE | SHARE_DELETE;
+                    Action<string> hook = TestHook;
+                    if (hook != null) hook(phase + crel);
+                    SafeFileHandle h;
+                    try { h = Open(f.Handle, e.Name, access, share, isDir ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE, crel, false, FILE_OPEN); }
+                    catch (HoldException ex) { if (ex.Code == "NOT_FOUND") continue; throw; }
+                    bool pushed = false;
+                    try
+                    {
+                        uint attrs = AttrTag(h, crel);
+                        if ((attrs & ATTR_REPARSE) != 0)
+                            throw new HoldException("REPARSE", crel, "object became a reparse point", false);
+                        if (((attrs & ATTR_DIRECTORY) != 0) != isDir)
+                            throw new HoldException("CHANGED", crel, "object type changed during walk", false);
+                        if (isDir)
+                        {
+                            Frame c = new Frame();
+                            c.Handle = h; c.Rel = crel; c.Entries = Enumerate(h, crel);
+                            stack.Push(c);
+                            pushed = true;
+                        }
+                        else if (delete) Dispose(h, crel);
+                    }
+                    finally { if (!pushed) h.Dispose(); }
                 }
+            }
+            finally
+            {
+                while (stack.Count > 0) { Frame f = stack.Pop(); if (f.Handle != root) f.Handle.Dispose(); }
             }
         }
 
         static SafeFileHandle Open(SafeFileHandle parent, string name, uint access, uint share,
             uint options, string rel, bool caseInsensitive)
+        {
+            return Open(parent, name, access, share, options, rel, caseInsensitive, FILE_OPEN);
+        }
+
+        static SafeFileHandle Open(SafeFileHandle parent, string name, uint access, uint share,
+            uint options, string rel, bool caseInsensitive, uint disposition)
         {
             IntPtr nameBuf = Marshal.StringToHGlobalUni(name);
             IntPtr us = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(UNICODE_STRING)));
@@ -235,7 +309,7 @@ namespace ParityWork
                 oa.Attributes = (caseInsensitive ? OBJ_CASE_INSENSITIVE : 0) | (parent == null ? 0 : OBJ_DONT_REPARSE);
                 IntPtr h;
                 IO_STATUS_BLOCK iosb;
-                int st = NtCreateFile(out h, access, ref oa, out iosb, IntPtr.Zero, 0, share, FILE_OPEN,
+                int st = NtCreateFile(out h, access, ref oa, out iosb, IntPtr.Zero, 0, share, disposition,
                     options | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
                     IntPtr.Zero, 0);
                 GC.KeepAlive(parent);
@@ -344,6 +418,8 @@ namespace ParityWork
             {
                 case 0xC0000034: case 0xC000003A:
                     return new HoldException("NOT_FOUND", rel, "not found", false);
+                case 0xC0000035:
+                    return new HoldException("EXISTS", rel, "already exists; an existing object is never adopted", false);
                 case 0xC0000043: case 0xC0000056: case 0xC0000121: case 0xC0000101:
                     return new HoldException("SHARING", rel, "in use (NTSTATUS 0x" + st.ToString("X8") + ")", true);
                 case 0xC000050B: case 0xC0000280:
@@ -406,6 +482,8 @@ namespace ParityWork
             long c, e, k, u;
             if (!GetProcessTimes(h, out c, out e, out k, out u))
                 throw new HoldException("PROCESS", pid.ToString(), "cannot read start time (Win32 " + Marshal.GetLastWin32Error() + ")", false);
+            if (c <= 0)
+                throw new HoldException("PROCESS", pid.ToString(), "start time unreadable (zero)", false);
             StartTicks = DateTime.FromFileTimeUtc(c).Ticks.ToString();
             if (HasExited) return;
             System.Text.StringBuilder sb = new System.Text.StringBuilder(1024);
@@ -413,6 +491,47 @@ namespace ParityWork
             if (!QueryFullProcessImageNameW(h, 0, sb, ref n))
                 throw new HoldException("PROCESS", pid.ToString(), "cannot read image path (Win32 " + Marshal.GetLastWin32Error() + ")", false);
             ImagePath = sb.ToString(0, n);
+        }
+
+        [DllImport("ntdll.dll")]
+        static extern int NtQueryInformationProcess(IntPtr h, int cls, IntPtr info, int len, out int ret);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool ReadProcessMemory(IntPtr h, IntPtr addr, byte[] buf, IntPtr size, out IntPtr read);
+
+        // Current directory of another process, read from its PEB (64-bit host only:
+        // PEB.ProcessParameters at 0x20, CurrentDirectory.DosPath at 0x38). Null when it
+        // cannot be read; such a process also cannot be inspected or killed by this actor,
+        // and its open directory handle makes any deletion of that directory a HOLD.
+        public static string GetCurrentDirectory(int pid)
+        {
+            if (IntPtr.Size != 8) return null;
+            IntPtr ph = OpenProcess(0x1000 | 0x10, false, pid);   // QUERY_LIMITED_INFORMATION | VM_READ
+            if (ph == IntPtr.Zero) return null;
+            IntPtr pbi = Marshal.AllocHGlobal(48);
+            try
+            {
+                int ret;
+                if (NtQueryInformationProcess(ph, 0, pbi, 48, out ret) < 0) return null;
+                IntPtr peb = Marshal.ReadIntPtr(pbi, 8);
+                if (peb == IntPtr.Zero) return null;
+                byte[] pp = ReadMem(ph, new IntPtr(peb.ToInt64() + 0x20), 8);
+                if (pp == null) return null;
+                byte[] us = ReadMem(ph, new IntPtr(BitConverter.ToInt64(pp, 0) + 0x38), 16);
+                if (us == null) return null;
+                int len = BitConverter.ToUInt16(us, 0);
+                long buf = BitConverter.ToInt64(us, 8);
+                if (len == 0 || buf == 0) return null;
+                byte[] s = ReadMem(ph, new IntPtr(buf), len);
+                return s == null ? null : System.Text.Encoding.Unicode.GetString(s);
+            }
+            finally { Marshal.FreeHGlobal(pbi); CloseHandle(ph); }
+        }
+
+        static byte[] ReadMem(IntPtr ph, IntPtr addr, int n)
+        {
+            byte[] b = new byte[n];
+            IntPtr got;
+            return ReadProcessMemory(ph, addr, b, new IntPtr(n), out got) && got.ToInt64() == n ? b : null;
         }
 
         public bool HasExited { get { return WaitForSingleObject(h, 0) == 0; } }

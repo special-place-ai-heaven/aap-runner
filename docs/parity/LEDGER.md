@@ -1,6 +1,8 @@
 # Parity implementation ledger
 
-Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, P02.2, P03, P03.1, P04, P04.1, P05, P06, P06.1, P06.2, P07, P07.1, P08, P09, P10, P10.2, P10.3, P11, P11.1, P11.2, P12, P13, P13.1, P13.2, P13.3, P13.4, P14, P15, P17, P18 and P20.0 are COMPLETE (P03.1, P04.1, P12 and P14 cleanup-verified 2026-10-22 by an independent read-only verifier). P13.5 and P13.5b are merged and cleanup-verified but IN_PROGRESS: they merged without an independent review, the independent post-merge review returned FIX-FIRST on both, and their remainder item P13.5c is NOT_STARTED. Every cleanup receipt in the parity evidence store (52) now carries an independent verifier verdict (pass 1 on 2026-10-22 at 02:17 CEST for P03.1, P04.1, P12, P13.5, P13.5b, P14 and coordinator PR #72; pass 2 at 03:58 CEST for coordinator PRs #65, #73 and #77), so the global no-new-dispatch barrier is OPEN; the close-4 entry that recorded #65 as verified CLEAN had no recorded evidence before pass 2. Nothing is PR_OPEN, and the contract-revision PRs #79 (P02.5) and #80 (P02.4) are open while their items stay NOT_STARTED. Wave 6 is current. States below are current; everything not listed otherwise is NOT_STARTED. ledger.json is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in WORKTREES.md. Only COMPLETE dependencies unlock work; merged or gate-verified alone does not.
+Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-11-07 (ledger reconcile, see "Reconcile - 2026-11-07 (fourth close)" below) on origin/main 27a1621: the COMPLETE set of close 6 is unchanged. COMPLETE additions since close 6, each cleanup receipt verified CLEAN-WITH-NOTES by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batches 2-6, 8 and 10-13): R2.1 (#103), R1.1 (#104), R1.2 (#108), P08.2 (#110), R1.3 (#112), P08.1 (#113), P05.1 (#109), P22.1 (#117), P22.2 (#118), P12.2 (#119), R1.4 (#120), P00.1 (#122), P10.1 (#123) and P25.1 (#125). Coordinator PRs #111 (P17/P18 oracle refresh, batch 7), #106 and #116 (ledger PRs, batch 9), #121 (ledger PR, batch 12), #124 (ledger PR, batch 13), #126 (the 6-hour VM lifetime cap contract as settings schema 5, batch 14) and #127 and #128 (defect fixes from the 2026-11-07 silent-failure audit, batch 14) are verified too. IN_PROGRESS: P02.4 and P02.5 (contract revisions merged as #80 and #79 on 2026-10-22, cleanup verified CLEAN-WITH-NOTES 2026-11-06, lab proof and conformance work open), P10.0, P13.5, P13.5b and P16 (#99 retired the maintained sccache wiring; broker support and coordinator-controlled legacy reservations remain; P16 is also R1 step 5). PR_OPEN: P13.5c (#83). The global no-new-dispatch barrier is OPEN: every merged parity receipt and receipted coordinator PR has a verifier verdict. The claim budgets are now enforced from ledger fields: every NOT_STARTED and IN_PROGRESS task declares `tokens` (see the third and fourth closes). Open PRs: #83 (P13.5c), #84 (P02.5 Linux conformance, pester-backends failing); #82 (P09.x hard-cap contract) was closed unmerged and is superseded by #126, merged. Live rollout of fcb04b1 done 2026-11-06; its canary is green (2026-11-07) and its finalize ran on the owner's word 2026-11-07; the live tray is at main 980c426; #127 (manager) and #128 (supervisor) were installed live on the owner's word 2026-11-07 (the distro image was not rebuilt). Owner decision Q1 is SUPERSEDED by the owner's 2026-11-05 runner group decision. The close-6 status follows for history.
+
+Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, P02.2, P03, P03.1, P04, P04.1, P05, P06, P06.1, P06.2, P07, P07.1, P08, P09, P10, P10.2, P10.3, P11, P11.1, P11.2, P12, P13, P13.1, P13.2, P13.3, P13.4, P14, P15, P17, P18 and P20.0 are COMPLETE (P03.1, P04.1, P12 and P14 cleanup-verified 2026-10-22 by an independent read-only verifier). P13.5 and P13.5b are merged and cleanup-verified but IN_PROGRESS: they merged without an independent review, the independent post-merge review returned FIX-FIRST on both, and their remainder item P13.5c is NOT_STARTED. Every cleanup receipt in the parity evidence store (52) now carries an independent verifier verdict (pass 1 on 2026-10-22 at 02:17 CEST for P03.1, P04.1, P12, P13.5, P13.5b, P14 and coordinator PR #72; pass 2 at 03:58 CEST for coordinator PRs #65, #73 and #77), so the global no-new-dispatch barrier is OPEN; the close-4 entry that recorded #65 as verified CLEAN had no recorded evidence before pass 2. Nothing is PR_OPEN, and the contract-revision PRs #79 (P02.5) and #80 (P02.4) are open while their items stay NOT_STARTED. Wave 6 is current. States below are current; everything not listed otherwise is NOT_STARTED. ledger.json is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in WORKTREES.md. Only COMPLETE dependencies unlock work; merged or gate-verified alone does not.
 
 ## Owner decisions and open gates
 
@@ -9,12 +11,14 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-22 
 - Partitions and volumes are never touched; only plain files inside `E:\aap-runner\` after approval.
 - Interim Windows host runner approved unisolated (group `aap-win-interim`, label `windows-host-interim`); retire it when the VM profile is certified.
 - Queued for the owner (details in `ledger.json` `owner_decisions_queued`); answered in the 2026-10-21/22 owner decision session, with what remains open:
-  - Q1 URGENT: interim runner exposure. DECIDED: restrict the `aap-win-interim` runner group to selected repositories only and require approval for fork PRs from all outside collaborators. Open: the OWNER applies both GitHub org/repo settings; the agent token gets 403 on the runner-group and fork-approval APIs, so the current settings are UNREAD and UNAPPLIED and nothing here claims the exposure is closed; they must be applied before Q3.
-  - Q2: zccache 1.15.6 AGPL-3.0-only. DECIDED: internal use only, never redistribute binaries or images containing it; P13 activation is unblocked on this question. Open: nothing for the licence decision (P13 shared-root activation still also needs Q3 applied and P02.3).
+  - Q1 URGENT: interim runner exposure. DECIDED: restrict the `aap-win-interim` runner group to selected repositories only and require approval for fork PRs from all outside collaborators. Open: the OWNER applies both GitHub org/repo settings; the agent token gets 403 on the runner-group and fork-approval APIs, so the current settings are UNREAD and UNAPPLIED and nothing here claims the exposure is closed; they must be applied before Q3. SUPERSEDED 2026-11-05 by the owner (`distro/README.md` runner group section and checklist, PR #101): both groups allow public repositories (`aap-crrr` serves the repositories the owner selects), and fork PR workflows on public repositories need approval for all outside collaborators, the only gate on the unisolated interim runner. This ledger has not read the settings through the API; whether Q3 still waits on anything is the owner's call.
+  - Q2: zccache 1.15.6 AGPL-3.0-only. DECIDED: internal use only, never redistribute binaries or images containing it; P13 activation is unblocked on this question. Open: nothing for the licence decision (P13 shared-root activation still also needs Q3 applied and P02.3). Restated by the owner on 2026-10-26 in the body of PR #86: "AGPL is fine for internal runner images."
   - Q3: GitHub App permissions for cache trust-class lookups. DECIDED: `actions: read` + `contents: read`, only on repositories in the `aap-crrr` runner group, and only AFTER Q1 is applied. Open: the OWNER applies it; unapplied at ledger close 6, so P02.3 and cache sharing cannot rely on it yet.
-  - Q4: hard VM lifetime cap. DECIDED: 6 hours for all repositories. Open: not implemented; P10.6 (Windows backend) and P11.3 (Linux backend) are NOT_STARTED (their prerequisites P10/P11 and P12 are COMPLETE); the lab proof is gated on the owner; the frozen contract still says the wall clock only flags, so a contract revision is needed first or with them.
+  - Q4: hard VM lifetime cap. DECIDED: 6 hours for all repositories. Open: not implemented in the backends; P10.6 (Windows backend) and P11.3 (Linux backend) are NOT_STARTED and ready (their prerequisites P10/P11 and P12 are COMPLETE); the lab proof is gated on the owner. The contract is merged: PR #126 (`077c5cd`, 2026-11-07, cleanup verified CLEAN-WITH-NOTES, batch 14) carries the cap as settings schema 5 (`vm_lifetime_cap_hours` 1..6, replacing `lease_wall_clock_hours`) and supersedes PR #82, which was closed unmerged (its remote branch deleted on the owner's word; the worktree's uncommitted edits are saved as `evidence/p09-hardcap-attempt2-uncommitted.patch` in the parity work directory). The supervisor and tray still write and accept settings 4 until a supervisor item applies schema 5; the #126 follow-ups are item P09.1. `docs/ROADMAP.md` R3 (owner-approved 2026-11-04) lists the P10.6 six-hour cap as remaining work.
   - Q5: even-mode drain when a runner count is raised. DECIDED: accept as is. Open: nothing.
-  - Q6: guest identity record (P02.5). APPROVED: an offline record in the Windows unattend/answer file and the Linux cloud-init seed (`vm_id`, `reservation_id`, `lease_generation`, expected scratch disk size/identity), Hyper-V KVP off, SMBIOS UUID rejected. Open: the contract revision is PR #79 (open, not merged), then the four conformance items (P10 WriteUnattend, P11 seed, P14, P15) and the independent security review.
+  - Q6: guest identity record (P02.5). APPROVED: an offline record in the Windows unattend/answer file and the Linux cloud-init seed (`vm_id`, `reservation_id`, `lease_generation`, expected scratch disk size/identity), Hyper-V KVP off, SMBIOS UUID rejected. Open: the contract revision is PR #79 (open, not merged), then the four conformance items (P10 WriteUnattend, P11 seed, P14, P15) and the independent security review. As of 2026-11-06: PR #79 merged at `c7ee17a` on 2026-10-22 (cleanup verified CLEAN-WITH-NOTES 2026-11-06); the Linux conformance (P11 seed, P15) is PR #84, open, pester-backends failing; the Windows side (P10 WriteUnattend, P14) has no PR.
+  - Q7 (new 2026-11-07, non-blocking): confirm or raise the P22.2 generation minimums (Windows 2 CPU / 4 GiB, Linux 2 CPU / 2 GiB). The values in force are coordinator placeholders chosen with the advisor (PR #118, merged); nothing waits on the answer.
+  - Q8 (new 2026-11-07, non-blocking): Authenticode code-signing for the tray (buy or provision a certificate). P25.1 is COMPLETE (#125): its "unsigned replacement refused" is met by sha256 and PE/version checks, and a same-user program can still start an update request (the independent reviewer's MEDIUM, partial, inherent without signing); nothing waits on the answer.
 
 ## P00 — Build the worktree, lease and cleanup gate
 
@@ -30,7 +34,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-22 
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `tools/parity-work/**`, `tests/parity-work/**`.
 - Deliverable: Land the non-blocking findings from the 2026-10-19 code and security reviews of P00 (see `ledger.json` P00.1 for the full list), plus the build/test/resource tokens and the 3-worker/2-compile/1-suite/1-IO budgets enforced at claim. The budgets must land before wave 4 dispatches P03/P04/P05 in parallel.
 - Acceptance: Each listed finding has a test that fails without its fix; both PowerShell hosts green; budgets refuse a fourth worker, a third compile-heavy job and a second full suite.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #122 merged at `95ed418` (merge commit, accepted head `9791d37`, hosted CI run 42347969064 5/5 green); attempt-1 cleaned and independently verified CLEAN-WITH-NOTES (receipt in the parity evidence store, `verifier-pass-2026-11-06.md` batch 12). The claim budgets read their limits from the ledger fields and their tokens from each task's `tokens` array.
 
 ## P01 — Freeze hosted baselines and consumer inventory
 
@@ -121,7 +125,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-22 
 - Pinned execution lane: Luna high; ownership: `tools/parity-certify/**`, `tests/parity-certify/**`.
 - Deliverable: Use the evidence-bundle waivers field in certify and bind exit_code; fix the certify.py re.match $ trailing-newline acceptance (use fullmatch or \Z).
 - Acceptance: Each fix has a test that fails without it; a waiver unbound to its workload is refused; a trailing-newline value is rejected; both PowerShell hosts green.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE (2026-11-06) — PR #109 (branch `fix/p05-1-certify-hardening`, head `6f384cc`) merged at `16d0870` on 2026-11-06; hosted CI 5/5 on the head; receipt P05.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 8; notes: the two reviews are recorded in-session only, no registry manifest, main push CI on the merge still queued, the pin note on main is looser than the receipt's list). The harness change re-pinned the P17/P18 oracles to hosted runs 42301321135 (Linux 44/44) and 42301328046 (Windows 47/47), on the same images as the #111 pins and identical to runs 42239305519 / 42239311263 by definition id (status, exit_code and expected; command, log hashes, timestamps and the source-tree hash differ).
 - Why: P05 review follow-ups: certify ignores the evidence-bundle waivers and exit_code binding, and its regex accepts a trailing newline.
 
 ## P06 — Build the native Windows image
@@ -162,7 +166,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-22 
 - Pinned execution lane: Luna high; ownership: `supervisor/broker/**`, `distro/worker-auth.sh`, `tests/broker/**`, `tests/worker_auth_test.sh`.
 - Deliverable: Move the audit log dir from /var/log to /var/lib/aap-runner/broker; rm -f the lease file on create failure only when it is empty; raise the client TimeoutSeconds floor to 60; correct the exit-code comment.
 - Acceptance: Each change has a test that fails without it; worker_auth_test.sh green on real Linux in hosted CI; both PowerShell hosts green; independent security review (secret-bearing path).
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE (2026-11-06) — PR #113 (branch `fix/p08-1-broker-notes`, head `ce8ec37`) merged at `5df813c` on 2026-11-06; hosted CI 5/5 on the head; receipt P08.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 6; notes: the review is recorded in-session only, no registry manifest, the merged tree was never CI-tested on its own). Process deviation recorded in the receipt and confirmed by the verifier (B6.3): #113 merged 7 s after #111, before #111's cleanup was verified; both are verified now, and no cleanup consequence followed.
 - Why: P08 review notes that were non-blocking: audit log location, lease-file removal on create failure, client timeout floor and an exit-code comment.
 
 ## P09 — Implement one mixed-fleet capacity allocator
@@ -195,7 +199,7 @@ Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-10-22 
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `supervisor/backends/windows/**`, `tests/backends/windows/**`.
 - Deliverable: Make the backend's tests stop leaving SY+BA-locked fixtures that only an owner self-grant can delete; harden clone measurement against files that vanish mid-walk so a transient race no longer destroys the VM; dismount a stale mount left behind.
 - Acceptance: Each item has a test that fails without its fix; the suite leaves nothing that needs elevation to delete; a vanished file during clone measurement retries or fails closed without destroying a healthy VM; a stale mount is dismounted by the reconcile path; both PowerShell hosts green.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #123 merged at `14b652f` (merge commit, accepted head `bd42b31`, hosted CI run 42348355779 5/5 green); attempt-1 cleaned and independently verified CLEAN-WITH-NOTES (receipt in the parity evidence store, batch 12). The pre-existing SY+BA-locked TEMP folder `C:\Users\poslj\AppData\Local\Temp\x2d5fc1` (not from this item) is left for the owner.
 - Why: P10 shipped with test fixtures that need an owner self-grant to delete, a 'clone not measurable' path that destroys on a transient race, and a stale-mount case it does not dismount.
 
 ## P11 — Implement Linux VM backend
@@ -275,7 +279,7 @@ New follow-ups (all NOT_STARTED): P08.2 re-checks that the runner is still idle 
 - Pinned execution lane: Sol medium; ownership: `distro/worker-auth.sh`, `tests/worker_auth_test.sh`.
 - Deliverable: In `distro/worker-auth.sh`, re-check that the runner is still idle immediately before sending the release request, so a busy or unreadable runner keeps its lease instead of being released.
 - Acceptance: A runner that turns busy (or whose status is unreadable) between the idle read and the release request is not released; worker_auth_test.sh green on real Linux in hosted CI.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE (2026-11-06) — PR #110 (branch `fix/p08-2-release-idle-recheck`, head `e666f57`) merged at `1f1988d` on 2026-11-06; hosted CI 5/5 on the head; receipt P08.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 4; notes: the review is recorded in-session only, no registry manifest).
 - Why: the P12 cross-family review found the busy? re-check before releasing a runner fails OPEN on an unreadable status; the same release path is reached from worker-auth.sh.
 
 ## P13.5 — Give zccache an empty stdin in the cache shim
@@ -293,7 +297,7 @@ New follow-ups (all NOT_STARTED): P08.2 re-checks that the runner is still idle 
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `parity/contracts/**`, `docs/parity/evidence/lab/**`.
 - Deliverable: Proposed (NOT P02.4, the unrelated ARP-poisoning lab test; owner approval queued as Q6): the host writes a per-clone guest identity record OFFLINE into the Windows unattend/answer file and the Linux cloud-init seed (vm_id, reservation_id, lease_generation, expected scratch disk size/identity); the guest reads it once at first probe and binds. Hyper-V KVP stays OFF (KVP-on leaks the host name; P06 security review); SMBIOS UUID is the alternative. Implement as a contract-revision PR (contract text + schema + fixtures + validator + tests), reviewed first, then four small conformance items: P10 WriteUnattend, P11 seed, P14, P15.
 - Acceptance: validate.py PASS with the new fixtures; a missing or mismatched identity record fails the first probe closed; no host-identifying data reaches the guest beyond the record fields; independent security review; gated on owner approval (Q6).
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (proposed).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: IN_PROGRESS (2026-11-06) — owner approval Q6 recorded (2026-10-21/22); the contract revision (guest-transport revision 2) merged as PR #79 at `c7ee17a` (head `d621e9a`) on 2026-10-22; its cleanup receipt P02.5-attempt-1 was verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 1). Missing: the Linux conformance (P11 seed, P15) is PR #84, open, pester-backends failing on its head; the Windows conformance (P10 WriteUnattend, P14) has no PR; the independent security review is not recorded.
 - Why: the Highs from the cross-family review need a guest-side binding of vm_id/reservation/lease_generation to the clone; KVP-on leaks the host name.
 
 ## P22.2 — Minimum guest memory and CPU per image generation (P22/P24)
@@ -302,8 +306,24 @@ New follow-ups (all NOT_STARTED): P08.2 re-checks that the runner is still idle 
 - Pinned execution lane: Sol medium; ownership: `supervisor/capacity/**`, `tests/capacity/**`.
 - Deliverable: Record a minimum guest memory and CPU per image generation in the allocator inputs and refuse admission of a profile whose per-generation minimums do not fit the host after the control VM and the reserve, so the P22/P24 certificates state the minimums.
 - Acceptance: An 8 CPU / 16 GiB host admits only profiles whose image-generation minimum memory/CPU fit the host reserve; a ~2 GiB Windows guest (which cannot boot Windows Server) is refused before boot, not admitted and left unbootable.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE (2026-11-07) — PR #118 (branch `fix/p22-2-generation-minimums`, head `849e43f`, base `93ed165`) merged at `20b5c2a` on 2026-11-07; hosted CI 5/5 on the head; receipt P22.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 10; notes: the review is recorded in-session only, no registry manifest, the minimums are provisional pending owner decision Q7). A guest below its image generation's minimum is refused as `minimum` before any boot. The minimums (win25-vs2026-x64 2 CPU / 4 GiB, ubuntu-24.04-x64 2 CPU / 2 GiB) are coordinator placeholders chosen with the advisor.
 - Why: today an 8 CPU / 16 GiB host admits Windows guests at ~2 GiB including overhead, which cannot boot Windows Server.
+
+## P22.1 — Verify the deployed zccache daemon before priming
+
+- Earliest wave: 10; prerequisites: P13.3.
+- Pinned execution lane: Sol medium; ownership: `supervisor/**`, `tests/**`.
+- Deliverable: Verify SHA-256 of the deployed daemon (`<root>/v1.15.6/zccache-daemon[.exe]`) before priming; refuse or delete otherwise.
+- Acceptance: An unexpected SHA-256 is refused or deleted before any shared cache root is primed.
+- Closure: as every item. Current state: COMPLETE (2026-11-07) — PR #117 (branch `fix/p22-1-zccache-daemon-hash`, head `a9cc713`, base `16d0870`) merged at `69d977b` on 2026-11-07; hosted CI 5/5 on the head; receipt P22.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 10; notes: the review is recorded in-session only, no registry manifest, the base clone was briefly switched to another branch while the worker had uncommitted edits (a worker statement, not checkable), the installed copy was not inspected). The change landed in the cache shims (`guests/cache/**`) and the staged copy `distro/aap-zccache.sh`, not under `supervisor/**`.
+
+## P12.2 — Reconcile orphan build VMs after a builder crash
+
+- Earliest wave: 6; prerequisites: P09.
+- Pinned execution lane: Sol medium; ownership: `supervisor/**`, `tests/**`.
+- Deliverable: Reconcile orphan `aap-wbuild-*` build VMs whose build lock is not held.
+- Acceptance: A crashed builder does not leave an orphan build VM attached.
+- Closure: as every item. Current state: COMPLETE (2026-11-07) — PR #119 (branch `fix/p12-2-orphan-build-vms`, head `10f1960`, base `93ed165`) merged at `fc319e5` on 2026-11-07; hosted CI 5/5 on the head; receipt P12.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 10; notes: the advisor and orch-review results are recorded in-session only, no registry manifest, one sentence of the receipt was corrected after the pass, the installed supervisor was not inspected). A build VM whose lock file exists and opens exclusively is removed; a build VM with no matching lock file is left alone and reported as a WARN row (coordinator and advisor decision, the second commit). The live supervisor does not run this path while no Windows VM backend is loaded.
 
 ## Close 6 - 2026-10-22
 
@@ -357,7 +377,7 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Pinned execution lane: Sol high; ownership: `guests/cache/windows/AapZcCache.psm1`, `supervisor/backends/linux/AapLinBackend.HyperV.psm1`, `tests/guests/cache/**`, `tests/backends/linux/**`, `tests/backends/windows/Invoke-AapWinMutations.ps1`.
 - Deliverable: Fix exactly the findings of the independent post-merge review of PRs #75 and #76 (Codex gpt-6.1-sol, high, read-only, 2026-10-22): (1) HIGH, PR #76: restore the console input encoding in a `finally` around `Process.Start` in `Invoke-AapZcProcess` (`guests/cache/windows/AapZcCache.psm1`) and in the Linux backend's HyperV ssh-keygen start (`supervisor/backends/linux/AapLinBackend.HyperV.psm1`), so a failed start (missing executable, denied launch) cannot leave the caller's encoding changed; (2) MEDIUM, PR #76: give the ssh-keygen swap the same Windows PowerShell 5.1 guard as the cache module and serialize cooperating starters across save, swap, start and restore, so a second runspace cannot observe the temporary encoding, and document the concurrency constraint; (3) MEDIUM, PR #76: tests that exercise the wrapped Windows PowerShell 5.1 path (the cache tests launch pwsh 7 today), both console encodings and failed starts, plus a provider test with a harmless fake executable; (4) HIGH, PR #75: a closed stdin must be empty: suppress the preamble and require zero bytes (the merged probe accepted the BOM; PR #76 fixes only the normal start path); (5) MEDIUM, PR #75: test the Windows initialization separately in a child whose input pipe stays open and assert its own probe records; (6) MEDIUM, PR #75: make the Linux probe (`tests/guests/cache/fakes/fake-zccache`) read one byte explicitly and reject any byte instead of taking `read` exit status 1 as zero bytes; (7) LOW: the fake writes process metadata and stdin hex to disk, keep counts only. Also investigate and record why the P12 mutation survivor (stdin-bom: the tagged conditions at `supervisor/backends/linux/AapLinBackend.psm1` line ~873 and `supervisor/backends/windows/AapWinBackend.psm1` line ~805, replaced by `$false` in `tests/backends/linux/Invoke-AapLinMutations.ps1` and `tests/backends/windows/Invoke-AapWinMutations.ps1`) survives under pwsh 7; PR #76 does not touch those modules, so the survivor is still open, and a code change in them needs an ownership revision.
 - Acceptance: Every finding has a test that fails on the pre-change code (heads `04b4ba2` and `680b820`; main `729d3e7`) and passes after the fix: a failed `Process.Start` with a preamble-bearing original encoding leaves that encoding unchanged; cooperating starters never observe or restore a foreign encoding; the wrapped Windows PowerShell 5.1 path is exercised under UTF-8 and non-UTF-8 consoles; the initialization probe fails without the production fix; the Linux probe rejects `x` followed by EOF; the P12 survivor is either killed by a new check or recorded as a documented platform exception with evidence; tests/guests/cache and the backend suites are green on both PowerShell hosts and real Linux in hosted CI; independent review READY at the exact head, because P13.5 and P13.5b merged without one. Commits use the required special-place-administrator noreply identity.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (branch parity/p13-5c-stdin-restore; owner is the coordinator). P13.5c is the remainder item of the early-merged P13.5b (and P13.5): its prerequisite is the merged P13.5b code, not P13.5b's COMPLETE state, and P13.5 and P13.5b stay IN_PROGRESS until P13.5c lands and is independently reviewed.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: PR_OPEN (2026-11-06) — PR #83 (branch parity/p13-5c-stdin-restore, head `6df256a`, hosted CI 4/4 SUCCESS); the independent review READY at that head is not recorded; owner is the coordinator. P13.5c is the remainder item of the early-merged P13.5b (and P13.5): its prerequisite is the merged P13.5b code, not P13.5b's COMPLETE state, and P13.5 and P13.5b stay IN_PROGRESS until P13.5c lands and is independently reviewed.
 - Why: The independent post-merge review (Codex gpt-6.1-sol, high, read-only, 2026-10-22; replies `t005-ledger6-sol` and `t006-p135-post-merge-sol` in the parity work directory) returned FIX-FIRST on PRs #75 and #76, which merged without an independent review. Also recorded here: the five implementation commits `6637d71`, `d278cae`, `98801d3`, `04b4ba2` (PR #75) and `680b820` (PR #76) carry the literal placeholder author and committer email [EMAIL] instead of the required noreply identity; history is not rewritten.
 
 ## P10.6 — Enforce the 6-hour hard VM lifetime cap in the Windows backend
@@ -366,8 +386,8 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Pinned execution lane: Sol high; ownership: `supervisor/backends/windows/**`, `tests/backends/windows/**`.
 - Deliverable: Windows backend part of owner decision Q4: the supervisor enforces a 6 hour wall-clock cap per VM, independent of the job and of the guest. At the cap the VM is stopped, reclaimed through the verified-teardown path, and the job is reported failed with an explicit reason; the slot is not reused before verified teardown. A guest reply and the runner's GitHub status (online, busy) never extend or reset the cap, and its start time is persisted, not held only in memory.
 - Acceptance: Fake-backed tests prove the cap fires at the boundary, survives a supervisor restart (the start time is persisted, not held in memory) and reclaims a guest that ignores shutdown; the Windows backend suite is green on both PowerShell hosts and in hosted CI. The lab proof is gated on the owner.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
-- Why: owner decision Q4 (2026-10-21/22), a hard VM lifetime cap of 6 hours for all repositories. P10 declared the gap 'no hard VM lifetime cap' (supervisor/backends/windows/INTEGRATION.md request 4, supervisor/broker/INTEGRATION.md F4): a guest that holds its runner credential can keep GitHub reporting its runner online and busy, so a heartbeat-quarantined slot may never be freed. Needs a contract revision first or with this item: allocator.md (Wall-clock rule), status-settings.md and the README still say the wall clock only flags and never destroys, backend-lifecycle.md has no lifetime-cap result, and `lease_wall_clock_hours` (1..72, default 6) must be reconciled with the fixed 6 hour cap.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED and ready. Its contract revision merged as PR #126 at `077c5cd` on 2026-11-07 (settings schema 5, `vm_lifetime_cap_hours` 1..6; PR #82 was closed unmerged and is superseded); the #126 follow-ups are item P09.1 and do not block it. `docs/ROADMAP.md` R3 lists this item as remaining work.
+- Why: owner decision Q4 (2026-10-21/22), a hard VM lifetime cap of 6 hours for all repositories. P10 declared the gap 'no hard VM lifetime cap' (supervisor/backends/windows/INTEGRATION.md request 4, supervisor/broker/INTEGRATION.md F4): a guest that holds its runner credential can keep GitHub reporting its runner online and busy, so a heartbeat-quarantined slot may never be freed. Needs a contract revision first or with this item: allocator.md (Wall-clock rule), status-settings.md and the README still say the wall clock only flags and never destroys, backend-lifecycle.md has no lifetime-cap result, and `lease_wall_clock_hours` (1..72, default 6) must be reconciled with the fixed 6 hour cap. Update 2026-11-07: that contract revision is merged as PR #126 (settings schema 5; `vm_lifetime_cap_hours` 1..6 replaces `lease_wall_clock_hours`).
 
 ## P11.3 — Enforce the 6-hour hard VM lifetime cap in the Linux backend
 
@@ -375,8 +395,8 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Pinned execution lane: Sol high; ownership: `supervisor/backends/linux/**`, `tests/backends/linux/**`.
 - Deliverable: Linux backend part of owner decision Q4: the supervisor enforces a 6 hour wall-clock cap per VM, independent of the job and of the guest. At the cap the VM is stopped, reclaimed through the verified-teardown path, and the job is reported failed with an explicit reason; the slot is not reused before verified teardown. A guest reply and the runner's GitHub status (online, busy) never extend or reset the cap, and its start time is persisted, not held only in memory.
 - Acceptance: Fake-backed tests prove the cap fires at the boundary, survives a supervisor restart (the start time is persisted, not held in memory) and reclaims a guest that ignores shutdown; the Linux backend suite is green on both PowerShell hosts and in hosted CI. The lab proof is gated on the owner.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
-- Why: owner decision Q4 (2026-10-21/22), a hard VM lifetime cap of 6 hours for all repositories. The Linux backend inherits the P10 gap (supervisor/backends/linux/INTEGRATION.md request 3: hard VM lifetime cap, as the Windows twin's request 4): a guest that holds its runner credential can keep GitHub reporting its runner online and busy, so a heartbeat-quarantined slot may never be freed. Same contract dependency as P10.6.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED and ready. Its contract revision merged as PR #126 at `077c5cd` on 2026-11-07 (settings schema 5; PR #82 was closed unmerged and is superseded); the #126 follow-ups are item P09.1 and do not block it.
+- Why: owner decision Q4 (2026-10-21/22), a hard VM lifetime cap of 6 hours for all repositories. The Linux backend inherits the P10 gap (supervisor/backends/linux/INTEGRATION.md request 3: hard VM lifetime cap, as the Windows twin's request 4): a guest that holds its runner credential can keep GitHub reporting its runner online and busy, so a heartbeat-quarantined slot may never be freed. Same contract dependency as P10.6, now met by PR #126.
 
 ## P14 — Implement Windows guest bootstrap
 
@@ -400,7 +420,7 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Pinned execution lane: Sol high; ownership: `distro/Dockerfile`, `distro/bootstrap.sh`, `distro/manager.sh`, `distro/manager.conf.example`, `distro/ephemeral-entry.sh`, `distro/labels.sh`, `distro/README.md`, `distro/staging.sha256`, `tests/manager_*.sh`, `tests/run.sh`.
 - Deliverable: Install broker support, make legacy reservations coordinator-controlled and replace maintained sccache install/env/paths/whitelists/diagnostics with qualified zccache or direct compilation. Preserve legacy isolation until authorized retirement.
 - Acceptance: No active sccache binary/variable/process/workflow requirement remains in maintained runtime. Bash suites and shellcheck pass on real Linux; staging hashes match. No Docker-volume deletion or live-cache purge. P19 later owns shared bootstrap/hash serially.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: IN_PROGRESS (2026-11-06) — PR #99 merged at `03ae663` (head `91d6fbf`, 2026-11-05, owner decision 2026-11-04) replaced the maintained sccache wiring (manager, entrypoint, image, distro README) with the `guests/cache` zccache integration, every compiler direct until a pair is qualified; PR #100 (`3ec4cbf`) checks for no sccache at image acceptance. Missing: broker support in the distro, coordinator-controlled legacy reservations (roadmap R1 step 5), the P02 security review M1 threat-model correction, a parity cleanup receipt and independent verification.
 
 ## P17 — Implement Windows and Actions compatibility workloads
 
@@ -488,7 +508,7 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `crates/tray/**`.
 - Deliverable: Let the tray replace its own executable through the existing elevated helper: one UAC click, no console window, no wsl.exe, no tokens in the tray; contract docs and both sides' tests updated in the same PR.
 - Acceptance: cargo fmt/clippy/test green; update succeeds with the tray running or quits it itself; a bad or unsigned replacement is refused and the old build stays; independent security review of the helper verb. Overlaps crates/tray/** with P19/P20, so the coordinator serializes the claims.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #125 merged at `980c426` (merge commit, accepted head `dd68e2b`, branch `feat/p25-1-tray-self-update`, hosted CI run 42357827015 5/5 green); attempt-1 cleaned and independently verified CLEAN-WITH-NOTES (receipt in the parity evidence store, `verifier-pass-2026-11-06.md`, batch 13). Two independent security-review rounds: round 1 found a HIGH (candidate location never checked) and a MEDIUM (a same-user program can start an update); round 2: the HIGH is fixed, the MEDIUM is partial (inherent without signing). Authenticode remains owner decision Q8: "unsigned replacement refused" is met by sha256 and PE/version checks. Not live-tested in the PR (real UAC, the confirmation box, renaming the running image). The live tray was updated to main `980c426` on the owner's word (2026-11-07, sha256 8B63E660...).
 - Why: Replacing the tray executable today needs the owner to quit it and swap by hand; the existing elevated helper can do it with one UAC click and no console.
 
 ## P26 — Independent final security and release review
@@ -514,3 +534,274 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Deliverable: Reconcile every task/consumer child, reference/candidate certificate, merge/review identity, cleanup receipt, retained product asset and update/rollback runbook. Remove all disposable planning/execution resources by their manifests and publish the verified service profile.
 - Acceptance: Every required task accepted, agent-merged where applicable and CLEANUP_VERIFIED; no orphan worktree/target/process/temp artifact. Explicit product images/cache/evidence remain accounted. No deferred mandatory parity gate or unsupported claim.
 - Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+
+## R2.1 — Report the interim Windows runner (roadmap R2, slice 1)
+
+- Prerequisites: P12, P20.0 (COMPLETE). Ownership: `parity/contracts/status-settings.md`, `status-v5.schema.json`, `validate.py` and fixtures, `supervisor/aap-runner-supervisor.ps1` and its tests, `crates/tray/src/{state,settings_panel,dashboard}.rs`.
+- Deliverable: status-settings revision 4: the Windows profile reports `backend: windows-host` with `host_runner` (`online`, `busy`, `stopped`) while the interim runner is installed and no Windows VM backend is loaded; the supervisor detects it read-only (logon task, listener and worker processes); the tray names it and its state with one warning line. Report only: no start or stop, no JIT registration (later R2 slices).
+- Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #103 (branch `feat/windows-host-backend`, head `5b55b9f`) merged at `279eed4` on 2026-11-06; receipt R2.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 2; notes: stale base-clone statements, no registry manifest, the review recorded in-session only). PR #107 (receipt item and branch patterns widened) merged 2026-11-06 at `5309a62`; the receipt validates with origin/main's validator.
+
+## R1.1 — Tiered Linux pool contract and tray (roadmap R1, steps 1 and 4)
+
+- Prerequisites: P12, P20.0 (COMPLETE); owner brief R1 (2026-11-04). Ownership: `parity/contracts/status-settings.md`, `settings-v4.schema.json`, `status-v5.schema.json`, `validate.py` and fixtures, `distro/README.md` (label lines only), `crates/tray/**`.
+- Deliverable: status-settings revision 5: settings schema 4 (`linux_light_count` 0..10, `linux_heavy_count` 0..2 instead of `runner_count`), status slots carry `tier` with fixed tier slot numbers and 17-slot maxima while schema 4 is applied; the tray's Light | Heavy count picker, compact always-drawn Linux cards (disabled slots grey) and painted tier icons, writing schema 4 only when a stored schema 4 file or a fresh `status.v5.json` allows it. Manager (step 2) and supervisor (step 3) tiers are separate items.
+- Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #104 (branch `feat/tray-tiers`, head `3bc41c4`) merged at `b5c946b` on 2026-11-06; receipt R1.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 2; same notes as R2.1). PR #107 merged 2026-11-06 at `5309a62`; the receipt validates with origin/main's validator.
+
+## R1.2 — Manager runs the heavy and light Linux tiers (roadmap R1, step 2)
+
+- Prerequisites: R1.1 (COMPLETE). Ownership: `distro/{manager,bootstrap,evidence,labels}.sh`, `distro/README.md`, `distro/staging.sha256`, `parity/contracts/status-settings.md`, `tests/manager_*_test.sh`.
+- Deliverable: the distro manager runs two Linux tiers, heavy 0..2 and light 0..10, each with its own labels, limits and slot numbering, reading settings schema 4 and writing the tiered status slots of R1.1.
+- Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #108 (branch `feat/manager-tiers`, head `a6c184c`) merged at `b531a1f` on 2026-11-06; hosted CI 5/5 on the head; receipt R1.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 3; notes: the review is recorded in-session only, no registry manifest, main push CI on the merge still queued, the live install copy not inspected).
+
+## R1.3 — Supervisor applies settings schema 4 and the tray mirrors the reservation rule (roadmap R1, step 3)
+
+- Prerequisites: R1.1 (COMPLETE). Ownership: `supervisor/aap-runner-supervisor.ps1` and its README and tests, `parity/contracts/{status-settings.md,settings-v4.schema.json,validate.py,README.md}` and fixtures, `crates/tray/src/{settings,settings_panel}.rs`, `crates/tray/README.md`.
+- Deliverable: the supervisor validates and applies settings schema 4 (tiered Linux pool) and keeps reading older files; the tray mirrors the supervisor reservation rule and refuses schema 4 tiers whose reservations exceed the memory total.
+- Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #112 (branch `feat/supervisor-schema-4`, head `7c8aea7`) merged at `fcb04b1` on 2026-11-06; hosted CI 5/5 on the head; receipt R1.3-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 5; notes: the review, one MEDIUM finding fixed in `7c8aea7`, is recorded in-session only; no registry manifest; main push CI on the merge still queued; the live install copy not inspected). This is the commit rolled out live on 2026-11-06 (see "Reconcile - 2026-11-07").
+
+## R1.4 — Tray shows what each runner is doing and its occupancy (owner regression report 2026-11-07)
+
+- Prerequisites: R1.3 (COMPLETE). Ownership: `crates/tray/src/{dashboard,state}.rs`, `crates/tray/README.md`.
+- Deliverable: each runner card shows, while busy, its repo, job and run link and its own CPU and memory occupancy (the per-slot `cpu_cores`/`mem_gib` the manager already samples); the pool Cores/Memory/Disk bars show real samples instead of "no sample"; the tier tiles stay.
+- Why: the owner, verbatim 2026-11-07: "this GUI is a regression. I need to see what each runner is doing and their occupancy" (the R1.1 compact tiles dropped per-runner activity and usage). Queued after the current work, as the owner asked.
+- Closure: as every item. Current state: COMPLETE (2026-11-07) — PR #120 (branch `feat/r1-4-runner-occupancy`, head `d35cc9b`, base `20b5c2a`) merged at `1759b63` on 2026-11-07; hosted CI 5/5 on the head; receipt R1.4-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 11; notes: the review and the local test counts are recorded in-session only, no registry manifest, the installed tray binary was not inspected). Root cause: the tile layout inherited the grid's horizontal layout (a layout panic reproduced with the fix reverted). Only `crates/tray/src/dashboard.rs` and the tray README changed. The installed tray still has the bug until the owner approves a tray rollout.
+
+## R1.5 — Tray shows a retired slot as retired (follow-up of PR #128)
+
+- Earliest wave: 8; prerequisites: R1.4.
+- Pinned execution lane: Sol medium; ownership: `crates/tray/**`.
+- Claim tokens: `compile`, `suite`.
+- Deliverable: A slot whose status.json state word is retired renders as retired on its runner card instead of starting. Today the tray treats an unknown state word as starting; status.json carries retired for a slot the manager gave up on (PR #127) and status.v5 maps it to the lifecycle quarantined (PR #128). The tray follows the same mapping.
+- Acceptance: Tray tests for a retired slot in both tiers fail on current main (the card shows starting) and pass after; other unknown state words keep their current rendering; cargo fmt --all --check, cargo clippy --all-targets --locked -D warnings and cargo test --locked green; hosted CI 5/5; a live check with a dev build (hidden GUI) against a read-only copy of a status file with a retired slot. The installed tray changes only on the owner's word.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED and ready (queued 2026-11-07, fourth ledger close). Owns crates/tray/**, which overlaps P19 and P20 (the claim gate refuses an overlapping lease, so only one of them is claimed at a time).
+- Why: PR #128 states that the tray reads status.json and still shows an unknown state word as starting, so a retired slot (a pool that gave up on it) looks like it is coming up.
+
+## P19.1 — installer/helper-run.ps1 decides "distro running" like the supervisor (follow-up of PR #128)
+
+- Earliest wave: 7; prerequisites: P12.
+- Pinned execution lane: Sol medium; ownership: `installer/**`.
+- Claim tokens: `suite`.
+- Deliverable: installer/helper-run.ps1 decides that the distro is running only from wsl --list --running --quiet, which exits non-zero when nothing runs, so "nothing is running" and "the call failed" look the same. Give it the supervisor's check from PR #128: the names-only quiet list first, then the verbose list as a fallback, with an unreadable answer treated as unknown and never as not running.
+- Acceptance: Installer Pester tests fail on current main and pass after for: quiet lists the distro; quiet exits non-zero and the verbose list shows it Running; quiet exits non-zero and the verbose list shows it Stopped or absent; both calls fail (unknown). The installer suite is green on both PowerShell hosts; no visible window is opened.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED and ready (queued 2026-11-07, fourth ledger close). Owns installer/**, which overlaps P19 (not claimable until P16 is COMPLETE anyway); P19.1 is narrower and lands first.
+- Why: PR #128 fixed the supervisor's Off verification and startup read of the same list; the installer helper has the same single --list --running --quiet check and therefore the same silent misread.
+
+## P16.1 — Distro silent-failure audit remainder (evidence.sh, manager.sh, worker-auth.sh)
+
+- Earliest wave: 7; prerequisites: P12.
+- Pinned execution lane: Sol high; ownership: `distro/evidence.sh`, `distro/manager.sh`, `distro/worker-auth.sh`, `distro/README.md`, `distro/staging.sha256`, `tests/manager_*.sh`, `tests/worker_auth_test.sh`, `tests/run.sh`.
+- Claim tokens: `suite`.
+- Deliverable: The distro findings of the silent-failure audit of 2026-11-07 (ecc silent-failure-hunter) that PR #127 did not fix: evidence.sh probe_url treats a refused connection as blocked (MEDIUM) and must not count a failed connection as the expected block; manager.sh sysbox leftover stamp, silent validation exits and the reap path's docker inspect error; worker-auth.sh sweep and audit rotation (LOW). The audit report is in the coordinator's session, not in the repo: the worker re-derives each finding from the code, and a finding it cannot reproduce is reported rather than fixed.
+- Acceptance: Each listed finding has a test that fails without its fix (red first); manager.sh --self-check and bootstrap.sh --self-check, shellcheck 0.11 at -S warning and bash tests/run.sh green on real Linux (WSL Ubuntu), distro/staging.sha256 re-hashed; the contract in distro/README.md updated when a behaviour changes; the live distro changes only through an owner-approved rollout.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED and ready (queued 2026-11-07, fourth ledger close). Owns distro/manager.sh and tests/manager_*.sh, which P16 (IN_PROGRESS) also owns: the claim gate serializes the two.
+- Why: PR #127 fixed the audit's HIGH (pre-job failures retried every 5 s forever) and the docker cleanup MEDIUM; these are the rest of the distro findings.
+
+## P12.3 — Supervisor and broker silent-failure audit remainder
+
+- Earliest wave: 7; prerequisites: P12.
+- Pinned execution lane: Sol high; ownership: `supervisor/aap-runner-supervisor.ps1`, `supervisor/supervisor.Tests.ps1`, `supervisor/README.md`, `supervisor/broker/**`, `tests/broker/**`.
+- Claim tokens: `suite`.
+- Deliverable: The supervisor and broker findings of the silent-failure audit of 2026-11-07 (ecc silent-failure-hunter) that PR #128 did not fix: the supervisor acts on desired=off after one transient read; a cached memory total of 0; the CIM status read; broker diagnostics (LOW). The audit report is in the coordinator's session, not in the repo: the worker re-derives each finding from the code, and a finding it cannot reproduce is reported rather than fixed.
+- Acceptance: Each listed finding has a test that fails without its fix (red first); supervisor/supervisor.Tests.ps1 and tests/broker green on pwsh 7 and Windows PowerShell 5.1; supervisor/README.md updated when a behaviour changes; the live supervisor changes only through an owner-approved rollout.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED and ready (queued 2026-11-07, fourth ledger close). Owns supervisor/aap-runner-supervisor.ps1, which P12 owned (COMPLETE).
+- Why: PR #128 fixed the supervisor findings it names; these are the remaining ones.
+
+## P09.1 — Lifetime-cap contract tests and the PR #126 follow-ups
+
+- Earliest wave: 7; prerequisites: P09.
+- Pinned execution lane: Sol medium; ownership: `parity/contracts/**`, `tests/capacity/LifetimeCap.Contract.Tests.ps1`, `tests/parity/contracts/test_lifetime_cap.py`.
+- Claim tokens: `suite`.
+- Deliverable: Bring the two test files of the closed PR #82 into the repo against settings schema 5 (tests/capacity/LifetimeCap.Contract.Tests.ps1 and tests/parity/contracts/test_lifetime_cap.py), and settle the PR #126 follow-ups with the advisor: #82's settings-v3/v4 tightening, how a stored v4 value above 6 (7..72) is presented, the vm-cap-notes slot name pattern for 5 slots against the 17 tiered slots, and whether a slot cap requires settings 5 to be applied.
+- Acceptance: Both test files fail against a contract without the cap rules (red first) and pass on the contract; validate.py PASS; tests/capacity green on both PowerShell hosts; the four decisions are recorded in parity/contracts/README.md; the Python test runs in CI (a ci.yml step is coordinator-authorized, ci.yml is not owned by this item).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED and ready (queued 2026-11-07, fourth ledger close). P10.6 and P11.3 do not wait on this item, but its decisions may refine the contract they implement against.
+- Why: PR #126 carried the cap contract but not #82's tests, and left these four points open.
+
+## Reconcile - 2026-11-06
+
+Brings this file and ledger.json from close 6 (origin/main a55cb7b) to origin/main b5c946b. Read from `git log origin/main`, `gh pr view` and the parity evidence store.
+
+| Item | Delivery state |
+| --- | --- |
+| P02.5 #79 c7ee17a | IN_PROGRESS: contract revision merged 2026-10-22; receipt P02.5-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06; Linux conformance PR #84 open (pester-backends failing); Windows conformance and security review not started |
+| P02.4 #80 79d1feb | IN_PROGRESS: contract revision 2 merged 2026-10-22; receipt P02.4-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06; lab proof gated on P02.1 and the owner |
+| coordinator PR #81 437ce96 (ledger close 6) | merged; receipt coord-ledger-close-6-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 |
+| P16 #99 03ae663 | IN_PROGRESS: sccache retirement merged; broker support, coordinator-controlled reservations, receipt and verification missing |
+| P13.5c #83 | PR_OPEN: CI 4/4 green, independent review not recorded |
+| R2.1 #103 279eed4; R1.1 #104 b5c946b | COMPLETE: receipts R2.1-attempt-1 and R1.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06; they validate once PR #107 merges |
+| P10.6, P11.3 | NOT_STARTED; contract revision PR #82 open |
+
+Barrier: OPEN. The independent read-only verifier pass `verifier-pass-2026-11-06.md` (parity work directory) signed all five receipts CLEAN-WITH-NOTES: batch 1 P02.4-attempt-1 (#80), P02.5-attempt-1 (#79) and coord-ledger-close-6-attempt-1 (#81); batch 2 R2.1-attempt-1 (#103) and R1.1-attempt-1 (#104). The R receipts depend on PR #107 (open), which widens the cleanup-receipt item and branch patterns; origin/main's validator still rejects them. No merged parity item lacks a verifier verdict.
+
+Merged outside the parity worktree lifecycle (no parity receipts; not ledger items except where named): #88 PRODUCT.md, #89 systemd-analyze test, #90 docs/ROADMAP.md, #91 job containers under `--init`, #92 jq, #93 Node.js 26.13.0, #94 runner 2.338.2, #95 Rust 1.99.1, #96 pool-core limits crate, #98 runner image check workflow, #99 (P16 part), #100 image acceptance, #101 runner group settings docs, #102 one clock authority, #103 (R2.1), #104 (R1.1). Closed unmerged: #85, #86, #87 (2026-11-06, stale or superseded) and #97 (superseded by #99). PR #105 (CI on the owner's runners) is open. From #88 onward, CI-wiring PRs (#105 included) are not ledger items and get no coordinator receipt; a reconcile does not flag them.
+
+Owner decisions: Q1 SUPERSEDED by the owner on 2026-11-05 (public repositories allowed on both groups, fork approval for all outside collaborators; `distro/README.md`, PR #101). Q2 restated 2026-10-26 (PR #86 body). Q4 reaffirmed by `docs/ROADMAP.md` R3 (2026-11-04); contract PR #82 open. Q3 has no record of being applied, and its precondition (the old Q1 answer) needs restating by the owner. Q5 unchanged. Q6's contract merged (#79); conformance open.
+
+NOT_STARTED items whose prerequisites are all COMPLETE (the barrier is open): P00.1, P02.1 (lab gate D2 and the owner), P02.3 (owner Q3), P05.1, P08.1, P08.2, P10.1, P10.6 and P11.3 (contract PR #82 first), P12.2, P21, P22.1, P22.2, P25.1.
+
+## Reconcile - 2026-11-07
+
+Brings this file and ledger.json from origin/main b5c946b to origin/main 16d0870. Read from `git log origin/main`, `gh pr view`, the parity evidence store and `verifier-pass-2026-11-06.md` (parity work directory), batches 3-8.
+
+| Item | Delivery state |
+| --- | --- |
+| R1.2 #108 b531a1f | COMPLETE (new item): receipt R1.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06, batch 3 |
+| P08.2 #110 1f1988d | COMPLETE: receipt P08.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06, batch 4 |
+| R1.3 #112 fcb04b1 | COMPLETE (new item): receipt R1.3-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06, batch 5 |
+| P08.1 #113 5df813c | COMPLETE: receipt P08.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06, batch 6; merged 7 s after #111, before #111's cleanup was verified (deviation recorded in the receipt, confirmed accurate) |
+| coordinator PR #111 31b2712 (P17/P18 oracle refresh) | merged; receipt coord-oracle-refresh-2026-11-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06, batch 7. GitHub rolled its hosted images to 20261101.360.1 (Linux) and 20261103.298.1 (Windows); CI had stayed green on the stale oracles because `check_hosted_run` only compares against the recorded run. The oracles are re-pinned to runs 42239305519 (Linux 44/44) and 42239311263 (Windows 47/47) |
+| P05.1 #109 16d0870 | COMPLETE: receipt P05.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 8. The harness change re-pinned the P17/P18 oracles to runs 42301321135 and 42301328046, identical by definition id to the #111 pins |
+
+Counts (ledger.json tasks): 70 items (68 on 2026-11-06 plus R1.2 and R1.3): 40 COMPLETE (was 35), 6 IN_PROGRESS (P02.4, P02.5, P10.0, P13.5, P13.5b, P16), 1 PR_OPEN (P13.5c), 23 NOT_STARTED (was 26).
+
+Barrier: OPEN. The verifier pass signed every receipt that was pending or missing: batch 3 R1.2 (#108), batch 4 P08.2 (#110), batch 5 R1.3 (#112), batch 6 P08.1 (#113), batch 7 coordinator #111, batch 8 P05.1 (#109), on top of batches 1 and 2 of the first reconcile. Cleanup-receipt schema fixes #107 and #115 are merged, so all of these receipts validate with origin/main's validator. The 7 s deviation (#113 over #111) is recorded; both receipts are verified.
+
+Rule: CI-wiring PRs (#114, the `ci-hosted` label and concurrency group) and cleanup-receipt schema fixes (#107, #115) are coordinator support, not ledger items, and get no receipt.
+
+Live rollout (2026-11-06): the owner chose "Both halves now" and the rollout of fcb04b1 ran at about 22:46-23:15 CET: supervisor 20F51C69..., tray C2E3CFFE..., distro scripts and runner image sha256:954816e4546b. `status.v5` now lists `settings_schemas` 1,2,4. The canary job and the finalize step are still pending.
+
+Owner rules recorded 2026-11-06: the resource cap is 90% of CPU, RAM and disk (supersedes 97%); the interim Windows runner now runs at Idle priority; zero visible terminal windows.
+
+Owner decisions: unchanged from the 2026-11-06 reconcile (Q1 SUPERSEDED, Q2 restated, Q3 unapplied, Q4 contract PR #82 open, Q5 unchanged, Q6 conformance open).
+
+NOT_STARTED items whose prerequisites are all COMPLETE (the barrier is open): P00.1, P02.1 (lab gate D2 and the owner), P02.3 (owner Q3), P10.1, P10.6 and P11.3 (contract PR #82 first), P12.2, P21, P22.1, P22.2, P25.1. Off the queue since 2026-11-06: P05.1, P08.1 and P08.2 (COMPLETE).
+
+Remaining blockers:
+- P02.1 (the lab proof, gate D2 and the owner) blocks P10.0 and P02.4, and through P10.0 blocks P10.4, P10.5 and P12.1.
+- P16 is R1 step 5 (the allocator adopts the Linux pool as its first backend) and is IN_PROGRESS: broker support and coordinator-controlled legacy reservations remain. P19 waits on P16, P22 waits on P16 (and on P20 and P21), and the chain P20 (via P19), P23, P24, P25, P26, P27 and P28 waits behind them. Nothing waits on R1 step 4: the tray work is in R1.1, COMPLETE.
+- P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
+- P10.6 and P11.3 are ready but their contract revision #82 is unmerged; P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
+- Pending on the live install: the canary job and finalize for the 2026-11-06 rollout.
+
+## Reconcile - 2026-11-07 (second close)
+
+Brings this file and ledger.json from origin/main 16d0870 to origin/main 1759b63. Read from `git log origin/main`, `gh pr view`, the parity evidence store and `verifier-pass-2026-11-06.md` (parity work directory), batches 9-11.
+
+| Item | Delivery state |
+| --- | --- |
+| P22.1 #117 69d977b | COMPLETE: receipt P22.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 10 |
+| P22.2 #118 20b5c2a | COMPLETE: receipt P22.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 10. The generation minimums are coordinator placeholders chosen with the advisor; owner confirmation queued as Q7 |
+| P12.2 #119 fc319e5 | COMPLETE: receipt P12.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 10. Build VMs with no matching lock file are left alone (WARN), by coordinator and advisor decision |
+| R1.4 #120 1759b63 | COMPLETE: receipt R1.4-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 11. Root cause: the tile layout inherited the grid's horizontal layout; the installed tray still has the bug until the owner approves a tray rollout |
+| coordinator PR #106 30f99a2 (ledger reconcile 2026-11-06) | merged; receipt coord-ledger-reconcile-2026-11-06-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 9 |
+| coordinator PR #116 93ed165 (ledger close 2026-11-07) | merged; receipt coord-ledger-close-2026-11-07-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 9 |
+
+Counts (ledger.json tasks): 71 items (the 70 of the previous section plus R1.4, queued at the 2026-11-07 close): 44 COMPLETE (was 40), 6 IN_PROGRESS (P02.4, P02.5, P10.0, P13.5, P13.5b, P16), 1 PR_OPEN (P13.5c), 20 NOT_STARTED (was 24).
+
+Barrier: OPEN. The verifier pass signed every receipt that was pending: batch 9 coordinator #106 and #116, batch 10 P22.1 (#117), P22.2 (#118) and P12.2 (#119), batch 11 R1.4 (#120), on top of batches 1-8. This close is itself a coordinator PR; its receipt is written after it merges.
+
+Live (2026-11-07): the canary on the new runner image is green (Frontend, DB Integration and DB install succeeded; Security Audit fails on RustSec advisories in the canary repository, as it did on the old image). The owner set 2 heavy + 10 light runners at 02:04 CET. Pending the owner: the rollout finalize (needs the pool Off) and the tray rollout of R1.4.
+
+Owner decisions: Q7 new and OPEN (confirm or raise the P22.2 generation minimums, Windows 2 CPU / 4 GiB and Linux 2 CPU / 2 GiB; non-blocking). Q1-Q6 unchanged from the 2026-11-07 reconcile.
+
+Ready queue (NOT_STARTED items whose prerequisites are all COMPLETE; the barrier is open): P00.1, P02.1 (lab gate D2 and the owner), P02.3 (owner Q3), P10.1, P10.6 and P11.3 (contract PR #82 first), P21, P25.1. Off the queue since the previous section: P12.2, P22.1 and P22.2 (COMPLETE). The other 12 NOT_STARTED items wait on unfinished prerequisites: P12.1, P10.4 and P10.5 on P10.0; P19 on P16; P20 on P19; P22 on P16, P20 and P21; P23 on P22; P24 on P22 and P23; P25 on P21 and P22; P26 on P24 and P25; P27 on P26; P28 on P27.
+
+Remaining blockers:
+- P02.1 (the lab proof, gate D2 and the owner) blocks P10.0 and P02.4, and through P10.0 blocks P10.4, P10.5 and P12.1.
+- P16 is R1 step 5 (the allocator adopts the Linux pool as its first backend) and is IN_PROGRESS: broker support and coordinator-controlled legacy reservations remain. P19 waits on P16, P22 waits on P16 (and on P20 and P21), and the chain P20 (via P19), P23, P24, P25, P26, P27 and P28 waits behind them.
+- P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
+- P10.6 and P11.3 are ready but their contract revision #82 is unmerged; P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
+- Pending on the live install: the rollout finalize for the 2026-11-06 rollout and the tray rollout of R1.4, both the owner's call.
+
+## Reconcile - 2026-11-07 (third close)
+
+Brings this file and ledger.json from origin/main 1759b63 to origin/main 14b652f. Read from `git log origin/main`, `gh pr view`, the parity evidence store and `verifier-pass-2026-11-06.md` (parity work directory), batch 12.
+
+| Item | Delivery state |
+| --- | --- |
+| P00.1 #122 95ed418 | COMPLETE: receipt P00.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 12. The cleanup gate is hardened and the claim budgets are real; the receipt's follow-up (tokens inert until ledger tasks declare them) is closed by the tokens below |
+| P10.1 #123 14b652f | COMPLETE: receipt P10.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 12. A pre-existing SY+BA-locked TEMP folder (`C:\Users\poslj\AppData\Local\Temp\x2d5fc1`, not from this item) is left for the owner |
+| coordinator PR #121 16c1839 (ledger close 2026-11-07, second) | merged; receipt coord-ledger-close-2026-11-07b-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 12 |
+| P25.1 | IN_PROGRESS: claimed on `feat/p25-1-tray-self-update` (worktree at 14b652f, no commits, no PR). Owner decision Q8 queued |
+
+Counts (ledger.json tasks): 71 items: 46 COMPLETE (was 44), 7 IN_PROGRESS (P02.4, P02.5, P10.0, P13.5, P13.5b, P16, P25.1), 1 PR_OPEN (P13.5c), 17 NOT_STARTED (was 20).
+
+Barrier: OPEN. The verifier pass signed every receipt that was pending: batch 12 coordinator #121, P00.1 (#122) and P10.1 (#123), on top of batches 1-11. This close is itself a coordinator PR; its receipt is written after it merges.
+
+Owner decisions: Q8 new and OPEN (Authenticode code-signing certificate for the tray; until then P25.1's "unsigned replacement refused" is met by sha256 and PE/version checks; non-blocking). Q7 is still open; Q1-Q6 unchanged.
+
+Ready queue (NOT_STARTED items whose prerequisites are all COMPLETE; the barrier is open): P02.1 (lab gate D2 and the owner), P02.3 (owner Q3), P10.6 and P11.3 (contract PR #82 first), P21. Off the queue since the previous section: P00.1 and P10.1 (COMPLETE) and P25.1 (IN_PROGRESS). The other 12 NOT_STARTED items wait on unfinished prerequisites: P12.1, P10.4 and P10.5 on P10.0; P19 on P16; P20 on P19; P22 on P16, P20 and P21; P23 on P22; P24 on P22 and P23; P25 on P21 and P22; P26 on P24 and P25; P27 on P26; P28 on P27.
+
+### Claim tokens (P00.1 budgets, enforced from the ledger)
+
+`tools/parity-work` takes a worker slot plus the `tokens` its ledger task declares at claim. The limits are the ledger fields `max_concurrent_workers` 3, `max_compile_heavy` 2, `max_full_test_suites` 1 and (new) `max_io_heavy` 1; an unknown token is refused at import. A token stays held until the item's leases are released (COMPLETE), so a HOLD or a merged, uncleaned item still counts. Tokens: `compile` builds Rust or other compile-heavy work; `suite` needs a full test suite run for its acceptance; `io` is image build, VM/VHD work, large artifact acquisition or authorized-lab work. Every NOT_STARTED and IN_PROGRESS task declares them; COMPLETE tasks do not, and P13.5c (PR_OPEN, already past its claim) is not tagged. The tags are a conservative judgment from each deliverable and ownership, revisable by a ledger edit while an item is NOT_STARTED (the gate refuses a revision once it has left NOT_STARTED).
+
+| Item | Tokens | Rationale |
+| --- | --- | --- |
+| P02.1 | io | authorized-lab VM work (PowerShell Direct, hvsocket, network matrix); no test suite |
+| P02.3 | (none) | contract text and fixtures checked by validate.py only |
+| P02.4 | io | ARP-poisoning lab test on guest VMs |
+| P02.5 | suite | conformance items (P10 WriteUnattend, P11 seed, P14, P15) run the backends Pester suites; the contract part is validate.py only |
+| P10.0 | suite, io | Pester with Hyper-V fakes plus the lab negative matrix on a disposable guest |
+| P10.4 | suite | supervisor/backends code change, full backends and supervisor suites |
+| P10.5 | suite, io | module Verify change (suite) and a lab confirmation of the answer-file interface name (VM) |
+| P10.6 | suite | Windows backend suite on both PowerShell hosts and hosted CI; the lab proof is gated on the owner and is not in the acceptance |
+| P11.3 | suite | Linux backend fake-backed tests plus the backend suite |
+| P12.1 | suite | supervisor/** and tests/** change, full Pester suites |
+| P13.5 | suite | tests/guests/cache on both PowerShell hosts and real Linux |
+| P13.5b | suite | tests/guests/cache and the Linux backend tests on both PowerShell hosts |
+| P16 | suite | bash suites and shellcheck on real Linux; no image build is required by the acceptance |
+| P19 | compile, suite | Rust helper/win.rs changes (cargo) and the PowerShell installer suites; "all impacted suites pass" |
+| P20 | compile, suite | tray crate changes: cargo build, clippy and test, plus the Pester request tests |
+| P21 | suite, io | tools/image-catalog tests and building or hashing candidate image artifacts |
+| P22 | io | mixed-fleet integration with real guests in the authorized lab; no mock-only pass |
+| P23 | io | consumer fixtures are exercised in the authorized lab |
+| P24 | io | cold/warm/concurrent differential runs on final guests in the lab |
+| P25 | suite, io | tests/image-maintenance suite and rebuild/recertify/rollback of image generations |
+| P25.1 | compile, suite | crates/tray changes: cargo fmt, clippy and test, plus the helper request tests |
+| P26 | (none) | independent review only |
+| P27 | io | stages certified images and runs native canary workflows; owner-authorized |
+| P28 | (none) | documentation closure |
+
+Remaining blockers:
+- P02.1 (the lab proof, gate D2 and the owner) blocks P10.0 and P02.4, and through P10.0 blocks P10.4, P10.5 and P12.1.
+- P16 is R1 step 5 (the allocator adopts the Linux pool as its first backend) and is IN_PROGRESS: broker support and coordinator-controlled legacy reservations remain. P19 waits on P16, P22 waits on P16 (and on P20 and P21), and the chain P20 (via P19), P23, P24, P25, P26, P27 and P28 waits behind them.
+- P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
+- P10.6 and P11.3 are ready but their contract revision #82 is unmerged; P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
+- P25.1 owns `crates/tray/**`, which overlaps P19 and P20; the claim gate refuses an overlapping lease, so only one of them is claimed at a time.
+- Pending on the live install: the rollout finalize for the 2026-11-06 rollout and the tray rollout of R1.4, both the owner's call.
+
+## Reconcile - 2026-11-07 (fourth close)
+
+Brings this file and ledger.json from origin/main 14b652f to origin/main 27a1621. Read from `git log origin/main`, `gh pr view`, the parity evidence store and `verifier-pass-2026-11-06.md` (parity work directory), batches 13 and 14.
+
+| Item | Delivery state |
+| --- | --- |
+| P25.1 #125 980c426 | COMPLETE: receipt P25.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 13. The tray replaces its own executable through the elevated helper's `update` verb (head `dd68e2b`, branch `feat/p25-1-tray-self-update`, 8 files under `crates/tray`). Two independent security-review rounds; Authenticode remains owner decision Q8. Not live-tested in the PR: real UAC, the confirmation box, renaming the running image. The live tray was updated to main 980c426 on the owner's word (2026-11-07, sha256 8B63E660...), which contains R1.4 |
+| coordinator PR #124 3b97492 (ledger close 2026-11-07, third) | merged; receipt coord-ledger-close-2026-11-07c-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 13 |
+| coordinator PR #127 a0035f1 (defect fix, `distro/manager.sh`) | merged; receipt coord-fix-manager-slot-backoff-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 14. From the 2026-11-07 silent-failure audit (ecc silent-failure-hunter), fixed via orch-fix-defect: a slot failing before its job no longer retries every 5 s forever (it backs off 5, 10, 20 and 40 s and gives up with exit 75 after 5, so the slot retires); docker cleanup failures are logged and the wall clock escalates to `docker kill`. Installed live on the owner's word 2026-11-07: a sustained GitHub or token outage now retires the slots after about 10 minutes and the manager exits 1 for systemd to restart (RestartSec=15) |
+| coordinator PR #126 077c5cd (6-hour VM lifetime cap contract, settings schema 5) | merged; receipt coord-p09-cap-contract-v5-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 14. Supersedes PR #82, closed unmerged (its remote branch deleted on the owner's word; the worktree's uncommitted edits saved as `evidence/p09-hardcap-attempt2-uncommitted.patch`; the local branch `parity/p09-vm-hard-cap-contract` remains, pending the owner). Contracts only: the supervisor and tray still write and accept settings 4 |
+| coordinator PR #128 27a1621 (defect fix, Windows supervisor) | merged; receipt coord-fix-supervisor-unchecked-drain-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 14. From the same audit: drain, undrain, terminate and the limits restore are checked (a failed limit change no longer counts as applied), a failed Off is verified, a wedged manager is detected (180 s on the supervisor's clock), `retired` maps to the lifecycle `quarantined`, and the health restart undrains first. Installed live on the owner's word 2026-11-07 |
+| new NOT_STARTED items | R1.5, P19.1, P16.1, P12.3 and P09.1, below |
+
+Counts (ledger.json tasks): 76 items: 47 COMPLETE (was 46), 6 IN_PROGRESS (P02.4, P02.5, P10.0, P13.5, P13.5b, P16), 1 PR_OPEN (P13.5c), 22 NOT_STARTED (was 17: P25.1 left the IN_PROGRESS set, five items were added).
+
+Barrier: OPEN. The verifier pass signed every receipt that was pending: batch 13 coordinator #124 and P25.1 (#125), batch 14 coordinator #127, #126 and #128, on top of batches 1-12. This close is itself a coordinator PR; its receipt is written after it merges.
+
+Owner decisions: Q4 updated (the contract is merged as #126; backends open). Q8 still OPEN (P25.1 is COMPLETE without a certificate). Q7 still open; Q1-Q3, Q5 and Q6 unchanged.
+
+Live notes (not ledger items):
+- The rollout finalize for the 2026-11-06 rollout ran on the owner's word on 2026-11-07: the `.prev` files were removed. The finalize script's `docker rmi` hangs while the pool is Off because the work disk is detached, so `aap-crrr-runner:prev` was removed by hand after the pool came back On. The finalize script is a staging script only, not in the repo.
+- The live tray is at main 980c426.
+- On the owner's word ("yes install", 2026-11-07, about 14:13-14:18 CET) the live install got the #127 manager (distro /usr/local/sbin/aap-runner-manager, sha256 54f87042..., manifest line updated, the old file kept as .prev, --self-check ok) and the #128 supervisor script (C:\wsl\aap-runner-supervisor\aap-runner-supervisor.ps1, sha256 662DF31D..., the old 20F51C69... kept as .prev). The pool went Off, install, On; it is back to running with 12 slots, limits 12,26,72,io=90,sharing=slice,h=2,l=10 unchanged, and no WARN in the supervisor log or the manager journal. The distro image (aap-zccache.sh from P22.1) was NOT rebuilt; that needs a separate image rollout.
+
+New NOT_STARTED items (sections above; tokens per WORKTREES.md):
+
+| Item | Tokens | Rationale |
+| --- | --- | --- |
+| R1.5 | compile, suite | tray crate change: cargo build, clippy and test |
+| P19.1 | suite | installer Pester suite on both hosts; no VM, no image build |
+| P16.1 | suite | bash suites and shellcheck on real Linux; no image build is required by the acceptance |
+| P12.3 | suite | supervisor and broker Pester suites on both PowerShell hosts |
+| P09.1 | suite | tests/capacity Pester plus the contract validator and the new Python test |
+
+The silent-failure audit's remaining findings are split by part so P16.1 and P12.3 do not overlap each other: P16.1 is the distro (`evidence.sh`, `manager.sh`, `worker-auth.sh`), P12.3 the supervisor and the broker. P09.1 does not block P10.6 and P11.3.
+
+Ready queue (NOT_STARTED items whose prerequisites are all COMPLETE; the barrier is open): P02.1 (lab gate D2 and the owner), P02.3 (owner Q3), P10.6 and P11.3 (the contract revision merged as #126), P21, and the new R1.5, P19.1, P16.1, P12.3 and P09.1. Off the queue since the previous section: P25.1 (COMPLETE). The other 12 NOT_STARTED items wait on unfinished prerequisites: P12.1, P10.4 and P10.5 on P10.0; P19 on P16; P20 on P19; P22 on P16, P20 and P21; P23 on P22; P24 on P22 and P23; P25 on P21 and P22; P26 on P24 and P25; P27 on P26; P28 on P27.
+
+Remaining blockers:
+- P02.1 (the lab proof, gate D2 and the owner) blocks P10.0 and P02.4, and through P10.0 blocks P10.4, P10.5 and P12.1.
+- P16 is R1 step 5 (the allocator adopts the Linux pool as its first backend) and is IN_PROGRESS: broker support and coordinator-controlled legacy reservations remain. P19 waits on P16, P22 waits on P16 (and on P20 and P21), and the chain P20 (via P19), P23, P24, P25, P26, P27 and P28 waits behind them.
+- P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
+- P10.6 and P11.3 are ready (their contract revision is merged as #126); P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
+- Overlapping ownership is serialized by the claim gate, one claim at a time: R1.5 with P19 and P20 (`crates/tray/**`), P19.1 with P19 (`installer/**`), P16.1 with P16 (`distro/manager.sh`, `tests/manager_*.sh`), P09.1 with P02.3 and P02.5 (`parity/contracts/**`), P12.3 with P19 (`supervisor/README.md`), P16.1 with P19 (`distro/staging.sha256`, `distro/README.md`).
+- Pending, all the owner's call: an image rollout (the distro image with the P22.1 `aap-zccache.sh` was not rebuilt), the local branch `parity/p09-vm-hard-cap-contract`, and owner decisions Q7 and Q8.

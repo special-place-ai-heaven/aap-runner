@@ -1,4 +1,4 @@
-# Shared parity contracts (ledger item P02, revised by P02.2)
+# Shared parity contracts (ledger item P02, revised by P02.2 and P09.x)
 
 Frozen interfaces for the GitHub-runner parity work. The architecture they implement is
 [docs/parity/ARCHITECTURE.md](../../docs/parity/ARCHITECTURE.md). A change to a contract is a
@@ -17,15 +17,16 @@ names the error it must produce, so it cannot pass for the wrong reason.
 
 | Contract | Version | Files | Writer | Readers | Status |
 |---|---|---|---|---|---|
-| [Allocator](allocator.md) | 2 | `allocator.schema.json` | P09 | P10, P11, P12, P16, P20, P22 | DECIDED |
-| [Backend lifecycle](backend-lifecycle.md) | 2 | `backend-lifecycle.schema.json` | P10, P11; storage document P19 | P09, P12, P19, P20, P22, P25 | DECIDED; budgets and cap enforcement measured later (P02.1, P06, P07) |
+| [Allocator](allocator.md) | 2 (text revised by P09.x) | `allocator.schema.json` | P09 | P10, P11, P12, P16, P20, P22 | DECIDED; hard VM lifetime cap decided (owner Q4), conformance P09 follow-up, P10.6, P11.3 |
+| [Backend lifecycle](backend-lifecycle.md) | 3 (records `schema` 2) | `backend-lifecycle.schema.json` | P10, P11; storage document P19 | P09, P12, P19, P20, P22, P25 | DECIDED; budgets and cap enforcement measured later (P02.1, P06, P07); hard VM lifetime cap decided (owner Q4), conformance P10.6 and P11.3 |
 | [Broker](broker.md) | 1 | `broker.schema.json` | P08 | P10, P11, P14, P15, P16, P26 | DECIDED; JIT runner behaviour CANDIDATE (D2) |
 | [Guest transport](guest-transport.md) | 2 | `guest-transport.schema.json` | P10/P11 host (the identity record is their offline write at create), P14/P15 guest | P22, P26 | envelope and identity record DECIDED; mechanisms CANDIDATE (D2) |
 | [Image catalog](image-catalog.md) | 2 (P02.5: additive overlay field) | `image-catalog.schema.json` | P21, P25 | P06, P07, P10, P11, P12, P19, P20, P24 | DECIDED |
 | [Cache qualification](cache-qualification.md) | 2 | `cache-qualification.schema.json` | P04 | P13, P14, P15, P16, P20, P22, P24 | DECIDED |
-| [Status and settings](status-settings.md) | settings 3, status 5 (revision 3); tray-local 1 | `settings-v3`, `status-v5`, `tray-windows-choice` schemas | P12, P20 | P19, P22 | DECIDED; landed in P12 (supervisor reads 3 and writes `status.v5.json`; tray reads it and writes 3); window controls P20 |
+| [Status and settings](status-settings.md) | settings 3, 4 and 5, status 5 (revision 6); tray-local 1 | `settings-v3`, `settings-v4`, `settings-v5`, `status-v5`, `tray-windows-choice` schemas | P12, P20 | P19, P22 | DECIDED; landed in P12 (supervisor reads 3 and writes `status.v5.json`; tray reads it and writes 3); window controls P20; settings 4 landed in R1; settings 5 and the per-slot cap object (hard VM lifetime cap, owner Q4) are contract only until the P12 and P20 follow-ups land |
+| [VM deadline record and lifetime clock](allocator.md#host-power-off-backstop-decided-owner-decision-q4-review-b1-to-b9) | 1 each (P09.x) | `vm-cap-notes.schema.json`, `lifetime-clock.schema.json` | P10.6 and P11.3 (Notes record), P12.3 (supervisor clock), P10.7 (watchdog clock) | P10.7, P12.3, P02.1 | DECIDED (owner Q4 review); contract only until P10.6, P10.7, P11.3, P12.3 and P19.1 land |
 | [Evidence and cleanup](evidence-cleanup.md) | evidence 2, receipt 1 | `evidence-bundle`, `cleanup-receipt` schemas | P05, P00 | every item, P24, P26, P28 | DECIDED |
-| [Host network module](host-network-module.md) | 1 | `host-network-module.schema.json`; shared check `supervisor/network/AapHostNetworkCheck.psm1`; shared fake `tests/common/AapHostNetworkFake.psm1` | P10.0 | P06, P07, P10, P11, P12, P19 | interface and switches DECIDED (coordinator, 2026-10-21); mechanism CANDIDATE (D2); consumers not yet conformant |
+| [Host network module](host-network-module.md) | 2 | `host-network-module.schema.json`; shared check `supervisor/network/AapHostNetworkCheck.psm1`; shared fake `tests/common/AapHostNetworkFake.psm1` | P10.0 | P06, P07, P10, P11, P12, P19 | interface, switches and the host-neighbour poisoning protection (permanent host neighbour entry per guest address + static MAC of the module's range; protects host-to-guest delivery only, clone-to-clone residuals listed; Verify reads the entry back) DECIDED (coordinator 2026-10-21, control adopted 2026-10-22); mechanism and the control's lab proof CANDIDATE (D2); consumers not yet conformant |
 
 ## Decided
 
@@ -37,9 +38,8 @@ names the error it must produce, so it cannot pass for the wrong reason.
    freed only by observed teardown. Admission checks shares at admission; pool, disk and IO budgets
    count every live reservation, so draining overhang delays the other profile. Three missed
    heartbeats quarantine with capacity held; a heartbeat restores the slot; destroy waits until
-   GitHub reports the runner offline and not busy, or the job ends (a busy runner is never
-   destroyed, only flagged once `lease_wall_clock_hours` have passed since the reservation's
-   `acquired_at`); hostile guests go straight to deletion from any state, a heartbeat quarantine
+   GitHub reports the runner offline and not busy, or the job ends, or the VM's hard lifetime cap
+   is reached (item 14); hostile guests go straight to deletion from any state, a heartbeat quarantine
    included. Neither a resize nor a new host measurement evicts admitted work.
 4. Provider interface, idempotency keys, intent/outcome journal, crash recovery, the disk layout per
    storage tier, and measured-only budgets with enforced per-tier caps.
@@ -57,8 +57,8 @@ names the error it must produce, so it cannot pass for the wrong reason.
 8. Immutable catalog generations tied to the P01 baselines, one active per profile, one retained
    rollback, quarantine is final.
 9. zccache 1.15.6 only, per-pair qualification, direct compilation otherwise, no sccache.
-10. `status.json` stays schema 4; schema 5 is `status.v5.json`; settings schema 3 is written only
-    when advertised; unknown future schemas are rejected safely on both sides.
+10. `status.json` stays schema 4; schema 5 is `status.v5.json`; settings schemas 3, 4 and 5 are written
+    only when advertised; unknown future schemas are rejected safely on both sides.
 11. Evidence record and both receipt shapes, with independent verifiers and observed absence;
     waivers are listed in the record (revision 2).
 12. Storage tiers (owner, 2026-10-20): configurable `base_root`, `clone_root`, `scratch_root` and an
@@ -78,6 +78,17 @@ names the error it must produce, so it cannot pass for the wrong reason.
     admission verifies the agent: only a generation whose catalog entry certifies revision 2 or
     later, the rollback generation included, is admitted (guest-transport.md, Admission;
     image-catalog.md, rule 8).
+14. VM lifetime enforcement (owner Q4): `vm_lifetime_cap_hours` is 1..6, default/ceiling 6, from immutable
+    `acquired_at`. Latch in memory, issue bounded hypervisor power-off, then persist and perform verified teardown;
+    only teardown proof frees capacity. All due VMs get concurrent enforcement; one other blocking call at a time.
+    The supervisor completes its initial E1 attempt within 90 s. The independent watchdog fairly services all five
+    VMs with durable E1/E2 progress within 300 s, including enumeration, observation and persistence. **Only observed
+    Off means terminated**; failed stopping mechanisms yield an unresolved `cap_breach`, held capacity, blocked starts
+    and continued enforcement, never a claim that network detachment stopped execution. Boot-bound high-water time
+    preserves restart age; reboot/clock-loss safety decisions have explicit triggers and unknown/below-cap elapsed
+    evidence. Journal ordering uses consistently nondecreasing high-water timestamps, not raw wall-clock order.
+    A mandatory installer gate resolves every pre-existing VM to valid Notes or verified absence before activation.
+    Details and failure-injection requirements: allocator.md L1-L10/B1-B9 and backend-lifecycle.md.
 
 ## Candidate pending D2 lab proof
 
@@ -169,6 +180,29 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
    Today three missed heartbeats quarantine only `ready` and `busy`. A VM in `draining` or
    `collecting` that stops answering would otherwise wait for its job or teardown without a
    quarantine ([allocator.md, Provider rules](allocator.md#provider-rules-for-p10-and-p11-decided-p09-security-review-2026-10-20)).
+3. **Persist the cap's monotonic anchor?** Closed by the review of the hard cap: the supervisor persists a high-water
+   mark of true time every tick with a boot id and a counter (`lifetime-clock.json`), so a clock step followed by a
+   restart no longer shortens a VM's age and the decision is latched
+   ([allocator.md, L7](allocator.md#hard-vm-lifetime-cap-decided-owner-decision-q4-2026-10-22)). What cannot be
+   recovered (a reboot with the clock stepped back, a lost record) is handled conservatively and bounded by the VM's
+   uptime and the backstop.
+4. **Where may a VM profile run without the cap?** (P09.x, for the owner). A supervisor older than the first one
+   that enforces the cap flags only, so a downgrade or a half-finished install would run VM jobs with no cap. The
+   installer (P19) could refuse to enable a VM profile on such a supervisor; the contract does not require it yet.
+5. **A backstop independent of allocator state?** Required, not optional: the host watchdog uses validated VM Notes
+   and its own durable progress, never allocator/journal/backend modules. By B5's bound it observes Off or explicitly
+   reports an unresolved breach; failed host stopping mechanisms are not described as bounded termination.
+6. **Should a lowered cap reach running VMs at once?** (P09.x, for the owner). `allocator.json` has no field for a
+   per-reservation cap (its schema is frozen by the capacity module's byte copy), so a lowered
+   `vm_lifetime_cap_hours` applies to every live VM at the next tick, and `inbox\settings.json` is user-writable.
+   Applying it only to later reservations needs one allocator field; the contract chose the simpler rule (the
+   operator account can already stop the pool and read the broker's key).
+7. **Which cap while settings schema 3 or 4 is applied?** (P09.x re-cut, for the owner). Revision 6 puts the hard cap
+   in settings schema 5 (`vm_lifetime_cap_hours` 1..6) and leaves schemas 3 and 4 as they are, so their
+   `lease_wall_clock_hours` stays 1..72 (schema 4 is live). What a revision 6 supervisor enforces for a `hyperv-vm`
+   reservation while such a file is applied (the 6 h ceiling, the stored value when it is 1..6, or the stored value
+   refused above 6 as PR #82 proposed for schema 3) is not settled; the watchdog's 6 h ceiling (allocator.md, B1 and B4)
+   holds either way.
 
 ## Security review (2026-10-19) items carried by other owners
 
@@ -199,15 +233,15 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 - **P04.1** (done 2026-10-21): the Linux `debug-pdb` (`-g`) rows for every compiler version (8
   more rows, Linux matrix revision 2), and `retention.md` requirement 4 now follows rule 6's job
   trust class.
-- **P05.1**: write waivers into the evidence record's `waivers` field and stop appending them to
-  `command`; until then `parity-report.json` and `verdict.json` stay authoritative. Nit: the
-  harness's `re.match(...$)` checks for workload ids and SHAs accept one trailing newline (Python
-  `$`); `validate.py` now rejects such values in the records.
+- **P05.1** (done): the harness writes waivers into the evidence record's `waivers` field and no
+  longer appends them to `command`; the record's `exit_status` is the validated integer exit code
+  (a bool or float `exit_code` in a results file fails the row); the workload id and SHA checks
+  use `\Z` instead of `$`, so a trailing newline is rejected.
 - **P07, P11**: match the hosted Ubuntu kernel, `read_ahead_kb` and mount options, or justify each
   difference with a reviewed allowlist entry (image-catalog.md, Acceptance input).
 - **P09**: `allocator.json` schema 2 (per-volume disk budgets, reservation `clone_gib` and
   `scratch_gib`) and the P09 review points: the legacy `busy` to `ready` loop, hostile replies from
-  a quarantine, the wall clock from `acquired_at` that only flags, no eviction (clamped host,
+  a quarantine, the wall clock from `acquired_at` (flag-only then, a hard cap since P09.x), no eviction (clamped host,
   `resize_waits`, `pool_over_live`), the `even` mode drain, and unknown folders blocking admission.
 - **P10, P11**: the inventory callback returns a complete list or throws (allocator.md, Reconcile).
 - **P13**: cache roots per repository plus the job's trust class (cache-qualification.md rule 6);
@@ -217,6 +251,62 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
   and `contents: read`); `workflow_dispatch` is untrusted, and untrusted jobs get a private
   per-job root only.
 - **P19, P20**: the storage document, its helper verb and the tray's storage view.
+
+## Revision follow-ups (P09.x, owner decision Q4) carried by other owners
+
+The hard VM lifetime cap is a contract until these land: the supervisor, the providers and the tray still implement
+revision 5 (the wall clock flags and never destroys), and no watchdog exists. Until the items below are done and the lab
+proof is given (the owner's), no VM profile serves a public repository (owner decision Q4). The ids are proposals; the
+ledger is the orchestrator's. Every failure-injection test below runs against fakes whose calls can hang, fail or never
+return, on both PowerShell hosts.
+
+- **P10.6 (Windows backend) and P11.3 (Linux backend)**, each in its provider and its suite: write the VM's deadline
+  record before the first start and start only after the read-back and a healthy backstop (allocator.md, B1 and B7;
+  backend-lifecycle.md); evaluate the cap at every point of L3 and run every call bounded and isolated, due power-offs
+  concurrently dispatched, teardown calls held to the nearest other deadline; one order, latch, power off, persist,
+  teardown (L4); durable escalation E1/E2 and explicit cap-breach handling (L5); fencing so no start follows the decision,
+  no interrupted create/boot resurrects a capped VM and teardown proof stays valid (L6); high-water `power_off_utc`
+  (backend-lifecycle.md); drop the drain-keep flag (`DrainKeepHours`, `drain_overdue`). Tests: the boundary (one second
+  before the deadline and at it); five concurrent E1 attempts completed within 90 s, with termination asserted only
+  when Off is observed; a hung power-off while another deadline passes; A due now/B one second later with release
+  hanging; a guest that ignores shutdown (no guest call after the decision); a guest call that blocks until its timeout
+  while a deadline arrives; a runner GitHub keeping `online` or `busy`; a heartbeat quarantine; a drained VM waiting
+  for its release; a stuck `creating` with and without a `vm_id`; a power-off that fails and repeats with the slot held
+  and the ladder climbing; a release answering `retry`; a journal or allocator write that fails, or a process that dies
+  after the power-off (the VM stays off, nothing restarts it, the slot is reclaimed); a crash between the power-off
+  and the persisted latch; a replayed `create` or `boot` for a capped reservation; a Notes write whose read-back differs
+  (no start); a stale watchdog record (no start); a clock stepped back and forward; `unknown_vm` and legacy slots
+  untouched; no slot reuse before the teardown proof; every record through `validate.py`.
+- **P10.7 (watchdog)**: implement B3-B7's bounded complete enumeration, one concurrent stage for every due VM, durable
+  escalation progress/recovery and the 300 s Off-or-explicit-breach outcome. Test five VMs with hanging E1/E2, a process
+  killed during E1 and after its progress write, restart resuming E2, no starvation, bounded inventory/observation/write
+  failures, a still-running VM after E2 (cap_breach, not termination), and an Off observation clearing only execution
+  uncertainty, never teardown proof. Test supervisor down/off/error, allocator loss/lock, unknown VM with valid Notes,
+  foreign/invalid/copied Notes refused, explicit reboot/clock-unavailable evidence, and no deletion or slot release.
+  The complete run is at most 50 s: 10 s inventory/identity/clock, 30 s concurrent stage, 5 s observation, 5 s persistence.
+- **P12.3 (new, supervisor)**: `lifetime-clock.json` every tick with boot id and counter, restart recovery (L7),
+  conservative handling of a reboot or missing/invalid clock record (cap existing running VMs, never restart an off VM),
+  the latched decisions, the capacity pass at every evaluation point including before status writes, the start gate and
+  `backstop_down:`, settings schema 5 (`vm_lifetime_cap_hours` 1..6, anything else refused whole, `vm_cap_refused`), advertise 5,
+  the per-slot `vm_lifetime_cap` object (not for an `unknown_vm`), `clock_step`, `supervisor/README.md` and its tests
+  (one fixture is still named `future-schema-4`).
+- **P09.1 (new, allocator module `supervisor/capacity`)**: the direct edge to `deleting` from every live state that has
+  a `vm_id` (L4, step 3b; a `creating` reservation without one stays `creating`) and its test;
+  `Invoke-AapReconcile` stops flagging; its `LeaseWallClockHours` range follows open decision 7 (settings schema 4 keeps 1..72). Its schema copy stays
+  byte-identical: this revision did not change `allocator.schema.json`.
+- **P19.1 (new, installer)**: register/remove the watchdog task and admin-only folders (B8). Before enabling a VM profile,
+  reconcile every pre-existing managed VM: require a valid B1 Notes record bound to the actual GUID/name, or ordinary
+  verified teardown and observed absence. Any unrecorded, unmatched or unresolved VM blocks activation and remains held
+  until resolved; install the watchdog and require a fresh B7 heartbeat before any VM starts. This is mandatory, not an
+  owner option. Test that missing/damaged Notes or unresolved teardown blocks activation and verified absence clears the gate.
+- **P20.1 (new, tray)**: write schema 5 once advertised, carry a stored schema 4 file's keys across (its
+  `lease_wall_clock_hours` 1..6 becomes `vm_lifetime_cap_hours`, same number), never rewrite a stored cap above 6, show `vm_cap_refused:`, `backstop_down:` and a fired slot's `reason`; the schema 5 cap control is 1..=6
+  (`crates/tray/src/settings.rs`); `crates/tray/README.md`. The installed tray is not changed without the owner's word.
+- **P02.1 (lab, gated on the owner)**: a guest that ignores `shutdown` and keeps its runner credential, at a 1 h cap and
+  at 6 h, with the supervisor healthy and with the supervisor and the allocator killed (the watchdog's bound), a hung
+  power-off, and two VMs due one second apart; record the measured lateness; confirm the counter and boot id across a
+  supervisor restart, a host sleep, a wall-clock step and a reboot; inject clock-record loss while VMs are running and
+  confirm both enforcers fail closed as the contract requires.
 
 ## Findings recorded while freezing
 
@@ -266,3 +356,12 @@ The five open decisions, settled by the owner and coordinator on 2026-10-19:
 | 2026-10-21 | P13.3 | cache-qualification | 2 (text only) | rule 7: a zero exit whose declared outputs (object, depfile) are missing, empty or not regular files is a wrapper failure; outputs the shim cannot name (rustc, other sidecars) rely on zccache's own delivery and P04's evidence. No schema change |
 | 2026-10-22 | P02.5 | guest-transport | 2 | new `guest_identity` record (schema 2; the envelope documents stay schema 1) + `identity_exchange` test composite with an optional phased `reread` (`before_cleanup`: the same record again; `after_cleanup`: `null`): the host (P10 into the answer file, P11 into the cloud-init seed) writes the per-clone record OFFLINE at create, once the VM and its scratch disk exist — `vm_id`, `reservation_id`, `lease_generation`, expected scratch `size_gib` (the reservation's `scratch_gib`; the guest compares the disk's size rounded up to whole GiB, because the image is created a little under the cap) and `identity`, or null; the guest binds once at the first `probe` (replacing the first-writer `reservation_id`/`lease_generation` binding), takes its VM id from the record alone (not SMBIOS, not KVP), then follows one sequence, bind, cleanup, presence check: before cleanup the same record read again changes nothing, after cleanup any record found, identical or not, ends the clone; host-to-guest KVP stays off, so the credential's KVP sub-candidate (b) and the Linux seed-or-KVP choice are withdrawn (P06: KVP-on hands the job the host's fully qualified name), and the SMBIOS UUID is not the carrier (owner, 2026-10-21); `additionalProperties: false` (`scratch` too) + tight patterns so no host-identifying data rides it; fail-closed: missing or malformed record, two records, a scratch disk that does not match, a mismatched command (`refused`; `validate.py`: cmd vs record on `vm_id`/`reservation_id`/`lease_generation`), a different or second record before cleanup, a before-cleanup re-read beside a `listening`, `busy` or `job_done` reply (the guest deletes the material before it answers `listening`; the schema's `allOf` carries that rule), or any record after cleanup (`validate.py`: `reread`); admission: the wire cannot tell revision-1 from revision-2 agents, so only a generation whose catalog entry certifies a revision-2 guest agent is admitted, the rollback generation included (image-catalog row below); fixtures 5 valid + 18 invalid (a composite is one command and one reply, so they prove what one exchange may show, not the order across commands: that is the agent tests' and the lab's); lab cases added (another `reservation_id`, a swapped seed, material that reappears, an old-agent generation, host-to-guest KVP) |
 | 2026-10-22 | P02.5 | image-catalog | 2 (additive; the catalog `schema` stays 2) | the `guest-agent` overlay carries `guest_transport_revision` (guest-transport.md, Admission): written by P21 from the agent's conformance record, never from a guest; `validate.py` requires 2 or later in every `approved`, `active` or `retired` generation (the retained rollback generation included; a `candidate` may lack the overlay) and refuses the field on any other overlay; rule 8: the supervisor's `approved-images.json` entry carries the revision beside the artifact hashes, every `create` (certification runs included) admits only a revision the host implements, and P25 refuses a rollback that fails it; fixtures: the two valid catalogs carry the revision, 4 new invalid (no revision, no guest-agent overlay, a revision-1 rollback generation, a revision on another overlay), and the 12 older invalid catalogs carry it too, so each fails for its own rule only |
+| 2026-10-22 | P02.4 | host-network-module | 2 | host-neighbour poisoning protection: the owner adopts the contract's preferred control for the clone-to-clone ARP residual, narrowed to what it does: it protects host-to-guest delivery only (the entry is meant to keep a guest's ARP from moving the host's own entry, so what the host sends the guest, NAT return traffic included, is not redirected; its lab proof is open), not a guest's own ARP cache and not guest-to-guest frames; Limitations lists the clone-to-clone residuals and the per-guest switch stays the documented alternative. Attach gives the adapter a static MAC before the VM's first start, from a range the module owns (`02-A0-98-xx-xx-xx`, one copy in the shared check), and adds `New-NetNeighbor -State Permanent -InterfaceIndex <n>` for the guest's address and that MAC on the switch's management adapter, in the act with the adapter (a repeated Attach re-sets both, idempotent; the record's `created` lists the entry, `aap-neighbor-<vm_id>`). Before it changes anything Attach reads the host's entries for the guest's address on every interface as Verify does: none, it adds the entry; exactly the record's (address, MAC, `Permanent`, the management adapter's interface index and alias), idempotent success; anything else it throws `AAP_NetworkUntrusted` and never overwrites or replaces it; a failing read is a throw. After the add Attach reads the table back and throws when the entry is not exactly the record's. MACs are unique: Attach of a record refuses a MAC another record holds (any switch), and Verify reports it for both VMs (check 1) and reports another adapter on the VM's switch, the host's management adapters included, carrying the declared MAC (check 2, shared check `-PeerMacs`, Verify only). `-PeerMacs` omitted compares nothing (a consumer's read-back); supplied, as Verify always does, a null or empty list (the host's own adapter is always on the switch) or an entry that is not a MAC (twelve hex digits, dashed, colon or run together) is a problem, never read as no other adapter. The module resolves the switch's management adapter by identity (`Get-VMNetworkAdapter -ManagementOS -SwitchName`, `DeviceId` to `InterfaceGuid`, a lab point), never by alias text; Verify check 8 passes it as `-HostInterface` and requires exactly one entry, `Permanent`, the declared MAC, that interface's index and alias (shared check `-Neighbors`, module-only; a failing `Get-NetNeighbor` read is a throw, never a no-match). Detach removes exactly the record's own tuple (address, MAC, management adapter, any state) before the address is released, reads the table back, and a still-present entry, or a read that fails, throws and releases nothing. A record that is JSON but structurally damaged (a declaration that is not an object or lacks, or does not hold as non-empty text, a field the module reads back) is unreadable like one that is not JSON, always `the record of VM <id> is unreadable; it stays for an owner`, and both recovery ops still work while it is there. Attach and Detach of one VM run one at a time under a per-VM lifecycle lock (`lock-<vm id>`, taken before Hyper-V is asked about the VM, the journal lock inside it, 30 s wait; Verify takes the journal lock only), so a repeated Attach paused before its act cannot resume after a Detach and re-create the entry and adapter with no record. The owner's remedy for an unreadable record is ordered: remove the VM, clean up the neighbour entry (tuple from the record's text or from the orphan listing) with the neighbour recovery op (exact tuple, read back), only then delete the record; the orphan listing and the removal op are new owner-only recovery ops. Verify check 9 (the switch's enabled extensions against the set P19 recorded, no HNS network on it; shared check `Get-AapHostNetworkSwitchProblems`) is restored after the previous revision displaced it. The `mac` enters the declaration and the record (`host_network_attach`/`host_network_record` `schema` 2, the record names exactly one neighbour entry); contract version stays 2, no schema change. The provider read-backs gain `MacAddress`, passed through as read: a provider module is a module of its own and cannot see the check's functions, so the shared check normalises Hyper-V's own text, exactly twelve uppercase hex digits to the contract's dashed form, where check 2 compares it, and anything else compares as read and fails closed (the text Hyper-V prints is an open lab question); a test reads each of the four providers back in a fresh session beside a consumer module that holds the check. PVLAN stays an optional lab add-on (expected negative alone), the check keeps refusing `VlanMode` `Private` (fail closed), and the lab questions (the two-guest captures, a static MAC through Windows Setup and cloud-init, Hyper-V's own MAC text, `New-NetNeighbor` on an existing entry, the `DeviceId` mapping, the extension baseline) stay open. Fixtures: `attach-mac-missing`, `attach-mac-form`, `attach-mac-range`, `attach-schema-1`, each invalid for one reason only; every other invalid fixture of this contract is built to fail for one reason too (a record fixture names its one neighbour entry; an endpoint fixture carries the same bad address in both endpoints and, where that address is well formed, in the resolvers); shared fake tampers `adapter-mac`, `neighbor-missing`, `neighbor-mac`, `neighbor-state`, `neighbor-interface`, `neighbor-unreadable`, `neighbor-add-lost`, `neighbor-stuck`, `peer-mac-clash`, `switch-extension`, `switch-extension-off`, `hns-network`, `switch-unreadable` (the former `neighbor-foreign` is now a planted entry, `Add-AapFakeHostNetworkNeighbor`), fault `DetachAfterNeighbor` and pause `AttachBeforeAct` |
+| 2026-10-22 | P09.x (owner decision Q4, with the second-family review) | status-settings, allocator, backend-lifecycle, vm-cap-notes (new), lifetime-clock (new) | settings 4 (3 still read), status 5 revision 4 (as proposed in PR #82; landed as settings 5, below); allocator 2 (text only); backend-lifecycle 3 (records `schema` 2); vm-cap-notes 1; lifetime-clock 1 | hard 6-hour VM lifetime cap replaces the flag-only wall clock, with two independent enforcers. Supervisor path: from `acquired_at`, latch in memory, concurrently dispatch every due hypervisor power-off, then persist clock/allocator/journal records and perform verified teardown; calls isolated and bounded to 30 s, one non-power-off call at a time, 90 s supported lateness; fencing prevents resurrection and only teardown proof frees capacity. Persisted high-water time and boot id/counter recover same-boot restarts; reboot or missing/invalid clock state fails closed for running VMs. Host backstop: separate watchdog uses a validated Notes deadline and VM GUID/name identity, independent of allocator/journal/backend (300 s supported lateness), and fails closed on clock loss. The mandatory installer gate reconciles every pre-existing VM to a valid record or verified absence before profile activation. Settings schema 4 cap, status fields, after-power-off journal evidence, validator and fixtures described above; `allocator.schema.json` remains unchanged. Consumers not yet conformant |
+| 2026-10-24 | P09.x delta review | allocator, backend-lifecycle, lifetime-clock, status-settings | contract revisions unchanged (unmerged) | fair concurrent watchdog scheduling with durable E1/E2 stages and complete 50 s run budgets; 300 s to observed Off or an explicit unresolved cap breach, never network detachment as termination; clock-safety triggers allow unknown or below-cap elapsed evidence; journal issuance/persistence ordering uses high-water estimates through wall-clock rollback; valid/invalid fixtures and regression/mutation tests updated |
+| 2026-11-05 | R2 slice 1 | status-settings | status 5, revision 4 | the Windows profile `backend` may be `windows-host` (the interim runner on this PC, unisolated, owner accepted 2026-10-20) with the optional `host_runner` (`online`, `busy`, `stopped`), present exactly with that backend; available exactly when not `stopped`; Windows profile only; no slot and no count (outside the five pool slots). `validate.py` gains the three rules; fixtures 1 valid + 3 invalid. Settings schema 3 unchanged |
+| 2026-11-05 | R1 step 1 | status-settings | settings 4, status 5, revision 5 | tiered Linux pool (docs/ROADMAP.md R1): new `settings-v4.schema.json`, every schema 3 key except `runner_count`, replaced by `linux_light_count` 0..10 and `linux_heavy_count` 0..2, Windows 0..5, at least one runner, shares over light + heavy; Linux per-slot limits from the tier table, not the file. `status.v5.json`: 4 may be listed and applied; while 4 is applied `max_slots` is 17, the Linux count 0..12, every Linux slot has `tier` (`heavy` slots 1..2, `light` 3..12) and Windows slots none (13..17); otherwise no tier and the five-slot rules (the old `max_slots` const 5 is now 5 or 17, `slots` up to 17, `six-slots` now fails as more slots than `max_slots`). `tier` stays optional in the JSON schema so today's supervisor output validates. Tier label lines `self-hosted,linux,x64,fresh,heavy` / `...,light`. Fixtures: settings-v4 3 valid + 8 invalid; status-v5 1 valid + 8 invalid |
+| 2026-11-06 | R1 step 3 | status-settings | settings 4, status 5, revision 5 (supervisor behaviour; one added rule) | `job_cpus` and `job_memory_gib` stay the legacy WSL pool totals in schema 4 (not Windows-only), and heavy x 20 + light x 3 must not exceed `job_memory_gib` (`sem_settings_v4`; the manager refuses the same pool); fixture `full-pool-even` raised from 57 to 72 GiB, new invalid fixture `tier-reservations-over-memory`. The supervisor lists 4 only for a tiered manager and without the capacity module |
+| 2026-11-06 | coord-receipt-r-items | evidence-cleanup | receipt 1 | cleanup-receipt `item` also accepts a roadmap step `R<n>.<m>` (docs/ROADMAP.md: R1.1, R2.1), and the manual receipt `branch` also accepts the `feat/`, `fix/`, `docs/` and `ci/` prefixes beside `parity/` (roadmap work runs on those branches in the base clone); fixtures `roadmap-feat-shape` (valid) and `roadmap-item-no-step` (`R1`, invalid); `schema` stays 1 |
+| 2026-11-06 | coord-receipt-coord-branch | evidence-cleanup | receipt 1 | the manual receipt `branch` also accepts a bare `coord-<slug>` (lowercase letters, digits, hyphens), the branch name coordinator jobs use outside `parity/` (coord-oracle-refresh-2026-11, PR #111); fixtures `coord-bare-branch` (valid) and `coord-branch-uppercase` (invalid); `schema` stays 1 |
+| 2026-11-07 | P09.x re-cut (PR #82 onto R1) | status-settings | settings 5 (3 and 4 still read), status 5, revision 6 | the hard VM lifetime cap lands as settings schema 5 instead of #82's schema 4, because main's schema 4 is the R1 tiered pool: `settings-v5.schema.json` is `settings-v4.schema.json` with `lease_wall_clock_hours` (1..72, flag only) replaced by `vm_lifetime_cap_hours` (1..6, default 6), every other key and range unchanged, and `validate.py` applies `sem_settings_v4` to it unchanged; settings schemas 3 and 4 are unchanged (#82's narrowing of the schema 3 key to 1..6 is not carried). `status.v5.json` may list and apply 5 (`settings_schemas` up to 5 items); 5 applied is tiered like 4 (`max_slots` 17, tier slot numbers). #82's status-v5 cap fixtures apply settings schema 3, the "5 is unknown" fixtures now use 6. Fixtures: settings-v5 4 valid + 15 invalid; status-v5 4 valid + 11 invalid more (`tiers-settings-schema-5`, `applied-5-five-slots`) |

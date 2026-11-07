@@ -2,10 +2,11 @@
 
 The supervisor-side provider for `hyperv-vm` reservations of the Linux profile (Ubuntu 24.04 x64). It runs inside the
 hidden, elevated supervisor and is the only code that drives Linux runner VMs. Contracts:
-[backend-lifecycle.md](../../../parity/contracts/backend-lifecycle.md) (version 2),
-[guest-transport.md](../../../parity/contracts/guest-transport.md) (version 1),
-[allocator.md](../../../parity/contracts/allocator.md) (version 2) and [broker.md](../../../parity/contracts/broker.md)
-(version 1). The image it clones is P07's ([images/ubuntu-24.04](../../../images/ubuntu-24.04), its INTEGRATION.md, P11
+[backend-lifecycle.md](../../../parity/contracts/backend-lifecycle.md) (version 3, the hard lifetime cap),
+[guest-transport.md](../../../parity/contracts/guest-transport.md) (version 2),
+[allocator.md](../../../parity/contracts/allocator.md) (Hard VM lifetime cap, L1 to L10 and B1 to B9),
+[vm-cap-notes.schema.json](../../../parity/contracts/vm-cap-notes.schema.json) and
+[broker.md](../../../parity/contracts/broker.md) (version 1). The image it clones is P07's ([images/ubuntu-24.04](../../../images/ubuntu-24.04), its INTEGRATION.md, P11
 section). Its Windows twin is [../windows](../windows/README.md) (P10); this backend follows the same rules and every lesson
 of P10's reviews, and differs only where a Linux guest differs. What other items must wire is in
 [INTEGRATION.md](INTEGRATION.md).
@@ -44,6 +45,7 @@ requires both revision pins to be integer 2 before its intent or any provider op
 | `creating` | **create**: trust-check the roots and the host (Enhanced Session Mode off, nobody but SYSTEM and Administrators in Hyper-V Administrators), check that the generation folder and `base.vhdx` are sealed read-only, re-hash the base against the pin through a read handle held until the differencing disk exists and its parent is checked, the clone folder, `os.avhdx`, a fresh key pair, `New-VM` with no network adapter and an empty DVD drive and its id journaled at once (or the VM whose id the journal already recorded), the per-clone `ssh_config`, P10.0's `Attach` (VM Off) and the shared declaration check, the seed ISO with the declaration's static addressing (`SetSeed` puts it in the DVD drive), read back and verify every VM setting, its disk and its DVD, then `Verify` and the read-back. Then **boot**: `Attach` again (VM Off; the same declaration), the declaration check, `Verify` and the read-back, then `Start-VM` (a VM found already running is verified instead), then **ready**: then **ready**: wait for the host key in KVP and pin it, `probe` until `ready` (at most 15 minutes after boot), eject and delete the seed, check no medium is left, `Set-AapSlotState ready` |
 | `ready` | **run_one**: `Invoke-AapBrokerLease`, `deliver_registration` with the JIT config on the ssh child's stdin, `start_runner` (its success journaled) |
 | `ready`, `busy`, `draining` | **heartbeat**, at most every 30 s per reservation: guest `status` over this VM's own channel, broker status for `JobRunning`, `Update-AapHeartbeat`. A runner that GitHub reports gone ends the job (`collecting`); a draining runner that is idle is stopped; a busy one is never touched |
+| every state | **lifetime cap**, first of all (below) |
 | every state with a VM | **limits**, from the host, before anything else on every step, with or without a guest channel: `creating` while it probes, `ready`, `busy`, `draining`, `collecting`, every quarantine, and `deleting` (a drained VM kept for its pending release) before the once-a-minute retry gate; after a restart too. A paused VM, a clone folder over `clone_gib` (or one that cannot be measured), or a running VM whose network P10.0's `Verify` no longer accepts or cannot look at (at most every 30 s per reservation) destroys the VM (`fatal`), the slot held until the teardown proof |
 | `collecting` | **collect**: the agent's bounded summary (returned as `Summary`, never written), then `deleting` |
 | `deleting` | **destroy**: `Invoke-AapBrokerRelease` if a lease was ever asked for, `Stop-VM -TurnOff`, `Remove-VM`, P10.0 detach, delete the clone folder (disk, seed, VM files, key) and any scratch folder without following links, observe absence, `Complete-AapTeardown` |
@@ -172,9 +174,43 @@ proof after the VM (by id and by name), the clone folder (with the key and seed)
 absent on roots present on their recorded volumes, after the network detach succeeded, with a final runner proof
 (`never_registered`, `true`, `github-removed`; `uncertain` holds the slot as `teardown_failed`; `pending` keeps it
 `deleting`, retried at most once a minute). A drained VM whose release is pending is kept, held to every limit on every
-step, flagged `drain_overdue` after 6 h, never destroyed for time; its release waits until the broker answers ok with the runner
+step, ended by time only through the lifetime cap; its release waits until the broker answers ok with the runner
 not busy (busy, unavailable, a timeout or an unreadable reply keep it; an urgent teardown does not ask). Three tries 5 s apart, then `teardown_failed`, capacity
 held. Deletes never follow a junction or symbolic link, and an ACL is never written through one.
+
+### The hard VM lifetime cap (P11.3, owner decision Q4)
+
+"Hard VM lifetime cap of 6 hours for all repositories." Every step evaluates it first, before the journal decides
+anything else; `Invoke-AapLinCapPass` lets the supervisor power off every due VM before any step tears one down.
+
+- **Decision** (allocator.md L2, L7): due when `true_now - acquired_at` reaches the cap in force (`-CapHours`, 1..6,
+  default 6; exactly the cap counts). `acquired_at` is in allocator.json, so a restarted supervisor decides again from
+  it. `true_now` is the wall clock, or the previous estimate advanced by a boot-bound counter when that is later: a clock
+  stepped back neither stops nor turns back the cap's clock. A guest reply, a heartbeat, the job, the broker and the
+  runner's GitHub status never enter it. Once due, the reservation is latched in memory, and its destroy intent's
+  `lifetime_cap` evidence is the durable latch: no later clock reading un-caps it. With `-ClockSafety` (`host_reboot`,
+  `clock_unavailable`) every reservation whose VM exists at the first look is capped with that trigger and its measured
+  age.
+- **Order** (L4): power the VM off at the hypervisor (`StopVm`, `Stop-VM -TurnOff`; never a guest shutdown, no guest call
+  after the decision), observe it Off, then persist: the allocator down to `deleting`, a `failed` record with code
+  `vm_lifetime_cap` and the fixed detail `vm lifetime cap reached; the VM was powered off` for every op still open but
+  destroy (the job's `run_one`, or `create`/`boot`), then the `destroy` intent carrying `lifetime_cap` whose
+  `power_off_utc` and `at` come from the reservation's evidence clock (never before its start or an earlier sample).
+  Then the ordinary verified teardown; only its proof frees the slot (a runner GitHub still lists keeps it `deleting`).
+- **cap_breach** (L5): a VM not observed Off after the power-off is journaled once as `destroy` `failed` `retryable`
+  `cap_breach`; the step returns `held`/`cap_breach`, the slot stays held, and every later step repeats the power-off
+  and nothing else for it.
+- **Deadline record and start gate** (B1, B7, L6): create writes the VM's Notes (`SetVmNotes`) with the
+  vm-cap-notes record (deadline = start + the 6 h ceiling, never the configured cap) and reads it back
+  (`AAP_NotesInvalid`). Boot starts the VM only when the Notes read back as that record, its deadline is ahead by true
+  time, and the host watchdog's clock record (`-WatchdogClockPath`) is valid, of this host boot (`GetBootId`), at most
+  180 s old and 60 s ahead, with no `cap_breach`, its folder admin-only, and this backend holds no unresolved breach;
+  otherwise `waiting` (`notes_unverified`, `backstop_down`, the reason in `Detail`), nothing journaled, retried every
+  step. A start that returns past the deadline is powered off at once; a replayed create or boot past the cap issues no
+  start, and a boot an earlier supervisor never finished is never started again (L6 d).
+- **Never fail open**: a decision that throws (start time, clock, journal evidence) still powers the VM off and says
+  `enforcement_unavailable`; a start time ahead of true time is capped as `clock_unavailable`; every failure on the way
+  is in the result's `Detail`.
 
 ### Trust checks
 
@@ -222,6 +258,7 @@ guest's first boot and its agent, the broker and the network (no Hyper-V, ssh, W
 | `Transport.Tests.ps1` | every reply check; ssh failures are failed guests; every hostile case end to end; bad host key; changed host key; pin first; the ssh_config hardening; the real capped child (overflow, stderr flood, hang, memory flood, grandchild, exit codes, stdin only, BOM-free stdin under three code pages, the payload unbuffered); the relay's arguments and address; its job guard (the call child's job named for it: inside, on to its socket; another job, another name for the same job, no name, a job it is not in: exit 4 and no socket; no handle kept on the job) |
 | `Teardown.Tests.ps1` | release outcomes; a VM, key or folder that will not go; no slot reuse before the proof; links in clone folders |
 | `Create.Tests.ps1` | untrusted roots; the base pin and seal; host settings; the seed's content and its network-config from the declaration (only dotted IPv4 and a prefix length reach its YAML, even past a looser shared check); key and seed failures; the ISO writer's full blocks and short reads; the seed read back (lost or stale bytes); re-run create; VM settings; the network against the shared strict fake (`tests/common/AapHostNetworkFake.psm1`): the create order (no seed at `NewVm`, `Attach`, seed, `SetSeed`, `Verify`), no copy of the declaration, every tamper and fault refused at create and before the start, a `$null` from `Verify`, the provider read-back, a refused declaration, a crash between `Attach` and the seed, the re-`Attach` before `Start-VM`, a running clone verified again; the provider's adapter-name rule; eject; the pin file; the storage document and context |
+| `LifetimeCap.Tests.ps1` | the cap at the boundary (not a second before); a busy guest and a busy runner change nothing and get no call after the decision; a guest that would ignore shutdown; a lower cap; a restart (from acquired_at alone, and after the evidence, with the clock far behind: nothing written twice); a clock stepped back before the cap; both rollback windows; both clock-safety triggers; cap_breach held and retried; no start on replay, a late start powered off; a reservation with no VM yet; the pass powering off every due VM first; the Notes record (validated) and every start-gate refusal |
 | `Recovery.Tests.ps1` | unreadable journals; hostile records; restart keeps the channel (probe, heartbeats, collect); a fresh channel's initial mark; missing or damaged seq mark and lost key folder; restart between delivery and start; JIT delivery rule; inventory and reconcile callbacks; orphans |
 | `Crash.Tests.ps1` | a real process killed at every lifecycle boundary (24 points, plus a drain and a running job) and recovered: never a second VM or lease, no refused `seq`, no secret left |
 | `Hygiene.Tests.ps1` | no JIT config or private key in any file; the private key never read; the JIT object never a command's parameter; antivirus patterns; AMSI compile; hidden children with no data on their command line; one `Add-Type`, under the admin-only `%TMP%` |
@@ -245,3 +282,7 @@ pwsh -File tests/backends/linux/Invoke-AapLinMutations.ps1
 - The guest agent, sshd vsock socket and KVP host-key publisher are implemented in `guests/linux`; their real-VM behavior
   is not proven here. Simulated backend tests and the real guest reader tests enforce guest-transport revision 2.
 - `shutdown` is never sent: destroy turns the VM off.
+- Lifetime cap: the provider's Hyper-V calls are not yet bounded child calls (allocator.md L3), there is no E2 stage
+  (terminating the VM's worker process) before `cap_breach`, and the durable clock record with its enforcement stage
+  (`lifetime-clock.json`) is the supervisor's (P12.3). No Linux VM starts until the host watchdog (P10.7) writes its
+  record. INTEGRATION.md, P12 item 8.

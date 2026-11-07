@@ -7,6 +7,7 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/aap-runner-tray.ico");
+    println!("cargo:rerun-if-changed=assets/aap-runner-tray.rc");
     // ponytail: not rerun on every commit (no .git/HEAD watch); `cargo clean -p` or the env var
     // forces a fresh stamp if a build ever shows a stale commit.
     println!("cargo:rerun-if-env-changed=AAP_TRAY_COMMIT");
@@ -26,7 +27,13 @@ fn main() {
     println!("cargo:rustc-env=AAP_TRAY_COMMIT={commit}");
     #[cfg(windows)]
     {
-        embed_resource::compile("assets/aap-runner-tray.rc", embed_resource::NONE)
+        let part = |k: &str| std::env::var(k).expect("cargo sets the package version");
+        let macros = [
+            format!("AAP_VER_MAJOR={}", part("CARGO_PKG_VERSION_MAJOR")),
+            format!("AAP_VER_MINOR={}", part("CARGO_PKG_VERSION_MINOR")),
+            format!("AAP_VER_PATCH={}", part("CARGO_PKG_VERSION_PATCH")),
+        ];
+        embed_resource::compile("assets/aap-runner-tray.rc", &macros)
             .manifest_required()
             .expect("compile assets/aap-runner-tray.rc");
     }

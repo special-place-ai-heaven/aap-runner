@@ -403,8 +403,7 @@ Describe 'cleanup and independent verification' {
         $reg = @{ Registry = $fx.Registry; Item = 'A'; Source = $src; AssetOwner = 'o'; Retention = 'r'; Expiry = 'e' }
         { Register-PwAsset @reg -Destination (Join-Path $fx.Sentinels[0] 'p.img') } | Should -Throw '*outside the registered boundary*'
         $guarded = Join-Path $fx.Catalog 'guarded'
-        Initialize-PwRegistry -Registry $fx.Registry -Evidence $fx.Evidence -WorkRoot $fx.Work -BaseClone $fx.Base -Repo 'fx/repo' `
-            -LedgerPath $fx.Ledger -Sentinels (@($fx.Sentinels) + @($guarded)) -DefaultSentinels @() -Catalog $fx.Catalog
+        Set-FxSentinels $fx (@($fx.Sentinels) + @($guarded))
         { Register-PwAsset @reg -Destination (Join-Path $guarded 'p.img') } | Should -Throw '*protected sentinel*'
         @((Get-FxManifest $fx 'A').assets).Count | Should -Be 0
     }
@@ -456,8 +455,7 @@ Describe 'cleanup and independent verification' {
         $a = New-FxReadyItem $fx 'A' 7
         $cache = Join-Path $a.Root 'target\shared-cargo-cache'
         Write-FxFile (Join-Path $cache 'registry.bin') 'shared'
-        Initialize-PwRegistry -Registry $fx.Registry -Evidence $fx.Evidence -WorkRoot $fx.Work -BaseClone $fx.Base `
-            -Repo 'fx/repo' -LedgerPath $fx.Ledger -Sentinels (@($fx.Sentinels) + @($cache)) -DefaultSentinels @()
+        Set-FxSentinels $fx (@($fx.Sentinels) + @($cache))
         $null = Invoke-FxMergeAndRecord $fx $a
         $r = Invoke-PwCleanup -Registry $fx.Registry -Item 'A' -Actor 'coordinator' -RetryDelayMs 100
         $r.Status | Should -Be 'HOLD'

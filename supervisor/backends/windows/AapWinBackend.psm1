@@ -54,6 +54,7 @@ $script:BootMinutes = 15                # guest-transport.md: probe until 15 min
 $script:LeaseWindowMinutes = 15         # a lease call the broker never recorded cannot be recorded after this (55 s run cap)
 $script:RetrySeconds = 60               # a pending release is asked again at most this often
 $script:TeardownTries = 3               # ARCHITECTURE.md section 10: three retries over 15 s, then quarantined
+$script:MeasureTries = 3                # clone folder walks per step before 'clone not measurable' (a file can vanish mid-walk)
 $script:TeardownPauseSeconds = 5
 # ponytail: fixed VHDX metadata headroom under scratch_gib; replace with the P02.1 measurement of a full VHDX.
 $script:ScratchHeadroomBytes = 67108864
@@ -65,10 +66,11 @@ $script:WriteMask = 0x500D0156
 $script:SecretValue = 'gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|SYNTHETIC-JIT-MARKER'
 $script:GuidRe = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
 $script:RidRe = '^r-[0-9a-f]{16}\z'
+$script:BuildVmRe = '^aap-wbuild-[0-9a-f]{8}\z'   # the image builder's build VM names (AapWinImage.psm1, Get-AapWinNames)
 $script:GenerationRe = '^win25-vs2026-x64/[0-9]{8}\.[0-9]+\.[0-9]+-aap\.[0-9]+\z'
 $script:Reserved = '^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]) *(\..*)?$'
 $script:ProviderOps = @('GetVolumeGuid', 'GetHostSecurity', 'HashFile', 'NewDiffDisk', 'GetVhdParent', 'NewDisk', 'WriteUnattend', 'NewVm',
-    'GetVmConfig', 'StartVm', 'StopVm', 'RemoveVm', 'ListVms', 'MeasureBytes')
+    'GetVmConfig', 'StartVm', 'StopVm', 'RemoveVm', 'ListVms', 'MeasureBytes', 'DismountDisk')
 $script:VmGroupSid = 'S-1-5-83-0'      # NT VIRTUAL MACHINE\Virtual Machines: may read a sealed base (P06), nothing more
 # The lease outcomes journaled right after the lease call (a repeated `ready` `done` record: `op` has no lease field), so a
 # restarted supervisor never takes a broker that lost an issued lease for one that never recorded it.
@@ -526,6 +528,13 @@ function Read-AapWinStorage([string]$Path) {
         if ($g -cnotmatch $script:GuidRe) { throw "AAP_StorageInvalid: $t volume_guid is malformed" }
         $s[$t] = @{ Path = $p; Guid = $g }
     }
+    # Where the image builder keeps its build folders and locks: staging_root, else <base_root>\staging (backend-lifecycle.md).
+    $sp = [string](Get-AapWinField (Get-AapWinField (Get-AapWinField $doc 'roots') 'staging_root') 'path')
+    if ($sp) {
+        $why = Test-AapWinRootForm $sp
+        if ($why) { throw "AAP_StorageInvalid: staging_root $why" }
+    } else { $sp = Join-Path $s.base_root.Path 'staging' }
+    $s.StagingPath = $sp
     $fixed = @('C:\ProgramData\aap-runner', [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows), 'C:\wsl') | Where-Object { $_ }
     foreach ($a in 'base_root', 'clone_root', 'scratch_root') {
         $pa = $s[$a].Path.ToLowerInvariant()
@@ -1163,6 +1172,11 @@ function Invoke-AapWinDestroy($B, $r, $j, [switch]$Force, [switch]$Urgent) {
                 & $B.Provider.RemoveVm @{ VmId = $vm.Id }
             }
         } catch { $null = $_ }
+        # A disk a crash left mounted on the host (inside WriteUnattend or NewDisk) holds its file open: dismount it once
+        # the VM is gone, or the folder never goes. Only a plain file is passed; a link is removed as an entry below.
+        foreach ($disk in @((Join-Path $clone 'os.avhdx'), (Join-Path $scratch 'scratch.vhdx'))) {
+            try { if ((Get-AapWinPathKind $disk) -ceq 'file') { & $B.Provider.DismountDisk @{ Path = $disk } } } catch { $null = $_ }   # check:stale-mount
+        }
         Invoke-AapWinFault 'destroy:after-vm'
         try { & $B.Network.Detach @{ VmId = $vmId; VmName = $name; Profile = 'windows' }; $detached = $true } catch { $null = $_ }
         try { Remove-AapWinTree $clone $B.Storage.clone_root.Path } catch { $null = $_ }
@@ -1248,7 +1262,11 @@ function Get-AapWinLimitBreach($B, $r, $j) {
     if (-not $vm.Count) { return $null }
     if ($vm[0].State -like 'Paused*') { return 'vm paused' }   # check:vm-paused
     $clone = Join-Path $B.Storage.clone_root.Path ([string]$r.reservation_id)
-    try { $bytes = [double](& $B.Provider.MeasureBytes @{ Path = $clone }) } catch { return 'clone not measurable' }
+    # A walk can meet a file Hyper-V deletes under it (a transient race): walk again, up to MeasureTries; only a folder
+    # that never measures is a broken limit.
+    $bytes = $null
+    for ($try = 1; $null -eq $bytes -and $try -le $script:MeasureTries; $try++) { try { $bytes = [double](& $B.Provider.MeasureBytes @{ Path = $clone }) } catch { $null = $_ } }
+    if ($null -eq $bytes) { return 'clone not measurable' }   # check:clone-measure
     if ($bytes -gt [double]$r.clone_gib * $script:GiB) { return 'clone over cap' }   # check:clone-cap
     $rid = [string]$r.reservation_id
     $now = Get-AapWinNow $B
@@ -1635,5 +1653,66 @@ function Get-AapWinBrokerStatus {
     @{ status = [string]$s.RunnerStatus; busy = [bool]$s.RunnerBusy; job_ended = $false }
 }
 
-Export-ModuleMember -Function New-AapWinBackend, Invoke-AapWinStep, Get-AapWinInventory, Get-AapWinBrokerStatus, Get-AapWinStorageProblem,
+function Remove-AapWinOrphanBuildVm {
+    <# P12.2: the image builder's VMs of a dead builder. The builder holds <staging>\build\<build id>.lock (FileShare.None,
+       never deleted) from before NewVm until it exits, and names its VM aap-wbuild-<first 8 hex of SHA-256(build id)>. Every
+       such VM whose lock file exists and opens exclusively (a crashed builder's handle is gone, its file stays) is
+       stopped, removed by id and detached, the same sequence as destroy, while this call holds the lock, so a builder
+       starting meanwhile gets AAP_BuildBusy. Returns one object per VM it found: Name, VmId, Action (removed; held: a
+       builder or an unreadable lock keeps it; unmatched: no lock file carries its tag, so it is left alone; failed) and
+       Detail. One VM's failure never stops the rest. Throws on a listing error; an absent build folder removes nothing
+       (every build VM is unmatched).
+       The build folder, its disks and its state.json stay for the next run of that build id (Remove-AapWinBuild takes the
+       lock first and detaches again by the id in state.json). aap-wverify-* VMs are not touched. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][hashtable]$Backend)
+    $B = $Backend
+    $found = New-Object Collections.Generic.List[object]
+    foreach ($vm in @(Get-AapWinVms $B)) {
+        if ($vm.Name -cnotmatch $script:BuildVmRe) { continue }   # check:build-name
+        $found.Add($vm)
+    }
+    if (-not $found.Count) { return @() }
+    $buildRoot = Join-Path $B.Storage.StagingPath 'build'
+    $kind = Get-AapWinPathKind $buildRoot
+    if ($kind -cne 'absent' -and $kind -cne 'dir') { throw "AAP_StorageUntrusted: $buildRoot is not a plain folder" }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $locks = @{}
+    try {
+        if ($kind -ceq 'dir') { foreach ($f in [IO.Directory]::GetFiles($buildRoot, '*.lock')) {
+            $tag = ([BitConverter]::ToString($sha.ComputeHash($script:Utf8.GetBytes([IO.Path]::GetFileNameWithoutExtension($f)))) -replace '-', '').ToLowerInvariant().Substring(0, 8)
+            $locks[$tag] = $f
+        } }
+    } finally { $sha.Dispose() }
+    @($found | ForEach-Object { Remove-AapWinOneBuildVm $B $_ ([string]$locks[$_.Name.Substring('aap-wbuild-'.Length)]) })
+}
+
+function Remove-AapWinOneBuildVm($B, $vm, [string]$LockPath) {
+    $row = [pscustomobject]@{ Name = $vm.Name; VmId = $vm.Id; Action = 'failed'; Detail = '' }
+    if (-not $LockPath) {   # check:build-unmatched
+        $row.Action = 'unmatched'
+        $row.Detail = 'no lock file carries this build VM''s tag; left alone'
+        return $row
+    }
+    $lock = $null
+    $why = ''
+    try { $lock = New-Object IO.FileStream($LockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) } catch { $why = $_.Exception.Message }
+    try {
+        if ($null -eq $lock) {   # check:build-lock
+            $row.Action = 'held'
+            $row.Detail = "the build lock is held or unreadable: $why"
+            return $row
+        }
+        try {
+            if ($vm.State -cne 'Off') { & $B.Provider.StopVm @{ VmId = $vm.Id } }
+            & $B.Provider.RemoveVm @{ VmId = $vm.Id }
+        } catch { $row.Detail = "the VM could not be removed: $($_.Exception.Message)"; return $row }
+        try { & $B.Network.Detach @{ VmId = $vm.Id; VmName = $vm.Name; Profile = 'windows' } }
+        catch { $row.Detail = "the VM is removed but its network is not proven detached: $($_.Exception.Message)"; return $row }
+        $row.Action = 'removed'
+        return $row
+    } finally { if ($lock) { $lock.Dispose() } }
+}
+
+Export-ModuleMember -Function New-AapWinBackend, Invoke-AapWinStep, Get-AapWinInventory, Get-AapWinBrokerStatus, Remove-AapWinOrphanBuildVm, Get-AapWinStorageProblem,
     Get-AapWinHostProblem, Select-AapWinPartition, Write-AapWinUnattend

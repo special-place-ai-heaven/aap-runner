@@ -21,7 +21,49 @@ it.** The only reason is that WSL sessions belong to the logon session
   A failed On sequence (mount task) has its own backoff with the same steps.
   A new `retry` in `inbox\state.json` resets both and tries again at once.
   Each tick also sets the `vmmemWSL` process to BelowNormal priority, so games
-  and other interactive apps win CPU contention against CI jobs.
+  and other interactive apps win CPU contention against CI jobs. While the
+  manager unit is active but the `updated` value in its `status.json` has not
+  changed for 3 health ticks (180 s on the supervisor's clock), the status is
+  `starting` with detail `manager status stale`; the change to stale and back
+  is logged once each. The manager's clock is never compared with Windows'
+  (the WSL clock can drift). A file without `updated`, or whose `updated` is
+  not a whole unix second, is never stale, nor is one that says `cleaning`
+  (the watch starts again after it). Pause, Off, stopping the legacy pool and
+  every manager start or restart begin the watch afresh. A
+  restart of a manager that is not paused or stopped runs `--undrain` first,
+  so a drain left by a failed undrain does not make it exit at once; if that
+  undrain fails the manager is not started, and the On sequence does the same.
+- **Failed drain steps:** a limits change whose drain fails or times out, or
+  whose undrain fails, a pause whose drain fails or times out, a manager start
+  (resume, or a granted legacy slot) whose `--undrain` fails, stopping the
+  legacy pool when its `--drain` fails, and an Off whose terminate cannot be
+  confirmed are each tried again with backoff 10, 30, 60, 120, then every
+  300 s. A failure is logged on each of the first 5 attempts and whenever its
+  message changes, and a success after failures logs `<step> recovered` once
+  and resets the backoff. A pause that did not drain is not `paused`: the
+  status is `error` (drain failed) or `draining` (job still running), kept by
+  the health ticks until the pause works or settings no longer ask for it. A failed
+  resume is `error` with `resume: --undrain failed; retrying` until it works.
+  A limits change that did not finish puts back the `limits.conf` read before
+  it (cached until it is back, so a retry never re-reads the new file as the
+  old one) or removes the file if there was none; a file that could not be put
+  back is logged as `ERROR` and never counts as applied; each later cycle
+  tries to put it back first (with the same backoff), also while its key is
+  refused. A failed `wsl --terminate` is checked with
+  `wsl --list --running --quiet` first: it prints names only, so it reads the
+  same in every Windows language, and exit 0 means running exactly when a
+  line is `aap-runner`. It exits non-zero when nothing runs, so then
+  `wsl --list --verbose` decides: the `aap-runner` row's STATE `Running` is
+  running, `Stopped` or no row is not running, and a failing call, output
+  without the English `NAME STATE VERSION` header (another Windows language)
+  or any other state word is unknown (logged with the exit code and stderr
+  or the output).
+  While it runs or is unknown the status is `error` with
+  `... and aap-runner still runs` or
+  `... and cannot tell whether aap-runner runs: <why>` and Off tries again.
+  The same check runs at supervisor start: unknown is logged as `WARN` and
+  the distro is treated as not known to run (no `wsl` call that would start
+  it).
 - **Off:** runs `aap-runner-manager --drain`, waits up to 6 h for the manager
   to exit after its job, then `wsl.exe --terminate aap-runner`. Flipping back to
   on while draining undrains instead. A job still running after the 6 h is
@@ -43,6 +85,14 @@ it.** The only reason is that WSL sessions belong to the logon session
   (`draining`) and the next tick looks again. A job the old manager starts
   right after that idle read still ends with the distro (it cannot be told
   to stop taking jobs).
+- **Tier probe:** once the grep for `--undrain` passes, a second passive
+  `grep -q -- AAP_LINUX_HEAVY_COUNT` of the same file tells whether the
+  manager runs the two Linux tiers (R1 step 2). `--version` is never called.
+  The answer is cached like the first probe, cleared at Off and probed again
+  at every On, and again after a `--check-limits` refusal of a tiered file.
+  Only a tiered manager makes the supervisor list settings schema 4 and
+  accept it; against today's manager nothing changes. It is not probed with
+  the capacity module (see Capacity).
 - **After every `systemctl start`** it checks `is-active` and logs the last
   5 journal lines of a unit that did not come up.
 
@@ -69,9 +119,9 @@ split by trust:
 | File | Writer | Content |
 |---|---|---|
 | `inbox\state.json` | tray or you | `{"desired":"on"}` or `{"desired":"off"}`, optionally with `"retry":<unix seconds>`. Anything else in `desired` counts as off and logs one warning. A `retry` larger than the last one seen (a whole number) resets the On and restart backoffs and runs the next attempt now. It logs `retry requested`. Nothing else is read from it. |
-| `inbox\settings.json` | tray or you | `{"runner_count":1-5,"job_cpus":1-28,"job_memory_gib":1-80,"paused":true\|false}`. All four keys, whole numbers, a real boolean. Schema 2 adds optional `"schema":2`, `"io_percent":0-100` (whole number), `"sharing":"slice"\|"fixed"` and `"windows_runner_count":0-4` (whole number, `runner_count` plus it at most 5); a file without them (schema 1) is still read. In schema 1 and 2 `windows_runner_count` is validated when present and never applied, and `runner_count` stays the Linux count: they mean Linux `runner_count`, Windows 0, even shares, reserve 10. Schema 3 (only with the capacity module, see Capacity) has exactly the keys of [`settings-v3.schema.json`](../parity/contracts/settings-v3.schema.json): `runner_count` (Linux) and `windows_runner_count` 0-5 each and 1-5 together, `job_cpus`, `job_memory_gib`, `paused`, `io_percent`, `sharing`, `host_reserve_percent` 10-90, `share_mode` `even` (both shares null) or `per_profile` (shares 0-90, shares plus reserve 100, a share 0 exactly when its count is 0), `linux_backend` `wsl-legacy` or `hyperv-vm` (refused unless an Ubuntu generation is active) and `lease_wall_clock_hours` 1-72. A `schema` above the newest one this supervisor accepts (2 without the capacity module, 3 with it) is refused, the last valid settings stay, and the status `detail` names it until a valid file arrives. Anything else logs one warning and the last valid settings stay. Missing means no override and not paused. |
-| `status.json` | supervisor | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"","updated":"<RFC3339>","detail":"","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/owner/name/actions/runs/ID"}`. The three numbers are what the manager reports as applied, or null. `repo` and `run_url` are the running job's, copied from the manager only when they match `owner/name` and `https://github.com/owner/name/actions/runs/<digits>` exactly, else empty. Both are empty while off or paused. Schema 4 writes `"schema":4` and adds `"work_disk_gib"`, `"work_disk_free_gb"`, `"work_disk_floor_gb"` and `"cleaning":true|false` (null and false unless the manager is idle, running, or draining; a schema 3 manager file still reads; a size outside 0-1024 is null). Schema 3 fields: `"sampled_at":"<RFC3339>"\|null`, `"pool":{"cpu_cores","mem_gib","io_mbps"}`, `"slots":[{"slot","state","job","repo","run_url","job_url","started_at","cpu_cores","mem_gib"}]`, `"job_io_mbps"` and `"sharing":"slice"\|"fixed"\|null`. They are copied from the manager only while it reports idle, running or draining; otherwise `slots` is `[]` and the rest null. Every value is re-checked: numbers in range (cores 0-1024, GiB 0-4096) else null, `repo` and `run_url` as above, `job_url` as `https://github.com/owner/name/actions/runs/<digits>/job/<digits>`, slot `state` one of idle, running, draining, starting, error, else empty. At most 5 slots. The manager's unix-second times are written as RFC 3339 UTC. An older manager without a `slots` list gives `[]`. Rewritten at least every 60 s. The tray calls it stale after 180 s. |
-| `status.v5.json` | supervisor | Schema 5, [`status-v5.schema.json`](../parity/contracts/status-v5.schema.json), written in the same tick as `status.json` with the same atomic rename. `status.json` keeps schema 4 and describes the legacy pool only; `status.v5.json` has the overall `state` (`running` also when only a VM slot is busy), the `detail` as one line of printable ASCII (at most 300), `settings_schemas` (`[1,2]` without the capacity module, `[1,2,3]` with it), `applied_settings_schema` (null until a valid file was read), `capacity` (5 slots, used, free, reserve, share mode, host), exactly two `profiles` (Linux then Windows: backend, count, share, per-runner and profile caps from the allocator, `image_generation` and `generation_state`, cache state `unknown` until the guests report it, `available` and the reason when not), up to five `slots` (one per live allocator reservation, each with its profile, OS, backend and lifecycle; a legacy slot carries the job, repo and URLs of the manager slot it is accounted as), `storage` and `legacy_pool` (the schema 4 numbers, null while Linux runs on VMs). Without the capacity module the slots are the manager's and the Windows profile is `backend: none`. Every value comes from a check in this script, the allocator's validated state, or the storage document the backends validated; times are UTC with a `Z`. |
+| `inbox\settings.json` | tray or you | `{"runner_count":1-5,"job_cpus":1-28,"job_memory_gib":1-80,"paused":true\|false}`. All four keys, whole numbers, a real boolean. Schema 2 adds optional `"schema":2`, `"io_percent":0-100` (whole number), `"sharing":"slice"\|"fixed"` and `"windows_runner_count":0-4` (whole number, `runner_count` plus it at most 5); a file without them (schema 1) is still read. In schema 1 and 2 `windows_runner_count` is validated when present and never applied, and `runner_count` stays the Linux count: they mean Linux `runner_count`, Windows 0, even shares, reserve 10. Schema 3 (only with the capacity module, see Capacity) has exactly the keys of [`settings-v3.schema.json`](../parity/contracts/settings-v3.schema.json): `runner_count` (Linux) and `windows_runner_count` 0-5 each and 1-5 together, `job_cpus`, `job_memory_gib`, `paused`, `io_percent`, `sharing`, `host_reserve_percent` 10-90, `share_mode` `even` (both shares null) or `per_profile` (shares 0-90, shares plus reserve 100, a share 0 exactly when its count is 0), `linux_backend` `wsl-legacy` or `hyperv-vm` (refused unless an Ubuntu generation is active) and `lease_wall_clock_hours` 1-72. Schema 4 (tiered Linux pool, R1; only without the capacity module and only while the installed manager runs the tiers, see Old manager) has exactly the keys of [`settings-v4.schema.json`](../parity/contracts/settings-v4.schema.json): schema 3's keys with `runner_count` replaced by `linux_light_count` 0-10 and `linux_heavy_count` 0-2 (a file with `runner_count` is not schema 4), `windows_runner_count` 0-5, and shares that follow schema 3 with Linux = light + heavy. `job_cpus` and `job_memory_gib` stay the WSL pool totals and go to `limits.conf` unchanged. The supervisor also refuses a file with no Linux runner (nothing here runs Windows VMs), with `hyperv-vm`, or whose heavy x 20 + light x 3 GiB exceeds `job_memory_gib` (the manager refuses the same pool); the last valid settings stay and the status `detail` names the reason. A `schema` above the newest one this supervisor accepts (2 without the capacity module, 4 added for a tiered manager without it, 3 with the module) is refused, the last valid settings stay, and the status `detail` names it until a valid file arrives. Anything else logs one warning and the last valid settings stay. Missing means no override and not paused. |
+| `status.json` | supervisor | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"","updated":"<RFC3339>","detail":"","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/owner/name/actions/runs/ID"}`. The three numbers are what the manager reports as applied, or null. `repo` and `run_url` are the running job's, copied from the manager only when they match `owner/name` and `https://github.com/owner/name/actions/runs/<digits>` exactly, else empty. Both are empty while off or paused. Schema 4 writes `"schema":4` and adds `"work_disk_gib"`, `"work_disk_free_gb"`, `"work_disk_floor_gb"` and `"cleaning":true|false` (null and false unless the manager is idle, running, or draining; a schema 3 manager file still reads; a size outside 0-1024 is null). Schema 3 fields: `"sampled_at":"<RFC3339>"\|null`, `"pool":{"cpu_cores","mem_gib","io_mbps"}`, `"slots":[{"slot","state","job","repo","run_url","job_url","started_at","cpu_cores","mem_gib"}]`, `"job_io_mbps"` and `"sharing":"slice"\|"fixed"\|null`. They are copied from the manager only while it reports idle, running or draining; otherwise `slots` is `[]` and the rest null. Every value is re-checked: numbers in range (cores 0-1024, GiB 0-4096) else null, `repo` and `run_url` as above, `job_url` as `https://github.com/owner/name/actions/runs/<digits>/job/<digits>`, slot `state` one of idle, running, draining, starting, error, retired (the manager gave the slot up after 5 fast deaths), else empty. At most 17 slots (5 untiered, 12 with the tiered pool, keeping the manager's slot numbers). The manager's unix-second times are written as RFC 3339 UTC. An older manager without a `slots` list gives `[]`. Rewritten at least every 60 s. The tray calls it stale after 180 s. |
+| `status.v5.json` | supervisor | Schema 5, [`status-v5.schema.json`](../parity/contracts/status-v5.schema.json), written in the same tick as `status.json` with the same atomic rename. `status.json` keeps schema 4 and describes the legacy pool only; `status.v5.json` has the overall `state` (`running` also when only a VM slot is busy), the `detail` as one line of printable ASCII (at most 300), `settings_schemas` (`[1,2]` without the capacity module, `[1,2,4]` there when the manager runs the tiers or schema 4 is applied, `[1,2,3]` with the module), `applied_settings_schema` (null until a valid file was read), `capacity` (5 slots, or 17 while schema 4 is applied; used, free, reserve, share mode, host), exactly two `profiles` (Linux then Windows: backend, count, share, per-runner and profile caps from the allocator, `image_generation` and `generation_state`, cache state `unknown` until the guests report it, `available` and the reason when not), up to five `slots` (17 while schema 4 is applied; one per live allocator reservation, each with its profile, OS, backend and lifecycle; a legacy slot carries the job, repo and URLs of the manager slot it is accounted as; without the capacity module a manager slot that is idle, running, draining or retired has lifecycle ready, busy, draining or quarantined, anything else creating), `storage` and `legacy_pool` (the schema 4 numbers, null while Linux runs on VMs). Without the capacity module the slots are the manager's (while schema 4 is applied each keeps the manager's slot number, 1-2 heavy and 3-12 light, and carries `tier`) and the Windows profile is `backend: none`. While the interim Windows runner's install folder (`C:\aap-win-interim\runner`) exists, no Windows VM backend is loaded and no Windows VM reservation is live, the Windows profile is instead `backend: windows-host` with `host_runner` `online` (logon task `\AAP-Win-Interim-Runner` running and `Runner.Listener.exe` from that folder's `bin` running), `busy` (also `Runner.Worker.exe` from there) or `stopped` (`available` false, the reason names the missing piece: the task not found, not running, or no listener); its count stays the settings' (status-settings.md, Windows host). Report only: the supervisor reads the task and the process list and never starts, stops or reads files of that runner. Every value comes from a check in this script, the allocator's validated state, or the storage document the backends validated; times are UTC with a `Z`. |
 | `logs\supervisor.log` | supervisor | One line per event, rotated to `.1` at 5 MB. |
 | `inbox\jobs\<id>.json` | tray | Schema 1: `{"schema":1,"id":"<16 lowercase hex>","verb":"verify"|"repair"}`, or with `"verb":"identity"` plus exactly `org`, `app_id`, `installation_id` (numbers), `group`, `labels`, and `key_path` (see `crates/tray/README.md`, Identity). Nothing else is accepted. The supervisor does not read it. |
 | `jobs\<id>\` | elevated helper | `status.json` (schema 1: `queued`, `running`, `passed`, `failed`, or `rejected`), `log.txt`, `exit.txt`. Admin-owned. The tray reads them. The supervisor does not. |
@@ -105,9 +155,11 @@ While On, `inbox\settings.json` is read every 5 s:
 
 - **Limits change:** the supervisor writes `/etc/aap-runner/limits.conf` in
   the distro (`AAP_RUNNER_COUNT`, `AAP_JOB_CPUS`, `AAP_JOB_MEMORY`, plus
-  `AAP_JOB_IO_PERCENT` and `AAP_POOL_SHARING` when settings.json sets them)
-  and runs `aap-runner-manager --check-limits`. A change to any of the five
-  counts. If the check
+  `AAP_JOB_IO_PERCENT` and `AAP_POOL_SHARING` when settings.json sets them;
+  for schema 4, `AAP_LINUX_HEAVY_COUNT` and `AAP_LINUX_LIGHT_COUNT` instead of
+  `AAP_RUNNER_COUNT`, with `AAP_JOB_CPUS` and `AAP_JOB_MEMORY=<job_memory_gib>g`
+  as the pool totals) and runs `aap-runner-manager --check-limits`. A change to
+  any of those values, or to the heavy or light count, restarts the manager. If the check
   refuses, the previous file is put back and the status shows the reason
   until the settings change. If it passes, the manager drains, finishes its
   running jobs, and restarts with the new limits. After a supervisor start, a
@@ -130,8 +182,12 @@ reparse point, has an admin owner and lets nobody else delete, re-permission
 or take it over (install-supervisor.ps1's ancestor rule); otherwise, and
 without the module (today's install,
 which copies only the script), it is the schema 2 supervisor described above:
-legacy pool only, settings 1 and 2, and `status.v5.json` with the Windows
-profile `none`.
+legacy pool only, settings 1 and 2 (and 4 for a tiered manager), and `status.v5.json` with the Windows
+profile `none` (or `windows-host` while the interim runner is installed).
+
+Settings schema 4 needs no capacity module and is refused with one (as newer,
+`(1, 2, 3)`): the allocator is built for at most five slots and the tiered pool
+has twelve Linux ones. The step that lifts that is P16 / R1 step 5.
 
 - **Start of an On session:** create the allocator state once, with the
   measured host (logical CPUs, RAM, 2 GiB for the control VM until P22
@@ -139,6 +195,9 @@ profile `none`.
   is trusted), never over an existing state or the remains of a lost one
   (`invalid_state`: status `error`, the owner restores it). Then reconcile
   before any admission, and again every 10 minutes.
+  Each reconcile also asks the loaded Windows backend to remove orphan image-builder VMs
+  (`aap-wbuild-*` whose build lock nobody holds; `backends/windows/INTEGRATION.md`, item 6):
+  removals are logged, a failure or a VM with no matching lock file is a `WARN`, a failing call never stops the reconcile.
 - **Every 5 s:** the two counts, the shares, the reserve, the Linux backend
   and the active generations go to the allocator; `resize_waits` and
   `pool_over_live` keep the last applied settings and lead the `detail`.

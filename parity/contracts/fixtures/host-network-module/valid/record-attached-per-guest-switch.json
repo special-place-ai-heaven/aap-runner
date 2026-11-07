@@ -1,9 +1,9 @@
 {
-  "schema": 1,
+  "schema": 2,
   "kind": "host_network_record",
   "state": "attached",
   "declaration": {
-    "schema": 1,
+    "schema": 2,
     "kind": "host_network_attach",
     "vm_id": "6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b",
     "vm_name": "aap-w-1-3-1a2b3c4d",
@@ -11,6 +11,7 @@
     "subnet": "172.31.240.0/24",
     "gateway": "172.31.240.1",
     "address": "172.31.240.2",
+    "mac": "02-A0-98-00-00-01",
     "resolvers": [
       "192.0.2.53",
       "198.51.100.53"
@@ -21,6 +22,10 @@
     {
       "kind": "adapter",
       "name": "aap-guest-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"
+    },
+    {
+      "kind": "neighbor",
+      "name": "aap-neighbor-6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b"
     },
     {
       "kind": "switch",

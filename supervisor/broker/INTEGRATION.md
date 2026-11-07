@@ -23,12 +23,12 @@ wire, and where P08 reads the frozen contract more strictly than its text.
    `bootstrap.sh --self-check` checks every listed file. P19: the installer's upgrade path copies
    the same file.
 3. **Nothing else to create.** On first run the broker creates `/var/lib/aap-runner/broker/`
-   (`leases/`, `open/`, `slots/`, `lock`, `group-id`; root `0700`/`0600`) and
-   `/var/log/aap-runner/broker-audit.jsonl` (root `0600`, rotated at 5 MB to one `.1`). Each of
+   (`leases/`, `open/`, `slots/`, `lock`, `group-id`; root `0700`/`0600`), with the audit log
+   `broker-audit.jsonl` beside them (root `0600`, rotated at 5 MB to one `.1`). Each of
    those directories goes through `install -d -m 0700`, and the broker refuses to run (exit 1)
-   when one is a symlink or is not owned by root. If the manager ever writes to
-   `/var/log/aap-runner` too, that directory is root `0700`. No unit, timer, socket, listener or
-   sudoers entry: the supervisor reaches root through `wsl.exe -u root`.
+   when one is a symlink or is not owned by root. The broker writes nothing under `/var/log`
+   (P08.1 moved its audit log from `/var/log/aap-runner/` to its own state directory). No unit,
+   timer, socket, listener or sudoers entry: the supervisor reaches root through `wsl.exe -u root`.
 4. **What the manager must keep.** The broker reuses the manager's App code instead of a second
    JWT signer. It sources the installed manager and calls `load_config`, `check_key`,
    `mint_installation_token`, `auth_header` and `now_s`, and reads `AAP_GITHUB_ORG` and
@@ -74,7 +74,8 @@ Import-Module (Join-Path $PSScriptRoot 'broker\aap-broker.psm1')
 ```
 
 Every call starts exactly this child, hidden, with `WSL_UTF8=1` and without `WSLENV`. It writes
-the request to stdin, waits at most 60 s, reads at most 20 KiB of stdout, and drains and drops
+the request to stdin, waits at most `-TimeoutSeconds` (default 60, allowed 60 to 600: the broker's
+own run limit is 55 s, so a shorter wait would kill it mid-request), reads at most 20 KiB of stdout, and drains and drops
 stderr:
 
 ```text

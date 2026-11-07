@@ -8,12 +8,12 @@ set -euo pipefail
 # shellcheck source=labels.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/labels.sh"
 # Exact match for AAP_RUNNER_LABELS_VERSION in labels.sh.
-require_labels_version 1 || exit 1
+require_labels_version 2 || exit 1
 
 # `aap-runner-manager --version` prints this. The Windows supervisor reads it
 # to tell this manager (drain, status, limits) from one that would treat an
 # unknown argument as "start the pool".
-MANAGER_VERSION="aap-runner-manager 2"
+MANAGER_VERSION="aap-runner-manager 3"
 # The tray helper's identity verb points this at manager.conf.tmp for one
 # --check-limits before it swaps the file in. Root sets it; nothing else does.
 CONFIG_PATH="${AAP_MANAGER_CONF:-/etc/aap-runner/manager.conf}"
@@ -47,6 +47,13 @@ AAP_JOB_IO_PERCENT=""
 AAP_POOL_SHARING=""
 # Unset means absent (one slot). A present but empty value is refused.
 unset AAP_RUNNER_COUNT
+# Tiered Linux pool: heavy 0..2 and light 0..10, both or neither, in place of
+# AAP_RUNNER_COUNT. Unset means the untiered pool. finish_tiers sets
+# AAP_RUNNER_COUNT to their sum.
+unset AAP_LINUX_HEAVY_COUNT AAP_LINUX_LIGHT_COUNT
+# The slot numbers of the pool, set by finish_runner_count: 1..N untiered;
+# heavy 1..H and light 3..2+L tiered, so the slot number is the tier.
+POOL_SLOTS=()
 # Per-slot docker create limits, set by finish_runner_count.
 SLOT_CPUS=""
 SLOT_MEMORY=""
@@ -82,19 +89,25 @@ DEREG_NAMES=()
 # systemd restarts the whole pool.
 SLOT_MAX_FAILS=5
 SLOT_FAST_SECONDS=120
-# Shared rustc cache on the work disk, bind-mounted into every job. sccache's
-# local disk cache is built for concurrent readers and writers (separate
-# sccache servers, one per job), so parallel slots can share it. ci.yml sets
-# SCCACHE_DIR to a per-repository subdirectory; "default" is for jobs that do not.
-SCCACHE_HOST_DIR=${WORK_MOUNT}/sccache
-SCCACHE_CONTAINER_DIR=/var/cache/aap-sccache
-SCCACHE_CACHE_SIZE=10G
-# SCCACHE_CACHE_SIZE bounds one directory, and any job can create another.
-# Before each job the whole tree is measured. Over 15% of the disk, the oldest
-# files are removed until the tree is at 80% of that bound. finish_disk_bounds
-# sets the cap from AAP_WORK_DISK_GIB. 9216 MiB is 15% of the default 60 GiB.
-SCCACHE_TREE_MAX_MB=9216
-RUNNER_UID=""
+# A slot whose runner fails before it registers (network or container create,
+# the token mint, config.sh) this many times in a row exits with
+# SLOT_GAVE_UP_EXIT, which run_pool counts as a fast death however long the
+# attempts took. Between attempts it waits 5, 10, 20, then 40 s.
+SLOT_PREJOB_MAX_FAILS=5
+SLOT_GAVE_UP_EXIT=75
+# Where the last run_one stopped: the failing stage, or job once a runner listened.
+RUN_ONE_STAGE=""
+# Compile cache: zccache 1.15.6, installed in the image (guests/cache). Each job
+# has its own private root inside its container, and the container filesystem
+# is on the work disk. Shared roots stay off until the lab proof
+# (guests/cache/INTEGRATION.md), so nothing is shared between jobs and no host
+# directory is mounted. The entrypoint gives the root this budget; at the
+# budget the shim stops using the root, it never deletes cache files. The root
+# goes with `docker rm -f -v`. finish_disk_bounds sets the pool's budget to
+# 15% of AAP_WORK_DISK_GIB, at most 10240 MiB (the old shared-tree limit);
+# 9216 MiB is 15% of the default 60 GiB. Each job root gets 1/AAP_RUNNER_COUNT
+# of it, so all the slots together stay inside the 15%.
+ZCCACHE_BUDGET_MB=9216
 # Interface for the Windows-side supervisor (wsl -d aap-runner -u root --).
 # ${RUN_DIR}/drain stops new jobs; ${RUN_DIR}/status.json reports the pool.
 # /run is a tmpfs. Not a systemd RuntimeDirectory, which is deleted when the
@@ -223,6 +236,8 @@ apply_config_line() {
     AAP_JOB_IO_PERCENT) AAP_JOB_IO_PERCENT=${val} ;;
     AAP_POOL_SHARING) AAP_POOL_SHARING=${val} ;;
     AAP_RUNNER_COUNT) AAP_RUNNER_COUNT=${val} ;;
+    AAP_LINUX_HEAVY_COUNT) AAP_LINUX_HEAVY_COUNT=${val} ;;
+    AAP_LINUX_LIGHT_COUNT) AAP_LINUX_LIGHT_COUNT=${val} ;;
     *)
       echo "unknown config key: ${key}" >&2
       return 1
@@ -241,6 +256,10 @@ load_config() {
   while IFS= read -r line || [[ -n "${line}" ]]; do
     apply_config_line "${line}"
   done < "${CONFIG_PATH}"
+  if [[ -n "${AAP_RUNNER_COUNT+x}" && (-n "${AAP_LINUX_HEAVY_COUNT+x}" || -n "${AAP_LINUX_LIGHT_COUNT+x}") ]]; then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT cannot be combined with AAP_RUNNER_COUNT in the same file (${CONFIG_PATH})" >&2
+    exit 1
+  fi
   load_limits
   [[ "${AAP_GITHUB_ORG}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
   [[ "${AAP_GITHUB_APP_ID}" =~ ^[0-9]+$ ]]
@@ -260,12 +279,12 @@ load_config() {
   finish_runner_labels
 }
 
-# limits.conf overrides five manager.conf keys, then the same checks run on
+# limits.conf overrides seven manager.conf keys, then the same checks run on
 # the result (count 1..5, the per-slot split, the memory and cpu grammar).
 # It holds no App ids and no secrets. Any other key, an empty value, a file
 # that is not root's, or a group or world writable mode is refused.
 load_limits() {
-  local perms owner line key
+  local perms owner line key lim_count=0 lim_tier=0
   [[ -e "${LIMITS_PATH}" ]] || return 0
   if [[ ! -f "${LIMITS_PATH}" ]]; then
     echo "refusing: ${LIMITS_PATH} is not a regular file" >&2
@@ -283,9 +302,9 @@ load_limits() {
     esac
     key=${line%%=*}
     case "${key}" in
-      AAP_RUNNER_COUNT | AAP_JOB_CPUS | AAP_JOB_MEMORY | AAP_JOB_IO_PERCENT | AAP_POOL_SHARING) ;;
+      AAP_RUNNER_COUNT | AAP_LINUX_HEAVY_COUNT | AAP_LINUX_LIGHT_COUNT | AAP_JOB_CPUS | AAP_JOB_MEMORY | AAP_JOB_IO_PERCENT | AAP_POOL_SHARING) ;;
       *)
-        echo "refusing: ${LIMITS_PATH} key ${key} is not AAP_RUNNER_COUNT, AAP_JOB_CPUS, AAP_JOB_MEMORY, AAP_JOB_IO_PERCENT, or AAP_POOL_SHARING" >&2
+        echo "refusing: ${LIMITS_PATH} key ${key} is not AAP_RUNNER_COUNT, AAP_LINUX_HEAVY_COUNT, AAP_LINUX_LIGHT_COUNT, AAP_JOB_CPUS, AAP_JOB_MEMORY, AAP_JOB_IO_PERCENT, or AAP_POOL_SHARING" >&2
         exit 1
         ;;
     esac
@@ -297,7 +316,21 @@ load_limits() {
       echo "refusing: ${LIMITS_PATH} line for ${key}" >&2
       exit 1
     fi
+    case "${key}" in
+      AAP_RUNNER_COUNT) lim_count=1 ;;
+      AAP_LINUX_HEAVY_COUNT | AAP_LINUX_LIGHT_COUNT) lim_tier=1 ;;
+    esac
   done < "${LIMITS_PATH}"
+  # The exclusion is per file, and this file's form replaces manager.conf's.
+  if ((lim_count && lim_tier)); then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT cannot be combined with AAP_RUNNER_COUNT in the same file (${LIMITS_PATH})" >&2
+    exit 1
+  fi
+  if ((lim_tier)); then
+    unset AAP_RUNNER_COUNT
+  elif ((lim_count)); then
+    unset AAP_LINUX_HEAVY_COUNT AAP_LINUX_LIGHT_COUNT
+  fi
 }
 
 # AAP_WORK_DISK_GIB is this host's VHDX size. Absent means 60, which is CRRR.
@@ -326,7 +359,10 @@ finish_disk_bounds() {
     WORK_DISK_MIN_GB=1
   fi
   WORK_DISK_MAX_GB=$((AAP_WORK_DISK_GIB + 4))
-  SCCACHE_TREE_MAX_MB=$(( AAP_WORK_DISK_GIB * 1024 * 15 / 100 ))
+  ZCCACHE_BUDGET_MB=$(( AAP_WORK_DISK_GIB * 1024 * 15 / 100 ))
+  if (( ZCCACHE_BUDGET_MB > 10240 )); then
+    ZCCACHE_BUDGET_MB=10240
+  fi
 }
 
 # Absent keys use the defaults. A present value that is not this grammar is refused.
@@ -377,8 +413,43 @@ finish_runner_labels() {
   AAP_RUNNER_LABELS="${expect},${seen}"
 }
 
+# heavy or light for a slot of a tiered pool; empty for an untiered pool or no
+# slot. Heavy is slot 1..2, light is slot 3 and up: the slot number is the tier.
+slot_tier() {
+  [[ -n "${AAP_LINUX_HEAVY_COUNT+x}" && "${1:-}" =~ ^[0-9]+$ ]] || return 0
+  if (($1 <= 2)); then
+    echo heavy
+  else
+    echo light
+  fi
+}
+
+# The label line the slot's runner registers with.
+slot_labels() {
+  case "$(slot_tier "${1:-}")" in
+    heavy) printf '%s\n' "${AAP_LABELS_HEAVY}" ;;
+    light) printf '%s\n' "${AAP_LABELS_LIGHT}" ;;
+    *) printf '%s\n' "${AAP_RUNNER_LABELS}" ;;
+  esac
+}
+
+# Untiered: the line the journal always had. Tiered: the slot's own line.
 log_runner_labels() {
-  echo "runner labels: ${AAP_RUNNER_LABELS}"
+  if [[ -n "$(slot_tier "${1:-}")" ]]; then
+    echo "slot ${1}: runner labels: $(slot_labels "$1")"
+  else
+    echo "runner labels: ${AAP_RUNNER_LABELS}"
+  fi
+}
+
+# The slot numbers, one per line: POOL_SLOTS once finish_runner_count ran, else
+# 1..AAP_RUNNER_COUNT (tests that set the count without it).
+pool_slots() {
+  if ((${#POOL_SLOTS[@]} > 0 && ${#POOL_SLOTS[@]} == ${AAP_RUNNER_COUNT:-1})); then
+    printf '%s\n' "${POOL_SLOTS[@]}"
+  else
+    seq 1 "${AAP_RUNNER_COUNT:-1}"
+  fi
 }
 
 finish_job_limits() {
@@ -410,11 +481,16 @@ finish_job_limits() {
 # configured values verbatim. Runs after finish_job_limits validated them.
 finish_runner_count() {
   local num unit mult mib cpus
+  if [[ -n "${AAP_LINUX_HEAVY_COUNT+x}" || -n "${AAP_LINUX_LIGHT_COUNT+x}" ]]; then
+    finish_tiers
+    return
+  fi
   [[ -z "${AAP_RUNNER_COUNT+x}" ]] && AAP_RUNNER_COUNT=1
   if [[ ! "${AAP_RUNNER_COUNT}" =~ ^[1-5]$ ]]; then
     echo "refusing: AAP_RUNNER_COUNT=${AAP_RUNNER_COUNT} is not 1..5" >&2
     return 1
   fi
+  mapfile -t POOL_SLOTS < <(seq 1 "${AAP_RUNNER_COUNT}")
   if [[ "${AAP_RUNNER_COUNT}" -eq 1 ]]; then
     SLOT_CPUS=${AAP_JOB_CPUS}
     SLOT_MEMORY=${AAP_JOB_MEMORY}
@@ -445,6 +521,76 @@ finish_runner_count() {
   else
     SLOT_MEMORY="${mib}m"
   fi
+}
+
+# A tiered Linux pool: AAP_LINUX_HEAVY_COUNT (0..2) heavy slots, numbered 1..H,
+# and AAP_LINUX_LIGHT_COUNT (0..10) light slots, numbered 3..2+L. Both keys or
+# neither, integers only, not with AAP_RUNNER_COUNT, not 0+0. The labels and
+# the per-tier limits are constants in this file (heavy: 20g reserved, 8 cpus
+# fixed; light: 3g reserved, 8g and 4 cpus in slice mode, 4 cpus fixed), and
+# the reservations of all the slots must fit AAP_JOB_MEMORY. Fixed-mode caps
+# equal the reservations, so a fixed pool never overcommits memory. Sets
+# AAP_RUNNER_COUNT to H+L, so the IO and zccache splits work on the count.
+finish_tiers() {
+  local h l num unit mult need pool i
+  if [[ -n "${AAP_RUNNER_COUNT+x}" ]]; then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT cannot be combined with AAP_RUNNER_COUNT" >&2
+    return 1
+  fi
+  if [[ -z "${AAP_LINUX_HEAVY_COUNT+x}" || -z "${AAP_LINUX_LIGHT_COUNT+x}" ]]; then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT must both be set" >&2
+    return 1
+  fi
+  h=${AAP_LINUX_HEAVY_COUNT}
+  l=${AAP_LINUX_LIGHT_COUNT}
+  if [[ ! "${h}" =~ ^[0-2]$ ]]; then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT=${h} is not 0..2" >&2
+    return 1
+  fi
+  if [[ ! "${l}" =~ ^([0-9]|10)$ ]]; then
+    echo "refusing: AAP_LINUX_LIGHT_COUNT=${l} is not 0..10" >&2
+    return 1
+  fi
+  if ((h + l == 0)); then
+    echo "refusing: AAP_LINUX_HEAVY_COUNT and AAP_LINUX_LIGHT_COUNT cannot both be 0" >&2
+    return 1
+  fi
+  if [[ "${AAP_RUNNER_BASE_LABEL}" != fresh ]]; then
+    echo "refusing: tiers need AAP_RUNNER_BASE_LABEL=fresh" >&2
+    return 1
+  fi
+  if [[ -n "${AAP_RUNNER_EXTRA_LABELS}" && "${AAP_RUNNER_EXTRA_LABELS}" != heavy ]]; then
+    echo "refusing: tiers allow AAP_RUNNER_EXTRA_LABELS only empty or heavy" >&2
+    return 1
+  fi
+  num=${AAP_JOB_MEMORY%[bBkKmMgG]}
+  unit=${AAP_JOB_MEMORY#"${num}"}
+  case "${unit}" in
+    k | K) mult=1024 ;;
+    m | M) mult=$((1024 * 1024)) ;;
+    g | G) mult=$((1024 * 1024 * 1024)) ;;
+    *) mult=1 ;;
+  esac
+  if [[ "${#num}" -gt 18 ]] || ((num > (1 << 62) / mult)); then
+    echo "refusing: AAP_JOB_MEMORY=${AAP_JOB_MEMORY} is too large to split" >&2
+    return 1
+  fi
+  pool=$((num * mult / (1024 * 1024)))
+  need=$((h * 20 + l * 3))
+  if ((need * 1024 > pool)); then
+    echo "refusing: tier reservations ${need}g exceed AAP_JOB_MEMORY=${AAP_JOB_MEMORY}" >&2
+    return 1
+  fi
+  AAP_RUNNER_COUNT=$((h + l))
+  POOL_SLOTS=()
+  for ((i = 1; i <= h; i++)); do
+    POOL_SLOTS+=("${i}")
+  done
+  for ((i = 3; i <= 2 + l; i++)); do
+    POOL_SLOTS+=("${i}")
+  done
+  SLOT_CPUS=""
+  SLOT_MEMORY=""
 }
 
 # AAP_JOB_IO_PERCENT (0..100, default 90, 0 = no cap) of the measured work
@@ -649,8 +795,11 @@ arm_wall_clock() {
   setsid bash -c '
     sleep "$1"
     echo "wall clock ${1}s elapsed; stopping $2" >&2
-    docker stop -t 20 "$2" || true
-    docker rm -f "$2" || true
+    docker stop -t 20 "$2" || echo "warning: docker stop of $2 failed" >&2
+    if ! docker rm -f "$2"; then
+      echo "warning: docker rm -f of $2 failed; killing it" >&2
+      docker kill "$2" || echo "warning: docker kill of $2 failed; the job may outlive its wall clock" >&2
+    fi
   ' _ "${seconds}" "${name}" >/dev/null &
   echo $!
 }
@@ -864,7 +1013,7 @@ reap_ghost_runners() {
     echo "warning: ghost reap: docker ps failed; reaping nothing" >&2
     return 0
   fi
-  for f in "${RUN_DIR}"/slot-[1-9]; do
+  for f in "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9][0-9]; do
     [[ -f "${f}" ]] && body+=$'\n'$(slot_container "${f##*slot-}")
   done
   while IFS= read -r id; do
@@ -917,7 +1066,7 @@ tick_reap() {
 usage_lines() {
   local f name cpu mem
   local -A slot_of=()
-  for f in "${RUN_DIR}"/slot-[1-9]; do
+  for f in "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9][0-9]; do
     name=""
     { read -r _ _ name _ < "${f}"; } 2>/dev/null || true
     [[ -n "${name}" && "${name}" != - ]] && slot_of[${name}]=${f##*-}
@@ -1033,42 +1182,8 @@ deregister_runners() {
 # remove_job_containers prunes at startup and stop, when no slot is running.
 cleanup_job() {
   local name="$1" net="$2"
-  docker rm -f -v "${name}" || true
-  docker network rm "${net}" || true
-}
-
-# One trim at a time: five slots starting together trim once. A caller that
-# does not get the lock skips the trim and returns 0; the holder's pass
-# covers it. Without RUN_DIR (self-check, tests) there is no lock file and
-# the trim just runs.
-bound_sccache_tree() {
-  [[ -d "${RUN_DIR}" ]] || { trim_sccache_tree; return 0; }
-  (
-    flock -n 9 || exit 0
-    trim_sccache_tree
-  ) 9> "${RUN_DIR}/sccache-trim.lock"
-}
-
-# Bytes, not du -sm. Over the cap, delete oldest regular files until the tree
-# is at or under 80% of the cap. The directory stays.
-trim_sccache_tree() {
-  local used bound target need sz path
-  [[ -d "${SCCACHE_HOST_DIR}" ]] || return 0
-  [[ "${SCCACHE_TREE_MAX_MB}" =~ ^[0-9]+$ ]] || return 0
-  bound=$(( SCCACHE_TREE_MAX_MB * 1024 * 1024 ))
-  used=$(du -sb "${SCCACHE_HOST_DIR}" 2>/dev/null | awk '{ print $1 }')
-  [[ "${used}" =~ ^[0-9]+$ && "${used}" -gt "${bound}" ]] || return 0
-  target=$(( bound * 80 / 100 ))
-  echo "sccache tree ${SCCACHE_HOST_DIR} is ${used} bytes, over ${bound}; trimming oldest files to ${target}" >&2
-  need=$(( used - target ))
-  while IFS=$'\t' read -r _ sz path; do
-    [[ -n "${path}" && -f "${path}" ]] || continue
-    rm -f -- "${path}" || true
-    if [[ "${sz}" =~ ^[0-9]+$ ]]; then
-      need=$(( need - sz ))
-    fi
-    (( need > 0 )) || break
-  done < <(find "${SCCACHE_HOST_DIR}" -type f -printf '%T@\t%s\t%p\n' | sort -n)
+  docker rm -f -v "${name}" || echo "warning: could not remove job container ${name}" >&2
+  docker network rm "${net}" || echo "warning: could not remove job network ${net}" >&2
 }
 
 # A marker is named after the cleaner's pid. One whose process is gone (a
@@ -1162,11 +1277,9 @@ reclaim_pool_cache() {
   echo "cache: reclaimed $((bytes / 1048576)) MiB of cold page cache from ${POOL_SLICE}"
 }
 
-# After every job, and once when a start is under the floor. The cache trim
-# is included because that tree is on this disk.
+# After every job, and once when a start is under the floor.
 clean_after_job() {
   begin_cleaning
-  bound_sccache_tree || true
   prune_job_docker
   reclaim_pool_cache || true
   maybe_daily_clean
@@ -1193,29 +1306,55 @@ job_name() {
 
 run_one() {
   local slot="$1" token="" name net rc=1 killer="" seconds=0 runner="" errf="" try
+  local tier shares=${CPU_SHARES}
   local -a lim=()
+  tier=$(slot_tier "${slot}")
   name=$(job_name "${slot}")
   net="${name}"
   # set -e does not apply inside this function: the loop calls it from `if`.
-  # disk_ok passed just before this, so the cache dir is on the work disk.
-  bound_sccache_tree
-  if ! install -d -o "${RUNNER_UID}" -m 0700 "${SCCACHE_HOST_DIR}"; then
-    echo "refusing to start a job: could not create ${SCCACHE_HOST_DIR}" >&2
-    return 1
-  fi
+  RUN_ONE_STAGE="job network create"
   if ! docker network create --label aap-crrr-job=1 "${net}"; then
     return 1
   fi
   # slice: the pool totals are the slice's caps; each container may use up to
   # all of them, with an equal soft memory share. fixed: hard 1/count shares.
+  # A tiered pool replaces the shares with the tier's: heavy reserves 20g and
+  # weighs 2048, light reserves 3g and weighs 512; fixed caps equal the
+  # reservations, so a fixed pool never overcommits memory.
+  case "${tier}" in
+    heavy) shares=2048 ;;
+    light) shares=512 ;;
+  esac
   if [[ "${AAP_POOL_SHARING}" == slice ]]; then
-    lim=(--cgroup-parent "${POOL_SLICE}"
-      --memory "${AAP_JOB_MEMORY}"
-      --memory-swap "${AAP_JOB_MEMORY}"
-      --memory-reservation "${SLOT_MEMORY}"
-      --cpus "${AAP_JOB_CPUS}")
+    case "${tier}" in
+      heavy)
+        lim=(--cgroup-parent "${POOL_SLICE}"
+          --memory "${AAP_JOB_MEMORY}"
+          --memory-swap "${AAP_JOB_MEMORY}"
+          --memory-reservation 20g
+          --cpus "${AAP_JOB_CPUS}")
+        ;;
+      light)
+        lim=(--cgroup-parent "${POOL_SLICE}"
+          --memory 8g
+          --memory-swap 8g
+          --memory-reservation 3g
+          --cpus 4)
+        ;;
+      *)
+        lim=(--cgroup-parent "${POOL_SLICE}"
+          --memory "${AAP_JOB_MEMORY}"
+          --memory-swap "${AAP_JOB_MEMORY}"
+          --memory-reservation "${SLOT_MEMORY}"
+          --cpus "${AAP_JOB_CPUS}")
+        ;;
+    esac
   else
-    lim=(--memory "${SLOT_MEMORY}" --memory-swap "${SLOT_MEMORY}" --cpus "${SLOT_CPUS}")
+    case "${tier}" in
+      heavy) lim=(--memory 20g --memory-swap 20g --memory-reservation 20g --cpus 8) ;;
+      light) lim=(--memory 3g --memory-swap 3g --memory-reservation 3g --cpus 4) ;;
+      *) lim=(--memory "${SLOT_MEMORY}" --memory-swap "${SLOT_MEMORY}" --cpus "${SLOT_CPUS}") ;;
+    esac
     if ((SLOT_IO_MBPS > 0)) && [[ -n "${IO_DEVICE}" ]]; then
       lim+=(--device-read-bps "${IO_DEVICE}:${SLOT_IO_MBPS}mb"
         --device-write-bps "${IO_DEVICE}:${SLOT_IO_MBPS}mb"
@@ -1223,47 +1362,50 @@ run_one() {
         --device-write-iops "${IO_DEVICE}:$((SLOT_IO_MBPS * IO_IOPS_PER_MB))")
     fi
   fi
-  # One bind mount, the sccache dir on the work disk. No -v, no /mnt.
+  # No bind mounts, no -v, no /mnt: the zccache root is inside the container.
+  # --init adds docker-init, which is not under /mnt.
   # assert_no_mnt_mounts rejects a source under /mnt even if the daemon adds
   # one. /mnt/wsl is the shared docker-desktop tmpfs.
+  RUN_ONE_STAGE="container create"
   if ! docker create \
     --runtime=sysbox-runc \
+    --init \
     --interactive \
     --name "${name}" \
     --network "${net}" \
     "${lim[@]}" \
-    --cpu-shares "${CPU_SHARES}" \
+    --cpu-shares "${shares}" \
     --pids-limit "${AAP_JOB_PIDS_LIMIT}" \
     --label aap-crrr-job=1 \
     --label "aap-crrr-slot=${slot}" \
     --env "AAP_GITHUB_ORG=${AAP_GITHUB_ORG}" \
-    --env "AAP_RUNNER_LABELS=${AAP_RUNNER_LABELS}" \
+    --env "AAP_RUNNER_LABELS=$(slot_labels "${slot}")" \
     --env "AAP_RUNNER_GROUP=${AAP_RUNNER_GROUP}" \
     --env "AAP_WORK_DISK_GIB=${AAP_WORK_DISK_GIB}" \
     --env "AAP_DISK_FLOOR_GB=${AAP_DISK_FLOOR_GB}" \
-    --mount "type=bind,source=${SCCACHE_HOST_DIR},target=${SCCACHE_CONTAINER_DIR}" \
-    --env "RUSTC_WRAPPER=sccache" \
-    --env "SCCACHE_DIR=${SCCACHE_CONTAINER_DIR}/default" \
-    --env "SCCACHE_CACHE_SIZE=${SCCACHE_CACHE_SIZE}" \
+    --env "AAP_ZCCACHE_BUDGET_BYTES=$((ZCCACHE_BUDGET_MB / AAP_RUNNER_COUNT * 1024 * 1024))" \
     "${AAP_RUNNER_IMAGE}"; then
-    docker network rm "${net}" || true
+    docker network rm "${net}" || echo "warning: could not remove job network ${net}" >&2
     return 1
   fi
+  RUN_ONE_STAGE="mount check"
   if ! assert_no_mnt_mounts "${name}"; then
     cleanup_job "${name}" "${net}"
     return 1
   fi
-  log_runner_labels
+  log_runner_labels "${slot}"
   # Drain: the container is created but not started, so nothing registered.
   if draining; then
     cleanup_job "${name}" "${net}"
     return 0
   fi
+  RUN_ONE_STAGE="registration token mint"
   if ! token="$(mint_registration_token)"; then
     cleanup_job "${name}" "${net}"
     return 1
   fi
   seconds=$((AAP_JOB_TIMEOUT_MINUTES * 60))
+  RUN_ONE_STAGE="wall clock arm"
   if ! killer=$(arm_wall_clock "${seconds}" "${name}") || ! kill -0 "${killer}" 2>/dev/null; then
     token=""
     unset token
@@ -1271,6 +1413,7 @@ run_one() {
     return 1
   fi
   set_slot_state "${slot}" starting "${name}"
+  RUN_ONE_STAGE="runner registration"
   # docker start's stderr is also kept in errf; the subshell waits for tee, so
   # errf is complete when the pipeline returns. One retry, only for the slice
   # start race: runc found the new scope's io files missing and nothing ran.
@@ -1295,6 +1438,8 @@ run_one() {
   token=""
   unset token
   disarm_wall_clock "${killer}"
+  # Still starting: the runner never listened (config.sh failed, or it died).
+  [[ "$(slot_state "${slot}")" == starting ]] || RUN_ONE_STAGE=job
   # A runner that ended without a job (the wall clock, or a listener that
   # exited) is still registered. GitHub removes it only after a job.
   runner=""
@@ -1444,7 +1589,8 @@ discover_job_run() {
 # state: draining while the drain file exists, else running while a slot has
 # a job, else idle once a slot listens, else starting. job: the most
 # recently started running job, or "". repo and run_url: that job's, once
-# discover_job_run found them, else "". runner_count: AAP_RUNNER_COUNT. job_cpus and job_memory: the pool totals as configured,
+# discover_job_run found them, else "". runner_count: AAP_RUNNER_COUNT (heavy plus light in a tiered pool,
+# whose slot numbers are 1..H and 3..2+L: the slot number carries the tier). job_cpus and job_memory: the pool totals as configured,
 # after limits.conf. job_io_mbps: the per-slot IO share in MiB/s, 0 for none.
 # sharing: slice or fixed, as the pool runs (fixed after a fallback).
 # job_cpus is a JSON number and may be fractional (2.5)
@@ -1465,7 +1611,7 @@ status_json() {
   local busy=0 idle=0 best=-1 job="" state=starting sampled="" u n c g
   local rns rrepo rurl repo="" run_url=""
   local dsize="" dfree="" floor="" cleaning=false
-  local -a args=()
+  local -a args=() slots=()
   local -A uname_of=() ucpu_of=() umem_of=()
   {
     read -r sampled
@@ -1476,7 +1622,8 @@ status_json() {
     done
   } 2>/dev/null < "${RUN_DIR}/usage" || true
   [[ "${sampled}" =~ ^[0-9]+$ ]] || sampled=""
-  for ((slot = 1; slot <= ${AAP_RUNNER_COUNT:-1}; slot++)); do
+  mapfile -t slots < <(pool_slots)
+  for slot in "${slots[@]}"; do
     f="${RUN_DIR}/slot-${slot}"
     st="" ns="" cname="" name="" sjob="" srepo="" srun="" started="" cpu="" mem=""
     { read -r st ns cname name < "${f}"; } 2>/dev/null || true
@@ -1804,19 +1951,6 @@ self_check() {
     echo "wall clock was still running after disarm" >&2
     return 1
   fi
-  sc_dir=$(mktemp -d)
-  SCCACHE_HOST_DIR=${sc_dir}
-  mkdir -p "${sc_dir}/repo"
-  head -c 2097152 /dev/zero > "${sc_dir}/repo/old"
-  head -c 2097152 /dev/zero > "${sc_dir}/repo/new"
-  touch -d '2020-01-01 00:00:00' "${sc_dir}/repo/old"
-  touch -d '2024-01-01 00:00:00' "${sc_dir}/repo/new"
-  SCCACHE_TREE_MAX_MB=3
-  bound_sccache_tree
-  [[ -d "${sc_dir}" ]]
-  [[ ! -e "${sc_dir}/repo/old" ]]
-  [[ -f "${sc_dir}/repo/new" ]]
-  rm -rf "${sc_dir}"
   # Dead sysbox directories go. A live id and a non-id stay. docker is stubbed.
   (
     sys=$(mktemp -d)
@@ -1892,44 +2026,35 @@ self_check() {
   echo "disk floor self-check ok"
 }
 
-runner_uid_ok() {
-  [[ "$1" =~ ^[1-9][0-9]*$ ]]
-}
-
-# The cache dir is owned by the image's runner uid, mode 0700. Sysbox mounts
-# host binds ID-mapped, so that host uid is the same uid inside the job.
-# Mode 1777 would let any distro account, ghrunner included, plant cache
-# objects, and so would a runner uid that a distro account also has.
-# Read once at startup with the default runtime and no network.
-resolve_runner_uid() {
-  local out="" account
-  out=$(docker run --rm --pull never --network none --entrypoint id "${AAP_RUNNER_IMAGE}" -u runner 2>/dev/null) || out=""
-  if ! runner_uid_ok "${out}"; then
-    echo "refusing: runner uid in ${AAP_RUNNER_IMAGE} is '${out}', not a plain non-zero integer" >&2
-    return 1
-  fi
-  account=$(getent passwd "${out}" | cut -d: -f1 || true)
-  if [[ -n "${account}" ]]; then
-    echo "refusing: runner uid ${out} is distro account ${account}; the cache would be writable from the distro" >&2
-    return 1
-  fi
-  RUNNER_UID=${out}
-}
-
 # A dead slot's job container keeps running and holds its cpus and memory.
 # Remove it, and its network (named after the container), before the slot
 # restarts or retires.
 remove_slot_containers() {
-  local id name
+  local ids id name
+  if ! ids=$(docker ps -aq --filter label=aap-crrr-job=1 --filter "label=aap-crrr-slot=$1"); then
+    echo "warning: slot $1: could not list its job containers; one left behind keeps its reservation" >&2
+    return 0
+  fi
   while IFS= read -r id; do
     [[ -n "${id}" ]] || continue
     name=$(docker inspect --format '{{.Name}}' "${id}" 2>/dev/null || true)
     name=${name#/}
-    docker rm -f -v "${id}" >/dev/null || true
-    if [[ -n "${name}" ]]; then
-      docker network rm "${name}" >/dev/null 2>&1 || true
+    if ! docker rm -f -v "${id}" >/dev/null; then
+      echo "warning: slot $1: could not remove job container ${name:-${id}}" >&2
     fi
-  done < <(docker ps -aq --filter label=aap-crrr-job=1 --filter "label=aap-crrr-slot=$1")
+    if [[ -n "${name}" ]] && ! docker network rm "${name}" >/dev/null; then
+      echo "warning: slot $1: could not remove job network ${name}" >&2
+    fi
+  done <<< "${ids}"
+}
+
+# The old sccache tree the manager kept on the work disk before zccache. Nothing
+# mounts it any more; it is a cache, so it is removed, once, at pool start.
+remove_legacy_sccache_tree() {
+  local dir=${WORK_MOUNT}/sccache
+  [[ -d "${dir}" ]] || return 0
+  echo "removing the old sccache tree ${dir}; zccache keeps a private root per job"
+  rm -rf --one-file-system "${dir}" || echo "could not remove ${dir} fully; it is no longer used" >&2
 }
 
 remove_job_containers() {
@@ -1943,10 +2068,12 @@ remove_job_containers() {
 }
 
 # One slot runs one job at a time, forever. A job that exits non-zero is the
-# normal path: the slot logs it and takes the next job. The slot drops the
-# parent's traps so only the parent cleans up the pool.
+# normal path: the slot logs it and takes the next job. A failure before the
+# runner registers backs off and, after SLOT_PREJOB_MAX_FAILS in a row, ends
+# the slot so run_pool restarts or retires it. The slot drops the parent's
+# traps so only the parent cleans up the pool.
 slot_loop() {
-  local slot="$1"
+  local slot="$1" fails=0
   trap - EXIT TERM INT
   set_slot_state "${slot}" starting
   while true; do
@@ -1960,12 +2087,33 @@ slot_loop() {
       sleep 60
       continue
     fi
-    if ! run_one "${slot}"; then
+    if run_one "${slot}"; then
+      fails=0
+    elif [[ "${RUN_ONE_STAGE}" == job ]]; then
+      fails=0
       echo "slot ${slot}: runner container exited non-zero; workspace was removed with the container" >&2
       sleep 5
+    else
+      fails=$((fails + 1))
+      echo "slot ${slot}: ${RUN_ONE_STAGE} failed before a runner registered (${fails} in a row)" >&2
+      if ((fails >= SLOT_PREJOB_MAX_FAILS)); then
+        echo "slot ${slot}: giving up after ${fails} failures in a row" >&2
+        exit "${SLOT_GAVE_UP_EXIT}"
+      fi
+      sleep "$(prejob_backoff_delay "${fails}")"
     fi
     clean_after_job
   done
+}
+
+# Seconds to wait after $1 pre-job failures in a row: 5 s, doubling. The
+# 300 s cap only matters if SLOT_PREJOB_MAX_FAILS is raised above 7.
+prejob_backoff_delay() {
+  local delay=5 i
+  for ((i = 1; i < $1 && delay < 300; i++)); do
+    delay=$((delay * 2))
+  done
+  printf '%s\n' "$((delay > 300 ? 300 : delay))"
 }
 
 # Seconds to wait before restarting a slot that has died $1 times in a row.
@@ -2061,7 +2209,7 @@ stop_pool() {
   DEREG_PIDS=()
   DEREG_NAMES=()
   deregister_runners "${runners[@]}"
-  rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}/usage"
+  rm -f "${RUN_DIR}/status.json" "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9][0-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}"/slot-[1-9][0-9].run "${RUN_DIR}/usage"
   rm -rf "${RUN_DIR}/cleaning.d"
 }
 
@@ -2070,12 +2218,14 @@ stop_pool() {
 # matches a retired PID again. wait -n -p needs bash 5.1. Ubuntu 24.04 ships 5.2.
 run_pool() {
   local slot i died now rc
+  local -a slots=()
   trap 'stop_pool; exit 143' TERM INT
   trap stop_pool EXIT
-  rm -f "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}/usage"
+  rm -f "${RUN_DIR}"/slot-[1-9] "${RUN_DIR}"/slot-[1-9][0-9] "${RUN_DIR}"/slot-[1-9].run "${RUN_DIR}"/slot-[1-9][0-9].run "${RUN_DIR}/usage"
   rm -rf "${RUN_DIR}/cleaning.d"
   write_status
-  for ((slot = 1; slot <= AAP_RUNNER_COUNT; slot++)); do
+  mapfile -t slots < <(pool_slots)
+  for slot in "${slots[@]}"; do
     SLOT_FAILS[slot]=0
     start_slot "${slot}" 0
   done
@@ -2135,7 +2285,7 @@ run_pool() {
       continue
     fi
     now=$(now_s)
-    if [[ $((now - SLOT_STARTED[slot])) -lt "${SLOT_FAST_SECONDS}" ]]; then
+    if [[ "${rc}" -eq "${SLOT_GAVE_UP_EXIT}" || $((now - SLOT_STARTED[slot])) -lt "${SLOT_FAST_SECONDS}" ]]; then
       SLOT_FAILS[slot]=$((SLOT_FAILS[slot] + 1))
     else
       SLOT_FAILS[slot]=1
@@ -2191,8 +2341,12 @@ main() {
   # effective limits printed, nothing started and no docker call.
   if [[ "${1:-}" == "--check-limits" ]]; then
     load_config
-    printf 'AAP_RUNNER_COUNT=%s\nAAP_JOB_CPUS=%s\nAAP_JOB_MEMORY=%s\nAAP_JOB_IO_PERCENT=%s\nAAP_JOB_IO_MBPS=%s\nAAP_POOL_SHARING=%s\n' \
-      "${AAP_RUNNER_COUNT}" "${AAP_JOB_CPUS}" "${AAP_JOB_MEMORY}" "${AAP_JOB_IO_PERCENT}" "${SLOT_IO_MBPS}" "${AAP_POOL_SHARING}"
+    printf 'AAP_RUNNER_COUNT=%s\n' "${AAP_RUNNER_COUNT}"
+    if [[ -n "${AAP_LINUX_HEAVY_COUNT+x}" ]]; then
+      printf 'AAP_LINUX_HEAVY_COUNT=%s\nAAP_LINUX_LIGHT_COUNT=%s\n' "${AAP_LINUX_HEAVY_COUNT}" "${AAP_LINUX_LIGHT_COUNT}"
+    fi
+    printf 'AAP_JOB_CPUS=%s\nAAP_JOB_MEMORY=%s\nAAP_JOB_IO_PERCENT=%s\nAAP_JOB_IO_MBPS=%s\nAAP_POOL_SHARING=%s\n' \
+      "${AAP_JOB_CPUS}" "${AAP_JOB_MEMORY}" "${AAP_JOB_IO_PERCENT}" "${SLOT_IO_MBPS}" "${AAP_POOL_SHARING}"
     exit 0
   fi
 
@@ -2241,11 +2395,15 @@ main() {
 
   load_config
   check_key
-  resolve_runner_uid
   remove_job_containers
+  remove_legacy_sccache_tree
   resolve_io_device
   setup_pool_sharing
-  echo "runner pool: ${AAP_RUNNER_COUNT} slot(s), sharing ${AAP_POOL_SHARING}, share --cpus ${SLOT_CPUS} --memory ${SLOT_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT} io ${SLOT_IO_MBPS:-0} MiB/s on ${IO_DEVICE:-none}"
+  if [[ -n "${AAP_LINUX_HEAVY_COUNT+x}" ]]; then
+    echo "runner pool: ${AAP_LINUX_HEAVY_COUNT} heavy + ${AAP_LINUX_LIGHT_COUNT} light slot(s) (${POOL_SLOTS[*]}), sharing ${AAP_POOL_SHARING}, pool --cpus ${AAP_JOB_CPUS} --memory ${AAP_JOB_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT} io ${SLOT_IO_MBPS:-0} MiB/s on ${IO_DEVICE:-none}"
+  else
+    echo "runner pool: ${AAP_RUNNER_COUNT} slot(s), sharing ${AAP_POOL_SHARING}, share --cpus ${SLOT_CPUS} --memory ${SLOT_MEMORY} --pids-limit ${AAP_JOB_PIDS_LIMIT} io ${SLOT_IO_MBPS:-0} MiB/s on ${IO_DEVICE:-none}"
+  fi
   run_pool
 }
 

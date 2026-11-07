@@ -189,8 +189,10 @@ function New-AapLinHyperVProvider {
         $nics = foreach ($n in @(Hyper-V\Get-VMNetworkAdapter -VM $vm)) {
             $name = ''; $type = ''
             if ($n.SwitchId) { $sw = Hyper-V\Get-VMSwitch -Id $n.SwitchId -ErrorAction Stop; $name = [string]$sw.Name; $type = [string]$sw.SwitchType }
+            # MacAddress goes through as Hyper-V prints it: the shared check normalises it (twelve hex digits, no separators). This
+            # module is apart from the one that imports the check, so it must not call the check's functions (contract, Read-back).
             @{  SwitchName = $name; SwitchType = $type
-                DhcpGuard = [string]$n.DhcpGuard; RouterGuard = [string]$n.RouterGuard; MacAddressSpoofing = [string]$n.MacAddressSpoofing
+                MacAddress = [string]$n.MacAddress; DhcpGuard = [string]$n.DhcpGuard; RouterGuard = [string]$n.RouterGuard; MacAddressSpoofing = [string]$n.MacAddressSpoofing
                 PortMirroringMode = [string]$n.PortMirroringMode; VlanMode = [string]$n.VlanSetting.OperationMode; StormLimit = [string]$n.StormLimit
                 LegacyAcls = @(Hyper-V\Get-VMNetworkAdapterAcl -VMNetworkAdapter $n).Count
                 # the other VMs with an adapter on the same switch; the host's own adapters are not VMs
@@ -237,6 +239,14 @@ function New-AapLinHyperVProvider {
     $p.EjectSeed = { param($a) foreach ($d in @(Hyper-V\Get-VMDvdDrive -VM (Get-AapLinHvVm $a.VmId) | Where-Object { $_.Path })) { Hyper-V\Set-VMDvdDrive -VMDvdDrive $d -Path $null } }
     $p.StartVm = { param($a) $vm = Get-AapLinHvVm $a.VmId; if ($vm.State -ne 'Running') { Hyper-V\Start-VM -VM $vm } }
     $p.StopVm = { param($a) Hyper-V\Stop-VM -VM (Get-AapLinHvVm $a.VmId) -TurnOff -Force }
+    # The lifetime cap's deadline record (allocator.md B1) lives in the VM's own Notes; the host boot id (B7) is the boot
+    # counter Windows increments at every boot (no wall-clock change can alter it). The watchdog (P10.7) must read the same.
+    $p.SetVmNotes = { param($a) Hyper-V\Set-VM -VM (Get-AapLinHvVm $a.VmId) -Notes $a.Notes }
+    $p.GetVmNotes = { param($a) [string](Get-AapLinHvVm $a.VmId).Notes }
+    $p.GetBootId = { param($a)
+        $n = Get-ItemPropertyValue -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters' -Name BootId
+        ([uint32]$n).ToString('x8')
+    }
     $p.RemoveVm = { param($a) Hyper-V\Remove-VM -VM (Get-AapLinHvVm $a.VmId) -Force }
     $p.ListVms = { param($a)
         @(Hyper-V\Get-VM -ErrorAction Stop) | ForEach-Object {

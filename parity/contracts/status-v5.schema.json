@@ -45,13 +45,15 @@
     "settings_schemas": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 4,
+      "maxItems": 5,
       "uniqueItems": true,
       "items": {
         "enum": [
           1,
           2,
-          3
+          3,
+          4,
+          5
         ]
       }
     },
@@ -60,7 +62,9 @@
         null,
         1,
         2,
-        3
+        3,
+        4,
+        5
       ]
     },
     "capacity": {
@@ -76,17 +80,21 @@
       ],
       "properties": {
         "max_slots": {
-          "const": 5
+          "enum": [
+            5,
+            17
+          ],
+          "description": "5 (settings schema 1..3 applied: Linux + Windows at most 5); 17 while settings schema 4 is applied (Linux heavy 2 + light 10, Windows 5)."
         },
         "used_slots": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 5
+          "maximum": 17
         },
         "free_slots": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 5
+          "maximum": 17
         },
         "host_reserve_percent": {
           "type": "integer",
@@ -114,7 +122,7 @@
     },
     "slots": {
       "type": "array",
-      "maxItems": 5,
+      "maxItems": 17,
       "items": {
         "$ref": "#/$defs/slot"
       }
@@ -224,7 +232,7 @@
                 "null"
               ],
               "minimum": 0,
-              "maximum": 5
+              "maximum": 12
             },
             "job_cpus": {
               "type": [
@@ -352,13 +360,15 @@
           "enum": [
             "wsl-legacy",
             "hyperv-vm",
+            "windows-host",
             "none"
-          ]
+          ],
+          "description": "windows-host (Windows profile only): the interim runner installed on this PC itself, unisolated (owner accepted 2026-10-20), reported until the hyperv-vm profile is certified."
         },
         "count": {
           "type": "integer",
           "minimum": 0,
-          "maximum": 5
+          "maximum": 12
         },
         "share_percent": {
           "type": [
@@ -421,6 +431,14 @@
           "type": "string",
           "maxLength": 200,
           "pattern": "^[ -~]*$"
+        },
+        "host_runner": {
+          "enum": [
+            "online",
+            "busy",
+            "stopped"
+          ],
+          "description": "Present exactly when backend is windows-host: online (logon task running, listener up, no job), busy (a job runs), stopped (the reason names the missing piece)."
         }
       }
     },
@@ -446,7 +464,7 @@
         "slot": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 5
+          "maximum": 17
         },
         "profile": {
           "enum": [
@@ -525,6 +543,47 @@
           ],
           "minimum": 0,
           "maximum": 4096
+        },
+        "tier": {
+          "enum": [
+            "heavy",
+            "light",
+            null
+          ],
+          "description": "R1 tier. Present on every Linux slot (heavy or light) exactly while settings schema 4 or 5 is applied, null or absent otherwise and on every Windows slot. Optional in the schema so a supervisor before R1 step 3 stays valid."
+        },
+        "vm_lifetime_cap": {
+          "$ref": "#/$defs/vm_lifetime_cap"
+        }
+      }
+    },
+    "vm_lifetime_cap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cap_hours",
+        "started_utc",
+        "deadline_utc",
+        "reason"
+      ],
+      "description": "The slot's hard VM lifetime cap (allocator.md, Hard VM lifetime cap); only a hyperv-vm slot carries it, and a supervisor that predates revision 6 of status-settings.md writes none. started_utc is the reservation's acquired_at, deadline_utc is started_utc plus cap_hours hours (validate.py), reason is null until the cap fires and vm_lifetime_cap from then until the slot is freed (the slot is creating without a VM id, deleting or quarantined). Times, a count of hours and one fixed word: no host name, path or id.",
+      "properties": {
+        "cap_hours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "started_utc": {
+          "$ref": "#/$defs/time"
+        },
+        "deadline_utc": {
+          "$ref": "#/$defs/time"
+        },
+        "reason": {
+          "enum": [
+            null,
+            "vm_lifetime_cap"
+          ]
         }
       }
     },

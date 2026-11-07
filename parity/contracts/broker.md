@@ -14,7 +14,7 @@ marker, not a credential).
   `wsl.exe -d aap-runner -u root --exec /usr/local/sbin/aap-runner-broker`, no further
   arguments. The request is one JSON document on stdin, at most 4096 bytes; the response is one
   JSON document on stdout, at most 20 KiB. Any other output, size or exit code is a refusal.
-  Timeout: 60 s per call.
+  Timeout: 60 s per call; the client accepts 60 to 600 s, never less (the broker's own run limit is 55 s).
 - No socket, port, named pipe or file drop. Guests cannot reach the distro (network rule,
   ARCHITECTURE.md boundary 4).
 - **Access is not controlled by the broker** (security review M1): WSL sessions belong to the
@@ -80,7 +80,10 @@ The broker derives:
   (`DELETE /orgs/{org}/actions/runners/{id}`) and answers `deregistered`; a 404 or no match is
   `already_gone`. Both close the lease and are accepted as the teardown proof's runner part. Its
   `nonce` must be new for that lease. Only the ledger-recorded runner is ever deleted; a request
-  cannot name a different one. `retry` means GitHub failed; the slot stays `deleting`.
+  cannot name a different one. Immediately before the DELETE the broker reads the runner once
+  more: one GitHub reports `busy`, or whose state cannot be read, is not deleted, the lease stays
+  open and the answer is `retry`/`github_error`. `retry` means GitHub failed or the runner is
+  not idle; the slot stays `deleting`.
 - `status_request` is read-only: it looks up the ledger-recorded runner id and reports its GitHub
   `status` (`online`, `offline`) and `busy`, or `absent`; the allocator uses it to decide when a heartbeat-quarantined slot may be destroyed.
 - The ledger never stores the JIT config, a token, a JWT or a hash of them.
@@ -97,7 +100,7 @@ the inbox, status, an image, a log or evidence. A registration token (`POST .../
 
 ## Audit record
 
-One `audit` line per request in `/var/log/aap-runner/broker-audit.jsonl`, root 0600, rotated at
+One `audit` line per request in `/var/lib/aap-runner/broker/broker-audit.jsonl`, root 0600, rotated at
 5 MB with one `.1`. Fields: time, op (`lease`, `release`, `status`, `expire`), lease and
 reservation ids, generation, profile, image generation, outcome, reason, runner id and name. The
 schema forbids any other field, and `validate.py` rejects secret-shaped field names in it.
