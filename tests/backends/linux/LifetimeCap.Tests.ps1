@@ -566,7 +566,7 @@ Describe 'review round: nothing fails open, nothing is masked' {
         (Step-Lin $B $w $rid).Action | Should -Be 'destroyed'
     }
 
-    It 'a failed power-off is recorded honestly: its error kept, no power_off_utc evidence until the VM is observed off' -Tag 'cap-breach' {
+    It 'a power-off that did not take: power_off_utc is its issuance, the intent written at once, the journal detail fixed' -Tag 'cap-breach', 'cap-once' {
         $w = New-LinWorld
         $B = New-LinBackend $w
         $rid = (New-LinReservation $w).reservation_id
@@ -576,15 +576,66 @@ Describe 'review round: nothing fails open, nothing is masked' {
         $s = Step-Lin $B $w $rid
         $s.Code | Should -Be 'cap_breach'
         $s.Detail | Should -BeLike '*Stop-VM timed out*'
-        @(Get-LinJournal $w $rid | Where-Object { $_.result -and $_.result.detail -like 'cap_breach*Stop-VM timed out*' }).Count | Should -Be 1
-        Get-LinCapRecords $w $rid | Should -BeNullOrEmpty -Because 'no power-off succeeded yet'
+        # The durable latch is written as soon as the journal can be: power_off_utc is when the power-off was issued.
+        $cap = @(Get-LinCapRecords $w $rid)
+        $cap.Count | Should -Be 1
+        $cap[0].lifetime_cap.power_off_utc | Should -Be (Format-LinTime $t0.AddHours(6))
+        # The journal says cap_breach, nothing more, so ticks that fail differently never grow it.
+        Set-LinAt $w $t0 ($script:Cap + 5)
+        $B.Provider.StopVm = { param($a) Add-LinCall $w "StopVm $($a.VmId)"; throw 'fake: Stop-VM access denied' }
+        (Step-Lin $B $w $rid).Detail | Should -BeLike '*access denied*'
+        $breach = @(Get-LinJournal $w $rid | Where-Object { $_.result -and $_.result.detail -like 'cap_breach*' })
+        $breach.Count | Should -Be 1
+        $breach[0].result.detail | Should -BeExactly 'cap_breach'
         $B.Provider.StopVm = (New-LinProvider).StopVm
         Set-LinAt $w $t0 ($script:Cap + 30)
         (Step-Lin $B $w $rid).Action | Should -Be 'destroyed'
-        @(Get-LinCapRecords $w $rid)[0].lifetime_cap.power_off_utc | Should -Be (Format-LinTime $t0.AddSeconds($script:Cap + 30))
+        @(Get-LinCapRecords $w $rid).Count | Should -Be 1
         Invoke-LinValidator $w 'backend-lifecycle' @(Get-LinJournalLines $w $rid) | Should -BeNullOrEmpty
     }
 
+    It 'a Stop-VM that throws but takes keeps the cap evidence and tears down' -Tag 'cap-breach' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        $t0 = Start-LinCapJob $w $B $rid
+        $orig = (New-LinProvider).StopVm
+        $B.Provider.StopVm = { param($a) & $orig $a; throw 'fake: Stop-VM timed out (but the VM did go off)' }.GetNewClosure()
+        Set-LinAt $w $t0 $script:Cap
+        $s = Step-Lin $B $w $rid
+        $s.LifetimeCap.power_off_utc | Should -Be (Format-LinTime $t0.AddHours(6))
+        $s.Action | Should -Be 'destroyed'
+        @(Get-LinCapRecords $w $rid).Count | Should -Be 1
+        (Get-LinRes $w $rid).state | Should -Be 'reconciled'
+    }
+
+    It 'a safety-triggered cap whose power-off did not take survives a restart without -ClockSafety; no other VM starts' -Tag 'cap-journal', 'cap-once' {
+        $w = New-LinWorld -Linux 2
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        $t0 = Start-LinCapJob $w $B $rid -Ago 7200
+        Set-LinAt $w $t0 7260
+        Set-LinKnob $w @{ StopVmNoop = $true }
+        $B2 = New-LinBackend $w -CapArgs @{ ClockSafety = 'host_reboot' }
+        (Step-Lin $B2 $w $rid).Code | Should -Be 'cap_breach'
+        @(Get-LinCapRecords $w $rid).Count | Should -Be 1
+        # Restarted in the same boot with its clock record intact: no clock-safety decision, only the journal's latch.
+        $B3 = New-LinBackend $w
+        Set-LinAt $w $t0 7330
+        $n = @(Get-LinCalls $w 'StopVm *').Count
+        $s = Step-Lin $B3 $w $rid
+        $s.Code | Should -Be 'cap_breach'
+        $s.LifetimeCap.trigger | Should -Be 'host_reboot'
+        @(Get-LinCalls $w 'StopVm *').Count | Should -BeGreaterThan $n
+        $rb = (New-LinReservation $w).reservation_id
+        [void](Set-LinStart $w $rb 600)
+        (Step-Lin $B3 $w $rb).Action | Should -Be 'created'
+        $s2 = Step-Lin $B3 $w $rb
+        $s2.Code | Should -Be 'backstop_down'
+        $s2.Detail | Should -BeLike 'local_cap_breach*'
+        @(Get-LinCalls $w 'StartVm *').Count | Should -Be 1
+        @(Get-LinCapRecords $w $rid).Count | Should -Be 1
+    }
     It 'a restart that finds the journal latch and the VM running again powers it off again' -Tag 'cap-journal' {
         $w = New-LinWorld
         $B = New-LinBackend $w
@@ -703,5 +754,40 @@ Describe 'review round: nothing fails open, nothing is masked' {
         [void](Invoke-LinSteps $B2 $w $rid -Max 4)
         @(Get-LinCalls $w 'StartVm *').Count | Should -Be 0
         (Get-LinRes $w $rid).state | Should -Be 'reconciled'
+    }
+}
+Describe 'security re-review hardening' {
+    It 'the watchdog record file: an ACE that is not a plain allow or deny, or a write grant, is untrusted' -Tag 'backstop-file' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $p = Join-Path $w.Fake 'watchdog\lifetime-clock.json'
+        [IO.File]::WriteAllText($p, '{}')
+        (Invoke-LinInModule { param($B, $p) Get-AapLinFileTrustProblem $B $p } @($B, $p)) | Should -BeNullOrEmpty
+        $out = & icacls.exe $p /grant '*S-1-1-0:(W)' 2>&1
+        $LASTEXITCODE | Should -Be 0 -Because "$out"
+        (Invoke-LinInModule { param($B, $p) Get-AapLinFileTrustProblem $B $p } @($B, $p)) | Should -BeLike 'grants S-1-1-0 write*'
+        # An object ACE, as a descriptor the file could carry: refused like the folder check refuses it.
+        $sd = New-Object Security.AccessControl.RawSecurityDescriptor('O:SYD:P(A;;FA;;;SY)(OA;;CC;bf967aba-0de6-11d0-a285-00aa003049e2;;WD)')
+        $why = Invoke-LinInModule { param($B, $p, $sd) Get-AapLinFileTrustProblem $B $p $sd } @($B, $p, $sd)
+        $why | Should -BeLike '*not a plain allow or deny*'
+    }
+
+    It 'the emergency result never throws on a reservation object without state or generation' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $bare = [pscustomobject]@{ reservation_id = 'r-00000000000000ab' }
+        $out = Invoke-LinInModule { param($B, $r) Invoke-AapLinCapEmergency $B $r $null 'fake failure' } @($B, $bare)
+        $out.Code | Should -Be 'enforcement_unavailable'
+        $out.Detail | Should -BeLike '*fake failure*'
+    }
+
+    It 'the pass reports a reservation id it refuses' -Tag 'pass-rid' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $bad = [pscustomobject]@{ reservation_id = 'r-..\x'; profile = 'linux'; backend = 'hyperv-vm' }
+        $warn = $null
+        $ids = @(Invoke-AapLinCapPass -Backend $B -Reservations @($bad) -WarningVariable warn -WarningAction SilentlyContinue)
+        $ids.Count | Should -Be 0
+        @($warn | Where-Object { "$_" -like '*not a reservation id*' }).Count | Should -Be 1
     }
 }

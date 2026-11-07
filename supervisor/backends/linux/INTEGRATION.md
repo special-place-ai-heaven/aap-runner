@@ -61,10 +61,12 @@ requests ([../windows/INTEGRATION.md](../windows/INTEGRATION.md)) apply here too
      trigger and the measured age (or `null`), never six invented hours.
    - **Result**: every step of a capped reservation returns `LifetimeCap` (the `lifetime_cap` evidence object of
      backend-lifecycle.schema.json: `cap_hours`, `started_utc`, `deadline_utc`, `elapsed_s`, `trigger`, `power_off_utc`,
-     `reason` `vm_lifetime_cap`; `$null` while it cannot be formed honestly: no known start, or no power-off call that
-     returned) and `Detail` (one bounded line: the error of a failed power-off, decision, allocator move or journal write,
+     `reason` `vm_lifetime_cap`; `$null` while it cannot be formed: no known start, or no power-off issued yet;
+     `power_off_utc` is the issuance, whether Stop-VM then returned or threw) and `Detail` (one bounded line: the error of a failed power-off, decision, allocator move or journal write,
      never swallowed). `Code` is `vm_lifetime_cap` once torn down, the ordinary teardown code while it waits
-     (`release_pending`, `teardown_failed`, `retry_later`), `cap_breach` while the VM is not observed Off (report `error`,
+     (`release_pending`, `teardown_failed`, `retry_later`), `cap_breach` while the VM is not observed Off
+     (the destroy intent with the evidence, the durable latch, is written anyway, so a restart keeps the breach; the
+     journal's breach detail is the fixed `cap_breach`; report `error`,
      `vm_lifetime_cap: cap_breach:` in `detail`, block new VM starts, keep the slot held), `enforcement_unavailable` when
      the VM list or the decision itself failed (an unreadable start time, a failing clock, bad journal evidence: the VM
      is powered off by id or derived name all the same, and `Invoke-AapLinCapPass` goes on with the other
@@ -81,6 +83,9 @@ requests ([../windows/INTEGRATION.md](../windows/INTEGRATION.md)) apply here too
      starts: no Linux VM boots before P10.7 is installed (B7, B8).
    - **Recovery (L6 d)**: a boot an earlier supervisor journaled and never finished, whose VM is not running now, is
      never started: it is given up (`boot` `failed` `retryable`) and destroyed.
+     Contract clarification requested: allocator.md L6 d reads more broadly (`a VM that is not running at supervisor
+     start is never started by recovery, whatever the journal says`); this backend reads it as a start an earlier
+     supervisor began, so a created VM whose first boot was never attempted still gets it.
    - **Not here**: the durable clock latch and its `enforcement_stage` (`lifetime-clock.json`, P12.3), the E2 stage
      (terminating the VM's `vmwp.exe`; `cap_breach` is reported right after a power-off that did not take), bounded and
      killable Hyper-V calls (L3: every provider call still runs in-process), and the allocator edges below. Safe to defer:
