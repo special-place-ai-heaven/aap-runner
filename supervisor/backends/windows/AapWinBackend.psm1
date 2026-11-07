@@ -54,6 +54,7 @@ $script:BootMinutes = 15                # guest-transport.md: probe until 15 min
 $script:LeaseWindowMinutes = 15         # a lease call the broker never recorded cannot be recorded after this (55 s run cap)
 $script:RetrySeconds = 60               # a pending release is asked again at most this often
 $script:TeardownTries = 3               # ARCHITECTURE.md section 10: three retries over 15 s, then quarantined
+$script:MeasureTries = 3                # clone folder walks per step before 'clone not measurable' (a file can vanish mid-walk)
 $script:TeardownPauseSeconds = 5
 # ponytail: fixed VHDX metadata headroom under scratch_gib; replace with the P02.1 measurement of a full VHDX.
 $script:ScratchHeadroomBytes = 67108864
@@ -1256,7 +1257,11 @@ function Get-AapWinLimitBreach($B, $r, $j) {
     if (-not $vm.Count) { return $null }
     if ($vm[0].State -like 'Paused*') { return 'vm paused' }   # check:vm-paused
     $clone = Join-Path $B.Storage.clone_root.Path ([string]$r.reservation_id)
-    try { $bytes = [double](& $B.Provider.MeasureBytes @{ Path = $clone }) } catch { return 'clone not measurable' }
+    # A walk can meet a file Hyper-V deletes under it (a transient race): walk again, up to MeasureTries; only a folder
+    # that never measures is a broken limit.
+    $bytes = $null
+    for ($try = 1; $null -eq $bytes -and $try -le $script:MeasureTries; $try++) { try { $bytes = [double](& $B.Provider.MeasureBytes @{ Path = $clone }) } catch { $null = $_ } }
+    if ($null -eq $bytes) { return 'clone not measurable' }   # check:clone-measure
     if ($bytes -gt [double]$r.clone_gib * $script:GiB) { return 'clone over cap' }   # check:clone-cap
     $rid = [string]$r.reservation_id
     $now = Get-AapWinNow $B

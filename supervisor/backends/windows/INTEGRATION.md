@@ -187,8 +187,9 @@ host preparation.
 - Whether Hyper-V adds per-VM entries (`S-1-5-83-1-...`) to the ACL of `base.vhdx` or its folder when a VM starts. If it
   does, `Get-AapWinSealedProblem` refuses every later create of that generation (fail closed); decide in the lab whether
   to accept those entries.
-- That the supervisor can enumerate Hyper-V's runtime folders inside a clone folder: a `MeasureBytes` error is a broken
-  limit (fail closed: the VM is destroyed at its first step), so an unreadable runtime folder would end every job.
+- That the supervisor can enumerate Hyper-V's runtime folders inside a clone folder: a `MeasureBytes` error on three
+  walks in a row is a broken limit (fail closed: the VM is destroyed at that step), so an unreadable runtime folder
+  would end every job. One or two errors (a file Hyper-V deleted mid-walk) are walked again in the same step (P10.1).
 - A crash inside `WriteUnattend` leaves `os.avhdx` mounted: the folder delete then fails and the slot ends
   `teardown_failed` (fail closed). P02.1 decides whether destroy should `Dismount-VHD` first and create detect a stale
   mount (a new provider op).

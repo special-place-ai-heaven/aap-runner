@@ -200,7 +200,13 @@ function New-WinProvider {
         if (Get-WinKnob $w 'ListFails' $false) { throw 'fake: Get-VM failed (access denied)' }
         @(Get-WinVms $w | ForEach-Object { @{ Id = $_.Id; Name = $_.Name; State = $(if (Get-WinKnob $w 'Paused' $false) { 'Paused' } else { $_.State }); Cpus = $_.Cpus; MemGib = $_.MemGib } })
     }
-    $p.MeasureBytes = { param($a) if (Get-WinKnob $w 'MeasureFails' $false) { throw 'access denied' }; [double](Get-WinKnob $w 'CloneBytes' $script:GiB) }
+    # 'MeasureVanish': that many walks hit a file Hyper-V deleted under them (a transient race), then they succeed.
+    $p.MeasureBytes = { param($a)
+        if (Get-WinKnob $w 'MeasureFails' $false) { throw 'access denied' }
+        $vanish = [int](Get-WinKnob $w 'MeasureVanish' 0)
+        if ($vanish -gt 0) { Set-WinKnob $w @{ MeasureVanish = $vanish - 1 }; throw (New-Object IO.FileNotFoundException 'fake: a file vanished during the walk') }
+        [double](Get-WinKnob $w 'CloneBytes' $script:GiB)
+    }
     $p
 }
 

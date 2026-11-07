@@ -359,6 +359,28 @@ Describe 'one job, end to end' {
         }
     }
 
+    It 'a file that vanishes during the clone walk is measured again, not taken for a broken limit; one that never measures still ends the VM' -Tag 'clone-measure' {
+        foreach ($case in @(@{ Vanish = 2; Kept = $true }, @{ Vanish = 3; Kept = $false })) {
+            $w = New-WinWorld
+            $B = New-WinBackend $w
+            $r = New-WinReservation $w
+            $rid = $r.reservation_id
+            [void](Invoke-WinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+            [void](Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid))
+            Set-WinKnob $w @{ RunnerBusy = $true; MeasureVanish = $case.Vanish }
+            $s = Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $rid)
+            $fail = @(Get-WinJournal $w $rid | Where-Object { $_.phase -eq 'failed' })
+            if ($case.Kept) {
+                $s.Action | Should -Be 'busy' -Because "$($case.Vanish) vanished walks, then a good one"
+                @(Get-WinVms $w).Count | Should -Be 1
+                $fail.Count | Should -Be 0
+            } else {
+                $s.Action | Should -Be 'destroyed'
+                $fail[0].result.detail | Should -Be 'clone not measurable'
+            }
+        }
+    }
+
     It 'a heartbeat-quarantined clone over its cap or paused is destroyed from the host, with or without a guest channel' -Tag 'clone-cap', 'vm-paused' {
         foreach ($case in @(@{ Knob = @{ CloneBytes = 61 * $script:GiB }; Restart = $false }, @{ Knob = @{ CloneBytes = 61 * $script:GiB }; Restart = $true }, @{ Knob = @{ Paused = $true }; Restart = $true })) {
             $w = New-WinWorld
