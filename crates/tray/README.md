@@ -171,7 +171,7 @@ addendum of the design doc.
   button) or `Waiting for a job` on the second, and on the third the slot's sampled CPU and memory
   against its share, busy or idle: `1.0/8 cores · 5.2/20 GiB` (heavy: the 8 CPU / 20 GiB
   reservation; light: the 4 CPU / 8 GiB cap; untiered: the even share of the pool), `-` for a
-  value docker left out, in the over colour past the share, `no sample` with no sample. A tile shows the status slot of the same number (status-settings.md Tiers: heavy 1..2,
+  value docker left out, in the over colour past the share, `no sample` with no sample. A slot the manager gave up on (`state` `retired`) shows the error symbol and colour, the word `Retired` and `gave up; restarts with the pool` in place of the job row, with no occupancy row; any other unknown state word still shows `Starting`. A tile shows the status slot of the same number (status-settings.md Tiers: heavy 1..2,
   light 3..12 under settings schema 4; before it slot N is `Light N` and the heavy tiles show none).
   A tile no stored count chooses and no runner reports is fully grey and dim (`Not chosen`, or
   `Needs settings schema 4` on the heavy tiles before it). Then one `Windows 1`… placeholder per

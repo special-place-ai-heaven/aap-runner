@@ -117,6 +117,8 @@ pub struct Slot {
     pub started_at: Option<SystemTime>,
     pub cpu_cores: Option<f64>,
     pub mem_gib: Option<f64>,
+    /// The manager gave up on this slot (`retired`); `state` is Error for the colour.
+    pub retired: bool,
 }
 
 impl Slot {
@@ -133,6 +135,20 @@ impl Slot {
 
     pub fn busy(&self) -> bool {
         matches!(self.state, Sym::Running | Sym::Draining)
+    }
+
+    /// The state word on the card.
+    pub fn word(&self) -> &'static str {
+        if self.retired {
+            "Retired"
+        } else {
+            self.state.label()
+        }
+    }
+
+    /// A line under the word, for a state that needs one.
+    pub fn note(&self) -> Option<&'static str> {
+        self.retired.then_some("gave up; restarts with the pool")
     }
 }
 
@@ -310,13 +326,14 @@ struct RawSlot {
     mem_gib: Option<f64>,
 }
 
-/// A slot state word. Anything else shows as Starting: the slot exists, its state says no more.
+/// A slot state word. `retired` (the manager gave up) shows as Error; anything else unknown shows
+/// as Starting: the slot exists, its state says no more.
 fn slot_sym(state: &str) -> Sym {
     match state {
         "idle" => Sym::Idle,
         "running" => Sym::Running,
         "draining" => Sym::Draining,
-        "error" => Sym::Error,
+        "error" | "retired" => Sym::Error,
         _ => Sym::Starting,
     }
 }
@@ -389,6 +406,7 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
             started_at: s.started_at.as_deref().and_then(parse_rfc3339),
             cpu_cores: s.cpu_cores,
             mem_gib: s.mem_gib,
+            retired: s.state.as_deref() == Some("retired"),
         })
         .collect();
     // No (or an empty) slots[]: one card from the top-level fields while the manager runs.
@@ -408,6 +426,7 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
             started_at: None,
             cpu_cores: None,
             mem_gib: None,
+            retired: false,
         }]
     } else {
         Vec::new()
@@ -788,6 +807,28 @@ mod tests {
         for (state, want) in cases {
             assert_eq!(status(&json(state, t), now), want, "{state}");
         }
+    }
+
+    #[test]
+    fn a_retired_slot_is_retired_and_other_unknown_words_still_start() {
+        let now = at("2026-10-12T08:01:00Z");
+        let json = r#"{"schema":4,"state":"running","job":"j","updated":"2026-10-12T08:00:00Z",
+            "slots":[{"slot":1,"state":"retired"},{"slot":2,"state":"bogus"},{"slot":3,"state":"idle"}]}"#;
+        let slots = parse_status(json, now).slots;
+        assert!(slots[0].retired && !slots[1].retired && !slots[2].retired);
+        assert_eq!((slots[0].word(), slots[0].state), ("Retired", Sym::Error));
+        assert!(
+            slots[0]
+                .note()
+                .is_some_and(|n| n.contains("restarts with the pool"))
+        );
+        assert!(!slots[0].busy());
+        assert_eq!(
+            (slots[1].word(), slots[1].state),
+            ("Starting", Sym::Starting)
+        );
+        assert_eq!(slots[1].note(), None);
+        assert_eq!(slots[2].word(), "Idle");
     }
 
     #[test]

@@ -1243,6 +1243,12 @@ fn paint_sym(p: &egui::Painter, rect: Rect, sym: Sym, color: Color32, hole: Colo
     }
 }
 
+/// Whether a click on a card's symbol opens the error panel: an Error slot while a problem is
+/// reported, but not a retired one (that is the manager's own state, not a fault to repair).
+fn opens_problem(slot: &Slot, problem: bool) -> bool {
+    slot.state == Sym::Error && !slot.retired && problem
+}
+
 /// A symbol at `size`; `clickable` lets a click open the error panel (not a Tab stop).
 fn sym_widget(
     ui: &mut egui::Ui,
@@ -1603,7 +1609,7 @@ impl Dash {
                         ui.label(RichText::new(word).color(p.muted));
                         return;
                     };
-                    let error = slot.state == Sym::Error && self.problem.is_some();
+                    let error = opens_problem(slot, self.problem.is_some());
                     let r = sym_widget(
                         ui,
                         16.0,
@@ -1611,12 +1617,12 @@ impl Dash {
                         &p,
                         fill,
                         error,
-                        format!("{name}, {}", slot.state.label()),
+                        format!("{name}, {}", slot.word()),
                     );
                     if r.clicked() && error {
                         self.show_panel();
                     }
-                    ui.label(RichText::new(slot.state.label()).color(p.state(slot.state)));
+                    ui.label(RichText::new(slot.word()).color(p.state(slot.state)));
                     if let Some(start) = slot.started_at.filter(|_| slot.busy()) {
                         let d = SystemTime::now().duration_since(start).unwrap_or_default();
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1625,6 +1631,12 @@ impl Dash {
                     }
                 });
                 match slot {
+                    Some(slot) if slot.note().is_some() => {
+                        let note = slot.note().unwrap_or_default();
+                        ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
+                            ui.label(RichText::new(note).color(p.state(slot.state)).small());
+                        });
+                    }
                     Some(slot) if slot.busy() || !slot.job.is_empty() => self.title_row(ui, slot),
                     _ => {
                         ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
@@ -1632,8 +1644,9 @@ impl Dash {
                         });
                     }
                 }
-                let occupancy =
-                    slot.map(|s| occupancy_line(s.cpu_cores, s.mem_gib, share, sampled));
+                let occupancy = slot
+                    .filter(|s| !s.retired)
+                    .map(|s| occupancy_line(s.cpu_cores, s.mem_gib, share, sampled));
                 ui.allocate_ui_with_layout(
                     vec2(ui.available_width(), CAPTION_H),
                     Layout::left_to_right(Align::Center),
@@ -3448,6 +3461,75 @@ mod tests {
         assert_eq!(tile_share(tiered[0], true, even), (Some(8.0), Some(20.0)));
         assert_eq!(tile_share(tiered[2], true, even), (Some(4.0), Some(8.0)));
         assert_eq!(tile_share(tiered[2], false, even), even);
+    }
+
+    #[test]
+    fn a_retired_slot_reads_retired_on_a_heavy_and_a_light_card() {
+        let now = SystemTime::now();
+        let json = format!(
+            r#"{{"schema":4,"state":"running","job":"j","updated":"{}","sampled_at":"{}",
+            "slots":[{{"slot":1,"state":"retired","cpu_cores":1,"mem_gib":2}},
+                     {{"slot":3,"state":"retired","cpu_cores":1,"mem_gib":2}},
+                     {{"slot":4,"state":"bogus","cpu_cores":1,"mem_gib":2}},
+                     {{"slot":5,"state":"error"}}]}}"#,
+            chrono_free_at(now),
+            chrono_free_at(now)
+        );
+        let mut d = Dash::new(state::temp_base("dash-retired-tile"));
+        d.snap = state::parse_status(&json, now);
+        assert!(d.sampled());
+        let slots = d.snap.slots.clone();
+        assert!(opens_problem(&slots[3], true) && !opens_problem(&slots[3], false));
+        assert!(
+            !opens_problem(&slots[0], true),
+            "a retired slot opens no panel"
+        );
+        let tiles = linux_tiles(8, 2, true);
+        for (tile, slot, name) in [(0, 0, "Heavy 1"), (2, 1, "Light 1"), (3, 2, "Light 2")] {
+            let context = egui::Context::default();
+            context.set_fonts(fonts());
+            context.all_styles_mut(style);
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(480.0, 400.0))),
+                ..Default::default()
+            };
+            let mut output = context.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    d.tile(
+                        ui,
+                        tiles[tile],
+                        Some(&slots[slot]),
+                        (Some(4.0), Some(8.0)),
+                        220.0,
+                    );
+                });
+            });
+            let texts: Vec<String> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+            output.textures_delta.clear();
+            let has = |w: &str| texts.iter().any(|t| t.contains(w));
+            assert!(has(name), "{name}: {texts:?}");
+            if slot < 2 {
+                assert!(has("Retired") && !has("Starting"), "{name}: {texts:?}");
+                assert!(has("restarts with the pool"), "{name}: {texts:?}");
+                assert!(
+                    !has("cores") && !has("no sample"),
+                    "no occupancy row: {texts:?}"
+                );
+            } else {
+                assert!(has("Starting") && !has("Retired"), "{name}: {texts:?}");
+                assert!(
+                    has("cores"),
+                    "a sampled non-retired tile has one: {texts:?}"
+                );
+            }
+        }
     }
 
     #[test]
