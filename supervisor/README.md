@@ -21,7 +21,17 @@ it.** The only reason is that WSL sessions belong to the logon session
   A failed On sequence (mount task) has its own backoff with the same steps.
   A new `retry` in `inbox\state.json` resets both and tries again at once.
   Each tick also sets the `vmmemWSL` process to BelowNormal priority, so games
-  and other interactive apps win CPU contention against CI jobs.
+  and other interactive apps win CPU contention against CI jobs. While the
+  manager unit is active but its `status.json` `updated` is more than 3 health
+  ticks (180 s) old, the status is `starting` with detail `manager status stale`.
+- **Failed drain steps:** a non-zero `--drain` or `--undrain` is logged. A
+  pause whose drain fails or whose wait times out is not `paused`: the status
+  says why and the next cycle pauses again. Resume starts the manager only
+  after `--undrain` succeeded. A limits change whose drain times out or whose
+  undrain fails puts the previous `limits.conf` back, undrains and tries again
+  next cycle. A failed `wsl --terminate` is checked with
+  `wsl --list --running`; while the distro may still run the status is
+  `error` and Off tries again next cycle.
 - **Off:** runs `aap-runner-manager --drain`, waits up to 6 h for the manager
   to exit after its job, then `wsl.exe --terminate aap-runner`. Flipping back to
   on while draining undrains instead. A job still running after the 6 h is
