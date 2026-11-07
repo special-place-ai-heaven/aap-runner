@@ -794,7 +794,7 @@ New NOT_STARTED items (sections above; tokens per WORKTREES.md):
 | P12.3 | suite | supervisor and broker Pester suites on both PowerShell hosts |
 | P09.1 | suite | tests/capacity Pester plus the contract validator and the new Python test |
 
-The silent-failure audit's remaining findings are split by part so the owned paths stay disjoint: P16.1 is the distro (`evidence.sh`, `manager.sh`, `worker-auth.sh`), P12.3 the supervisor and the broker. P09.1 does not block P10.6 and P11.3.
+The silent-failure audit's remaining findings are split by part so P16.1 and P12.3 do not overlap each other: P16.1 is the distro (`evidence.sh`, `manager.sh`, `worker-auth.sh`), P12.3 the supervisor and the broker. P09.1 does not block P10.6 and P11.3.
 
 Ready queue (NOT_STARTED items whose prerequisites are all COMPLETE; the barrier is open): P02.1 (lab gate D2 and the owner), P02.3 (owner Q3), P10.6 and P11.3 (the contract revision merged as #126), P21, and the new R1.5, P19.1, P16.1, P12.3 and P09.1. Off the queue since the previous section: P25.1 (COMPLETE). The other 12 NOT_STARTED items wait on unfinished prerequisites: P12.1, P10.4 and P10.5 on P10.0; P19 on P16; P20 on P19; P22 on P16, P20 and P21; P23 on P22; P24 on P22 and P23; P25 on P21 and P22; P26 on P24 and P25; P27 on P26; P28 on P27.
 
@@ -803,5 +803,5 @@ Remaining blockers:
 - P16 is R1 step 5 (the allocator adopts the Linux pool as its first backend) and is IN_PROGRESS: broker support and coordinator-controlled legacy reservations remain. P19 waits on P16, P22 waits on P16 (and on P20 and P21), and the chain P20 (via P19), P23, P24, P25, P26, P27 and P28 waits behind them.
 - P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
 - P10.6 and P11.3 are ready (their contract revision is merged as #126); P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
-- Overlapping ownership is serialized by the claim gate, one claim at a time: R1.5 with P19 and P20 (`crates/tray/**`), P19.1 with P19 (`installer/**`), P16.1 with P16 (`distro/manager.sh`, `tests/manager_*.sh`), P09.1 with P02.3 and P02.5 (`parity/contracts/**`).
+- Overlapping ownership is serialized by the claim gate, one claim at a time: R1.5 with P19 and P20 (`crates/tray/**`), P19.1 with P19 (`installer/**`), P16.1 with P16 (`distro/manager.sh`, `tests/manager_*.sh`), P09.1 with P02.3 and P02.5 (`parity/contracts/**`), P12.3 with P19 (`supervisor/README.md`), P16.1 with P19 (`distro/staging.sha256`, `distro/README.md`).
 - Pending, all the owner's call: an image rollout (the distro image with the P22.1 `aap-zccache.sh` was not rebuilt), the local branch `parity/p09-vm-hard-cap-contract`, and owner decisions Q7 and Q8.
