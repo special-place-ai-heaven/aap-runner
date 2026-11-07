@@ -66,6 +66,20 @@ supervisor, the installer, the guest image, the network or CI yet. How the backe
    tier root that is not a reservation folder. When P11 lands, use one inventory for both profiles: union the folder and
    journal lists, keep one VM list. `destroy` and `replay` actions need no call of their own: the next
    `Invoke-AapWinStep` of that reservation carries them out.
+
+   Right after it, at the same cadence: `Remove-AapWinOrphanBuildVm -Backend $B` (P12.2). The image builder
+   (`images\windows`) holds `<staging>\build\<build id>.lock` (staging_root, else `<base_root>\staging`; the lock file is
+   never deleted) from before it creates its VM until it exits, and names the VM `aap-wbuild-<first 8 hex of SHA-256(build
+   id)>`. A crashed builder's handle goes but its `.lock` file stays, so a VM so named whose lock file exists and opens
+   exclusively is a dead builder's: the function stops it, removes it by id and detaches its network (`Detach` with
+   `Profile = 'windows'`), holding the lock meanwhile so a builder starting at that moment gets `AAP_BuildBusy`. It
+   returns `Name`, `VmId`, `Action` (`removed`, `held`, `unmatched`, `failed`) and `Detail` per VM. A `held` VM has a running
+   builder or an unreadable lock: left alone, not logged. An `unmatched` VM has no lock file carrying its tag (a staging
+   path that differs from the builder's, a wiped build folder, an absent build folder): left alone, and the supervisor logs
+   a `WARN` for it each reconcile; `removed` and `failed` are logged too.
+   Other VMs are never touched, `aap-wverify-*` included; a listing error throws. The build folder, disks and `state.json` stay for the next run of that build id, which cleans them under the
+   lock and detaches again by the id in `state.json`. A VM already removed whose `Detach` failed is not listed again;
+   that rerun is what retries it.
 7. **Wall clock.** The backend never destroys for the wall clock. The allocator's reconcile `Flags` name the slots past
    `lease_wall_clock_hours`; show them.
 8. **Pause, off, resize**: move `ready`/`busy` to `draining` with `Set-AapSlotState`; the backend stops idle runners and

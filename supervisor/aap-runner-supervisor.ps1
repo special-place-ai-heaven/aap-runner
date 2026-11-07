@@ -1697,6 +1697,21 @@ function Invoke-AapCapReconcile($s) {
         $AapRt.CapFlags = @($r.Flags)
         if ($r.Status -ceq 'ok') { Write-AapLog "reconcile: $(Format-AapText $r.Detail 600)" }
     }
+    Invoke-AapBuildVmReconcile
+}
+
+# P12.2: the Windows image builder's VMs (aap-wbuild-*) whose build lock nobody holds belong to a dead builder; the
+# backend stops, removes and detaches them. A builder that is running holds its lock: its VM is left and not logged.
+function Invoke-AapBuildVmReconcile {
+    $vm = $AapRt.Vm.windows
+    if (-not $vm -or -not (Get-Command "Remove-Aap$($vm.Kind)OrphanBuildVm" -ErrorAction SilentlyContinue)) { return }
+    try {
+        foreach ($b in @(& "Remove-Aap$($vm.Kind)OrphanBuildVm" -Backend $vm.B)) {
+            if ($b.Action -ceq 'removed') { Write-AapLog "orphan build VM $($b.Name) removed" }
+            elseif ($b.Action -ceq 'unmatched') { Write-AapLog "WARN orphan build VM $($b.Name) left alone: $(Format-AapText $b.Detail 300)" }
+            elseif ($b.Action -ceq 'failed') { Write-AapLog "WARN orphan build VM $($b.Name) not removed: $(Format-AapText $b.Detail 300)" }
+        }
+    } catch { Write-AapLog "WARN orphan build VM reconcile failed: $(Format-AapText $_.Exception.Message 300)" }
 }
 
 # At the first tick of an On session: create the allocator state once (never
