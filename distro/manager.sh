@@ -89,6 +89,14 @@ DEREG_NAMES=()
 # systemd restarts the whole pool.
 SLOT_MAX_FAILS=5
 SLOT_FAST_SECONDS=120
+# A slot whose runner fails before it registers (network or container create,
+# the token mint, config.sh) this many times in a row exits with
+# SLOT_GAVE_UP_EXIT, which run_pool counts as a fast death however long the
+# attempts took. Between attempts it waits 5, 10, 20, then 40 s.
+SLOT_PREJOB_MAX_FAILS=5
+SLOT_GAVE_UP_EXIT=75
+# Where the last run_one stopped: the failing stage, or job once a runner listened.
+RUN_ONE_STAGE=""
 # Compile cache: zccache 1.15.6, installed in the image (guests/cache). Each job
 # has its own private root inside its container, and the container filesystem
 # is on the work disk. Shared roots stay off until the lab proof
@@ -787,8 +795,11 @@ arm_wall_clock() {
   setsid bash -c '
     sleep "$1"
     echo "wall clock ${1}s elapsed; stopping $2" >&2
-    docker stop -t 20 "$2" || true
-    docker rm -f "$2" || true
+    docker stop -t 20 "$2" || echo "warning: docker stop of $2 failed" >&2
+    if ! docker rm -f "$2"; then
+      echo "warning: docker rm -f of $2 failed; killing it" >&2
+      docker kill "$2" || echo "warning: docker kill of $2 failed; the job may outlive its wall clock" >&2
+    fi
   ' _ "${seconds}" "${name}" >/dev/null &
   echo $!
 }
@@ -1171,8 +1182,8 @@ deregister_runners() {
 # remove_job_containers prunes at startup and stop, when no slot is running.
 cleanup_job() {
   local name="$1" net="$2"
-  docker rm -f -v "${name}" || true
-  docker network rm "${net}" || true
+  docker rm -f -v "${name}" || echo "warning: could not remove job container ${name}" >&2
+  docker network rm "${net}" || echo "warning: could not remove job network ${net}" >&2
 }
 
 # A marker is named after the cleaner's pid. One whose process is gone (a
@@ -1301,6 +1312,7 @@ run_one() {
   name=$(job_name "${slot}")
   net="${name}"
   # set -e does not apply inside this function: the loop calls it from `if`.
+  RUN_ONE_STAGE="job network create"
   if ! docker network create --label aap-crrr-job=1 "${net}"; then
     return 1
   fi
@@ -1354,6 +1366,7 @@ run_one() {
   # --init adds docker-init, which is not under /mnt.
   # assert_no_mnt_mounts rejects a source under /mnt even if the daemon adds
   # one. /mnt/wsl is the shared docker-desktop tmpfs.
+  RUN_ONE_STAGE="container create"
   if ! docker create \
     --runtime=sysbox-runc \
     --init \
@@ -1372,9 +1385,10 @@ run_one() {
     --env "AAP_DISK_FLOOR_GB=${AAP_DISK_FLOOR_GB}" \
     --env "AAP_ZCCACHE_BUDGET_BYTES=$((ZCCACHE_BUDGET_MB / AAP_RUNNER_COUNT * 1024 * 1024))" \
     "${AAP_RUNNER_IMAGE}"; then
-    docker network rm "${net}" || true
+    docker network rm "${net}" || echo "warning: could not remove job network ${net}" >&2
     return 1
   fi
+  RUN_ONE_STAGE="mount check"
   if ! assert_no_mnt_mounts "${name}"; then
     cleanup_job "${name}" "${net}"
     return 1
@@ -1385,11 +1399,13 @@ run_one() {
     cleanup_job "${name}" "${net}"
     return 0
   fi
+  RUN_ONE_STAGE="registration token mint"
   if ! token="$(mint_registration_token)"; then
     cleanup_job "${name}" "${net}"
     return 1
   fi
   seconds=$((AAP_JOB_TIMEOUT_MINUTES * 60))
+  RUN_ONE_STAGE="wall clock arm"
   if ! killer=$(arm_wall_clock "${seconds}" "${name}") || ! kill -0 "${killer}" 2>/dev/null; then
     token=""
     unset token
@@ -1397,6 +1413,7 @@ run_one() {
     return 1
   fi
   set_slot_state "${slot}" starting "${name}"
+  RUN_ONE_STAGE="runner registration"
   # docker start's stderr is also kept in errf; the subshell waits for tee, so
   # errf is complete when the pipeline returns. One retry, only for the slice
   # start race: runc found the new scope's io files missing and nothing ran.
@@ -1421,6 +1438,8 @@ run_one() {
   token=""
   unset token
   disarm_wall_clock "${killer}"
+  # Still starting: the runner never listened (config.sh failed, or it died).
+  [[ "$(slot_state "${slot}")" == starting ]] || RUN_ONE_STAGE=job
   # A runner that ended without a job (the wall clock, or a listener that
   # exited) is still registered. GitHub removes it only after a job.
   runner=""
@@ -2011,16 +2030,22 @@ self_check() {
 # Remove it, and its network (named after the container), before the slot
 # restarts or retires.
 remove_slot_containers() {
-  local id name
+  local ids id name
+  if ! ids=$(docker ps -aq --filter label=aap-crrr-job=1 --filter "label=aap-crrr-slot=$1"); then
+    echo "warning: slot $1: could not list its job containers; one left behind keeps its reservation" >&2
+    return 0
+  fi
   while IFS= read -r id; do
     [[ -n "${id}" ]] || continue
     name=$(docker inspect --format '{{.Name}}' "${id}" 2>/dev/null || true)
     name=${name#/}
-    docker rm -f -v "${id}" >/dev/null || true
-    if [[ -n "${name}" ]]; then
-      docker network rm "${name}" >/dev/null 2>&1 || true
+    if ! docker rm -f -v "${id}" >/dev/null; then
+      echo "warning: slot $1: could not remove job container ${name:-${id}}" >&2
     fi
-  done < <(docker ps -aq --filter label=aap-crrr-job=1 --filter "label=aap-crrr-slot=$1")
+    if [[ -n "${name}" ]] && ! docker network rm "${name}" >/dev/null; then
+      echo "warning: slot $1: could not remove job network ${name}" >&2
+    fi
+  done <<< "${ids}"
 }
 
 # The old sccache tree the manager kept on the work disk before zccache. Nothing
@@ -2043,10 +2068,12 @@ remove_job_containers() {
 }
 
 # One slot runs one job at a time, forever. A job that exits non-zero is the
-# normal path: the slot logs it and takes the next job. The slot drops the
-# parent's traps so only the parent cleans up the pool.
+# normal path: the slot logs it and takes the next job. A failure before the
+# runner registers backs off and, after SLOT_PREJOB_MAX_FAILS in a row, ends
+# the slot so run_pool restarts or retires it. The slot drops the parent's
+# traps so only the parent cleans up the pool.
 slot_loop() {
-  local slot="$1"
+  local slot="$1" fails=0
   trap - EXIT TERM INT
   set_slot_state "${slot}" starting
   while true; do
@@ -2060,12 +2087,33 @@ slot_loop() {
       sleep 60
       continue
     fi
-    if ! run_one "${slot}"; then
+    if run_one "${slot}"; then
+      fails=0
+    elif [[ "${RUN_ONE_STAGE}" == job ]]; then
+      fails=0
       echo "slot ${slot}: runner container exited non-zero; workspace was removed with the container" >&2
       sleep 5
+    else
+      fails=$((fails + 1))
+      echo "slot ${slot}: ${RUN_ONE_STAGE} failed before a runner registered (${fails} in a row)" >&2
+      if ((fails >= SLOT_PREJOB_MAX_FAILS)); then
+        echo "slot ${slot}: giving up after ${fails} failures in a row" >&2
+        exit "${SLOT_GAVE_UP_EXIT}"
+      fi
+      sleep "$(prejob_backoff_delay "${fails}")"
     fi
     clean_after_job
   done
+}
+
+# Seconds to wait after $1 pre-job failures in a row: 5 s, doubling. The
+# 300 s cap only matters if SLOT_PREJOB_MAX_FAILS is raised above 7.
+prejob_backoff_delay() {
+  local delay=5 i
+  for ((i = 1; i < $1 && delay < 300; i++)); do
+    delay=$((delay * 2))
+  done
+  printf '%s\n' "$((delay > 300 ? 300 : delay))"
 }
 
 # Seconds to wait before restarting a slot that has died $1 times in a row.
@@ -2237,7 +2285,7 @@ run_pool() {
       continue
     fi
     now=$(now_s)
-    if [[ $((now - SLOT_STARTED[slot])) -lt "${SLOT_FAST_SECONDS}" ]]; then
+    if [[ "${rc}" -eq "${SLOT_GAVE_UP_EXIT}" || $((now - SLOT_STARTED[slot])) -lt "${SLOT_FAST_SECONDS}" ]]; then
       SLOT_FAILS[slot]=$((SLOT_FAILS[slot] + 1))
     else
       SLOT_FAILS[slot]=1
