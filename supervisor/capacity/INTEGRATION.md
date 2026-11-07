@@ -57,14 +57,26 @@ tray yet.
 - The crash tests use a fault hook, `Invoke-AapFault`. It does nothing unless the module-private
   variable `$script:Fault` names the point. No parameter, environment variable or file sets it;
   only code running inside the module's scope can. It stays as it is.
+- Minimum guest size per image generation (P22.2). The module records, per VM image family, the
+  smallest guest that can boot and run a job: `win25-vs2026-x64` 2 CPUs and 4 GiB, `ubuntu-24.04-x64`
+  2 CPUs and 2 GiB (guest `mem_gib`, VM overhead not counted). A VM `Request-AapReservation` whose
+  guest is smaller, by default share or by explicit `-Cpus`/`-MemGib`, is refused with `minimum`
+  before any reservation exists, so no VM is created and left unbootable; on an 8 CPU / 16 GiB host
+  that is every Windows runner of a five-runner split (about 2 GiB each). This is an admission
+  rule only: `allocator.json` stays schema 2, the minimums are not stored in it, and a reservation
+  made earlier is not re-checked. The minimums appear in the `Request-AapReservation` result, in
+  the `allocator.log` line of the reservation (`min_cpus=... min_mem=...`), in
+  `Get-AapAllocatorState` per profile and from `Get-AapGenerationMinimum`. A VM generation with no
+  recorded minimum is refused, never admitted unchecked. A legacy WSL generation has none.
 
 | Function | Use |
 |---|---|
 | `Initialize-AapAllocator -HostInfo @{cpu_cores; mem_gib; volumes = @(@{volume_guid; tiers; available_gib; floor_gib; held_gib}); io_mbps; control_distro_mem_gib} -Linux -Windows [-ShareMode -LinuxShare -WindowsShare -HostReservePercent -LinuxBackend]` | Creates the folder if missing and writes revision 1 once; never overwrites an existing state |
-| `Get-AapAllocatorState` | The state plus `UsedSlots`, `FreeSlots`, `PoolCpus`, `PoolMemGib`, `UsedCpus`, `UsedMemGib`, `MeasurementClamped`, and per profile `Count`, `Admitted`, `Live`, `EachCpus`, `EachMemGib`, `CapCpus`, `CapMemGib` |
+| `Get-AapAllocatorState` | The state plus `UsedSlots`, `FreeSlots`, `PoolCpus`, `PoolMemGib`, `UsedCpus`, `UsedMemGib`, `MeasurementClamped`, and per profile `Count`, `Admitted`, `Live`, `MinCpus`, `MinMemGib` (the active VM generation's recorded minimum guest size, `$null` for a legacy profile or no generation), `EachCpus`, `EachMemGib`, `CapCpus`, `CapMemGib` |
 | `Set-AapProfileCounts -Linux -Windows [-ShareMode -LinuxShare -WindowsShare -HostReservePercent -LinuxBackend -LinuxGeneration -WindowsGeneration]` | The two live controls and the shares; returns `Drained` and `Cancelled` |
 | `Set-AapHostMeasurement -HostInfo` | A new host measurement. One the live reservations no longer fit is stored clamped to them and refused (`pool_over_live`, with `Clamped` and `Host`) |
-| `Request-AapReservation -Profile linux\|windows [-Cpus -MemGib -MemOverheadMib -CloneGib -ScratchGib -IoMbps -ImageGeneration]` | Admission. Returns `Reservation`, `VmName`, `RunnerName` and `IdempotencyKey` |
+| `Request-AapReservation -Profile linux\|windows [-Cpus -MemGib -MemOverheadMib -CloneGib -ScratchGib -IoMbps -MinCpus -MinMemGib -ImageGeneration]` | Admission. Returns `Reservation`, `VmName`, `RunnerName`, `IdempotencyKey` and, for a VM, the `MinCpus` and `MinMemGib` it was checked against. `-MinCpus` and `-MinMemGib` can only raise the generation's recorded minimum |
+| `Get-AapGenerationMinimum -ImageGeneration` | The recorded minimum guest size (`MinCpus`, `MinMemGib`) of an image generation's family, or `$null` (legacy generation, unknown family). P22 and P24 copy these into their certificates |
 | `Register-AapLegacySlots -ManagerStatus <status.json object> -ManagerVersion` or `-ManagerStopped` | Adopts the legacy pool, once |
 | `Get-AapLegacyLimits [-JobCpus -JobMemoryGib]` | What `limits.conf` must say, and the size of the next legacy grant |
 | `Update-AapHeartbeat -ReservationId -LeaseGeneration [-JobRunning]` | VM heartbeat |
@@ -94,6 +106,7 @@ tray yet.
 | refused | `io` | Over the IO budget, or IO reserved while host IO is not measured |
 | refused | `io_unmeasured` | A VM admission while `host.io_mbps` is 0 |
 | refused | `legacy_not_adopted` | Any admission before `Register-AapLegacySlots` succeeded |
+| refused | `minimum` | A VM guest smaller than its image generation can boot: fewer CPUs or less guest memory (`mem_gib`, VM overhead not counted) than the generation's minimum, or a generation with no recorded minimum. Refused before the reservation exists, so nothing boots. `Detail` states the minimum and the size requested |
 | refused | `generation` | A VM request not on the profile's active generation |
 | refused | `unresolved_unknown` | An unknown VM or folder has no slot yet |
 | refused | `resize_waits` | A heartbeat quarantine, or a VM still creating without a vm id, would have to leave admission. Retry next tick |

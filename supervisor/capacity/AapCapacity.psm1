@@ -63,6 +63,13 @@ $script:Known = @('$schema', '$id', '$defs', '$comment', 'title', 'description',
 # ponytail: validate.py knows these too; allocator.schema.json uses none of them, so a schema
 # revision that needs one fails closed here until it is implemented.
 $script:NotImplemented = @('oneOf', 'allOf', 'not', 'if', 'then', 'else')
+# Smallest guest (CPUs, GiB of guest memory without VM overhead) each VM image family can boot and run
+# a job in (P22.2). Keyed by the family in image_generation; a legacy WSL generation has none. A VM
+# admission whose guest would be smaller is refused before boot; a caller may raise a minimum, never lower it.
+$script:GenerationMinimums = @{
+    'win25-vs2026-x64' = @{ MinCpus = 2; MinMemGib = 4 }
+    'ubuntu-24.04-x64' = @{ MinCpus = 2; MinMemGib = 2 }
+}
 $script:Fault = $null            # test hook: a fault point name; the process kills itself there
 $script:Seen = @{}               # highest revision applied per folder, in this process
 $script:Warned = @{}
@@ -926,6 +933,10 @@ function Test-AapAdmission($Doc, [hashtable]$Spec) {
     $admitted = @($live | Where-Object { $_.profile -ceq $name -and (Test-AapAdmitted $_) })
     if ($admitted.Count -ge [long]$Doc.profiles.$name.count) { return @('count', "$name has $($admitted.Count) of $($Doc.profiles.$name.count) runners admitted") }
     if ($live.Count -ge 5) { return @('ceiling', "all 5 runner slots are held ($(@($live | ForEach-Object { "$($_.slot):$($_.state)" }) -join ', '))") }
+    if ($Spec.Backend -ceq 'hyperv-vm') {
+        if ($null -eq $Spec.MinCpus) { return @('minimum', "no minimum guest size is recorded for image generation $($Spec.Generation), so no VM is admitted") }
+        if ([long]$Spec.Cpus -lt $Spec.MinCpus -or [long]$Spec.MemGib -lt $Spec.MinMemGib) { return @('minimum', "$($Spec.Generation) needs a guest of at least $($Spec.MinCpus) CPUs and $($Spec.MinMemGib) GiB; this request gives $($Spec.Cpus) CPUs and $($Spec.MemGib) GiB") }
+    }
     $caps = Get-AapCaps $Doc
     $c = $caps[$name]
     $mem = [long]$Spec.MemGib + [long][Math]::Ceiling([double]$Spec.OverheadMib / 1024)
@@ -1010,6 +1021,17 @@ function Get-AapVmName {
     $letter = 'l'
     if ($Profile -ceq 'windows') { $letter = 'w' }
     "aap-$letter-$Slot-$LeaseGeneration-$($ReservationId.Substring(2, 8))"
+}
+
+# The recorded minimum guest size of an image generation (family before the slash), or $null when none
+# is recorded (a legacy generation, an unknown family).
+function Get-AapGenerationMinimum {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$ImageGeneration)
+    $family = ([string]$ImageGeneration).Split('/')[0]
+    if (-not $script:GenerationMinimums.ContainsKey($family)) { return $null }
+    $m = $script:GenerationMinimums[$family]
+    [pscustomobject][ordered]@{ ImageGeneration = $ImageGeneration; MinCpus = [long]$m.MinCpus; MinMemGib = [long]$m.MinMemGib }
 }
 
 function Test-AapAllocatorState {
@@ -1104,8 +1126,13 @@ function Get-AapAllocatorState {
     $profiles = [ordered]@{}
     foreach ($name in @('linux', 'windows')) {
         $mine = @($live | Where-Object { $_.profile -ceq $name })
+        $minCpus = $null; $minMem = $null
+        $min = $null
+        if ($doc.profiles.$name.backend -ceq 'hyperv-vm') { $min = Get-AapGenerationMinimum $doc.profiles.$name.active_generation }
+        if ($null -ne $min) { $minCpus = $min.MinCpus; $minMem = $min.MinMemGib }
         $profiles[$name] = [pscustomobject][ordered]@{
             Count = [long]$doc.profiles.$name.count; Admitted = @($mine | Where-Object { Test-AapAdmitted $_ }).Count; Live = $mine.Count
+            MinCpus = $minCpus; MinMemGib = $minMem
             EachCpus = $caps[$name].EachCpus; EachMemGib = $caps[$name].EachMemGib; CapCpus = $caps[$name].CapCpus; CapMemGib = $caps[$name].CapMemGib
         }
     }
@@ -1319,12 +1346,14 @@ function Set-AapProfileCounts {
 # any broker lease; returns the reservation and the derived VM and runner name. Sizes default to
 # the profile's per-runner share (memory minus the VM overhead). VM reservations take their
 # measured budget explicitly: -MemOverheadMib, -CloneGib (clone_gib_max, at least 1), -ScratchGib
-# (scratch_gib_max) and -IoMbps.
+# (scratch_gib_max) and -IoMbps. A VM guest must also be at least its image generation's minimum
+# (Get-AapGenerationMinimum; -MinCpus/-MinMemGib may only raise it), else 'minimum' before any boot.
 function Request-AapReservation {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root,
         [Parameter(Mandatory)][ValidateSet('linux', 'windows', IgnoreCase = $false)][string]$Profile,
         $Cpus = $null, $MemGib = $null, $MemOverheadMib = $null, $CloneGib = $null, $ScratchGib = $null, $IoMbps = $null,
+        $MinCpus = $null, $MinMemGib = $null,
         [string]$ImageGeneration = '',
         [int]$LockTimeoutSeconds = 30, [switch]$RelaxedTrustForTests)
     Invoke-AapLocked $Root ([bool]$RelaxedTrustForTests) $LockTimeoutSeconds {
@@ -1334,7 +1363,7 @@ function Request-AapReservation {
         if ($u.Items.Count) { return (New-AapResult 'refused' 'unresolved_unknown' "unknown VMs or folders wait for resolution: $((@($u.Items) | ForEach-Object { Get-AapField $_ 'name' }) -join ', ')") }
         if (-not $doc.legacy_adopted) { return (New-AapResult 'refused' 'legacy_not_adopted' 'the legacy pool is not adopted yet (Register-AapLegacySlots)') }
         $backend = $doc.profiles.$Profile.backend
-        foreach ($pair in @(@('Cpus', $Cpus), @('MemGib', $MemGib), @('MemOverheadMib', $MemOverheadMib), @('CloneGib', $CloneGib), @('ScratchGib', $ScratchGib), @('IoMbps', $IoMbps))) {
+        foreach ($pair in @(@('Cpus', $Cpus), @('MemGib', $MemGib), @('MemOverheadMib', $MemOverheadMib), @('CloneGib', $CloneGib), @('ScratchGib', $ScratchGib), @('IoMbps', $IoMbps), @('MinCpus', $MinCpus), @('MinMemGib', $MinMemGib))) {
             if ($null -ne $pair[1] -and (-not (Test-AapInt $pair[1]) -or $pair[1] -lt 0)) { return (New-AapResult 'refused' 'bad_request' "$($pair[0]) must be a whole number") }
         }
         if ($backend -ceq 'hyperv-vm') {
@@ -1359,7 +1388,15 @@ function Request-AapReservation {
         if ($null -ne $MemOverheadMib) { $ovh = [long]$MemOverheadMib }
         if ($null -eq $Cpus) { $Cpus = $c.EachCpus }
         if ($null -eq $MemGib) { $MemGib = $c.EachMemGib - [long][Math]::Ceiling([double]$ovh / 1024) }
-        $spec = @{ Profile = $Profile; Backend = $backend; Generation = $generation; State = 'creating'; Cpus = [long]$Cpus; MemGib = [long]$MemGib; OverheadMib = $ovh
+        # The generation's recorded minimum guest size; a caller's -MinCpus/-MinMemGib may only raise it.
+        $needCpus = $null; $needMem = $null
+        $gm = $null
+        if ($backend -ceq 'hyperv-vm') { $gm = Get-AapGenerationMinimum $generation }
+        if ($null -ne $gm) {
+            $needCpus = [Math]::Max([long]$gm.MinCpus, [long]$(if ($null -ne $MinCpus) { $MinCpus } else { 0 }))
+            $needMem = [Math]::Max([long]$gm.MinMemGib, [long]$(if ($null -ne $MinMemGib) { $MinMemGib } else { 0 }))
+        }
+        $spec = @{ Profile = $Profile; Backend = $backend; Generation = $generation; MinCpus = $needCpus; MinMemGib = $needMem; State = 'creating'; Cpus = [long]$Cpus; MemGib = [long]$MemGib; OverheadMib = $ovh
             CloneGib = [long]$(if ($null -ne $CloneGib) { $CloneGib } else { 0 }); ScratchGib = [long]$(if ($null -ne $ScratchGib) { $ScratchGib } else { 0 }); IoMbps = [long]$(if ($null -ne $IoMbps) { $IoMbps } else { 0 }) }
         $refusal = Test-AapAdmission $doc $spec
         if ($refusal) { return (New-AapResult 'refused' $refusal[0] $refusal[1]) }
@@ -1375,9 +1412,9 @@ function Request-AapReservation {
         }
         if ($spec.Cpus -lt 1 -or $spec.MemGib -lt 1) { return (New-AapResult 'refused' 'share' "the $Profile per-runner share ($($c.EachCpus) CPUs, $($c.EachMemGib) GiB) is too small for one runner") }
         $r = Add-AapReservation $doc $spec (Format-AapTime (Get-AapUtcNow))
-        Save-AapDoc $Root $doc "reserve $($r.reservation_id) slot $($r.slot) generation $($r.lease_generation) $Profile $backend cpus=$($r.cpus) mem=$($r.mem_gib) overhead=$($r.mem_overhead_mib) clone=$($r.clone_gib) scratch=$($r.scratch_gib) io=$($r.io_mbps)"
+        Save-AapDoc $Root $doc "reserve $($r.reservation_id) slot $($r.slot) generation $($r.lease_generation) $Profile $backend cpus=$($r.cpus) mem=$($r.mem_gib) overhead=$($r.mem_overhead_mib) clone=$($r.clone_gib) scratch=$($r.scratch_gib) io=$($r.io_mbps) min_cpus=$needCpus min_mem=$needMem"
         $vm = Get-AapVmNameOf $r
-        New-AapResult 'ok' $null "slot $($r.slot) reserved" ([ordered]@{ Reservation = $r; VmName = $vm; RunnerName = $vm; IdempotencyKey = $r.idempotency_key })
+        New-AapResult 'ok' $null "slot $($r.slot) reserved" ([ordered]@{ Reservation = $r; VmName = $vm; RunnerName = $vm; IdempotencyKey = $r.idempotency_key; MinCpus = $needCpus; MinMemGib = $needMem })
     }
 }
 
@@ -1910,6 +1947,6 @@ function Invoke-AapReconcile {
     }
 }
 
-Export-ModuleMember -Function Get-AapVmName, Test-AapAllocatorState, Initialize-AapAllocator, Get-AapAllocatorState,
+Export-ModuleMember -Function Get-AapVmName, Get-AapGenerationMinimum, Test-AapAllocatorState, Initialize-AapAllocator, Get-AapAllocatorState,
 Set-AapHostMeasurement, Set-AapProfileCounts, Request-AapReservation, Register-AapLegacySlots, Get-AapLegacyLimits,
 Update-AapHeartbeat, Set-AapSlotState, Complete-AapTeardown, Invoke-AapReconcile

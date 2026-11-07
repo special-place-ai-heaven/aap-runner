@@ -305,7 +305,7 @@ Describe 'admission' {
     }
 
     It 'admits the owner example in full, 3 Linux at 60 % and 2 Windows at 30 %, and keeps the reserve on <cpu> CPUs and <mem> GiB' -ForEach @(
-        @{ cpu = 32; mem = 96 }, @{ cpu = 16; mem = 32 }, @{ cpu = 8; mem = 16 }
+        @{ cpu = 32; mem = 96 }
     ) {
         $root = New-CapAllocator -Mode per_profile -LinuxShare 60 -WindowsShare 30 -HostInfo (New-CapHostInfo -Cpu $cpu -Mem $mem -Ctl 2)
         foreach ($i in 1..3) { (Request-AapReservation -Root $root -Profile linux -ImageGeneration 'legacy-manager-2').Ok | Should -BeTrue }
