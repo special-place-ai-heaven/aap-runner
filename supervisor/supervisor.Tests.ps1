@@ -651,9 +651,13 @@ Describe 'aap-runner host supervisor' {
                 $script:terminateCode = 1
                 $script:listOut = Get-AapWslVerbose @('* Ubuntu-24.04    Stopped         2', '  aap-runner      Running         2')
                 $script:listCode = 0
+                # Names of running distros; non-zero (nothing runs, or broken) falls back to --list --verbose.
+                $script:quietCode = 0
+                $script:quietOut = "aap-runner`r`n"
                 $script:responder = {
                     param($line)
                     if ($line -eq '--terminate aap-runner') { return (Get-AapFakeResult $script:terminateCode '') }
+                    if ($line -eq '--list --running --quiet') { return (Get-AapFakeResult $script:quietCode $script:quietOut) }
                     if ($line -eq '--list --verbose') {
                         $r = Get-AapFakeResult $script:listCode $script:listOut
                         if ($script:listCode -ne 0) { $r.Out = ''; $r.Err = 'Wsl/Service/E_UNEXPECTED' }
@@ -666,7 +670,7 @@ Describe 'aap-runner host supervisor' {
 
             It 'reports an error and keeps Off pending while the distro still runs' -Tag 'off-terminate' {
                 Invoke-AapCycle
-                $script:calls | Should -Contain 'wsl --list --verbose'
+                $script:calls | Should -Contain 'wsl --list --running --quiet'
                 $AapRt.Mode | Should -Be 'on'
                 $script:keep.Killed | Should -BeFalse
                 $s = Get-AapStatusFile
@@ -691,6 +695,7 @@ Describe 'aap-runner host supervisor' {
                 @{ name = 'it is not registered'; rows = @('* Ubuntu-24.04    Running         2', '  docker-desktop  Running         2') }
                 @{ name = 'it is the Stopped default'; rows = @('* aap-runner      Stopped         2', '  Ubuntu-24.04    Running         2') }
             ) {
+                $script:quietCode = 1
                 $script:listOut = Get-AapWslVerbose $rows
                 Invoke-AapCycle
                 $AapRt.Mode | Should -Be 'off'
@@ -699,6 +704,7 @@ Describe 'aap-runner host supervisor' {
             }
 
             It 'says the list failed, with its exit code and stderr, and keeps Off pending' -Tag 'off-list' {
+                $script:quietCode = 1
                 $script:listCode = 1
                 Invoke-AapCycle
                 $AapRt.Mode | Should -Be 'on'
@@ -710,6 +716,7 @@ Describe 'aap-runner host supervisor' {
             }
 
             It 'keeps Off pending when the list cannot be parsed' -Tag 'off-list' {
+                $script:quietCode = 1
                 $script:listOut = "Windows Subsystem for Linux has no installed distributions.`r`n"
                 Invoke-AapCycle
                 $AapRt.Mode | Should -Be 'on'
@@ -805,6 +812,27 @@ Describe 'aap-runner host supervisor' {
             $log = (Get-AapLogText) -split "`n"
             @($log | Where-Object { $_ -match 'manager status\.json updated .* unchanged for' }).Count | Should -Be $logs
             @($log | Where-Object { $_ -match 'manager status\.json updated moves again' }).Count | Should -Be $logs
+        }
+
+        It 'is not stale right after a restart with the same updated value' -Tag 'stale-reset' {
+            $AapRt.ManagerOk = $true
+            $script:mgr = 'active'
+            $script:responder = {
+                param($line)
+                if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 0 "active`n$script:mgr") }
+                if ($line -like '*cat /run/aap-runner/status.json') { return (Get-AapFakeResult 0 '{"state":"idle","job":"","updated":42,"runner_count":3,"job_cpus":28,"job_memory":"72g"}') }
+                return (Get-AapFakeResult 0 '')
+            }
+            Invoke-AapCycle
+            (Get-AapStatusFile).state | Should -Be 'idle'
+            $script:mgr = 'inactive'
+            $script:clock.Now = $AapRt.NextHealth
+            Invoke-AapCycle
+            (Get-AapStatusFile).state | Should -Be 'starting'
+            $script:mgr = 'active'
+            $script:clock.Now = $script:clock.Now.AddSeconds(150)
+            Invoke-AapCycle
+            (Get-AapStatusFile).state | Should -Be 'idle'
         }
 
         It 'is not stale right after a resume with the same updated value' -Tag 'manager-stale' {
@@ -975,7 +1003,7 @@ Describe 'aap-runner host supervisor' {
         }
 
         It 'drains a distro left running when desired is off at startup' {
-            $script:responder = { param($line) if ($line -eq '--list --verbose') { return (Get-AapFakeResult 0 (Get-AapWslVerbose @('* Ubuntu-24.04    Stopped         2', '  aap-runner      Running         2'))) }; return (Get-AapFakeResult 0 '') }
+            $script:responder = { param($line) if ($line -eq '--list --running --quiet') { return (Get-AapFakeResult 0 "Ubuntu-24.04`r`naap-runner`r`n") }; return (Get-AapFakeResult 0 '') }
             Write-AapStateFile '{"desired":"off"}'
             Initialize-AapMode
             $AapRt.Mode | Should -Be 'on'
@@ -985,6 +1013,7 @@ Describe 'aap-runner host supervisor' {
         It 'logs a failing wsl --list --verbose at startup and leaves the mode off' -Tag 'init-mode-list' {
             $script:responder = {
                 param($line)
+                if ($line -eq '--list --running --quiet') { return (Get-AapFakeResult 1 '') }
                 if ($line -eq '--list --verbose') { $r = Get-AapFakeResult 1 ''; $r.Err = 'E_UNEXPECTED'; return $r }
                 return (Get-AapFakeResult 0 '')
             }
@@ -999,7 +1028,12 @@ Describe 'aap-runner host supervisor' {
             @{ name = 'not registered'; rows = @('* Ubuntu-24.04    Running         2') }
         ) {
             $script:rows = $rows
-            $script:responder = { param($line) if ($line -eq '--list --verbose') { return (Get-AapFakeResult 0 (Get-AapWslVerbose $script:rows)) }; return (Get-AapFakeResult 0 '') }
+            $script:responder = {
+                param($line)
+                if ($line -eq '--list --running --quiet') { return (Get-AapFakeResult 1 '') }
+                if ($line -eq '--list --verbose') { return (Get-AapFakeResult 0 (Get-AapWslVerbose $script:rows)) }
+                return (Get-AapFakeResult 0 '')
+            }
             Write-AapStateFile '{"desired":"off"}'
             Initialize-AapMode
             $AapRt.Mode | Should -Be 'off'
@@ -1030,7 +1064,27 @@ Describe 'aap-runner host supervisor' {
             $d = Get-AapDistroState
             $d.State | Should -BeExactly 'unknown'
             $d.Why | Should -BeExactly 'wsl --list --verbose exit -1: E_ACCESSDENIED'
-            $script:calls | Should -Be @('wsl --list --verbose')
+            $script:calls | Should -Be @('wsl --list --running --quiet', 'wsl --list --verbose')
+        }
+
+        # --running --quiet lists names only (no localized words); it fails when nothing runs.
+        It 'reads <name>' -Tag 'wsl-hybrid' -TestCases @(
+            @{ name = 'aap-runner among the running names'; qcode = 0; qout = "Ubuntu-24.04`r`naap-runner`r`n"; rows = $null; raw = $null; want = 'running'; calls = 1 }
+            @{ name = 'running names without aap-runner'; qcode = 0; qout = "Ubuntu-24.04`r`naap-runner-old`r`n"; rows = $null; raw = $null; want = 'stopped'; calls = 1 }
+            @{ name = 'a failing quiet list, then verbose Stopped'; qcode = 1; qout = ''; rows = @('* Ubuntu-24.04    Running         2', '  aap-runner      Stopped         2'); raw = $null; want = 'stopped'; calls = 2 }
+            @{ name = 'a failing quiet list, then unparseable verbose'; qcode = 1; qout = ''; rows = $null; raw = "NOM          ETAT            VERSION`r`naap-runner   En cours        2`r`n"; want = 'unknown'; calls = 2 }
+        ) {
+            $script:q = @{ Code = $qcode; Out = $qout }
+            $script:v = $raw
+            if ($null -ne $rows) { $script:v = Get-AapWslVerbose $rows }
+            $script:responder = {
+                param($line)
+                if ($line -eq '--list --running --quiet') { return (Get-AapFakeResult $script:q.Code $script:q.Out) }
+                if ($line -eq '--list --verbose') { return (Get-AapFakeResult 0 $script:v) }
+                return (Get-AapFakeResult 0 '')
+            }
+            (Get-AapDistroState).State | Should -BeExactly $want
+            $script:calls.Count | Should -Be $calls
         }
     }
 
@@ -1402,6 +1456,24 @@ Describe 'aap-runner host supervisor' {
                 Get-AapLogText | Should -Not -Match 'already has'
             }
 
+            It 'puts back a refused file whose restore failed on a later cycle' -Tag 'limits-dirty' {
+                $script:checkOk = $false
+                $script:restoreCode = 1
+                Invoke-AapCycle
+                $AapRt.Refused | Should -Be '2,8,32'
+                $script:file | Should -Not -Be $script:old
+                $script:restoreCode = 0
+                $script:clock.Now = $script:clock.Now.AddSeconds(5)
+                Invoke-AapCycle
+                $script:file | Should -BeExactly $script:old
+                $AapRt.LimitsDirty | Should -BeFalse
+                # Nothing else is retried for the refused key.
+                $script:calls.Clear()
+                $script:clock.Now = $script:clock.Now.AddSeconds(5)
+                Invoke-AapCycle
+                $script:calls.Count | Should -Be 0
+            }
+
             It 'logs an ERROR instead of "restored" when <name> fails after a refusal' -Tag 'limits-restore' -TestCases @(
                 @{ name = 'writing the previous file back'; catCode = 0; restoreCode = 1; rmCode = 0 }
                 @{ name = 'removing a file that did not exist before'; catCode = 1; restoreCode = 0; rmCode = 1 }
@@ -1536,6 +1608,29 @@ Describe 'aap-runner host supervisor' {
                 Invoke-AapCycle
                 $script:calls | Should -Contain ($script:W + '/bin/systemctl start aap-runner-manager')
                 $AapRt.Paused | Should -BeFalse
+            }
+
+            It 'keeps a failed pause as an error across a health tick' -Tag 'pause-status' {
+                $script:drainCode = 1
+                $script:responder2 = $script:responder
+                $script:responder = {
+                    param($line)
+                    if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 0 "active`nactive") }
+                    if ($line -like '*cat /run/aap-runner/status.json') { return (Get-AapFakeResult 0 '{"state":"running","job":"ci","updated":42,"runner_count":3,"job_cpus":28,"job_memory":"72g"}') }
+                    return (& $script:responder2 $line)
+                }
+                Invoke-AapCycle
+                $AapRt.NextHealth = [DateTimeOffset]::MinValue
+                $script:clock.Now = $script:clock.Now.AddSeconds(5)
+                Invoke-AapCycle
+                $s = Get-AapStatusFile
+                $s.state | Should -Be 'error'
+                $s.detail | Should -Be 'pausing: aap-runner-manager --drain failed; retrying'
+                # Unpausing in settings drops it.
+                Write-AapSettingsFile '{"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":false}'
+                $AapRt.NextHealth = [DateTimeOffset]::MinValue
+                Invoke-AapCycle
+                (Get-AapStatusFile).state | Should -Be 'running'
             }
 
             It 'reports a failed resume as an error, also after a health tick' -Tag 'resume-status' {

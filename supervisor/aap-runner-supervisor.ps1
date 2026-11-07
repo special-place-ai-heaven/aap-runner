@@ -203,6 +203,8 @@ function Initialize-AapRuntime {
     $AapRt.LimitsDirty = $false
     # Set while a resume failed: the status says so, not paused.
     $AapRt.ResumeWhy = $null
+    # @{ State; Detail } while a pause did not drain: health keeps that status.
+    $AapRt.PauseWhy = $null
     $AapRt.Status = $null
     $AapRt.StatusAt = [DateTimeOffset]::MinValue
 }
@@ -1279,6 +1281,8 @@ function Invoke-AapHealth {
             Write-AapStatus 'error' '' $AapOldManager
         } elseif ($AapRt.CapError) {
             Write-AapStatus 'error' '' $detail
+        } elseif ($AapRt.PauseWhy) {
+            Write-AapStatus $AapRt.PauseWhy.State '' $AapRt.PauseWhy.Detail
         } elseif ($AapRt.Paused -and $AapRt.ResumeWhy) {
             Write-AapStatus 'error' '' $AapRt.ResumeWhy
         } elseif ($AapRt.Paused) {
@@ -1302,6 +1306,8 @@ function Invoke-AapHealth {
     $delay = Get-AapBackoffDelay $AapRt.Failures
     $detail = "sysbox=$sysbox manager=$manager; restart $($AapRt.Failures)"
     Write-AapLog "unhealthy: $detail; next check in $delay s"
+    # A restarted manager rewrites status.json; until then its old updated is no sign of a wedge.
+    Reset-AapStaleWatch
     [void](Invoke-AapUnitStart @('sysbox'))
     if (-not $stopped) {
         # Not paused or stopped, so no drain is meant: one left by a failed
@@ -1322,6 +1328,11 @@ function Invoke-AapHealth {
 # (rewritten every 5 s) has not moved for 3 health ticks of this clock. The
 # manager's clock is never compared with this one (WSL drifts). No updated
 # field is never stale.
+function Reset-AapStaleWatch {
+    $AapRt.MgrUpdated = $null
+    $AapRt.MgrStale = $false
+}
+
 # Cleanup may hold the status still: never stale while it says cleaning, and
 # the watch starts again after. The change to stale and back is logged once.
 function Test-AapManagerStale($M, [DateTimeOffset]$Now) {
@@ -1353,20 +1364,22 @@ function Invoke-AapPause {
     $e = Invoke-AapDrain
     if ($e) {
         Register-AapRetryFailure 'pause' "pause: --$e"
-        Write-AapStatus 'error' '' 'pausing: aap-runner-manager --drain failed; retrying'
+        $AapRt.PauseWhy = @{ State = 'error'; Detail = 'pausing: aap-runner-manager --drain failed; retrying' }
+        Write-AapStatus $AapRt.PauseWhy.State '' $AapRt.PauseWhy.Detail
         return 'failed'
     }
     $r = Wait-AapManagerInactive 'off' 'pausing'
     if ($r -eq 'timeout') {
         Register-AapRetryFailure 'pause' 'pause: the legacy pool still runs a job'
-        Write-AapStatus 'draining' '' 'pausing: the legacy pool still runs a job; retrying'
+        $AapRt.PauseWhy = @{ State = 'draining'; Detail = 'pausing: the legacy pool still runs a job; retrying' }
+        Write-AapStatus $AapRt.PauseWhy.State '' $AapRt.PauseWhy.Detail
         return $r
     }
     Clear-AapRetry 'pause'
+    $AapRt.PauseWhy = $null
     $AapRt.Paused = $true
     # A stopped manager's status does not move; the next run starts a fresh watch.
-    $AapRt.MgrUpdated = $null
-    $AapRt.MgrStale = $false
+    Reset-AapStaleWatch
     if ($r -ne 'aborted') { Write-AapStatus 'paused' '' '' }
     return $r
 }
@@ -1492,6 +1505,8 @@ function Sync-AapSettingsFile {
     $s = Read-AapSettingsFile
     # Pause and limits need manager flags; an old manager ignores settings.
     if (($s.Paused -or $null -ne $s.Limits -or $AapRt.Paused) -and -not (Test-AapManagerFlag)) { return }
+    # A pause that is no longer wanted no longer explains the status.
+    if (-not $s.Paused) { $AapRt.PauseWhy = $null }
     if ($s.Paused -and -not $AapRt.Paused) {
         # Pause covers the whole pool: no admission, and the VM slots drain too.
         if (-not (Test-AapRetryDue 'pause')) { return }
@@ -1508,6 +1523,10 @@ function Sync-AapSettingsFile {
 }
 
 function Set-AapLimits($Limits) {
+    # A limits.conf that could not be put back is tried again first, also for a refused key.
+    if ($AapRt.LimitsDirty -and $AapRt.LimitsGood -and (Test-AapRetryDue 'limits-restore')) {
+        if (Restore-AapLimitsFile) { Clear-AapRetry 'limits-restore' } else { Register-AapRetryFailure 'limits-restore' 'limits.conf still not restored' }
+    }
     $key = Get-AapLimitsKey $Limits
     if ($null -eq $key -or $key -eq $AapRt.Applied -or $key -eq $AapRt.Refused) { return }
     if (-not (Test-AapRetryDue 'limits')) { return }
@@ -2044,7 +2063,7 @@ function Start-AapManager {
         return $false
     }
     Clear-AapRetry 'manager-start'
-    [void](Invoke-AapUnitStart @('aap-runner-manager'))
+    if (Invoke-AapUnitStart @('aap-runner-manager')) { Reset-AapStaleWatch }
     $AapRt.ManagerStopped = $false
     $AapRt.NextHealth = [DateTimeOffset]::MinValue
     return $true
@@ -2064,6 +2083,7 @@ function Invoke-AapManagerStop {
     Clear-AapRetry 'manager-stop'
     if ((Wait-AapManagerInactive 'off' 'stopping the legacy pool') -ne 'inactive') { return }   # check:stop-inactive
     $AapRt.ManagerStopped = $true
+    Reset-AapStaleWatch
     $AapRt.Effective = $null
     $AapRt.Applied = $null
     Write-AapLog 'legacy pool stopped: no Linux slot is granted'
@@ -2262,11 +2282,11 @@ function Invoke-AapOff {
     $AapRt.ManagerOk = $null
     $AapRt.ManagerTiers = $null
     $AapRt.ManagerStopped = $false
-    $AapRt.MgrUpdated = $null
-    $AapRt.MgrStale = $false
+    Reset-AapStaleWatch
     $AapRt.LimitsGood = $null
     $AapRt.LimitsDirty = $false
     $AapRt.ResumeWhy = $null
+    $AapRt.PauseWhy = $null
     $AapRt.Retry = @{}
     # The next On initializes and reconciles again.
     $AapRt.CapReady = $false
@@ -2325,12 +2345,20 @@ function Invoke-AapCycle {
     }
 }
 
-# Whether the distro runs, from `wsl --list --verbose` (it exits 0 while any
-# distro is installed; `--list --running` fails when none runs). Invoke-AapWsl
-# decodes it (WSL_UTF8, NULs stripped). @{ State = 'running' | 'stopped' |
-# 'unknown'; Why }: not registered is stopped; a failing call or output
-# without the NAME STATE VERSION header is unknown.
+# Whether the distro runs. `wsl --list --running --quiet` prints names only,
+# so it reads the same in every Windows language: exit 0 means running exactly
+# when a line is the distro's name. It exits non-zero when nothing runs (and
+# when wsl is broken), so then `wsl --list --verbose` decides, whose header
+# and state words are English only. Invoke-AapWsl decodes both (WSL_UTF8,
+# NULs stripped). @{ State = 'running' | 'stopped' | 'unknown'; Why }: not
+# registered is stopped; a failing verbose call or output without the
+# NAME STATE VERSION header (another language) is unknown.
 function Get-AapDistroState {
+    $q = Invoke-AapWsl -Arguments @('--list', '--running', '--quiet')
+    if ($q.Code -eq 0) {
+        if (@(Split-AapLine $q.Out) -contains $AapCfg.Distro) { return @{ State = 'running'; Why = '' } }
+        return @{ State = 'stopped'; Why = '' }
+    }
     $r = Invoke-AapWsl -Arguments @('--list', '--verbose')
     if ($r.Code -ne 0) { return @{ State = 'unknown'; Why = "wsl --list --verbose exit $($r.Code): $(Format-AapText $r.Err)" } }
     $state = ConvertFrom-AapWslList $r.Out $AapCfg.Distro

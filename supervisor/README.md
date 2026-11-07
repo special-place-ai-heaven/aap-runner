@@ -28,7 +28,8 @@ it.** The only reason is that WSL sessions belong to the logon session
   is logged once each. The manager's clock is never compared with Windows'
   (the WSL clock can drift). A file without `updated`, or whose `updated` is
   not a whole unix second, is never stale, nor is one that says `cleaning`
-  (the watch starts again after it). Pause and Off start the watch afresh. A
+  (the watch starts again after it). Pause, Off, stopping the legacy pool and
+  every manager start or restart begin the watch afresh. A
   restart of a manager that is not paused or stopped runs `--undrain` first,
   so a drain left by a failed undrain does not make it exit at once; if that
   undrain fails the manager is not started, and the On sequence does the same.
@@ -40,17 +41,23 @@ it.** The only reason is that WSL sessions belong to the logon session
   300 s. A failure is logged on each of the first 5 attempts and whenever its
   message changes, and a success after failures logs `<step> recovered` once
   and resets the backoff. A pause that did not drain is not `paused`: the
-  status is `error` (drain failed) or `draining` (job still running). A failed
+  status is `error` (drain failed) or `draining` (job still running), kept by
+  the health ticks until the pause works or settings no longer ask for it. A failed
   resume is `error` with `resume: --undrain failed; retrying` until it works.
   A limits change that did not finish puts back the `limits.conf` read before
   it (cached until it is back, so a retry never re-reads the new file as the
   old one) or removes the file if there was none; a file that could not be put
-  back is logged as `ERROR` and never counts as applied. A failed
-  `wsl --terminate` is checked with `wsl --list --verbose` (not
-  `--list --running`, which fails when nothing runs): the `aap-runner` row's
-  STATE `Running` is running, `Stopped` or no row is not running, and a
-  failing call, output without the `NAME STATE VERSION` header or any other
-  state word is unknown (logged with the exit code and stderr or the output).
+  back is logged as `ERROR` and never counts as applied; each later cycle
+  tries to put it back first (with the same backoff), also while its key is
+  refused. A failed `wsl --terminate` is checked with
+  `wsl --list --running --quiet` first: it prints names only, so it reads the
+  same in every Windows language, and exit 0 means running exactly when a
+  line is `aap-runner`. It exits non-zero when nothing runs, so then
+  `wsl --list --verbose` decides: the `aap-runner` row's STATE `Running` is
+  running, `Stopped` or no row is not running, and a failing call, output
+  without the English `NAME STATE VERSION` header (another Windows language)
+  or any other state word is unknown (logged with the exit code and stderr
+  or the output).
   While it runs or is unknown the status is `error` with
   `... and aap-runner still runs` or
   `... and cannot tell whether aap-runner runs: <why>` and Off tries again.
