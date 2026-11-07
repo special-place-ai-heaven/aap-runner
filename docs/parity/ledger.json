@@ -13,9 +13,10 @@
   "max_concurrent_workers": 3,
   "max_compile_heavy": 2,
   "max_full_test_suites": 1,
+  "max_io_heavy": 1,
   "cleanup_barrier": "GLOBAL_NO_NEW_ITEM_WHILE_MERGED_UNCLEAN",
   "as_of": "2026-11-07",
-  "origin_main": "1759b630d639d421b290fe1566884fd2481f0bb3",
+  "origin_main": "14b652f3b93f4534c772d5309ddc3a9ec11e1182",
   "current_wave": 6,
   "in_flight": [
     {
@@ -40,7 +41,7 @@
       "note": "contract revision only; hosted CI 4/4 SUCCESS on the head; no independent review recorded"
     }
   ],
-  "cleanup_barrier_state": "OPEN (2026-11-07): the independent read-only verifier pass C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md (batches 1-11) has signed every parity receipt and receipted coordinator PR that was pending or missing since the first 2026-11-06 reconcile, all CLEAN-WITH-NOTES: batch 1 P02.4-attempt-1 (PR #80), P02.5-attempt-1 (PR #79), coord-ledger-close-6-attempt-1 (PR #81); batch 2 R2.1-attempt-1 (PR #103), R1.1-attempt-1 (PR #104); batch 3 R1.2-attempt-1 (PR #108); batch 4 P08.2-attempt-1 (PR #110); batch 5 R1.3-attempt-1 (PR #112); batch 6 P08.1-attempt-1 (PR #113); batch 7 coord-oracle-refresh-2026-11-attempt-1 (PR #111); batch 8 P05.1-attempt-1 (PR #109); batch 9 coord-ledger-reconcile-2026-11-06-attempt-1 (PR #106) and coord-ledger-close-2026-11-07-attempt-1 (PR #116); batch 10 P22.1-attempt-1 (PR #117), P22.2-attempt-1 (PR #118), P12.2-attempt-1 (PR #119); batch 11 R1.4-attempt-1 (PR #120). PR #107 and #115 (cleanup-receipt schema fixes) are merged, so all of these receipts validate with origin/main's parity/contracts/validate.py. No merged parity item or receipted coordinator PR lacks a verifier verdict. Recorded deviation: #113 merged 7 s after #111, before #111's cleanup was verified (receipt P08.1-attempt-1, batch 6 B6.3); both are verified now, so the barrier is open for both. CI-wiring PRs (#105, #114 and earlier) and cleanup-receipt schema fixes (#107, #115) are coordinator support, not ledger items, and carry no receipt by rule. This close itself is a coordinator PR whose receipt is written after it merges.",
+  "cleanup_barrier_state": "OPEN (2026-11-07): the independent read-only verifier pass C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md (batches 1-12) has signed every parity receipt and receipted coordinator PR that was pending or missing since the first 2026-11-06 reconcile, all CLEAN-WITH-NOTES: batch 1 P02.4-attempt-1 (PR #80), P02.5-attempt-1 (PR #79), coord-ledger-close-6-attempt-1 (PR #81); batch 2 R2.1-attempt-1 (PR #103), R1.1-attempt-1 (PR #104); batch 3 R1.2-attempt-1 (PR #108); batch 4 P08.2-attempt-1 (PR #110); batch 5 R1.3-attempt-1 (PR #112); batch 6 P08.1-attempt-1 (PR #113); batch 7 coord-oracle-refresh-2026-11-attempt-1 (PR #111); batch 8 P05.1-attempt-1 (PR #109); batch 9 coord-ledger-reconcile-2026-11-06-attempt-1 (PR #106) and coord-ledger-close-2026-11-07-attempt-1 (PR #116); batch 10 P22.1-attempt-1 (PR #117), P22.2-attempt-1 (PR #118), P12.2-attempt-1 (PR #119); batch 11 R1.4-attempt-1 (PR #120); batch 12 coord-ledger-close-2026-11-07b-attempt-1 (PR #121), P00.1-attempt-1 (PR #122), P10.1-attempt-1 (PR #123). PR #107 and #115 (cleanup-receipt schema fixes) are merged, so all of these receipts validate with origin/main's parity/contracts/validate.py. No merged parity item or receipted coordinator PR lacks a verifier verdict. Recorded deviation: #113 merged 7 s after #111, before #111's cleanup was verified (receipt P08.1-attempt-1, batch 6 B6.3); both are verified now, so the barrier is open for both. CI-wiring PRs (#105, #114 and earlier) and cleanup-receipt schema fixes (#107, #115) are coordinator support, not ledger items, and carry no receipt by rule. This close itself is a coordinator PR whose receipt is written after it merges.",
   "tasks": [
     {
       "id": "P00",
@@ -89,11 +90,19 @@
         "tests/parity-work/**"
       ],
       "lane": "Sol high (Claude: Opus high)",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Land the non-blocking findings from the 2026-10-19 code and security reviews of P00 (706d812): refuse registration after MERGED_CLEANUP_REQUIRED; merge-proof candidates tied to merge shape (2-parent: merge^1 base, merge^2 == accepted head; rebase: step-match); unreadable process start time -> HOLD; Invoke-PwGit separates stderr and checks exit codes; unknown-process scan also matches working directory under the root; transitive child/parent validation; mid-component wildcard overlap; porcelain -z; verifier must differ from cleanup actor; require git >= 2.40 for merge-tree --merge-base; take directory identity from the creating handle (FILE_CREATE); close the worktree-remove window (observe absence immediately before git, or delete the admin entry via SafeTree); init refuses to overwrite config and -DefaultSentinels leaves the CLI; receipt omits hashes of untracked/ignored owner files; SafeTree iterative walk; race-test swap hook between enumeration and open; build/test/resource tokens and the 3-worker/2-compile/1-suite/1-IO budgets enforced at claim (required before wave 4 parallel dispatch).",
       "acceptance": "Each listed finding has a test that fails without its fix; both PowerShell hosts green; budgets refuse a fourth worker, a third compile-heavy job and a second full suite.",
-      "merge_proof": null,
-      "cleanup_receipt": null
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/122",
+        "method": "merge-commit",
+        "accepted_head": "9791d37a8dbd929baab257fcd09435003ad3a299",
+        "merge_sha": "95ed4181b379612628480eb79a2fe24f2c935e18"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P00.1-attempt-1.receipt.json (verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 12: the ecc:orch-review APPROVE and the local test counts are recorded in-session only; no registry manifest; the written field is later than the file mtime))",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/122",
+      "branch": "fix/p00-1-cleanup-gate-hardening",
+      "note": "Merged 2026-11-07 at 95ed418 (PR #122, head 9791d37, base 1759b63; first parent 16c1839, main after #121; commits 9d76b51, 7a4f88f and 9791d37); hosted CI 5/5 SUCCESS on the recorded head before the merge (run 42347969064); cleanup receipt P00.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 12). Scope: tools/parity-work (ParityWork.psm1, SafeTree.cs, parity-work.ps1) and tests/parity-work (Cleanup.Tests.ps1, Fixture.ps1, new Hardening.Tests.ps1); 6 files. The cleanup gate is hardened per the P00 reviews and the claim budgets (3 workers, 2 compile, 1 suite, 1 IO) are enforced from the ledger fields max_concurrent_workers, max_compile_heavy, max_full_test_suites and max_io_heavy plus the per-task tokens array. Worker statement, not checkable: 28 of 31 new tests fail on 1759b63; tests/parity-work 121/121 on pwsh 7.6.9 and Windows PowerShell 5.1 at 7a4f88f (9791d37 only rewords a comment); the ecc:orch-review APPROVE is recorded in-session only. Follow-up from the receipt: the tokens were inert until ledger tasks declared them; the 2026-11-07 third close declares them (see LEDGER.md)."
     },
     {
       "id": "P01",
@@ -172,6 +181,9 @@
         "docs/parity/evidence/lab/**"
       ],
       "lane": "Sol high (Claude: Opus xhigh)",
+      "tokens": [
+        "io"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Execute the guest-transport.md lab plan once gate D2 is granted: PowerShell Direct via an isolated child process (and the hvsocket framed-protocol comparison), SSH over hvsocket with pinned host key, credential bootstrap (unattend vs KVP), replay/nonce/echo checks, hostile and oversized replies, guest-replaced endpoint, crafted CLIXML and stream floods, guest network isolation (H1 negative matrix incl. IPv6, host ports, ARP/DHCP spoofing, WSL mirrored mode) with a positive egress oracle, JIT end-to-end on the current runner incl. unused-runner deletion, measured disk/memory/IO budgets. Freeze the chosen sub-candidates as a contract revision.",
       "acceptance": "Every lab case has an observed result; isolation negatives all refused; no secret in host logs/events 4103/4104/transcripts or guest files outside the runner root; chosen mechanisms recorded in parity/contracts with the lab evidence; independent security review of the evidence. Requires D2 (eval ISO, lab GitHub App and test org/repo, approved compute/storage budget); never on the live pool.",
@@ -220,6 +232,7 @@
         "parity/contracts/**"
       ],
       "lane": "Sol high (Claude: Opus high)",
+      "tokens": [],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Specify a one-shot guest-transport command bind_cache (at most 1 KiB) that binds the job's cache trust class (event, ref, head repository) to the guest cache root, with schema, positive and negative fixtures and the broker-side narrowed per-lookup token flow.",
       "acceptance": "validate.py PASS with the new fixtures; oversized, replayed, unbound-class and arbitrary-exec negatives refused; independent security review. Requires the owner decision on giving the GitHub App actions:read + contents:read for cache trust-class lookups (installed only on the aap-crrr runner group's repositories); never implemented against the live App before that decision.",
@@ -633,6 +646,10 @@
         "tests/backends/network/**"
       ],
       "lane": "Sol high (Claude: Opus high)",
+      "tokens": [
+        "suite",
+        "io"
+      ],
       "delivery_state": "IN_PROGRESS",
       "deliverable": "One PowerShell module that creates the per-profile internal switch + NAT (or the per-guest private switch chosen in P02.1), applies DHCP guard, router guard, MAC-spoofing off, extended port ACLs (deny host vEthernet except DHCP/DNS, RFC1918, 169.254/16, 100.64/10, multicast, fe80::/10, fc00::/7, LAN IPv6 prefix, clone subnet except gateway), disables enhanced session and Guest Service Interface, and exposes attach/detach/verify for P10 and P11.",
       "acceptance": "Pester with fakes for the Hyper-V cmdlets; the lab negative matrix from guest-transport.md passes on a disposable guest; External/Default switch attachment refused.",
@@ -697,12 +714,20 @@
         "tests/backends/windows/**"
       ],
       "lane": "Sol high (Claude: Opus high)",
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Make the backend's tests stop leaving SY+BA-locked fixtures that only an owner self-grant can delete; harden clone measurement against files that vanish mid-walk so a transient race no longer destroys the VM; dismount a stale mount left behind.",
       "acceptance": "Each item has a test that fails without its fix; the suite leaves nothing that needs elevation to delete; a vanished file during clone measurement retries or fails closed without destroying a healthy VM; a stale mount is dismounted by the reconcile path; both PowerShell hosts green.",
-      "merge_proof": null,
-      "cleanup_receipt": null,
-      "why": "P10 shipped with test fixtures that need an owner self-grant to delete, a 'clone not measurable' path that destroys on a transient race, and a stale-mount case it does not dismount."
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/123",
+        "method": "merge-commit",
+        "accepted_head": "bd42b31777639594054692ca4eb85e64dfbfa38c",
+        "merge_sha": "14b652f3b93f4534c772d5309ddc3a9ec11e1182"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P10.1-attempt-1.receipt.json (verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 12: the ecc:orch-review APPROVE and the local test counts are recorded in-session only; no registry manifest; the written field is later than the file mtime; the pre-existing locked TEMP folder x2d5fc1 still exists and is left for the owner))",
+      "why": "P10 shipped with test fixtures that need an owner self-grant to delete, a 'clone not measurable' path that destroys on a transient race, and a stale-mount case it does not dismount.",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/123",
+      "branch": "fix/p10-1-win-backend-hardening",
+      "note": "Merged 2026-11-07 at 14b652f (PR #123, head bd42b31, base 1759b63; first parent 95ed418, main after #122; commits fe55c26, c533aba and bd42b31); hosted CI 5/5 SUCCESS on the recorded head before the merge (run 42348355779, last job 33 s before the merge); cleanup receipt P10.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 12). Scope: supervisor/backends/windows (AapWinBackend.psm1, AapWinBackend.HyperV.psm1, README.md, INTEGRATION.md) and tests/backends/windows; 9 files. The tests leave no SY+BA-locked fixtures, clone measurement retries when a file vanishes mid-walk instead of destroying a healthy VM, and destroy dismounts a disk a crash left mounted. Fakes only, no real VMs or mounts. Worker statement, not checkable: tests/backends/windows plus supervisor.Tests.ps1 588/588 on pwsh 7.6.9 and Windows PowerShell 5.1; mutations 91/91 on 5.1 and 90/91 on pwsh (stdin-bom survives, pre-existing). Left for the owner: the pre-existing SY+BA-locked TEMP folder C:\\Users\\poslj\\AppData\\Local\\Temp\\x2d5fc1 (not from this item; it needs an owner self-grant to delete)."
     },
     {
       "id": "P11",
@@ -908,6 +933,9 @@
         "tests/run.sh"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "suite"
+      ],
       "delivery_state": "IN_PROGRESS",
       "deliverable": "Install broker support, make legacy reservations coordinator-controlled and replace maintained sccache install/env/paths/whitelists/diagnostics with qualified zccache or direct compilation. Preserve legacy isolation until authorized retirement. Also correct the distro/README.md threat-model row: any process of the operator account can run wsl.exe and therefore the broker and read app.pem; broker replay/lease limits are integrity controls, not access control (P02 security review M1).",
       "acceptance": "No active sccache binary/variable/process/workflow requirement remains in maintained runtime. Bash suites and shellcheck pass on real Linux; staging hashes match. No Docker-volume deletion or live-cache purge. P19 later owns shared bootstrap/hash serially.",
@@ -1016,6 +1044,10 @@
         "crates/tray/README.md"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "compile",
+        "suite"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Extend existing helper paths for reviewed image/backend lifecycle, ACLs, resource/disk sizing, resume and rollback preparation. Update Rust/PowerShell request tests together. Reconcile merged M4 APIs. No new elevation mechanism or implicit production upgrade.",
       "acceptance": "Active-pool guard, cancellation, partial install/resume, reparse/ACL/input attacks and image-manifest mismatch tested. Preserve source/key gates. All impacted suites pass; refresh staging digests. Shared bootstrap/hash paths are serialized after P16.",
@@ -1068,6 +1100,10 @@
         "crates/tray/README.md"
       ],
       "lane": "Luna high",
+      "tokens": [
+        "compile",
+        "suite"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Expose native OS/profile, image generation, available/reserved capacity, truthful cache state, first-error remediation, image stale/quarantine state and safe on/off/pause/settings through existing inbox/helper boundaries.",
       "acceptance": "Profile counts are two live controls, Linux 0-5 and Windows 0-5, with Linux + Windows <= 5; each control's maximum is recomputed from the other (3 Linux => Windows max 2; 5 Windows => Linux 0) and 0 is valid for either. Resource allotment follows the counts per profile and the host reserve is never given away. The tray shows the two profiles as separate groups with the OS on every runner card and per-profile totals and limits next to each control (owner requirement 2026-10-19). Per-profile resource shares are a hard requirement: each runner profile gets a configurable share of host CPU/RAM and a reserved host remainder (owner example 2026-10-19: 2 Windows runners = 30 %, 3 Linux runners = 60 %, 10 % kept for the owner's desktop). Injected/headless tests plus authorized disposable UI proof; no tray WSL calls or secrets. Five total cap visible. Pending/resume/failure paths never show false readiness or stop active work.",
@@ -1089,6 +1125,10 @@
         "parity/catalog/**"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "suite",
+        "io"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Compose reviewed base images and AAP guest/cache overlays, produce final artifact hashes/inventory/provenance, secure catalog and generation metadata, retain rollback images under explicit product ownership.",
       "acceptance": "No credential-bearing image seals; tampered/incomplete/changed inputs cannot promote. Re-run upstream and job-context probes on final artifacts, not only pre-overlay base. Product artifacts are accounted retained outputs, not hidden leftovers.",
@@ -1110,6 +1150,9 @@
         "parity/integration/**"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "io"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Exercise certified candidate guests under host-wide leases, actual Actions jobs, drains, cancellation, restart recovery, guest reset, network boundary, constrained disk/RAM/IO and offline dependency failure in an authorized lab.",
       "acceptance": "Five mixed slots and sixth denied; legacy plus new counted; no cross-job residue or host/key access; no task cancellation on graceful drain; fault at each state boundary yields truthful state. No mock-only pass for VM behavior.",
@@ -1127,6 +1170,9 @@
         "parity/consumers/**"
       ],
       "lane": "Luna high",
+      "tokens": [
+        "io"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Expand one exact owned preparation child per consuming repository: inventory current workflows, remove sccache coupling safely, add inert/manual-only reference and candidate fixtures, and prepare reviewed activation patches. Normal production routing remains on available legacy profiles until P27. Actual activation is a separate P27 child per repository after authorized canary availability.",
       "acceptance": "Preparation children are agent-merged and cleaned; selected consumer commits pass reference/candidate fixtures in the authorized lab. Negative check proves merged pre-cutover changes do not route production jobs to unavailable profiles or remove required legacy runtime cache support. Record every later P27 activation child and its exact ownership.",
@@ -1145,6 +1191,9 @@
         "parity/certificates/**"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "io"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Publish complete inventory and behavioral comparison for each exact final generation, uncached/cold/warm/concurrent/reset modes, first-error evidence, accepted rig differences and certification expiry inputs.",
       "acceptance": "Zero missing required baseline tools and zero unexplained behavioral failures. Azure identity/hardware differences explicit. No skipped required workload or unsupported cached compiler can be silently called parity; uncached native build path must work.",
@@ -1165,6 +1214,10 @@
         "docs/parity/OPERATIONS.md"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "suite",
+        "io"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Detect upstream/runner support drift, rebuild and recertify, atomically switch new admissions, quarantine failed generation, drain safely and rollback future jobs. Define cache protocol/version transitions, image/source expiry and owned retention.",
       "acceptance": "Update while jobs run; old jobs finish, new jobs use approved generation; corrupt candidate/upgrade crash leave last good generation; rollback works on both OSs. No silent mutable latest label or destructive cache/volume sweep.",
@@ -1182,13 +1235,18 @@
         "crates/tray/**"
       ],
       "lane": "Sol high (Claude: Opus high)",
-      "delivery_state": "NOT_STARTED",
+      "tokens": [
+        "compile",
+        "suite"
+      ],
+      "delivery_state": "IN_PROGRESS",
       "deliverable": "Let the tray replace its own executable through the existing elevated helper: one UAC click, no console window, no wsl.exe, no tokens in the tray; contract docs and both sides' tests updated in the same PR.",
       "acceptance": "cargo fmt/clippy/test green; update succeeds with the tray running or quits it itself; a bad or unsigned replacement is refused and the old build stays; independent security review of the helper verb. Overlaps crates/tray/** with P19/P20, so the coordinator serializes the claims.",
       "merge_proof": null,
       "cleanup_receipt": null,
       "why": "Replacing the tray executable today needs the owner to quit it and swap by hand; the existing elevated helper can do it with one UAC click and no console.",
-      "note": "Overlaps crates/tray/** with P19 and P20: the coordinator serializes the claims, so P25.1 is not dispatched while a P19 or P20 claim holds the lease."
+      "note": "Overlaps crates/tray/** with P19 and P20: the coordinator serializes the claims, so P25.1 is not dispatched while a P19 or P20 claim holds the lease. Claimed 2026-11-07: worktree parity/P25.1/attempt-1/repo on feat/p25-1-tray-self-update at 14b652f (main after #123); no commits and no PR yet, the branch is not pushed. Owner decision Q8 (Authenticode code-signing, queued 2026-11-07, non-blocking): until a certificate exists, \"unsigned replacement refused\" is met by sha256 and PE/version checks.",
+      "branch": "feat/p25-1-tray-self-update"
     },
     {
       "id": "P26",
@@ -1202,6 +1260,7 @@
         "docs/parity/evidence/security/**"
       ],
       "lane": "Sol high",
+      "tokens": [],
       "delivery_state": "NOT_STARTED",
       "deliverable": "An independent reviewer rechecks actual final diff, privileged guest boundary, broker/JIT secrecy/replay, management channel, artifact trust, cache isolation, allocator crash semantics, fork guards and cleanup implementation. Repair findings in new linked items and re-certify affected evidence.",
       "acceptance": "No unresolved blocking finding; reviewer evidence refers to exact tested commits/artifacts. Finding repairs have their own worktree, PR, merge proof and cleanup; stale certification invalidated. No real key read needed.",
@@ -1219,6 +1278,9 @@
         "docs/parity/evidence/cutover/**"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "io"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Only after new explicit owner authorization, stage certified images and adopt/drain legacy capacity before adding a native Windows canary, then Ubuntu. Never run five legacy plus additional new workers. Record measured reserves and live parity results. Activate consumer routing only after the target profiles are available and approved; expand one exact owned activation child per repository, preserving rollback routing. P28 waits for every activation child to merge and clean.",
       "acceptance": "Existing jobs finish without cancellation, global cap holds through restart, native real workflows pass, rollback rehearsed. Never delete Docker volumes or benchmark data. No authorization means waiting, not completed or failed. Confirm pre-cutover normal jobs stay routable, then native-profile canary availability before activation, real production routing after activation, and rollback routing on rehearsal. Activation children remain incomplete until agent-merged and cleanup-verified.",
@@ -1236,6 +1298,7 @@
         "docs/parity/evidence/final/**"
       ],
       "lane": "Luna medium",
+      "tokens": [],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Reconcile every task/consumer child, reference/candidate certificate, merge/review identity, cleanup receipt, retained product asset and update/rollback runbook. Remove all disposable planning/execution resources by their manifests and publish the verified service profile.",
       "acceptance": "Every required task accepted, agent-merged where applicable and CLEANUP_VERIFIED; no orphan worktree/target/process/temp artifact. Explicit product images/cache/evidence remain accounted. No deferred mandatory parity gate or unsupported claim.",
@@ -1501,6 +1564,9 @@
         "tests/**"
       ],
       "lane": "Sol medium",
+      "tokens": [
+        "suite"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Re-verify host network state at most every 60 seconds while a build phase runs.",
       "acceptance": "Covers P07.1/P06.2 partial conformance.",
@@ -1546,6 +1612,9 @@
         "tests/**"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "suite"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Tie each aap-guest-<id> adapter to the VM with that id.",
       "acceptance": "Close remaining gap in P10.2, P06.2, P07.1 providers and module Verify.",
@@ -1564,6 +1633,10 @@
         "tests/**"
       ],
       "lane": "Sol medium",
+      "tokens": [
+        "suite",
+        "io"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Run P10.0 Verify with ErrorActionPreference Stop; confirm answer-file interface name Ethernet in lab.",
       "acceptance": "Verify stops on errors and lab confirms the interface name.",
@@ -1582,6 +1655,9 @@
         "docs/parity/evidence/lab/**"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "io"
+      ],
       "delivery_state": "IN_PROGRESS",
       "deliverable": "Test clone-to-clone ARP poisoning; Windows profile must not serve public repositories until clone isolation is required and proven.",
       "acceptance": "Authorized lab proves clone isolation before public-repository service.",
@@ -1639,6 +1715,9 @@
         "tests/guests/cache/**"
       ],
       "lane": "Sol medium",
+      "tokens": [
+        "suite"
+      ],
       "delivery_state": "IN_PROGRESS",
       "deliverable": "Run the zccache client with an empty/closed stdin from the cache shim on both platforms (Linux guests/cache/linux/aap-zccache.sh, Windows guests/cache/windows/AapZcCache.psm1) so an open stdin cannot hang the zccache client.",
       "acceptance": "Each shim invocation proves an empty stdin on both platforms; a hung-stdin mutation is caught by tests/guests/cache on both PowerShell hosts and real Linux.",
@@ -1667,6 +1746,9 @@
         "docs/parity/evidence/lab/**"
       ],
       "lane": "Sol high (Claude: Opus high)",
+      "tokens": [
+        "suite"
+      ],
       "delivery_state": "IN_PROGRESS",
       "deliverable": "Proposed (NOT P02.4, the unrelated ARP-poisoning lab test; owner approval queued as Q6): the host writes a per-clone guest identity record OFFLINE into the Windows unattend/answer file and the Linux cloud-init seed (vm_id, reservation_id, lease_generation, expected scratch disk size/identity); the guest reads it once at first probe and binds. Hyper-V KVP stays OFF (KVP-on leaks the host name; P06 security review); SMBIOS UUID is the alternative. Implement as a contract-revision PR (contract text + schema + fixtures + validator + tests), reviewed first, then four small conformance items: P10 WriteUnattend, P11 seed, P14, P15.",
       "acceptance": "validate.py PASS with the new fixtures; a missing or mismatched identity record fails the first probe closed; no host-identifying data reaches the guest beyond the record fields; independent security review; gated on owner approval (owner_decisions_queued Q6).",
@@ -1722,6 +1804,9 @@
         "tests/guests/cache/**"
       ],
       "lane": "Sol medium",
+      "tokens": [
+        "suite"
+      ],
       "delivery_state": "IN_PROGRESS",
       "deliverable": "Windows PowerShell 5.1 builds the redirected stdin writer at Process.Start from the console input encoding and flushes that encoding's preamble (EF BB BF on a UTF-8 console) into the client's pipe, so a closed stdin is not empty. Swap in a BOM-less console input encoding for the Start only, then restore the caller's, in Invoke-AapZcProcess -Capture (guests/cache/windows/AapZcCache.psm1) and in the Linux backend's HyperV ssh-keygen start (supervisor/backends/linux/AapLinBackend.HyperV.psm1); the fake zccache fails any byte before EOF (exit 7) and logs what it saw; the stdin Describe runs on a UTF-8 console as the regression.",
       "acceptance": "An empty stdin means zero bytes before EOF on every console: the fake zccache client reads zero bytes and then EOF on a UTF-8 console and any byte fails the call; tests/guests/cache green on both PowerShell hosts and in hosted CI.",
@@ -1780,6 +1865,9 @@
         "tests/backends/windows/**"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "suite"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Windows backend part of owner decision Q4: the supervisor enforces a 6 hour wall-clock cap per VM, independent of the job and of the guest. At the cap the VM is stopped, reclaimed through the verified-teardown path, and the job is reported failed with an explicit reason; the slot is not reused before verified teardown. A guest reply and the runner's GitHub status (online, busy) never extend or reset the cap, and its start time is persisted, not held only in memory.",
       "acceptance": "Fake-backed tests prove the cap fires at the boundary, survives a supervisor restart (the start time is persisted, not held in memory) and reclaims a guest that ignores shutdown; the Windows backend suite is green on both PowerShell hosts and in hosted CI. The lab proof is gated on the owner.",
@@ -1801,6 +1889,9 @@
         "tests/backends/linux/**"
       ],
       "lane": "Sol high",
+      "tokens": [
+        "suite"
+      ],
       "delivery_state": "NOT_STARTED",
       "deliverable": "Linux backend part of owner decision Q4: the supervisor enforces a 6 hour wall-clock cap per VM, independent of the job and of the guest. At the cap the VM is stopped, reclaimed through the verified-teardown path, and the job is reported failed with an explicit reason; the slot is not reused before verified teardown. A guest reply and the runner's GitHub status (online, busy) never extend or reset the cap, and its start time is persisted, not held only in memory.",
       "acceptance": "Fake-backed tests prove the cap fires at the boundary, survives a supervisor restart (the start time is persisted, not held in memory) and reclaims a guest that ignores shutdown; the Linux backend suite is green on both PowerShell hosts and in hosted CI. The lab proof is gated on the owner.",
@@ -2150,6 +2241,14 @@
       "cleanup": "receipt coord-ledger-close-2026-11-07-attempt-1.receipt.json verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 9: the orch-review APPROVE is recorded in-session only; no registry manifest; the written field is later than the file mtime)"
     },
     {
+      "item": "coord-ledger-close-2026-11-07b",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/121",
+      "reviewed_head": "43258931a2b55137461681a276fe1cff0640332b",
+      "merge_sha": "16c18397842766a8508531b58d59082531d44723",
+      "what": "ledger close 2026-11-07 (second): P22.1, P22.2, P12.2 and R1.4 recorded COMPLETE, coordinator PRs #106 and #116 recorded, owner decision Q7 queued (docs/parity/LEDGER.md and docs/parity/ledger.json only)",
+      "cleanup": "receipt coord-ledger-close-2026-11-07b-attempt-1.receipt.json verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 12: the orch-review APPROVE is recorded in-session only; no registry manifest; the written field is later than the file mtime)"
+    },
+    {
       "item": "product-prs-2026-11-05",
       "what": "Merged outside the parity worktree lifecycle (no parity receipts): #88 PRODUCT.md (6ad2c70), #89 systemd-analyze test (c354f58), #90 docs/ROADMAP.md (4006352), #91 job containers under --init (5a2c3a1), #92 jq in the image (7edbd9a), #93 Node.js 26.13.0 in the image (a1753a7), #94 runner 2.338.2 pinned (d9a9d10), #95 Rust 1.99.1 (5d91d13), #96 pool-core limits crate (55914b3), #98 manual runner image check workflow (047b6fd), #99 zccache replaces sccache (03ae663, P16 part), #100 image acceptance (3ec4cbf), #101 runner group settings docs (cfca6df), #102 one clock authority (2826471), #103 R2.1 (279eed4), #104 R1.1 (b5c946b). Closed unmerged 2026-11-06: #85, #86, #87 (stale or superseded), #97 (superseded by #99).",
       "cleanup": "none recorded",
@@ -2235,6 +2334,15 @@
       "status": "OPEN",
       "raised": "2026-11-07 (coordinator, with the advisor; PR #118 merged at 20b5c2a)",
       "still_open": "The values (win25-vs2026-x64 2 CPU / 4 GiB, ubuntu-24.04-x64 2 CPU / 2 GiB, in supervisor/capacity/AapCapacity.psm1 GenerationMinimums) are coordinator placeholders chosen with the advisor and logged as an everos DECISION; they are in force as provisional. Nothing waits on the answer: P22.2 is COMPLETE, and a caller may raise a minimum but never lower it. A different answer is a one-line change to that table plus its test."
+    },
+    {
+      "id": "Q8",
+      "urgent": false,
+      "topic": "tray code-signing certificate",
+      "detail": "Authenticode code-signing for the tray (buy or provision a cert); until then P25.1's 'unsigned replacement refused' is met by sha256 + PE/version checks; non-blocking.",
+      "status": "OPEN",
+      "raised": "2026-11-07 (coordinator; P25.1 claimed on feat/p25-1-tray-self-update)",
+      "still_open": "Nothing waits on the answer: P25.1 proceeds with the sha256 and PE/version checks as its definition of a bad replacement. Buying or provisioning a certificate is the owner's call (it is spending); once a certificate exists the helper verb can additionally verify the Authenticode signature of the replacement."
     }
   ]
 }
