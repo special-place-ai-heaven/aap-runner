@@ -139,9 +139,13 @@ addendum of the design doc.
   `N GiB free of M · floor P` (`· cleaning` appended to caption when manager cleans),
   `IO cap N pool · M each` (both caps known),
   `IO cap N pool` / `IO cap M each` (one cap known), `sampled N s ago`) with narrower tracks.
+  Cores and Memory draw whenever the (fresh) status carries a usage sample (`sampled_at` set);
+  an old sample still draws and its `sampled N ago` caption turns the over colour after 150 s
+  (`sampled_at` is the distro's clock, and a failed `docker stats` keeps the previous sample).
+  Disk comes with the status itself, not the sample. `no sample` means no value at all.
   All rows are fixed height; there is no scroll area in the left column. The footer
   (Verify/Repair/Open logs) follows in the normal top-down flow after a fixed gap.
-  `SIZE[1]` = `MIN_SIZE[1]` = 760 px = max(left worst case 760, tile grid right 524); a test keeps
+  `SIZE[1]` = `MIN_SIZE[1]` = 760 px = max(left worst case 760, tile grid right 644); a test keeps
   the left worst case at most 780 pt (1080p at 125 %);
   a new left-column row that does not fit grows SIZE[1], never adds a scrollbar.
 - **Profile identity:** Linux is a Tux-style penguin glyph in green, Windows the four-pane window
@@ -161,16 +165,18 @@ addendum of the design doc.
   status line for the current Verify/Repair job (format: `Verify · failed · exit 1` on failure,
   `Repair · running…` while active, `Verify · ok` on success; with a `· Open log`
   CollapsingHeader when log lines are available; log panel keyed on a fixed id, not the label text).
-  Then the Linux tiles, every slot always drawn, all one fixed size (60 px, two per row, six rows):
+  Then the Linux tiles, every slot always drawn, all one fixed size (80 px, two per row, six rows):
   `Heavy 1`, `Heavy 2`, `Light 1` … `Light 10`, each with the penguin and tier glyphs, state and
-  elapsed on one row and `title · repo` (full text in a tooltip, copy button) or `Waiting for a job`
-  on the second; CPU and Mem against the slot's limit are in the state row's tooltip while a job
-  runs. A tile shows the status slot of the same number (status-settings.md Tiers: heavy 1..2,
+  elapsed on one row, `title · repo` (a link to the run, full text and URL in a tooltip, copy
+  button) or `Waiting for a job` on the second, and on the third the slot's sampled CPU and memory
+  against its share, busy or idle: `1.0/8 cores · 5.2/20 GiB` (heavy: the 8 CPU / 20 GiB
+  reservation; light: the 4 CPU / 8 GiB cap; untiered: the even share of the pool), `-` for a
+  value docker left out, in the over colour past the share, `no sample` with no sample. A tile shows the status slot of the same number (status-settings.md Tiers: heavy 1..2,
   light 3..12 under settings schema 4; before it slot N is `Light N` and the heavy tiles show none).
   A tile no stored count chooses and no runner reports is fully grey and dim (`Not chosen`, or
   `Needs settings schema 4` on the heavy tiles before it). Then one `Windows 1`… placeholder per
   chosen Windows runner (unchanged, 102 px), `Not installed` and `Starts nothing`, never shown as
-  running. The tiles fit a 768 px work area; with two Windows cards they fit the default height. The last 60 minutes follows below (scrolls at small sizes).
+  running. The tiles fit a 768 px work area; with one Windows card (the interim runner) they fit the default height, more scroll. The last 60 minutes follows below (scrolls at small sizes).
 - **Error panel:** replaces the right column's cards, with `< Back to runners` on top. It opens by itself
   when the state enters an error class; the `1 problem` button, an error symbol, `--dashboard --problem`
   and a left click in an error state reopen it. It holds the one-liner, raw detail and since, the class's
