@@ -292,7 +292,7 @@ return, on both PowerShell hosts.
   (one fixture is still named `future-schema-4`).
 - **P09.1 (new, allocator module `supervisor/capacity`)**: the direct edge to `deleting` from every live state that has
   a `vm_id` (L4, step 3b; a `creating` reservation without one stays `creating`) and its test;
-  `Invoke-AapReconcile` stops flagging; its `LeaseWallClockHours` range becomes 1..6. Its schema copy stays
+  `Invoke-AapReconcile` stops flagging; its `LeaseWallClockHours` range follows open decision 7 (settings schema 4 keeps 1..72). Its schema copy stays
   byte-identical: this revision did not change `allocator.schema.json`.
 - **P19.1 (new, installer)**: register/remove the watchdog task and admin-only folders (B8). Before enabling a VM profile,
   reconcile every pre-existing managed VM: require a valid B1 Notes record bound to the actual GUID/name, or ordinary

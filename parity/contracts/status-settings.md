@@ -327,7 +327,7 @@ whose deadline is not start plus hours, a cap of 7 hours, a fired cap on a busy 
 real time (30 February), a reason word that is not `vm_lifetime_cap`, `settings_schemas` or
 `applied_settings_schema` naming schema 6, and applied 5 with the five-slot shape. Valid: a live cap (6 h), a reclaim
 (one slot `deleting`, one `quarantined`) and a lab cap of 1 h (these apply settings schema 3: the cap object is per
-slot and does not depend on the tiers), heavy and light slots under schema 5; settings schema 5: main's three tier
+slot and does not depend on the tiers), heavy and light slots under schema 5; settings schema 5: the three schema 4 tier
 payloads at 6 h and one at 1 h. Schemas 3 and 4 keep their `lease_wall_clock_hours` fixtures (1..72).
 `settings-v3/invalid/future-schema-4.json` keeps its name: the schema 3 file refuses it, and it is a future schema
 only for a supervisor that does not accept schema 4.
