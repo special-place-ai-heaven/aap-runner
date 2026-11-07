@@ -570,6 +570,7 @@ mod tests {
             started_at: None,
             cpu_cores: None,
             mem_gib: None,
+            retired: false,
         }
     }
 
