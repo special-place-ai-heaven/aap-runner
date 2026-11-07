@@ -1,6 +1,6 @@
 # Parity implementation ledger
 
-Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-11-07 (ledger reconcile, see "Reconcile - 2026-11-07" below) on origin/main 1759b63: the COMPLETE set of close 6 is unchanged. COMPLETE additions since close 6, each cleanup receipt verified CLEAN-WITH-NOTES by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batches 2-6, 8, 10 and 11): R2.1 (#103), R1.1 (#104), R1.2 (#108), P08.2 (#110), R1.3 (#112), P08.1 (#113), P05.1 (#109), P22.1 (#117), P22.2 (#118), P12.2 (#119) and R1.4 (#120). Coordinator PRs #111 (P17/P18 oracle refresh, batch 7), #106 and #116 (ledger PRs, batch 9) are verified too. IN_PROGRESS: P02.4 and P02.5 (contract revisions merged as #80 and #79 on 2026-10-22, cleanup verified CLEAN-WITH-NOTES 2026-11-06, lab proof and conformance work open), P10.0, P13.5, P13.5b and P16 (#99 retired the maintained sccache wiring; broker support and coordinator-controlled legacy reservations remain; P16 is also R1 step 5). PR_OPEN: P13.5c (#83). The global no-new-dispatch barrier is OPEN: every merged parity receipt and receipted coordinator PR has a verifier verdict. Open PRs: #82 (P09.x hard-cap contract, needed by P10.6/P11.3), #83 (P13.5c), #84 (P02.5 Linux conformance, pester-backends failing). Live rollout of fcb04b1 done 2026-11-06; its canary is green (2026-11-07), finalize and the tray rollout of R1.4 are pending the owner. Owner decision Q1 is SUPERSEDED by the owner's 2026-11-05 runner group decision. The close-6 status follows for history.
+Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-11-07 (ledger reconcile, see "Reconcile - 2026-11-07 (third close)" below) on origin/main 14b652f: the COMPLETE set of close 6 is unchanged. COMPLETE additions since close 6, each cleanup receipt verified CLEAN-WITH-NOTES by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batches 2-6, 8 and 10-12): R2.1 (#103), R1.1 (#104), R1.2 (#108), P08.2 (#110), R1.3 (#112), P08.1 (#113), P05.1 (#109), P22.1 (#117), P22.2 (#118), P12.2 (#119), R1.4 (#120), P00.1 (#122) and P10.1 (#123). Coordinator PRs #111 (P17/P18 oracle refresh, batch 7), #106 and #116 (ledger PRs, batch 9) and #121 (ledger PR, batch 12) are verified too. IN_PROGRESS: P02.4 and P02.5 (contract revisions merged as #80 and #79 on 2026-10-22, cleanup verified CLEAN-WITH-NOTES 2026-11-06, lab proof and conformance work open), P10.0, P13.5, P13.5b, P16 (#99 retired the maintained sccache wiring; broker support and coordinator-controlled legacy reservations remain; P16 is also R1 step 5) and P25.1 (claimed 2026-11-07 on feat/p25-1-tray-self-update, no PR yet). PR_OPEN: P13.5c (#83). The global no-new-dispatch barrier is OPEN: every merged parity receipt and receipted coordinator PR has a verifier verdict. The claim budgets are now enforced from ledger fields: every NOT_STARTED and IN_PROGRESS task declares `tokens` (see the third close). Open PRs: #82 (P09.x hard-cap contract, needed by P10.6/P11.3), #83 (P13.5c), #84 (P02.5 Linux conformance, pester-backends failing). Live rollout of fcb04b1 done 2026-11-06; its canary is green (2026-11-07), finalize and the tray rollout of R1.4 are pending the owner. Owner decision Q1 is SUPERSEDED by the owner's 2026-11-05 runner group decision. The close-6 status follows for history.
 
 Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, P02.2, P03, P03.1, P04, P04.1, P05, P06, P06.1, P06.2, P07, P07.1, P08, P09, P10, P10.2, P10.3, P11, P11.1, P11.2, P12, P13, P13.1, P13.2, P13.3, P13.4, P14, P15, P17, P18 and P20.0 are COMPLETE (P03.1, P04.1, P12 and P14 cleanup-verified 2026-10-22 by an independent read-only verifier). P13.5 and P13.5b are merged and cleanup-verified but IN_PROGRESS: they merged without an independent review, the independent post-merge review returned FIX-FIRST on both, and their remainder item P13.5c is NOT_STARTED. Every cleanup receipt in the parity evidence store (52) now carries an independent verifier verdict (pass 1 on 2026-10-22 at 02:17 CEST for P03.1, P04.1, P12, P13.5, P13.5b, P14 and coordinator PR #72; pass 2 at 03:58 CEST for coordinator PRs #65, #73 and #77), so the global no-new-dispatch barrier is OPEN; the close-4 entry that recorded #65 as verified CLEAN had no recorded evidence before pass 2. Nothing is PR_OPEN, and the contract-revision PRs #79 (P02.5) and #80 (P02.4) are open while their items stay NOT_STARTED. Wave 6 is current. States below are current; everything not listed otherwise is NOT_STARTED. ledger.json is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in WORKTREES.md. Only COMPLETE dependencies unlock work; merged or gate-verified alone does not.
 
@@ -18,6 +18,7 @@ Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, 
   - Q5: even-mode drain when a runner count is raised. DECIDED: accept as is. Open: nothing.
   - Q6: guest identity record (P02.5). APPROVED: an offline record in the Windows unattend/answer file and the Linux cloud-init seed (`vm_id`, `reservation_id`, `lease_generation`, expected scratch disk size/identity), Hyper-V KVP off, SMBIOS UUID rejected. Open: the contract revision is PR #79 (open, not merged), then the four conformance items (P10 WriteUnattend, P11 seed, P14, P15) and the independent security review. As of 2026-11-06: PR #79 merged at `c7ee17a` on 2026-10-22 (cleanup verified CLEAN-WITH-NOTES 2026-11-06); the Linux conformance (P11 seed, P15) is PR #84, open, pester-backends failing; the Windows side (P10 WriteUnattend, P14) has no PR.
   - Q7 (new 2026-11-07, non-blocking): confirm or raise the P22.2 generation minimums (Windows 2 CPU / 4 GiB, Linux 2 CPU / 2 GiB). The values in force are coordinator placeholders chosen with the advisor (PR #118, merged); nothing waits on the answer.
+  - Q8 (new 2026-11-07, non-blocking): Authenticode code-signing for the tray (buy or provision a certificate). Until then P25.1's "unsigned replacement refused" is met by sha256 and PE/version checks; nothing waits on the answer.
 
 ## P00 — Build the worktree, lease and cleanup gate
 
@@ -33,7 +34,7 @@ Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, 
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `tools/parity-work/**`, `tests/parity-work/**`.
 - Deliverable: Land the non-blocking findings from the 2026-10-19 code and security reviews of P00 (see `ledger.json` P00.1 for the full list), plus the build/test/resource tokens and the 3-worker/2-compile/1-suite/1-IO budgets enforced at claim. The budgets must land before wave 4 dispatches P03/P04/P05 in parallel.
 - Acceptance: Each listed finding has a test that fails without its fix; both PowerShell hosts green; budgets refuse a fourth worker, a third compile-heavy job and a second full suite.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #122 merged at `95ed418` (merge commit, accepted head `9791d37`, hosted CI run 42347969064 5/5 green); attempt-1 cleaned and independently verified CLEAN-WITH-NOTES (receipt in the parity evidence store, `verifier-pass-2026-11-06.md` batch 12). The claim budgets read their limits from the ledger fields and their tokens from each task's `tokens` array.
 
 ## P01 — Freeze hosted baselines and consumer inventory
 
@@ -198,7 +199,7 @@ Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, 
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `supervisor/backends/windows/**`, `tests/backends/windows/**`.
 - Deliverable: Make the backend's tests stop leaving SY+BA-locked fixtures that only an owner self-grant can delete; harden clone measurement against files that vanish mid-walk so a transient race no longer destroys the VM; dismount a stale mount left behind.
 - Acceptance: Each item has a test that fails without its fix; the suite leaves nothing that needs elevation to delete; a vanished file during clone measurement retries or fails closed without destroying a healthy VM; a stale mount is dismounted by the reconcile path; both PowerShell hosts green.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE — PR #123 merged at `14b652f` (merge commit, accepted head `bd42b31`, hosted CI run 42348355779 5/5 green); attempt-1 cleaned and independently verified CLEAN-WITH-NOTES (receipt in the parity evidence store, batch 12). The pre-existing SY+BA-locked TEMP folder `C:\Users\poslj\AppData\Local\Temp\x2d5fc1` (not from this item) is left for the owner.
 - Why: P10 shipped with test fixtures that need an owner self-grant to delete, a 'clone not measurable' path that destroys on a transient race, and a stale-mount case it does not dismount.
 
 ## P11 — Implement Linux VM backend
@@ -507,7 +508,7 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Pinned execution lane: Sol high (Claude: Opus high); ownership: `crates/tray/**`.
 - Deliverable: Let the tray replace its own executable through the existing elevated helper: one UAC click, no console window, no wsl.exe, no tokens in the tray; contract docs and both sides' tests updated in the same PR.
 - Acceptance: cargo fmt/clippy/test green; update succeeds with the tray running or quits it itself; a bad or unsigned replacement is refused and the old build stays; independent security review of the helper verb. Overlaps crates/tray/** with P19/P20, so the coordinator serializes the claims.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: IN_PROGRESS — claimed 2026-11-07; worktree on `feat/p25-1-tray-self-update` at `14b652f`, no commits and no PR yet. Until owner decision Q8 (Authenticode certificate) is answered, "unsigned replacement refused" is met by sha256 and PE/version checks.
 - Why: Replacing the tray executable today needs the owner to quit it and swap by hand; the existing elevated helper can do it with one UAC click and no console.
 
 ## P26 — Independent final security and release review
@@ -649,4 +650,62 @@ Remaining blockers:
 - P16 is R1 step 5 (the allocator adopts the Linux pool as its first backend) and is IN_PROGRESS: broker support and coordinator-controlled legacy reservations remain. P19 waits on P16, P22 waits on P16 (and on P20 and P21), and the chain P20 (via P19), P23, P24, P25, P26, P27 and P28 waits behind them.
 - P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
 - P10.6 and P11.3 are ready but their contract revision #82 is unmerged; P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
+- Pending on the live install: the rollout finalize for the 2026-11-06 rollout and the tray rollout of R1.4, both the owner's call.
+
+## Reconcile - 2026-11-07 (third close)
+
+Brings this file and ledger.json from origin/main 1759b63 to origin/main 14b652f. Read from `git log origin/main`, `gh pr view`, the parity evidence store and `verifier-pass-2026-11-06.md` (parity work directory), batch 12.
+
+| Item | Delivery state |
+| --- | --- |
+| P00.1 #122 95ed418 | COMPLETE: receipt P00.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 12. The cleanup gate is hardened and the claim budgets are real; the receipt's follow-up (tokens inert until ledger tasks declare them) is closed by the tokens below |
+| P10.1 #123 14b652f | COMPLETE: receipt P10.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 12. A pre-existing SY+BA-locked TEMP folder (`C:\Users\poslj\AppData\Local\Temp\x2d5fc1`, not from this item) is left for the owner |
+| coordinator PR #121 16c1839 (ledger close 2026-11-07, second) | merged; receipt coord-ledger-close-2026-11-07b-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 12 |
+| P25.1 | IN_PROGRESS: claimed on `feat/p25-1-tray-self-update` (worktree at 14b652f, no commits, no PR). Owner decision Q8 queued |
+
+Counts (ledger.json tasks): 71 items: 46 COMPLETE (was 44), 7 IN_PROGRESS (P02.4, P02.5, P10.0, P13.5, P13.5b, P16, P25.1), 1 PR_OPEN (P13.5c), 17 NOT_STARTED (was 20).
+
+Barrier: OPEN. The verifier pass signed every receipt that was pending: batch 12 coordinator #121, P00.1 (#122) and P10.1 (#123), on top of batches 1-11. This close is itself a coordinator PR; its receipt is written after it merges.
+
+Owner decisions: Q8 new and OPEN (Authenticode code-signing certificate for the tray; until then P25.1's "unsigned replacement refused" is met by sha256 and PE/version checks; non-blocking). Q7 is still open; Q1-Q6 unchanged.
+
+Ready queue (NOT_STARTED items whose prerequisites are all COMPLETE; the barrier is open): P02.1 (lab gate D2 and the owner), P02.3 (owner Q3), P10.6 and P11.3 (contract PR #82 first), P21. Off the queue since the previous section: P00.1 and P10.1 (COMPLETE) and P25.1 (IN_PROGRESS). The other 12 NOT_STARTED items wait on unfinished prerequisites: P12.1, P10.4 and P10.5 on P10.0; P19 on P16; P20 on P19; P22 on P16, P20 and P21; P23 on P22; P24 on P22 and P23; P25 on P21 and P22; P26 on P24 and P25; P27 on P26; P28 on P27.
+
+### Claim tokens (P00.1 budgets, enforced from the ledger)
+
+`tools/parity-work` takes a worker slot plus the `tokens` its ledger task declares at claim. The limits are the ledger fields `max_concurrent_workers` 3, `max_compile_heavy` 2, `max_full_test_suites` 1 and (new) `max_io_heavy` 1; an unknown token is refused at import. A token stays held until the item's leases are released (COMPLETE), so a HOLD or a merged, uncleaned item still counts. Tokens: `compile` builds Rust or other compile-heavy work; `suite` needs a full test suite run for its acceptance; `io` is image build, VM/VHD work, large artifact acquisition or authorized-lab work. Every NOT_STARTED and IN_PROGRESS task declares them; COMPLETE tasks do not, and P13.5c (PR_OPEN, already past its claim) is not tagged. The tags are a conservative judgment from each deliverable and ownership, revisable by a ledger edit while an item is NOT_STARTED (the gate refuses a revision once it has left NOT_STARTED).
+
+| Item | Tokens | Rationale |
+| --- | --- | --- |
+| P02.1 | io | authorized-lab VM work (PowerShell Direct, hvsocket, network matrix); no test suite |
+| P02.3 | (none) | contract text and fixtures checked by validate.py only |
+| P02.4 | io | ARP-poisoning lab test on guest VMs |
+| P02.5 | suite | conformance items (P10 WriteUnattend, P11 seed, P14, P15) run the backends Pester suites; the contract part is validate.py only |
+| P10.0 | suite, io | Pester with Hyper-V fakes plus the lab negative matrix on a disposable guest |
+| P10.4 | suite | supervisor/backends code change, full backends and supervisor suites |
+| P10.5 | suite, io | module Verify change (suite) and a lab confirmation of the answer-file interface name (VM) |
+| P10.6 | suite | Windows backend suite on both PowerShell hosts and hosted CI; the lab proof is gated on the owner and is not in the acceptance |
+| P11.3 | suite | Linux backend fake-backed tests plus the backend suite |
+| P12.1 | suite | supervisor/** and tests/** change, full Pester suites |
+| P13.5 | suite | tests/guests/cache on both PowerShell hosts and real Linux |
+| P13.5b | suite | tests/guests/cache and the Linux backend tests on both PowerShell hosts |
+| P16 | suite | bash suites and shellcheck on real Linux; no image build is required by the acceptance |
+| P19 | compile, suite | Rust helper/win.rs changes (cargo) and the PowerShell installer suites; "all impacted suites pass" |
+| P20 | compile, suite | tray crate changes: cargo build, clippy and test, plus the Pester request tests |
+| P21 | suite, io | tools/image-catalog tests and building or hashing candidate image artifacts |
+| P22 | io | mixed-fleet integration with real guests in the authorized lab; no mock-only pass |
+| P23 | io | consumer fixtures are exercised in the authorized lab |
+| P24 | io | cold/warm/concurrent differential runs on final guests in the lab |
+| P25 | suite, io | tests/image-maintenance suite and rebuild/recertify/rollback of image generations |
+| P25.1 | compile, suite | crates/tray changes: cargo fmt, clippy and test, plus the helper request tests |
+| P26 | (none) | independent review only |
+| P27 | io | stages certified images and runs native canary workflows; owner-authorized |
+| P28 | (none) | documentation closure |
+
+Remaining blockers:
+- P02.1 (the lab proof, gate D2 and the owner) blocks P10.0 and P02.4, and through P10.0 blocks P10.4, P10.5 and P12.1.
+- P16 is R1 step 5 (the allocator adopts the Linux pool as its first backend) and is IN_PROGRESS: broker support and coordinator-controlled legacy reservations remain. P19 waits on P16, P22 waits on P16 (and on P20 and P21), and the chain P20 (via P19), P23, P24, P25, P26, P27 and P28 waits behind them.
+- P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
+- P10.6 and P11.3 are ready but their contract revision #82 is unmerged; P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
+- P25.1 owns `crates/tray/**`, which overlaps P19 and P20; the claim gate refuses an overlapping lease, so only one of them is claimed at a time.
 - Pending on the live install: the rollout finalize for the 2026-11-06 rollout and the tray rollout of R1.4, both the owner's call.
