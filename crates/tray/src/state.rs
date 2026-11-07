@@ -148,8 +148,7 @@ impl Slot {
 
     /// A line under the word, for a state that needs one.
     pub fn note(&self) -> Option<&'static str> {
-        self.retired
-            .then_some("gave up; restarts with the pool")
+        self.retired.then_some("gave up; restarts with the pool")
     }
 }
 
