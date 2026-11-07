@@ -8,8 +8,9 @@
 #   aap-zccache.sh state JOB_ROOT                                                 guest agent status/collect (JSON)
 #   zcshim COMPILER [ARGS...]   (this file installed under the name zcshim)       per compiler call
 # Any wrapper, daemon or budget problem runs the compiler directly (contract rule 7). Nothing here deletes a file
-# from a cache root: retention is the daemon's, and a root over budget stops being used. Every safety check carries
-# a SAFETY:<id> tag; tests/guests/cache/mutate.py breaks each one and expects a test to fail.
+# from a cache root but a deployed daemon copy that is not the pinned release (P22.1): retention is the daemon's, and a
+# root over budget stops being used. Every safety check carries a SAFETY:<id> tag; tests/guests/cache/mutate.py breaks
+# each one and expects a test to fail.
 set -u
 
 ZC_PLATFORM=linux-x86_64
@@ -174,9 +175,20 @@ zc_child_env() { # ROOT_DIR ARTIFACT_BUDGET CMD...
   env "${drop[@]}" ZCCACHE_CACHE_DIR="${dir}" ZCCACHE_MODE=COPY ZCCACHE_CACHE_SIZE_BYTES="${budget}" "$@"
 }
 
+# P22.1: the daemon copy zccache deployed into a root earlier (a shared root outlives jobs) is the pinned zccache member
+# or the root is not primed. No copy is fine: zccache deploys one from the pinned binary. Anything else at that path is
+# removed (that one file or link, never a folder, nothing through a linked version folder) and the root is refused.
+zc_check_deployed() { # ROOT_DIR VERSION MEMBER_SHA256
+  local cp="$1/v$2/zccache-daemon"
+  [[ -e "${cp}" || -L "${cp}" ]] || return 0
+  [[ -f "${cp}" && ! -L "${cp}" && "$(zc_sha "${cp}")" == "$3" ]] && return 0  # SAFETY:LNX-DAEMON-HASH
+  [[ -L "$1/v$2" || -d "${cp}" && ! -L "${cp}" ]] || rm -f -- "${cp}"
+  return 1
+}
+
 # Starts the root's daemon from this (the agent's) environment, never from a job step, under `env -i` with the
 # ZC_DAEMON_ENV allowlist. zccache starts its daemon on demand (README 379-381); an empty journaled session is the
-# documented call that does it. To confirm in lab.
+# documented call that does it. To confirm in lab. Returns 2 when the root holds a daemon copy that is not the pinned one.
 zc_start_daemon() { # INSTALL_DIR JOB_ROOT ROOT_ID -> rewrites config with the daemon's pid and start time
   local install=$1 job=$2 id=$3 cfg zc dir budget out rc sid start n keep=() known pids
   cfg=$(zc_cfg "${job}")
@@ -184,6 +196,8 @@ zc_start_daemon() { # INSTALL_DIR JOB_ROOT ROOT_ID -> rewrites config with the d
   dir=$(jq -r --arg i "${id}" '.roots[$i].dir' "${cfg}")
   budget=$(jq -r --arg i "${id}" '.roots[$i].artifact_budget_bytes' "${cfg}")
   zc_mkdir "${dir}"
+  zc_check_deployed "${dir}" "$(jq -r .zccache.version "${install}/wrappers.json")" \
+    "$(jq -r --arg p "${ZC_PLATFORM}" '.platforms[$p].members[0].sha256' "${install}/wrappers.json")" || return 2
   for n in ${ZC_DAEMON_ENV}; do [[ -n "${!n+x}" ]] && keep+=("${n}=${!n}"); done
   # Output goes to a file, not a pipe: a daemon that inherited the pipe would hold a command substitution open.
   out="${job}/state/prime-${id}.out"
@@ -206,7 +220,7 @@ zc_start_daemon() { # INSTALL_DIR JOB_ROOT ROOT_ID -> rewrites config with the d
 }
 
 zc_init() { # INSTALL_DIR JOB_ROOT BUDGET_BYTES [--shared-roots] [--wrapper-timeout SECONDS] [--wrapper-timeout-long SECONDS]
-  local dir=$1 job=$2 budget=$3 shared=false tmo=60 tmol=600 plat ok=1 m d active=() t tcs digest qualified cfg state detail env_lines="" shim
+  local dir=$1 job=$2 budget=$3 shared=false tmo=60 tmol=600 plat ok=1 m d active=() t tcs digest qualified cfg state detail env_lines="" shim rc
   shift 3
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -255,7 +269,9 @@ zc_init() { # INSTALL_DIR JOB_ROOT BUDGET_BYTES [--shared-roots] [--wrapper-time
       jq -e 'any(.[]; .compiler != "rustc")' <<< "${qualified}" > /dev/null &&
         env_lines+="CMAKE_C_COMPILER_LAUNCHER=${shim}"$'\n'"CMAKE_CXX_COMPILER_LAUNCHER=${shim}"$'\n'
     else
+      rc=$?
       state=degraded; detail="daemon did not start; compilers run directly"
+      [[ ${rc} == 2 ]] && detail="the deployed daemon is not the pinned release; compilers run directly"
     fi
     jq --arg st "${state}" --arg de "${detail}" '.state = $st | .detail = $de' "${cfg}" | zc_write "${cfg}"
   fi
@@ -268,7 +284,7 @@ zc_init() { # INSTALL_DIR JOB_ROOT BUDGET_BYTES [--shared-roots] [--wrapper-time
 # Prints {"attached":bool,"reason":...}; never reads the environment. Only a trusted binding is ever attached, and only
 # when init turned shared roots on.
 zc_attach() { # INSTALL_DIR JOB_ROOT BINDING MOUNT RUNNER_NAME
-  local install=$1 job=$2 binding=$3 mount=$4 runner=$5 cfg reason="" b=""
+  local install=$1 job=$2 binding=$3 mount=$4 runner=$5 cfg reason="" b="" rc
   cfg=$(zc_cfg "${job}")
   b=$(jq -ce . "${binding}" 2> /dev/null) || b=""
   if [[ "$(jq -r .state "${cfg}")" != qualified ]]; then reason="no-qualified-wrappers"
@@ -294,8 +310,10 @@ zc_attach() { # INSTALL_DIR JOB_ROOT BINDING MOUNT RUNNER_NAME
     if zc_start_daemon "${install}" "${job}" shared; then
       jq '.active_root = "shared"' "${cfg}" | zc_write "${cfg}"
     else
+      rc=$?
       jq 'del(.roots.shared)' "${cfg}" | zc_write "${cfg}"
       reason="daemon-start-failed"
+      [[ ${rc} == 2 ]] && reason="daemon-hash-mismatch"
     fi
   fi
   jq --arg r "${reason}" '.last_bind = {attached: ($r == ""), reason: (if $r == "" then null else $r end)}' "${cfg}" | zc_write "${cfg}"
