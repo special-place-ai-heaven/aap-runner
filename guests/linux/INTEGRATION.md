@@ -7,13 +7,15 @@ How the agent works: [README.md](README.md).
 
 1. Install the overlay into each `ubuntu-24.04-x64` generation as root: `bash guests/linux/install.sh` (or
    `install.sh <root>`), from the same commit the catalog records for the `guest-agent` overlay.
+   The overlay's `guest_transport_revision` is **2**, from this conformance record plus the required P02.1 lab, never
+   from a guest reply. P12 must pass the matching admin-approved revision at create, including certification/rollback.
 2. The `actions-runner` overlay: the pinned release extracted to **`/opt/actions-runner`** (root-owned is fine; first boot
    makes it the job user's), with `bin/Runner.Listener` and no `.runner`, `.credentials`, `.credentials_rsaparams`,
    `.env` or `.path` (first boot refuses a root that has any). Never run `config.sh` in the image.
 3. The cache overlay (P13): `aap-zccache.sh install ... /usr/local/libexec/aap-guest/cache ...` as P13's INTEGRATION.md
    says; the agent looks for `/usr/local/libexec/aap-guest/cache/aap-zccache.sh` and runs `init` only if it is there.
 4. The image must ship and enable `hv-kvp-daemon.service` (Ubuntu's `linux-cloud-tools`, matching the `linux-azure`
-   kernel), `jq`, `setpriv` and `runuser` (util-linux), `flock`, `make-ssl-cert` (`ssl-cert`) and `systemd-run`; first
+   kernel), `jq`, `lsblk`, `setpriv` and `runuser` (util-linux), `flock`, `make-ssl-cert` (`ssl-cert`) and `systemd-run`; first
    boot fails at `host_key` without an active KVP daemon.
 5. Re-run P07's secret scan on the final overlaid image: the overlay holds no key or token (the suite checks it against
    the scan's content and file-name rules), and the runner overlay must not bring registration material.
@@ -25,9 +27,10 @@ How the agent works: [README.md](README.md).
 
 ## P11: Linux backend
 
-- Nothing new: the agent implements the backend's P15 list. Two notes for its README ("What is not done" says the agent
-  does not exist; it does now, unrun): `deliver_registration` answers `registered` and starts the runner at once, and
-  `start_runner` answers `listening` or `busy` once the runner is up (both in the backend's state table).
+- The agent binds only from the per-clone NoCloud record at its first probe; it retains cloud-init copies until then.
+  Delivery removes all copies and durably marks cleanup before `registered` and starting the runner; `start_runner`
+  answers `listening` or `busy` only once the runner is up. Exact embedding, admission, reread and final-failure rules:
+  [README.md](README.md#per-clone-offline-identity-guest-transport-revision-2).
 
 ## P08: broker (work folder parity)
 
@@ -38,11 +41,12 @@ How the agent works: [README.md](README.md).
 
 ## P02.1: what the lab must show for this agent
 
-- **vm_id.** The agent reads its own id from `/sys/class/dmi/id/product_uuid` (backend INTEGRATION.md, P15). On Hyper-V
-  that is the VM's SMBIOS (BIOS) GUID, which is not necessarily the VM id `Get-VM` reports. If they differ, every command is
-  refused (fail closed: no clone gets past its first probe). The fallback is the host-to-guest intrinsic KVP item
-  `VirtualMachineId` (pool 3, written by Hyper-V, not by the host's code): a contract wording change in guest-transport.md
-  and the backend's INTEGRATION.md, and a one-line change in `own_vm_id`.
+- **Offline identity.** No SMBIOS/KVP identity fallback exists. Show cloud-init ignores the line-2 identity comment yet
+  preserves it in cached raw user-data the reader scans, and that the `instance` alias is accepted for both relative and
+  absolute `/var/lib/cloud/instances/<id>` targets only when the target directory is plain and contained. This record
+  must match the journaled Hyper-V VM id and `lsblk` must see only the OS disk. Show the opaque `instances/*/obj.pkl`
+  cache is retained until binding, deleted before registration, and any later reappearance fails closed alongside any
+  reappearing seed/text copy. Simulated tests are not this lab proof.
 - **Host key.** The pool-1 record the agent writes appears in `Msvm_KvpExchangeComponent.GuestExchangeItems` as
   `aap-ssh-host-key-ed25519` with exactly `ssh-ed25519 <key>`; `hv_kvp_daemon` picks up a pool file
   replaced by a rename (a new inode: the daemon must reopen it by name; its `fcntl` lock was on the old one).

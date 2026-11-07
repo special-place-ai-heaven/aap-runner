@@ -25,7 +25,8 @@ requests ([../windows/INTEGRATION.md](../windows/INTEGRATION.md)) apply here too
 4. **Every tick**, for every live reservation with `profile` `linux` and `backend` `hyperv-vm`:
 
    ```powershell
-   $res = Invoke-AapLinStep -Backend $L -Reservation $r -BaseSha256 <approved-images.json pin of $r.image_generation>
+   $res = Invoke-AapLinStep -Backend $L -Reservation $r -BaseSha256 <approved-images.json pin of $r.image_generation> `
+       -CatalogGuestRevision <catalog guest-agent overlay guest_transport_revision> -ApprovedGuestRevision <approved-images.json revision>
    ```
 
    Same contract as `Invoke-AapWinStep` (one runspace per context, the per-reservation step lock, `Action`/`Code`/`Summary`,
@@ -37,6 +38,11 @@ requests ([../windows/INTEGRATION.md](../windows/INTEGRATION.md)) apply here too
    -IoMbps <io>`: the Linux profile has no scratch disk, and create refuses a reservation with `scratch_gib` other than 0
    (`AAP_BadRequest`). Initialize the allocator with `-LinuxBackend hyperv-vm` for this profile. Request no Linux VM while a
    storage or host problem is listed or the P10.0 module is missing.
+   Every new or recovered `create` additionally requires `-CatalogGuestRevision` and `-ApprovedGuestRevision` to both be
+   integer **2**. Missing, string, floating-point, bool, unsupported or mismatched values throw `AAP_GuestRevision` before
+   the create intent or any provider/guest operation. The backend reads neither catalog nor approval files: P12 must pass
+   both admin-owned values without coercion. Candidate certification and rollback generations get no exemption. Wire
+   replies remain schema 1, so a guest's claim or reply cannot substitute for admission (image-catalog.md, rule 8).
 6. **Reconcile.** One inventory for both profiles: `Get-AapLinInventory` and `Get-AapWinInventory` list the same VMs,
    folders and journals; pass either, never both. `-BrokerStatus` per reservation: `Get-AapLinBrokerStatus` for `linux`,
    `Get-AapWinBrokerStatus` for `windows` (the Linux one reads a journal with a `windows` record as unreadable and returns
@@ -57,15 +63,31 @@ requests ([../windows/INTEGRATION.md](../windows/INTEGRATION.md)) apply here too
   the seed writes (`restrict,command="/usr/local/libexec/aap-guest/agent" ssh-ed25519 ... aap-management`). stdin: the
   envelope line, a newline, then exactly `payload_bytes` bytes (tolerate a leading UTF-8 BOM). stdout: one reply line;
   exit 0 after every reply, a refusal included: any other exit is `child_exit`, hostile.
-- The refusals of guest-transport.md, Envelope: own `vm_id` from the hypervisor (`/sys/class/dmi/id/product_uuid`, lower
-  case), first `lease_generation`, `seq` strictly greater than the last accepted one (gaps are normal, including across a
-  host supervisor restart, which continues above its persisted mark), fresh `nonce`, one-shot classes once, not expired.
-  Echo the request's `nonce` and `seq`.
+- **Offline identity**, not SMBIOS/KVP or first-writer binding: `create` writes the canonical revision-2 record in
+  `user-data` line 2 as one YAML comment, `# aap-guest-identity: {"schema":2,"kind":"guest_identity","vm_id":"<uuid>","reservation_id":"r-<16 hex>","lease_generation":<int>,"scratch":null}`.
+  It derives `vm_id` from the checked Attach declaration (the journaled Hyper-V id), the other fields from the reservation.
+  UUID/id are lowercase, generation integer 1..999999999, scratch null; no additional keys, host data or secrets.
+  `New-AapLinSeed` requires `-ReservationId` and `-LeaseGeneration` beside its existing parameters. JSON is compact in
+  that key order, user-data UTF-8 without BOM with LF; cloud-init ignores the comment. `meta-data` and `network-config`
+  retain their existing roles. The backend builds `seed.iso.tmp`, flushes and verifies size/hash, then atomically renames
+  or replaces `<clone_root>/<reservation_id>/seed.iso`. Retry removes unpublished `.tmp`/`.files` leftovers and replaces
+  the complete seed, never appends. The same journaled VM and reservation produce the same identity even with a fresh
+  public key/instance id. Rewriting a clone after boot intent or while not Off is refused before credential replacement.
+- The first `probe` binds exactly one valid offline record in root-only durable agent state. Every command compares
+  all three identity fields with that binding before replay/nonce/one-shot/expiry checks; no first envelope can choose
+  them. Echo request `nonce` and `seq` as before. The host verifies the same fields against its reservation in every
+  reply (first probe included); a wrong echo is hostile and destroys the clone. Missing/malformed identity makes the
+  first probe `error`/`failed`, and a replacement/after-cleanup record `refused`/`failed`; the backend abandons it. Old
+  agents' byte-identical replies are excluded at admission, not guessed from a reply. `identity_exchange` is test evidence,
+  not a new wire document. See [the reader's exact rules](../../../guests/linux/README.md#per-clone-offline-identity-guest-transport-revision-2).
 - Replies the backend accepts per command: as the Windows twin (its INTEGRATION.md, P14), `probe` `ready` only after
   first boot finished (cloud-init done, the host key published, the job user present, the post-generation scripts run).
-- **Bootstrap material**: before answering `listening`, delete what the guest got for bootstrap: the JIT config wherever
-  it was held, and the cloud-init seed's copies (`/var/lib/cloud/instance/user-data.txt` and the seed cache). The host
-  ejects the seed after the first `ready` probe; nothing in it is secret, but nothing should keep it.
+- **Bootstrap material**: firstboot retains cloud-init copies until the first probe binds. Before delivery answers
+  `registered` (and before any `listening`/`busy`/`job_done`), remove all seed/cache copies and durably mark cleanup.
+  Before cleanup, every command rereads identical records without rebinding; after cleanup, any record, identical or not,
+  is final. The guest checks all instances' `user-data.txt*`/`cloud-config.txt*` and the seed cache without following
+  arbitrary links. Its binding, cleanup and final-failure state survive agent restarts and guest reboots. The host
+  ejects/deletes the ISO after the first `ready` probe. No input text or path is reflected in an identity failure.
 - Start `Runner.Listener run` as `runner` (uid 1001) with `ACTIONS_RUNNER_INPUT_JITCONFIG` in its environment only;
   `/etc/environment` loaded as the runner loads it; `loginctl enable-linger runner`; crash dumps off for the runner.
 - **No account with uid 1000**: the seed creates only `runner`; the image must not ship one (P07's seal check removes the

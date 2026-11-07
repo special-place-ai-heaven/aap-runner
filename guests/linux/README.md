@@ -3,7 +3,7 @@
 The guest side of a Linux runner clone (profile `ubuntu-24.04`): the management agent the host drives over SSH on vsock
 5222, and the first-boot step that turns a fresh clone of the sealed image into the machine a hosted job expects. It is
 the catalog's `guest-agent` overlay; P21 installs it into each generation with `install.sh`. Contracts:
-[guest-transport.md](../../parity/contracts/guest-transport.md) (version 1; envelope, Linux candidate, runner start),
+[guest-transport.md](../../parity/contracts/guest-transport.md) (revision 2; envelope, offline identity, Linux candidate, runner start),
 [broker.md](../../parity/contracts/broker.md) (JIT delivery). What the host side expects of it:
 [supervisor/backends/linux/INTEGRATION.md](../../supervisor/backends/linux/INTEGRATION.md), P15; what the image expects:
 [images/ubuntu-24.04/INTEGRATION.md](../../images/ubuntu-24.04/INTEGRATION.md), P15. The compile cache it wires is P13's
@@ -32,15 +32,14 @@ Each connection runs the agent once: stdin is the envelope line (a leading UTF-8
 `payload_bytes` bytes; stdout is one `guest_reply` line; exit 0 after every reply, a refusal included. An envelope that
 is not exactly the ten `host_cmd` fields with their schema types and patterns, or a line over 1024 bytes, gets no reply
 (the host counts a failed guest and sends again with a higher `seq`). Under a lock (`/var/lib/aap-guest/lock`, waited
-20 s) the agent refuses, in this order: another `vm_id` (this VM's, from `/sys/class/dmi/id/product_uuid`, lower case),
-a lease generation other than the first it accepted, a `seq` not above the last accepted one (gaps are normal), a nonce
-it saw, a one-shot class (`deliver_registration`, `start_runner`, `shutdown`) that already ran, an expired command, and
-`payload_bytes` other than non-zero for `deliver_registration` and zero for the rest. An accepted command moves the
-marks (`generation`, `seq`, `nonces`, `shots` in `/var/lib/aap-guest`, root 0700) and flushes them (`sync -f`) before any
-work, so a reply lost after that leaves a gap, never a false refusal. If any mark cannot be written or flushed (a full or
-broken state file system), the command does not run and gets no reply (a failed guest): it can never run later under an
-old `seq` or without its one-shot mark. Core dumps are off (`RLIMIT_CORE` 0) from the agent's first statement, in every
-mode, before it reads any input; if the limit cannot be set it stops there, with no reply.
+20 s) the first `probe` binds the offline identity described below. Every command must match its `vm_id`, `reservation_id`
+and `lease_generation`; no value is learned from SMBIOS, KVP or the first envelope. The agent then refuses a `seq` not
+above the last accepted one (gaps are normal), a nonce it saw, a one-shot class (`deliver_registration`, `start_runner`,
+`shutdown`) that already ran, an expired command, or `payload_bytes` other than non-zero for `deliver_registration` and
+zero for the rest. Accepted commands move the marks (`seq`, `nonces`, `shots` in `/var/lib/aap-guest`, root 0700) and flush
+them (`sync -f`) before work. If a mark cannot be written or flushed the command gets no reply and never runs under an
+old sequence or without its one-shot mark. Core dumps are off (`RLIMIT_CORE` 0) from the first statement, in every mode,
+before input; failure to set the limit stops there without a reply.
 
 | Command | Answer |
 |---|---|
@@ -58,6 +57,58 @@ input and uses for display and the summary only.
 Accepted residual (security review, low 1): root inside the guest can tamper with the agent's state and replay a command
 it once saw over the local vsock socket. That gains nothing outside this VM: the VM is destroyed after its one job, and
 the reservation id and nonces are not guessable from outside it.
+
+## Per-clone offline identity (guest-transport revision 2)
+
+`New-AapLinSeed` writes one ignored YAML comment as line 2 of the clone's NoCloud `user-data`, immediately after
+`#cloud-config`. Its payload is compact JSON, in this key order:
+
+```text
+# aap-guest-identity: {"schema":2,"kind":"guest_identity","vm_id":"6f1d2c3b-4a59-4e6f-8a7b-9c0d1e2f3a4b","reservation_id":"r-1a2b3c4d000000b1","lease_generation":7,"scratch":null}
+```
+
+The UUID and reservation id are lowercase, the generation an integer in 1..999999999. The Linux profile has only its
+OS disk: `scratch` must be null and `lsblk -dn -o TYPE` must report exactly one disk. Extra keys, a scratch object,
+duplicate JSON keys, schema 1, a wrong type or a malformed marker fail closed. The record carries no host name, host
+path, user name, credential or token. It is not a YAML setting, a KVP item or a SMBIOS UUID.
+
+The reader scans `/var/lib/cloud/instances/*/user-data.txt*` and `cloud-config.txt*`, a plain `/var/lib/cloud/instance`
+directory if present, and all files below `/var/lib/cloud/seed`. Cloud-init's `instance` alias may use its normal
+relative `instances/<id>` or absolute `/var/lib/cloud/instances/<id>` target; only a one-component target under the
+plain `instances` directory is accepted, and target directories that are links are refused. Arbitrary links are never
+followed. Cloud-init's `/var/lib/cloud/instances/*/obj.pkl` datasource cache is retained as opaque data until cleanup;
+the agent never parses it as the identity source, but removes every cache entry and requires absence afterward because
+it can retain the original user-data. Text material must be readable, plain ASCII and at most 1 MiB. A marker anywhere
+makes that line a candidate; it must start with `# aap-guest-identity: `. Two candidates in one file are refused even if
+identical; identical records across cached text files are copies of one record, while conflicting copies are refused.
+A merged cloud-config with no marker is normal: cloud-init ignores comments.
+
+1. The **first probe** validates the material and disk inventory, then atomically saves the canonical record as
+   `/var/lib/aap-guest/identity.json` (0600, inside root-only state) and flushes it. It never rebinds; the file survives
+   separate SSH invocations, agent restarts and guest reboots. A non-probe before binding is refused without binding.
+2. **Before cleanup**, every command checks the material still holds exactly the bound record. The first-boot service
+   deliberately leaves copies in place so it cannot erase identity before the host's first probe. A mismatched command
+   is refused without changing the binding or sequence marks; a later correct command can still proceed.
+3. **Delivery cleanup**, before registration is handed to the runner or `registered`/`listening` is answered, deletes the
+   seed cache, each text copy and every opaque `obj.pkl`, checks all those locations are absent, then durably records
+   `identity.cleaned`. A crash between removal and the cleanup mark fails closed rather than rebinding. A cleanup mark
+   with lost binding state also refuses a new binding, even if a valid seed record reappears. The host separately ejects/
+   deletes `seed.iso` after `ready`.
+4. **After cleanup**, before every command (including replays), any text record or `obj.pkl` cache entry found again,
+   identical or not, is a final failure. A malformed, missing, unreadable or changed record before cleanup is final too.
+   `identity.failed` persists this terminal state: first-probe input errors answer `error`/`failed`, later violations
+   `refused`/`failed`, with only the fixed printable-ASCII diagnostic `identity record invalid`; no input text or path is reflected.
+
+Wire replies remain schema 1. `identity_exchange` schema 2 is test evidence, not a new wire reply: `agent_test.sh`
+validates successful replies with the bound record and a reread of actual copies (or their absence after cleanup).
+Old agents cannot be identified from their byte-identical replies: `create` must first admit matching catalog and
+admin-approved guest-agent revision 2 (image-catalog rule 8), including candidates and rollback generations.
+
+The host tests compare the real writer's output byte-for-byte with `tests/guests/linux/fixtures/seed-user-data.golden`;
+the guest tests consume that same fixture. For a direct real-writer-to-real-reader run, render with
+`pwsh -File tests/backends/linux/Write-IdentitySeed.ps1 -Output <temporary-user-data>`, then run the Linux suite with
+`AAP_SEED_USER_DATA=<that-file> bash tests/guests/linux/agent_test.sh`. No VM, cloud-init daemon or live state is used.
+
 
 ## The registration path
 
@@ -88,7 +139,7 @@ never resumed: after any job, `/imagegeneration` (mode 777 upstream) may hold pl
 |---|---|
 | `host_key` | `/etc/ssh/ssh_host_ed25519_key.pub` must be `ssh-ed25519` with a 68-character key; `hv-kvp-daemon.service` must be active; publishes exactly `ssh-ed25519 <key>` as the guest-to-host KVP item `aap-ssh-host-key-ed25519` (pool 1 record: 512-byte key, 2048-byte value, NUL padded; an earlier record of that key replaced, others kept; the new pool file is written beside it and renamed over it only when every read, copy and write worked and its size is exactly the records it should hold; otherwise the old pool stays) |
 | `identity` | `runner` has uid 1001 and home `/home/runner`, is in `adm`, `users`, `docker` and `systemd-journal`, and runs `sudo -n true`; no account has uid 1000 |
-| `scrub` | removes cloud-init's seed copies: `/var/lib/cloud/seed` and every instance's `user-data.txt*` and `cloud-config.txt` |
+| (cleanup) | not a first-boot step: seed copies remain until identity binds at the first probe, then delivery scrubs them before registration |
 | `tls` | `make-ssl-cert generate-default-snakeoil --force-overwrite`; both snakeoil files must exist (P07's verification runs the same) |
 | `post_generation` | each `*.sh` in `/imagegeneration/post-generation`, through `bash`, in `find`'s order, as root; any failure fails the step after all ran (P07's `run_verify` does the same) |
 | `linger` | `loginctl enable-linger runner` |

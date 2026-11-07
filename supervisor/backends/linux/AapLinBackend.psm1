@@ -4,7 +4,7 @@
 # differs: the host never mounts a guest disk (Windows cannot read ext4), files go in on a host-built NoCloud seed ISO that
 # holds only public material, and the management channel is OpenSSH over a Hyper-V socket with a pinned host key.
 #
-# Contracts: parity/contracts/backend-lifecycle.md (version 2), guest-transport.md (version 1), allocator.md (version 2,
+# Contracts: parity/contracts/backend-lifecycle.md (version 2), guest-transport.md (version 2), allocator.md (version 2,
 # "Provider rules for P10 and P11") and broker.md (version 1).
 #
 # Invoke-AapLinStep moves one reservation one step, by its allocator state:
@@ -557,12 +557,18 @@ function New-AapLinSeed {
        default route, the resolvers as its DNS servers, no DHCP and no router advertisements, on the one hv_netvsc
        interface (matched by driver: Hyper-V may assign the MAC address at first start). Nothing on the host serves DHCP. #>
     param([Parameter(Mandatory)][string]$VmName, [Parameter(Mandatory)][string]$InstanceId, [Parameter(Mandatory)][string]$PublicKey,
-        [Parameter(Mandatory)]$Network)
+        [Parameter(Mandatory)]$Network, $ReservationId = $null, $LeaseGeneration = $null)
     if ($VmName -cnotmatch $script:VmNameRe -or $InstanceId -cnotmatch '^[a-z0-9-]{1,64}\z' -or $PublicKey -cnotmatch $script:Ed25519Re) { throw 'AAP_SeedInvalid: the VM name, instance id or public key' }   # check:seed-values
     # Only a declaration the shared check accepts for this VM name becomes YAML: every value is then a canonical address.
     $req = @{ VmId = [string](Get-AapLinField $Network 'vm_id'); VmName = $VmName; Profile = 'linux' }
     $bad = @(Get-AapHostNetworkDeclarationProblems -Request $req -Declaration $Network)
     if ($bad.Count) { throw "AAP_SeedInvalid: the network declaration: $(Get-AapLinLine ($bad -join '; ') 160)" }   # check:seed-network
+    $vmId = Get-AapLinField $Network 'vm_id'
+    if ($vmId -isnot [string] -or $vmId -cnotmatch $script:GuidRe -or $ReservationId -isnot [string] -or $ReservationId -cnotmatch $script:RidRe -or -not ($LeaseGeneration -is [int] -or $LeaseGeneration -is [long]) -or $LeaseGeneration -lt 1 -or $LeaseGeneration -gt 999999999) {   # check:seed-identity
+        throw 'AAP_SeedInvalid: identity record: vm_id, reservation_id or lease_generation'
+    }
+    # Closed canonical JSON, from validated parts only. A YAML comment is ignored by cloud-init, not a private YAML key.
+    $identity = '{"schema":2,"kind":"guest_identity","vm_id":"' + $vmId + '","reservation_id":"' + $ReservationId + '","lease_generation":' + $LeaseGeneration.ToString($script:Inv) + ',"scratch":null}'
     # The lines below put these values into YAML unquoted. That is safe only because the shared check above accepts
     # canonical dotted IPv4 (and a prefix length of digits) and nothing else; checked again here, so a looser shared
     # check can never write a line of its own into the guest's network-config.
@@ -595,6 +601,7 @@ function New-AapLinSeed {
         ) -join "`n") + "`n"
     $userData = @"
 #cloud-config
+# aap-guest-identity: $identity
 hostname: $VmName
 preserve_hostname: false
 disable_root: false
@@ -1104,6 +1111,7 @@ function Invoke-AapLinCreate($B, $r, [string]$BaseSha256, $j) {
     $id = [string]$j.VmId
     if ($id) {
         if ($named.Count -ne 1 -or $named[0].Id -cne $id) { throw "AAP_VmMismatch: the VM the journal recorded is not the one VM named $name" }   # check:vm-journaled
+        if ($j.Has['boot/intent'] -or $named[0].State -cne 'Off') { throw 'AAP_VmMismatch: create may rewrite only a never-booted clone' }   # check:seed-never-booted
     } elseif ($named.Count) {
         throw "AAP_VmNotJournaled: a VM named $name exists that this journal never recorded; it is destroyed, never adopted"   # a crash between New-VM and its record
     }
@@ -1136,19 +1144,24 @@ function Invoke-AapLinCreate($B, $r, [string]$BaseSha256, $j) {
     $decl = Connect-AapLinNetwork $B $net
     Invoke-AapLinFault 'create:after-attach'
     $seed = Join-Path $clone 'seed.iso'
-    Remove-AapLinTree $seed $clone
-    $files = New-AapLinSeed -VmName $name -InstanceId ('aap-' + $rid.Substring(2) + '-' + [long]$r.lease_generation + '-' + (New-AapLinHex 4)) -PublicKey $public -Network $decl
-    $made = & $B.Provider.NewSeedImage @{ Path = $seed; Label = 'CIDATA'; Files = $files }
-    if ((Get-AapLinPathKind $seed) -cne 'file') { throw 'AAP_SeedInvalid: no seed image was written' }
-    # The image on disk read back against what the writer produced, its size and SHA-256, through a handle that shares
-    # only reading: a short or lost write never becomes the VM's DVD.
-    $hold = New-Object IO.FileStream($seed, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $kind = Get-AapLinPathKind $seed
+    if ($kind -cne 'absent' -and $kind -cne 'file') { throw 'AAP_SeedInvalid: the seed path is not a plain file' }
+    $tmpSeed = $seed + '.tmp'
+    # An interrupted writer leaves only unpublished material. Remove it without following links, then rebuild whole.
+    foreach ($p in @($tmpSeed, ($tmpSeed + '.files'), ($seed + '.files'))) { Remove-AapLinTree $p $clone }
+    $files = New-AapLinSeed -VmName $name -InstanceId ('aap-' + $rid.Substring(2) + '-' + [long]$r.lease_generation + '-' + (New-AapLinHex 4)) -PublicKey $public -Network $decl -ReservationId $rid -LeaseGeneration $r.lease_generation
+    $made = & $B.Provider.NewSeedImage @{ Path = $tmpSeed; Label = 'CIDATA'; Files = $files }
+    if ((Get-AapLinPathKind $tmpSeed) -cne 'file') { throw 'AAP_SeedInvalid: no seed image was written' }
+    # Verify the complete unpublished ISO through a read-only handle before replacing the old seed atomically.
+    $hold = New-Object IO.FileStream($tmpSeed, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
     try {
         $size = [long](Get-AapLinField $made 'Bytes')
-        if ($size -le 0 -or $hold.Length -ne $size -or [string](& $B.Provider.HashFile @{ Path = $seed; Stream = $hold }) -cne [string](Get-AapLinField $made 'Sha256')) {   # check:seed-written
+        if ($size -le 0 -or $hold.Length -ne $size -or [string](& $B.Provider.HashFile @{ Path = $tmpSeed; Stream = $hold }) -cne [string](Get-AapLinField $made 'Sha256')) {   # check:seed-written
             throw 'AAP_SeedInvalid: the seed image on disk is not the image that was written'
         }
     } finally { $hold.Dispose() }
+    Invoke-AapLinFault 'create:before-seed-publish'
+    if ($kind -ceq 'file') { [IO.File]::Replace($tmpSeed, $seed, [NullString]::Value) } else { [IO.File]::Move($tmpSeed, $seed) }   # check:seed-atomic
     Invoke-AapLinFault 'create:after-seed'
     & $B.Provider.SetSeed @{ VmId = $id; Seed = $seed }   # the one DVD drive; setting the same path again is idempotent
     Assert-AapLinVmConfig $B $r $id $clone $os $seed
@@ -1669,7 +1682,8 @@ function Invoke-AapLinStep {
        generation's pinned hash (approved-images.json); only create uses it. Returns ReservationId, LeaseGeneration,
        Action, State, Code (a fixed code) and Summary (collect only; guest-authored text, bounded and printable). #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)][hashtable]$Backend, [Parameter(Mandatory)]$Reservation, [string]$BaseSha256 = '')
+    param([Parameter(Mandatory)][hashtable]$Backend, [Parameter(Mandatory)]$Reservation, [string]$BaseSha256 = '',
+        $CatalogGuestRevision = $null, $ApprovedGuestRevision = $null)
     $B = $Backend
     $r = $Reservation
     if ((Get-AapLinField $r 'profile') -cne 'linux' -or (Get-AapLinField $r 'backend') -cne 'hyperv-vm' -or [string](Get-AapLinField $r 'reservation_id') -cnotmatch $script:RidRe) {
@@ -1678,10 +1692,10 @@ function Invoke-AapLinStep {
     $lock = $null
     try { $lock = New-Object IO.FileStream((Join-Path $B.JournalRoot ([string]$r.reservation_id + '.lock')), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None, 1, [IO.FileOptions]::DeleteOnClose) } catch { $lock = $null }
     if ($null -eq $lock) { return (New-AapLinResult $r 'held' 'step_in_progress') }   # check:step-lock
-    try { Step-AapLinOne $B $r $BaseSha256 } finally { $lock.Dispose() }
+    try { Step-AapLinOne $B $r $BaseSha256 $CatalogGuestRevision $ApprovedGuestRevision } finally { $lock.Dispose() }
 }
 
-function Step-AapLinOne($B, $r, [string]$BaseSha256) {
+function Step-AapLinOne($B, $r, [string]$BaseSha256, $CatalogGuestRevision, $ApprovedGuestRevision) {
     try { $j = Read-AapLinJournal $B $r }
     catch {
         # Journal unreadable: quarantine the reservation, capacity held (backend-lifecycle.md, crash table); a deleting
@@ -1690,6 +1704,13 @@ function Step-AapLinOne($B, $r, [string]$BaseSha256) {
         $qk = $(if ($s -ceq 'deleting') { 'teardown_failed' } else { 'crash' })
         if (@('creating', 'ready', 'busy', 'draining', 'collecting', 'deleting') -ccontains $s) { [void](Set-AapLinState $B $r quarantined -Kind $qk -Reason 'journal unreadable; capacity held') }   # check:journal-deleting
         return (New-AapLinResult $r 'held' 'journal_unreadable')
+    }
+    # The wire is still schema 1: a guest reply cannot certify its agent revision. Only these admin-owned pins admit it.
+    # Check every new/recovered create before its intent, limits, VM/disk/key/seed operations or any guest command.
+    if ($r.state -ceq 'creating' -and -not $j.Has['create/done'] -and -not $j.Has['create/failed'] -and -not $j.Has['boot/failed'] -and -not $j.Has['ready/failed']) {
+        if (-not ($CatalogGuestRevision -is [int] -or $CatalogGuestRevision -is [long]) -or -not ($ApprovedGuestRevision -is [int] -or $ApprovedGuestRevision -is [long]) -or $CatalogGuestRevision -ne 2 -or $ApprovedGuestRevision -ne 2) {   # check:guest-revision
+            throw 'AAP_GuestRevision: catalog and approved guest-agent revisions must both be integer 2'
+        }
     }
     $g = Get-AapLinGuest $B $r $j
     # A hostile guest is final: once journaled, the slot only goes down, even after a crash between the journal and the

@@ -281,7 +281,7 @@ Describe 'the per-clone ssh client configuration' {
         $w = New-LinWorld
         $B = New-LinBackend $w
         $r = New-LinReservation $w
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         $dir = Join-Path $w.Clones "$($r.reservation_id)\ssh"
         $vmId = @(Get-LinVms $w)[0].Id
         $cfg = [IO.File]::ReadAllText((Join-Path $dir 'ssh_config'))
@@ -305,7 +305,7 @@ Describe 'the per-clone ssh client configuration' {
         $w = New-LinWorld
         $B = New-LinBackend $w
         $r = New-LinReservation $w
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         $admin = (New-Object Security.Principal.WindowsPrincipal ([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
         $sids = @(@('S-1-5-18', 'S-1-5-32-544') + @($(if (-not $admin) { $script:UserSid })) | Sort-Object -Unique)
         $acl = Get-Acl -LiteralPath (Join-Path $w.Clones "$($r.reservation_id)\ssh")

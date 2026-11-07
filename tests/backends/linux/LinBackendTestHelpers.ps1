@@ -186,7 +186,7 @@ function New-LinProvider {
             CheckpointType = 'Disabled'; AutomaticStopAction = 'TurnOff'; AutomaticStartAction = 'Nothing'; DynamicMemory = $false; NestedVirtualization = $true
             GuestServiceInterface = $false; KeyValuePairExchange = $true; ConfigurationLocation = $a.Path; SnapshotFileLocation = $a.Path; SmartPagingFilePath = $a.Path
             Disks = @($a.OsDisk); Dvds = @(); DvdDrives = 1; ComPorts = 0; GpuPartitions = 0; AssignedDevices = 0; Booted = $false; HostKey = ''; AuthKey = ''; OsDisk = $a.OsDisk
-            Address = ''
+            Address = ''; IdentityRecord = ''
         }
         if (Get-LinKnob $w 'ExtraDisk' $false) { $vm.Disks = @($vm.Disks) + (Join-Path $a.Path 'extra.vhdx') }
         Save-LinVms $w (@(Get-LinVms $w) + [pscustomobject]$vm)
@@ -234,6 +234,9 @@ function New-LinProvider {
                     $s = Read-LinSeed $seed[0]
                     $m = [regex]::Match([string]$s.files.'user-data', 'restrict,command="[^"]+" (ssh-ed25519 [A-Za-z0-9+/]+)')
                     if ($m.Success) { $v.AuthKey = $m.Groups[1].Value }
+                    # Cloud-init's raw cached copy, independent of the host's first command and of later seed ejection.
+                    $records = [regex]::Matches([string]$s.files.'user-data', '(?m)^# aap-guest-identity: (.+)$')
+                    if ($records.Count -eq 1) { $v.IdentityRecord = $records[0].Groups[1].Value }
                     # No DHCP: the guest's address is the one its seed's network-config gives it, or none.
                     $nm = [regex]::Match([string]$s.files.'network-config', '(?m)^    addresses: \[([0-9.]+)/[0-9]+\]$')
                     if ($nm.Success) { $v.Address = $nm.Groups[1].Value }
@@ -303,9 +306,9 @@ function New-LinNetwork {
 
 # The guest behind its sshd and forced command, file-backed per VM. ssh.exe's own failures come back as exit 255 with no
 # reply: the VM not running, sshd not up yet (knob NotUp, a count), a host key other than the one pinned in the call's
-# known_hosts, or a client key other than the one its seed authorized. The agent then refuses a wrong vm_id, a lease
-# generation other than the first it saw, a seq not strictly greater than the last one it accepted (gaps are fine), a
-# reused nonce, an expired command and a second one-shot command. Knob 'Guest' maps a command (or '*') to a misbehaviour;
+# known_hosts, or a client key other than the one its seed authorized. The simulated agent binds the offline record at
+# first probe, keeps it across invocations, verifies it before cleanup and refuses any reappearance afterwards. It also
+# checks seq/nonces/one-shots/expiry. Knob 'Guest' maps a command (or '*') to a hostile reply;
 # 'LoseReply' a count of calls the agent accepts whose reply never arrives (ssh exit 255). A started runner writes the
 # job's state into the clone's disk, as a job writes to its root file system.
 function New-LinGuest {
@@ -324,19 +327,38 @@ function New-LinGuest {
         if (-not [IO.File]::Exists($kh) -or [IO.File]::ReadAllText($kh) -cne "aap-guest $($vm[0].HostKey)`n") { Add-LinCall $w "GuestHostKeyRefused $($Call.VmId)"; return $fail }
         if ((Get-LinPublicOf ([IO.File]::ReadAllBytes((Join-Path $dir 'id_ed25519')))) -cne $vm[0].AuthKey) { Add-LinCall $w "GuestAuthRefused $($Call.VmId)"; return $fail }
         $sf = Join-Path $w.Fake "guests\$($Call.VmId).json"
-        $st = Read-LinJson $sf ([pscustomobject]@{ Seq = 0; Gen = 0; Nonces = @(); Shots = @(); Probes = 0; PayloadSha = ''; PayloadLen = 0 })
+        $st = Read-LinJson $sf ([pscustomobject]@{ Seq = 0; Record = ''; Cleaned = $false; Failed = $false; Nonces = @(); Shots = @(); Probes = 0; PayloadSha = ''; PayloadLen = 0 })
         $status = 'ok'; $state = 'booting'; $exit = $null; $diag = ''
         $shot = @('deliver_registration', 'start_runner', 'shutdown') -contains $hc.cmd
         $expired = [DateTime]::ParseExact($hc.expires_at, "yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture, 'AssumeUniversal, AdjustToUniversal') -lt [DateTime]::UtcNow.AddSeconds([double](Get-LinKnob $w 'ClockOffset' 0) - 5)
-        if ($hc.vm_id -ne $Call.VmId -or ($st.Gen -and $st.Gen -ne $hc.lease_generation) -or $hc.seq -le $st.Seq -or @($st.Nonces) -contains $hc.nonce -or
-            ($shot -and @($st.Shots) -contains $hc.cmd) -or $expired) {
+        $identityFailure = ''; $bound = $null
+        if ($st.Failed) { $identityFailure = 'refused' }
+        elseif (-not $st.Record) {
+            $candidate = $null
+            try { if ($vm[0].IdentityRecord) { $candidate = ConvertFrom-LinJson $vm[0].IdentityRecord } } catch { $candidate = $null }
+            if ($null -eq $candidate -or $candidate.schema -ne 2 -or $candidate.kind -cne 'guest_identity' -or $null -ne $candidate.scratch -or
+                @($candidate.PSObject.Properties).Count -ne 6) { $st.Failed = $true; $identityFailure = 'error' }
+            elseif ($hc.cmd -cne 'probe') { $identityFailure = 'refused' }
+            else { $st.Record = $vm[0].IdentityRecord }
+        } elseif (($st.Cleaned -and $vm[0].IdentityRecord) -or (-not $st.Cleaned -and $vm[0].IdentityRecord -cne $st.Record)) {
+            $st.Failed = $true; $identityFailure = 'refused'
+        }
+        if (-not $identityFailure) { $bound = ConvertFrom-LinJson $st.Record }
+        if ($identityFailure) { $status = $identityFailure; $state = 'failed'; $diag = 'identity record invalid' }
+        elseif ($hc.vm_id -cne $bound.vm_id -or $hc.reservation_id -cne $bound.reservation_id -or $hc.lease_generation -ne $bound.lease_generation -or
+            $hc.seq -le $st.Seq -or @($st.Nonces) -contains $hc.nonce -or ($shot -and @($st.Shots) -contains $hc.cmd) -or $expired) {
             $status = 'refused'; $diag = 'refused by the agent'
         } else {
-            $st.Seq = $hc.seq; $st.Gen = $hc.lease_generation; $st.Nonces = @($st.Nonces) + $hc.nonce
+            $st.Seq = $hc.seq; $st.Nonces = @($st.Nonces) + $hc.nonce
             if ($shot) { $st.Shots = @($st.Shots) + $hc.cmd }
             switch ($hc.cmd) {
                 'probe' { $st.Probes++; $state = $(if ($st.Probes -gt [int](Get-LinKnob $w 'BootProbes' 0)) { 'ready' } else { 'booting' }) }
-                'deliver_registration' { $st.PayloadSha = Get-LinSha $payload; $st.PayloadLen = $payload.Length; $state = 'registered'; $diag = 'bootstrap material removed' }
+                'deliver_registration' {
+                    $st.PayloadSha = Get-LinSha $payload; $st.PayloadLen = $payload.Length; $state = 'registered'; $diag = 'bootstrap material removed'
+                    $st.Cleaned = $true; $allVms = @(Get-LinVms $w)
+                    foreach ($v in $allVms) { if ($v.Id -eq $Call.VmId) { $v.IdentityRecord = '' } }
+                    Save-LinVms $w $allVms
+                }
                 'start_runner' {
                     $state = 'listening'; $diag = 'runner started from env input'
                     [IO.File]::AppendAllText($vm[0].OsDisk, "`njob state: /home/runner planted, workspace planted, listener on 8080, unit aap-planted.service")
@@ -481,7 +503,7 @@ function Invoke-LinSteps($B, $World, [string]$Id, [int]$Max = 12, [scriptblock]$
     for ($i = 0; $i -lt $Max; $i++) {
         $r = Get-LinRes $w $Id
         if ($r.state -eq 'reconciled' -or ($Until -and (& $Until $r))) { break }
-        $out.Add((Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha))
+        $out.Add((Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2))
     }
     $out.ToArray()
 }
