@@ -443,13 +443,14 @@ pub fn create_admin_dir(path: &std::path::Path) -> std::io::Result<()> {
     result.map_err(std::io::Error::other)
 }
 
-/// SYSTEM and Administrators only, no Users read ACE (the update staging folder). The owner is
-/// the creating token's default owner (Administrators for an elevated admin).
+/// SYSTEM and Administrators only, no Users read ACE (the update staging folder), owned by
+/// Administrators whatever the default-owner policy. A token that cannot assign that owner
+/// (not elevated) gets ERROR_INVALID_OWNER (1307) and nothing is created.
 pub fn create_private_dir(path: &std::path::Path) -> std::io::Result<()> {
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            w!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"),
+            w!("O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"),
             SDDL_REVISION_1,
             &mut descriptor,
             None,
@@ -467,13 +468,24 @@ pub fn create_private_dir(path: &std::path::Path) -> std::io::Result<()> {
     unsafe {
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
     }
-    result.map_err(std::io::Error::other)
+    result.map_err(|e| std::io::Error::from_raw_os_error((e.code().0 as u32 & 0xffff) as i32))
 }
 
 /// Replace `path`'s DACL with the installed tray's: SYSTEM and Administrators full, Users read and
 /// execute, not inherited. A staged copy moved out of the private staging folder keeps the
 /// staging folder's ACEs otherwise, and Users could not start it.
 pub fn set_install_acl(path: &std::path::Path) -> std::io::Result<()> {
+    set_dacl(path, w!("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)"))
+}
+
+/// The kept `.prev`: SYSTEM and Administrators may read and delete it (0x130089 = generic read
+/// plus DELETE), nobody may execute it, so it cannot be started or elevated until it is deleted.
+pub fn set_prev_acl(path: &std::path::Path) -> std::io::Result<()> {
+    set_dacl(path, w!("D:P(A;;0x130089;;;SY)(A;;0x130089;;;BA)"))
+}
+
+/// Replace `path`'s DACL with the protected one in `sddl`.
+fn set_dacl(path: &std::path::Path, sddl: PCWSTR) -> std::io::Result<()> {
     use windows::Win32::Security::Authorization::SetNamedSecurityInfoW;
     use windows::Win32::Security::{
         GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
@@ -481,7 +493,7 @@ pub fn set_install_acl(path: &std::path::Path) -> std::io::Result<()> {
     let mut descriptor = PSECURITY_DESCRIPTOR::default();
     unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            w!("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)"),
+            sddl,
             SDDL_REVISION_1,
             &mut descriptor,
             None,
@@ -520,10 +532,12 @@ pub fn set_install_acl(path: &std::path::Path) -> std::io::Result<()> {
     result
 }
 
-/// A Yes/No box, No by default, topmost. `true` only for Yes.
+/// A system-modal Yes/No box, No by default, topmost. `true` only for Yes; `false` also when the
+/// box could not be shown. The caller bounds the wait.
 pub fn confirm(title: &str, text: &str) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{
-        IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MessageBoxW,
+        IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_SETFOREGROUND, MB_SYSTEMMODAL, MB_TOPMOST,
+        MB_YESNO, MessageBoxW,
     };
     let text = wide(std::ffi::OsStr::new(text));
     let title = wide(std::ffi::OsStr::new(title));
@@ -533,7 +547,12 @@ pub fn confirm(title: &str, text: &str) -> bool {
             None,
             PCWSTR(text.as_ptr()),
             PCWSTR(title.as_ptr()),
-            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST,
+            MB_YESNO
+                | MB_ICONWARNING
+                | MB_DEFBUTTON2
+                | MB_SETFOREGROUND
+                | MB_TOPMOST
+                | MB_SYSTEMMODAL,
         )
     };
     answer == IDYES

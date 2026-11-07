@@ -224,10 +224,17 @@ const PRIVATE_LOCATION: &str = "Installer must be on a fixed local drive, owned 
 /// write its folder, or replace an ancestor.
 pub(crate) fn user_location_ok(acl: win::ObjectAcl, dir: &Path, user: &str) -> Result<(), String> {
     if !allowed_for_verb(&acl_view(acl), Some(user), false) {
-        return Err(PRIVATE_LOCATION.into());
+        return Err(format!(
+            "the new build can be changed by another account; {KEEP_BUILD_PRIVATE}"
+        ));
     }
-    check_exe_directories(dir, Some(user))
+    // ponytail: install keeps its own "private Downloads folder" wording; align it separately.
+    check_exe_directories(dir, Some(user)).map_err(|_| {
+        format!("the new build's folder, or one above it, can be changed by another account; {KEEP_BUILD_PRIVATE}")
+    })
 }
+
+const KEEP_BUILD_PRIVATE: &str = "keep the new build in a folder only you, SYSTEM and Administrators can change (for example C:\\aap-builds with inheritance removed)";
 
 pub fn install_location_ok() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -1240,7 +1247,21 @@ fn recent(pointer: &Path) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpdateWatch {
     pub finished: bool,
+    pub running: bool,
     pub age: Duration,
+}
+
+/// How long the elevated confirmation box waits for Yes; no answer is No.
+const CONFIRM_WAIT: Duration = Duration::from_secs(5 * 60);
+
+/// `ask()` on its own thread; `false` unless it answers `true` within `bound`. An abandoned box
+/// stays until the helper exits, which it does right after refusing.
+fn answer_within(bound: Duration, ask: impl FnOnce() -> bool + Send + 'static) -> bool {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(ask());
+    });
+    rx.recv_timeout(bound).unwrap_or(false)
 }
 
 /// `None` unless the pointer names an update written in the last [`UPDATE_WATCH`]. While it
@@ -1252,15 +1273,27 @@ pub fn update_watch(base: &Path) -> Option<UpdateWatch> {
     if raw.schema != 1 || raw.verb != "update" || !raw.error.is_empty() || !valid_id(&raw.id) {
         return None;
     }
-    let finished = protected_job(base, &raw.id, Verb::Update)
-        .is_some_and(|j| matches!(j.state.as_str(), "passed" | "failed" | "rejected"));
-    Some(UpdateWatch { finished, age })
+    let state = protected_job(base, &raw.id, Verb::Update).map(|j| j.state);
+    Some(UpdateWatch {
+        finished: state
+            .as_deref()
+            .is_some_and(|s| matches!(s, "passed" | "failed" | "rejected")),
+        running: state.as_deref() == Some("running"),
+        age,
+    })
 }
 
 /// Restart the installed tray once the update finished either way (a refused update must bring
 /// the old build back), or after [`UPDATE_GIVE_UP`] without a result. Never while a tray runs.
+/// A running job (the confirmation box may be open, then the swap) gets [`CONFIRM_WAIT`] more,
+/// so the old tray is not restarted under an update that is still deciding.
 pub fn relaunch_due(watch: UpdateWatch, tray_free: bool) -> bool {
-    tray_free && (watch.finished || watch.age >= UPDATE_GIVE_UP)
+    let give_up = if watch.running {
+        UPDATE_GIVE_UP + CONFIRM_WAIT
+    } else {
+        UPDATE_GIVE_UP
+    };
+    tray_free && (watch.finished || watch.age >= give_up)
 }
 
 pub fn issued_install_id() -> Option<String> {
@@ -1775,13 +1808,13 @@ fn run_update(
         .and_then(|sha| {
             note("STEP confirm");
             let size = fs::metadata(&staged).map_err(|e| e.to_string())?.len();
-            if win::confirm(
-                "AAP Runner update",
-                &update::confirm_text(&source, size, &sha),
-            ) {
+            let text = update::confirm_text(&source, size, &sha);
+            if answer_within(CONFIRM_WAIT, move || {
+                win::confirm("AAP Runner update", &text)
+            }) {
                 Ok(sha)
             } else {
-                Err("the update was declined in the confirmation box".into())
+                Err("the update was declined, or not confirmed within 5 minutes".into())
             }
         })
         .and_then(|sha| {
@@ -1797,7 +1830,7 @@ fn run_update(
         }
     };
     note("STEP replace installed tray");
-    if let Err(e) = update::swap_in(&staged, installed, update::RENAME_WAIT) {
+    if let Err(e) = update::swap_in(&staged, installed, update::RENAME_WAIT, win::set_prev_acl) {
         let _ = fs::remove_file(&staged);
         return refuse("failed", e, 1);
     }
@@ -2170,9 +2203,47 @@ mod tests {
     }
 
     #[test]
+    fn the_window_waits_for_a_running_job_up_to_the_confirmation_bound() {
+        let running = |secs| UpdateWatch {
+            finished: false,
+            running: true,
+            age: Duration::from_secs(secs),
+        };
+        assert!(
+            !relaunch_due(running(4 * 60), true),
+            "the confirmation box may still be open"
+        );
+        assert!(!relaunch_due(running(9 * 60 - 1), true));
+        assert!(
+            relaunch_due(running(9 * 60), true),
+            "a hung helper: give up"
+        );
+        assert!(
+            UPDATE_GIVE_UP + CONFIRM_WAIT + Duration::from_secs(60) < UPDATE_WATCH,
+            "the window still watches when the box bound runs out"
+        );
+    }
+
+    #[test]
+    fn an_unanswered_question_is_a_no() {
+        assert!(answer_within(Duration::from_secs(5), || true));
+        assert!(!answer_within(Duration::from_secs(5), || false));
+        let started = Instant::now();
+        assert!(!answer_within(Duration::from_millis(50), || {
+            thread::sleep(Duration::from_secs(2));
+            true
+        }));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the bound, not the answer"
+        );
+    }
+
+    #[test]
     fn the_window_restarts_the_tray_once_the_update_is_over() {
         let at = |finished, secs| UpdateWatch {
             finished,
+            running: false,
             age: Duration::from_secs(secs),
         };
         assert!(

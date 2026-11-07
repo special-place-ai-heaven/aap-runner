@@ -405,11 +405,17 @@ fn version_strings(b: &[u8]) -> Option<(Option<u64>, Vec<(String, String)>)> {
     Some((version, out))
 }
 
-/// Move `installed` to `installed.prev` (retrying for `wait`) and `staged` into its place. A
-/// stale `.prev` is removed first; if that fails nothing is touched. If the move-in fails the
-/// old build is renamed back. Windows renames a running image, so a tray that has not quit yet
+/// Move `installed` to `installed.prev` (retrying for `wait`), lock `.prev` against execution
+/// (`lock_prev`; production passes [`crate::win::set_prev_acl`]),
+/// and move `staged` into its place. A stale `.prev` is removed first; if that fails nothing is
+/// touched. If locking or the move-in fails the old build is renamed back with the install ACL. Windows renames a running image, so a tray that has not quit yet
 /// keeps running from `.prev`.
-pub fn swap_in(staged: &Path, installed: &Path, wait: Duration) -> Result<(), String> {
+pub fn swap_in(
+    staged: &Path,
+    installed: &Path,
+    wait: Duration,
+    lock_prev: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<(), String> {
     let prev = prev_path(installed);
     if fs::symlink_metadata(&prev).is_ok() {
         fs::remove_file(&prev).map_err(|e| {
@@ -427,14 +433,25 @@ pub fn swap_in(staged: &Path, installed: &Path, wait: Duration) -> Result<(), St
             Err(e) => return Err(format!("could not move the installed tray aside: {e}")),
         }
     }
-    if let Err(e) = fs::rename(staged, installed) {
-        return Err(match fs::rename(&prev, installed) {
-            Ok(()) => format!("could not move the new build in ({e}); the old build was restored"),
-            Err(r) => format!(
-                "could not move the new build in ({e}) or restore the old build ({r}); it is at {}",
-                prev.display()
-            ),
+    // The kept build must not stay startable (or elevatable) until remove_prev deletes it.
+    let moved_in = lock_prev(&prev)
+        .map_err(|e| format!("could not lock the previous build ({e})"))
+        .and_then(|()| {
+            fs::rename(staged, installed)
+                .map_err(|e| format!("could not move the new build in ({e})"))
         });
+    if let Err(e) = moved_in {
+        // Rename back (needs only DELETE, which .prev keeps), then give it back the install ACL.
+        return Err(
+            match fs::rename(&prev, installed).and_then(|()| crate::win::set_install_acl(installed))
+            {
+                Ok(()) => format!("{e}; the old build was restored"),
+                Err(r) => format!(
+                    "{e}; restoring the old build failed ({r}); it is at {}",
+                    prev.display()
+                ),
+            },
+        );
     }
     Ok(())
 }
@@ -525,6 +542,14 @@ mod tests {
             .unwrap()
             .success();
         assert!(ok, "icacls {ace}");
+    }
+
+    /// The production lock, plus an ACE for the test user: the elevated helper reaches `.prev`
+    /// through its Administrators ACE, a non-elevated test cannot.
+    fn lock(prev: &Path) -> io::Result<()> {
+        crate::win::set_prev_acl(prev)?;
+        grant(prev, &format!("*{}:(F)", user()));
+        Ok(())
     }
 
     fn sha_of(bytes: &[u8]) -> String {
@@ -844,13 +869,38 @@ mod tests {
         fs::write(&installed, b"old").unwrap();
         fs::write(dir.join("aap-runner-tray.exe.prev"), b"older").unwrap();
         fs::write(&staged, b"new").unwrap();
-        swap_in(&staged, &installed, Duration::ZERO).unwrap();
+        swap_in(&staged, &installed, Duration::ZERO, lock).unwrap();
         assert_eq!(fs::read(&installed).unwrap(), b"new");
-        assert_eq!(
-            fs::read(dir.join("aap-runner-tray.exe.prev")).unwrap(),
-            b"old"
-        );
         assert!(!staged.exists());
+        let prev = prev_path(&installed);
+        let me = user();
+        let acl = crate::win::acl_of_path(&prev, true).unwrap();
+        let aces: Vec<_> = acl.aces.iter().filter(|a| a.sid != me).collect();
+        let sids: Vec<&str> = aces.iter().map(|a| a.sid.as_str()).collect();
+        assert_eq!(
+            sids,
+            ["S-1-5-18", "S-1-5-32-544"],
+            "only SYSTEM and Administrators"
+        );
+        for ace in aces {
+            assert!(ace.allow && !ace.other);
+            assert_eq!(
+                ace.rights & 0x0020,
+                0,
+                "no FILE_EXECUTE: .prev cannot be started"
+            );
+            assert_eq!(ace.rights & 0x1000_0000, 0, "no GENERIC_ALL");
+            assert_ne!(
+                ace.rights & 0x0001_0000,
+                0,
+                "DELETE, so remove_prev and restore work"
+            );
+        }
+        assert_eq!(fs::read(&prev).unwrap(), b"old");
+        assert!(
+            remove_prev(&installed),
+            "the locked-down .prev can still be deleted"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -860,9 +910,33 @@ mod tests {
         let installed = dir.join(TRAY_NAME);
         fs::write(&installed, b"old").unwrap();
         let missing = dir.join("gone.exe");
-        assert!(swap_in(&missing, &installed, Duration::ZERO).is_err());
+        assert!(swap_in(&missing, &installed, Duration::ZERO, lock).is_err());
         assert_eq!(fs::read(&installed).unwrap(), b"old");
         assert!(!dir.join("aap-runner-tray.exe.prev").exists());
+        // Restored with the installed tray's ACL, so Users can start it again.
+        let acl = crate::win::acl_of_path(&installed, true).unwrap();
+        let users = acl.aces.iter().find(|a| a.sid == "S-1-5-32-545");
+        assert!(
+            users.is_some_and(|a| a.allow && a.rights & 0x0020 != 0),
+            "{acl:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_prev_that_cannot_be_locked_restores_the_old_build() {
+        let dir = temp();
+        let installed = dir.join(TRAY_NAME);
+        let staged = dir.join("staging.exe");
+        fs::write(&installed, b"old").unwrap();
+        fs::write(&staged, b"new").unwrap();
+        let err = swap_in(&staged, &installed, Duration::ZERO, |_| {
+            Err(io::Error::other("no"))
+        })
+        .unwrap_err();
+        assert!(err.contains("lock") && err.contains("restored"), "{err}");
+        assert_eq!(fs::read(&installed).unwrap(), b"old");
+        assert!(!prev_path(&installed).exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -875,7 +949,7 @@ mod tests {
         fs::write(&staged, b"new").unwrap();
         // A directory named .prev cannot be removed with remove_file.
         fs::create_dir(dir.join("aap-runner-tray.exe.prev")).unwrap();
-        assert!(swap_in(&staged, &installed, Duration::ZERO).is_err());
+        assert!(swap_in(&staged, &installed, Duration::ZERO, lock).is_err());
         assert_eq!(fs::read(&installed).unwrap(), b"old");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -920,7 +994,12 @@ mod tests {
         )
         .unwrap_err();
         // The file's own ACL is checked before the folders.
-        assert!(err.contains("writable only by you"), "{err}");
+        assert!(
+            err.contains("the new build can be changed by another account"),
+            "{err}"
+        );
+        assert!(err.contains(r"C:\aap-builds"), "{err}");
+        assert!(!err.contains("Downloads"), "{err}");
         assert!(!staged.exists());
         assert!(open_candidate(&source.display().to_string(), private_location(&me)).is_err());
         let _ = fs::remove_dir_all(&dir);
@@ -945,7 +1024,9 @@ mod tests {
             private_location(&me),
         )
         .unwrap_err();
-        assert!(err.contains("folder permits another account"), "{err}");
+        assert!(err.contains("folder"), "{err}");
+        assert!(err.contains(r"C:\aap-builds"), "{err}");
+        assert!(!err.contains("Downloads"), "{err}");
         assert!(!staged.exists());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1007,11 +1088,21 @@ mod tests {
     #[test]
     fn the_staging_folder_grants_only_system_and_administrators() {
         let dir = temp().join("staging");
-        crate::win::create_private_dir(&dir).unwrap();
-        // The test user owns it but has no ACE, so it cannot open it to read the ACL: add one
-        // (icacls only needs the owner's implicit rights) and leave it out of the comparison.
+        if let Err(e) = crate::win::create_private_dir(&dir) {
+            // Not elevated: Windows refuses Administrators as owner (ERROR_INVALID_OWNER), so
+            // the folder is never created with the test user as owner instead.
+            assert_eq!(e.raw_os_error(), Some(1307), "{e}");
+            assert!(!dir.exists());
+            let _ = fs::remove_dir_all(dir.parent().unwrap());
+            return;
+        }
+        assert_eq!(
+            crate::win::acl_of_path(&dir, true).unwrap().owner,
+            "S-1-5-32-544",
+            "owner is Administrators"
+        );
+        // Elevated: Administrators already has access.
         let me = user();
-        grant(&dir, &format!("*{me}:(F)"));
         let acl = crate::win::acl_of_path(&dir, true).unwrap();
         let sids: Vec<&str> = acl
             .aces

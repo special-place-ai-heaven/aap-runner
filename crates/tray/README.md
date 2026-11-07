@@ -356,10 +356,11 @@ it (the tray checks its own handle-resolved path first).
    handle) is that user or Administrators, no other SID has an allow ACE with write, append,
    write-attributes, delete, write-DAC, write-owner or generic write/all on it, its folder passes the
    same test, and no ancestor lets another SID delete, delete a child, or change its DACL or owner.
-   A refusal says to move the build to your private Downloads folder.
+   A refusal says to keep the new build in a folder only you, SYSTEM and Administrators can
+   change (for example `C:\aap-builds` with inheritance removed).
 6. It copies from that handle, create-new, into `C:\Program Files\aap-runner\staging\<id>.exe`. The
-   staging folder is created SYSTEM and Administrators only (no Users read ACE), and an existing one
-   that grants any other SID anything is refused.
+   staging folder is created owned by Administrators with SYSTEM and Administrators ACEs only (no
+   Users read ACE), and an existing one that grants any other SID anything is refused.
 7. It hashes the staged copy, never the user's file, and refuses a mismatch with the command line's
    `sha256` (the reason names only the expected hash: `status.json` is readable by every user). The
    staged copy must be an x64 (`0x8664`) PE32+ executable, not a DLL, whose version resource has
@@ -367,13 +368,18 @@ it (the tray checks its own handle-resolved path first).
    (set in `assets/aap-runner-tray.rc` from the Cargo version). Downgrade rule: a `FILEVERSION`
    lower than the installed exe's is refused; an equal one is allowed (commits between version bumps
    share a version); an installed exe without a version resource counts as 0.
-8. It shows a Yes/No box (No is the default, topmost) with the candidate path, size and sha256.
-   Only Yes continues. The box belongs to the elevated process, so a non-elevated program cannot
-   click it (UIPI).
+8. It shows a Yes/No box (system-modal, topmost, set to the foreground, No is the default) with
+   the candidate path, size and sha256. Only Yes continues; a box that cannot be shown, or no
+   answer within 5 minutes, is No. While the job is running (the box may be open) the window waits
+   up to 9 minutes (the 4-minute no-result bound plus the 5-minute box bound) before it restarts the
+   tray; the watch itself lasts 15 minutes.
 9. The staged copy gets the installed tray's ACL (SYSTEM and Administrators full, Users read and
    execute, not inherited) and must then pass the admin-only check. Swap: a stale `.prev` is deleted
    first (if that fails nothing changes); the installed exe is renamed to `.prev` (retried for up to
-   30 s), then the staged copy is renamed into place. If that fails the `.prev` is renamed back.
+   30 s) and given a protected DACL with no execute right (SYSTEM and Administrators may read and
+   delete it), so it cannot be started or elevated before step 3 deletes it; then the staged copy is
+   renamed into place. If either fails the `.prev` is renamed back and gets the installed tray's ACL
+   again.
    Windows can rename a running image, so a window still running the old build keeps running from
    `.prev`.
 10. `status.json` ends `passed` with step `installed sha256 <hex>` and `"sha256":"<hex>"`, and the
@@ -390,11 +396,17 @@ it (the tray checks its own handle-resolved path first).
 Threat model. `C:\ProgramData\aap-runner\inbox` is user-writable, and the tray runs as the owner,
 so any program running as the owner can start an update by itself: write a request and start
 `--helper update <id> <sha256>` through `runas`. No race is needed. UAC then names the installed
-tray, not the candidate. What protects the owner from that is the helper's own confirmation box,
-which shows the candidate path, size and sha256 and defaults to No: compare that hash with the build
-you made, and press Yes only for an update you started. A malicious program that tricks you into
-pressing Yes wins; the real fix is Authenticode signing, which needs a certificate (owner decision
-Q8).
+tray, not the candidate. The helper's confirmation box, which shows the candidate path, size and
+sha256 and defaults to No, is a speed bump, not a boundary: it is not on the secure desktop, so a
+program running as you can cover or imitate it, or press Yes through an input route it can obtain
+(UIAccess-style). Compare the hash with the build you made and answer Yes only for an update you
+started, but do not rely on the box against malware already running as you. The real fix is
+Authenticode signing, which needs a certificate (owner decision Q8).
+
+The build's source tree and output folder must be private too (only you, SYSTEM and
+Administrators can change them). Otherwise another account can plant the build before you copy it,
+and "keep it in a private folder" only launders that file. Build into a private output folder
+outside the profile with inheritance removed, for example a `CARGO_TARGET_DIR` of `C:\aap-builds`.
 
 What the helper does prevent: another account cannot supply or swap the build, because the
 candidate must be owned by the requesting user or Administrators, writable only by them, in a
