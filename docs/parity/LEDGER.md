@@ -638,7 +638,7 @@ Counts (ledger.json tasks): 71 items (the 70 of the previous section plus R1.4, 
 
 Barrier: OPEN. The verifier pass signed every receipt that was pending: batch 9 coordinator #106 and #116, batch 10 P22.1 (#117), P22.2 (#118) and P12.2 (#119), batch 11 R1.4 (#120), on top of batches 1-8. This close is itself a coordinator PR; its receipt is written after it merges.
 
-Live (2026-11-07): the canary on the new runner image is green (Frontend, DB Integration and DB install succeeded; Security Audit fails on RustSec advisories in the canary repository, as it did on the old image). The owner set 2 heavy + 10 light runners at 02:04 local time. Pending the owner: the rollout finalize (needs the pool Off) and the tray rollout of R1.4.
+Live (2026-11-07): the canary on the new runner image is green (Frontend, DB Integration and DB install succeeded; Security Audit fails on RustSec advisories in the canary repository, as it did on the old image). The owner set 2 heavy + 10 light runners at 02:04 CET. Pending the owner: the rollout finalize (needs the pool Off) and the tray rollout of R1.4.
 
 Owner decisions: Q7 new and OPEN (confirm or raise the P22.2 generation minimums, Windows 2 CPU / 4 GiB and Linux 2 CPU / 2 GiB; non-blocking). Q1-Q6 unchanged from the 2026-11-07 reconcile.
 

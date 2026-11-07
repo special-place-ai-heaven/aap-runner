@@ -1993,7 +1993,7 @@
     "2026-11-06 owner (resource cap): 90% of CPU, RAM and disk. This supersedes 97%.",
     "2026-11-06 owner (interim Windows runner): FRESH-win-interim now runs at Idle priority.",
     "2026-11-06 owner (windows): zero visible terminal windows.",
-    "2026-11-07 live (pool): the canary on the new runner image (fcb04b1 rollout) ran green for Frontend, DB Integration and DB install; Security Audit fails on RustSec advisories in the canary repository, as it did on the old image. The owner set 2 heavy + 10 light runners at 02:04 local time. The rollout finalize step is pending the owner (it needs the pool Off). The tray rollout of R1.4 (PR #120) is pending the owner; the installed tray still has the tile layout bug until then."
+    "2026-11-07 live (pool): the canary on the new runner image (fcb04b1 rollout) ran green for Frontend, DB Integration and DB install; Security Audit fails on RustSec advisories in the canary repository, as it did on the old image. The owner set 2 heavy + 10 light runners at 02:04 CET. The rollout finalize step is pending the owner (it needs the pool Off). The tray rollout of R1.4 (PR #120) is pending the owner; the installed tray still has the tile layout bug until then."
   ],
   "coordinator_prs": [
     {
