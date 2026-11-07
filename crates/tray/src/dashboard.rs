@@ -283,10 +283,16 @@ fn card_height() -> f32 {
         + 2.0 // frame border 1 px each side
 }
 
-/// One Linux tile: the state row and the title row (both floored to INTERACT_H), the tile's
-/// margins and border. Every tile has this height, chosen or not.
+/// One Linux tile: the state row and the title row (both floored to INTERACT_H), the occupancy
+/// caption, the tile's margins and border. Every tile has this height, chosen or not.
 fn tile_height() -> f32 {
-    INTERACT_H + CARD_ITEM_GAP + CARD_TITLE_H + 2.0 * TILE_MARGIN_V as f32 + 2.0
+    INTERACT_H
+        + CARD_ITEM_GAP
+        + CARD_TITLE_H
+        + CARD_ITEM_GAP
+        + CAPTION_H
+        + 2.0 * TILE_MARGIN_V as f32
+        + 2.0
 }
 
 /// The Linux grid: twelve tiles in two columns, six rows, `CARD_ITEM_GAP` apart.
@@ -335,7 +341,7 @@ fn clamped_window_height(work_h: f32, title: f32) -> f32 {
 const LEFT_W: f32 = 260.0;
 const PAD: f32 = 12.0;
 const REFRESH: Duration = Duration::from_secs(5);
-/// A sample older than this draws as "no sample".
+/// A sample older than this still draws, with its `sampled N ago` caption in the over colour.
 const SAMPLE_STALE: Duration = Duration::from_secs(150);
 const LABEL_W: f32 = 56.0;
 const BAR_H: f32 = 8.0;
@@ -568,17 +574,16 @@ fn bar_numbers(used: f64, share: Option<f64>, cores: bool) -> (String, bool) {
 }
 
 /// Work disk bar: used fraction of the size, caption `40 GiB free of 100 · floor 15`.
-/// `over` is free space under the floor. A stale status (`fresh` false, the
-/// same `SAMPLE_STALE` rule as the cores and memory bars) is no sample.
+/// `over` is free space under the floor. The disk numbers come with the (fresh) status itself,
+/// not with the usage sample, so only a missing or bad value is no sample.
 fn disk_line(
     size: Option<f64>,
     free: Option<f64>,
     floor: Option<f64>,
-    fresh: bool,
 ) -> (Option<f64>, Option<f64>, String, bool) {
     match (size, free) {
         (Some(size), Some(free))
-            if fresh && size.is_finite() && free.is_finite() && size >= 0.0 && free >= 0.0 =>
+            if size.is_finite() && free.is_finite() && size >= 0.0 && free >= 0.0 =>
         {
             let used = (size - free).max(0.0);
             let over = floor.is_some_and(|f| free < f);
@@ -614,16 +619,41 @@ fn checked(url: &str) -> Option<&str> {
     (state::valid_job_url(url) || state::valid_run_url(url)).then_some(url)
 }
 
-/// `6.2/8`, `20/24`: a compact card's numbers, and whether the use is over the share.
-fn compact_numbers(used: f64, share: Option<f64>, cores: bool) -> (String, bool) {
-    let u = if cores {
-        format!("{used:.1}")
-    } else {
-        format!("{used:.0}")
+/// A tile's occupancy caption, `1.0/8 cores · 4.8/20 GiB` against its tier's share (`-` for a
+/// value the manager left out), and whether either use is over its share. No usage sample at
+/// all is `no sample`.
+fn occupancy_line(
+    cpu: Option<f64>,
+    mem: Option<f64>,
+    share: (Option<f64>, Option<f64>),
+    sampled: bool,
+) -> (String, bool) {
+    if !sampled || (cpu.is_none() && mem.is_none()) {
+        return ("no sample".into(), false);
+    }
+    let part = |used: Option<f64>, share: Option<f64>, text: fn(f64) -> String| match (used, share)
+    {
+        (None, _) => ("-".to_owned(), false),
+        (Some(u), Some(s)) => (format!("{}/{}", text(u), whole(s)), u > s + 1e-9),
+        (Some(u), None) => (text(u), false),
     };
-    match share {
-        Some(s) => (format!("{u}/{}", whole(s)), used > s + 1e-9),
-        None => (u, false),
+    let (c, c_over) = part(cpu, share.0, |v| format!("{v:.1}"));
+    let (m, m_over) = part(mem, share.1, gib);
+    (format!("{c} cores \u{b7} {m} GiB"), c_over || m_over)
+}
+
+/// The pool's `sampled N ago` caption and whether the sample is older than `SAMPLE_STALE`.
+/// A `sampled_at` ahead of this PC's clock (the distro's clock leads) reads as just now.
+fn sampled_caption(sampled_at: Option<SystemTime>, now: SystemTime) -> (String, bool) {
+    match sampled_at {
+        None => ("no sample".into(), false),
+        Some(t) => {
+            let age = now.duration_since(t).unwrap_or_default();
+            (
+                format!("sampled {} ago", problem::ago(age)),
+                age > SAMPLE_STALE,
+            )
+        }
     }
 }
 
@@ -696,35 +726,7 @@ pub fn run(base: PathBuf, view: View) -> eframe::Result {
             cc.egui_ctx.set_visuals_of(Theme::Dark, visuals(&DARK));
             cc.egui_ctx.set_visuals_of(Theme::Light, visuals(&LIGHT));
             cc.egui_ctx.all_styles_mut(style);
-            let settings = SettingsPanel::load(&base);
-            let mut d = Dash {
-                base,
-                snap: Snapshot::bare(Status::Unknown),
-                raw: None,
-                history: History::default(),
-                desired: Desired::Off,
-                read_at: Instant::now(),
-                light: false,
-                animate: true,
-                offset: 0,
-                panel: false,
-                settings,
-                problem: None,
-                log: None,
-                note: None,
-                copied: None,
-                right_first: None,
-                want_focus: None,
-                job: None,
-                job_at: Instant::now(),
-                github: false,
-                setup: crate::github_setup::Store::load(crate::github_setup::path()),
-                github_arm: false,
-                github_met_at: None,
-                identity: false,
-                ident: crate::identity::Store::load(crate::identity::path()),
-                wizard: None,
-            };
+            let mut d = Dash::new(base);
             d.job = crate::helper::load_job(&d.base);
             d.refresh(&cc.egui_ctx);
             // Initial focus: the problem button when there is an error, otherwise none.
@@ -738,6 +740,39 @@ pub fn run(base: PathBuf, view: View) -> eframe::Result {
 }
 
 impl Dash {
+    /// The window's state before its first read: nothing known yet, files loaded from `base`.
+    fn new(base: PathBuf) -> Dash {
+        let settings = SettingsPanel::load(&base);
+        Dash {
+            base,
+            snap: Snapshot::bare(Status::Unknown),
+            raw: None,
+            history: History::default(),
+            desired: Desired::Off,
+            read_at: Instant::now(),
+            light: false,
+            animate: true,
+            offset: 0,
+            panel: false,
+            settings,
+            problem: None,
+            log: None,
+            note: None,
+            copied: None,
+            right_first: None,
+            want_focus: None,
+            job: None,
+            job_at: Instant::now(),
+            github: false,
+            setup: crate::github_setup::Store::load(crate::github_setup::path()),
+            github_arm: false,
+            github_met_at: None,
+            identity: false,
+            ident: crate::identity::Store::load(crate::identity::path()),
+            wizard: None,
+        }
+    }
+
     fn pal(&self) -> Palette {
         if self.light { LIGHT } else { DARK }
     }
@@ -1377,7 +1412,6 @@ impl Dash {
             self.snap.work_disk_gib,
             self.snap.work_disk_free_gb,
             self.snap.work_disk_floor_gb,
-            self.fresh(),
         );
         if self.snap.cleaning {
             text.push_str(" \u{b7} cleaning");
@@ -1410,14 +1444,14 @@ impl Dash {
     /// Pool bars and the `IO …` / `sampled N s ago` line.
     fn pool(&mut self, ui: &mut egui::Ui) {
         let p = self.pal();
-        let fresh = self.fresh();
+        let sampled = self.sampled();
         let a = self.snap.applied;
         let track_w = (ui.available_width() - LABEL_W - 8.0).clamp(80.0, 240.0);
         self.bar(
             ui,
             egui::Id::new("pool-cores"),
             "Cores",
-            self.snap.pool.cpu_cores.filter(|_| fresh),
+            self.snap.pool.cpu_cores.filter(|_| sampled),
             a.job_cpus.map(f64::from),
             true,
             track_w,
@@ -1427,7 +1461,7 @@ impl Dash {
             ui,
             egui::Id::new("pool-mem"),
             "Memory",
-            self.snap.pool.mem_gib.filter(|_| fresh),
+            self.snap.pool.mem_gib.filter(|_| sampled),
             a.job_memory_gib.map(f64::from),
             false,
             track_w,
@@ -1436,7 +1470,7 @@ impl Dash {
         self.disk_bar(ui, track_w);
         // IO cap line: fixed height; omitted when both values are None.
         let io_text = pool_io_line(
-            self.snap.pool.io_mbps.filter(|_| fresh),
+            self.snap.pool.io_mbps.filter(|_| sampled),
             self.snap.job_io_mbps,
         );
         if !io_text.is_empty() {
@@ -1449,15 +1483,9 @@ impl Dash {
                 },
             );
         }
-        // Sampled-at line: right-aligned, fixed height.
-        let sampled_text = match self
-            .snap
-            .sampled_at
-            .and_then(|t| SystemTime::now().duration_since(t).ok())
-        {
-            Some(a) => format!("sampled {} ago", problem::ago(a)),
-            None => "no sample".into(),
-        };
+        // Sampled-at line: right-aligned, fixed height; an old sample is in the over colour.
+        let (sampled_text, old) = sampled_caption(self.snap.sampled_at, SystemTime::now());
+        let sampled_color = if old { p.over } else { p.muted };
         // Legend left, sampled-at right, one fixed-height row.
         let row_w = ui.available_width();
         ui.allocate_ui_with_layout(
@@ -1466,18 +1494,17 @@ impl Dash {
             |ui| {
                 legend(ui, &p);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(RichText::new(&sampled_text).color(p.muted).small());
+                    ui.label(RichText::new(&sampled_text).color(sampled_color).small());
                 });
             },
         );
     }
 
-    fn fresh(&self) -> bool {
-        self.snap.sampled_at.is_some_and(|t| {
-            SystemTime::now()
-                .duration_since(t)
-                .map_or(true, |a| a <= SAMPLE_STALE)
-        })
+    /// The status (fresh, or it would be Unknown) carries a usage sample. Its age is shown by
+    /// the `sampled N ago` caption rather than hidden: the sample comes from the distro's clock
+    /// and one failed `docker stats` keeps the previous one, so an age gate blanked every bar.
+    fn sampled(&self) -> bool {
+        self.snap.sampled_at.is_some()
     }
 
     /// The red `1 problem` button with the Error symbol.
@@ -1524,7 +1551,8 @@ impl Dash {
     }
 
     /// One compact tile: glyphs, `Heavy 1`, state and elapsed; then `title · repo` with the copy
-    /// button, or a waiting line. A slot no count chooses (and no runner reports) is grey and dim.
+    /// button, or a waiting line; then the slot's CPU and memory against its share. A slot no
+    /// count chooses (and no runner reports) is grey and dim.
     fn tile(
         &mut self,
         ui: &mut egui::Ui,
@@ -1538,20 +1566,22 @@ impl Dash {
         let name = tile_name(t);
         let ink = if on { p.os(Os::Linux) } else { p.muted };
         let fill = if on { p.card } else { p.bg };
-        let fresh = self.fresh();
+        let sampled = self.sampled();
         let frame = egui::Frame::new()
             .fill(fill)
             .stroke(Stroke::new(1.0, p.border))
             .corner_radius(4)
             .inner_margin(egui::Margin::symmetric(10, TILE_MARGIN_V));
-        let frame = ui.allocate_ui(vec2(w, tile_height()), |ui| {
+        // Top-down, not the grid row's left-to-right: inherited, the title row got no width.
+        let top_down = Layout::top_down(Align::Min);
+        let frame = ui.allocate_ui_with_layout(vec2(w, tile_height()), top_down, |ui| {
             if !on {
                 ui.set_opacity(TILE_DIM);
             }
             frame.show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
                 ui.set_width(ui.available_width());
-                let row = ui.horizontal(|ui| {
+                ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     let (rect, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
                     paint_os(ui.painter(), rect, Os::Linux, ink, fill);
@@ -1591,17 +1621,6 @@ impl Dash {
                         });
                     }
                 });
-                if let Some(slot) = slot.filter(|s| s.busy()) {
-                    let numbers = |v: Option<f64>, s: Option<f64>, cores: bool| {
-                        v.filter(|_| fresh)
-                            .map_or("no sample".into(), |u| compact_numbers(u, s, cores).0)
-                    };
-                    row.response.on_hover_text(format!(
-                        "{name}: CPU {} \u{b7} Mem {} GiB",
-                        numbers(slot.cpu_cores, share.0, true),
-                        numbers(slot.mem_gib, share.1, false)
-                    ));
-                }
                 match slot {
                     Some(slot) if slot.busy() || !slot.job.is_empty() => self.title_row(ui, slot),
                     _ => {
@@ -1610,6 +1629,18 @@ impl Dash {
                         });
                     }
                 }
+                let occupancy =
+                    slot.map(|s| occupancy_line(s.cpu_cores, s.mem_gib, share, sampled));
+                ui.allocate_ui_with_layout(
+                    vec2(ui.available_width(), CAPTION_H),
+                    Layout::left_to_right(Align::Center),
+                    |ui| {
+                        if let Some((text, over)) = occupancy {
+                            let color = if over { p.over } else { p.muted };
+                            ui.label(RichText::new(text).color(color).small());
+                        }
+                    },
+                );
             })
         });
         let edge = if on { p.os(Os::Linux) } else { p.border };
@@ -2969,32 +3000,133 @@ mod tests {
     }
 
     #[test]
-    fn compact_numbers_read_like_the_mockup() {
+    fn occupancy_line_reads_against_the_tier_share() {
+        let heavy = (Some(8.0), Some(20.0));
         assert_eq!(
-            compact_numbers(6.2, Some(8.0), true),
-            ("6.2/8".into(), false)
+            occupancy_line(Some(1.0), Some(4.8), heavy, true),
+            ("1.0/8 cores \u{b7} 4.8/20 GiB".into(), false)
+        );
+        let light = (Some(4.0), Some(8.0));
+        assert_eq!(
+            occupancy_line(Some(0.0), Some(0.1), light, true),
+            ("0.0/4 cores \u{b7} 0.1/8 GiB".into(), false),
+            "an idle slot's footprint"
         );
         assert_eq!(
-            compact_numbers(9.4, Some(8.0), true),
-            ("9.4/8".into(), true)
+            occupancy_line(Some(4.6), Some(3.0), light, true),
+            ("4.6/4 cores \u{b7} 3.0/8 GiB".into(), true),
+            "over the light cap"
         );
         assert_eq!(
-            compact_numbers(20.0, Some(24.0), false),
-            ("20/24".into(), false)
+            occupancy_line(Some(2.0), None, (Some(5.2), None), true),
+            ("2.0/5.2 cores \u{b7} - GiB".into(), false),
+            "a value docker left out"
         );
         assert_eq!(
-            compact_numbers(2.0, Some(26.0 / 3.0), true),
-            ("2.0/8.7".into(), false)
-        );
-        assert_eq!(compact_numbers(3.0, None, false), ("3".into(), false));
-        assert_eq!(
-            compact_numbers(4.8, Some(24.0 / 5.0), true),
-            ("4.8/4.8".into(), false)
+            occupancy_line(Some(2.0), Some(12.0), (None, None), true),
+            ("2.0 cores \u{b7} 12 GiB".into(), false)
         );
         assert_eq!(
-            compact_numbers(0.0, Some(72.0 / 5.0), false),
-            ("0/14.4".into(), false)
+            occupancy_line(None, None, heavy, true),
+            ("no sample".into(), false)
         );
+        assert_eq!(
+            occupancy_line(Some(1.0), Some(4.8), heavy, false),
+            ("no sample".into(), false)
+        );
+    }
+
+    #[test]
+    fn sampled_caption_shows_the_age_and_flags_an_old_sample() {
+        let now = std::time::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let ago = |s| Some(now - Duration::from_secs(s));
+        assert_eq!(sampled_caption(None, now), ("no sample".into(), false));
+        assert_eq!(
+            sampled_caption(ago(70), now),
+            ("sampled 1 min ago".into(), false)
+        );
+        assert_eq!(
+            sampled_caption(ago(150), now),
+            ("sampled 2 min ago".into(), false)
+        );
+        assert_eq!(
+            sampled_caption(ago(151), now),
+            ("sampled 2 min ago".into(), true),
+            "old, still drawn"
+        );
+        assert_eq!(
+            sampled_caption(Some(now + Duration::from_secs(30)), now),
+            ("sampled 0 s ago".into(), false),
+            "the distro's clock ahead of this PC's"
+        );
+    }
+
+    #[test]
+    fn a_busy_tile_shows_its_job_repo_elapsed_and_occupancy() {
+        let base = state::temp_base("dash-busy-tile");
+        std::fs::write(
+            state::inbox(&base).join("settings.json"),
+            r#"{"runner_count":3,"job_cpus":26,"job_memory_gib":72}"#,
+        )
+        .unwrap();
+        let now = SystemTime::now();
+        let rfc = |t: SystemTime| chrono_free_at(t);
+        let json = format!(
+            r#"{{"schema":4,"state":"running","job":"Agents Tests","updated":"{}","sampled_at":"{}",
+            "pool":{{"cpu_cores":1.1,"mem_gib":5.1}},"slots":[
+            {{"slot":1,"state":"running","job":"Agents Tests","repo":"o/Agent_Army",
+              "run_url":"https://github.com/o/Agent_Army/actions/runs/7","started_at":"{}",
+              "cpu_cores":1,"mem_gib":5}},
+            {{"slot":2,"state":"idle","cpu_cores":0,"mem_gib":0.1}}]}}"#,
+            rfc(now),
+            rfc(now),
+            rfc(now - Duration::from_secs(125)),
+        );
+        let mut d = Dash::new(base.clone());
+        d.snap = state::parse_status(&json, now);
+        assert!(d.snap.slots[0].busy(), "{:?}", d.snap);
+        let slots = d.snap.slots.clone();
+        let context = egui::Context::default();
+        context.set_fonts(fonts());
+        context.all_styles_mut(style);
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(480.0, 800.0))),
+            ..Default::default()
+        };
+        // Before the top-down tile layout this panicked in debug: the title row had -32 px.
+        let mut output = context.run_ui(input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                d.linux_grid(ui, &slots, (Some(26.0 / 3.0), Some(24.0)));
+            });
+        });
+        let texts: Vec<(String, egui::Pos2)> = output
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.pos)),
+                _ => None,
+            })
+            .collect();
+        output.textures_delta.clear();
+        let at = |want: &str| {
+            texts
+                .iter()
+                .find(|(t, _)| t.contains(want))
+                .map(|(_, p)| *p)
+                .unwrap_or_else(|| panic!("missing {want}: {texts:?}"))
+        };
+        let name = at("Linux 1");
+        let title = at("Agents Tests \u{b7} Agent_Army");
+        let occupancy = at("1.0/8.7 cores \u{b7} 5.0/24 GiB");
+        at("2m 0");
+        at("0.0/8.7 cores \u{b7} 0.1/24 GiB");
+        at("Waiting for a job");
+        assert!(name.y < title.y && title.y < occupancy.y, "{texts:?}");
+        assert!(
+            (name.x - title.x).abs() < 20.0,
+            "title under the name: {texts:?}"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
@@ -3072,10 +3204,12 @@ mod tests {
 
     /// Now as `YYYY-MM-DDTHH:MM:SSZ`, by the same civil-date rule the tray parses with.
     fn chrono_free_now() -> String {
-        let secs = SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
+        chrono_free_at(SystemTime::now())
+    }
+
+    /// RFC 3339 UTC for `t`, without a date crate.
+    fn chrono_free_at(t: SystemTime) -> String {
+        let secs = t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
         let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
         // Howard Hinnant's civil_from_days.
         let z = days + 719_468;
@@ -3240,14 +3374,15 @@ mod tests {
 
     #[test]
     fn every_linux_tile_is_drawn_with_one_fixed_size() {
-        // 60 = 24 state row + 4 gap + 24 title row + 2 x 3 margin + 2 border.
-        assert_eq!(tile_height(), 60.0);
+        // 80 = 24 state row + 4 gap + 24 title row + 4 gap + 16 occupancy + 2 x 3 margin
+        // + 2 border.
+        assert_eq!(tile_height(), 80.0);
         assert!(
             tile_height() < card_height(),
             "compact: shorter than a card"
         );
         // Six rows of two, 4 apart, whatever the counts.
-        assert_eq!(linux_grid_height(), 6.0 * 60.0 + 5.0 * 4.0);
+        assert_eq!(linux_grid_height(), 6.0 * 80.0 + 5.0 * 4.0);
         for (light, heavy, tiered) in [(0, 0, false), (3, 0, false), (10, 2, true), (1, 0, true)] {
             let tiles = linux_tiles(light, heavy, tiered);
             assert_eq!(tiles.len(), 12, "{light} {heavy} {tiered}");
@@ -3326,21 +3461,22 @@ mod tests {
 
     #[test]
     fn disk_line_names_free_size_and_floor() {
-        let (used, share, text, over) = disk_line(Some(100.0), Some(40.0), Some(15.0), true);
+        let (used, share, text, over) = disk_line(Some(100.0), Some(40.0), Some(15.0));
         assert_eq!((used, share, over), (Some(60.0), Some(100.0), false));
         assert_eq!(text, "40 GiB free of 100 \u{b7} floor 15");
-        assert!(disk_line(Some(100.0), Some(10.0), Some(15.0), true).3);
-        let (used, share, text, over) = disk_line(None, None, None, true);
+        assert!(disk_line(Some(100.0), Some(10.0), Some(15.0)).3);
+        let (used, share, text, over) = disk_line(None, None, None);
         assert_eq!((used, share, over), (None, None, false));
         assert_eq!(text, "no sample");
     }
 
     #[test]
     fn the_linux_grid_fits_clamped_height() {
-        // 1080 px work area: clamps to SIZE[1] = 760. All twelve tiles and two Windows cards.
+        // 1080 px work area: clamps to SIZE[1] = 760. All twelve tiles and one Windows card (the
+        // interim runner on this PC); more Windows cards scroll.
         let h_1080 = clamped_window_height(1080.0, 32.0);
         assert_eq!(h_1080, SIZE[1], "sanity: 1080p clamps to default size");
-        let h = right_column_height(2);
+        let h = right_column_height(1);
         assert!(h <= h_1080, "grid overflows 1080p: {h:.0} > {h_1080:.0}");
         // 768 px work area (laptop): clamps below SIZE[1]; all twelve tiles still fit.
         let h_768 = clamped_window_height(768.0, 32.0);
@@ -3491,9 +3627,9 @@ mod tests {
     }
 
     #[test]
-    fn disk_line_stale_is_no_sample_like_the_other_bars() {
-        let (used, share, text, over) = disk_line(Some(100.0), Some(10.0), Some(15.0), false);
-        assert_eq!((used, share, over), (None, None, false));
-        assert_eq!(text, "no sample");
+    fn disk_line_bad_values_are_no_sample() {
+        let (used, share, text, _) = disk_line(Some(f64::NAN), Some(10.0), Some(15.0));
+        assert_eq!((used, share, text.as_str()), (None, None, "no sample"));
+        assert_eq!(disk_line(Some(100.0), Some(-1.0), None).2, "no sample");
     }
 }
