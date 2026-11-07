@@ -1820,6 +1820,12 @@ Describe 'aap-runner host supervisor' {
             function Get-AapFakeBrokerStatus { param($Backend, $Reservation) return @{ status = 'online'; busy = $true; job_ended = $false } }
             function Get-AapFakeStorageProblem { param($Backend) return @($script:storageProblems) }
             function Get-AapFakeHostProblem { param($Backend) return @($script:hostProblems) }
+            function Remove-AapFakeOrphanBuildVm {
+                param($Backend)
+                $script:buildReconciles++
+                if ($script:buildThrows) { throw 'AAP_Fake: the build folder cannot be listed' }
+                return @($script:buildResults)
+            }
 
             # The short (8.3) names CI's TEMP has would not pass the root pattern.
             function Get-AapLongPath([string]$Path) {
@@ -1856,6 +1862,9 @@ Describe 'aap-runner host supervisor' {
             $script:stepThrows = @()
             $script:storageProblems = @()
             $script:hostProblems = @()
+            $script:buildReconciles = 0
+            $script:buildThrows = $false
+            $script:buildResults = @()
             $script:holdJobs = $false
             $script:holdVms = $false
             $script:sampleAt = $null
@@ -2421,6 +2430,32 @@ Describe 'aap-runner host supervisor' {
                 Invoke-AapMinute
                 Get-AapLogText | Should -Match "$($vms[0].reservation_id): step failed: AAP_FakeBroken"
                 @($script:steps | Where-Object { $_ -like "$($vms[1].reservation_id) *" }).Count | Should -BeGreaterThan 0
+            }
+
+            It 'reconciles orphan build VMs at start and logs what it removed and what it could not' -Tag 'build-reconcile' {
+                Enable-AapFakeVm
+                $script:buildResults = @(
+                    [pscustomobject]@{ Name = 'aap-wbuild-0123abcd'; VmId = 'a'; Action = 'removed'; Detail = '' },
+                    [pscustomobject]@{ Name = 'aap-wbuild-4567ef01'; VmId = 'b'; Action = 'held'; Detail = 'the build lock is held or unreadable: busy' },
+                    [pscustomobject]@{ Name = 'aap-wbuild-89abcdef'; VmId = 'c'; Action = 'failed'; Detail = 'the VM could not be removed: fake' })
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":1,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                $script:buildReconciles | Should -BeGreaterThan 0
+                Get-AapLogText | Should -Match 'orphan build VM aap-wbuild-0123abcd removed'
+                Get-AapLogText | Should -Match 'WARN orphan build VM aap-wbuild-89abcdef not removed: the VM could not be removed: fake'
+                Get-AapLogText | Should -Not -Match 'aap-wbuild-4567ef01'
+            }
+
+            It 'a failing build VM reconcile is logged and does not stop the steps' -Tag 'build-reconcile' {
+                Enable-AapFakeVm
+                $script:buildThrows = $true
+                Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":1,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
+                Reset-AapFakeDistro 1 9 28 @('idle')
+                Invoke-AapCycle
+                Invoke-AapMinute 4
+                Get-AapLogText | Should -Match 'WARN orphan build VM reconcile failed: AAP_Fake: the build folder cannot be listed'
+                @($script:steps).Count | Should -BeGreaterThan 0
             }
         }
     }
