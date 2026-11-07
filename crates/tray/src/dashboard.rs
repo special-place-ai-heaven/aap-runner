@@ -1243,6 +1243,12 @@ fn paint_sym(p: &egui::Painter, rect: Rect, sym: Sym, color: Color32, hole: Colo
     }
 }
 
+/// Whether a click on a card's symbol opens the error panel: an Error slot while a problem is
+/// reported, but not a retired one (that is the manager's own state, not a fault to repair).
+fn opens_problem(slot: &Slot, problem: bool) -> bool {
+    slot.state == Sym::Error && !slot.retired && problem
+}
+
 /// A symbol at `size`; `clickable` lets a click open the error panel (not a Tab stop).
 fn sym_widget(
     ui: &mut egui::Ui,
@@ -1603,7 +1609,7 @@ impl Dash {
                         ui.label(RichText::new(word).color(p.muted));
                         return;
                     };
-                    let error = slot.state == Sym::Error && !slot.retired && self.problem.is_some();
+                    let error = opens_problem(slot, self.problem.is_some());
                     let r = sym_widget(
                         ui,
                         16.0,
@@ -1626,8 +1632,8 @@ impl Dash {
                 });
                 match slot {
                     Some(slot) if slot.note().is_some() => {
+                        let note = slot.note().unwrap_or_default();
                         ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
-                            let note = slot.note().unwrap_or_default();
                             ui.label(RichText::new(note).color(p.state(slot.state)).small());
                         });
                     }
@@ -3461,14 +3467,23 @@ mod tests {
     fn a_retired_slot_reads_retired_on_a_heavy_and_a_light_card() {
         let now = SystemTime::now();
         let json = format!(
-            r#"{{"schema":4,"state":"running","job":"j","updated":"{}",
+            r#"{{"schema":4,"state":"running","job":"j","updated":"{}","sampled_at":"{}",
             "slots":[{{"slot":1,"state":"retired","cpu_cores":1,"mem_gib":2}},
                      {{"slot":3,"state":"retired","cpu_cores":1,"mem_gib":2}},
-                     {{"slot":4,"state":"bogus"}}]}}"#,
+                     {{"slot":4,"state":"bogus","cpu_cores":1,"mem_gib":2}},
+                     {{"slot":5,"state":"error"}}]}}"#,
+            chrono_free_at(now),
             chrono_free_at(now)
         );
         let mut d = Dash::new(state::temp_base("dash-retired-tile"));
-        let slots = state::parse_status(&json, now).slots;
+        d.snap = state::parse_status(&json, now);
+        assert!(d.sampled());
+        let slots = d.snap.slots.clone();
+        assert!(opens_problem(&slots[3], true) && !opens_problem(&slots[3], false));
+        assert!(
+            !opens_problem(&slots[0], true),
+            "a retired slot opens no panel"
+        );
         let tiles = linux_tiles(8, 2, true);
         for (tile, slot, name) in [(0, 0, "Heavy 1"), (2, 1, "Light 1"), (3, 2, "Light 2")] {
             let context = egui::Context::default();
@@ -3503,9 +3518,16 @@ mod tests {
             if slot < 2 {
                 assert!(has("Retired") && !has("Starting"), "{name}: {texts:?}");
                 assert!(has("restarts with the pool"), "{name}: {texts:?}");
-                assert!(!has("cores"), "no occupancy row: {texts:?}");
+                assert!(
+                    !has("cores") && !has("no sample"),
+                    "no occupancy row: {texts:?}"
+                );
             } else {
                 assert!(has("Starting") && !has("Retired"), "{name}: {texts:?}");
+                assert!(
+                    has("cores"),
+                    "a sampled non-retired tile has one: {texts:?}"
+                );
             }
         }
     }
