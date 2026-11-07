@@ -255,6 +255,14 @@ Describe 'the cap survives a supervisor restart and a clock stepped back' {
         $B = New-LinBackend $w -CapArgs @{ ClockSafety = 'host_reboot' }
         $rid = (New-LinReservation $w).reservation_id
         (Step-Lin $B $w $rid).Action | Should -Be 'created'
+        # A VM found off at the first look is capped too: recovery never starts it.
+        $B2 = New-LinBackend $w -CapArgs @{ ClockSafety = 'host_reboot' }
+        $s = Step-Lin $B2 $w $rid
+        $s.Code | Should -Be 'vm_lifetime_cap'
+        $s.LifetimeCap.trigger | Should -Be 'host_reboot'
+        @(Get-LinCalls $w 'StartVm *').Count | Should -Be 0
+        (Get-LinRes $w $rid).state | Should -Be 'reconciled'
+        Invoke-LinValidator $w 'backend-lifecycle' @(Get-LinJournalLines $w $rid) | Should -BeNullOrEmpty
     }
 }
 

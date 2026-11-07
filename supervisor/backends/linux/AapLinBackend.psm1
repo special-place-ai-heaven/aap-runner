@@ -1145,8 +1145,8 @@ function Get-AapLinOwnVms($B, $r, [string]$VmId) {
 # Steps 1 and 2 of allocator.md L4 for one reservation: decide, latch in memory, power the VM off at the hypervisor
 # (Stop-VM -TurnOff, never a guest shutdown), observe it. Due when its age by true time reaches the cap in force (exactly
 # the cap counts); when this process latched it before (no later clock reading un-caps it); when its journal carries the
-# evidence already (a restart decides again); or, with -ClockSafety, when its VM is found running at this process's first
-# look (L7: time across a host reboot or a lost clock record cannot be recovered). Only acquired_at, the cap and the host
+# evidence already (a restart decides again); or, with -ClockSafety, when its VM exists at this process's first look
+# (running or off: an off one is never started again) (L7: time across a host reboot or a lost clock record cannot be recovered). Only acquired_at, the cap and the host
 # clocks decide: no guest reply, heartbeat, job state, broker answer or runner status enters. Returns the latch, or $null.
 function Invoke-AapLinCapPowerOff($B, $r, $j) {
     $rid = [string]$r.reservation_id
@@ -1169,8 +1169,11 @@ function Invoke-AapLinCapPowerOff($B, $r, $j) {
     $first = -not $B.CapSeen.ContainsKey($rid)
     $B.CapSeen[$rid] = $true
     if ($null -eq $cap -and $first -and $B.ClockSafety) {
-        try { $on = @(Get-AapLinOwnVms $B $r $vmId | Where-Object { $_.State -cne 'Off' }) } catch { $on = @() }
-        if ($on.Count) { $cap = @{ Trigger = $B.ClockSafety; Elapsed = $(if ($age -ge 0) { $age } else { $null }); Hours = $hours; PowerOff = $null } }   # check:cap-safety
+        # A VM found running is capped at once; one found off is capped too, so recovery never starts it (L6 d).
+        try { $on = @(Get-AapLinOwnVms $B $r $vmId) } catch { $on = @() }
+        $measured = $null
+        if ($age -ge 0) { $measured = $age }   # the measured age, never invented: null when the clock is behind the start
+        if ($on.Count) { $cap = @{ Trigger = $B.ClockSafety; Elapsed = $measured; Hours = $hours; PowerOff = $null } }   # check:cap-safety
     }
     if ($null -eq $cap) { return $null }
     $B.Capped[$rid] = $cap
