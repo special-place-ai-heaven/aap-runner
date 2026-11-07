@@ -45,14 +45,15 @@
     "settings_schemas": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 4,
+      "maxItems": 5,
       "uniqueItems": true,
       "items": {
         "enum": [
           1,
           2,
           3,
-          4
+          4,
+          5
         ]
       }
     },
@@ -62,7 +63,8 @@
         1,
         2,
         3,
-        4
+        4,
+        5
       ]
     },
     "capacity": {
@@ -548,7 +550,40 @@
             "light",
             null
           ],
-          "description": "R1 tier. Present on every Linux slot (heavy or light) exactly while settings schema 4 is applied, null or absent otherwise and on every Windows slot. Optional in the schema so a supervisor before R1 step 3 stays valid."
+          "description": "R1 tier. Present on every Linux slot (heavy or light) exactly while settings schema 4 or 5 is applied, null or absent otherwise and on every Windows slot. Optional in the schema so a supervisor before R1 step 3 stays valid."
+        },
+        "vm_lifetime_cap": {
+          "$ref": "#/$defs/vm_lifetime_cap"
+        }
+      }
+    },
+    "vm_lifetime_cap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cap_hours",
+        "started_utc",
+        "deadline_utc",
+        "reason"
+      ],
+      "description": "The slot's hard VM lifetime cap (allocator.md, Hard VM lifetime cap); only a hyperv-vm slot carries it, and a supervisor that predates revision 6 of status-settings.md writes none. started_utc is the reservation's acquired_at, deadline_utc is started_utc plus cap_hours hours (validate.py), reason is null until the cap fires and vm_lifetime_cap from then until the slot is freed (the slot is creating without a VM id, deleting or quarantined). Times, a count of hours and one fixed word: no host name, path or id.",
+      "properties": {
+        "cap_hours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "started_utc": {
+          "$ref": "#/$defs/time"
+        },
+        "deadline_utc": {
+          "$ref": "#/$defs/time"
+        },
+        "reason": {
+          "enum": [
+            null,
+            "vm_lifetime_cap"
+          ]
         }
       }
     },

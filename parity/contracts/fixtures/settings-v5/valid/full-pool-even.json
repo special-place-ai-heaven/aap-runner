@@ -1,0 +1,17 @@
+{
+  "schema": 5,
+  "linux_backend": "wsl-legacy",
+  "vm_lifetime_cap_hours": 6,
+  "linux_light_count": 10,
+  "linux_heavy_count": 2,
+  "windows_runner_count": 5,
+  "job_cpus": 19,
+  "job_memory_gib": 72,
+  "paused": false,
+  "io_percent": 90,
+  "sharing": "slice",
+  "host_reserve_percent": 10,
+  "share_mode": "even",
+  "linux_share_percent": null,
+  "windows_share_percent": null
+}
