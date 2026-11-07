@@ -134,6 +134,12 @@ function Save-WinLeases($World, $Leases) { Write-WinJson (Join-Path $World.Fake 
 
 # ---- fakes ---------------------------------------------------------------------------------------------------------
 
+# A disk the host still has mounted (a crash inside WriteUnattend or NewDisk): an exclusive handle on the file, as the
+# real mount holds one, closed only by the fake DismountDisk or Clear-WinMounts (call it in finally).
+$script:WinMounts = @{}
+function Mount-WinStale([string]$Path) { $script:WinMounts[$Path] = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+function Clear-WinMounts { foreach ($h in @($script:WinMounts.Values)) { $h.Dispose() }; $script:WinMounts.Clear() }
+
 function New-WinProvider {
     $p = @{}
     $p.GetVolumeGuid = { param($a) $bad = Get-WinKnob $w 'WrongVolume' ''; if ($bad -and $a.Path -like "*$bad*") { return $script:OtherGuid }; $script:VolGuid }
@@ -201,6 +207,10 @@ function New-WinProvider {
         @(Get-WinVms $w | ForEach-Object { @{ Id = $_.Id; Name = $_.Name; State = $(if (Get-WinKnob $w 'Paused' $false) { 'Paused' } else { $_.State }); Cpus = $_.Cpus; MemGib = $_.MemGib } })
     }
     # 'MeasureVanish': that many walks hit a file Hyper-V deleted under them (a transient race), then they succeed.
+    $p.DismountDisk = { param($a)
+        Add-WinCall $w "DismountDisk $($a.Path)"
+        if ($script:WinMounts.ContainsKey($a.Path)) { $script:WinMounts[$a.Path].Dispose(); [void]$script:WinMounts.Remove($a.Path) }
+    }
     $p.MeasureBytes = { param($a)
         if (Get-WinKnob $w 'MeasureFails' $false) { throw 'access denied' }
         $vanish = [int](Get-WinKnob $w 'MeasureVanish' 0)

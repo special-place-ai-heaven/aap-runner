@@ -70,7 +70,7 @@ $script:BuildVmRe = '^aap-wbuild-[0-9a-f]{8}\z'   # the image builder's build VM
 $script:GenerationRe = '^win25-vs2026-x64/[0-9]{8}\.[0-9]+\.[0-9]+-aap\.[0-9]+\z'
 $script:Reserved = '^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]) *(\..*)?$'
 $script:ProviderOps = @('GetVolumeGuid', 'GetHostSecurity', 'HashFile', 'NewDiffDisk', 'GetVhdParent', 'NewDisk', 'WriteUnattend', 'NewVm',
-    'GetVmConfig', 'StartVm', 'StopVm', 'RemoveVm', 'ListVms', 'MeasureBytes')
+    'GetVmConfig', 'StartVm', 'StopVm', 'RemoveVm', 'ListVms', 'MeasureBytes', 'DismountDisk')
 $script:VmGroupSid = 'S-1-5-83-0'      # NT VIRTUAL MACHINE\Virtual Machines: may read a sealed base (P06), nothing more
 # The lease outcomes journaled right after the lease call (a repeated `ready` `done` record: `op` has no lease field), so a
 # restarted supervisor never takes a broker that lost an issued lease for one that never recorded it.
@@ -1172,6 +1172,11 @@ function Invoke-AapWinDestroy($B, $r, $j, [switch]$Force, [switch]$Urgent) {
                 & $B.Provider.RemoveVm @{ VmId = $vm.Id }
             }
         } catch { $null = $_ }
+        # A disk a crash left mounted on the host (inside WriteUnattend or NewDisk) holds its file open: dismount it once
+        # the VM is gone, or the folder never goes. Only a plain file is passed; a link is removed as an entry below.
+        foreach ($disk in @((Join-Path $clone 'os.avhdx'), (Join-Path $scratch 'scratch.vhdx'))) {
+            try { if ((Get-AapWinPathKind $disk) -ceq 'file') { & $B.Provider.DismountDisk @{ Path = $disk } } } catch { $null = $_ }   # check:stale-mount
+        }
         Invoke-AapWinFault 'destroy:after-vm'
         try { & $B.Network.Detach @{ VmId = $vmId; VmName = $name; Profile = 'windows' }; $detached = $true } catch { $null = $_ }
         try { Remove-AapWinTree $clone $B.Storage.clone_root.Path } catch { $null = $_ }

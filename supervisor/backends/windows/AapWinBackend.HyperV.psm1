@@ -143,6 +143,9 @@ function New-AapWinHyperVProvider {
         }
     }
     $p.MeasureBytes = { param($a) Get-AapWinTreeBytes $a.Path }
+    # Destroy, after Remove-VM: a clone or scratch disk still attached to the host (a crash inside WriteUnattend or NewDisk)
+    # is dismounted; a disk the host does not have attached is left alone.
+    $p.DismountDisk = { param($a) if ([bool](Hyper-V\Get-VHD -Path $a.Path -ErrorAction Stop).Attached) { Hyper-V\Dismount-VHD -Path $a.Path -ErrorAction Stop } }
     $p
 }
 

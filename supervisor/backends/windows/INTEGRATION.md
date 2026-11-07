@@ -190,9 +190,11 @@ host preparation.
 - That the supervisor can enumerate Hyper-V's runtime folders inside a clone folder: a `MeasureBytes` error on three
   walks in a row is a broken limit (fail closed: the VM is destroyed at that step), so an unreadable runtime folder
   would end every job. One or two errors (a file Hyper-V deleted mid-walk) are walked again in the same step (P10.1).
-- A crash inside `WriteUnattend` leaves `os.avhdx` mounted: the folder delete then fails and the slot ends
-  `teardown_failed` (fail closed). P02.1 decides whether destroy should `Dismount-VHD` first and create detect a stale
-  mount (a new provider op).
+- A crash inside `WriteUnattend` (or `NewDisk`) leaves `os.avhdx` (or `scratch.vhdx`) mounted on the host. Destroy,
+  which reconcile's `destroy` action and every abandoned create end in, calls the provider op `DismountDisk` on both
+  disks after `Remove-VM` (P10.1): `Get-VHD` `.Attached`, then `Dismount-VHD`. The lab confirms `Attached` reads true for
+  such a host mount and false once the VM is removed; a dismount that fails still ends the slot `teardown_failed`.
+  Create itself does not look for a stale mount: a re-run create that finds one fails and is destroyed.
 - That a VM created with `New-VM -Path <clone>\<id>` and the smart paging and snapshot paths there leaves no file outside
   the clone folder (the backend checks the paths Hyper-V reports).
 
