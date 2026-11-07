@@ -565,7 +565,7 @@ function New-AapLinSeed {
        key. The job user is runner (uid 1001, as on the hosted image); no account gets uid 1000 (the image's removed
        install user had it) and cloud-init's default user is not created. Root may log in with the forced command only
        (sshd PermitRootLogin forced-commands-only, the image's part, P15). The seed is ejected and deleted once the guest
-       answers its first probe.
+       answers a probe with ready (the ready step), not at the first probe, which may still answer booting.
        network-config: the guest's static addressing, from the declaration the P10.0 module's Attach returned for this VM
        (host-network-module.md, Consumer obligations 1): its address with the subnet's prefix length, the gateway as the
        default route, the resolvers as its DNS servers, no DHCP and no router advertisements, on the one hv_netvsc
