@@ -485,6 +485,7 @@ echo "ghost reap sees slot 12's container ok"
         while IFS=: read -r id slot; do
           [[ -z "${want}" || "${want}" == "${slot}" ]] && echo "${id}"
         done <<< "${ids}"
+        return 0
         ;;
       inspect) [[ "$4" == c12 ]] && echo /aap-crrr-12-1-1 || echo /aap-crrr-1-1-1 ;;
       *) echo "docker $*" >> "${slog}" ;;
