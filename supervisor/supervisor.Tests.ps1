@@ -2437,7 +2437,8 @@ Describe 'aap-runner host supervisor' {
                 $script:buildResults = @(
                     [pscustomobject]@{ Name = 'aap-wbuild-0123abcd'; VmId = 'a'; Action = 'removed'; Detail = '' },
                     [pscustomobject]@{ Name = 'aap-wbuild-4567ef01'; VmId = 'b'; Action = 'held'; Detail = 'the build lock is held or unreadable: busy' },
-                    [pscustomobject]@{ Name = 'aap-wbuild-89abcdef'; VmId = 'c'; Action = 'failed'; Detail = 'the VM could not be removed: fake' })
+                    [pscustomobject]@{ Name = 'aap-wbuild-89abcdef'; VmId = 'c'; Action = 'failed'; Detail = 'the VM could not be removed: fake' },
+                    [pscustomobject]@{ Name = 'aap-wbuild-deadbeef'; VmId = 'd'; Action = 'unmatched'; Detail = 'no lock file carries this build VM''s tag' })
                 Write-AapSettingsFile '{"schema":3,"linux_backend":"wsl-legacy","runner_count":1,"windows_runner_count":1,"job_cpus":28,"job_memory_gib":72,"paused":false,"io_percent":90,"sharing":"slice","host_reserve_percent":10,"share_mode":"even","linux_share_percent":null,"windows_share_percent":null,"lease_wall_clock_hours":6}'
                 Reset-AapFakeDistro 1 9 28 @('idle')
                 Invoke-AapCycle
@@ -2445,6 +2446,7 @@ Describe 'aap-runner host supervisor' {
                 Get-AapLogText | Should -Match 'orphan build VM aap-wbuild-0123abcd removed'
                 Get-AapLogText | Should -Match 'WARN orphan build VM aap-wbuild-89abcdef not removed: the VM could not be removed: fake'
                 Get-AapLogText | Should -Not -Match 'aap-wbuild-4567ef01'
+                Get-AapLogText | Should -Match 'WARN orphan build VM aap-wbuild-deadbeef left alone: no lock file carries this build VM''s tag'
             }
 
             It 'a failing build VM reconcile is logged and does not stop the steps' -Tag 'build-reconcile' {

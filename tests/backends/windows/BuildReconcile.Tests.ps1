@@ -57,14 +57,41 @@ Describe 'orphan build VMs' {
         @(Remove-AapWinOrphanBuildVm -Backend $x.B).Count | Should -Be 0
     }
 
-    It 'an Off orphan is not stopped; a build VM with no lock file at all is an orphan too' -Tag 'build-orphan' {
+    It 'an Off orphan is not stopped, only removed and detached' -Tag 'build-orphan' {
         $x = New-BuildWorld; $w = $x.W
-        [void][IO.Directory]::CreateDirectory($x.Build)
-        $id = Add-BuildVm $x ('aap-wbuild-' + (Get-BuildTag 'some-other-build')) -State 'Off'
+        $id = Add-BuildVm $x ('aap-wbuild-' + (Get-BuildTag $script:BuildId)) $script:BuildId -State 'Off' -Lock
         $r = @(Remove-AapWinOrphanBuildVm -Backend $x.B)
         $r[0].Action | Should -Be 'removed'
         @(Get-WinCalls $w 'StopVm *').Count | Should -Be 0
         @(Get-WinCalls $w 'RemoveVm *') | Should -Be @("RemoveVm $id")
+        @(Get-WinNetRecords $w).Count | Should -Be 0
+    }
+
+    It 'a build VM with no matching lock file is left alone and reported unmatched' -Tag 'build-unmatched' {
+        $x = New-BuildWorld; $w = $x.W
+        # Another build's lock exists, so the folder is listed, but none carries this VM's tag.
+        [void](Add-BuildVm $x ('aap-wbuild-' + (Get-BuildTag 'other-build')) 'other-build' -Lock)
+        [void](Add-BuildVm $x ('aap-wbuild-' + (Get-BuildTag $script:BuildId)) $script:BuildId -NoAttach)
+        $r = @(Remove-AapWinOrphanBuildVm -Backend $x.B)
+        $r.Count | Should -Be 2
+        @($r | Where-Object { $_.Name -eq 'aap-wbuild-' + (Get-BuildTag 'other-build') })[0].Action | Should -Be 'removed'
+        $u = @($r | Where-Object { $_.Name -eq 'aap-wbuild-' + (Get-BuildTag $script:BuildId) })[0]
+        $u.Action | Should -Be 'unmatched'
+        $u.Detail | Should -Match 'no lock file'
+        @(Get-WinVms $w).Count | Should -Be 1
+        @(Get-WinCalls $w 'StopVm *').Count | Should -Be 1
+        @(Get-WinCalls $w 'RemoveVm *').Count | Should -Be 1
+    }
+
+    It 'an absent build folder removes nothing and reports every build VM unmatched' -Tag 'build-unmatched' {
+        $x = New-BuildWorld; $w = $x.W
+        [void](Add-BuildVm $x ('aap-wbuild-' + (Get-BuildTag $script:BuildId)) $script:BuildId)
+        $r = @(Remove-AapWinOrphanBuildVm -Backend $x.B)
+        $r.Count | Should -Be 1
+        $r[0].Action | Should -Be 'unmatched'
+        @(Get-WinVms $w).Count | Should -Be 1
+        @(Get-WinNetRecords $w).Count | Should -Be 1
+        @(Get-WinCalls $w | Where-Object { $_ -match '^(StopVm|RemoveVm|NetDetach) ' }).Count | Should -Be 0
     }
 
     It 'a build VM whose lock a builder holds is left alone until it lets go' -Tag 'build-lock' {
@@ -146,12 +173,9 @@ Describe 'orphan build VMs' {
         @(Get-WinNetRecords $w).Count | Should -Be 1
     }
 
-    It 'a VM listing error throws and touches nothing; an absent build folder is not a reason to remove anything' -Tag 'build-list' {
+    It 'a VM listing error throws and touches nothing' -Tag 'build-list' {
         $x = New-BuildWorld; $w = $x.W
-        [void](Add-BuildVm $x ('aap-wbuild-' + (Get-BuildTag $script:BuildId)) $script:BuildId)
-        @(Remove-AapWinOrphanBuildVm -Backend $x.B).Count | Should -Be 0
-        @(Get-WinVms $w).Count | Should -Be 1
-        [void][IO.Directory]::CreateDirectory($x.Build)
+        [void](Add-BuildVm $x ('aap-wbuild-' + (Get-BuildTag $script:BuildId)) $script:BuildId -Lock)
         Set-WinKnob $w @{ ListFails = $true }
         { Remove-AapWinOrphanBuildVm -Backend $x.B } | Should -Throw '*Get-VM failed*'
         @(Get-WinCalls $w 'RemoveVm *').Count | Should -Be 0

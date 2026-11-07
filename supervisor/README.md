@@ -155,7 +155,7 @@ has twelve Linux ones. The step that lifts that is P16 / R1 step 5.
   before any admission, and again every 10 minutes.
   Each reconcile also asks the loaded Windows backend to remove orphan image-builder VMs
   (`aap-wbuild-*` whose build lock nobody holds; `backends/windows/INTEGRATION.md`, item 6):
-  removals are logged, a failure is a `WARN`, a failing call never stops the reconcile.
+  removals are logged, a failure or a VM with no matching lock file is a `WARN`, a failing call never stops the reconcile.
 - **Every 5 s:** the two counts, the shares, the reserve, the Linux backend
   and the active generations go to the allocator; `resize_waits` and
   `pool_over_live` keep the last applied settings and lead the `detail`.

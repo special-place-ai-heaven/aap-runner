@@ -1708,6 +1708,7 @@ function Invoke-AapBuildVmReconcile {
     try {
         foreach ($b in @(& "Remove-Aap$($vm.Kind)OrphanBuildVm" -Backend $vm.B)) {
             if ($b.Action -ceq 'removed') { Write-AapLog "orphan build VM $($b.Name) removed" }
+            elseif ($b.Action -ceq 'unmatched') { Write-AapLog "WARN orphan build VM $($b.Name) left alone: $(Format-AapText $b.Detail 300)" }
             elseif ($b.Action -ceq 'failed') { Write-AapLog "WARN orphan build VM $($b.Name) not removed: $(Format-AapText $b.Detail 300)" }
         }
     } catch { Write-AapLog "WARN orphan build VM reconcile failed: $(Format-AapText $_.Exception.Message 300)" }

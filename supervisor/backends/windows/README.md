@@ -169,7 +169,7 @@ with `parity/contracts/validate.py`).
 | `Teardown.Tests.ps1` | release outcomes; a VM or folder that will not go; no slot reuse before the proof; links in clone folders |
 | `Create.Tests.ps1` | untrusted roots; the base pin; VM settings; the guest network against the shared fake (order, every tamper and fault, a lying module's Verify and declaration, the re-Attach and read-back before boot, a VM running at boot, an adapter the module did not make); storage document; offline disk helpers (the answer file's static addressing) |
 | `Recovery.Tests.ps1` | unreadable journals; lost credential; hostile records; restart with a busy runner; JIT delivery rule; inventory and reconcile callbacks; orphans |
-| `BuildReconcile.Tests.ps1` | orphan `aap-wbuild-*` VMs of a dead image builder: lock not held (removed and detached), lock held (left), other names (never touched), a removal or Detach that fails (reported), the staging root |
+| `BuildReconcile.Tests.ps1` | orphan `aap-wbuild-*` VMs of a dead image builder: lock not held (removed and detached), lock held (left), no lock file (left, reported unmatched), other names (never touched), a removal or Detach that fails (reported), the staging root |
 | `Crash.Tests.ps1` | a real process killed at every lifecycle boundary (19 points, plus a drain) and recovered |
 | `Hygiene.Tests.ps1` | no password or JIT config in any file; JIT never text; the password and answer-file bytes never a command's parameter (AST); antivirus patterns; AMSI compile |
 | `Invoke-AapWinMutations.ps1` | disables each `# check:` (in `AapWinBackend.psm1` and `psdirect-call.ps1`) in turn; every check must make a test fail |

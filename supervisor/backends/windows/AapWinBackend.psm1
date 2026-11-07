@@ -1646,10 +1646,12 @@ function Get-AapWinBrokerStatus {
 function Remove-AapWinOrphanBuildVm {
     <# P12.2: the image builder's VMs of a dead builder. The builder holds <staging>\build\<build id>.lock (FileShare.None,
        never deleted) from before NewVm until it exits, and names its VM aap-wbuild-<first 8 hex of SHA-256(build id)>. Every
-       such VM whose lock nobody holds (or whose lock file is absent) is stopped, removed by id and detached, the same
-       sequence as destroy, while this call holds the lock, so a builder starting meanwhile gets AAP_BuildBusy. Returns one
-       object per VM it found: Name, VmId, Action (removed; held: a builder or an unreadable lock keeps it; failed) and
-       Detail. One VM's failure never stops the rest. Throws on a listing error; an absent build folder removes nothing.
+       such VM whose lock file exists and opens exclusively (a crashed builder's handle is gone, its file stays) is
+       stopped, removed by id and detached, the same sequence as destroy, while this call holds the lock, so a builder
+       starting meanwhile gets AAP_BuildBusy. Returns one object per VM it found: Name, VmId, Action (removed; held: a
+       builder or an unreadable lock keeps it; unmatched: no lock file carries its tag, so it is left alone; failed) and
+       Detail. One VM's failure never stops the rest. Throws on a listing error; an absent build folder removes nothing
+       (every build VM is unmatched).
        The build folder, its disks and its state.json stay for the next run of that build id (Remove-AapWinBuild takes the
        lock first and detaches again by the id in state.json). aap-wverify-* VMs are not touched. #>
     [CmdletBinding()]
@@ -1663,28 +1665,30 @@ function Remove-AapWinOrphanBuildVm {
     if (-not $found.Count) { return @() }
     $buildRoot = Join-Path $B.Storage.StagingPath 'build'
     $kind = Get-AapWinPathKind $buildRoot
-    if ($kind -ceq 'absent') { return @() }
-    if ($kind -cne 'dir') { throw "AAP_StorageUntrusted: $buildRoot is not a plain folder" }
+    if ($kind -cne 'absent' -and $kind -cne 'dir') { throw "AAP_StorageUntrusted: $buildRoot is not a plain folder" }
     $sha = [Security.Cryptography.SHA256]::Create()
     $locks = @{}
     try {
-        foreach ($f in [IO.Directory]::GetFiles($buildRoot, '*.lock')) {
+        if ($kind -ceq 'dir') { foreach ($f in [IO.Directory]::GetFiles($buildRoot, '*.lock')) {
             $tag = ([BitConverter]::ToString($sha.ComputeHash($script:Utf8.GetBytes([IO.Path]::GetFileNameWithoutExtension($f)))) -replace '-', '').ToLowerInvariant().Substring(0, 8)
             $locks[$tag] = $f
-        }
+        } }
     } finally { $sha.Dispose() }
     @($found | ForEach-Object { Remove-AapWinOneBuildVm $B $_ ([string]$locks[$_.Name.Substring('aap-wbuild-'.Length)]) })
 }
 
 function Remove-AapWinOneBuildVm($B, $vm, [string]$LockPath) {
     $row = [pscustomobject]@{ Name = $vm.Name; VmId = $vm.Id; Action = 'failed'; Detail = '' }
+    if (-not $LockPath) {   # check:build-unmatched
+        $row.Action = 'unmatched'
+        $row.Detail = 'no lock file carries this build VM''s tag; left alone'
+        return $row
+    }
     $lock = $null
     $why = ''
-    if ($LockPath) {
-        try { $lock = New-Object IO.FileStream($LockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) } catch { $why = $_.Exception.Message }
-    }
+    try { $lock = New-Object IO.FileStream($LockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) } catch { $why = $_.Exception.Message }
     try {
-        if ($LockPath -and $null -eq $lock) {   # check:build-lock
+        if ($null -eq $lock) {   # check:build-lock
             $row.Action = 'held'
             $row.Detail = "the build lock is held or unreadable: $why"
             return $row
