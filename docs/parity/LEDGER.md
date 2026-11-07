@@ -1,6 +1,6 @@
 # Parity implementation ledger
 
-Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-11-07 (ledger reconcile, see "Reconcile - 2026-11-07" below) on origin/main 16d0870: the COMPLETE set of close 6 is unchanged. COMPLETE additions since close 6, each cleanup receipt verified CLEAN-WITH-NOTES by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batches 2-6 and 8): R2.1 (#103), R1.1 (#104), R1.2 (#108), P08.2 (#110), R1.3 (#112), P08.1 (#113) and P05.1 (#109). Coordinator PR #111 (P17/P18 oracle refresh) is verified too (batch 7). IN_PROGRESS: P02.4 and P02.5 (contract revisions merged as #80 and #79 on 2026-10-22, cleanup verified CLEAN-WITH-NOTES 2026-11-06, lab proof and conformance work open), P10.0, P13.5, P13.5b and P16 (#99 retired the maintained sccache wiring; broker support and coordinator-controlled legacy reservations remain; P16 is also R1 step 5). PR_OPEN: P13.5c (#83). The global no-new-dispatch barrier is OPEN: every merged parity receipt and receipted coordinator PR has a verifier verdict. Open PRs: #82 (P09.x hard-cap contract, needed by P10.6/P11.3), #83 (P13.5c), #84 (P02.5 Linux conformance, pester-backends failing). Live rollout of fcb04b1 done 2026-11-06 (canary job and finalize pending). Owner decision Q1 is SUPERSEDED by the owner's 2026-11-05 runner group decision. The close-6 status follows for history.
+Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-11-07 (ledger reconcile, see "Reconcile - 2026-11-07" below) on origin/main 1759b63: the COMPLETE set of close 6 is unchanged. COMPLETE additions since close 6, each cleanup receipt verified CLEAN-WITH-NOTES by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batches 2-6, 8, 10 and 11): R2.1 (#103), R1.1 (#104), R1.2 (#108), P08.2 (#110), R1.3 (#112), P08.1 (#113), P05.1 (#109), P22.1 (#117), P22.2 (#118), P12.2 (#119) and R1.4 (#120). Coordinator PRs #111 (P17/P18 oracle refresh, batch 7), #106 and #116 (ledger PRs, batch 9) are verified too. IN_PROGRESS: P02.4 and P02.5 (contract revisions merged as #80 and #79 on 2026-10-22, cleanup verified CLEAN-WITH-NOTES 2026-11-06, lab proof and conformance work open), P10.0, P13.5, P13.5b and P16 (#99 retired the maintained sccache wiring; broker support and coordinator-controlled legacy reservations remain; P16 is also R1 step 5). PR_OPEN: P13.5c (#83). The global no-new-dispatch barrier is OPEN: every merged parity receipt and receipted coordinator PR has a verifier verdict. Open PRs: #82 (P09.x hard-cap contract, needed by P10.6/P11.3), #83 (P13.5c), #84 (P02.5 Linux conformance, pester-backends failing). Live rollout of fcb04b1 done 2026-11-06; its canary is green (2026-11-07), finalize and the tray rollout of R1.4 are pending the owner. Owner decision Q1 is SUPERSEDED by the owner's 2026-11-05 runner group decision. The close-6 status follows for history.
 
 Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, P02.2, P03, P03.1, P04, P04.1, P05, P06, P06.1, P06.2, P07, P07.1, P08, P09, P10, P10.2, P10.3, P11, P11.1, P11.2, P12, P13, P13.1, P13.2, P13.3, P13.4, P14, P15, P17, P18 and P20.0 are COMPLETE (P03.1, P04.1, P12 and P14 cleanup-verified 2026-10-22 by an independent read-only verifier). P13.5 and P13.5b are merged and cleanup-verified but IN_PROGRESS: they merged without an independent review, the independent post-merge review returned FIX-FIRST on both, and their remainder item P13.5c is NOT_STARTED. Every cleanup receipt in the parity evidence store (52) now carries an independent verifier verdict (pass 1 on 2026-10-22 at 02:17 CEST for P03.1, P04.1, P12, P13.5, P13.5b, P14 and coordinator PR #72; pass 2 at 03:58 CEST for coordinator PRs #65, #73 and #77), so the global no-new-dispatch barrier is OPEN; the close-4 entry that recorded #65 as verified CLEAN had no recorded evidence before pass 2. Nothing is PR_OPEN, and the contract-revision PRs #79 (P02.5) and #80 (P02.4) are open while their items stay NOT_STARTED. Wave 6 is current. States below are current; everything not listed otherwise is NOT_STARTED. ledger.json is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in WORKTREES.md. Only COMPLETE dependencies unlock work; merged or gate-verified alone does not.
 
@@ -17,6 +17,7 @@ Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, 
   - Q4: hard VM lifetime cap. DECIDED: 6 hours for all repositories. Open: not implemented; P10.6 (Windows backend) and P11.3 (Linux backend) are NOT_STARTED (their prerequisites P10/P11 and P12 are COMPLETE); the lab proof is gated on the owner; the frozen contract still says the wall clock only flags, so a contract revision is needed first or with them. As of 2026-11-06: `docs/ROADMAP.md` R3 (owner-approved 2026-11-04) lists the P10.6 six-hour cap as remaining work; the contract revision is PR #82 (open, unmerged).
   - Q5: even-mode drain when a runner count is raised. DECIDED: accept as is. Open: nothing.
   - Q6: guest identity record (P02.5). APPROVED: an offline record in the Windows unattend/answer file and the Linux cloud-init seed (`vm_id`, `reservation_id`, `lease_generation`, expected scratch disk size/identity), Hyper-V KVP off, SMBIOS UUID rejected. Open: the contract revision is PR #79 (open, not merged), then the four conformance items (P10 WriteUnattend, P11 seed, P14, P15) and the independent security review. As of 2026-11-06: PR #79 merged at `c7ee17a` on 2026-10-22 (cleanup verified CLEAN-WITH-NOTES 2026-11-06); the Linux conformance (P11 seed, P15) is PR #84, open, pester-backends failing; the Windows side (P10 WriteUnattend, P14) has no PR.
+  - Q7 (new 2026-11-07, non-blocking): confirm or raise the P22.2 generation minimums (Windows 2 CPU / 4 GiB, Linux 2 CPU / 2 GiB). The values in force are coordinator placeholders chosen with the advisor (PR #118, merged); nothing waits on the answer.
 
 ## P00 — Build the worktree, lease and cleanup gate
 
@@ -304,8 +305,24 @@ New follow-ups (all NOT_STARTED): P08.2 re-checks that the runner is still idle 
 - Pinned execution lane: Sol medium; ownership: `supervisor/capacity/**`, `tests/capacity/**`.
 - Deliverable: Record a minimum guest memory and CPU per image generation in the allocator inputs and refuse admission of a profile whose per-generation minimums do not fit the host after the control VM and the reserve, so the P22/P24 certificates state the minimums.
 - Acceptance: An 8 CPU / 16 GiB host admits only profiles whose image-generation minimum memory/CPU fit the host reserve; a ~2 GiB Windows guest (which cannot boot Windows Server) is refused before boot, not admitted and left unbootable.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE (2026-11-07) — PR #118 (branch `fix/p22-2-generation-minimums`, head `849e43f`, base `93ed165`) merged at `20b5c2a` on 2026-11-07; hosted CI 5/5 on the head; receipt P22.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 10; notes: the review is recorded in-session only, no registry manifest, the minimums are provisional pending owner decision Q7). A guest below its image generation's minimum is refused as `minimum` before any boot. The minimums (win25-vs2026-x64 2 CPU / 4 GiB, ubuntu-24.04-x64 2 CPU / 2 GiB) are coordinator placeholders chosen with the advisor.
 - Why: today an 8 CPU / 16 GiB host admits Windows guests at ~2 GiB including overhead, which cannot boot Windows Server.
+
+## P22.1 — Verify the deployed zccache daemon before priming
+
+- Earliest wave: 10; prerequisites: P13.3.
+- Pinned execution lane: Sol medium; ownership: `supervisor/**`, `tests/**`.
+- Deliverable: Verify SHA-256 of the deployed daemon (`<root>/v1.15.6/zccache-daemon[.exe]`) before priming; refuse or delete otherwise.
+- Acceptance: An unexpected SHA-256 is refused or deleted before any shared cache root is primed.
+- Closure: as every item. Current state: COMPLETE (2026-11-07) — PR #117 (branch `fix/p22-1-zccache-daemon-hash`, head `a9cc713`, base `16d0870`) merged at `69d977b` on 2026-11-07; hosted CI 5/5 on the head; receipt P22.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 10; notes: the review is recorded in-session only, no registry manifest, the base clone was briefly switched to another branch while the worker had uncommitted edits (a worker statement, not checkable), the installed copy was not inspected). The change landed in the cache shims (`guests/cache/**`) and the staged copy `distro/aap-zccache.sh`, not under `supervisor/**`.
+
+## P12.2 — Reconcile orphan build VMs after a builder crash
+
+- Earliest wave: 6; prerequisites: P09.
+- Pinned execution lane: Sol medium; ownership: `supervisor/**`, `tests/**`.
+- Deliverable: Reconcile orphan `aap-wbuild-*` build VMs whose build lock is not held.
+- Acceptance: A crashed builder does not leave an orphan build VM attached.
+- Closure: as every item. Current state: COMPLETE (2026-11-07) — PR #119 (branch `fix/p12-2-orphan-build-vms`, head `10f1960`, base `93ed165`) merged at `fc319e5` on 2026-11-07; hosted CI 5/5 on the head; receipt P12.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 10; notes: the advisor and orch-review results are recorded in-session only, no registry manifest, one sentence of the receipt was corrected after the pass, the installed supervisor was not inspected). A build VM whose lock file exists and opens exclusively is removed; a build VM with no matching lock file is left alone and reported as a WARN row (coordinator and advisor decision, the second commit). The live supervisor does not run this path while no Windows VM backend is loaded.
 
 ## Close 6 - 2026-10-22
 
@@ -546,7 +563,7 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Prerequisites: R1.3 (COMPLETE). Ownership: `crates/tray/src/{dashboard,state}.rs`, `crates/tray/README.md`.
 - Deliverable: each runner card shows, while busy, its repo, job and run link and its own CPU and memory occupancy (the per-slot `cpu_cores`/`mem_gib` the manager already samples); the pool Cores/Memory/Disk bars show real samples instead of "no sample"; the tier tiles stay.
 - Why: the owner, verbatim 2026-11-07: "this GUI is a regression. I need to see what each runner is doing and their occupancy" (the R1.1 compact tiles dropped per-runner activity and usage). Queued after the current work, as the owner asked.
-- Closure: as every item. Current state: NOT_STARTED.
+- Closure: as every item. Current state: COMPLETE (2026-11-07) — PR #120 (branch `feat/r1-4-runner-occupancy`, head `d35cc9b`, base `20b5c2a`) merged at `1759b63` on 2026-11-07; hosted CI 5/5 on the head; receipt R1.4-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 11; notes: the review and the local test counts are recorded in-session only, no registry manifest, the installed tray binary was not inspected). Root cause: the tile layout inherited the grid's horizontal layout (a layout panic reproduced with the fix reverted). Only `crates/tray/src/dashboard.rs` and the tray README changed. The installed tray still has the bug until the owner approves a tray rollout.
 
 ## Reconcile - 2026-11-06
 
@@ -603,3 +620,33 @@ Remaining blockers:
 - P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
 - P10.6 and P11.3 are ready but their contract revision #82 is unmerged; P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
 - Pending on the live install: the canary job and finalize for the 2026-11-06 rollout.
+
+## Reconcile - 2026-11-07 (second close)
+
+Brings this file and ledger.json from origin/main 16d0870 to origin/main 1759b63. Read from `git log origin/main`, `gh pr view`, the parity evidence store and `verifier-pass-2026-11-06.md` (parity work directory), batches 9-11.
+
+| Item | Delivery state |
+| --- | --- |
+| P22.1 #117 69d977b | COMPLETE: receipt P22.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 10 |
+| P22.2 #118 20b5c2a | COMPLETE: receipt P22.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 10. The generation minimums are coordinator placeholders chosen with the advisor; owner confirmation queued as Q7 |
+| P12.2 #119 fc319e5 | COMPLETE: receipt P12.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 10. Build VMs with no matching lock file are left alone (WARN), by coordinator and advisor decision |
+| R1.4 #120 1759b63 | COMPLETE: receipt R1.4-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 11. Root cause: the tile layout inherited the grid's horizontal layout; the installed tray still has the bug until the owner approves a tray rollout |
+| coordinator PR #106 30f99a2 (ledger reconcile 2026-11-06) | merged; receipt coord-ledger-reconcile-2026-11-06-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 9 |
+| coordinator PR #116 93ed165 (ledger close 2026-11-07) | merged; receipt coord-ledger-close-2026-11-07-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 9 |
+
+Counts (ledger.json tasks): 71 items (the 70 of the previous section plus R1.4, queued at the 2026-11-07 close): 44 COMPLETE (was 40), 6 IN_PROGRESS (P02.4, P02.5, P10.0, P13.5, P13.5b, P16), 1 PR_OPEN (P13.5c), 20 NOT_STARTED (was 24).
+
+Barrier: OPEN. The verifier pass signed every receipt that was pending: batch 9 coordinator #106 and #116, batch 10 P22.1 (#117), P22.2 (#118) and P12.2 (#119), batch 11 R1.4 (#120), on top of batches 1-8. This close is itself a coordinator PR; its receipt is written after it merges.
+
+Live (2026-11-07): the canary on the new runner image is green (Frontend, DB Integration and DB install succeeded; Security Audit fails on RustSec advisories in the canary repository, as it did on the old image). The owner set 2 heavy + 10 light runners at 02:04 local time. Pending the owner: the rollout finalize (needs the pool Off) and the tray rollout of R1.4.
+
+Owner decisions: Q7 new and OPEN (confirm or raise the P22.2 generation minimums, Windows 2 CPU / 4 GiB and Linux 2 CPU / 2 GiB; non-blocking). Q1-Q6 unchanged from the 2026-11-07 reconcile.
+
+Ready queue (NOT_STARTED items whose prerequisites are all COMPLETE; the barrier is open): P00.1, P02.1 (lab gate D2 and the owner), P02.3 (owner Q3), P10.1, P10.6 and P11.3 (contract PR #82 first), P21, P25.1. Off the queue since the previous section: P12.2, P22.1 and P22.2 (COMPLETE). The other 12 NOT_STARTED items wait on unfinished prerequisites: P12.1, P10.4 and P10.5 on P10.0; P19 on P16; P20 on P19; P22 on P16, P20 and P21; P23 on P22; P24 on P22 and P23; P25 on P21 and P22; P26 on P24 and P25; P27 on P26; P28 on P27.
+
+Remaining blockers:
+- P02.1 (the lab proof, gate D2 and the owner) blocks P10.0 and P02.4, and through P10.0 blocks P10.4, P10.5 and P12.1.
+- P16 is R1 step 5 (the allocator adopts the Linux pool as its first backend) and is IN_PROGRESS: broker support and coordinator-controlled legacy reservations remain. P19 waits on P16, P22 waits on P16 (and on P20 and P21), and the chain P20 (via P19), P23, P24, P25, P26, P27 and P28 waits behind them.
+- P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
+- P10.6 and P11.3 are ready but their contract revision #82 is unmerged; P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
+- Pending on the live install: the rollout finalize for the 2026-11-06 rollout and the tray rollout of R1.4, both the owner's call.
