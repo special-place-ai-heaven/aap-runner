@@ -5,8 +5,9 @@
 #   Get-AapZcState           guest agent status/collect: qualified, direct, disabled, degraded or unknown, plus byte counts
 #   Invoke-AapZcShim         zcshim.ps1: per compiler call, zccache for qualified pairs, else the compiler directly
 # Any wrapper, daemon or budget problem runs the compiler directly (contract rule 7). Nothing here deletes a file from a
-# cache root: retention is the daemon's, and a root over budget stops being used. Every safety check carries a
-# SAFETY:<id> tag; tests/guests/cache/mutate.py breaks each one and expects a test to fail.
+# cache root but a deployed daemon copy that is not the pinned release (P22.1): retention is the daemon's, and a root
+# over budget stops being used. Every safety check carries a SAFETY:<id> tag; tests/guests/cache/mutate.py breaks each
+# one and expects a test to fail.
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -320,11 +321,30 @@ function Test-AapZcDaemonAlive($Daemon) {
     return ($null -ne $p -and $p.StartTime.ToUniversalTime().Ticks -eq [long](Get-AapZcProp $Daemon 'start'))  # SAFETY:WIN-DAEMON-ALIVE
 }
 
+# P22.1: the daemon copy zccache deployed into a root earlier (a shared root outlives jobs) is the pinned zccache member
+# or the root is not primed. No copy is fine: zccache deploys one from the pinned binary. Anything else at that path is
+# deleted (that one file or file link, never a folder, nothing through a linked version folder) and the root is refused.
+function Test-AapZcDeployedDaemon([string]$RootDir, [string]$Version, [string]$MemberSha256) {
+    $dir = Join-Path $RootDir ('v' + $Version)
+    $f = Join-Path $dir 'zccache-daemon.exe'
+    $item = Get-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return $true }
+    $hash = $null
+    if (-not $item.PSIsContainer -and -not (Test-AapZcLink $f)) { try { $hash = Get-AapZcFileHash $f } catch { $null = $_ } }
+    if ($hash -and $hash -eq $MemberSha256) { return $true }  # SAFETY:WIN-DAEMON-HASH
+    if (-not $item.PSIsContainer -and -not (Test-AapZcLink $dir)) { try { [IO.File]::Delete($f) } catch { $null = $_ } }
+    return $false
+}
+
 # Starts the root's daemon from this (the agent's) environment, never from a job step. zccache starts its daemon on
-# demand (README 379-381); an empty journaled session is the documented call that does it. To confirm in lab.
+# demand (README 379-381); an empty journaled session is the documented call that does it. To confirm in lab. A root
+# holding a daemon copy that is not the pinned one is refused: $false, and $script:DaemonRefused says why.
 function Start-AapZcDaemon($Config, [string]$RootId, [string]$InstallDir) {
+    $script:DaemonRefused = $false
     $root = Get-AapZcProp $Config.roots $RootId
     New-AapZcDir ([string]$root.dir)
+    $w = Get-AapZcPlatform (Join-Path $InstallDir 'wrappers.json')
+    if (-not (Test-AapZcDeployedDaemon ([string]$root.dir) ([string]$w.Version) ([string]$w.Platform.members[0].sha256))) { $script:DaemonRefused = $true; return $false }
     $zc = Get-AapZcBinary $InstallDir
     $before = [DateTime]::Now.AddSeconds(-2)
     $envVars = Get-AapZcChildEnv $root
@@ -396,7 +416,10 @@ function Initialize-AapZcJob {
                 $launcher = '{0};-NoProfile;-NonInteractive;-ExecutionPolicy;Bypass;-File;{1}' -f $script:LauncherShell, (Join-Path $InstallDir 'zcshim.ps1')
                 $envLines.Add('AAP_ZC_STATE=' + (Get-AapZcConfigPath $JobRoot))
                 $envLines.Add('CMAKE_C_COMPILER_LAUNCHER=' + $launcher); $envLines.Add('CMAKE_CXX_COMPILER_LAUNCHER=' + $launcher)
-            } else { $cfg.state = 'degraded'; $cfg.detail = 'daemon did not start; compilers run directly' }
+            } else {
+                $cfg.state = 'degraded'; $cfg.detail = 'daemon did not start; compilers run directly'
+                if ($script:DaemonRefused) { $cfg.detail = 'the deployed daemon is not the pinned release; compilers run directly' }
+            }
         }
     }
     Write-AapZcJson $cfg (Get-AapZcConfigPath $JobRoot)
@@ -446,7 +469,7 @@ function Connect-AapZcSharedRoot {
         Set-AapZcProp $cfg.roots 'shared' ([pscustomobject]@{ dir = Join-Path $MountPath 'root'; budget_bytes = $budget
                 artifact_budget_bytes = [long][Math]::Floor($budget * 3 / 4); daemon = $null; root_id = [string]$b.root_id; trust_class = 'trusted' })
         if (Start-AapZcDaemon $cfg 'shared' $InstallDir) { $cfg.active_root = 'shared' }
-        else { $cfg.roots.PSObject.Properties.Remove('shared'); $reason = 'daemon-start-failed' }
+        else { $cfg.roots.PSObject.Properties.Remove('shared'); $reason = $(if ($script:DaemonRefused) { 'daemon-hash-mismatch' } else { 'daemon-start-failed' }) }
     }
     Set-AapZcProp $cfg 'last_bind' ([ordered]@{ attached = (-not $reason); reason = $reason })
     Write-AapZcJson $cfg $cfgPath

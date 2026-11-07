@@ -327,6 +327,59 @@ Describe 'Initialize-AapZcJob' {
         @($cfg.toolchains).Count | Should -Be 0
         $cfg.state | Should -Be 'direct'
     }
+    # P22.1: the daemon copy zccache deployed into a root is hashed against the pinned zccache member before the root is
+    # primed. Anything else is refused, only that file is deleted, and the build goes on direct.
+    It 'primes the root when the deployed daemon is the pinned member, or when none is deployed yet' -Tag 'WIN-DAEMON-HASH' {
+        $pkg = New-Package
+        Install-Package $pkg
+        $v = Join-Path $pkg.Job 'roots\private\v1.15.6'
+        $null = New-Item -ItemType Directory -Path $v -Force
+        Copy-Item -LiteralPath (Join-Path $pkg.Install 'bin\zccache.cmd') -Destination (Join-Path $v 'zccache-daemon.exe')
+        (Initialize-AapZcJob -InstallDir $pkg.Install -JobRoot $pkg.Job -BudgetBytes 100MB).state | Should -Be 'qualified'
+        $none = New-Package
+        $null = New-Item -ItemType Directory -Path (Join-Path $none.Job 'roots\private\v1.15.6') -Force
+        (Initialize-Package $none).state | Should -Be 'qualified'
+    }
+    It 'refuses a deployed daemon that is not the pinned member, deletes that file only and builds directly' -Tag 'WIN-DAEMON-HASH' {
+        $pkg = New-Package
+        Install-Package $pkg
+        $root = Join-Path $pkg.Job 'roots\private'
+        $v = Join-Path $root 'v1.15.6'
+        $null = New-Item -ItemType Directory -Path $v, (Join-Path $root 'artifacts') -Force
+        [IO.File]::WriteAllText((Join-Path $v 'zccache-daemon.exe'), 'not the daemon')
+        [IO.File]::WriteAllText((Join-Path $v 'keep.txt'), 'neighbour')
+        [IO.File]::WriteAllText((Join-Path $root 'artifacts\blob'), 'blob')
+        $cfg = Initialize-AapZcJob -InstallDir $pkg.Install -JobRoot $pkg.Job -BudgetBytes 100MB
+        $cfg.state | Should -Be 'degraded'
+        $cfg.detail | Should -Match 'not the pinned'
+        Test-Path -LiteralPath (Join-Path $v 'zccache-daemon.exe') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $v 'keep.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $root 'artifacts\blob') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $root 'fake-daemon.pid') | Should -BeFalse -Because 'zccache never started on the root'
+        [IO.File]::ReadAllText((Join-Path $pkg.Job 'state\runner.env')) | Should -BeExactly ''
+        $c = Compile $pkg
+        $c.Code | Should -Be 0
+        @(Get-Journal $pkg).Count | Should -Be 0 -Because 'the compile ran directly, not through zccache'
+    }
+    It 'refuses a folder in place of the daemon and never deletes it' -Tag 'WIN-DAEMON-HASH' {
+        $pkg = New-Package
+        Install-Package $pkg
+        $d = Join-Path $pkg.Job 'roots\private\v1.15.6\zccache-daemon.exe'
+        $null = New-Item -ItemType Directory -Path $d -Force
+        [IO.File]::WriteAllText((Join-Path $d 'inner'), 'x')
+        (Initialize-AapZcJob -InstallDir $pkg.Install -JobRoot $pkg.Job -BudgetBytes 100MB).state | Should -Be 'degraded'
+        Test-Path -LiteralPath (Join-Path $d 'inner') | Should -BeTrue
+    }
+    It 'refuses a linked version folder and deletes nothing through it' -Tag 'WIN-DAEMON-HASH' {
+        $pkg = New-Package
+        Install-Package $pkg
+        $target = New-Tree
+        [IO.File]::WriteAllText((Join-Path $target 'zccache-daemon.exe'), 'not the daemon')
+        $null = New-Item -ItemType Directory -Path (Join-Path $pkg.Job 'roots\private') -Force
+        $null = New-Item -ItemType Junction -Path (Join-Path $pkg.Job 'roots\private\v1.15.6') -Value $target
+        (Initialize-AapZcJob -InstallDir $pkg.Install -JobRoot $pkg.Job -BudgetBytes 100MB).state | Should -Be 'degraded'
+        Test-Path -LiteralPath (Join-Path $target 'zccache-daemon.exe') | Should -BeTrue
+    }
     It 'refuses a job root that is a junction' -Tag 'WIN-DIR-LINK' {
         $pkg = New-Package
         Install-Package $pkg
@@ -896,6 +949,33 @@ Describe 'Connect-AapZcSharedRoot' {
         $cfg.active_root | Should -Be 'private'
         $cfg.roots.PSObject.Properties.Name | Should -Not -Contain 'shared'
         @(Get-ChildItem -LiteralPath (Join-Path $script:Pkg.Job 'state') -Filter '*.tmp').Count | Should -Be 0
+    }
+    It 'attaches nothing when the shared root holds a deployed daemon that is not the pinned member, and deletes only that file' -Tag 'WIN-DAEMON-HASH' {
+        $b = New-Binding $script:Pkg 'trusted'
+        $m = New-Mount $script:Pkg $b
+        $v = Join-Path $m 'root\v1.15.6'
+        $null = New-Item -ItemType Directory -Path $v, (Join-Path $m 'root\artifacts') -Force
+        [IO.File]::WriteAllText((Join-Path $v 'zccache-daemon.exe'), 'not the daemon')
+        [IO.File]::WriteAllText((Join-Path $v 'keep.txt'), 'neighbour')
+        [IO.File]::WriteAllText((Join-Path $m 'root\artifacts\blob'), 'blob')
+        $r = Connect-Binding $script:Pkg $b $m
+        $r.Attached | Should -BeFalse
+        $r.Reason | Should -Be 'daemon-hash-mismatch'
+        Test-Path -LiteralPath (Join-Path $v 'zccache-daemon.exe') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $v 'keep.txt') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $m 'root\artifacts\blob') | Should -BeTrue
+        Test-Path -LiteralPath (Join-Path $m 'root\fake-daemon.pid') | Should -BeFalse
+        $cfg = Get-Content -Raw $script:Pkg.Config | ConvertFrom-Json
+        $cfg.active_root | Should -Be 'private'
+        $cfg.roots.PSObject.Properties.Name | Should -Not -Contain 'shared'
+    }
+    It 'attaches a shared root whose deployed daemon is the pinned member' -Tag 'WIN-DAEMON-HASH' {
+        $b = New-Binding $script:Pkg 'trusted'
+        $m = New-Mount $script:Pkg $b
+        $v = Join-Path $m 'root\v1.15.6'
+        $null = New-Item -ItemType Directory -Path $v -Force
+        Copy-Item -LiteralPath (Join-Path $script:Pkg.Install 'bin\zccache.cmd') -Destination (Join-Path $v 'zccache-daemon.exe')
+        (Connect-Binding $script:Pkg $b $m).Attached | Should -BeTrue
     }
     It 'replaces the config while a shim holds it open for reading' {
         $fs = [IO.File]::Open($script:Pkg.Config, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))

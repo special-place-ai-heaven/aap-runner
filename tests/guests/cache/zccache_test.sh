@@ -256,6 +256,70 @@ t_init_daemon_in_bin() {
   check "init: running from bin, not from a copy in the root" \
     [ "$(tr '\0' ' ' < "/proc/$(jq -r .roots.private.daemon.pid "${CFG}")/cmdline")" == "${P}/install/bin/zccache-daemon 600 " ]
 }
+# P22.1: the copy of the daemon zccache deployed into a root (ROOT/v1.15.6/zccache-daemon) is hashed against the pinned
+# zccache member before the root is primed. Any other content is refused, only that file is removed, and the build goes
+# on direct. plant_daemon puts the pinned member (good) or other bytes (bad) there, beside a neighbour that must survive.
+plant_daemon() { # ROOT_DIR good|bad|link|dir
+  local v="$1/v1.15.6"
+  mkdir -p "${v}" "$1/artifacts"
+  printf 'neighbour\n' > "${v}/keep.txt"; printf 'blob\n' > "$1/artifacts/blob"
+  case "$2" in
+    good) cp -- "${P}/install/bin/zccache" "${v}/zccache-daemon" ;;
+    bad) printf 'not the daemon\n' > "${v}/zccache-daemon" ;;
+    link) cp -- "${P}/install/bin/zccache" "${v}/real" && ln -s real "${v}/zccache-daemon" ;;
+    dir) mkdir "${v}/zccache-daemon" && printf 'x\n' > "${v}/zccache-daemon/inner" ;;
+  esac
+}
+survivors() { [[ -f "$1/v1.15.6/keep.txt" && -f "$1/artifacts/blob" ]]; }
+t_init_daemon_hash() {
+  local r
+  new_pkg
+  install_pkg > /dev/null 2>&1
+  r="${P}/job/roots/private"
+  plant_daemon "${r}" good
+  bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 > /dev/null
+  check "init: a deployed daemon equal to the pinned member primes the root" [ "$(jq -r .state "${CFG}")" == qualified ]
+  new_pkg
+  init_pkg
+  check "init: no deployed daemon yet primes the root" [ "$(jq -r .state "${CFG}")" == qualified ]
+  new_pkg
+  install_pkg > /dev/null 2>&1
+  r="${P}/job/roots/private"
+  plant_daemon "${r}" bad
+  rm -f -- "${r}/v1.15.6/zccache-daemon"
+  bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 > /dev/null
+  check "init: a version folder without a daemon primes the root" [ "$(jq -r .state "${CFG}")" == qualified ]
+  new_pkg
+  install_pkg > /dev/null 2>&1
+  r="${P}/job/roots/private"
+  plant_daemon "${r}" bad
+  bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 > /dev/null
+  check "init: a deployed daemon that is not the pinned member is refused" [ "$(jq -r .state "${CFG}")" == degraded ]
+  check "init: and the state says why" bash -c 'jq -r .detail "$1" | grep -q "not the pinned"' _ "${CFG}"
+  check "init: and that file is removed" [ ! -e "${r}/v1.15.6/zccache-daemon" ]
+  check "init: and nothing else in the root" survivors "${r}"
+  check "init: and zccache never started" [ ! -e "${r}/fake-daemon.pid" ]
+  check "init: and the runner environment stays empty" [ ! -s "${P}/job/state/runner.env" ]
+  compile a.c
+  check "init: and the build still succeeds, compiled directly" same_as_direct "${OUT}"
+  check "init: and not through zccache" [ "$(journal)" == 0 ]
+  if [[ ${MSYS} == 0 ]]; then
+    new_pkg
+    install_pkg > /dev/null 2>&1
+    r="${P}/job/roots/private"
+    plant_daemon "${r}" link
+    bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 > /dev/null
+    check "init: a link in place of the daemon is refused" [ "$(jq -r .state "${CFG}")" == degraded ]
+    check "init: and only the link is removed" bash -c '[ ! -L "$1/v1.15.6/zccache-daemon" ] && [ -f "$1/v1.15.6/real" ]' _ "${r}"
+  fi
+  new_pkg
+  install_pkg > /dev/null 2>&1
+  r="${P}/job/roots/private"
+  plant_daemon "${r}" dir
+  bash "${SCRIPT}" init "${P}/install" "${P}/job" 104857600 > /dev/null
+  check "init: a folder in place of the daemon is refused" [ "$(jq -r .state "${CFG}")" == degraded ]
+  check "init: and never deleted" [ -f "${r}/v1.15.6/zccache-daemon/inner" ]
+}
 t_init_rustc() {
   new_pkg '[{"compiler":"rustc","compiler_version":"1.99.0","invocation":"rustc-wrapper","evidence_ref":"parity/cache/qualification/evidence/r.json"}]'
   jq --arg p "${P}/tc/fake-cc" '.toolchains = [{compiler: "rustc", compiler_version: "1.99.0", path: $p}]' "${P}/toolchains.json" > "${P}/t2" &&
@@ -749,6 +813,26 @@ t_attach_ambiguous() {
 }
 
 # ---- state, classes, digest ----
+t_attach_daemon_hash() {
+  new_pkg
+  init_pkg 104857600 --shared-roots
+  local b m r
+  b=$(binding trusted); m=$(mount_for "${b}")
+  plant_daemon "${m}/root" bad
+  r=$(attach "${b}" "${m}")
+  check "attach: a deployed daemon that is not the pinned member attaches nothing" [ "$(reason "${r}")" == daemon-hash-mismatch ]
+  check "attach: and that file is removed, nothing else" bash -c '[ ! -e "$1/root/v1.15.6/zccache-daemon" ] && [ -f "$1/root/v1.15.6/keep.txt" ] && [ -f "$1/root/artifacts/blob" ]' _ "${m}"
+  check "attach: and zccache never started on it" [ ! -e "${m}/root/fake-daemon.pid" ]
+  check "attach: and the job keeps its private root" jq -e '.active_root == "private" and (.roots | has("shared") | not)' "${CFG}" > /dev/null
+  compile a.c
+  check "attach: and the build compiles through the private root" [ "$(journal)" == 1 ]
+  new_pkg
+  init_pkg 104857600 --shared-roots
+  b=$(binding trusted); m=$(mount_for "${b}")
+  plant_daemon "${m}/root" good
+  r=$(attach "${b}" "${m}")
+  check "attach: a deployed daemon equal to the pinned member attaches" [ "$(jq -r .attached <<< "${r}")" == true ]
+}
 t_state() {
   check "state: unknown before init" [ "$(zc_state "${TMPROOT}/nothing" | jq -r .state)" == unknown ]
   new_pkg '[]'
@@ -792,6 +876,7 @@ run t_install_dir_link LNX-DIR-LINK
 run t_init_direct
 run t_init_qualified LNX-COPY-MODE LNX-BUDGET-SET
 run t_init_daemon_in_bin LNX-DAEMON-BIN
+run t_init_daemon_hash LNX-DAEMON-HASH
 run t_init_rustc
 run t_init_env LNX-ENV-SECRET LNX-ENV-ZCCACHE
 run t_init_daemon_env LNX-DAEMON-ENV
@@ -830,6 +915,7 @@ run t_attach_missing LNX-BIND-MISSING
 run t_attach_refusals LNX-BIND-RUNNER LNX-BIND-TOOLCHAIN LNX-BIND-MARKER LNX-BIND-LINK
 run t_attach_during_compile LNX-DAEMON-ID
 run t_attach_ambiguous
+run t_attach_daemon_hash LNX-DAEMON-HASH
 run t_state
 run t_classify
 run t_digest
