@@ -61,17 +61,30 @@ requests ([../windows/INTEGRATION.md](../windows/INTEGRATION.md)) apply here too
      trigger and the measured age (or `null`), never six invented hours.
    - **Result**: every step of a capped reservation returns `LifetimeCap` (the `lifetime_cap` evidence object of
      backend-lifecycle.schema.json: `cap_hours`, `started_utc`, `deadline_utc`, `elapsed_s`, `trigger`, `power_off_utc`,
-     `reason` `vm_lifetime_cap`) until the slot is freed; `Code` is `vm_lifetime_cap` once torn down, the ordinary
-     teardown code while it waits (`release_pending`, `teardown_failed`, `retry_later`), `cap_breach` while the VM is not
-     observed Off (report `error`, `vm_lifetime_cap: cap_breach:` in `detail`, block new VM starts, keep the slot held),
-     `enforcement_unavailable` when the VM list failed. Fill the slot's `vm_lifetime_cap` object of `status.v5.json`
-     from it and log one line per decision (reservation id, slot, the three times).
-   - **Start gate**: `Action` `waiting` with `Code` `backstop_down` (the watchdog record missing, stale, of another host
-     boot, or holding a `cap_breach`) or `notes_unverified`: the reservation stays `creating`; report `backstop_down:`.
-     Without `-WatchdogClockPath` nothing starts: no Linux VM boots before P10.7 is installed (B7, B8).
+     `reason` `vm_lifetime_cap`; `$null` while it cannot be formed honestly: no known start, or no power-off call that
+     returned) and `Detail` (one bounded line: the error of a failed power-off, decision, allocator move or journal write,
+     never swallowed). `Code` is `vm_lifetime_cap` once torn down, the ordinary teardown code while it waits
+     (`release_pending`, `teardown_failed`, `retry_later`), `cap_breach` while the VM is not observed Off (report `error`,
+     `vm_lifetime_cap: cap_breach:` in `detail`, block new VM starts, keep the slot held), `enforcement_unavailable` when
+     the VM list or the decision itself failed (an unreadable start time, a failing clock, bad journal evidence: the VM
+     is powered off by id or derived name all the same, and `Invoke-AapLinCapPass` goes on with the other
+     reservations), `journal_unreadable` / `journal_unwritable` when only the journal failed (the VM is off). A start
+     time ahead of true time is capped as `clock_unavailable` with no measured age. Fill the slot's `vm_lifetime_cap`
+     object of `status.v5.json` from it and log one line per decision (reservation id, slot, the three times). An
+     invalid `CapHours` counts as 6 and is warned once per value.
+   - **Start gate**: `Action` `waiting` with `Code` `backstop_down` or `notes_unverified`; `Detail` names why:
+     `unconfigured` (no or not an absolute normalized `-WatchdogClockPath`), `boot_id_unreadable`, `untrusted` (the
+     record's folder fails the admin-only trust check or the file is writable by anyone else), `missing`, `invalid`
+     (over 64 KiB, not JSON, not a schema 1 watchdog record, `latched` not a list of objects), `other_boot`, `stale` (older
+     than 180 s or more than 60 s ahead), `breach` (the watchdog holds a `cap_breach`), `local_cap_breach` (this backend
+     holds one). The reservation stays `creating`; report `backstop_down:`. Without a valid watchdog record nothing
+     starts: no Linux VM boots before P10.7 is installed (B7, B8).
+   - **Recovery (L6 d)**: a boot an earlier supervisor journaled and never finished, whose VM is not running now, is
+     never started: it is given up (`boot` `failed` `retryable`) and destroyed.
    - **Not here**: the durable clock latch and its `enforcement_stage` (`lifetime-clock.json`, P12.3), the E2 stage
-     (terminating the VM's `vmwp.exe`), bounded and killable Hyper-V calls (L3: every provider call still runs
-     in-process), and the allocator edges below.
+     (terminating the VM's `vmwp.exe`; `cap_breach` is reported right after a power-off that did not take), bounded and
+     killable Hyper-V calls (L3: every provider call still runs in-process), and the allocator edges below. Safe to defer:
+     no VM can start without a valid watchdog record.
    - **Allocator requests (AapCapacity.psm1, P12.3)**: L4 asks for one direct edge `ready|busy|draining|collecting ->
      deleting` with `cleanup_uncertain: true`; the backend walks the existing edges instead (`busy -> collecting ->
      deleting`). `quarantined` with kind `heartbeat` or `crash` cannot reach `deleting` outside reconcile, so for those

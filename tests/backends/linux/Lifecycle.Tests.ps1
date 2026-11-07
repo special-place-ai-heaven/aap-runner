@@ -101,6 +101,7 @@ Describe 'one job, end to end' {
             Set-LinKnob $w ($k + @{ ClockOffset = -16 * 60 })   # booted 16 minutes ago, by the backend's clock
             $r = New-LinReservation $w
             $rid = $r.reservation_id
+            [void](Set-LinStart $w $rid 1200)   # started 20 minutes ago: the clock 16 minutes back is still after the start
             $acts = @(Invoke-LinSteps $B $w $rid -Max 4)
             ($acts | ForEach-Object { $_.Action }) -join ',' | Should -Be 'created,booted,probing,probing'
             $acts[-1].Code | Should -Be $(if ($k.ContainsKey('KvpDelay')) { 'host_key_pending' } else { 'ok' })

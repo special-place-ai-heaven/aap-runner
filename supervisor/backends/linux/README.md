@@ -197,9 +197,13 @@ anything else; `Invoke-AapLinCapPass` lets the supervisor power off every due VM
   vm-cap-notes record (deadline = start + the 6 h ceiling, never the configured cap) and reads it back
   (`AAP_NotesInvalid`). Boot starts the VM only when the Notes read back as that record, its deadline is ahead by true
   time, and the host watchdog's clock record (`-WatchdogClockPath`) is valid, of this host boot (`GetBootId`), at most
-  180 s old and 60 s ahead, with no `cap_breach`; otherwise `waiting` (`notes_unverified`, `backstop_down`), nothing
-  journaled, retried every step. A start that returns past the deadline is powered off at once; a replayed create or
-  boot past the cap issues no start.
+  180 s old and 60 s ahead, with no `cap_breach`, its folder admin-only, and this backend holds no unresolved breach;
+  otherwise `waiting` (`notes_unverified`, `backstop_down`, the reason in `Detail`), nothing journaled, retried every
+  step. A start that returns past the deadline is powered off at once; a replayed create or boot past the cap issues no
+  start, and a boot an earlier supervisor never finished is never started again (L6 d).
+- **Never fail open**: a decision that throws (start time, clock, journal evidence) still powers the VM off and says
+  `enforcement_unavailable`; a start time ahead of true time is capped as `clock_unavailable`; every failure on the way
+  is in the result's `Detail`.
 
 ### Trust checks
 

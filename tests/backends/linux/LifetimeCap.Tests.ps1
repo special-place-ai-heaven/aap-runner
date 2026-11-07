@@ -432,16 +432,276 @@ Describe 'the deadline record in the VM Notes and the start gate' {
         (Step-Lin $B $w $rid).Action | Should -Be 'booted'
     }
 
-    It 'refuses a start whose 6 h deadline has passed by true time even under a higher cap in memory' -Tag 'start-deadline' {
+    It 'the start gate itself refuses a start once the 6 h deadline has passed by true time (L6 b)' -Tag 'start-deadline' {
         $w = New-LinWorld
         $B = New-LinBackend $w
         $rid = (New-LinReservation $w).reservation_id
         $t0 = Set-LinCapStart $w $rid ($script:Cap + 120)
         Set-LinAt $w $t0 60
         (Step-Lin $B $w $rid).Action | Should -Be 'created'
-        # Inside the backend: the gate itself, called for a reservation the cap has not latched (a cap check skipped).
+        # The gate on its own (a backend whose cap check would have been skipped): it reads the deadline from the start.
+        $id = @(Get-LinVms $w)[0].Id
+        $res = Get-LinRes $w $rid
+        Set-LinAt $w $t0 ($script:Cap - 1)
+        (Invoke-LinInModule { param($B, $r, $id) Get-AapLinStartProblem $B $r $id } @($B, $res, $id)) | Should -BeNullOrEmpty
         Set-LinAt $w $t0 $script:Cap
-        $why = Invoke-LinInModule { param($B, $r, $id) Get-AapLinStartProblem $B $r $id } @($B, (Get-LinRes $w $rid), @(Get-LinVms $w)[0].Id)
-        $why | Should -Be 'deadline_passed'
+        $why = Invoke-LinInModule { param($B, $r, $id) Get-AapLinStartProblem $B $r $id } @($B, $res, $id)
+        $why.Code | Should -Be 'deadline_passed'
+    }
+}
+
+Describe 'review round: nothing fails open, nothing is masked' {
+    It 'every guest call is counted, and none follows the decision; no shutdown is ever sent' -Tag 'cap-first' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        $t0 = Start-LinCapJob $w $B $rid
+        @(Get-LinCalls $w 'GuestCall status *').Count | Should -BeGreaterThan 0 -Because 'the spy sees the heartbeats'
+        $n = @(Get-LinCalls $w).Count
+        Set-LinAt $w $t0 $script:Cap
+        (Step-Lin $B $w $rid).Code | Should -Be 'vm_lifetime_cap'
+        @(Get-LinCalls $w | Select-Object -Skip $n | Where-Object { $_ -like 'GuestCall *' }).Count | Should -Be 0
+        @(Get-LinCalls $w 'GuestCall shutdown *').Count | Should -Be 0
+    }
+
+    It 'a clock-safety backend caps only what it finds at its first look: a fresh reservation runs its job' -Tag 'cap-safety' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w -CapArgs @{ ClockSafety = 'host_reboot' }
+        $rid = (New-LinReservation $w).reservation_id
+        [void](Start-LinCapJob $w $B $rid -Ago 600)
+        (Get-LinRes $w $rid).state | Should -Be 'busy'
+        @(Get-LinCalls $w 'StopVm *').Count | Should -Be 0
+    }
+
+    It 'a failed inventory at the first look is retried, never taken for no VM' -Tag 'cap-safety' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        [void](Start-LinCapJob $w $B $rid -Ago 600)
+        $B2 = New-LinBackend $w -CapArgs @{ ClockSafety = 'clock_unavailable' }
+        Set-LinKnob $w @{ ListFails = $true }
+        try { [void](Step-Lin $B2 $w $rid) } catch { $null = $_ }
+        Set-LinKnob $w @{ ListFails = $false }
+        $s = Step-Lin $B2 $w $rid
+        $s.LifetimeCap.trigger | Should -Be 'clock_unavailable'
+        @(Get-LinCalls $w 'StopVm *').Count | Should -BeGreaterOrEqual 1
+    }
+
+    It 'a start time in the future is a clock problem: capped as clock_unavailable, never silently uncapped' -Tag 'cap-negative' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        $t0 = Start-LinCapJob $w $B $rid -Ago 600
+        $B2 = New-LinBackend $w
+        Set-LinAt $w $t0 -60   # a new process whose clock reads a minute before the start
+        $s = Step-Lin $B2 $w $rid
+        $s.LifetimeCap.trigger | Should -Be 'clock_unavailable'
+        $s.LifetimeCap.elapsed_s | Should -BeNullOrEmpty
+        @(Get-LinVms $w | Where-Object { $_.State -ne 'Off' }).Count | Should -Be 0
+        Invoke-LinValidator $w 'backend-lifecycle' @(Get-LinJournalLines $w $rid) | Should -BeNullOrEmpty
+    }
+
+    It 'a decision that throws still powers the VM off by name and says enforcement_unavailable with the error' -Tag 'cap-isolate' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        [void](Start-LinCapJob $w $B $rid -Ago 600)
+        $B.Mono = { throw 'fake: the boot-bound counter failed' }
+        $n = @(Get-LinCalls $w).Count
+        $s = Step-Lin $B $w $rid
+        $s.Code | Should -Be 'enforcement_unavailable'
+        $s.Detail | Should -BeLike '*counter failed*'
+        @(Get-LinCalls $w 'StopVm *').Count | Should -Be 1
+        @(Get-LinVms $w | Where-Object { $_.State -ne 'Off' }).Count | Should -Be 0
+        @(Get-LinCalls $w | Select-Object -Skip $n | Where-Object { $_ -like 'GuestCall *' }).Count | Should -Be 0
+    }
+
+    It 'the pass: one reservation that throws stops neither the others nor its own power-off; a bad id is refused' -Tag 'cap-isolate', 'pass-rid' {
+        $w = New-LinWorld -Linux 2
+        $B = New-LinBackend $w
+        $ids = @((New-LinReservation $w).reservation_id, (New-LinReservation $w).reservation_id)
+        $t0 = Set-LinCapStart $w $ids[0] ($script:Cap + 120)
+        [void](Set-LinStart $w $ids[1] ($script:Cap + 120))
+        Set-LinAt $w $t0 60
+        foreach ($id in $ids) { [void](Invoke-LinSteps $B $w $id -Max 5 -Until { param($x) $x.state -eq 'ready' }) }
+        Set-LinAt $w $t0 ($script:Cap + 1)
+        $res = @((Get-AapAllocatorState -Root $w.Cap -RelaxedTrustForTests).State.reservations | Where-Object { $ids -contains $_.reservation_id } | Sort-Object reservation_id)
+        $bad = $res[0] | Select-Object *
+        $bad.acquired_at = 'not a time'
+        $evil = $res[1] | Select-Object *
+        $evil.reservation_id = 'r-..\..\x'
+        $latched = @(Invoke-AapLinCapPass -Backend $B -Reservations @($evil, $bad, $res[1]))
+        $latched | Should -Contain $res[1].reservation_id
+        $latched | Should -Not -Contain $evil.reservation_id
+        @(Get-LinVms $w | Where-Object { $_.State -ne 'Off' }).Count | Should -Be 0 -Because 'the bad one is powered off by name too'
+    }
+
+    It 'an unreadable journal never masks the cap or a breach; an unwritable one is retried and says so' -Tag 'cap-breach' {
+        foreach ($stop in 'works', 'noop') {
+            $w = New-LinWorld
+            $B = New-LinBackend $w
+            $rid = (New-LinReservation $w).reservation_id
+            $t0 = Start-LinCapJob $w $B $rid
+            [IO.File]::AppendAllText((Join-Path $w.Journal "$rid.jsonl"), "not json`n")
+            if ($stop -eq 'noop') { Set-LinKnob $w @{ StopVmNoop = $true } }
+            Set-LinAt $w $t0 $script:Cap
+            $s = Step-Lin $B $w $rid
+            $s.Code | Should -Be $(if ($stop -eq 'noop') { 'cap_breach' } else { 'journal_unreadable' }) -Because $stop
+            $s.LifetimeCap.reason | Should -Be 'vm_lifetime_cap'
+            @(Get-LinCalls $w 'StopVm *').Count | Should -Be 1
+        }
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        $t0 = Start-LinCapJob $w $B $rid
+        $jf = Join-Path $w.Journal "$rid.jsonl"
+        [IO.File]::SetAttributes($jf, [IO.FileAttributes]::ReadOnly)
+        Set-LinAt $w $t0 $script:Cap
+        $s = Step-Lin $B $w $rid
+        $s.Code | Should -Be 'journal_unwritable'
+        $s.Detail | Should -Not -BeNullOrEmpty
+        @(Get-LinVms $w | Where-Object { $_.State -ne 'Off' }).Count | Should -Be 0
+        [IO.File]::SetAttributes($jf, [IO.FileAttributes]::Normal)
+        Set-LinAt $w $t0 ($script:Cap + 70)
+        (Step-Lin $B $w $rid).Action | Should -Be 'destroyed'
+    }
+
+    It 'a failed power-off is recorded honestly: its error kept, no power_off_utc evidence until the VM is observed off' -Tag 'cap-breach' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        $t0 = Start-LinCapJob $w $B $rid
+        $B.Provider.StopVm = { param($a) Add-LinCall $w "StopVm $($a.VmId)"; throw 'fake: Stop-VM timed out' }
+        Set-LinAt $w $t0 $script:Cap
+        $s = Step-Lin $B $w $rid
+        $s.Code | Should -Be 'cap_breach'
+        $s.Detail | Should -BeLike '*Stop-VM timed out*'
+        @(Get-LinJournal $w $rid | Where-Object { $_.result -and $_.result.detail -like 'cap_breach*Stop-VM timed out*' }).Count | Should -Be 1
+        Get-LinCapRecords $w $rid | Should -BeNullOrEmpty -Because 'no power-off succeeded yet'
+        $B.Provider.StopVm = (New-LinProvider).StopVm
+        Set-LinAt $w $t0 ($script:Cap + 30)
+        (Step-Lin $B $w $rid).Action | Should -Be 'destroyed'
+        @(Get-LinCapRecords $w $rid)[0].lifetime_cap.power_off_utc | Should -Be (Format-LinTime $t0.AddSeconds($script:Cap + 30))
+        Invoke-LinValidator $w 'backend-lifecycle' @(Get-LinJournalLines $w $rid) | Should -BeNullOrEmpty
+    }
+
+    It 'a restart that finds the journal latch and the VM running again powers it off again' -Tag 'cap-journal' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        $t0 = Start-LinCapJob $w $B $rid
+        Set-LinKnob $w @{ ReleaseOutcome = 'retry'; StopVmNoop = $false }
+        $B.Provider.RemoveVm = { param($a) Add-LinCall $w "RemoveVm $($a.VmId)"; throw 'fake: Remove-VM failed' }
+        Set-LinAt $w $t0 $script:Cap
+        [void](Step-Lin $B $w $rid)
+        $vms = @(Get-LinVms $w); $vms[0].State = 'Running'; Save-LinVms $w $vms   # somebody started it again
+        $B2 = New-LinBackend $w
+        Set-LinAt $w $t0 3600
+        $n = @(Get-LinCalls $w 'StopVm *').Count
+        $s = Step-Lin $B2 $w $rid
+        $s.LifetimeCap.trigger | Should -Be 'deadline'
+        @(Get-LinCalls $w 'StopVm *').Count | Should -BeGreaterThan $n
+        @(Get-LinVms $w | Where-Object { $_.State -ne 'Off' }).Count | Should -Be 0
+    }
+
+    It 'fires from ready (no job yet) and from collecting' -Tag 'cap-deadline' {
+        foreach ($state in 'ready', 'collecting') {
+            $w = New-LinWorld
+            $B = New-LinBackend $w
+            $r = New-LinReservation $w
+            $rid = $r.reservation_id
+            $t0 = Set-LinCapStart $w $rid ($script:Cap + 120)
+            [void](Invoke-LinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+            if ($state -eq 'collecting') {
+                (Step-Lin $B $w $rid).Action | Should -Be 'running'
+                [void](Set-AapSlotState -Root $w.Cap -ReservationId $rid -LeaseGeneration $r.lease_generation -State busy -RelaxedTrustForTests)
+                [void](Set-AapSlotState -Root $w.Cap -ReservationId $rid -LeaseGeneration $r.lease_generation -State collecting -RelaxedTrustForTests)
+            }
+            (Get-LinRes $w $rid).state | Should -Be $state
+            Set-LinAt $w $t0 $script:Cap
+            $s = Step-Lin $B $w $rid
+            $s.Code | Should -Be 'vm_lifetime_cap' -Because $state
+            (Get-LinRes $w $rid).state | Should -Be 'reconciled' -Because $state
+            Invoke-LinValidator $w 'backend-lifecycle' @(Get-LinJournalLines $w $rid) | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'an invalid cap in force (0, negative, a string) counts as 6 h and is reported once' -Tag 'cap-hours' {
+        foreach ($bad in @(0, -3, '3')) {
+            $w = New-LinWorld
+            $B = New-LinBackend $w
+            $rid = (New-LinReservation $w).reservation_id
+            $t0 = Start-LinCapJob $w $B $rid -Ago (3 * 3600 + 120)
+            $B.CapHours = $bad
+            Set-LinAt $w $t0 (3 * 3600 + 10)
+            $warn = $null
+            $s = Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid) -WarningVariable warn -WarningAction SilentlyContinue
+            $s.Action | Should -Be 'busy' -Because "cap $bad is not 3 h"
+            @($warn | Where-Object { "$_" -like '*cap_hours*' }).Count | Should -Be 1 -Because "$bad"
+            $warn = $null
+            [void](Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid) -WarningVariable warn -WarningAction SilentlyContinue)
+            @($warn | Where-Object { "$_" -like '*cap_hours*' }).Count | Should -Be 0 -Because 'once'
+        }
+    }
+
+    It 'the start gate names why: watchdog unconfigured, missing, untrusted, invalid, stale or future, other boot, breach, boot id unreadable; 180 s still fresh' -Tag 'backstop-trust', 'backstop-latched', 'backstop-fresh' {
+        $cases = [ordered]@{ missing = 'missing'; stale = 'stale'; future = 'stale'; reboot = 'other_boot'; breach = 'breach'; schema = 'invalid'; oversized = 'invalid'
+            badjson = 'invalid'; 'latched-string' = 'invalid'; 'latched-items' = 'invalid'; bootfails = 'boot_id_unreadable'; untrusted = 'untrusted'; relative = 'unconfigured'; unconfigured = 'unconfigured'
+        }
+        foreach ($how in $cases.Keys) {
+            $w = New-LinWorld
+            $args2 = $(switch ($how) { 'unconfigured' { @{ WatchdogClockPath = '' } } 'relative' { @{ WatchdogClockPath = 'fake\watchdog\lifetime-clock.json' } } default { $null } })
+            $B = New-LinBackend $w -CapArgs $args2
+            $rid = (New-LinReservation $w).reservation_id
+            (Step-Lin $B $w $rid).Action | Should -Be 'created'
+            if ($how -eq 'untrusted') {
+                $wd = Join-Path $w.Fake 'watchdog'
+                $out = & icacls.exe $wd /grant '*S-1-1-0:(OI)(CI)M' 2>&1
+                $LASTEXITCODE | Should -Be 0 -Because "$out"
+            } elseif (@('unconfigured', 'relative') -notcontains $how) { Set-LinKnob $w @{ Watchdog = $how } }
+            $s = Step-Lin $B $w $rid
+            $s.Code | Should -Be 'backstop_down' -Because $how
+            $s.Detail | Should -BeLike "$($cases[$how])*" -Because $how
+            @(Get-LinCalls $w 'StartVm *').Count | Should -Be 0 -Because $how
+        }
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        [void](Set-LinCapStart $w $rid 600)   # the clock pinned: the record is exactly 180 s old when it is read
+        (Step-Lin $B $w $rid).Action | Should -Be 'created'
+        Set-LinKnob $w @{ Watchdog = 'age180' }
+        (Step-Lin $B $w $rid).Action | Should -Be 'booted'
+    }
+
+    It 'no start while this backend holds an unresolved cap breach of another VM' -Tag 'start-local-breach' {
+        $w = New-LinWorld -Linux 2
+        $B = New-LinBackend $w
+        $a = (New-LinReservation $w).reservation_id
+        $t0 = Start-LinCapJob $w $B $a
+        Set-LinKnob $w @{ StopVmNoop = $true }
+        Set-LinAt $w $t0 $script:Cap
+        (Step-Lin $B $w $a).Code | Should -Be 'cap_breach'
+        $rb = (New-LinReservation $w).reservation_id
+        [void](Set-LinStart $w $rb 600)
+        (Step-Lin $B $w $rb).Action | Should -Be 'created'
+        $s = Step-Lin $B $w $rb
+        $s.Code | Should -Be 'backstop_down'
+        $s.Detail | Should -BeLike 'local_cap_breach*'
+        @(Get-LinCalls $w 'StartVm *').Count | Should -Be 1 -Because 'only the first VM ever started'
+    }
+
+    It 'a replayed boot whose VM is off at restart is never started by recovery (L6 d)' -Tag 'boot-replay' {
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $r = New-LinReservation $w
+        $rid = $r.reservation_id
+        (Step-Lin $B $w $rid).Action | Should -Be 'created'
+        # A supervisor that journaled the boot intent and died before Start-VM.
+        $id = @(Get-LinVms $w)[0].Id
+        Invoke-LinInModule { param($B, $r, $id) Write-AapLinJournal $B $r 'boot' 'intent' -VmId $id } @($B, (Get-LinRes $w $rid), $id)
+        $B2 = New-LinBackend $w
+        [void](Invoke-LinSteps $B2 $w $rid -Max 4)
+        @(Get-LinCalls $w 'StartVm *').Count | Should -Be 0
+        (Get-LinRes $w $rid).state | Should -Be 'reconciled'
     }
 }

@@ -70,6 +70,7 @@ function New-LinWorld {
     [void][IO.Directory]::CreateDirectory((Join-Path $root 'roots'))
     foreach ($d in $w.Base, $w.Clones, $w.Scratch, $w.Cap) { New-LinAclDir $d }
     foreach ($d in $w.Fake, (Join-Path $w.Fake 'guests'), (Join-Path $w.Fake 'exchanges'), $w.Net) { [void][IO.Directory]::CreateDirectory($d) }
+    New-LinAclDir (Join-Path $w.Fake 'watchdog')   # the host watchdog's admin-only folder (P19.1 makes it)
     $genDir = Join-Path $w.Base ($script:LinGen -replace '/', '\')
     [void][IO.Directory]::CreateDirectory($genDir)
     $w.BaseFile = Join-Path $genDir 'base.vhdx'
@@ -288,20 +289,27 @@ function New-LinProvider {
     }
     $p.GetVmNotes = { param($a) $v = @(Get-LinVms $w | Where-Object { $_.Id -eq $a.VmId }); if ($v.Count) { [string]$v[0].Notes } }
     # The host boot id. The fake host watchdog (P10.7) runs here too: each read of the boot id writes its clock record
-    # fresh, as the real one does every 60 s, unless knob Watchdog says it is 'missing', 'stale', of another boot
-    # ('reboot') or reports an unresolved 'breach'.
+    # fresh, as the real one does every 60 s, unless knob Watchdog says it is 'missing', 'stale' (181 s old), 'age180',
+    # 'future' (61 s ahead), of another boot ('reboot'), reports an unresolved 'breach', has a bad 'schema', is
+    # 'oversized', 'badjson', has 'latched' that is not a list of objects ('latched-string', 'latched-items'), or the
+    # boot id read fails ('bootfails').
     $p.GetBootId = { param($a)
         $boot = [string](Get-LinKnob $w 'BootId' 'b00710d1')
         $how = [string](Get-LinKnob $w 'Watchdog' 'fresh')
+        if ($how -ceq 'bootfails') { throw 'fake: the boot id read failed' }
         $path = Join-Path $w.Fake 'watchdog\lifetime-clock.json'
         if ($how -ceq 'missing') { if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }; return $boot }
         $at = Get-LinClock $w
-        if ($how -ceq 'stale') { $at = $at.AddSeconds(-181) }
-        $latched = @()
+        switch ($how) { 'stale' { $at = $at.AddSeconds(-181) } 'age180' { $at = $at.AddSeconds(-180) } 'future' { $at = $at.AddSeconds(61) } }
+        $latched = [object[]]@()
         if ($how -ceq 'breach') { $latched = @([ordered]@{ reservation_id = 'r-00000000000000aa'; vm_id = '00000000-0000-4000-8000-0000000000aa'; decided_utc = (Format-LinTime $at); cap_hours = 6; elapsed_s = 21600; trigger = 'deadline'; enforcement_stage = 'cap_breach' }) }
-        $rec = [ordered]@{ schema = 1; role = 'watchdog'; boot_id = $(if ($how -ceq 'reboot') { 'b00710d0' } else { $boot }); mono_ms = 1000; written_utc = (Format-LinTime $at); high_water_utc = (Format-LinTime $at); latched = [object[]]$latched }
-        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $path))
-        Write-LinJson $path $rec
+        $rec = [ordered]@{ schema = $(if ($how -ceq 'schema') { 2 } else { 1 }); role = 'watchdog'; boot_id = $(if ($how -ceq 'reboot') { 'b00710d0' } else { $boot }); mono_ms = 1000; written_utc = (Format-LinTime $at); high_water_utc = (Format-LinTime $at); latched = $latched }
+        if ($how -ceq 'latched-string') { $rec.latched = 'cap_breach' }
+        if ($how -ceq 'latched-items') { $rec.latched = @('cap_breach') }
+        $text = ConvertTo-Json -InputObject $rec -Depth 6 -Compress
+        if ($how -ceq 'oversized') { $text = $text.TrimEnd('}') + ',"pad":"' + ('x' * 70000) + '"}' }
+        if ($how -ceq 'badjson') { $text = $text.Substring(0, 20) }
+        [IO.File]::WriteAllText($path, $text, $script:Utf8)
         $boot
     }
     $p
@@ -364,6 +372,7 @@ function New-LinGuest {
     {
         param($Call)
         $hc = ConvertFrom-LinJson $Call.Envelope
+        Add-LinCall $w "GuestCall $($hc.cmd) $($Call.VmId)"   # every call the backend makes, answered or not
         $payload = [byte[]]@()
         if ($Call.PayloadLength -gt 0) { $ms = New-Object IO.MemoryStream; & $Call.WritePayload $ms; $payload = $ms.ToArray() }
         $fail = @{ ExitCode = 255; Stdout = [byte[]]@(); TimedOut = $false; Overflow = $false }

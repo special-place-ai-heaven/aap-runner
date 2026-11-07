@@ -1064,10 +1064,16 @@ function Get-AapLinRunningNetworkProblem($B, $r, [string]$VmId) {
 
 # ---- the hard VM lifetime cap (owner decision Q4; allocator.md L1 to L8, B1 and B7) ---------------------------------------
 
-# The cap in force: $Backend.CapHours when it is a whole number 1..6, else the 6 hour ceiling; never above it.
+# The cap in force: $Backend.CapHours when it is a whole number 1..6, else the 6 hour ceiling; never above it. An invalid
+# value is reported once per value (a warning), never silently.
 function Get-AapLinCapHours($B) {
     $h = $B.CapHours
     if (($h -is [int] -or $h -is [long]) -and $h -ge 1 -and $h -le $script:CeilingHours) { return [int]$h }   # check:cap-hours
+    $seen = "$($h)|$(if ($null -ne $h) { $h.GetType().Name })"
+    if ($B.CapHoursWarned -cne $seen) {
+        $B.CapHoursWarned = $seen
+        Write-Warning "AapLinBackend: cap_hours $(Get-AapLinLine ([string]$h) 40) is not a whole number 1..6; the 6 h ceiling is in force"
+    }
     $script:CeilingHours
 }
 
@@ -1109,31 +1115,79 @@ function Get-AapLinNotes($r, [string]$VmId) {
     ConvertTo-Json -InputObject $n -Compress
 }
 
+# The watchdog's clock record file: owned by an admin (or the trusted test user), nobody else may write it.
+function Get-AapLinFileTrustProblem($B, [string]$Path) {
+    try { $raw = Get-AapLinRawSd $Path } catch { return 'cannot read its ACL' }
+    if ($null -eq $raw.Owner -or $B.TrustedSids -notcontains $raw.Owner.Value) { return "owner $($raw.Owner) is not an admin" }
+    if ($null -eq $raw.DiscretionaryAcl) { return 'no DACL' }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+        if ([int]$ace.AceType -ne 0 -or $B.TrustedSids -contains $ace.SecurityIdentifier.Value) { continue }
+        if ((([int]$ace.AccessMask) -band $script:WriteMask) -ne 0) { return "grants $($ace.SecurityIdentifier.Value) write" }
+    }
+    $null
+}
+
+# The host watchdog's clock record (allocator.md B7): $null when it lets a VM start, else '<sub-reason>[: text]' with
+# sub-reason unconfigured, boot_id_unreadable, untrusted, missing, invalid, other_boot, stale or breach.
+function Get-AapLinBackstopProblem($B) {
+    $p = [string]$B.WatchdogClockPath
+    if (-not $p) { return 'unconfigured: no watchdog clock record path' }
+    if ($p -notmatch '^[A-Za-z]:\\.+[^\\]\z' -or [IO.Path]::GetFullPath($p) -cne $p) { return 'unconfigured: the watchdog clock record path is not absolute and normalized' }
+    try { $boot = [string](& $B.Provider.GetBootId @{}) } catch { return "boot_id_unreadable: $(Get-AapLinError $_)" }
+    if ($boot -cnotmatch '^[0-9a-f-]{8,64}\z') { return 'boot_id_unreadable: not a boot id' }
+    $why = @(Get-AapLinTrustProblem $B (Split-Path -Parent $p))
+    if ($why.Count) { return "untrusted: $(Get-AapLinLine ($why -join '; ') 160)" }   # check:backstop-trust
+    $kind = Get-AapLinPathKind $p
+    if ($kind -ceq 'absent') { return 'missing: no watchdog clock record' }
+    if ($kind -cne 'file') { return "untrusted: the watchdog clock record is a $kind" }
+    $why = Get-AapLinFileTrustProblem $B $p
+    if ($why) { return "untrusted: $why" }   # check:backstop-trust
+    try {
+        $fs = New-Object IO.FileStream($p, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            $buf = New-Object byte[] ($script:WatchdogMax + 1)
+            $n = 0
+            while ($n -lt $buf.Length) { $k = $fs.Read($buf, $n, $buf.Length - $n); if ($k -le 0) { break }; $n += $k }
+        } finally { $fs.Dispose() }
+        if ($n -gt $script:WatchdogMax) { return 'invalid: the watchdog clock record is larger than 64 KiB' }
+        $doc = ConvertFrom-AapLinJson ((New-Object Text.UTF8Encoding($false, $true)).GetString($buf, 0, $n))
+    } catch { return "invalid: $(Get-AapLinError $_)" }
+    if (-not ($doc -is [Management.Automation.PSCustomObject])) { return 'invalid: not one JSON object' }
+    if ((Get-AapLinField $doc 'schema') -isnot [long] -and (Get-AapLinField $doc 'schema') -isnot [int]) { return 'invalid: schema' }
+    if ((Get-AapLinField $doc 'schema') -ne 1 -or [string](Get-AapLinField $doc 'role') -cne 'watchdog') { return 'invalid: not a watchdog clock record of schema 1' }
+    $latched = Get-AapLinField $doc 'latched'
+    if (-not ($latched -is [array])) { return 'invalid: latched is not a list' }   # check:backstop-latched
+    foreach ($l in $latched) { if (-not ($l -is [Management.Automation.PSCustomObject])) { return 'invalid: latched holds something that is not an object' } }   # check:backstop-latched
+    if ([string](Get-AapLinField $doc 'boot_id') -cne $boot) { return 'other_boot: the watchdog clock record is of another host boot' }   # check:backstop-boot
+    try { $written = ConvertTo-AapLinUtc (Get-AapLinField $doc 'written_utc') } catch { return 'invalid: written_utc' }
+    $age = ((Get-AapLinNow $B) - $written).TotalSeconds
+    if ($age -gt $script:WatchdogFreshSeconds -or $age -lt -$script:WatchdogAheadSeconds) { return "stale: written $([int]$age) s ago" }   # check:backstop-fresh
+    foreach ($l in $latched) { if ([string](Get-AapLinField $l 'enforcement_stage') -ceq $script:CapBreach) { return 'breach: the watchdog reports an unresolved cap breach' } }   # check:backstop-breach
+    $null
+}
+
 # The start gate (backend-lifecycle.md, Deadline record and start gate; allocator.md B1, B7 and L6 b): a VM starts only
-# while its Notes read back as the record this reservation gives, its deadline is still ahead by true time, and the host
-# watchdog's clock record is valid, of this host boot, fresh, and holds no unresolved cap breach. Without a watchdog
-# record (none configured, P10.7 not installed) nothing starts. Returns the problem as a fixed code, or $null.
+# while its Notes read back as the record this reservation gives, its deadline is still ahead by true time, this backend
+# holds no unresolved cap breach, and the host watchdog's clock record lets it. Returns @{ Code; Detail }, or $null.
 function Get-AapLinStartProblem($B, $r, [string]$VmId) {
     try {
         $notes = Get-AapLinNotes $r $VmId
-        if ([string](& $B.Provider.GetVmNotes @{ VmId = $VmId }) -cne $notes) { return 'notes_unverified' }   # check:start-notes
+        if ([string](& $B.Provider.GetVmNotes @{ VmId = $VmId }) -cne $notes) { return @{ Code = 'notes_unverified'; Detail = 'the VM Notes do not read back as its deadline record' } }   # check:start-notes
         $deadline = (ConvertTo-AapLinUtc $r.acquired_at).AddHours($script:CeilingHours)
-        if ((Get-AapLinEvidenceNow $B ([string]$r.reservation_id) (ConvertTo-AapLinUtc $r.acquired_at)) -ge $deadline) { return 'deadline_passed' }   # check:start-deadline
-    } catch { return 'notes_unverified' }
-    try {
-        $p = [string]$B.WatchdogClockPath
-        if (-not $p) { return 'backstop_down' }
-        $boot = [string](& $B.Provider.GetBootId @{})
-        if ((Get-AapLinPathKind $p) -cne 'file' -or (New-Object IO.FileInfo $p).Length -gt $script:WatchdogMax) { return 'backstop_down' }
-        $doc = ConvertFrom-AapLinJson ([IO.File]::ReadAllText($p, (New-Object Text.UTF8Encoding($false, $true))))
-        if ((Get-AapLinField $doc 'schema') -ne 1 -or [string](Get-AapLinField $doc 'role') -cne 'watchdog') { return 'backstop_down' }
-        if ($boot -cnotmatch '^[0-9a-f-]{8,64}\z' -or [string](Get-AapLinField $doc 'boot_id') -cne $boot) { return 'backstop_down' }   # check:backstop-boot
-        $age = ((Get-AapLinNow $B) - (ConvertTo-AapLinUtc (Get-AapLinField $doc 'written_utc'))).TotalSeconds
-        if ($age -gt $script:WatchdogFreshSeconds -or $age -lt -$script:WatchdogAheadSeconds) { return 'backstop_down' }   # check:backstop-fresh
-        $latched = Get-AapLinField $doc 'latched'
-        foreach ($l in $latched) { if ([string](Get-AapLinField $l 'enforcement_stage') -ceq $script:CapBreach) { return 'backstop_down' } }   # check:backstop-breach
-    } catch { return 'backstop_down' }
+        if ((Get-AapLinEvidenceNow $B ([string]$r.reservation_id) (ConvertTo-AapLinUtc $r.acquired_at)) -ge $deadline) { return @{ Code = 'deadline_passed'; Detail = 'the 6 h deadline has passed' } }   # check:start-deadline
+    } catch { return @{ Code = 'notes_unverified'; Detail = (Get-AapLinError $_) } }
+    $held = @($B.Capped.Keys | Where-Object { $B.Capped[$_].Running })
+    if ($held.Count) { return @{ Code = 'backstop_down'; Detail = "local_cap_breach: $($held -join ', ') not observed off" } }   # check:start-local-breach
+    $why = Get-AapLinBackstopProblem $B
+    if ($why) { return @{ Code = 'backstop_down'; Detail = $why } }
     $null
+}
+
+# One latch (allocator.md L4 step 1): every field present, so strict mode never meets a missing one.
+function New-AapLinCapLatch([string]$Trigger, $Elapsed, [int]$Hours) {
+    @{ Trigger = $Trigger; Elapsed = $Elapsed; Hours = $Hours; PowerOff = $null; Started = $null; Decided = $null; VmId = ''; Running = $false
+        Unavailable = $false; StopError = $null; Error = $null; Torn = $false
+    }
 }
 
 # The VMs of a reservation: by its id, or by the name derived from the reservation while no id is known.
@@ -1142,123 +1196,187 @@ function Get-AapLinOwnVms($B, $r, [string]$VmId) {
     @(Get-AapLinVms $B | Where-Object { ($VmId -and $_.Id -ceq $VmId) -or $_.Name -ceq $name })
 }
 
-# Steps 1 and 2 of allocator.md L4 for one reservation: decide, latch in memory, power the VM off at the hypervisor
-# (Stop-VM -TurnOff, never a guest shutdown), observe it. Due when its age by true time reaches the cap in force (exactly
-# the cap counts); when this process latched it before (no later clock reading un-caps it); when its journal carries the
-# evidence already (a restart decides again); or, with -ClockSafety, when its VM exists at this process's first look
-# (running or off: an off one is never started again) (L7: time across a host reboot or a lost clock record cannot be recovered). Only acquired_at, the cap and the host
-# clocks decide: no guest reply, heartbeat, job state, broker answer or runner status enters. Returns the latch, or $null.
-function Invoke-AapLinCapPowerOff($B, $r, $j) {
-    $rid = [string]$r.reservation_id
-    if ([string]$r.state -ceq 'reconciled' -or ([string]$r.state -ceq 'quarantined' -and [string](Get-AapLinField $r 'quarantine_kind') -ceq 'unknown_vm')) { return $null }
-    $started = ConvertTo-AapLinUtc $r.acquired_at
-    $hours = Get-AapLinCapHours $B
-    # The age from true time itself (negative while the clock is behind the start: unknown, never floored to a value);
-    # the evidence clock's floor at the start orders timestamps only.
-    $age = [long][Math]::Floor(((Get-AapLinTrueNow $B) - $started).TotalSeconds)
-    $now = Get-AapLinEvidenceNow $B $rid $started
-    $cap = $null
-    if ($B.Capped.ContainsKey($rid)) { $cap = $B.Capped[$rid] }
-    if ($null -eq $cap -and $age -ge [long]$hours * 3600) { $cap = @{ Trigger = 'deadline'; Elapsed = $age; Hours = $hours; PowerOff = $null } }   # check:cap-deadline
-    if ($null -eq $cap -and $null -ne $j -and $null -ne $j.Cap) {   # check:cap-journal
-        $c = $j.Cap
-        $cap = @{ Trigger = [string](Get-AapLinField $c 'trigger'); Elapsed = (Get-AapLinField $c 'elapsed_s'); Hours = [int](Get-AapLinField $c 'cap_hours')
-            PowerOff = (ConvertTo-AapLinUtc (Get-AapLinField $c 'power_off_utc'))
-        }
-    }
-    $vmId = [string](Get-AapLinField $r 'vm_id')
-    if (-not $vmId -and $null -ne $j) { $vmId = [string]$j.VmId }
-    $first = -not $B.CapSeen.ContainsKey($rid)
-    $B.CapSeen[$rid] = $true
-    if ($null -eq $cap -and $first -and $B.ClockSafety) {
-        # A VM found running is capped at once; one found off is capped too, so recovery never starts it (L6 d).
-        try { $on = @(Get-AapLinOwnVms $B $r $vmId) } catch { $on = @() }
-        $measured = $null
-        if ($age -ge 0) { $measured = $age }   # the measured age, never invented: null when the clock is behind the start
-        if ($on.Count) { $cap = @{ Trigger = $B.ClockSafety; Elapsed = $measured; Hours = $hours; PowerOff = $null } }   # check:cap-safety
-    }
-    if ($null -eq $cap) { return $null }
-    $B.Capped[$rid] = $cap
-    $cap.VmId = $vmId
-    $cap.Started = $started
+# Powers off every VM of the reservation that is not observed Off, at the hypervisor, never through the guest. Each
+# attempt that returned sets PowerOff to the evidence time it was issued at (when $Started is known); a failed one keeps
+# its error. Then observes: Running, Unavailable (the list itself failed).
+function Invoke-AapLinCapStop($B, $r, $cap) {
+    $cap.Running = $true
     $cap.Unavailable = $false
     try {
-        foreach ($vm in @(Get-AapLinOwnVms $B $r $vmId)) {
+        foreach ($vm in @(Get-AapLinOwnVms $B $r ([string]$cap.VmId))) {
             if (-not $cap.VmId) { $cap.VmId = [string]$vm.Id }
             if ($vm.State -ceq 'Off') { continue }
-            if ($null -eq $cap.PowerOff) { $cap.PowerOff = Get-AapLinEvidenceNow $B $rid $started }
-            try { & $B.Provider.StopVm @{ VmId = $vm.Id } } catch { $null = $_ }
+            $issued = $null
+            if ($null -ne $cap.Started) { try { $issued = Get-AapLinEvidenceNow $B ([string]$r.reservation_id) $cap.Started } catch { $issued = $null } }
+            try { & $B.Provider.StopVm @{ VmId = $vm.Id }; if ($null -ne $issued) { $cap.PowerOff = $issued }; $cap.StopError = $null }
+            catch { $cap.StopError = "Stop-VM failed: $(Get-AapLinError $_)" }
         }
-        $cap.Running = @(Get-AapLinOwnVms $B $r $vmId | Where-Object { $_.State -cne 'Off' }).Count -gt 0
-    } catch { $cap.Unavailable = $true; $cap.Running = $true }   # an inventory or observation that failed proves nothing
-    if ($null -eq $cap.PowerOff) { $cap.PowerOff = $now }   # nothing was running: the decision is the power-off
+        $cap.Running = @(Get-AapLinOwnVms $B $r ([string]$cap.VmId) | Where-Object { $_.State -cne 'Off' }).Count -gt 0
+    } catch { $cap.Unavailable = $true; $cap.StopError = "VM list failed: $(Get-AapLinError $_)" }   # an inventory or observation that failed proves nothing
+}
+
+# The decision of allocator.md L2 and L7 for one reservation. Due when its age by true time reaches the cap in force
+# (exactly the cap counts); when the age is negative (the clock behind the start: a clock problem, capped as
+# clock_unavailable with no measured age); when this process latched it before (no later clock reading un-caps it); when
+# its journal carries the evidence already (a restart decides again); or, with -ClockSafety, when its VM exists at this
+# process's first look (L7: time across a host reboot or a lost clock record cannot be recovered; a VM found off is capped
+# too, so recovery never starts it). Only acquired_at, the cap and the host clocks decide: no guest reply, heartbeat, job
+# state, broker answer or runner status enters. Returns the latch or $null; throws only what the caller turns into
+# enforcement_unavailable.
+function Get-AapLinCapDecision($B, $r, $j, [datetime]$Started) {
+    $rid = [string]$r.reservation_id
+    $prior = $null
+    if ($B.Capped.ContainsKey($rid)) { $prior = $B.Capped[$rid]; if (-not $prior.Error) { return $prior } }
+    $hours = Get-AapLinCapHours $B
+    # The age from true time itself, never floored; the evidence clock's floor at the start orders timestamps only.
+    $age = [long][Math]::Floor(((Get-AapLinTrueNow $B) - $Started).TotalSeconds)
+    $now = Get-AapLinEvidenceNow $B $rid $Started
+    $cap = $null
+    if ($age -ge [long]$hours * 3600) { $cap = (New-AapLinCapLatch 'deadline' $age $hours) }   # check:cap-deadline
+    if ($null -eq $cap -and $age -lt 0) { $cap = (New-AapLinCapLatch 'clock_unavailable' $null $hours) }   # check:cap-negative
+    if ($null -eq $cap -and $null -ne $j -and $null -ne $j.Cap) {   # check:cap-journal
+        $c = $j.Cap
+        $cap = New-AapLinCapLatch ([string](Get-AapLinField $c 'trigger')) (Get-AapLinField $c 'elapsed_s') ([int](Get-AapLinField $c 'cap_hours'))
+        $cap.PowerOff = ConvertTo-AapLinUtc (Get-AapLinField $c 'power_off_utc')
+    }
+    if ($null -eq $cap -and $B.ClockSafety -and -not $B.CapSeen.ContainsKey($rid)) {
+        $vmId = [string](Get-AapLinField $r 'vm_id')
+        if (-not $vmId -and $null -ne $j) { $vmId = [string]$j.VmId }
+        $on = @(Get-AapLinOwnVms $B $r $vmId)   # a failed list throws: the first look is retried, never taken for no VM
+        $measured = $null
+        if ($age -ge 0) { $measured = $age }
+        if ($on.Count) { $cap = (New-AapLinCapLatch $B.ClockSafety $measured $hours) }   # check:cap-safety
+    }
+    $B.CapSeen[$rid] = $true
+    if ($null -eq $cap -and $null -ne $prior) {
+        # Latched after a failed decision: it stays capped (the VM was powered off), now with what can be measured.
+        $measured = $null
+        if ($age -ge 0) { $measured = $age }
+        $cap = (New-AapLinCapLatch 'clock_unavailable' $measured $hours)
+    }
+    if ($null -ne $cap) { $cap.Decided = $now }
     $cap
 }
 
-# The lifetime_cap evidence of the destroy intent (backend-lifecycle.schema.json): power_off_utc and the record's at come
-# from the reservation's evidence clock, at after the power-off returned.
+# Steps 1 and 2 of allocator.md L4: decide, latch in memory, power off, observe. A decision that throws (an unreadable
+# start time, a clock that fails, a journal whose evidence does not parse) never fails open: the VM is powered off by its
+# id or derived name and the latch carries the error (enforcement_unavailable) until a later decision succeeds.
+function Invoke-AapLinCapPowerOff($B, $r, $j) {
+    $rid = [string]$r.reservation_id
+    if ([string]$r.state -ceq 'reconciled' -or ([string]$r.state -ceq 'quarantined' -and [string](Get-AapLinField $r 'quarantine_kind') -ceq 'unknown_vm')) { return $null }
+    $vmId = [string](Get-AapLinField $r 'vm_id')
+    if (-not $vmId -and $null -ne $j) { $vmId = [string]$j.VmId }
+    $cap = $null
+    try {
+        $started = ConvertTo-AapLinUtc $r.acquired_at
+        $cap = Get-AapLinCapDecision $B $r $j $started
+        if ($null -eq $cap) { return $null }
+        $cap.Started = $started
+        $cap.Error = $null
+    } catch {
+        $err = Get-AapLinError $_
+        $cap = $(if ($B.Capped.ContainsKey($rid)) { $B.Capped[$rid] } else { (New-AapLinCapLatch 'clock_unavailable' $null $script:CeilingHours) })
+        $cap.Error = "decision failed: $err"
+    }
+    $B.Capped[$rid] = $cap   # the latch: capped for the life of this process
+    if (-not $cap.VmId) { $cap.VmId = $vmId }
+    Invoke-AapLinCapStop $B $r $cap
+    if ($null -eq $cap.PowerOff -and -not $cap.Running -and $null -ne $cap.Started -and $null -eq $cap.StopError) { $cap.PowerOff = $cap.Decided }   # nothing was running: the decision is the power-off
+    $cap
+}
+
+# The lifetime_cap evidence of the destroy intent (backend-lifecycle.schema.json), or $null while it cannot be formed (no
+# known start, no power-off that returned): power_off_utc and the record's at come from the reservation's evidence clock.
 function Get-AapLinCapEvidence($cap) {
+    if ($null -eq $cap.Started -or $null -eq $cap.PowerOff) { return $null }
     [ordered]@{ cap_hours = [int]$cap.Hours; started_utc = (Format-AapLinTime $cap.Started); deadline_utc = (Format-AapLinTime $cap.Started.AddHours([int]$cap.Hours))
         elapsed_s = $cap.Elapsed; trigger = $cap.Trigger; power_off_utc = (Format-AapLinTime $cap.PowerOff); reason = 'vm_lifetime_cap'
     }
 }
 
+function New-AapLinCapResult($r, [string]$Action, [string]$Code, $Evidence, [string[]]$Details) {
+    $out = New-AapLinResult $r $Action $Code
+    $out.LifetimeCap = $Evidence
+    $d = @($Details | Where-Object { $_ })
+    if ($d.Count) { $out.Detail = Get-AapLinLine ($d -join '; ') 400 }
+    $out
+}
+
 # The cap for one reservation, first on every step (allocator.md L3, L4): after the power-off, persist (the allocator down
-# to deleting; a failed vm_lifetime_cap record for every open op but destroy; the destroy intent with the evidence, once
-# per reservation), then the ordinary verified teardown, the slot freed only by its proof (L6). A VM not observed Off is an
-# unresolved cap_breach (L5): its slot stays held, nothing but the power-off is repeated for it, and no guest call follows
-# the decision in any case. Returns the step's result (LifetimeCap carries the evidence), or $null when not due.
+# to deleting; a failed vm_lifetime_cap record for every open op but destroy; the destroy intent with the evidence once
+# the VM is observed off, once per reservation), then the ordinary verified teardown, the slot freed only by its proof (L6).
+# A VM not observed Off is an unresolved cap_breach (L5), a failed list or decision enforcement_unavailable: the slot
+# stays held, only the power-off is repeated, and no guest call follows the decision in any case. Every failure on the
+# way (the power-off, the allocator, the journal) is carried in Detail, never swallowed. Returns the step's result, or
+# $null when not due.
 function Invoke-AapLinLifetimeCap($B, $r, $j) {
     $cap = Invoke-AapLinCapPowerOff $B $r $j
     if ($null -eq $cap) { return $null }
-    $rid = [string]$r.reservation_id
     $vmId = [string]$cap.VmId
     $evidence = Get-AapLinCapEvidence $cap
+    $notes = New-Object Collections.Generic.List[string]
+    if ($cap.Error) { $notes.Add($cap.Error) }
+    if ($cap.StopError) { $notes.Add($cap.StopError) }
+    $hold = $(if ($cap.Unavailable -or $cap.Error) { 'enforcement_unavailable' } elseif ($cap.Running) { $script:CapBreach } else { $null })
     $s = [string]$r.state
     if (@('ready', 'busy', 'draining', 'collecting') -ccontains $s -or ($s -ceq 'creating' -and $vmId)) {
-        try { $next = Move-AapLinState $B $r 'deleting' $vmId; if ($null -ne $next) { $r = $next } } catch { $null = $_ }   # retried every step until it holds
+        try {
+            $next = Move-AapLinState $B $r 'deleting' $vmId
+            if ($null -ne $next) { $r = $next } else { $notes.Add('allocator: the move to deleting was refused; retried next step') }
+        } catch { $notes.Add("allocator: $(Get-AapLinError $_)") }
     }
-    if ($null -eq $j) {
-        # The journal is unreadable: the VM is off; the step quarantines the reservation, capacity held.
-        $out = New-AapLinResult $r 'held' $(if ($cap.Running) { $script:CapBreach } else { 'journal_unreadable' })
-        $out.LifetimeCap = $evidence
-        return $out
-    }
+    if ($null -eq $j) { return (New-AapLinCapResult $r 'held' $(if ($hold) { $hold } else { 'journal_unreadable' }) $evidence $notes.ToArray()) }
     try {
         if ($null -eq $j.Cap) {   # check:cap-once
-            $at = Get-AapLinEvidenceNow $B $rid $cap.Started
+            $at = $(if ($null -ne $cap.Started) { Get-AapLinEvidenceNow $B ([string]$r.reservation_id) $cap.Started } else { Get-AapLinNow $B })
             foreach ($op in @($j.Open.Keys | Where-Object { $j.Open[$_] -and $_ -cne 'destroy' } | Sort-Object)) {
                 Write-AapLinJournal $B $r $op 'failed' -VmId $vmId -Code 'vm_lifetime_cap' -Detail $script:CapDetail -At $at
             }
-            if ($vmId) { Write-AapLinJournal $B $r 'destroy' 'intent' -VmId $vmId -At $at -LifetimeCap $evidence }
-            elseif (-not $j.Has['create/failed']) { Write-AapLinJournal $B $r 'create' 'failed' -Code 'vm_lifetime_cap' -Detail $script:CapDetail -At $at }
+            if (-not $hold -and $null -ne $evidence -and $vmId) { Write-AapLinJournal $B $r 'destroy' 'intent' -VmId $vmId -At $at -LifetimeCap $evidence }
+            elseif (-not $vmId -and -not $j.Has['create/failed']) { Write-AapLinJournal $B $r 'create' 'failed' -Code 'vm_lifetime_cap' -Detail $script:CapDetail -At $at }
         }
         $j = Read-AapLinJournal $B $r
     } catch {
-        $out = New-AapLinResult $r 'held' 'journal_unwritable'   # retried every step; the VM stays off meanwhile
-        $out.LifetimeCap = $evidence
-        return $out
+        $notes.Add("journal: $(Get-AapLinError $_)")
+        return (New-AapLinCapResult $r 'held' $(if ($hold) { $hold } else { 'journal_unwritable' }) $evidence $notes.ToArray())   # retried every step
     }
-    if ($cap.Running) {   # check:cap-breach
-        $why =$(if ($cap.Unavailable) { 'enforcement_unavailable' } else { $script:CapBreach })
-        if ($vmId) { try { Write-AapLinFailedOnce $B $r $j 'destroy' $vmId 'retryable' $why } catch { $null = $_ } }
-        $out = New-AapLinResult $r 'held' $why
-        $out.LifetimeCap = $evidence
-        return $out
+    if ($hold) {   # check:cap-breach
+        if ($vmId) {
+            $d = $hold
+            if ($cap.StopError) { $d = "$hold`: $($cap.StopError)" }
+            try { Write-AapLinFailedOnce $B $r $j 'destroy' $vmId 'retryable' $d } catch { $notes.Add("journal: $(Get-AapLinError $_)") }
+        }
+        return (New-AapLinCapResult $r 'held' $hold $evidence $notes.ToArray())
     }
-    $force = -not $cap.ContainsKey('Torn')
+    $force = -not $cap.Torn
     $cap.Torn = $true
     $out = Invoke-AapLinDestroy $B $r $j -Force:$force -Urgent
     if (-not $out.Code) { $out.Code = 'vm_lifetime_cap' }
     $out.LifetimeCap = $evidence
+    if ($notes.Count) { $out.Detail = Get-AapLinLine ($notes -join '; ') 400 }
     $out
+}
+
+# The last resort when the cap itself threw: latch, power the reservation's VM off by its id or derived name, report
+# enforcement_unavailable with the error. Never fails open and never throws.
+function Invoke-AapLinCapEmergency($B, $r, $j, [string]$Err) {
+    $rid = [string]$r.reservation_id
+    $cap = $(if ($B.Capped.ContainsKey($rid)) { $B.Capped[$rid] } else { (New-AapLinCapLatch 'clock_unavailable' $null $script:CeilingHours) })
+    $cap.Error = "cap failed: $Err"
+    $B.Capped[$rid] = $cap
+    try {
+        if (-not $cap.VmId) { $cap.VmId = [string](Get-AapLinField $r 'vm_id') }
+        if (-not $cap.VmId -and $null -ne $j) { $cap.VmId = [string]$j.VmId }
+        Invoke-AapLinCapStop $B $r $cap
+    } catch { $cap.StopError = "power-off failed: $(Get-AapLinError $_)" }
+    New-AapLinCapResult $r 'held' 'enforcement_unavailable' $null @($cap.Error, $cap.StopError)
 }
 
 # ---- lifecycle ops ------------------------------------------------------------------------------------------------------
 
 function New-AapLinResult($r, [string]$Action, $Code = $null, $Summary = $null) {
     [pscustomobject][ordered]@{ ReservationId = [string]$r.reservation_id; LeaseGeneration = [long]$r.lease_generation; Action = $Action; State = [string]$r.state; Code = $Code; Summary = $Summary
-        LifetimeCap = $null
+        LifetimeCap = $null; Detail = $null
     }
 }
 
@@ -1507,7 +1625,7 @@ function Invoke-AapLinDestroy($B, $r, $j, [switch]$Force, [switch]$Urgent) {
     $a = Get-AapLinAllocArgs $B $r
     $c = Complete-AapTeardown @a -Proof $proof
     if ($c.Ok) {
-        foreach ($t in $B.Leases, $B.Tried, $B.StatusAt, $B.StatusBusy, $B.Breached, $B.NetAt, $B.Capped, $B.CapSeen, $B.Evidence) { [void]$t.Remove($rid) }
+        foreach ($t in $B.Leases, $B.Tried, $B.StatusAt, $B.StatusBusy, $B.Breached, $B.NetAt, $B.Capped, $B.CapSeen, $B.Evidence, $B.BootIntent) { [void]$t.Remove($rid) }
         $next = Get-AapLinField $c 'Reservation'
         if ($null -ne $next) { $r = $next }
         return (New-AapLinResult $r 'destroyed')
@@ -1625,10 +1743,17 @@ function Step-AapLinCreating($B, $r, $j, $g, [string]$BaseSha256) {
         # The start gate, before anything is journaled for the start: Notes read back, deadline ahead, watchdog healthy.
         # Otherwise the reservation stays creating and the next step asks again (the lifetime cap still ends it).
         $vm = @(Get-AapLinVms $B | Where-Object { $_.Id -ceq [string]$j.VmId })
-        if (-not ($vm.Count -eq 1 -and $vm[0].State -ceq 'Running')) {
-            $why = Get-AapLinStartProblem $B $r ([string]$j.VmId)
-            if ($why) { return (New-AapLinResult $r 'waiting' $why) }   # check:start-gate
+        $running = $vm.Count -eq 1 -and $vm[0].State -ceq 'Running'
+        # L6 d: a boot an earlier supervisor journaled and never finished, whose VM is not running now, is a crash; recovery
+        # never starts that VM, whatever the journal says. It is given up and destroyed.
+        if ($j.Has['boot/intent'] -and -not $B.BootIntent.ContainsKey([string]$r.reservation_id) -and -not $running) {   # check:boot-replay
+            return (Invoke-AapLinAbandon $B $r $j 'boot' 'retryable' 'recovery never starts a VM found off (allocator.md L6 d)')
         }
+        if (-not $running) {
+            $why = Get-AapLinStartProblem $B $r ([string]$j.VmId)
+            if ($why) { $out = New-AapLinResult $r 'waiting' $why.Code; $out.Detail = $why.Detail; return $out }   # check:start-gate
+        }
+        $B.BootIntent[[string]$r.reservation_id] = $true
         Write-AapLinJournal $B $r 'boot' 'intent' -VmId $j.VmId
         Invoke-AapLinFault 'boot:after-intent'
         # Before the power-on, with the VM Off (host-network-module.md, Consumer obligations 2): Attach again (the same
@@ -1862,7 +1987,7 @@ function New-AapLinBackend {
         Transport = $Transport; Now = $Clock; Sleep = $Sleep; StatusSeconds = $script:StatusSeconds
         Guests = @{}; Leases = @{}; Tried = @{}; StatusAt = @{}; StatusBusy = @{}; Breached = @{}; NetAt = @{}
         CapHours = $CapHours; WatchdogClockPath = $WatchdogClockPath; ClockSafety = $ClockSafety; Mono = $Monotonic; High = $null
-        Capped = @{}; CapSeen = @{}; Evidence = @{}
+        Capped = @{}; CapSeen = @{}; Evidence = @{}; BootIntent = @{}; CapHoursWarned = $null
     }
     if ($null -eq $B.Mono) { $B.Mono = { [long]([Diagnostics.Stopwatch]::GetTimestamp() / ([Diagnostics.Stopwatch]::Frequency / 1000.0)) } }
     if ($null -eq $B.Transport) { $B.Transport = { param($Call) Invoke-AapLinGuestChild $Call } }
@@ -1915,15 +2040,24 @@ function Step-AapLinOne($B, $r, [string]$BaseSha256) {
     $unreadable = $null
     try { $j = Read-AapLinJournal $B $r } catch { $unreadable = $_ }
     # The lifetime cap first, before anything else the step might do (allocator.md L3, L4); its power-off needs no journal.
-    $capped = Invoke-AapLinLifetimeCap $B $r $j
+    $capped = $null
+    try { $capped = Invoke-AapLinLifetimeCap $B $r $j }
+    catch { $capped = Invoke-AapLinCapEmergency $B $r $j (Get-AapLinError $_) }   # never fail open
     if ($null -ne $capped -and $null -ne $j) { return $capped }   # check:cap-first
     if ($null -ne $unreadable) {
         # Journal unreadable: quarantine the reservation, capacity held (backend-lifecycle.md, crash table); a deleting
-        # one as teardown_failed (the only quarantine a deleting slot may enter), never left deleting for ever.
-        $s = [string]$r.state
+        # one as teardown_failed (the only quarantine a deleting slot may enter), never left deleting for ever. A capped
+        # one keeps its own code (cap_breach stays cap_breach) and evidence; a refused quarantine is said, not dropped.
+        $s = $(if ($null -ne $capped) { [string]$capped.State } else { [string]$r.state })
         $qk = $(if ($s -ceq 'deleting') { 'teardown_failed' } else { 'crash' })
-        if (@('creating', 'ready', 'busy', 'draining', 'collecting', 'deleting') -ccontains $s) { [void](Set-AapLinState $B $r quarantined -Kind $qk -Reason 'journal unreadable; capacity held') }   # check:journal-deleting
-        return (New-AapLinResult $r 'held' 'journal_unreadable')
+        $q = $null
+        if (@('creating', 'ready', 'busy', 'draining', 'collecting', 'deleting') -ccontains $s) {   # check:journal-deleting
+            try { $q = Set-AapLinState $B $r quarantined -Kind $qk -Reason 'journal unreadable; capacity held' } catch { $q = [pscustomobject]@{ Ok = $false; Reason = (Get-AapLinError $_) } }
+        }
+        $out = $capped
+        if ($null -eq $out) { $out = New-AapLinResult $r 'held' 'journal_unreadable' }
+        if ($null -ne $q -and -not $q.Ok) { $out.Detail = Get-AapLinLine ((@($out.Detail, "quarantine refused: $($q.Reason)") | Where-Object { $_ }) -join '; ') 400 }
+        return $out
     }
     $g = Get-AapLinGuest $B $r $j
     # A hostile guest is final: once journaled, the slot only goes down, even after a crash between the journal and the
@@ -1961,9 +2095,13 @@ function Invoke-AapLinCapPass {
     param([Parameter(Mandatory)][hashtable]$Backend, [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Reservations)
     foreach ($r in $Reservations) {
         if ((Get-AapLinField $r 'profile') -cne 'linux' -or (Get-AapLinField $r 'backend') -cne 'hyperv-vm') { continue }
+        if ([string](Get-AapLinField $r 'reservation_id') -cnotmatch $script:RidRe) { continue }   # check:pass-rid
         $j = $null
         try { $j = Read-AapLinJournal $Backend $r } catch { $j = $null }
-        if ($null -ne (Invoke-AapLinCapPowerOff $Backend $r $j)) { [string]$r.reservation_id }
+        # One reservation that throws stops neither the others nor its own power-off.
+        $c = $null
+        try { $c = Invoke-AapLinCapPowerOff $Backend $r $j } catch { $c = Invoke-AapLinCapEmergency $Backend $r $j (Get-AapLinError $_) }
+        if ($null -ne $c) { [string]$r.reservation_id }
     }
 }
 
