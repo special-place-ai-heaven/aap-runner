@@ -191,6 +191,9 @@ function Initialize-AapRuntime {
     # The installed manager knows the tier keys (Test-AapManagerTiers); $null until probed.
     $AapRt.ManagerTiers = $null
     $AapRt.ProbedAt = [DateTimeOffset]::MinValue
+    # The manager status.json updated value last seen, and when it last changed (this clock).
+    $AapRt.MgrUpdated = $null
+    $AapRt.MgrUpdatedAt = [DateTimeOffset]::MinValue
     $AapRt.Status = $null
     $AapRt.StatusAt = [DateTimeOffset]::MinValue
 }
@@ -1235,8 +1238,7 @@ function Invoke-AapHealth {
             Write-AapStatus 'paused' '' $detail
         } elseif ($AapRt.ManagerStopped) {
             Write-AapStatus 'idle' '' $detail
-        } elseif ($m -and $m.State -and $null -ne $m.Updated -and $now.ToUnixTimeSeconds() - $m.Updated -gt 3 * $AapCfg.HealthSeconds) {
-            # The unit is active but its status file stopped moving (it rewrites every 5 s): a wedged manager.
+        } elseif ($m -and $m.State -and (Test-AapManagerStale $m.Updated $now)) {
             Write-AapStatus 'starting' '' 'manager status stale'
         } elseif ($m -and $m.State) {
             Write-AapStatus $m.State $m.Job $detail $m.Repo $m.RunUrl $m
@@ -1254,13 +1256,35 @@ function Invoke-AapHealth {
     $detail = "sysbox=$sysbox manager=$manager; restart $($AapRt.Failures)"
     Write-AapLog "unhealthy: $detail; next check in $delay s"
     [void](Invoke-AapUnitStart @('sysbox'))
-    if (-not $stopped) { [void](Invoke-AapUnitStart @('aap-runner-manager')) }
+    if (-not $stopped) {
+        # Not paused or stopped, so no drain is meant: one left by a failed
+        # undrain would make the manager exit at once.
+        if ($manager -ne 'active' -and $AapRt.ManagerOk) { [void](Invoke-AapUndrain) }
+        [void](Invoke-AapUnitStart @('aap-runner-manager'))
+    }
     if ($AapRt.Failures -ge 5) {
         Write-AapStatus 'error' '' "$detail failed; retrying every $delay s"
     } else {
         Write-AapStatus 'starting' '' $detail
     }
     $AapRt.NextHealth = $now.AddSeconds($delay)
+}
+
+# A wedged manager: its unit is active but the updated value in its status.json
+# (rewritten every 5 s) has not moved for 3 health ticks of this clock. The
+# manager's clock is never compared with this one (WSL drifts). No updated
+# field is never stale.
+function Test-AapManagerStale($Updated, [DateTimeOffset]$Now) {
+    if ($null -eq $Updated) {
+        $AapRt.MgrUpdated = $null
+        return $false
+    }
+    if ($Updated -ne $AapRt.MgrUpdated) {
+        $AapRt.MgrUpdated = $Updated
+        $AapRt.MgrUpdatedAt = $Now
+        return $false
+    }
+    return (($Now - $AapRt.MgrUpdatedAt).TotalSeconds -ge 3 * $AapCfg.HealthSeconds)
 }
 
 # Drain, wait for the job to finish, keep the distro up. If Off arrives while

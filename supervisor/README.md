@@ -22,8 +22,13 @@ it.** The only reason is that WSL sessions belong to the logon session
   A new `retry` in `inbox\state.json` resets both and tries again at once.
   Each tick also sets the `vmmemWSL` process to BelowNormal priority, so games
   and other interactive apps win CPU contention against CI jobs. While the
-  manager unit is active but its `status.json` `updated` is more than 3 health
-  ticks (180 s) old, the status is `starting` with detail `manager status stale`.
+  manager unit is active but the `updated` value in its `status.json` has not
+  changed for 3 health ticks (180 s on the supervisor's clock), the status is
+  `starting` with detail `manager status stale`. The manager's clock is never
+  compared with Windows' (the WSL clock can drift); a file without `updated` is
+  never stale. A restart of a manager that is not paused or stopped runs
+  `--undrain` first, so a drain left by a failed undrain does not make it exit
+  at once.
 - **Failed drain steps:** a non-zero `--drain` or `--undrain` is logged. A
   pause whose drain fails or whose wait times out is not `paused`: the status
   says why and the next cycle pauses again. Resume starts the manager only

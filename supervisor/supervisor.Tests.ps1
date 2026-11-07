@@ -724,23 +724,61 @@ Describe 'aap-runner host supervisor' {
             $AapRt.Failures | Should -Be 0
         }
 
-        It 'reports starting while the manager status is <age> s old' -Tag 'manager-stale' -TestCases @(
-            @{ age = 181; state = 'starting'; detail = 'manager status stale' }
-            @{ age = 180; state = 'idle'; detail = '' }
+        # The manager's clock is never compared with this one (WSL clock drift):
+        # only whether its updated value moves between health ticks.
+        It 'reports <name>' -Tag 'manager-stale' -TestCases @(
+            @{ name = 'stale once updated stays the same for 3 health ticks'; step = 0; base = 1760302800; states = @('idle', 'idle', 'idle', 'starting') }
+            @{ name = 'not stale while updated moves, even far in the past'; step = 5; base = 1000; states = @('idle', 'idle', 'idle', 'idle') }
+            @{ name = 'not stale while updated moves, even far in the future'; step = 5; base = 8000000000; states = @('idle', 'idle', 'idle', 'idle') }
+            @{ name = 'never stale without an updated field'; step = $null; base = 0; states = @('idle', 'idle', 'idle', 'idle') }
         ) {
-            $script:age = $age
+            $script:updated = $base
+            $script:step = $step
             $script:responder = {
                 param($line)
                 if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 0 "active`nactive") }
                 if ($line -like '*cat /run/aap-runner/status.json') {
-                    return (Get-AapFakeResult 0 ('{"state":"idle","job":"","updated":' + ($script:clock.Now.ToUnixTimeSeconds() - $script:age) + ',"runner_count":3,"job_cpus":28,"job_memory":"72g"}'))
+                    $u = ''
+                    if ($null -ne $script:step) { $u = ',"updated":' + $script:updated; $script:updated += $script:step }
+                    return (Get-AapFakeResult 0 ('{"state":"idle","job":""' + $u + ',"runner_count":3,"job_cpus":28,"job_memory":"72g"}'))
                 }
                 return (Get-AapFakeResult 0 '')
             }
+            $seen = @()
+            foreach ($i in 1..4) {
+                Invoke-AapCycle
+                $seen += (Get-AapStatusFile).state
+                $script:clock.Now = $AapRt.NextHealth
+            }
+            $seen | Should -Be $states
+            if ($states[-1] -eq 'starting') { (Get-AapStatusFile).detail | Should -Be 'manager status stale' }
+        }
+
+        It 'undrains before restarting a manager the supervisor did not mean to drain' -Tag 'restart-undrain' {
+            $AapRt.ManagerOk = $true
+            $script:responder = {
+                param($line)
+                if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 3 "active`ninactive") }
+                return (Get-AapFakeResult 0 '')
+            }
             Invoke-AapCycle
-            $s = Get-AapStatusFile
-            $s.state | Should -Be $state
-            $s.detail | Should -Be $detail
+            $u = [array]::IndexOf(@($script:calls), 'wsl -d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --undrain')
+            $s = [array]::IndexOf(@($script:calls), 'wsl -d aap-runner -u root -- /bin/systemctl start aap-runner-manager')
+            $u | Should -BeGreaterOrEqual 0
+            $u | Should -BeLessThan $s
+        }
+
+        It 'does not undrain a paused manager on restart' -Tag 'restart-undrain' {
+            $AapRt.ManagerOk = $true
+            $AapRt.Paused = $true
+            Write-AapSettingsFile '{"runner_count":3,"job_cpus":28,"job_memory_gib":72,"paused":true}'
+            $script:responder = {
+                param($line)
+                if ($line -like '*is-active sysbox aap-runner-manager') { return (Get-AapFakeResult 3 "inactive`ninactive") }
+                return (Get-AapFakeResult 0 '')
+            }
+            Invoke-AapCycle
+            $script:calls | Should -Not -Contain 'wsl -d aap-runner -u root -- /usr/local/sbin/aap-runner-manager --undrain'
         }
 
         It 'restarts a dead keep-alive' {
