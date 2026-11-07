@@ -566,7 +566,7 @@ Describe 'review round: nothing fails open, nothing is masked' {
         (Step-Lin $B $w $rid).Action | Should -Be 'destroyed'
     }
 
-    It 'a power-off that did not take: power_off_utc is its issuance, the intent written at once, the journal detail fixed' -Tag 'cap-breach', 'cap-once' {
+    It 'a power-off that did not take: power_off_utc is its issuance, the intent written at once, the journal detail fixed' -Tag 'cap-breach', 'cap-once', 'poweroff-issued' {
         $w = New-LinWorld
         $B = New-LinBackend $w
         $rid = (New-LinReservation $w).reservation_id
@@ -594,7 +594,7 @@ Describe 'review round: nothing fails open, nothing is masked' {
         Invoke-LinValidator $w 'backend-lifecycle' @(Get-LinJournalLines $w $rid) | Should -BeNullOrEmpty
     }
 
-    It 'a Stop-VM that throws but takes keeps the cap evidence and tears down' -Tag 'cap-breach' {
+    It 'a Stop-VM that throws but takes keeps the cap evidence and tears down' -Tag 'cap-breach', 'poweroff-issued' {
         $w = New-LinWorld
         $B = New-LinBackend $w
         $rid = (New-LinReservation $w).reservation_id
@@ -609,7 +609,7 @@ Describe 'review round: nothing fails open, nothing is masked' {
         (Get-LinRes $w $rid).state | Should -Be 'reconciled'
     }
 
-    It 'a safety-triggered cap whose power-off did not take survives a restart without -ClockSafety; no other VM starts' -Tag 'cap-journal', 'cap-once' {
+    It 'a safety-triggered cap whose power-off did not take survives a restart without -ClockSafety; no other VM starts' -Tag 'cap-journal', 'cap-once', 'poweroff-issued' {
         $w = New-LinWorld -Linux 2
         $B = New-LinBackend $w
         $rid = (New-LinReservation $w).reservation_id
