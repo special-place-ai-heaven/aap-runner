@@ -1342,6 +1342,23 @@ Describe 'aap-runner host supervisor' {
             Test-AapV5Contract | Should -Be 'ok'
         }
 
+        It 'reports a retired legacy slot as quarantined' -Tag 'slot-retired' {
+            $script:managerJson = '{"schema":4,"state":"idle","job":"","runner_count":2,"job_cpus":16,"job_memory":"32g","slots":[{"slot":1,"state":"retired"},{"slot":2,"state":"idle"}]}'
+            $script:responder = {
+                param($line)
+                if ($line -like '*cat /run/aap-runner/status.json') { return (Get-AapFakeResult 0 $script:managerJson) }
+                return (& $script:healthy $line)
+            }
+            Write-AapStateFile '{"desired":"on"}'
+            Write-AapSettingsFile '{"runner_count":2,"job_cpus":16,"job_memory_gib":32,"paused":false}'
+            Invoke-AapCycle
+            (Get-AapStatusFile).slots[0].state | Should -BeExactly 'retired'
+            $v = Get-AapV5File
+            $v.slots[0].lifecycle | Should -BeExactly 'quarantined'
+            $v.slots[1].lifecycle | Should -BeExactly 'ready'
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
         It 'refuses settings schema 3 and names the newer schema in the detail' -Tag 'settings-newer' {
             $AapRt.Mode = 'on'
             $AapRt.ManagerOk = $true

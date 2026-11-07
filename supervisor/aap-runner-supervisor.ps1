@@ -119,7 +119,7 @@ $AapSettingRanges = [ordered]@{ runner_count = 5; job_cpus = 28; job_memory_gib 
 $AapRepoPattern = '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\z'
 $AapRunUrlPattern = '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+\z'
 $AapJobUrlPattern = '^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[0-9]+/job/[0-9]+\z'
-$AapSlotStates = @('idle', 'running', 'draining', 'starting', 'error')
+$AapSlotStates = @('idle', 'running', 'draining', 'starting', 'error', 'retired')
 $AapV3Keys = @('schema', 'linux_backend', 'runner_count', 'windows_runner_count', 'job_cpus', 'job_memory_gib', 'paused', 'io_percent', 'sharing',
     'host_reserve_percent', 'share_mode', 'linux_share_percent', 'windows_share_percent', 'lease_wall_clock_hours')
 # Schema 4 (tiered Linux pool): schema 3's keys with runner_count replaced by the two tier counts.
@@ -665,6 +665,8 @@ function ConvertTo-AapLifecycle([string]$State) {
         'idle' { return 'ready' }
         'running' { return 'busy' }
         'draining' { return 'draining' }
+        # Retired after 5 fast deaths (distro/README.md): given up, not starting.
+        'retired' { return 'quarantined' }
     }
     return 'creating'
 }
