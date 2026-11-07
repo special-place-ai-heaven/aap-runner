@@ -1,5 +1,6 @@
-# P00.1: the review follow-ups of the cleanup gate. One Describe per finding; every
-# test here failed on the unhardened gate (5a1ce4e / origin/main 1759b63). Fixture
+# P00.1: the review follow-ups of the cleanup gate. One Describe per finding; each
+# finding's test failed on the unhardened gate (origin/main 1759b63), except the pid-4
+# inspection case (already fail-closed there) and the two overlap controls. Fixture
 # repositories under $TestDrive only. Pester 5, Windows PowerShell 5.1 and PowerShell 7.
 
 BeforeAll {
