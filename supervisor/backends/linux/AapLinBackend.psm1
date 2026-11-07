@@ -1153,8 +1153,10 @@ function Invoke-AapLinCapPowerOff($B, $r, $j) {
     if ([string]$r.state -ceq 'reconciled' -or ([string]$r.state -ceq 'quarantined' -and [string](Get-AapLinField $r 'quarantine_kind') -ceq 'unknown_vm')) { return $null }
     $started = ConvertTo-AapLinUtc $r.acquired_at
     $hours = Get-AapLinCapHours $B
+    # The age from true time itself (negative while the clock is behind the start: unknown, never floored to a value);
+    # the evidence clock's floor at the start orders timestamps only.
+    $age = [long][Math]::Floor(((Get-AapLinTrueNow $B) - $started).TotalSeconds)
     $now = Get-AapLinEvidenceNow $B $rid $started
-    $age = [long][Math]::Floor(($now - $started).TotalSeconds)
     $cap = $null
     if ($B.Capped.ContainsKey($rid)) { $cap = $B.Capped[$rid] }
     if ($null -eq $cap -and $age -ge [long]$hours * 3600) { $cap = @{ Trigger = 'deadline'; Elapsed = $age; Hours = $hours; PowerOff = $null } }   # check:cap-deadline

@@ -250,6 +250,23 @@ Describe 'the cap survives a supervisor restart and a clock stepped back' {
             (Get-LinRes $w $rid).state | Should -Be 'reconciled'
             Invoke-LinValidator $w 'backend-lifecycle' @(Get-LinJournalLines $w $rid) | Should -BeNullOrEmpty
         }
+        # The clock behind the reservation's start after a lost clock record: the age is unknown (null), and the evidence
+        # timestamps are floored at the start for ordering only.
+        $w = New-LinWorld
+        $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        $t0 = Start-LinCapJob $w $B $rid -Ago 7200
+        Set-LinAt $w $t0 -3600
+        $B2 = New-LinBackend $w -CapArgs @{ ClockSafety = 'clock_unavailable' }
+        $s = Step-Lin $B2 $w $rid
+        $s.LifetimeCap.trigger | Should -Be 'clock_unavailable'
+        $s.LifetimeCap.elapsed_s | Should -BeNullOrEmpty
+        $s.LifetimeCap.power_off_utc | Should -Be (Format-LinTime $t0)
+        @(Get-LinVms $w).Count | Should -Be 0
+        $rec = @(Get-LinCapRecords $w $rid)[0]
+        $rec.lifetime_cap.elapsed_s | Should -BeNullOrEmpty
+        [string]$rec.at | Should -Be (Format-LinTime $t0)
+        Invoke-LinValidator $w 'backend-lifecycle' @(Get-LinJournalLines $w $rid) | Should -BeNullOrEmpty
         # A reservation with no VM yet is not capped by a clock-safety decision: it gets its first VM normally.
         $w = New-LinWorld
         $B = New-LinBackend $w -CapArgs @{ ClockSafety = 'host_reboot' }
