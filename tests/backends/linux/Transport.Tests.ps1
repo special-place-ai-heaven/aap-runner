@@ -612,3 +612,165 @@ Start-Sleep -Seconds 300
         $t | Should -Match ([regex]::Escape("`$script:JobVar = '$(Get-LinModuleVar 'RelayJobVar')'"))
     }
 }
+
+Describe 'the call child''s stdin under a Windows PowerShell 5.1 supervisor, on every console (P13.5c)' {
+    BeforeAll {
+        # Windows PowerShell 5.1 writes the console input encoding's preamble into a redirected stdin pipe at Process.Start.
+        # The in-process cases above reach that only when the suite itself runs under 5.1 on a console that can be set to
+        # UTF-8; these run Start-AapLinProcess in a 5.1 process of its own with a console of its own, whatever host runs the
+        # suite, so the check:stdin-bom mutation fails them from PowerShell 7 too.
+        $script:Drv = Join-Path $TestDrive 'stdin-drivers'
+        # A stand-in for ssh.exe: reports the first stdin byte it gets and how many arrive before EOF.
+        $script:FirstBytes = Write-LinDriver $script:Drv 'first-bytes.ps1' @'
+$s = [Console]::OpenStandardInput()
+$first = -1; $n = 0
+while (($c = $s.ReadByte()) -ge 0) { if ($first -lt 0) { $first = $c }; $n++ }
+[Console]::Out.Write("first=$first count=$n")
+'@
+        $script:StartDriver = Write-LinDriver $script:Drv 'start-child.ps1' @'
+param([string]$Module, [string]$Kid, [string]$Missing)
+$ErrorActionPreference = 'Stop'
+Import-Module $Module
+$m = Get-Module AapLinBackend
+$b = [Console]::InputEncoding
+function New-Psi([string]$Exe, [string]$Arguments) {
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe; $psi.Arguments = $Arguments
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $psi
+}
+$ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$p = & $m { param($x) Start-AapLinProcess $x } (New-Psi $ps ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $Kid + '"'))
+$head = [Text.Encoding]::ASCII.GetBytes("hello`n")
+$p.StandardInput.BaseStream.Write($head, 0, $head.Length)
+$p.StandardInput.BaseStream.Flush()
+$p.StandardInput.Close()
+$kid = $p.StandardOutput.ReadToEnd()
+[void]$p.WaitForExit(30000)
+$p.Dispose()
+$threw = $false
+try { $null = & $m { param($x) Start-AapLinProcess $x } (New-Psi $Missing '') } catch { $threw = $true }
+$a = [Console]::InputEncoding
+'before=cp{0}/pre{1} kid={2} failed-start-threw={3} after=cp{4}/pre{5}' -f $b.CodePage, $b.GetPreamble().Length, $kid, $threw, $a.CodePage, $a.GetPreamble().Length
+'@
+        # This thread holds the mutex the starters of a process share while a second runspace starts a child.
+        $script:WaitDriver = Write-LinDriver $script:Drv 'start-wait.ps1' @'
+param([string]$Module)
+$ErrorActionPreference = 'Stop'
+$state = [hashtable]::Synchronized(@{ Ready = $false; Started = 0L })
+$lock = New-Object Threading.Mutex($false, ('Local\AapConsoleInputEncoding-' + $PID))
+[void]$lock.WaitOne()
+$ps = [powershell]::Create()
+[void]$ps.AddScript({ param($Module, $State)
+        Import-Module $Module
+        $psi = New-Object Diagnostics.ProcessStartInfo
+        $psi.FileName = Join-Path $env:SystemRoot 'System32\find.exe'; $psi.Arguments = '/c /v ""'
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $State.Ready = $true   # imported: the next thing it does is start a child
+        $p = & (Get-Module AapLinBackend) { param($x) Start-AapLinProcess $x } $psi
+        $State.Started = [DateTime]::UtcNow.Ticks   # the child is started: the critical section has been entered
+        $p.StandardInput.Close(); $null = $p.StandardOutput.ReadToEnd(); [void]$p.WaitForExit(10000); $p.Dispose()
+    }).AddArgument($Module).AddArgument($state)
+$h = $ps.BeginInvoke()
+$until = [DateTime]::UtcNow.AddSeconds(60)
+while (-not $state.Ready -and -not $h.IsCompleted -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 50 }
+Start-Sleep -Milliseconds 1500
+$blocked = -not $h.IsCompleted
+$released = [DateTime]::UtcNow.Ticks
+$lock.ReleaseMutex()
+$finished = $h.AsyncWaitHandle.WaitOne(30000)
+$err = ''
+if ($finished) { try { $null = $ps.EndInvoke($h) } catch { $err = $_.Exception.Message } }
+"blocked=$blocked ordered=$($state.Started -ge $released) finished=$finished err=$err"
+'@
+        # Setting [Console]::InputEncoding sets the console's own input code page, which every process on that console sees.
+        # On a console that is not UTF-8 there is no preamble to avoid, so a start must not touch it: a poller reads the code
+        # page as fast as it can while Start-AapLinProcess starts a (real, fast) child 20 times.
+        $script:CodePageDriver = Write-LinDriver $script:Drv 'code-page.ps1' @'
+param([string]$Module)
+$ErrorActionPreference = 'Stop'
+Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint GetConsoleCP();' -Name Cp -Namespace AapT
+[Console]::InputEncoding = [Text.Encoding]::GetEncoding(437)   # a console that is not UTF-8, whatever the machine's default
+Import-Module $Module
+$state = [hashtable]::Synchronized(@{ Stop = $false; Samples = 0; Other = 0 })
+$poll = [powershell]::Create()
+[void]$poll.AddScript({ param($s) while (-not $s.Stop) { $s.Samples++; if ([AapT.Cp]::GetConsoleCP() -ne 437) { $s.Other++ } } }).AddArgument($state)
+$h = $poll.BeginInvoke()
+Start-Sleep -Milliseconds 500
+foreach ($i in 1..20) {
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = Join-Path $env:SystemRoot 'System32\find.exe'; $psi.Arguments = '/c /v ""'
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $p = & (Get-Module AapLinBackend) { param($x) Start-AapLinProcess $x } $psi
+    $p.StandardInput.Close(); $null = $p.StandardOutput.ReadToEnd(); [void]$p.WaitForExit(10000); $p.Dispose()
+}
+$state.Stop = $true
+[void]$poll.EndInvoke($h)
+$poll.Dispose()
+'polled={0} other-code-page={1} after=cp{2}' -f $(if ($state.Samples -ge 1000) { 'enough' } else { 'too-few' }), $state.Other, [Console]::InputEncoding.CodePage
+'@
+        # The console's own code page is 437 and its encoding little-endian Unicode (1200, preamble FF FE). The Framework
+        # setter leaves the console code page alone for Unicode, so a start must swap in the same code page without the
+        # preamble and put Unicode back: never set the console to UTF-8, which nothing would then undo.
+        $script:UnicodeDriver = Write-LinDriver $script:Drv 'unicode.ps1' @'
+param([string]$Module, [string]$Missing)
+$ErrorActionPreference = 'Stop'
+Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint GetConsoleCP();' -Name Cp -Namespace AapT
+[Console]::InputEncoding = [Text.Encoding]::GetEncoding(437)
+[Console]::InputEncoding = [Text.Encoding]::Unicode
+Import-Module $Module
+$m = Get-Module AapLinBackend
+function New-Psi([string]$Exe, [string]$Arguments) {
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $Exe; $psi.Arguments = $Arguments
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $psi
+}
+$b = [Console]::InputEncoding
+$os0 = [AapT.Cp]::GetConsoleCP()
+$p = & $m { param($x) Start-AapLinProcess $x } (New-Psi (Join-Path $env:SystemRoot 'System32\find.exe') '/c /v ""')
+$p.StandardInput.Close()
+$child = $p.StandardOutput.ReadToEnd().Trim()
+[void]$p.WaitForExit(10000); $p.Dispose()
+$threw = $false
+try { $null = & $m { param($x) Start-AapLinProcess $x } (New-Psi $Missing '') } catch { $threw = $true }
+$a = [Console]::InputEncoding
+'before=cp{0}/pre{1}/os{2} child={3} threw={4} after=cp{5}/pre{6}/os{7}' -f $b.CodePage, $b.GetPreamble().Length, $os0, $child, $threw, $a.CodePage, $a.GetPreamble().Length, [AapT.Cp]::GetConsoleCP()
+'@
+    }
+
+    It 'a Windows PowerShell 5.1 supervisor on the <Con> console starts the call child with zero stdin bytes before the envelope and puts its encoding back, even after a failed start' -Tag 'stdin-bom' -ForEach @(
+        @{ Con = 'default' }, @{ Con = 'utf8' }
+    ) {
+        $r = Invoke-LinHosted 'powershell' @($script:StartDriver, $script:BackendModule, $script:FirstBytes, (Join-Path $TestDrive 'no-such-dir\ssh.exe')) -Utf8Console:($Con -eq 'utf8')
+        $r.TimedOut | Should -BeFalse
+        $m = [regex]::Match($r.Out.Trim(), '^before=(cp\d+/pre\d) kid=(.*) failed-start-threw=(\w+) after=(cp\d+/pre\d)$')
+        $m.Success | Should -BeTrue -Because ($r.Out + $r.Err)
+        $m.Groups[2].Value | Should -BeExactly 'first=104 count=6' -Because 'the child gets hello and a newline and nothing before them'
+        $m.Groups[3].Value | Should -BeExactly 'True'
+        $m.Groups[4].Value | Should -BeExactly $m.Groups[1].Value -Because 'the caller''s encoding is as it was'
+        if ($Con -eq 'utf8') { $m.Groups[1].Value | Should -BeExactly 'cp65001/pre3' -Because 'the hosted console is a UTF-8 one' }
+    }
+
+    It 'a start on a console whose input encoding is little-endian Unicode (code page 437) gives the child zero stdin bytes, puts Unicode back, even after a failed start, and leaves the console code page at 437' -Tag 'stdin-bom' {
+        $r = Invoke-LinHosted 'powershell' @($script:UnicodeDriver, $script:BackendModule, (Join-Path $TestDrive 'no-such-dir\ssh.exe'))
+        $r.TimedOut | Should -BeFalse
+        $r.Out.Trim() | Should -Be 'before=cp1200/pre2/os437 child=0 threw=True after=cp1200/pre2/os437' -Because $r.Err
+    }
+
+    It 'a start on a console that is not UTF-8 never changes the console''s code page, not even for a moment' {
+        $r = Invoke-LinHosted 'powershell' @($script:CodePageDriver, $script:BackendModule)
+        $r.TimedOut | Should -BeFalse
+        $r.Out.Trim() | Should -Be 'polled=enough other-code-page=0 after=cp437' -Because $r.Err
+    }
+
+    It 'a start waits while another thread of the process holds the mutex every starter shares' {
+        $r = Invoke-LinHosted 'powershell' @($script:WaitDriver, $script:BackendModule) -Utf8Console
+        $r.TimedOut | Should -BeFalse
+        $r.Out.Trim() | Should -Be 'blocked=True ordered=True finished=True err=' -Because $r.Err
+    }
+}
