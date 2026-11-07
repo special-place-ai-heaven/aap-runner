@@ -17,6 +17,7 @@ for ($i = 0; $i -lt @($Rest).Count; $i += 2) {
     if ($Rest[$i] -notmatch '^-(\w+)$' -or $i + 1 -ge $Rest.Count) { throw "expected '-Name value' pairs, got '$($Rest[$i])'" }
     $named[$Matches[1]] = $Rest[$i + 1]
 }
+if ($named.ContainsKey('DefaultSentinels')) { throw '-DefaultSentinels is not accepted here: the default protected paths always apply (add more with -Sentinels)' }
 if ($named.ContainsKey('Sentinels')) { $named['Sentinels'] = @($named['Sentinels'] -split ';') }
 
 $fn = @{

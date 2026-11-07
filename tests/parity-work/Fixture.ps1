@@ -122,6 +122,13 @@ function Set-FxManifest($Fx, [string]$Id, $M) {
     $it = Get-FxItem $Fx $Id
     [IO.File]::WriteAllText((Join-Path $Fx.Registry ("manifests\{0}-attempt-{1}.json" -f $Id, $it.attempt)), ($M | ConvertTo-Json -Depth 30))
 }
+# Test-only: replaces the configured sentinels (init never overwrites a configuration).
+function Set-FxSentinels($Fx, [string[]]$Sentinels) {
+    $p = Join-Path $Fx.Registry 'config.json'
+    $c = [IO.File]::ReadAllText($p) | ConvertFrom-Json
+    $c.sentinels = @(@($Fx.Base, $Fx.Registry, $Fx.Evidence) + @($Sentinels))
+    [IO.File]::WriteAllText($p, ($c | ConvertTo-Json -Depth 10))
+}
 # Test-only shortcut for unrelated items' states (e.g. children already complete).
 function Set-FxItemState($Fx, [string]$Id, [string]$State) {
     $p = Join-Path $Fx.Registry 'state.json'
