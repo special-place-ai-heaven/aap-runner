@@ -101,6 +101,7 @@ Describe 'one job, end to end' {
             Set-LinKnob $w ($k + @{ ClockOffset = -16 * 60 })   # booted 16 minutes ago, by the backend's clock
             $r = New-LinReservation $w
             $rid = $r.reservation_id
+            [void](Set-LinStart $w $rid 1200)   # started 20 minutes ago: the clock 16 minutes back is still after the start
             $acts = @(Invoke-LinSteps $B $w $rid -Max 4)
             ($acts | ForEach-Object { $_.Action }) -join ',' | Should -Be 'created,booted,probing,probing'
             $acts[-1].Code | Should -Be $(if ($k.ContainsKey('KvpDelay')) { 'host_key_pending' } else { 'ok' })
@@ -231,26 +232,36 @@ Describe 'one job, end to end' {
         (Get-LinRes $w $rid).teardown_proof.runner_deregistered | Should -BeTrue
     }
 
-    It 'a drained VM kept past 6 h is flagged, never destroyed for time; a limit still removes it' -Tag 'drain-overdue', 'deleting-limits' {
-        $w = New-LinWorld
-        $B = New-LinBackend $w
-        $r = New-LinReservation $w
-        $rid = $r.reservation_id
-        [void](Invoke-LinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
-        [void](Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid))
-        [void](Set-AapSlotState -Root $w.Cap -ReservationId $rid -LeaseGeneration $r.lease_generation -State draining -RelaxedTrustForTests)
-        Set-LinKnob $w @{ ReleaseOutcome = 'retry' }
-        (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid)).Code | Should -Be 'release_pending'
-        $B.Now = { [DateTime]::UtcNow.AddHours(6).AddMinutes(1) }
-        (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid)).Code | Should -Be 'drain_overdue'
-        $B.Now = { [DateTime]::UtcNow.AddHours(6).AddMinutes(3) }
-        (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid)).Code | Should -Be 'drain_overdue'
-        @(Get-LinVms $w).Count | Should -Be 1
-        @(Get-LinCalls $w 'RemoveVm *').Count | Should -Be 0
-        @(Get-LinJournal $w $rid | Where-Object { $_.result -and $_.result.detail -like 'drained VM kept 6 h*' }).Count | Should -Be 1
-        Set-LinKnob $w @{ CloneBytes = 56 * $script:GiB }
-        [void](Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid))
-        @(Get-LinVms $w).Count | Should -Be 0
+    It 'a drained VM kept for its pending release is ended by time only through the lifetime cap; a limit still removes it' -Tag 'deleting-limits' {
+        foreach ($end in 'limit', 'cap') {
+            $w = New-LinWorld
+            $B = New-LinBackend $w
+            $r = New-LinReservation $w
+            $rid = $r.reservation_id
+            [void](Invoke-LinSteps $B $w $rid -Max 5 -Until { param($x) $x.state -eq 'ready' })
+            [void](Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid))
+            [void](Set-AapSlotState -Root $w.Cap -ReservationId $rid -LeaseGeneration $r.lease_generation -State draining -RelaxedTrustForTests)
+            Set-LinKnob $w @{ ReleaseOutcome = 'retry' }
+            (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid)).Code | Should -Be 'release_pending'
+            $B.Now = { [DateTime]::UtcNow.AddMinutes(5) }
+            (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid)).Code | Should -Be 'release_pending'
+            @(Get-LinVms $w).Count | Should -Be 1
+            @(Get-LinCalls $w 'RemoveVm *').Count | Should -Be 0
+            if ($end -eq 'limit') {
+                Set-LinKnob $w @{ CloneBytes = 56 * $script:GiB }
+                [void](Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid))
+            } else {
+                # Six hours after the reservation started the cap powers the kept VM off and removes it; the slot waits
+                # for the release in deleting.
+                $B.Now = { [DateTime]::UtcNow.AddHours(6).AddMinutes(1) }
+                $s = Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid)
+                $s.Code | Should -Be 'release_pending'
+                $s.LifetimeCap.reason | Should -Be 'vm_lifetime_cap'
+                (Get-LinRes $w $rid).state | Should -Be 'deleting'
+                @(Get-LinJournal $w $rid | Where-Object { $_.PSObject.Properties['lifetime_cap'] }).Count | Should -Be 1
+            }
+            @(Get-LinVms $w).Count | Should -Be 0
+        }
     }
 
     It 'binds the heartbeat to its own channel: a reply that names another reservation is hostile' -Tag 'reply-echo' {
