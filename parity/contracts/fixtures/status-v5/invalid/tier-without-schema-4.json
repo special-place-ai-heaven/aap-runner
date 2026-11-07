@@ -1,5 +1,5 @@
 {
-  "expect": "a tier only while settings schema 4 is applied",
+  "expect": "a tier only while settings schema 4 or 5 is applied",
   "instance": {
     "schema": 5,
     "state": "running",

@@ -1,0 +1,12 @@
+{
+  "expect": "$.boot_id: does not match pattern",
+  "instance": {
+    "schema": 1,
+    "role": "supervisor",
+    "boot_id": "3F2A9C1E-7B4D-4E58-9A61-0C5D2B8E7F10",
+    "mono_ms": 86400000,
+    "written_utc": "2026-10-22T09:00:05Z",
+    "high_water_utc": "2026-10-22T09:00:05Z",
+    "latched": []
+  }
+}
