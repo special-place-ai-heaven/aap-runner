@@ -1,1 +1,22 @@
 1 ICON "aap-runner-tray.ico"
+
+// `--helper update` refuses a candidate whose ProductName or OriginalFilename differ
+// (crates/tray/src/update.rs, PRODUCT and TRAY_NAME).
+1 VERSIONINFO
+FILEOS 0x40004
+FILETYPE 0x1
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "AAP Runner tray"
+      VALUE "ProductName", "aap-runner-tray"
+      VALUE "OriginalFilename", "aap-runner-tray.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

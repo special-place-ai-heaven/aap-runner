@@ -16,6 +16,7 @@
 
 use crate::identity;
 use crate::state;
+use crate::update;
 use crate::win;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -377,6 +378,12 @@ pub fn resume_install_job(base: &Path) -> Option<JobUi> {
 }
 
 pub fn resume_install_id(base: &Path, id: &str) -> Option<JobUi> {
+    protected_job(base, id, Verb::Install)
+}
+
+/// A job this process did not issue, trusted only when its folder, the folders above it, and its
+/// `status.json` are admin-only (so only the helper wrote them).
+fn protected_job(base: &Path, id: &str, verb: Verb) -> Option<JobUi> {
     if !valid_id(id) {
         return None;
     }
@@ -388,7 +395,7 @@ pub fn resume_install_id(base: &Path, id: &str) -> Option<JobUi> {
         return None;
     }
     let status = read_status_file(&dir.join("status.json")).ok()??;
-    if status.schema != 1 || status.id != id || status.verb != "install" {
+    if status.schema != 1 || status.id != id || status.verb != verb.as_str() {
         return None;
     }
     Some(JobUi {
@@ -441,6 +448,7 @@ pub enum Verb {
     Repair,
     Identity,
     Install,
+    Update,
 }
 
 impl Verb {
@@ -450,6 +458,7 @@ impl Verb {
             Verb::Repair => "repair",
             Verb::Identity => "identity",
             Verb::Install => "install",
+            Verb::Update => "update",
         }
     }
 
@@ -459,6 +468,7 @@ impl Verb {
             Verb::Repair => "Repair",
             Verb::Identity => "Identity",
             Verb::Install => "Install",
+            Verb::Update => "Update",
         }
     }
 
@@ -468,6 +478,7 @@ impl Verb {
             "repair" => Some(Verb::Repair),
             "identity" => Some(Verb::Identity),
             "install" => Some(Verb::Install),
+            "update" => Some(Verb::Update),
             _ => None,
         }
     }
@@ -507,6 +518,9 @@ struct JobStatus {
     state: String,
     step: String,
     exit_code: Option<i32>,
+    /// `update` only, on `passed`: the sha256 of the exe now installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
 }
 
 /// The identity fields are present only for the `identity` verb. The path is a string here; the
@@ -537,6 +551,12 @@ struct RawRequest {
     job_memory_gib: Option<u32>,
     #[serde(default)]
     work_disk_gib: Option<u32>,
+    /// `update` only: the candidate exe and the sha256 the tray computed for it. Both are
+    /// user-controlled; the helper checks its own copy against the hash.
+    #[serde(default)]
+    exe_path: Option<String>,
+    #[serde(default)]
+    sha256: Option<String>,
 }
 
 impl RawRequest {
@@ -555,6 +575,17 @@ impl RawRequest {
             || self.job_cpus.is_some()
             || self.job_memory_gib.is_some()
             || self.work_disk_gib.is_some()
+    }
+
+    fn has_update(&self) -> bool {
+        self.exe_path.is_some() || self.sha256.is_some()
+    }
+
+    fn update_ok(&self) -> bool {
+        self.exe_path
+            .as_deref()
+            .is_some_and(|p| update::check_path(p).is_ok())
+            && self.sha256.as_deref().is_some_and(update::sha_ok)
     }
 
     fn has_identity(&self) -> bool {
@@ -830,6 +861,18 @@ fn advance(
     step: &str,
     exit_code: Option<i32>,
 ) -> Result<(), String> {
+    advance_with(dir, id, verb, to, step, exit_code, None)
+}
+
+fn advance_with(
+    dir: &Path,
+    id: &str,
+    verb: &str,
+    to: &str,
+    step: &str,
+    exit_code: Option<i32>,
+    sha256: Option<&str>,
+) -> Result<(), String> {
     if !valid_id(id) {
         return Err("bad id".into());
     }
@@ -853,6 +896,7 @@ fn advance(
         state: to.to_string(),
         step: sanitize_step(step),
         exit_code,
+        sha256: sha256.map(str::to_string),
     };
     let mut bytes = serde_json::to_vec(&status).map_err(|e| e.to_string())?;
     bytes.push(b'\n');
@@ -893,6 +937,10 @@ fn parse_request(bytes: &[u8], argv_verb: &str, argv_id: &str) -> Result<Verb, S
         {
             return Err("request install".into());
         }
+        v if v != Verb::Update && raw.has_update() => return Err("request rejected".into()),
+        Verb::Update if raw.has_identity() || raw.has_sizing() || !raw.update_ok() => {
+            return Err("request update".into());
+        }
         v if v != Verb::Install && raw.has_sizing() => return Err("request rejected".into()),
         Verb::Identity if !raw.identity_ok() => return Err("request identity".into()),
         Verb::Verify | Verb::Repair if raw.has_identity() => return Err("request rejected".into()),
@@ -904,7 +952,8 @@ fn parse_request(bytes: &[u8], argv_verb: &str, argv_id: &str) -> Result<Verb, S
 enum ReqRead {
     Missing,
     Bad(String),
-    Ready(Verb),
+    /// The verb, plus `(exe_path, sha256)` for `update`, taken from the same bytes.
+    Ready(Verb, Option<(String, String)>),
 }
 
 fn read_request(path: &Path, argv_verb: &str, argv_id: &str) -> ReqRead {
@@ -929,9 +978,15 @@ fn read_request(path: &Path, argv_verb: &str, argv_id: &str) -> ReqRead {
         return ReqRead::Bad("request unreadable".into());
     }
     match parse_request(&buf, argv_verb, argv_id) {
-        Ok(verb) => ReqRead::Ready(verb),
+        Ok(verb) => ReqRead::Ready(verb, update_fields(&buf)),
         Err(e) => ReqRead::Bad(e),
     }
+}
+
+/// Only called on bytes `parse_request` accepted.
+fn update_fields(bytes: &[u8]) -> Option<(String, String)> {
+    let raw: RawRequest = serde_json::from_slice(bytes).ok()?;
+    Some((raw.exe_path?, raw.sha256?))
 }
 
 #[cfg(test)]
@@ -941,7 +996,7 @@ fn write_request(
     verb: Verb,
     identity: Option<&identity::Valid>,
 ) -> io::Result<()> {
-    write_request_with_size(base, id, verb, identity, None)
+    write_request_with_size(base, id, verb, identity, None, None)
 }
 
 fn write_request_with_size(
@@ -950,6 +1005,7 @@ fn write_request_with_size(
     verb: Verb,
     identity: Option<&identity::Valid>,
     sizing: Option<&crate::wizard::Sizing>,
+    update: Option<&(String, String)>,
 ) -> io::Result<()> {
     let dir = base.join("inbox").join("jobs");
     if reparse_path(&dir) || reparse_path(&base.join("inbox")) || reparse_path(base) {
@@ -962,9 +1018,15 @@ fn write_request_with_size(
     if reparse_path(&path) {
         return Err(io::Error::other("reparse point"));
     }
-    let mut body = match identity {
-        Some(v) => identity::request_json(id, v),
-        None => format!(r#"{{"schema":1,"id":"{id}","verb":"{}"}}"#, verb.as_str()).into_bytes(),
+    let mut body = match (identity, update) {
+        (Some(v), _) => identity::request_json(id, v),
+        (None, Some((exe_path, sha256))) => serde_json::to_vec(&serde_json::json!({
+            "schema": 1, "id": id, "verb": "update", "exe_path": exe_path, "sha256": sha256,
+        }))
+        .map_err(io::Error::other)?,
+        (None, None) => {
+            format!(r#"{{"schema":1,"id":"{id}","verb":"{}"}}"#, verb.as_str()).into_bytes()
+        }
     };
     if let Some(s) = sizing {
         let mut value: serde_json::Value =
@@ -1085,9 +1147,13 @@ pub fn load_job_from(pointer: &Path, base: &Path) -> Option<JobUi> {
     if raw.schema != 1 || !valid_id(&raw.id) || Verb::parse(&raw.verb).is_none() {
         return None;
     }
-    // Reject stale results from a previous process: this process never issued that id.
+    // Reject stale results from a previous process: this process never issued that id. The
+    // one exception is an update the tray asked for just before it quit: the window shows it
+    // from the admin-only job folder.
     if !is_issued_id(&raw.id) {
-        return None;
+        return (raw.verb == "update" && recent(pointer))
+            .then(|| protected_job(base, &raw.id, Verb::Update))
+            .flatten();
     }
     if !raw.error.is_empty() {
         return Some(JobUi {
@@ -1122,6 +1188,46 @@ pub fn load_job_from(pointer: &Path, base: &Path) -> Option<JobUi> {
 
 pub fn load_job(base: &Path) -> Option<JobUi> {
     load_job_from(&pointer_path(), base)
+}
+
+/// How long after the tray wrote an update pointer the window keeps watching it.
+const UPDATE_WATCH: Duration = Duration::from_secs(15 * 60);
+/// A helper that never wrote a result (it died early): restart the tray anyway after this.
+const UPDATE_GIVE_UP: Duration = Duration::from_secs(4 * 60);
+
+fn pointer_age(pointer: &Path) -> Option<Duration> {
+    fs::metadata(pointer).ok()?.modified().ok()?.elapsed().ok()
+}
+
+fn recent(pointer: &Path) -> bool {
+    pointer_age(pointer).is_some_and(|age| age < UPDATE_WATCH)
+}
+
+/// The update the tray handed off before it quit, as the window sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateWatch {
+    pub finished: bool,
+    pub age: Duration,
+}
+
+/// `None` unless the pointer names an update written in the last [`UPDATE_WATCH`]. While it
+/// is `Some` the window does not close for a missing tray.
+pub fn update_watch(base: &Path) -> Option<UpdateWatch> {
+    let pointer = pointer_path();
+    let age = pointer_age(&pointer).filter(|age| *age < UPDATE_WATCH)?;
+    let raw: Pointer = serde_json::from_str(&state::read_bounded(&pointer)?).ok()?;
+    if raw.schema != 1 || raw.verb != "update" || !raw.error.is_empty() || !valid_id(&raw.id) {
+        return None;
+    }
+    let finished = protected_job(base, &raw.id, Verb::Update)
+        .is_some_and(|j| matches!(j.state.as_str(), "passed" | "failed" | "rejected"));
+    Some(UpdateWatch { finished, age })
+}
+
+/// Restart the installed tray once the update finished either way (a refused update must bring
+/// the old build back), or after [`UPDATE_GIVE_UP`] without a result. Never while a tray runs.
+pub fn relaunch_due(watch: UpdateWatch, tray_free: bool) -> bool {
+    tray_free && (watch.finished || watch.age >= UPDATE_GIVE_UP)
 }
 
 pub fn issued_install_id() -> Option<String> {
@@ -1220,7 +1326,24 @@ pub fn launch_install(
         resolved,
         Some(fields.clone()),
         Some(sizing.clone()),
+        None,
     )
+}
+
+/// Tray menu "Update tray…": hash the picked build and ask the helper to install it. Only the
+/// installed tray asks (the helper re-checks). The request must be written before the prompt,
+/// because the caller quits right after this returns `Ok`.
+pub fn launch_update(base: &Path, candidate: &Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let resolved = win::resolve_exe(&exe).map_err(|e| e.to_string())?;
+    update::check_self(&resolved.path, Path::new(update::INSTALL_DIR))?;
+    let path = candidate
+        .to_str()
+        .ok_or("candidate path is not valid text")?
+        .to_string();
+    update::check_path(&path)?;
+    let sha = update::sha256_file(candidate)?;
+    launch_payload(base, Verb::Update, resolved, None, None, Some((path, sha)))
 }
 
 fn launch_with(base: &Path, verb: Verb, identity: Option<identity::Valid>) -> Result<(), String> {
@@ -1248,7 +1371,7 @@ fn launch_resolved(
     resolved: win::ResolvedExe,
     identity: Option<identity::Valid>,
 ) -> Result<(), String> {
-    launch_payload(base, verb, resolved, identity, None)
+    launch_payload(base, verb, resolved, identity, None, None)
 }
 
 fn launch_payload(
@@ -1257,6 +1380,7 @@ fn launch_payload(
     resolved: win::ResolvedExe,
     identity: Option<identity::Valid>,
     sizing: Option<crate::wizard::Sizing>,
+    update: Option<(String, String)>,
 ) -> Result<(), String> {
     let path = resolved.path;
     if !win::is_fixed_local_path(&path) {
@@ -1281,8 +1405,21 @@ fn launch_payload(
     }
     let id = win::random_id().map_err(|e| e.to_string())?;
     write_pointer(&id, verb, "")?;
-    let wrote =
-        write_request_with_size(base, &id, verb, identity.as_ref(), sizing.as_ref()).is_ok();
+    let wrote = write_request_with_size(
+        base,
+        &id,
+        verb,
+        identity.as_ref(),
+        sizing.as_ref(),
+        update.as_ref(),
+    )
+    .is_ok();
+    if verb == Verb::Update && !wrote {
+        return refuse_elevation(
+            verb,
+            "could not write the update request; run Repair install",
+        );
+    }
     if let Err(e) = start_runas(&path, &format!("--helper {} {id}", verb.as_str())) {
         let _ = write_pointer(&id, verb, &e);
         return Err(e);
@@ -1292,8 +1429,15 @@ fn launch_payload(
         thread::spawn(move || {
             let deadline = Instant::now() + REQUEST_WAIT;
             while Instant::now() < deadline {
-                if write_request_with_size(&base, &id, verb, identity.as_ref(), sizing.as_ref())
-                    .is_ok()
+                if write_request_with_size(
+                    &base,
+                    &id,
+                    verb,
+                    identity.as_ref(),
+                    sizing.as_ref(),
+                    None,
+                )
+                .is_ok()
                 {
                     return;
                 }
@@ -1369,7 +1513,7 @@ fn ensure_request_dir(scripts_dir: &Path) -> Result<(), String> {
     })
 }
 
-fn exe_ok(path: &str) -> bool {
+pub(crate) fn exe_ok(path: &str) -> bool {
     if path.len() < 7 || path.contains("..") || path.contains('"') || !path.ends_with(".exe") {
         return false;
     }
@@ -1513,6 +1657,70 @@ fn fail_job(job: &Path, id: &str, verb: &str, to: &str, step: &str, code: i32) -
     code
 }
 
+/// The installed tray, checked like [`start_installed_tray`], and only when this helper runs
+/// from exactly that file.
+fn update_target() -> Result<PathBuf, String> {
+    let me = win::resolve_exe(&std::env::current_exe().map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let dir = Path::new(update::INSTALL_DIR);
+    let installed = update::check_self(&me.path, dir)?;
+    if !win::is_fixed_local_path(&me.path) || !elevation_allowed(&acl_view(me.acl)) {
+        return Err("installed tray is not protected".into());
+    }
+    check_exe_directories(dir, None)?;
+    Ok(installed)
+}
+
+/// Copy, then hash and inspect only the copy, then swap. Refusals leave the old build in place.
+fn run_update(job: &Path, id: &str, installed: &Path, fields: Option<(String, String)>) -> i32 {
+    let verb = Verb::Update.as_str();
+    let Some((source, expected)) = fields else {
+        return fail_job(job, id, verb, "rejected", "request update", 2);
+    };
+    let log = job.join("log.txt");
+    let note = |line: &str| {
+        let _ = append_log(&log, line);
+        let _ = advance(job, id, verb, "running", line, None);
+    };
+    let refuse = |to: &str, e: String, code: i32| {
+        let _ = append_log(&log, &format!("FAIL update {e}"));
+        fail_job(job, id, verb, to, &e, code)
+    };
+    let staging = Path::new(update::INSTALL_DIR).join("staging");
+    let staged = staging.join(format!("{id}.exe"));
+    note("STEP copy candidate to staging");
+    let verified = ensure_admin_dir(&staging)
+        .and_then(|()| update::copy_candidate(&source, &staged))
+        .and_then(|()| require_admin_only(&staged, "staged tray"))
+        .and_then(|()| {
+            note("STEP verify staged copy");
+            update::verify_staged(&staged, &expected)
+        });
+    let sha = match verified {
+        Ok(sha) => sha,
+        Err(e) => {
+            let _ = fs::remove_file(&staged);
+            return refuse("rejected", e, 2);
+        }
+    };
+    note("STEP replace installed tray");
+    if let Err(e) = update::swap_in(&staged, installed, update::RENAME_WAIT) {
+        let _ = fs::remove_file(&staged);
+        return refuse("failed", e, 1);
+    }
+    let _ = append_log(&log, &format!("PASS update installed sha256 {sha}"));
+    let _ = advance_with(
+        job,
+        id,
+        verb,
+        "passed",
+        &format!("installed sha256 {sha}"),
+        Some(0),
+        Some(&sha),
+    );
+    0
+}
+
 /// `--helper <verb> <id>`. Always uses [`DATA_DIR`]. Ignores `AAP_FAKE_BASE` and any path in the
 /// request. Returns the process exit code.
 pub fn run_elevated(verb_arg: &str, id: &str) -> i32 {
@@ -1532,6 +1740,26 @@ pub fn run_elevated(verb_arg: &str, id: &str) -> i32 {
     {
         return 2;
     }
+    let update_target = if verb == Verb::Update {
+        if advance(
+            &job,
+            id,
+            verb.as_str(),
+            "queued",
+            "checking installed tray",
+            None,
+        )
+        .is_err()
+        {
+            return 2;
+        }
+        match update_target() {
+            Ok(path) => Some(path),
+            Err(e) => return fail_job(&job, id, verb.as_str(), "rejected", &e, 2),
+        }
+    } else {
+        None
+    };
     let installed_exe = if verb == Verb::Install {
         if advance(
             &job,
@@ -1585,9 +1813,9 @@ pub fn run_elevated(verb_arg: &str, id: &str) -> i32 {
     }
     let path = request_path(&base, id);
     let deadline = Instant::now() + REQUEST_WAIT;
-    let got = loop {
+    let (got, fields) = loop {
         match read_request(&path, verb.as_str(), id) {
-            ReqRead::Ready(v) => break v,
+            ReqRead::Ready(v, fields) => break (v, fields),
             ReqRead::Missing => {
                 if Instant::now() >= deadline {
                     return fail_job(
@@ -1606,6 +1834,9 @@ pub fn run_elevated(verb_arg: &str, id: &str) -> i32 {
     };
     if advance(&job, id, got.as_str(), "running", "starting", None).is_err() {
         return 2;
+    }
+    if let (Verb::Update, Some(installed)) = (got, update_target) {
+        return run_update(&job, id, &installed, fields);
     }
     let tray = installed_exe.or_else(tray_exe_arg);
     match run_script(&job, got, tray.as_deref()) {
@@ -1682,6 +1913,150 @@ mod tests {
         );
     }
 
+    const SHA: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    fn update_request(id: &str, exe_path: &str, sha256: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "schema": 1, "id": id, "verb": "update", "exe_path": exe_path, "sha256": sha256,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_update_request_needs_a_plain_exe_path_and_a_sha256() {
+        let id = "0123456789abcdef";
+        let exe = r"C:\Users\me\Downloads\aap-runner-tray.exe";
+        let ok = update_request(id, exe, SHA);
+        assert_eq!(parse_request(&ok, "update", id).unwrap(), Verb::Update);
+        assert_eq!(update_fields(&ok), Some((exe.to_string(), SHA.to_string())));
+        assert!(
+            parse_request(&ok, "verify", id).is_err(),
+            "verb must match argv"
+        );
+        assert!(
+            parse_request(&ok, "update", "0000000000000000").is_err(),
+            "id must match argv"
+        );
+        let mut value: serde_json::Value = serde_json::from_slice(&ok).unwrap();
+        value["schema"] = 2.into();
+        assert!(parse_request(&serde_json::to_vec(&value).unwrap(), "update", id).is_err());
+        for (path, sha) in [
+            (r"\\server\share\aap-runner-tray.exe", SHA),
+            (r"\\?\C:\Users\me\aap-runner-tray.exe", SHA),
+            (r"\\.\C:\Users\me\aap-runner-tray.exe", SHA),
+            (r"C:\Users\me\aap-runner-tray.exe:ads", SHA),
+            (r"C:\Users\..\aap-runner-tray.exe", SHA),
+            (r"C:\Users\me\CON.exe", SHA),
+            (r"Users\me\aap-runner-tray.exe", SHA),
+            (exe, &SHA[..63]),
+            (exe, &SHA.to_uppercase()),
+            (exe, ""),
+        ] {
+            assert!(
+                parse_request(&update_request(id, path, sha), "update", id).is_err(),
+                "{path} {sha}"
+            );
+        }
+        for key in ["exe_path", "sha256"] {
+            let mut missing = value.clone();
+            missing["schema"] = 1.into();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(
+                parse_request(&serde_json::to_vec(&missing).unwrap(), "update", id).is_err(),
+                "{key} missing"
+            );
+        }
+        for (key, extra) in [
+            ("org", serde_json::json!("acme")),
+            ("runner_count", serde_json::json!(1)),
+            ("path", serde_json::json!(r"C:\x")),
+        ] {
+            let mut more = value.clone();
+            more["schema"] = 1.into();
+            more[key] = extra;
+            assert!(
+                parse_request(&serde_json::to_vec(&more).unwrap(), "update", id).is_err(),
+                "{key} on update"
+            );
+        }
+        let verify = format!(r#"{{"schema":1,"id":"{id}","verb":"verify","sha256":"{SHA}"}}"#);
+        assert!(
+            parse_request(verify.as_bytes(), "verify", id).is_err(),
+            "update fields on verify"
+        );
+        let bare = format!(r#"{{"schema":1,"id":"{id}","verb":"update"}}"#);
+        assert!(parse_request(bare.as_bytes(), "update", id).is_err());
+    }
+
+    #[test]
+    fn the_tray_writes_the_update_request_the_helper_accepts() {
+        let base = temp();
+        fs::create_dir_all(base.join("inbox/jobs")).unwrap();
+        let id = "abababababababab";
+        let fields = (
+            r"C:\Users\me\Downloads\aap-runner-tray.exe".to_string(),
+            SHA.to_string(),
+        );
+        write_request_with_size(&base, id, Verb::Update, None, None, Some(&fields)).unwrap();
+        let bytes = fs::read(request_path(&base, id)).unwrap();
+        assert_eq!(parse_request(&bytes, "update", id).unwrap(), Verb::Update);
+        assert_eq!(update_fields(&bytes), Some(fields));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_user_written_update_job_is_not_shown_or_trusted() {
+        let base = temp();
+        let id = "cdcdcdcdcdcdcdcd";
+        let dir = job_dir(&base, id);
+        fs::create_dir_all(&dir).unwrap();
+        advance(&dir, id, "update", "queued", "waiting", None).unwrap();
+        advance(&dir, id, "update", "running", "x", None).unwrap();
+        advance_with(
+            &dir,
+            id,
+            "update",
+            "passed",
+            "installed sha256 x",
+            Some(0),
+            Some(SHA),
+        )
+        .unwrap();
+        let text = fs::read_to_string(dir.join("status.json")).unwrap();
+        assert!(text.contains(&format!(r#""sha256":"{SHA}""#)), "{text}");
+        let pointer = base.join("helper.json");
+        fs::write(
+            &pointer,
+            format!(r#"{{"schema":1,"id":"{id}","verb":"update","error":""}}"#),
+        )
+        .unwrap();
+        // Not issued by this process, and the job folder is user-writable: ignored.
+        assert!(load_job_from(&pointer, &base).is_none());
+        assert!(protected_job(&base, id, Verb::Update).is_none());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn the_window_restarts_the_tray_once_the_update_is_over() {
+        let at = |finished, secs| UpdateWatch {
+            finished,
+            age: Duration::from_secs(secs),
+        };
+        assert!(
+            relaunch_due(at(true, 5), true),
+            "finished, passed or refused"
+        );
+        assert!(
+            !relaunch_due(at(true, 5), false),
+            "a tray is already running"
+        );
+        assert!(!relaunch_due(at(false, 5), true), "still running");
+        assert!(
+            relaunch_due(at(false, 4 * 60), true),
+            "no result: give up and restart"
+        );
+    }
+
     fn identity_fields() -> identity::Valid {
         identity::Valid {
             org: "acme".into(),
@@ -1711,6 +2086,7 @@ mod tests {
                 Verb::Install,
                 Some(&identity_fields()),
                 Some(&sizing),
+                None,
             )
             .unwrap();
             let text = fs::read_to_string(request_path(&base, id)).unwrap();
@@ -1734,6 +2110,7 @@ mod tests {
             Verb::Install,
             Some(&identity_fields()),
             Some(&crate::wizard::Sizing::default()),
+            None,
         )
         .unwrap();
         let bytes = fs::read(request_path(&base, id)).unwrap();

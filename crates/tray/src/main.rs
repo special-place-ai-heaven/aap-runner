@@ -22,6 +22,7 @@ mod problem;
 mod settings;
 mod settings_panel;
 mod state;
+mod update;
 mod win;
 mod wizard;
 
@@ -305,6 +306,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let identity_item = MenuItem::new("Identity\u{2026}", true, None);
     let verify_item = MenuItem::new("Verify install", true, None);
     let repair_item = MenuItem::new("Repair install", true, None);
+    let update_item = MenuItem::new("Update tray\u{2026}", true, None);
     let logs = MenuItem::new("Open logs", true, None);
     let version_item = MenuItem::new(version(), false, None);
     let quit = MenuItem::new("Quit", true, None);
@@ -322,6 +324,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
         &identity_item,
         &verify_item,
         &repair_item,
+        &update_item,
         &PredefinedMenuItem::separator(),
         &logs,
         &PredefinedMenuItem::separator(),
@@ -418,6 +421,22 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                     state::log(base, &e);
                 }
                 track_window(&mut window, show_window(base, Some(View::Status), None));
+            } else if id == update_item.id() {
+                let start = std::env::var_os("USERPROFILE")
+                    .map(PathBuf::from)
+                    .unwrap_or_default()
+                    .join("Downloads");
+                if let Some(picked) = win::pick_exe_file(tray_window, &start) {
+                    match helper::launch_update(base, &picked) {
+                        Ok(()) => {
+                            // The tray quits before the helper swaps the exe; the window (left
+                            // running, not killed) shows the result and starts the installed tray.
+                            let _ = show_window(base, Some(View::Status), None);
+                            return Ok(());
+                        }
+                        Err(e) => state::log(base, &e),
+                    }
+                }
             } else if id == open_job.id() {
                 if let Some(url) = job_url.as_deref().filter(|u| state::valid_run_url(u))
                     && let Err(e) = Command::new(EXPLORER).arg(url).spawn()

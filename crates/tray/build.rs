@@ -7,6 +7,7 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=assets/aap-runner-tray.ico");
+    println!("cargo:rerun-if-changed=assets/aap-runner-tray.rc");
     // ponytail: not rerun on every commit (no .git/HEAD watch); `cargo clean -p` or the env var
     // forces a fresh stamp if a build ever shows a stale commit.
     println!("cargo:rerun-if-env-changed=AAP_TRAY_COMMIT");

@@ -9,7 +9,9 @@ use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
     SDDL_REVISION_1, SE_FILE_OBJECT,
 };
-use windows::Win32::Security::Cryptography::{BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom};
+use windows::Win32::Security::Cryptography::{
+    BCRYPT_SHA256_ALG_HANDLE, BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom, BCryptHash,
+};
 use windows::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
     DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetTokenInformation,
@@ -306,10 +308,36 @@ pub fn pick_pem_file(
     owner: Option<isize>,
     initial_dir: &std::path::Path,
 ) -> Option<std::path::PathBuf> {
-    let filter: Vec<u16> = "PEM private key (*.pem)\0*.pem\0All files\0*.*\0\0"
-        .encode_utf16()
-        .collect();
-    let title = wide(std::ffi::OsStr::new("Pick the GitHub App private key"));
+    pick_file(
+        owner,
+        initial_dir,
+        "PEM private key (*.pem)\0*.pem\0All files\0*.*\0\0",
+        "Pick the GitHub App private key",
+    )
+}
+
+/// [`pick_pem_file`] for a new tray build: `*.exe`.
+pub fn pick_exe_file(
+    owner: Option<isize>,
+    initial_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    pick_file(
+        owner,
+        initial_dir,
+        "Tray build (aap-runner-tray.exe)\0*.exe\0\0",
+        "Pick the new aap-runner-tray.exe",
+    )
+}
+
+/// `filter` is the double-NUL-terminated `OPENFILENAMEW` filter list.
+fn pick_file(
+    owner: Option<isize>,
+    initial_dir: &std::path::Path,
+    filter: &str,
+    title: &str,
+) -> Option<std::path::PathBuf> {
+    let filter: Vec<u16> = filter.encode_utf16().collect();
+    let title = wide(std::ffi::OsStr::new(title));
     let dir = wide(initial_dir.as_os_str());
     let mut file = vec![0u16; 1024];
     let mut ofn = OPENFILENAMEW {
@@ -347,6 +375,28 @@ pub fn random_id() -> std::io::Result<String> {
         return Err(std::io::Error::other(format!("rng status {}", status.0)));
     }
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// SHA-256 of `bytes` (CNG pseudo-handle, Windows 10+).
+pub fn sha256(bytes: &[u8]) -> std::io::Result<[u8; 32]> {
+    let mut out = [0u8; 32];
+    // SAFETY: the pseudo-handle needs no open/close; `bytes` and `out` are live slices and the
+    // binding passes their lengths. Callers cap `bytes` far below u32::MAX.
+    let status = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, None, bytes, &mut out) };
+    if status.0 < 0 {
+        return Err(std::io::Error::other(format!("sha256 status {}", status.0)));
+    }
+    Ok(out)
+}
+
+/// The DOS path `GetFinalPathNameByHandleW` reports for an open file.
+pub fn final_path_of(file: &std::fs::File) -> std::io::Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    let handle = Opened(windows::Win32::Foundation::HANDLE(file.as_raw_handle()));
+    let path = final_dos_path(&handle);
+    // The handle belongs to `file`; do not close it here.
+    std::mem::forget(handle);
+    path
 }
 
 /// Read the actual process user, never an inbox or environment value.
