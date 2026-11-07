@@ -186,7 +186,7 @@ function New-LinProvider {
             CheckpointType = 'Disabled'; AutomaticStopAction = 'TurnOff'; AutomaticStartAction = 'Nothing'; DynamicMemory = $false; NestedVirtualization = $true
             GuestServiceInterface = $false; KeyValuePairExchange = $true; ConfigurationLocation = $a.Path; SnapshotFileLocation = $a.Path; SmartPagingFilePath = $a.Path
             Disks = @($a.OsDisk); Dvds = @(); DvdDrives = 1; ComPorts = 0; GpuPartitions = 0; AssignedDevices = 0; Booted = $false; HostKey = ''; AuthKey = ''; OsDisk = $a.OsDisk
-            Address = ''
+            Address = ''; Notes = ''
         }
         if (Get-LinKnob $w 'ExtraDisk' $false) { $vm.Disks = @($vm.Disks) + (Join-Path $a.Path 'extra.vhdx') }
         Save-LinVms $w (@(Get-LinVms $w) + [pscustomobject]$vm)
@@ -222,6 +222,7 @@ function New-LinProvider {
     $p.StartVm = { param($a)
         Add-LinCall $w "StartVm $($a.VmId)"
         if (Get-LinKnob $w 'StartFails' $false) { throw 'fake: Start-VM failed' }
+        $c = Get-LinKnob $w 'StartVmSetsClock' $null; if ($null -ne $c) { Set-LinKnob $w @{ ClockAt = $c } }   # the start returns late
         $vms = @(Get-LinVms $w)
         foreach ($v in $vms) {
             if ($v.Id -ne $a.VmId) { continue }
@@ -258,7 +259,14 @@ function New-LinProvider {
         if (Get-LinKnob $w 'EjectNoop' $false) { return }
         $vms = @(Get-LinVms $w); foreach ($v in $vms) { if ($v.Id -eq $a.VmId) { $v.Dvds = @() } }; Save-LinVms $w $vms
     }
-    $p.StopVm = { param($a) Add-LinCall $w "StopVm $($a.VmId)"; $vms = @(Get-LinVms $w); foreach ($v in $vms) { if ($v.Id -eq $a.VmId) { $v.State = 'Off' } }; Save-LinVms $w $vms }
+    # Stop-VM -TurnOff (knob StopVmNoop: the VM stays on, as a hung worker process; StopVmSetsClock: the wall clock is
+    # stepped to that time while the call runs).
+    $p.StopVm = { param($a)
+        Add-LinCall $w "StopVm $($a.VmId)"
+        $c = Get-LinKnob $w 'StopVmSetsClock' $null; if ($null -ne $c) { Set-LinKnob $w @{ ClockAt = $c } }
+        if (Get-LinKnob $w 'StopVmNoop' $false) { return }
+        $vms = @(Get-LinVms $w); foreach ($v in $vms) { if ($v.Id -eq $a.VmId) { $v.State = 'Off' } }; Save-LinVms $w $vms
+    }
     $p.RemoveVm = { param($a)
         Add-LinCall $w "RemoveVm $($a.VmId)"
         if (Get-LinKnob $w 'RemoveVmFails' $false) { throw 'fake: Remove-VM failed' }
@@ -271,7 +279,51 @@ function New-LinProvider {
         @(Get-LinVms $w | ForEach-Object { @{ Id = $_.Id; Name = $_.Name; State = $(if (Get-LinKnob $w 'Paused' $false) { 'Paused-Critical' } else { $_.State }); Cpus = $_.Cpus; MemGib = $_.MemGib } })
     }
     $p.MeasureBytes = { param($a) if (Get-LinKnob $w 'MeasureFails' $false) { throw 'access denied' }; [double](Get-LinKnob $w 'CloneBytes' $script:GiB) }
+    # The VM's Notes (knob NotesLost: Hyper-V keeps only part of what was written).
+    $p.SetVmNotes = { param($a)
+        Add-LinCall $w "SetVmNotes $($a.VmId)"
+        $vms = @(Get-LinVms $w)
+        foreach ($v in $vms) { if ($v.Id -eq $a.VmId) { $v.Notes = $(if (Get-LinKnob $w 'NotesLost' $false) { $a.Notes.Substring(0, 40) } else { $a.Notes }) } }
+        Save-LinVms $w $vms
+    }
+    $p.GetVmNotes = { param($a) $v = @(Get-LinVms $w | Where-Object { $_.Id -eq $a.VmId }); if ($v.Count) { [string]$v[0].Notes } }
+    # The host boot id. The fake host watchdog (P10.7) runs here too: each read of the boot id writes its clock record
+    # fresh, as the real one does every 60 s, unless knob Watchdog says it is 'missing', 'stale', of another boot
+    # ('reboot') or reports an unresolved 'breach'.
+    $p.GetBootId = { param($a)
+        $boot = [string](Get-LinKnob $w 'BootId' 'b00710d1')
+        $how = [string](Get-LinKnob $w 'Watchdog' 'fresh')
+        $path = Join-Path $w.Fake 'watchdog\lifetime-clock.json'
+        if ($how -ceq 'missing') { if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }; return $boot }
+        $at = Get-LinClock $w
+        if ($how -ceq 'stale') { $at = $at.AddSeconds(-181) }
+        $latched = @()
+        if ($how -ceq 'breach') { $latched = @([ordered]@{ reservation_id = 'r-00000000000000aa'; vm_id = '00000000-0000-4000-8000-0000000000aa'; decided_utc = (Format-LinTime $at); cap_hours = 6; elapsed_s = 21600; trigger = 'deadline'; enforcement_stage = 'cap_breach' }) }
+        $rec = [ordered]@{ schema = 1; role = 'watchdog'; boot_id = $(if ($how -ceq 'reboot') { 'b00710d0' } else { $boot }); mono_ms = 1000; written_utc = (Format-LinTime $at); high_water_utc = (Format-LinTime $at); latched = [object[]]$latched }
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $path))
+        Write-LinJson $path $rec
+        $boot
+    }
     $p
+}
+
+function Format-LinTime([datetime]$Time) { $Time.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture) }
+# The backend's wall clock: knob ClockAt (a fixed UTC time) or the real one moved by knob ClockOffset (seconds).
+function Get-LinClock($World) {
+    $at = Get-LinKnob $World 'ClockAt' $null
+    if ($null -ne $at) { return [DateTime]::ParseExact([string]$at, "yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture, 'AssumeUniversal, AdjustToUniversal') }
+    [DateTime]::UtcNow.AddSeconds([double](Get-LinKnob $World 'ClockOffset' 0))
+}
+# Makes the reservation $Seconds old by the real clock: its acquired_at in allocator.json moved back (the allocator stamps
+# real time, and frees a slot only with a proof observed between that start and now). Returns the start, whole seconds.
+function Set-LinStart($World, [string]$Id, [int]$Seconds) {
+    $p = Join-Path $World.Cap 'allocator.json'
+    $doc = ConvertFrom-LinJson ([IO.File]::ReadAllText($p))
+    $t = [DateTime]::UtcNow.AddSeconds(-$Seconds)
+    $t0 = New-Object DateTime (($t.Ticks - ($t.Ticks % [TimeSpan]::TicksPerSecond)), [DateTimeKind]::Utc)
+    foreach ($x in @($doc.reservations)) { if ($x.reservation_id -eq $Id) { $x.acquired_at = Format-LinTime $t0 } }
+    Write-LinJson $p $doc
+    $t0
 }
 
 # The P10.0 module: the shared strict fake (tests/common/AapHostNetworkFake.psm1) over the world's own folder $w.Net, its
@@ -327,7 +379,7 @@ function New-LinGuest {
         $st = Read-LinJson $sf ([pscustomobject]@{ Seq = 0; Gen = 0; Nonces = @(); Shots = @(); Probes = 0; PayloadSha = ''; PayloadLen = 0 })
         $status = 'ok'; $state = 'booting'; $exit = $null; $diag = ''
         $shot = @('deliver_registration', 'start_runner', 'shutdown') -contains $hc.cmd
-        $expired = [DateTime]::ParseExact($hc.expires_at, "yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture, 'AssumeUniversal, AdjustToUniversal') -lt [DateTime]::UtcNow.AddSeconds([double](Get-LinKnob $w 'ClockOffset' 0) - 5)
+        $expired = [DateTime]::ParseExact($hc.expires_at, "yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture, 'AssumeUniversal, AdjustToUniversal') -lt (Get-LinClock $w).AddSeconds(-5)
         if ($hc.vm_id -ne $Call.VmId -or ($st.Gen -and $st.Gen -ne $hc.lease_generation) -or $hc.seq -le $st.Seq -or @($st.Nonces) -contains $hc.nonce -or
             ($shot -and @($st.Shots) -contains $hc.cmd) -or $expired) {
             $status = 'refused'; $diag = 'refused by the agent'
@@ -453,11 +505,19 @@ function New-LinBroker {
 # ---- driving it ----------------------------------------------------------------------------------------------------
 
 # The status cadence is off (StatusSeconds 0) so every step heartbeats; one test puts it back.
-function New-LinBackend($World) {
+function New-LinBackend($World, [hashtable]$CapArgs = $null) {
     $w = $World
+    # The lifetime cap's inputs, when the module under test has them (a red run of the cap tests uses the module before it).
+    $cap = @{}
+    if ((Get-Command New-AapLinBackend).Parameters.ContainsKey('WatchdogClockPath')) {
+        $cap = @{ WatchdogClockPath = (Join-Path $w.Fake 'watchdog\lifetime-clock.json')
+            Monotonic = { $m = Get-LinKnob $w 'MonoMs' $null; if ($null -ne $m) { [long]$m } else { [long]([Diagnostics.Stopwatch]::GetTimestamp() / ([Diagnostics.Stopwatch]::Frequency / 1000.0)) } }
+        }
+        if ($null -ne $CapArgs) { foreach ($k in $CapArgs.Keys) { $cap[$k] = $CapArgs[$k] } }
+    }
     $B = New-AapLinBackend -Provider (New-LinProvider) -Network (New-LinNetwork) -Transport (New-LinGuest) -BrokerInvoker (New-LinBroker) `
         -AllocatorRoot $w.Cap -JournalRoot $w.Journal -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue `
-        -Clock { [DateTime]::UtcNow.AddSeconds([double](Get-LinKnob $w 'ClockOffset' 0)) } -Sleep { param($s) }
+        -Clock { Get-LinClock $w } -Sleep { param($s) } @cap
     $B.StatusSeconds = 0
     $B
 }

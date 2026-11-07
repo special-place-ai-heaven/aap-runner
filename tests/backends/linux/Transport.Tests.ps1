@@ -111,7 +111,8 @@ Describe 'the JIT config' {
         $held = New-Object Collections.Generic.List[object]
         $spy = { param($Call) if ($Call.PayloadLength -gt 0) { $held.Add($Call.WritePayload) }; & $guest $Call }.GetNewClosure()
         $B = New-AapLinBackend -Provider (New-LinProvider) -Network (New-LinNetwork) -Transport $spy -BrokerInvoker (New-LinBroker) -AllocatorRoot $w.Cap `
-            -JournalRoot $w.Journal -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue -Sleep { param($s) }
+            -JournalRoot $w.Journal -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue -Sleep { param($s) } `
+            -WatchdogClockPath (Join-Path $w.Fake 'watchdog\lifetime-clock.json')
         $r = New-LinReservation $w
         [void](Invoke-LinSteps $B $w $r.reservation_id -Max 5 -Until { param($x) $x.state -eq 'ready' })
         (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $r.reservation_id)).Action | Should -Be 'running'
@@ -476,7 +477,8 @@ Start-Sleep -Seconds 600
     It 'the backend''s call site turns an ssh failure into probing, never hostile, end to end through the real child' -Tag 'transport-drop' {
         $w = New-LinWorld
         $B = New-AapLinBackend -Provider (New-LinProvider) -Network (New-LinNetwork) -BrokerInvoker (New-LinBroker) -AllocatorRoot $w.Cap -JournalRoot $w.Journal `
-            -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue -Sleep { param($s) }
+            -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue -Sleep { param($s) } `
+            -WatchdogClockPath (Join-Path $w.Fake 'watchdog\lifetime-clock.json')
         $r = New-LinReservation $w
         [void](Invoke-LinSteps $B $w $r.reservation_id -Max 2)   # created, booted
         Set-LinModuleVar 'ChildExe' 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
