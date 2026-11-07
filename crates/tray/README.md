@@ -298,7 +298,7 @@ runner parity and planned zccache migration are assessed separately in
 
 ## Elevated helper
 
-`aap-runner-tray.exe --helper <verb> <id>` with `<verb>` `verify`, `repair`, `identity`, `install`, or `update` and `<id>` 16 lowercase hex digits.
+`aap-runner-tray.exe --helper <verb> <id>` with `<verb>` `verify`, `repair`, `identity`, `install`, or `update` and `<id>` 16 lowercase hex digits; `update` takes a third argument, the expected sha256 (Tray update).
 The menu items write `inbox\jobs\<id>.json` and start that command through ShellExecute `runas` (one UAC prompt).
 The helper accepts only schema 1 plus that verb and id; `identity` must carry the nine fields above, each re-checked, `install` (schema 2) its fields from the First-run wizard, `update` the five fields under Tray update, and `verify` and `repair` nothing else. Every directory it uses is
 under `C:\ProgramData\aap-runner` or a fixed install path (`C:\wsl`, the work VHDX, the two task names). A junction
@@ -323,60 +323,86 @@ The helper does not read that file. The supervisor does not read it either.
 ## Tray update
 
 Update tray… (tray menu) replaces `C:\Program Files\aap-runner\aap-runner-tray.exe` with a build the
-owner picks, with one UAC prompt and no console. Only the installed tray offers it (the tray checks
-its own handle-resolved path first).
+owner picks: one UAC prompt, then one confirmation box, no console. Only the installed tray offers
+it (the tray checks its own handle-resolved path first).
 
-1. The tray shows the classic Open dialog (`*.exe`, started in `%USERPROFILE%\Downloads`), reads the
-   picked file (at most 64 MiB), computes its SHA-256 (CNG), and writes
+1. The tray shows the classic Open dialog (`*.exe`, started in `%USERPROFILE%\Downloads`) and runs
+   the candidate checks of step 5 on the pick, so a refused location is reported before the prompt.
+   It reads the file (at most 64 MiB), computes its SHA-256 (CNG), and writes
    `{"schema":1,"id":"<16 hex>","verb":"update","exe_path":"C:\\...\\aap-runner-tray.exe","sha256":"<64 lowercase hex>"}`
    (exactly these five fields) to `inbox\jobs\<id>.json`. If that write fails nothing is started.
-2. It starts `--helper update <id>` through `runas`. Once the prompt is accepted it opens the window
-   on Status (left running) and quits itself; a declined prompt leaves it running.
-3. The helper, before copying anything, refuses unless it runs from exactly
+2. It starts `--helper update <id> <sha256>` through `runas`: the expected hash is also on the
+   elevated command line, and every other verb takes exactly `<verb> <id>`. Once the prompt is
+   accepted it opens the window on Status (left running) and quits itself; a declined prompt leaves
+   it running.
+3. In `--helper` mode (every verb) the process first calls
+   `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` and exits 2 if that fails. Then, when it
+   runs from the installed path, it deletes `aap-runner-tray.exe.prev`: the build that replaced it
+   has started, so the old one is no longer kept as a startable fallback. A `.prev` still running
+   (an old window) stays until the next elevated run.
+4. The helper, before copying anything, refuses unless it runs from exactly
    `C:\Program Files\aap-runner\aap-runner-tray.exe` (handle-resolved, compared case-insensitively),
    that exe is admin-only and on a fixed local drive, and its folder and every ancestor pass the
-   admin-only checks above.
-4. It re-validates the request: schema 1, the id and verb match the command line, no identity or
-   sizing field, `sha256` is 64 lowercase hex, and `exe_path` is a plain `X:\...\*.exe` under 1 KiB
-   made of letters, digits, space, `_`, `.`, `-` and `\` only (so no UNC, `\\?\`, `\\.\`, `/`, `:`
-   after the drive (no alternate data stream), `..`, quote or control character), with no empty or
-   trailing-dot/space component and no DOS device name (`CON`, `NUL`, `COM1`…).
+   admin-only checks above. It re-validates the request: schema 1, the id and verb match the command
+   line, no identity or sizing field, `sha256` is 64 lowercase hex and equal to the command line's,
+   and `exe_path` is a plain `X:\...\*.exe` under 1 KiB made of letters, digits, space, `_`, `.`, `-`
+   and `\` only (so no UNC, `\\?\`, `\\.\`, `/`, `:` after the drive (no alternate data stream),
+   `..`, quote or control character), with no empty or trailing-dot/space component and no DOS
+   device name (`CON`, `NUL`, `COM1`…).
 5. It opens the candidate once (`FILE_FLAG_OPEN_REPARSE_POINT`, sharing read only) and checks that
-   handle: not a reparse point, a regular file, 1 byte to 64 MiB, and `GetFinalPathNameByHandleW`
-   equal to the requested path on a fixed local drive. It copies from that handle, create-new, into
-   `C:\Program Files\aap-runner\staging\<id>.exe` (the folder is created with the admin-only ACL of
-   `create_admin_dir` or must already pass the admin-only checks) and refuses a staged file that is
-   not admin-only.
-6. It hashes the staged copy, never the user's file, and refuses a mismatch with the request's
-   `sha256`. The staged copy must be an x64 (`0x8664`) PE32+ executable, not a DLL, whose version
-   resource has `ProductName` `aap-runner-tray` and `OriginalFilename` `aap-runner-tray.exe`
-   (set in `assets/aap-runner-tray.rc`; a build from before that resource is refused).
-7. Swap: a stale `aap-runner-tray.exe.prev` is deleted first (if that fails, for example because an
-   old window still runs from it, nothing changes); the installed exe is renamed to `.prev`
-   (retried for up to 30 s), then the staged copy is renamed into place. If that fails the `.prev`
-   is renamed back. Windows can rename a running image, so a window still running the old build
-   keeps running from `.prev`.
-8. `status.json` ends `passed` with step `installed sha256 <hex>` and `"sha256":"<hex>"`, and the log
-   says `PASS update installed sha256 <hex>`. A refusal (bad request, wrong install path, link,
-   bad hash, not a PE, wrong product) is `rejected` with the reason and the old build stays; a
-   failed swap is `failed`. The staged copy is deleted on every path.
-9. The window shows the job (Update · passed · installed sha256 …). While the pointer names an
-   update written in the last 15 minutes it does not close for a missing tray. Once the job has
-   finished either way, or after 4 minutes with no result, and while no tray holds the lock, it
-   starts the installed tray once, with the same checks as the wizard's Done. If the window is closed
-   before that, the tray comes back at the next logon.
+   handle: not a reparse point, a regular file, one hard link, 1 byte to 64 MiB, and
+   `GetFinalPathNameByHandleW` equal to the requested path on a fixed local drive. Then the
+   installer's location rule, with the elevated token's user: the file's owner (read from the same
+   handle) is that user or Administrators, no other SID has an allow ACE with write, append,
+   write-attributes, delete, write-DAC, write-owner or generic write/all on it, its folder passes the
+   same test, and no ancestor lets another SID delete, delete a child, or change its DACL or owner.
+   A refusal says to move the build to your private Downloads folder.
+6. It copies from that handle, create-new, into `C:\Program Files\aap-runner\staging\<id>.exe`. The
+   staging folder is created SYSTEM and Administrators only (no Users read ACE), and an existing one
+   that grants any other SID anything is refused.
+7. It hashes the staged copy, never the user's file, and refuses a mismatch with the command line's
+   `sha256` (the reason names only the expected hash: `status.json` is readable by every user). The
+   staged copy must be an x64 (`0x8664`) PE32+ executable, not a DLL, whose version resource has
+   `ProductName` `aap-runner-tray`, `OriginalFilename` `aap-runner-tray.exe` and a `FILEVERSION`
+   (set in `assets/aap-runner-tray.rc` from the Cargo version). Downgrade rule: a `FILEVERSION`
+   lower than the installed exe's is refused; an equal one is allowed (commits between version bumps
+   share a version); an installed exe without a version resource counts as 0.
+8. It shows a Yes/No box (No is the default, topmost) with the candidate path, size and sha256.
+   Only Yes continues. The box belongs to the elevated process, so a non-elevated program cannot
+   click it (UIPI).
+9. The staged copy gets the installed tray's ACL (SYSTEM and Administrators full, Users read and
+   execute, not inherited) and must then pass the admin-only check. Swap: a stale `.prev` is deleted
+   first (if that fails nothing changes); the installed exe is renamed to `.prev` (retried for up to
+   30 s), then the staged copy is renamed into place. If that fails the `.prev` is renamed back.
+   Windows can rename a running image, so a window still running the old build keeps running from
+   `.prev`.
+10. `status.json` ends `passed` with step `installed sha256 <hex>` and `"sha256":"<hex>"`, and the
+    log says `PASS update installed sha256 <hex>`. A refusal (bad request or command line, wrong
+    install path, location, link, bad hash, not a PE, wrong product, older version, No in the box) is
+    `rejected` with the reason and the old build stays; a failed swap is `failed`. The staged copy is
+    deleted on every path.
+11. The window shows the job (Update · passed · installed sha256 …). While the pointer names an
+    update written in the last 15 minutes it does not close for a missing tray. Once the job has
+    finished either way, or after 4 minutes with no result, and while no tray holds the lock, it
+    starts the installed tray once, with the same checks as the wizard's Done. If the window is
+    closed before that, the tray comes back at the next logon.
 
-Threat model. `C:\ProgramData\aap-runner\inbox` is user-writable, so everything in the request,
-including the candidate path and the expected hash, is as trustworthy as any process running as the
-owner. The helper protects against a different account and against the file changing between check
-and use (it checks only its own admin-only copy), and it never installs anything that is not an
-x64 tray-named PE at the one fixed path. It does not prevent a user-level process racing an
-owner-initiated update: such a process can swap the picked file and rewrite the request's hash
-before the helper reads it, and the helper will install that file. The mitigation is the installed
-sha256 the window shows, which the owner compares with the hash of the build they meant to install.
-The version-resource names are a guard against picking the wrong file, not a trust check: anyone
-can set them. There is no Authenticode check because there is no signing certificate; adding one is
-owner decision Q8.
+Threat model. `C:\ProgramData\aap-runner\inbox` is user-writable, and the tray runs as the owner,
+so any program running as the owner can start an update by itself: write a request and start
+`--helper update <id> <sha256>` through `runas`. No race is needed. UAC then names the installed
+tray, not the candidate. What protects the owner from that is the helper's own confirmation box,
+which shows the candidate path, size and sha256 and defaults to No: compare that hash with the build
+you made, and press Yes only for an update you started. A malicious program that tricks you into
+pressing Yes wins; the real fix is Authenticode signing, which needs a certificate (owner decision
+Q8).
+
+What the helper does prevent: another account cannot supply or swap the build, because the
+candidate must be owned by the requesting user or Administrators, writable only by them, in a
+folder only they can write, with no ancestor another account can replace, and with one hard link;
+the file cannot change between the check and the install, because only the helper's admin-only copy
+is hashed and installed; it installs only an x64 tray-named executable whose version is not lower,
+only at the one fixed path, and only from the installed tray. The version-resource names are a guard
+against picking the wrong file, not a trust check: anyone can set them.
 
 ## Icon (after Fathom's `mark.rs`)
 

@@ -217,6 +217,18 @@ fn check_exe_directories(dir: &Path, bootstrap_user: Option<&str>) -> Result<(),
     Ok(())
 }
 
+const PRIVATE_LOCATION: &str = "Installer must be on a fixed local drive, owned by you or Administrators, and writable only by you or Administrators. Move it to your private Downloads folder.";
+
+/// The installer's location rule for an update candidate: `acl` is the file's (read from the
+/// open handle), `dir` its folder. Only `user` and Administrators may own or write the file,
+/// write its folder, or replace an ancestor.
+pub(crate) fn user_location_ok(acl: win::ObjectAcl, dir: &Path, user: &str) -> Result<(), String> {
+    if !allowed_for_verb(&acl_view(acl), Some(user), false) {
+        return Err(PRIVATE_LOCATION.into());
+    }
+    check_exe_directories(dir, Some(user))
+}
+
 pub fn install_location_ok() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let resolved = win::resolve_exe(&exe).map_err(|e| e.to_string())?;
@@ -224,7 +236,7 @@ pub fn install_location_ok() -> Result<(), String> {
     if !win::is_fixed_local_path(&resolved.path)
         || !allowed_for_verb(&acl_view(resolved.acl), Some(&user), false)
     {
-        return Err("Installer must be on a fixed local drive, owned by you or Administrators, and writable only by you or Administrators. Move it to your private Downloads folder.".into());
+        return Err(PRIVATE_LOCATION.into());
     }
     check_exe_directories(resolved.path.parent().ok_or("installer path")?, Some(&user))
 }
@@ -270,6 +282,26 @@ fn ensure_admin_dir(path: &Path) -> Result<(), String> {
         return Err("protected folder is a link or not a directory".into());
     }
     require_admin_only(path, "protected folder")?;
+    require_ancestors(path)
+}
+
+/// [`ensure_admin_dir`] for the update staging folder: created SYSTEM and Administrators only,
+/// and an existing one may not grant any other SID anything.
+fn ensure_private_dir(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        win::create_private_dir(path).map_err(|e| e.to_string())?;
+    }
+    if reparse_path(path) || !path.is_dir() {
+        return Err("protected folder is a link or not a directory".into());
+    }
+    let view = acl_view(win::acl_of_path(path, true).map_err(|e| e.to_string())?);
+    if !elevation_allowed(&view)
+        || view.aces.iter().any(|a| {
+            a.kind == AceKind::Allow && !a.inherit_only && !ADMIN_SIDS.contains(&a.sid.as_str())
+        })
+    {
+        return Err("update staging folder is readable by other accounts".into());
+    }
     require_ancestors(path)
 }
 
@@ -1343,6 +1375,12 @@ pub fn launch_update(base: &Path, candidate: &Path) -> Result<(), String> {
         .ok_or("candidate path is not valid text")?
         .to_string();
     update::check_path(&path)?;
+    // The helper repeats this; checking here gives the owner the reason before the prompt.
+    let user = win::current_user_sid().map_err(|e| e.to_string())?;
+    drop(update::open_candidate(
+        &path,
+        update::private_location(&user),
+    )?);
     let sha = update::sha256_file(candidate)?;
     launch_payload(base, Verb::Update, resolved, None, None, Some((path, sha)))
 }
@@ -1421,7 +1459,13 @@ fn launch_payload(
             "could not write the update request; run Repair install",
         );
     }
-    if let Err(e) = start_runas(&path, &format!("--helper {} {id}", verb.as_str())) {
+    // `update` also carries the expected sha256 on the command line; the helper requires the
+    // request and the staged copy to match it.
+    let parameters = match &update {
+        Some((_, sha)) => format!("--helper update {id} {sha}"),
+        None => format!("--helper {} {id}", verb.as_str()),
+    };
+    if let Err(e) = start_runas(&path, &parameters) {
         let _ = write_pointer(&id, verb, &e);
         return Err(e);
     }
@@ -1660,6 +1704,23 @@ fn fail_job(job: &Path, id: &str, verb: &str, to: &str, step: &str, code: i32) -
 
 /// The installed tray, checked like [`start_installed_tray`], and only when this helper runs
 /// from exactly that file.
+/// The words after `--helper`: `<verb> <id>`, or `update <id> <sha256>`. Nothing else.
+pub fn parse_helper_args(args: &[String]) -> Option<(&str, &str, Option<&str>)> {
+    match args {
+        [verb, id] if verb != "update" => Some((verb, id, None)),
+        [verb, id, sha] if verb == "update" && update::sha_ok(sha) => Some((verb, id, Some(sha))),
+        _ => None,
+    }
+}
+
+fn update_request_matches(fields: Option<&(String, String)>, argv_sha: &str) -> Result<(), String> {
+    if fields.is_some_and(|(_, sha)| sha == argv_sha) {
+        Ok(())
+    } else {
+        Err("request sha256 does not match the command line".into())
+    }
+}
+
 fn update_target() -> Result<PathBuf, String> {
     let me = win::resolve_exe(&std::env::current_exe().map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
@@ -1673,9 +1734,18 @@ fn update_target() -> Result<PathBuf, String> {
 }
 
 /// Copy, then hash and inspect only the copy, then swap. Refusals leave the old build in place.
-fn run_update(job: &Path, id: &str, installed: &Path, fields: Option<(String, String)>) -> i32 {
+fn run_update(
+    job: &Path,
+    id: &str,
+    installed: &Path,
+    fields: Option<(String, String)>,
+    argv_sha: &str,
+) -> i32 {
     let verb = Verb::Update.as_str();
-    let Some((source, expected)) = fields else {
+    if let Err(e) = update_request_matches(fields.as_ref(), argv_sha) {
+        return fail_job(job, id, verb, "rejected", &e, 2);
+    }
+    let Some((source, _)) = fields else {
         return fail_job(job, id, verb, "rejected", "request update", 2);
     };
     let log = job.join("log.txt");
@@ -1690,12 +1760,34 @@ fn run_update(job: &Path, id: &str, installed: &Path, fields: Option<(String, St
     let staging = Path::new(update::INSTALL_DIR).join("staging");
     let staged = staging.join(format!("{id}.exe"));
     note("STEP copy candidate to staging");
-    let verified = ensure_admin_dir(&staging)
-        .and_then(|()| update::copy_candidate(&source, &staged))
+    let verified = win::current_user_sid()
+        .map_err(|e| e.to_string())
+        .and_then(|user| {
+            ensure_private_dir(&staging)?;
+            update::copy_candidate(&source, &staged, update::private_location(&user))
+        })
         .and_then(|()| require_admin_only(&staged, "staged tray"))
         .and_then(|()| {
             note("STEP verify staged copy");
-            update::verify_staged(&staged, &expected)
+            let installed_version = update::installed_version_of(installed)?;
+            update::verify_staged(&staged, argv_sha, installed_version)
+        })
+        .and_then(|sha| {
+            note("STEP confirm");
+            let size = fs::metadata(&staged).map_err(|e| e.to_string())?.len();
+            if win::confirm(
+                "AAP Runner update",
+                &update::confirm_text(&source, size, &sha),
+            ) {
+                Ok(sha)
+            } else {
+                Err("the update was declined in the confirmation box".into())
+            }
+        })
+        .and_then(|sha| {
+            win::set_install_acl(&staged).map_err(|e| e.to_string())?;
+            require_admin_only(&staged, "staged tray")?;
+            Ok(sha)
         });
     let sha = match verified {
         Ok(sha) => sha,
@@ -1722,14 +1814,21 @@ fn run_update(job: &Path, id: &str, installed: &Path, fields: Option<(String, St
     0
 }
 
-/// `--helper <verb> <id>`. Always uses [`DATA_DIR`]. Ignores `AAP_FAKE_BASE` and any path in the
-/// request. Returns the process exit code.
-pub fn run_elevated(verb_arg: &str, id: &str) -> i32 {
+/// `--helper <verb> <id>` (`update` adds `<sha256>`). Always uses [`DATA_DIR`]. Ignores
+/// `AAP_FAKE_BASE` and any path in the request. Returns the process exit code.
+pub fn run_elevated(verb_arg: &str, id: &str, argv_sha: Option<&str>) -> i32 {
     let Some(verb) = Verb::parse(verb_arg) else {
         return 2;
     };
-    if !valid_id(id) {
+    if !valid_id(id) || (verb == Verb::Update) != argv_sha.is_some_and(update::sha_ok) {
         return 2;
+    }
+    // Running from the installed path means the build that replaced any `.prev` has started:
+    // the old one is no longer needed as a fallback and should not stay startable.
+    if let Ok(me) = std::env::current_exe().and_then(|e| win::resolve_exe(&e))
+        && let Ok(installed) = update::check_self(&me.path, Path::new(update::INSTALL_DIR))
+    {
+        update::remove_prev(&installed);
     }
     let base = PathBuf::from(DATA_DIR);
     let job = job_dir(&base, id);
@@ -1837,7 +1936,7 @@ pub fn run_elevated(verb_arg: &str, id: &str) -> i32 {
         return 2;
     }
     if let (Verb::Update, Some(installed)) = (got, update_target) {
-        return run_update(&job, id, &installed, fields);
+        return run_update(&job, id, &installed, fields, argv_sha.unwrap_or_default());
     }
     let tray = installed_exe.or_else(tray_exe_arg);
     match run_script(&job, got, tray.as_deref()) {
@@ -1921,6 +2020,39 @@ mod tests {
             "schema": 1, "id": id, "verb": "update", "exe_path": exe_path, "sha256": sha256,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn helper_arguments_carry_a_sha256_only_for_update() {
+        let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let id = "0123456789abcdef";
+        assert_eq!(
+            parse_helper_args(&args(&["verify", id])),
+            Some(("verify", id, None))
+        );
+        assert_eq!(
+            parse_helper_args(&args(&["update", id, SHA])),
+            Some(("update", id, Some(SHA)))
+        );
+        for bad in [
+            args(&["update", id]),
+            args(&["verify", id, SHA]),
+            args(&["update", id, &SHA.to_uppercase()]),
+            args(&["update", id, &SHA[..63]]),
+            args(&["update", id, SHA, "x"]),
+            args(&["verify"]),
+            args(&[]),
+        ] {
+            assert_eq!(parse_helper_args(&bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_request_hash_must_equal_the_command_line_hash() {
+        let exe = r"C:\Users\me\Downloads\aap-runner-tray.exe".to_string();
+        assert!(update_request_matches(Some(&(exe.clone(), SHA.to_string())), SHA).is_ok());
+        assert!(update_request_matches(Some(&(exe, "0".repeat(64))), SHA).is_err());
+        assert!(update_request_matches(None, SHA).is_err());
     }
 
     #[test]

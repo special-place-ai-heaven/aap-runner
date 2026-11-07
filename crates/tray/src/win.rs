@@ -391,12 +391,7 @@ pub fn sha256(bytes: &[u8]) -> std::io::Result<[u8; 32]> {
 
 /// The DOS path `GetFinalPathNameByHandleW` reports for an open file.
 pub fn final_path_of(file: &std::fs::File) -> std::io::Result<String> {
-    use std::os::windows::io::AsRawHandle;
-    let handle = Opened(windows::Win32::Foundation::HANDLE(file.as_raw_handle()));
-    let path = final_dos_path(&handle);
-    // The handle belongs to `file`; do not close it here.
-    std::mem::forget(handle);
-    path
+    with_handle(file, final_dos_path)
 }
 
 /// Read the actual process user, never an inbox or environment value.
@@ -446,6 +441,137 @@ pub fn create_admin_dir(path: &std::path::Path) -> std::io::Result<()> {
         let _ = LocalFree(Some(HLOCAL(descriptor.0)));
     }
     result.map_err(std::io::Error::other)
+}
+
+/// SYSTEM and Administrators only, no Users read ACE (the update staging folder). The owner is
+/// the creating token's default owner (Administrators for an elevated admin).
+pub fn create_private_dir(path: &std::path::Path) -> std::io::Result<()> {
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            w!("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )
+    }
+    .map_err(std::io::Error::other)?;
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: BOOL(0),
+    };
+    let name = wide(path.as_os_str());
+    // SAFETY: `name` is NUL-terminated; `attributes` points at the descriptor freed below.
+    let result = unsafe { CreateDirectoryW(PCWSTR(name.as_ptr()), Some(&attributes)) };
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+    }
+    result.map_err(std::io::Error::other)
+}
+
+/// Replace `path`'s DACL with the installed tray's: SYSTEM and Administrators full, Users read and
+/// execute, not inherited. A staged copy moved out of the private staging folder keeps the
+/// staging folder's ACEs otherwise, and Users could not start it.
+pub fn set_install_acl(path: &std::path::Path) -> std::io::Result<()> {
+    use windows::Win32::Security::Authorization::SetNamedSecurityInfoW;
+    use windows::Win32::Security::{
+        GetSecurityDescriptorDacl, PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+    let mut descriptor = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            w!("D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)"),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            None,
+        )
+    }
+    .map_err(std::io::Error::other)?;
+    let mut present = BOOL(0);
+    let mut defaulted = BOOL(0);
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let name = wide(path.as_os_str());
+    // SAFETY: `descriptor` is a live self-relative descriptor until LocalFree below, and `dacl`
+    // points into it. `name` is NUL-terminated.
+    let result = unsafe {
+        GetSecurityDescriptorDacl(descriptor, &mut present, &mut dacl, &mut defaulted)
+            .map_err(std::io::Error::other)
+            .and_then(|()| {
+                let status = SetNamedSecurityInfoW(
+                    PCWSTR(name.as_ptr()),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    None,
+                    None,
+                    Some(dacl),
+                    None,
+                );
+                if status == ERROR_SUCCESS {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::from_raw_os_error(status.0 as i32))
+                }
+            })
+    };
+    unsafe {
+        let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+    }
+    result
+}
+
+/// A Yes/No box, No by default, topmost. `true` only for Yes.
+pub fn confirm(title: &str, text: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO, MessageBoxW,
+    };
+    let text = wide(std::ffi::OsStr::new(text));
+    let title = wide(std::ffi::OsStr::new(title));
+    // SAFETY: both strings are NUL-terminated and live for the call; no owner window.
+    let answer = unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND | MB_TOPMOST,
+        )
+    };
+    answer == IDYES
+}
+
+/// Load DLLs only from System32 for the rest of the process (elevated helper).
+pub fn restrict_dll_search() -> bool {
+    use windows::Win32::System::LibraryLoader::SetDefaultDllDirectories;
+    // SAFETY: a flag-only call.
+    unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) }.is_ok()
+}
+
+/// Run `f` on `file`'s handle without taking ownership of it.
+fn with_handle<T>(file: &std::fs::File, f: impl FnOnce(&Opened) -> T) -> T {
+    use std::os::windows::io::AsRawHandle;
+    let handle = Opened(windows::Win32::Foundation::HANDLE(file.as_raw_handle()));
+    let out = f(&handle);
+    // The handle belongs to `file`; do not close it here.
+    std::mem::forget(handle);
+    out
+}
+
+/// Owner and DACL of an open file (the handle needs READ_CONTROL; GENERIC_READ has it).
+pub fn acl_of_file(file: &std::fs::File) -> std::io::Result<ObjectAcl> {
+    with_handle(file, acl_of_handle)
+}
+
+/// Hard links to an open file.
+pub fn link_count(file: &std::fs::File) -> std::io::Result<u32> {
+    use windows::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    with_handle(file, |h| {
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        // SAFETY: `h` is open and `info` is a live out-struct.
+        unsafe { GetFileInformationByHandle(h.0, &mut info) }.map_err(std::io::Error::other)?;
+        Ok(info.nNumberOfLinks)
+    })
 }
 
 fn wide(text: &std::ffi::OsStr) -> Vec<u16> {

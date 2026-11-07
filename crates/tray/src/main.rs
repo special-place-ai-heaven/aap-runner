@@ -252,9 +252,13 @@ fn main() {
     }
     if args.first().is_some_and(|a| a == "--helper") {
         // Elevated mode. Paths come from the constant data directory, never from AAP_FAKE_BASE.
-        let code = match args.get(1).zip(args.get(2)) {
-            Some((verb, id)) if args.len() == 3 => helper::run_elevated(verb, id),
-            _ => 2,
+        // System32-only DLL search before anything else runs elevated.
+        if !win::restrict_dll_search() {
+            std::process::exit(2);
+        }
+        let code = match helper::parse_helper_args(&args[1..]) {
+            Some((verb, id, sha)) => helper::run_elevated(verb, id, sha),
+            None => 2,
         };
         std::process::exit(code);
     }

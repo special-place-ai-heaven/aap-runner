@@ -27,7 +27,13 @@ fn main() {
     println!("cargo:rustc-env=AAP_TRAY_COMMIT={commit}");
     #[cfg(windows)]
     {
-        embed_resource::compile("assets/aap-runner-tray.rc", embed_resource::NONE)
+        let part = |k: &str| std::env::var(k).expect("cargo sets the package version");
+        let macros = [
+            format!("AAP_VER_MAJOR={}", part("CARGO_PKG_VERSION_MAJOR")),
+            format!("AAP_VER_MINOR={}", part("CARGO_PKG_VERSION_MINOR")),
+            format!("AAP_VER_PATCH={}", part("CARGO_PKG_VERSION_PATCH")),
+        ];
+        embed_resource::compile("assets/aap-runner-tray.rc", &macros)
             .manifest_required()
             .expect("compile assets/aap-runner-tray.rc");
     }

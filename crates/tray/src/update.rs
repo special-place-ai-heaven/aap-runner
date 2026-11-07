@@ -84,12 +84,16 @@ pub fn check_self(self_path: &Path, install_dir: &Path) -> Result<PathBuf, Strin
     }
 }
 
-/// Copy the candidate into `staged` (create-new) from one handle opened without following a
-/// link. The handle must be a regular file, not a reparse point, 1 byte to [`MAX_EXE`], whose
-/// final path is the requested path on a fixed local drive (so no 8.3 alias or normalisation).
-pub fn copy_candidate(source: &str, staged: &Path) -> Result<(), String> {
+/// Open the candidate once, without following a link, and check that handle: a regular file,
+/// not a reparse point, one hard link, 1 byte to [`MAX_EXE`], final path equal to the requested
+/// path on a fixed local drive (so no 8.3 alias or normalisation), and then `location` on the
+/// handle's ACL and folder. Production passes [`private_location`]. Returns the handle and size.
+pub fn open_candidate(
+    source: &str,
+    location: impl FnOnce(crate::win::ObjectAcl, &Path) -> Result<(), String>,
+) -> Result<(File, u64), String> {
     check_path(source)?;
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
@@ -108,6 +112,9 @@ pub fn copy_candidate(source: &str, staged: &Path) -> Result<(), String> {
             meta.len()
         ));
     }
+    if crate::win::link_count(&file).map_err(|e| e.to_string())? != 1 {
+        return Err("candidate has more than one hard link".into());
+    }
     let final_path = crate::win::final_path_of(&file).map_err(|e| e.to_string())?;
     if !final_path.eq_ignore_ascii_case(source)
         || !crate::win::is_fixed_local_path(Path::new(&final_path))
@@ -116,6 +123,29 @@ pub fn copy_candidate(source: &str, staged: &Path) -> Result<(), String> {
             "candidate resolves to {final_path}, not the same plain path on a fixed local drive"
         ));
     }
+    let acl = crate::win::acl_of_file(&file).map_err(|e| e.to_string())?;
+    let dir = Path::new(&final_path)
+        .parent()
+        .ok_or("candidate has no folder")?;
+    location(acl, dir)?;
+    Ok((file, meta.len()))
+}
+
+/// The installer's location rule for `user` (the process user): the file is owned by `user` or
+/// Administrators and no other account can write it, write its folder, or replace an ancestor.
+pub fn private_location(
+    user: &str,
+) -> impl FnOnce(crate::win::ObjectAcl, &Path) -> Result<(), String> + '_ {
+    move |acl, dir| crate::helper::user_location_ok(acl, dir, user)
+}
+
+/// Copy the candidate checked by [`open_candidate`] into `staged` (create-new) from that handle.
+pub fn copy_candidate(
+    source: &str,
+    staged: &Path,
+    location: impl FnOnce(crate::win::ObjectAcl, &Path) -> Result<(), String>,
+) -> Result<(), String> {
+    let (mut file, _) = open_candidate(source, location)?;
     let mut out = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -138,27 +168,77 @@ pub fn copy_candidate(source: &str, staged: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Hash and inspect the staged copy only. Returns its sha256.
-pub fn verify_staged(staged: &Path, expected: &str) -> Result<String, String> {
+/// Hash and inspect the staged copy only. Its FILEVERSION must not be lower than `installed`
+/// (0 when the installed build has none). Returns its sha256.
+pub fn verify_staged(staged: &Path, expected: &str, installed: u64) -> Result<String, String> {
     let bytes = read_capped(staged)?;
     let actual = hex(&crate::win::sha256(&bytes).map_err(|e| e.to_string())?);
+    // The step text lands in status.json, which every user can read: name only the request's hash.
     if actual != expected {
         return Err(format!(
-            "sha256 mismatch: the staged copy is {actual}, the request expected {expected}"
+            "sha256 mismatch: the staged copy is not the build with sha256 {expected}"
         ));
     }
-    check_image(&bytes)?;
+    let version = check_image(&bytes)?;
+    if version < installed {
+        return Err(format!(
+            "candidate version {} is older than the installed {}",
+            dotted(version),
+            dotted(installed)
+        ));
+    }
     Ok(actual)
 }
 
 /// An x64 PE32+ executable (not a DLL) whose version resource says `ProductName`
 /// [`PRODUCT`] and `OriginalFilename` [`TRAY_NAME`]. A sanity check against the wrong file,
 /// not a trust check: anyone can write those strings; the sha256 binds the owner's pick.
-pub fn check_image(bytes: &[u8]) -> Result<(), String> {
+/// Returns FILEVERSION as `major << 48 | minor << 32 | patch << 16 | build`.
+pub fn check_image(bytes: &[u8]) -> Result<u64, String> {
     image_problem(bytes).map_err(|e| format!("candidate refused: {e}"))
 }
 
-fn image_problem(b: &[u8]) -> Result<(), &'static str> {
+/// FILEVERSION of the installed tray, 0 when it predates the version resource.
+pub fn installed_version(bytes: &[u8]) -> u64 {
+    check_image(bytes).unwrap_or(0)
+}
+
+/// [`installed_version`] of the file at `path` (admin-only; a read error refuses the update).
+pub fn installed_version_of(path: &Path) -> Result<u64, String> {
+    read_capped(path).map(|b| installed_version(&b))
+}
+
+fn dotted(v: u64) -> String {
+    format!(
+        "{}.{}.{}.{}",
+        v >> 48,
+        (v >> 32) & 0xffff,
+        (v >> 16) & 0xffff,
+        v & 0xffff
+    )
+}
+
+/// What the elevated confirmation box says.
+pub fn confirm_text(path: &str, size: u64, sha: &str) -> String {
+    format!(
+        "Replace the installed AAP Runner tray with this build?\n\n{path}\n{size} bytes\nsha256 {sha}\n\nCompare the sha256 with the build you made. Only Yes installs it."
+    )
+}
+
+pub fn prev_path(installed: &Path) -> PathBuf {
+    let mut prev = installed.as_os_str().to_owned();
+    prev.push(".prev");
+    PathBuf::from(prev)
+}
+
+/// Delete the build a previous update kept. `true` when one was removed; a `.prev` that is
+/// still running (an old window) stays until the next try.
+pub fn remove_prev(installed: &Path) -> bool {
+    let prev = prev_path(installed);
+    fs::symlink_metadata(&prev).is_ok_and(|m| m.is_file()) && fs::remove_file(&prev).is_ok()
+}
+
+fn image_problem(b: &[u8]) -> Result<u64, &'static str> {
     const BAD: &str = "not a PE image";
     const NOT_TRAY: &str = "its version resource does not name aap-runner-tray";
     if b.get(0..2) != Some(b"MZ") {
@@ -229,7 +309,7 @@ fn image_problem(b: &[u8]) -> Result<(), &'static str> {
     let blob = b
         .get(start..start.checked_add(len).ok_or(BAD)?)
         .ok_or(BAD)?;
-    let strings = version_strings(blob).ok_or(BAD)?;
+    let (version, strings) = version_strings(blob).ok_or(BAD)?;
     let value = |key: &str| {
         strings
             .iter()
@@ -237,7 +317,7 @@ fn image_problem(b: &[u8]) -> Result<(), &'static str> {
             .map(|(_, v)| v.as_str())
     };
     if value("ProductName") == Some(PRODUCT) && value("OriginalFilename") == Some(TRAY_NAME) {
-        Ok(())
+        version.ok_or("its version resource has no FILEVERSION")
     } else {
         Err(NOT_TRAY)
     }
@@ -299,12 +379,17 @@ fn kids(b: &[u8], from: usize, end: usize) -> Option<Vec<(String, usize, usize, 
     Some(out)
 }
 
-/// Every `StringFileInfo` key/value in a `VS_VERSIONINFO` blob.
-fn version_strings(b: &[u8]) -> Option<Vec<(String, String)>> {
+/// FILEVERSION (from `VS_FIXEDFILEINFO`, when its signature is right) and every
+/// `StringFileInfo` key/value in a `VS_VERSIONINFO` blob.
+#[allow(clippy::type_complexity)]
+fn version_strings(b: &[u8]) -> Option<(Option<u64>, Vec<(String, String)>)> {
     let (key, value, value_len, end) = vnode(b, 0)?;
     if key != "VS_VERSION_INFO" {
         return None;
     }
+    let version = (value_len >= 52 && u32_at(b, value) == Some(0xFEEF_04BD))
+        .then(|| Some((u64::from(u32_at(b, value + 8)?) << 32) | u64::from(u32_at(b, value + 12)?)))
+        .flatten();
     let mut out = Vec::new();
     for (info, info_value, _, info_end) in kids(b, value + value_len, end)? {
         if info != "StringFileInfo" {
@@ -317,7 +402,7 @@ fn version_strings(b: &[u8]) -> Option<Vec<(String, String)>> {
             }
         }
     }
-    Some(out)
+    Some((version, out))
 }
 
 /// Move `installed` to `installed.prev` (retrying for `wait`) and `staged` into its place. A
@@ -325,9 +410,7 @@ fn version_strings(b: &[u8]) -> Option<Vec<(String, String)>> {
 /// old build is renamed back. Windows renames a running image, so a tray that has not quit yet
 /// keeps running from `.prev`.
 pub fn swap_in(staged: &Path, installed: &Path, wait: Duration) -> Result<(), String> {
-    let mut prev = installed.as_os_str().to_owned();
-    prev.push(".prev");
-    let prev = PathBuf::from(prev);
+    let prev = prev_path(installed);
     if fs::symlink_metadata(&prev).is_ok() {
         fs::remove_file(&prev).map_err(|e| {
             format!(
@@ -400,6 +483,50 @@ mod tests {
         PathBuf::from(crate::win::strip_extended_path(&long.to_string_lossy()))
     }
 
+    fn user() -> String {
+        crate::win::current_user_sid().unwrap()
+    }
+
+    /// For tests about copying and hashing: this machine's temp folder may itself be shared
+    /// (it is on the owner's PC), which the real rule rightly refuses.
+    fn anywhere(_: crate::win::ObjectAcl, _: &Path) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// `icacls <path> /grant <ace>`, no console window.
+    fn grant(path: &Path, ace: &str) {
+        icacls(path, &["/grant", ace]);
+    }
+
+    /// Only the test user, SYSTEM and Administrators, nothing inherited.
+    fn make_private(path: &Path) {
+        let me = format!("*{}:(F)", user());
+        icacls(
+            path,
+            &[
+                "/inheritance:r",
+                "/grant:r",
+                &me,
+                "*S-1-5-18:(F)",
+                "*S-1-5-32-544:(F)",
+            ],
+        );
+    }
+
+    fn icacls(path: &Path, args: &[&str]) {
+        use std::os::windows::process::CommandExt;
+        let ace = args.join(" ");
+        let ok = std::process::Command::new(r"C:\Windows\System32\icacls.exe")
+            .arg(path)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "icacls {ace}");
+    }
+
     fn sha_of(bytes: &[u8]) -> String {
         hex(&crate::win::sha256(bytes).unwrap())
     }
@@ -434,7 +561,13 @@ mod tests {
         v
     }
 
+    const V050: u64 = 5 << 32;
+
     fn version_blob(product: &str, original: &str) -> Vec<u8> {
+        version_blob_at(product, original, V050)
+    }
+
+    fn version_blob_at(product: &str, original: &str, version: u64) -> Vec<u8> {
         let string = |k: &str, val: &str| {
             let text = utf16z(val);
             vnode(k, 1, &text, (text.len() / 2) as u16, &[])
@@ -453,6 +586,8 @@ mod tests {
         let sfi = vnode("StringFileInfo", 1, &[], 0, &[table]);
         let mut fixed = vec![0u8; 52];
         fixed[0..4].copy_from_slice(&0xFEEF_04BDu32.to_le_bytes());
+        fixed[8..12].copy_from_slice(&((version >> 32) as u32).to_le_bytes());
+        fixed[12..16].copy_from_slice(&(version as u32).to_le_bytes());
         vnode("VS_VERSION_INFO", 0, &fixed, 52, &[sfi])
     }
 
@@ -580,14 +715,22 @@ mod tests {
 
     #[test]
     fn a_tray_pe_passes_the_image_check() {
-        check_image(&good_pe()).unwrap();
+        assert_eq!(check_image(&good_pe()).unwrap(), V050);
     }
 
     /// The rc's VERSIONINFO, as the real resource compiler lays it out, passes the same check.
     #[test]
     fn this_build_passes_its_own_image_check() {
         let me = fs::read(std::env::current_exe().unwrap()).unwrap();
-        check_image(&me).unwrap();
+        let v = |k: &str| k.parse::<u64>().unwrap();
+        let want = (v(env!("CARGO_PKG_VERSION_MAJOR")) << 48)
+            | (v(env!("CARGO_PKG_VERSION_MINOR")) << 32)
+            | (v(env!("CARGO_PKG_VERSION_PATCH")) << 16);
+        assert_eq!(
+            check_image(&me).unwrap(),
+            want,
+            "FILEVERSION is the Cargo version"
+        );
     }
 
     #[test]
@@ -627,7 +770,7 @@ mod tests {
         let good = good_pe();
         fs::write(&source, &good).unwrap();
         let staged = dir.join("staged.exe");
-        copy_candidate(&source.display().to_string(), &staged).unwrap();
+        copy_candidate(&source.display().to_string(), &staged, anywhere).unwrap();
         // The user (or anything running as the user) rewrites the source after the copy.
         let evil = pe(0x8664, &version_blob(PRODUCT, TRAY_NAME))
             .into_iter()
@@ -635,11 +778,11 @@ mod tests {
             .collect::<Vec<u8>>();
         fs::write(&source, &evil).unwrap();
         assert_eq!(
-            verify_staged(&staged, &sha_of(&good)).unwrap(),
+            verify_staged(&staged, &sha_of(&good), V050).unwrap(),
             sha_of(&good)
         );
         assert!(
-            verify_staged(&staged, &sha_of(&evil)).is_err(),
+            verify_staged(&staged, &sha_of(&evil), V050).is_err(),
             "the source's new hash does not match what was staged"
         );
         let _ = fs::remove_dir_all(&dir);
@@ -650,11 +793,19 @@ mod tests {
         let dir = temp();
         let staged = dir.join("staged.exe");
         fs::write(&staged, good_pe()).unwrap();
-        let err = verify_staged(&staged, &"0".repeat(64)).unwrap_err();
+        let err = verify_staged(&staged, &"0".repeat(64), 0).unwrap_err();
         assert!(err.contains("sha256"), "{err}");
+        assert!(
+            err.contains(&"0".repeat(64)),
+            "names the expected hash: {err}"
+        );
+        assert!(
+            !err.contains(&sha_of(&good_pe())),
+            "never the computed one (status.json is readable by every user): {err}"
+        );
         let text = b"MZ but not really".to_vec();
         fs::write(&staged, &text).unwrap();
-        assert!(verify_staged(&staged, &sha_of(&text)).is_err());
+        assert!(verify_staged(&staged, &sha_of(&text), 0).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -666,22 +817,22 @@ mod tests {
         let staged = dir.join("staged.exe");
         fs::write(&staged, b"already").unwrap();
         assert!(
-            copy_candidate(&source.display().to_string(), &staged).is_err(),
+            copy_candidate(&source.display().to_string(), &staged, anywhere).is_err(),
             "create-new only"
         );
         fs::remove_file(&staged).unwrap();
         let folder = dir.join("folder.exe");
         fs::create_dir(&folder).unwrap();
-        assert!(copy_candidate(&folder.display().to_string(), &staged).is_err());
+        assert!(copy_candidate(&folder.display().to_string(), &staged, anywhere).is_err());
         assert!(!staged.exists());
         let link = dir.join("link.exe");
         if std::os::windows::fs::symlink_file(&source, &link).is_ok() {
-            assert!(copy_candidate(&link.display().to_string(), &staged).is_err());
+            assert!(copy_candidate(&link.display().to_string(), &staged, anywhere).is_err());
             assert!(!staged.exists());
         }
         let empty = dir.join("empty.exe");
         fs::write(&empty, b"").unwrap();
-        assert!(copy_candidate(&empty.display().to_string(), &staged).is_err());
+        assert!(copy_candidate(&empty.display().to_string(), &staged, anywhere).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -726,6 +877,166 @@ mod tests {
         fs::create_dir(dir.join("aap-runner-tray.exe.prev")).unwrap();
         assert!(swap_in(&staged, &installed, Duration::ZERO).is_err());
         assert_eq!(fs::read(&installed).unwrap(), b"old");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_older_version_than_the_installed_one_is_refused() {
+        let dir = temp();
+        let staged = dir.join("staged.exe");
+        let older = pe(0x8664, &version_blob_at(PRODUCT, TRAY_NAME, 4 << 32));
+        fs::write(&staged, &older).unwrap();
+        let err = verify_staged(&staged, &sha_of(&older), V050).unwrap_err();
+        assert!(err.contains("older"), "{err}");
+        assert!(
+            verify_staged(&staged, &sha_of(&older), 4 << 32).is_ok(),
+            "same version"
+        );
+        assert!(
+            verify_staged(&staged, &sha_of(&older), 0).is_ok(),
+            "installed has no version"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_installed_version_of_a_build_without_a_resource_is_zero() {
+        assert_eq!(installed_version(b"MZ old build"), 0);
+        assert_eq!(installed_version(&good_pe()), V050);
+    }
+
+    #[test]
+    fn a_candidate_another_account_can_write_is_refused() {
+        let dir = temp();
+        let source = dir.join("aap-runner-tray.exe");
+        fs::write(&source, good_pe()).unwrap();
+        grant(&source, "*S-1-1-0:(W)");
+        let staged = dir.join("staged.exe");
+        let me = user();
+        let err = copy_candidate(
+            &source.display().to_string(),
+            &staged,
+            private_location(&me),
+        )
+        .unwrap_err();
+        // The file's own ACL is checked before the folders.
+        assert!(err.contains("writable only by you"), "{err}");
+        assert!(!staged.exists());
+        assert!(open_candidate(&source.display().to_string(), private_location(&me)).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_candidate_in_a_folder_another_account_can_modify_is_refused() {
+        let dir = temp();
+        let folder = dir.join("shared");
+        fs::create_dir(&folder).unwrap();
+        let source = folder.join("aap-runner-tray.exe");
+        fs::write(&source, good_pe()).unwrap();
+        // The file itself passes, so the refusal is the folder's: Authenticated Users may
+        // modify the folder (not inherited by the file).
+        make_private(&source);
+        grant(&folder, "*S-1-5-11:(M)");
+        let staged = dir.join("staged.exe");
+        let me = user();
+        let err = copy_candidate(
+            &source.display().to_string(),
+            &staged,
+            private_location(&me),
+        )
+        .unwrap_err();
+        assert!(err.contains("folder permits another account"), "{err}");
+        assert!(!staged.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_hard_linked_candidate_is_refused() {
+        let dir = temp();
+        let source = dir.join("aap-runner-tray.exe");
+        fs::write(&source, good_pe()).unwrap();
+        fs::hard_link(&source, dir.join("other-name.exe")).unwrap();
+        let staged = dir.join("staged.exe");
+        let err = copy_candidate(&source.display().to_string(), &staged, anywhere).unwrap_err();
+        assert!(err.contains("hard link"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_private_candidate_opens_for_the_early_check() {
+        let dir = temp();
+        let source = dir.join("aap-runner-tray.exe");
+        fs::write(&source, good_pe()).unwrap();
+        assert_eq!(
+            open_candidate(&source.display().to_string(), anywhere)
+                .unwrap()
+                .1,
+            good_pe().len() as u64
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_confirmation_names_path_size_and_hash() {
+        let text = confirm_text(
+            r"C:\Users\me\Downloads\aap-runner-tray.exe",
+            1234,
+            &"a".repeat(64),
+        );
+        assert!(
+            text.contains(r"C:\Users\me\Downloads\aap-runner-tray.exe"),
+            "{text}"
+        );
+        assert!(text.contains("1234 bytes"), "{text}");
+        assert!(text.contains(&"a".repeat(64)), "{text}");
+    }
+
+    #[test]
+    fn remove_prev_deletes_the_old_build_and_tolerates_none() {
+        let dir = temp();
+        let installed = dir.join(TRAY_NAME);
+        fs::write(&installed, b"new").unwrap();
+        assert!(!remove_prev(&installed), "nothing to remove");
+        fs::write(prev_path(&installed), b"old").unwrap();
+        assert!(remove_prev(&installed));
+        assert!(!prev_path(&installed).exists());
+        assert_eq!(fs::read(&installed).unwrap(), b"new");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_staging_folder_grants_only_system_and_administrators() {
+        let dir = temp().join("staging");
+        crate::win::create_private_dir(&dir).unwrap();
+        // The test user owns it but has no ACE, so it cannot open it to read the ACL: add one
+        // (icacls only needs the owner's implicit rights) and leave it out of the comparison.
+        let me = user();
+        grant(&dir, &format!("*{me}:(F)"));
+        let acl = crate::win::acl_of_path(&dir, true).unwrap();
+        let sids: Vec<&str> = acl
+            .aces
+            .iter()
+            .map(|a| a.sid.as_str())
+            .filter(|sid| *sid != me)
+            .collect();
+        assert_eq!(sids, ["S-1-5-18", "S-1-5-32-544"], "no Users read ACE");
+        let _ = fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn the_staged_copy_gets_the_install_acl_before_it_moves() {
+        let dir = temp();
+        let file = dir.join("staged.exe");
+        fs::write(&file, b"x").unwrap();
+        crate::win::set_install_acl(&file).unwrap();
+        let acl = crate::win::acl_of_path(&file, true).unwrap();
+        let mut sids: Vec<&str> = acl.aces.iter().map(|a| a.sid.as_str()).collect();
+        sids.sort();
+        assert_eq!(sids, ["S-1-5-18", "S-1-5-32-544", "S-1-5-32-545"]);
+        let users = acl.aces.iter().find(|a| a.sid == "S-1-5-32-545").unwrap();
+        assert!(users.allow && !users.other);
+        assert_eq!(users.rights & 0x0002, 0, "users cannot write");
+        assert_ne!(users.rights & 0x0020, 0, "users can execute");
         let _ = fs::remove_dir_all(&dir);
     }
 
