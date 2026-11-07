@@ -1,9 +1,9 @@
 #!/bin/bash
 # A slot whose runner never registers (network or container create, the
-# token mint, config.sh) backs off 5 s, 10 s, 20 s ... capped at 300 s, names
-# the failing stage, and exits after SLOT_PREJOB_MAX_FAILS in a row; run_pool
-# counts that exit toward retirement however long the attempts took. A job
-# that ran, or a successful run, resets the count.
+# token mint, config.sh) backs off 5, 10, 20, 40 s, names the failing stage
+# without the token, and exits after SLOT_PREJOB_MAX_FAILS in a row; run_pool
+# counts that exit toward retirement however long the attempts took, and only
+# that exit. A job that ran, or a successful run, resets the count.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -34,8 +34,8 @@ clean_after_job() { :; }
 sleep() { printf '%s ' "$1" >> "${sleeps}"; }
 
 # PLAN is one letter per run_one call: f a pre-job failure, j a job that ran
-# and exited non-zero, s a success. Past the plan run_one exits 99, which ends
-# the loop.
+# and exited non-zero, s a success, d a drain stop after the mount check. Past
+# the plan run_one exits 99, which ends the loop.
 PLAN=""
 calls=0
 # shellcheck disable=SC2317
@@ -46,6 +46,7 @@ run_one() {
     f) RUN_ONE_STAGE="registration token mint"; return 1 ;;
     j) RUN_ONE_STAGE=job; return 1 ;;
     s) RUN_ONE_STAGE=job; return 0 ;;
+    d) RUN_ONE_STAGE="mount check"; return 0 ;;
   esac
   exit 99
 }
@@ -77,6 +78,8 @@ loop ffffjffff
 loop jjjjjjjj
 [[ "${rc}" -eq 99 ]] || fail "failed jobs counted as pre-job failures (rc ${rc})"
 [[ "$(cat "${sleeps}")" == "5 5 5 5 5 5 5 5 " ]] || fail "failed jobs slept '$(cat "${sleeps}")'; want 5 s each"
+loop ffffdffff
+[[ "${rc}" -eq 99 ]] || fail "a clean run_one return (drain) did not reset the count (rc ${rc})"
 echo "a job or a success resets the count ok"
 
 [[ "$(prejob_backoff_delay 1)" == 5 ]] || fail "first delay is not 5"
@@ -147,9 +150,48 @@ docker() {
 stage_of job
 echo "run_one names the failing stage ok"
 
+# No token in the log: the mint's output reaches docker start on stdin only,
+# for a registration failure and for a mint that printed and then failed.
+sentinel=ghp_SENTINEL0123456789
+stdin_seen="${work}/stdin"
+argv_seen="${work}/argv"
+# shellcheck disable=SC2317
+disk_ok() { return 0; }
+# shellcheck disable=SC2317
+clean_after_job() { :; }
+# shellcheck disable=SC2317
+docker() {
+  printf '%s\n' "$*" >> "${argv_seen}"
+  if [[ "$1" == start ]]; then
+    cat >> "${stdin_seen}"
+    return 1
+  fi
+  return 0
+}
+for mint_rc in 0 1; do
+  # shellcheck disable=SC2317
+  mint_registration_token() { echo "${sentinel}"; return "${mint_rc}"; }
+  : > "${stdin_seen}"
+  : > "${argv_seen}"
+  : > "${sleeps}"
+  rc=0
+  (slot_loop 1) > "${work}/out" 2> "${err}" || rc=$?
+  [[ "${rc}" -eq "${SLOT_GAVE_UP_EXIT}" ]] || fail "mint rc ${mint_rc}: slot_loop exited ${rc}; want ${SLOT_GAVE_UP_EXIT}"
+  if grep -q "${sentinel}" "${err}" "${work}/out" "${argv_seen}" "${RUN_DIR}"/* 2>/dev/null; then
+    fail "mint rc ${mint_rc}: the registration token reached a log, argv, or a slot file"
+  fi
+  if [[ "${mint_rc}" -eq 0 ]]; then
+    grep -q 'runner registration failed before a runner registered' "${err}" || fail "registration stage not logged: $(cat "${err}")"
+    grep -qx "${sentinel}" "${stdin_seen}" || fail "the token did not reach docker start on stdin"
+  else
+    grep -q 'registration token mint failed before a runner registered' "${err}" || fail "mint stage not logged: $(cat "${err}")"
+  fi
+done
+echo "failing stages never log the token ok"
+
 # run_pool: a slot that gave up counts toward retirement even when its
 # attempts took longer than SLOT_FAST_SECONDS.
-unset -f sleep
+unset -f sleep docker mint_registration_token
 source "${here}/../distro/manager.sh"
 # shellcheck disable=SC2317
 remove_job_containers() { :; }
@@ -181,8 +223,34 @@ if kill -0 "${pool}" 2>/dev/null; then
   fail "a slot that kept giving up was restarted $(wc -l < "${work}/starts") times and never retired"
 fi
 wait "${pool}" || rc=$?
+[[ "${rc}" -eq 1 ]] || fail "run_pool exited ${rc} after its only slot retired; want 1"
 grep -q '^slot 1 retired' "${err}" || fail "slot 1 was not retired: $(cat "${err}")"
 [[ "$(wc -l < "${work}/starts")" -eq "${SLOT_MAX_FAILS}" ]] || fail "slot started $(wc -l < "${work}/starts") times; want ${SLOT_MAX_FAILS}"
 echo "a slot that gives up is retired ok"
+
+# Any other exit after SLOT_FAST_SECONDS is a slow death: restarted, never retired.
+# shellcheck disable=SC2317
+slot_loop() {
+  trap - EXIT TERM INT
+  echo start >> "${work}/starts"
+  exit 1
+}
+: > "${work}/starts"
+(run_pool) 2> "${err}" &
+pool=$!
+want=$((3 * SLOT_MAX_FAILS))
+for _ in $(seq 1 100); do
+  kill -0 "${pool}" 2>/dev/null || break
+  [[ "$(wc -l < "${work}/starts")" -ge "${want}" ]] && break
+  sleep 0.1
+done
+kill -0 "${pool}" 2>/dev/null || fail "run_pool stopped on slow exit-1 deaths: $(cat "${err}")"
+[[ "$(wc -l < "${work}/starts")" -ge "${want}" ]] || fail "slot started $(wc -l < "${work}/starts") times; want ${want}"
+grep -q '^slot 1 retired' "${err}" && fail "slow exit-1 deaths retired the slot"
+rc=0
+kill -TERM "${pool}"
+wait "${pool}" || rc=$?
+[[ "${rc}" -eq 143 ]] || fail "SIGTERM exit was ${rc}; want 143"
+echo "a slow exit 1 is restarted, not retired ok"
 
 echo "manager slot backoff tests ok"

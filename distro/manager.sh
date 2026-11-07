@@ -92,7 +92,7 @@ SLOT_FAST_SECONDS=120
 # A slot whose runner fails before it registers (network or container create,
 # the token mint, config.sh) this many times in a row exits with
 # SLOT_GAVE_UP_EXIT, which run_pool counts as a fast death however long the
-# attempts took. Between attempts it waits 5 s, doubling, capped at 300 s.
+# attempts took. Between attempts it waits 5, 10, 20, then 40 s.
 SLOT_PREJOB_MAX_FAILS=5
 SLOT_GAVE_UP_EXIT=75
 # Where the last run_one stopped: the failing stage, or job once a runner listened.
@@ -2042,8 +2042,8 @@ remove_slot_containers() {
     if ! docker rm -f -v "${id}" >/dev/null; then
       echo "warning: slot $1: could not remove job container ${name:-${id}}" >&2
     fi
-    if [[ -n "${name}" ]]; then
-      docker network rm "${name}" >/dev/null 2>&1 || true
+    if [[ -n "${name}" ]] && ! docker network rm "${name}" >/dev/null; then
+      echo "warning: slot $1: could not remove job network ${name}" >&2
     fi
   done <<< "${ids}"
 }
@@ -2106,7 +2106,8 @@ slot_loop() {
   done
 }
 
-# Seconds to wait after $1 pre-job failures in a row: 5, 10, 20 ... 300.
+# Seconds to wait after $1 pre-job failures in a row: 5 s, doubling. The
+# 300 s cap only matters if SLOT_PREJOB_MAX_FAILS is raised above 7.
 prejob_backoff_delay() {
   local delay=5 i
   for ((i = 1; i < $1 && delay < 300; i++)); do
