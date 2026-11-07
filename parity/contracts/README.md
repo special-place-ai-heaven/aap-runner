@@ -39,7 +39,7 @@ names the error it must produce, so it cannot pass for the wrong reason.
    count every live reservation, so draining overhang delays the other profile. Three missed
    heartbeats quarantine with capacity held; a heartbeat restores the slot; destroy waits until
    GitHub reports the runner offline and not busy, or the job ends, or the VM's hard lifetime cap
-   is reached (item 13); hostile guests go straight to deletion from any state, a heartbeat quarantine
+   is reached (item 14); hostile guests go straight to deletion from any state, a heartbeat quarantine
    included. Neither a resize nor a new host measurement evicts admitted work.
 4. Provider interface, idempotency keys, intent/outcome journal, crash recovery, the disk layout per
    storage tier, and measured-only budgets with enforced per-tier caps.
