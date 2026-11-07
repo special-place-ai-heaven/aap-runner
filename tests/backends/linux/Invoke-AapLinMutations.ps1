@@ -6,6 +6,8 @@
 # only if at least one of its tests then fails. A control run of every tagged test against an unmutated copy must pass
 # first, so a broken copy cannot pass for a killed mutant. Exit 0 when every check is covered.
 #   pwsh -File tests/backends/linux/Invoke-AapLinMutations.ps1 [-Name <check>...]
+# Revision-2 entries (auto-discovered from the same # check tags): guest-revision (admission before intent),
+# seed-identity (canonical closed record), seed-atomic (replace whole), seed-never-booted (no identity rewrite after boot).
 param([string[]]$Name, [string]$One, [string]$ModulePath)
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'

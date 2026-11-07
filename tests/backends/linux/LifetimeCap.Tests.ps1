@@ -29,7 +29,7 @@ BeforeAll {
         $t0
     }
     function Set-LinAt($w, [datetime]$T0, [long]$Seconds) { Set-LinKnob $w @{ ClockAt = (Format-LinTime $T0.AddSeconds($Seconds)) } }
-    function Step-Lin($B, $w, [string]$Rid) { Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $Rid) -BaseSha256 $w.BaseSha }
+    function Step-Lin($B, $w, [string]$Rid) { Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $Rid) -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2 }
     function Get-LinExchangeCount($w) { @([IO.Directory]::GetFiles((Join-Path $w.Fake 'exchanges'))).Count }
     function Get-LinCapRecords($w, [string]$Rid) { @(Get-LinJournal $w $Rid | Where-Object { $_.PSObject.Properties['lifetime_cap'] }) }
     function Get-LinCapFailed($w, [string]$Rid) { @(Get-LinJournal $w $Rid | Where-Object { $_.result -and $_.result.code -eq 'vm_lifetime_cap' }) }
@@ -789,5 +789,42 @@ Describe 'security re-review hardening' {
         $ids = @(Invoke-AapLinCapPass -Backend $B -Reservations @($bad) -WarningVariable warn -WarningAction SilentlyContinue)
         $ids.Count | Should -Be 0
         @($warn | Where-Object { "$_" -like '*not a reservation id*' }).Count | Should -Be 1
+    }
+}
+
+# P11/P15 merge: the cap runs before the guest-revision admission (check:cap-first), so a missing or wrong pin never
+# keeps a VM past its cap. Every other test here passes pins of 2; these pass none, or bad ones.
+Describe 'the cap runs before the guest-revision admission' {
+    It 'control: an uncapped new create with no pins throws AAP_GuestRevision' -Tag 'cap-first' {
+        $w = New-LinWorld; $B = New-LinBackend $w; $r = New-LinReservation $w
+        { Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha } | Should -Throw '*AAP_GuestRevision:*'
+    }
+    It 'a pre-VM create past its cap with no pins: capped, never throws, reconciled' -Tag 'cap-first' {
+        $w = New-LinWorld; $B = New-LinBackend $w
+        $rid = (New-LinReservation $w).reservation_id
+        $t0 = Set-LinCapStart $w $rid ($script:Cap + 120)
+        Set-LinAt $w $t0 $script:Cap
+        $s = Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid) -BaseSha256 $w.BaseSha
+        $s.Code | Should -Be 'vm_lifetime_cap'
+        (Get-LinRes $w $rid).state | Should -Be 'reconciled'
+    }
+    It 'a recovered create (VM exists, create/done missing) past its cap with bad pins: powered off and torn down' -Tag 'cap-first' {
+        $w = New-LinWorld; $B = New-LinBackend $w; $r = New-LinReservation $w
+        (Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2).Action | Should -Be 'created'
+        $path = Join-Path $w.Journal "$($r.reservation_id).jsonl"
+        [IO.File]::WriteAllText($path, ((@(Get-LinJournalLines $w $r.reservation_id | Where-Object { $_ -notlike '*"phase":"done"*' }) -join "`n") + "`n"))
+        @(Get-LinVms $w).Count | Should -Be 1
+        $t0 = Set-LinCapStart $w $r.reservation_id ($script:Cap + 120)
+        Set-LinAt $w $t0 $script:Cap
+        $codes = @()
+        for ($i = 0; $i -lt 6; $i++) {
+            $x = Get-LinRes $w $r.reservation_id
+            if ($x.state -eq 'reconciled') { break }
+            $s = Invoke-AapLinStep -Backend $B -Reservation $x -BaseSha256 $w.BaseSha -CatalogGuestRevision 1 -ApprovedGuestRevision 1
+            $codes += [string]$s.Code
+        }
+        $codes[0] | Should -Be 'vm_lifetime_cap'
+        (Get-LinRes $w $r.reservation_id).state | Should -Be 'reconciled'
+        @(Get-LinVms $w).Count | Should -Be 0
     }
 }

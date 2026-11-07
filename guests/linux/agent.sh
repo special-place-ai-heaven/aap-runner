@@ -6,9 +6,9 @@
 #                    one envelope line (a leading UTF-8 BOM is tolerated), then exactly payload_bytes bytes. stdout: one
 #                    guest_reply line, then exit 0, a refusal included. Input it cannot read gets no reply and exit 0 (the
 #                    host counts a failed guest and retries with a higher seq).
-#   agent firstboot  aap-guest-firstboot.service, once per clone after cloud-init: host key to KVP, the job user, the seed's
-#                    copies removed, the TLS test pair, the post-generation scripts, lingering, Docker, the runner root and
-#                    the private compile cache. probe answers ready only after it finished.
+#   agent firstboot  aap-guest-firstboot.service, once per clone after cloud-init: host key to KVP, the job user, the TLS
+#                    test pair, the post-generation scripts, lingering, Docker, the runner root and the private compile
+#                    cache. Seed copies stay until the first probe binds identity; delivery removes them before registered.
 #   agent launch     deliver_registration starts it in the transient scope aap-runner.scope with the JIT config on its stdin
 #                    pipe; it runs Runner.Listener as the job user with the config in that process's environment only, and
 #                    records the runner's exit code. The config never reaches a file, a command line or a log.
@@ -64,8 +64,6 @@ parse_envelope() { # LINE -> E_VM E_RID E_GEN E_SEQ E_NONCE E_CMD E_LEN E_EXP
   IFS=$'\t' read -r E_VM E_RID E_GEN E_SEQ E_NONCE E_CMD E_LEN E_EXP <<< "${t}"
 }
 
-# This VM's id from the hypervisor (SMBIOS system UUID), never from a file a command could name.
-own_vm_id() { tr 'A-F' 'a-f' < "${S}/sys/class/dmi/id/product_uuid" 2> /dev/null | head -c 36; }
 
 proc_start() { # PID -> the process start time (field 22 of /proc/PID/stat), or nothing
   local s f
@@ -75,6 +73,126 @@ proc_start() { # PID -> the process start time (field 22 of /proc/PID/stat), or 
 }
 
 save() { printf '%s\n' "$2" > "$1.tmp" && mv -f "$1.tmp" "$1"; }   # FILE VALUE, swapped in whole
+
+# --- offline identity (guest-transport revision 2) --------------------------------------------------------------------
+# Comments are ignored by cloud-init. The only input is the host's per-clone user-data, not SMBIOS, KVP or the command.
+# A raw stream pass rejects duplicate JSON keys (jq's object parser would silently keep the last); the second pass
+# checks the closed Linux record and emits canonical text for comparisons and the persistent binding.
+parse_identity() {
+  jq --stream -es 'map(select(length == 2) | .[0]) | length == 6 and (unique | length) == 6' <<< "$1" > /dev/null 2>&1 || return 1   # check:identity-duplicates
+  jq -ecs '
+    def str($re): type == "string" and test($re);
+    if length == 1 then .[0] else empty end
+    | select(type == "object" and keys == ["kind", "lease_generation", "reservation_id", "schema", "scratch", "vm_id"]
+        and .schema == 2 and .kind == "guest_identity"
+        and (.vm_id | str("\\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\z"))
+        and (.reservation_id | str("\\Ar-[0-9a-f]{16}\\z"))
+        and (.lease_generation | type == "number" and . == floor and . >= 1 and . <= 999999999)
+        and .scratch == null)
+    | {schema, kind, vm_id, reservation_id, lease_generation, scratch}' <<< "$1" 2> /dev/null
+}
+
+# All cloud-init identity sources, without following arbitrary links. The instance alias may be relative or absolute; its
+# one-segment target must be a plain directory below this NoCloud datasource's instances folder.
+identity_material() { # -> MATERIAL CACHE_MATERIAL arrays
+  local c="${S}/var/lib/cloud" f d target prefix instance_id
+  MATERIAL=(); CACHE_MATERIAL=()
+  [ ! -L "${c}" ] && [ ! -L "${c}/instances" ] && [ ! -L "${c}/seed" ] || return 1
+  for d in "${c}" "${c}/instances" "${c}/seed"; do
+    [ ! -e "${d}" ] || { [ -d "${d}" ] && [ -r "${d}" ] && [ -x "${d}" ]; } || return 1
+  done
+  if [ -L "${c}/instance" ]; then
+    target=$(readlink "${c}/instance") || return 1
+    if [[ ${target} == /* ]]; then
+      prefix="${c}/instances/"
+      [[ ${target} == "${prefix}"* ]] || return 1   # check:identity-instance-link
+      instance_id=${target#"${prefix}"}
+    else
+      [[ ${target} == instances/* ]] || return 1   # check:identity-instance-link
+      instance_id=${target#instances/}
+    fi
+    [[ -n ${instance_id} && ${instance_id} != */* && ${instance_id} != . && ${instance_id} != .. ]] || return 1
+    d="${c}/instances/${instance_id}"
+    [ -d "${d}" ] && [ ! -L "${d}" ] || return 1
+  fi
+  for d in "${c}/instances/"* "${c}/instance"; do
+    [ -e "${d}" ] || [ -L "${d}" ] || continue
+    [ ! -L "${d}" ] || { [ "${d}" = "${c}/instance" ] && continue; return 1; }
+    [ -d "${d}" ] && [ -r "${d}" ] && [ -x "${d}" ] || return 1
+    for f in "${d}/user-data.txt"* "${d}/cloud-config.txt"*; do
+      [ -e "${f}" ] || [ -L "${f}" ] || continue
+      MATERIAL+=("${f}")
+    done
+    f="${d}/obj.pkl"
+    [ -e "${f}" ] || [ -L "${f}" ] || continue
+    CACHE_MATERIAL+=("${f}")
+  done
+  if [ -e "${c}/seed" ]; then
+    # Capture find's status, not a process substitution's: unreadable material must never look absent.
+    find -P "${c}/seed" -mindepth 1 -print0 > "${ST}/material.tmp" 2> /dev/null || return 1
+    while IFS= read -r -d '' f; do
+      [ ! -L "${f}" ] || return 1
+      [ -d "${f}" ] || MATERIAL+=("${f}")
+    done < "${ST}/material.tmp"
+    rm -f "${ST}/material.tmp" || return 1
+  fi
+}
+
+read_identity() { # PHASE -> ID, empty only after cleanup. One record per file; identical cached copies are normal.
+  local f line record found count size
+  ID=''
+  identity_material || return 1   # check:identity-material
+  [ "$1" != after ] || [ "${#CACHE_MATERIAL[@]}" = 0 ] || return 1   # check:identity-cache-reappeared
+  for f in "${MATERIAL[@]}"; do
+    [ ! -L "${f}" ] && [ -f "${f}" ] && [ -r "${f}" ] || return 1   # check:identity-readable
+    size=$(stat -c %s "${f}") || return 1
+    [ "${size}" -le 1048576 ] || return 1   # check:identity-size
+    # The writer emits ASCII. Do not let bash discard a NUL or decode hostile bytes into a diagnostic.
+    [ "$(tr -d '\11\12\15\40-\176' < "${f}" | wc -c)" = 0 ] || return 1   # check:identity-ascii
+    count=0
+    while IFS= read -r line || [ -n "${line}" ]; do
+      [[ ${line} == *aap-guest-identity* ]] || continue
+      [ "$1" != after ] || return 1   # check:identity-after-cleanup
+      count=$((count + 1))
+      [ "${count}" = 1 ] || return 1   # check:identity-one-record
+      [[ ${line} == '# aap-guest-identity: '* ]] || return 1   # check:identity-schema
+      record=$(parse_identity "${line#\# aap-guest-identity: }") && [ -n "${record}" ] || return 1   # check:identity-schema
+      found=${ID}
+      [ -z "${found}" ] || [ "${found}" = "${record}" ] || return 1   # check:identity-copies
+      ID=${record}
+    done < "${f}"
+  done
+  [ "$1" = after ] || [ -n "${ID}" ]   # check:identity-present
+}
+
+identity_failed() { # STATUS: fixed diagnostic only; neither malformed material nor identity fields are reflected.
+  save "${ST}/identity.failed" invalid && sync -f "${ST}/identity.failed" || exit 0
+  reply "$1" failed null 'identity record invalid'
+  return 1
+}
+
+check_identity() {
+  local bound phase=before disks
+  [ ! -e "${ST}/identity.failed" ] || { reply refused failed null 'identity record invalid'; return 1; }   # check:identity-final
+  if [ ! -e "${ST}/identity.json" ]; then
+    [ ! -e "${ST}/identity.cleaned" ] || { identity_failed refused; return 1; }   # check:identity-no-rebind
+    [ "${E_CMD}" = probe ] || { reply refused failed null 'first command must be probe'; return 1; }   # check:identity-first-probe
+    read_identity before || { identity_failed error; return 1; }   # check:identity-bind
+    disks=$(lsblk -dn -o TYPE 2> /dev/null) || { identity_failed error; return 1; }
+    [ "$(grep -cx disk <<< "${disks}")" = 1 ] || { identity_failed error; return 1; }   # check:identity-no-scratch
+    (umask 077; save "${ST}/identity.json" "${ID}") && sync -f "${ST}/identity.json" || exit 0
+  else
+    bound=$(cat "${ST}/identity.json" 2> /dev/null) || { identity_failed refused; return 1; }
+    [ ! -e "${ST}/identity.cleaned" ] || phase=after
+    read_identity "${phase}" || { identity_failed refused; return 1; }   # check:identity-reread
+    [ "${phase}" = after ] || [ "${ID}" = "${bound}" ] || { identity_failed refused; return 1; }   # check:identity-unchanged
+    ID=${bound}
+  fi
+  IFS=$'\t' read -r I_VM I_RID I_GEN < <(jq -r '[.vm_id, .reservation_id, .lease_generation] | @tsv' <<< "${ID}")
+  [ "${E_VM}" = "${I_VM}" ] || { reply refused "$(current_state)" null 'refused: vm_id differs from identity'; return 1; }   # check:cmd-vm-id
+  [ "${E_RID}" = "${I_RID}" ] || { reply refused "$(current_state)" null 'refused: reservation_id differs from identity'; return 1; }   # check:cmd-reservation
+  [ "${E_GEN}" = "${I_GEN}" ] || { reply refused "$(current_state)" null 'refused: another lease generation'; return 1; }   # check:cmd-generation
+}
 
 # --- the runner ------------------------------------------------------------------------------------------------------
 # RS: none (never started), running, exited (RX its exit code), lost (gone without an exit record).
@@ -94,6 +212,7 @@ runner_state() {
 
 # What the guest is doing now, for replies that report no command-specific state (refusals included).
 current_state() {
+  [ ! -e "${ST}/identity.failed" ] || { printf failed; return; }
   [ -e "${ST}/firstboot.done" ] || { printf booting; return; }
   runner_state
   case "${RS}" in
@@ -150,12 +269,14 @@ launch() {
 }
 
 # --- commands --------------------------------------------------------------------------------------------------------
-# The seed's copies cloud-init keeps (public material only, but nothing should keep it): user-data and the seed cache.
+# Cloud-init caches raw user-data/config and an opaque obj.pkl under instances; remove every copy without parsing cache data.
 scrub_bootstrap() {
-  local c="${S}/var/lib/cloud"
-  rm -rf "${c}/seed"
-  rm -f "${c}"/instance/user-data.txt* "${c}"/instance/cloud-config.txt "${c}"/instances/*/user-data.txt* "${c}"/instances/*/cloud-config.txt
-  [ ! -e "${c}/seed" ] && [ -z "$(compgen -G "${c}/instances/*/user-data.txt*")" ] && [ -z "$(compgen -G "${c}/instance/user-data.txt*")" ]
+  local c="${S}/var/lib/cloud" f
+  identity_material || return 1
+  rm -rf "${c}/seed" || return 1
+  for f in "${MATERIAL[@]}" "${CACHE_MATERIAL[@]}"; do [ ! -e "${f}" ] && [ ! -L "${f}" ] || rm -f "${f}" || return 1; done   # check:identity-cache-cleanup
+  identity_material && [ "${#MATERIAL[@]}" = 0 ] && [ "${#CACHE_MATERIAL[@]}" = 0 ] || return 1
+  save "${ST}/identity.cleaned" cleaned && sync -f "${ST}/identity.cleaned"
 }
 
 cmd_probe() {
@@ -215,7 +336,7 @@ cmd_shutdown() {
 }
 
 serve() {
-  local line own last exp now good marks payload=''
+  local line last exp now good marks payload=''
   IFS= read -r -n 1028 line || [ -n "${line}" ] || exit 0
   line=${line#$'\xef\xbb\xbf'}
   [ "${#line}" -le 1024 ] || exit 0   # check:cmd-line-length
@@ -224,11 +345,9 @@ serve() {
   { mkdir -p "${ST}" && chmod 0700 "${ST}"; } || exit 0
   exec 9> "${ST}/lock"
   flock -w 20 9 || exit 0
-  # guest-transport.md, Envelope: refuse another VM, another lease generation, a seq not above the last accepted one (gaps
-  # are normal), a nonce seen before, a one-shot class that already ran, an expired command.
-  own=$(own_vm_id)
-  [ "${E_VM}" = "${own}" ] || { reply refused "$(current_state)" null 'refused: vm_id is not this VM'; exit 0; }   # check:cmd-vm-id
-  [ ! -s "${ST}/generation" ] || [ "$(< "${ST}/generation")" = "${E_GEN}" ] || { reply refused "$(current_state)" null 'refused: another lease generation'; exit 0; }   # check:cmd-generation
+  # Bind from the offline record, then verify identity and phased presence before EVERY command (replays included).
+  check_identity || exit 0
+  # Sequence, nonce, one-shot, expiry and payload guards are unchanged by revision 2.
   last=$(cat "${ST}/seq" 2> /dev/null) || last=0
   [[ ${last} =~ ^[0-9]+$ ]] || last=2147483647
   [ "${E_SEQ}" -gt "${last}" ] || { reply refused "$(current_state)" null 'refused: seq not above the last accepted one'; exit 0; }   # check:cmd-seq
@@ -243,7 +362,6 @@ serve() {
   # that cannot be written and flushed (a full or broken state file system) stops here: the command does not run and gets
   # no reply (a failed guest), so it can never run again later under an old seq or without its one-shot mark.
   marks=1
-  [ -s "${ST}/generation" ] || save "${ST}/generation" "${E_GEN}" || marks=0
   save "${ST}/seq" "${E_SEQ}" || marks=0
   printf '%s\n' "${E_NONCE}" >> "${ST}/nonces" || marks=0
   [[ ${ONE_SHOT} != *" ${E_CMD} "* ]] || printf '%s\n' "${E_CMD}" >> "${ST}/shots" || marks=0
@@ -353,9 +471,9 @@ firstboot() {
   [ ! -e "${ST}/firstboot.done" ] || exit 0
   [ ! -e "${ST}/firstboot.started" ] || { [ -e "${ST}/firstboot.failed" ] || save "${ST}/firstboot.failed" interrupted; exit 1; }   # check:fb-once
   : > "${ST}/firstboot.started"
-  for step in host_key identity scrub tls post_generation linger docker runner_root cache; do
+  for step in host_key identity tls post_generation linger docker runner_root cache; do
     echo "aap-guest firstboot: ${step}"
-    if [ "${step}" = scrub ]; then scrub_bootstrap; else "fb_${step}"; fi || { save "${ST}/firstboot.failed" "${step}"; echo "aap-guest firstboot: ${step} failed"; exit 1; }
+    "fb_${step}" || { save "${ST}/firstboot.failed" "${step}"; echo "aap-guest firstboot: ${step} failed"; exit 1; }
   done
   : > "${ST}/firstboot.done"
 }

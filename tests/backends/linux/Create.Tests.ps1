@@ -18,7 +18,7 @@ BeforeAll {
         $B = New-LinBackend $w
         $r = New-LinReservation $w
         $pin = $(if ($null -ne $Sha) { $Sha } else { $w.BaseSha })
-        $s = Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $pin
+        $s = Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $pin -CatalogGuestRevision 2 -ApprovedGuestRevision 2
         $fail = @(Get-LinJournal $w $r.reservation_id | Where-Object { $_.op -eq 'create' -and $_.phase -eq 'failed' })
         [pscustomobject]@{ Step = $s; W = $w; B = $B; Res = (Get-LinRes $w $r.reservation_id); Detail = $(if ($fail.Count) { $fail[0].result.detail } else { '' }) }
     }
@@ -50,9 +50,9 @@ BeforeAll {
         $w = New-LinWorld
         $B = New-LinBackend $w
         $r = New-LinReservation $w
-        (Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        (Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2).Action | Should -Be 'created'
         Set-AapFakeHostNetworkKnob -Root $w.Net -Tamper $Tamper -Fail $Fail
-        $s = Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $r.reservation_id) -BaseSha256 $w.BaseSha
+        $s = Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $r.reservation_id) -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2
         Set-AapFakeHostNetworkKnob -Root $w.Net
         [pscustomobject]@{ Step = $s; W = $w; B = $B; Id = $r.reservation_id
             Detail = @(@(Get-LinJournal $w $r.reservation_id | Where-Object { $_.op -eq 'boot' -and $_.phase -eq 'failed' }) | ForEach-Object { $_.result.detail }) -join ' | '
@@ -191,7 +191,7 @@ Describe 'the base' {
             'mismatch'
         }.GetNewClosure()
         $r = New-LinReservation $w
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         [IO.File]::ReadAllText($probe) | Should -Be 'locked'
         @(Get-LinJournal $w $r.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_BaseHashMismatch*'
     }
@@ -201,7 +201,7 @@ Describe 'the base' {
         $B = New-LinBackend $w
         $r = New-LinReservation $w
         [void][IO.Directory]::CreateDirectory((Join-Path $w.Clones "$($r.reservation_id)\os.avhdx"))
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         @(Get-LinJournal $w $r.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_UnsafePath: os.avhdx is a dir*'
         @(Get-LinCalls $w 'NewVm *').Count | Should -Be 0
     }
@@ -225,7 +225,7 @@ Describe 'the per-clone key and seed' {
         $B = New-LinBackend $w
         $r = New-LinReservation $w
         $rid = $r.reservation_id
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         $seed = Read-LinSeed (Join-Path $w.Clones "$rid\seed.iso")
         $seed.label | Should -BeExactly 'CIDATA'
         @($seed.files.PSObject.Properties.Name) -join ',' | Should -Be 'user-data,meta-data,network-config'
@@ -250,16 +250,16 @@ Describe 'the per-clone key and seed' {
     It 'New-AapLinSeed refuses a value it cannot vouch for' -Tag 'seed-values' {
         $pub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI' + ('A' * 43)
         $decl = New-LinDecl 'aap-l-1-1-0123abcd'
-        (New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network $decl).Keys -join ',' | Should -Be 'user-data,meta-data,network-config'
+        (New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network $decl -ReservationId 'r-1a2b3c4d000000b1' -LeaseGeneration 7).Keys -join ',' | Should -Be 'user-data,meta-data,network-config'
         foreach ($bad in @(@('aap-w-1-1-0123abcd', 'aap-x', $pub), @('aap-l-1-1-0123abcd', 'AAP X', $pub), @('aap-l-1-1-0123abcd', 'aap-x', ($pub + "`nruncmd: [reboot]")),
                 @('aap-l-1-1-0123abcd', 'aap-x', 'ssh-rsa AAAAB3NzaC1yc2E'), @("aap-l-1-1-0123abcd`nruncmd", 'aap-x', $pub))) {
-            { New-AapLinSeed -VmName $bad[0] -InstanceId $bad[1] -PublicKey $bad[2] -Network $decl } | Should -Throw '*AAP_SeedInvalid*'
+            { New-AapLinSeed -VmName $bad[0] -InstanceId $bad[1] -PublicKey $bad[2] -Network $decl -ReservationId 'r-1a2b3c4d000000b1' -LeaseGeneration 7 } | Should -Throw '*AAP_SeedInvalid*'
         }
     }
 
     It 'the network-config is the declaration''s static addressing, DHCP off, on the hv_netvsc interface' {
         $pub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI' + ('A' * 43)
-        $nc = (New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd'))['network-config']
+        $nc = (New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd') -ReservationId 'r-1a2b3c4d000000b1' -LeaseGeneration 7)['network-config']
         $nc | Should -BeExactly ((@('version: 2', 'ethernets:', '  aap0:', '    match:', '      driver: hv_netvsc', '    dhcp4: false', '    dhcp6: false', '    accept-ra: false',
                     '    link-local: []', '    addresses: [172.31.251.7/24]', '    routes:', '      - to: default', '        via: 172.31.251.1', '    nameservers:',
                     '      addresses: [192.0.2.53, 198.51.100.53]') -join "`n") + "`n")
@@ -274,7 +274,7 @@ Describe 'the per-clone key and seed' {
         @{ Case = 'a key too many'; Change = @{ dhcp = $true } }
     ) {
         $pub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI' + ('A' * 43)
-        { New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd' $Change) } | Should -Throw '*AAP_SeedInvalid: the network declaration*'
+        { New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd' $Change) -ReservationId 'r-1a2b3c4d000000b1' -LeaseGeneration 7 } | Should -Throw '*AAP_SeedInvalid: the network declaration*'
     }
 
     It 'New-AapLinSeed puts only dotted IPv4 addresses and a prefix length into the YAML, even past a shared check that accepts more (<Case>)' -Tag 'seed-yaml' -ForEach @(
@@ -289,8 +289,8 @@ Describe 'the per-clone key and seed' {
     ) {
         Mock -ModuleName AapLinBackend Get-AapHostNetworkDeclarationProblems { }
         $pub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI' + ('A' * 43)
-        (New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd')).Keys -join ',' | Should -Be 'user-data,meta-data,network-config'
-        { New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd' $Change) } | Should -Throw '*AAP_NetworkInvalid*'
+        (New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd') -ReservationId 'r-1a2b3c4d000000b1' -LeaseGeneration 7).Keys -join ',' | Should -Be 'user-data,meta-data,network-config'
+        { New-AapLinSeed -VmName 'aap-l-1-1-0123abcd' -InstanceId 'aap-x' -PublicKey $pub -Network (New-LinDecl 'aap-l-1-1-0123abcd' $Change) -ReservationId 'r-1a2b3c4d000000b1' -LeaseGeneration 7 } | Should -Throw '*AAP_NetworkInvalid*'
     }
 
     It 'a key pair ssh-keygen did not make, or a public key of another shape, is refused' -Tag 'key-shape' {
@@ -305,7 +305,7 @@ Describe 'the per-clone key and seed' {
         $x = Invoke-LinCreate -Knobs @{ SeedLost = $How }
         Assert-LinRefused $x '*AAP_SeedInvalid: the seed image on disk is not the image that was written*'
         @(Get-LinCalls $x.W 'SetSeed *').Count | Should -Be 0
-        @(Get-LinCalls $x.W 'HashFile *seed.iso').Count | Should -Be $Hashed
+        @(Get-LinCalls $x.W 'HashFile *seed.iso.tmp').Count | Should -Be $Hashed
     }
 
     It 'the ISO writer takes only full blocks from the image stream and returns the SHA-256 of what it wrote' {
@@ -361,13 +361,13 @@ public class AapLinTestImageStream : IStream {
         $B = New-LinBackend $w
         $r = New-LinReservation $w
         $rid = $r.reservation_id
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         $pub1 = [IO.File]::ReadAllText((Join-Path $w.Clones "$rid\ssh\id_ed25519.pub"))
         # A crash before create/done: drop that record; a restarted supervisor re-runs create.
         $path = Join-Path $w.Journal "$rid.jsonl"
         [IO.File]::WriteAllText($path, ((@(Get-LinJournalLines $w $rid | Where-Object { $_ -notlike '*"phase":"done"*' }) -join "`n") + "`n"))
         $B2 = New-LinBackend $w
-        (Invoke-AapLinStep -Backend $B2 -Reservation (Get-LinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        (Invoke-AapLinStep -Backend $B2 -Reservation (Get-LinRes $w $rid) -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2).Action | Should -Be 'created'
         @(Get-LinCalls $w 'NewVm *').Count | Should -Be 1
         $pub2 = [IO.File]::ReadAllText((Join-Path $w.Clones "$rid\ssh\id_ed25519.pub"))
         $pub2 | Should -Not -Be $pub1
@@ -382,7 +382,7 @@ public class AapLinTestImageStream : IStream {
         $r = New-LinReservation $w
         $name = Get-AapVmName -Profile linux -Slot $r.slot -LeaseGeneration $r.lease_generation -ReservationId $r.reservation_id
         Save-LinVms $w @([pscustomobject]@{ Id = [guid]::NewGuid().ToString(); Name = $name; State = 'Off'; Cpus = 2; MemGib = 4; ConfigurationLocation = $w.Root })
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         @(Get-LinJournal $w $r.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_VmNotJournaled*'
         @(Get-LinCalls $w 'NewVm *').Count | Should -Be 0
         @(Get-LinVms $w).Count | Should -Be 0
@@ -394,12 +394,12 @@ public class AapLinTestImageStream : IStream {
         $B = New-LinBackend $w
         $r = New-LinReservation $w
         $rid = $r.reservation_id
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         $path = Join-Path $w.Journal "$rid.jsonl"
         [IO.File]::WriteAllText($path, ((@(Get-LinJournalLines $w $rid | Where-Object { $_ -notlike '*"phase":"done"*' }) -join "`n") + "`n"))
         $vms = @(Get-LinVms $w); $vms[0].Id = [guid]::NewGuid().ToString(); Save-LinVms $w $vms
         $B2 = New-LinBackend $w
-        [void](Invoke-AapLinStep -Backend $B2 -Reservation (Get-LinRes $w $rid) -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B2 -Reservation (Get-LinRes $w $rid) -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         @(Get-LinJournal $w $rid | Where-Object { $_.phase -eq 'failed' })[0].result.detail | Should -BeLike '*AAP_VmMismatch*'
         @(Get-LinCalls $w 'NewVm *').Count | Should -Be 1
     }
@@ -440,7 +440,7 @@ Describe 'the VM and its network' {
         $B = New-LinBackend $w
         $r = New-LinReservation $w
         $rid = $r.reservation_id
-        (Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        (Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2).Action | Should -Be 'created'
         $vm = @(Get-LinVms $w)[0]
         $order = @(Get-LinCalls $w | Where-Object { $_ -match '^(NewVm|NetAttach|NewSeedImage|SetSeed|NetVerify|StartVm) ' } | ForEach-Object { ($_ -split ' ')[0] })
         $order -join ',' | Should -Be 'NewVm,NetAttach,NewSeedImage,SetSeed,NetVerify'
@@ -508,7 +508,7 @@ Describe 'the VM and its network' {
         @($vm[0].Dvds).Count | Should -Be 0
         $first = @(Get-AapFakeHostNetworkRecord -Root $w.Net)[0].declaration.address
         $B = New-LinBackend $w
-        (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid) -BaseSha256 $w.BaseSha).Action | Should -Be 'created'
+        (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $rid) -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2).Action | Should -Be 'created'
         @(Get-LinCalls $w 'NewVm *').Count | Should -Be 1
         @(Get-LinCalls $w 'NewSeedImage *').Count | Should -Be 1
         @(Get-AapFakeHostNetworkRecord -Root $w.Net).Count | Should -Be 1
@@ -526,7 +526,7 @@ Describe 'the VM and its network' {
         $B = New-AapLinBackend -Provider (New-LinProvider) -Transport (New-LinGuest) -BrokerInvoker (New-LinBroker) -AllocatorRoot $w.Cap -JournalRoot $w.Journal `
             -StoragePath $w.StoragePath -LockTimeoutSeconds 5 -RelaxedTrustForTests -WarningAction SilentlyContinue -Sleep { param($s) }
         $r = New-LinReservation $w
-        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+        [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
         $x = [pscustomobject]@{ W = $w; Res = (Get-LinRes $w $r.reservation_id); Detail = @(Get-LinJournal $w $r.reservation_id | Where-Object { $_.phase -eq 'failed' })[0].result.detail }
         Assert-LinRefused $x '*AAP_NetworkUnavailable*'
     }
@@ -538,10 +538,10 @@ Describe 'the VM and its network' {
         Set-LinKnob $w @{ NewVmFails = $true }
         [void][IO.Directory]::CreateDirectory((Join-Path $w.Clones $r.reservation_id))
         $h = [IO.File]::Open((Join-Path $w.Clones "$($r.reservation_id)\held.bin"), [IO.FileMode]::Create, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-        try { (Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha).Code | Should -Be 'folders_remain' } finally { $h.Dispose() }
+        try { (Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2).Code | Should -Be 'folders_remain' } finally { $h.Dispose() }
         Set-LinKnob $w @{ NewVmFails = $false }
         $B.Now = { [DateTime]::UtcNow.AddSeconds(60) }   # a teardown retry runs at most once a minute
-        (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $r.reservation_id) -BaseSha256 $w.BaseSha).Action | Should -Be 'destroyed'
+        (Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $r.reservation_id) -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2).Action | Should -Be 'destroyed'
         @(Get-LinCalls $w 'NewVm *').Count | Should -Be 1
         (Get-LinRes $w $r.reservation_id).teardown_proof.runner_deregistered | Should -Be 'never_registered'
     }
@@ -601,11 +601,11 @@ Describe 'the guest network before every start and while it runs' {
             $w = New-LinWorld
             $B = New-LinBackend $w
             $r = New-LinReservation $w
-            [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha)
+            [void](Invoke-AapLinStep -Backend $B -Reservation $r -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2)
             $vms = @(Get-LinVms $w); $vms[0].State = 'Running'; Save-LinVms $w $vms
             $B.StatusSeconds = 3600; $B.NetAt[$r.reservation_id] = [DateTime]::UtcNow   # the running check is not due: only boot's
             Set-AapFakeHostNetworkKnob -Root $w.Net -Tamper $t
-            $s = Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $r.reservation_id) -BaseSha256 $w.BaseSha
+            $s = Invoke-AapLinStep -Backend $B -Reservation (Get-LinRes $w $r.reservation_id) -BaseSha256 $w.BaseSha -CatalogGuestRevision 2 -ApprovedGuestRevision 2
             @(Get-LinCalls $w 'NetAttach *').Count | Should -Be 1 -Because 'a running VM is never attached again'
             if ($t.Count) { $s.Action | Should -Be 'destroyed' } else { $s.Action | Should -Be 'booted' }
             @(Get-LinCalls $w 'StartVm *').Count | Should -Be 0
