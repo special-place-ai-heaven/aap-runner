@@ -52,6 +52,11 @@ Describe 'aap-runner host supervisor' {
             return [pscustomobject]@{ Code = $Code; Out = $Out; Err = ''; TimedOut = $false }
         }
 
+        # `wsl --list --verbose` as Invoke-AapWsl returns it (WSL_UTF8, NULs stripped).
+        function Get-AapWslVerbose([string[]]$Rows) {
+            return ((@('  NAME            STATE           VERSION') + $Rows) -join "`r`n") + "`r`n"
+        }
+
         function Get-AapFakeProcess {
             $p = [pscustomobject]@{ Id = 4242; HasExited = $false; Killed = $false }
             $p | Add-Member -MemberType ScriptMethod -Name Kill -Value { $this.HasExited = $true; $this.Killed = $true }
@@ -644,13 +649,13 @@ Describe 'aap-runner host supervisor' {
             BeforeEach {
                 $script:activeLeft = 0
                 $script:terminateCode = 1
-                $script:running = "aap-runner`n"
+                $script:listOut = Get-AapWslVerbose @('* Ubuntu-24.04    Stopped         2', '  aap-runner      Running         2')
                 $script:listCode = 0
                 $script:responder = {
                     param($line)
                     if ($line -eq '--terminate aap-runner') { return (Get-AapFakeResult $script:terminateCode '') }
-                    if ($line -eq '--list --running --quiet') {
-                        $r = Get-AapFakeResult $script:listCode $script:running
+                    if ($line -eq '--list --verbose') {
+                        $r = Get-AapFakeResult $script:listCode $script:listOut
                         if ($script:listCode -ne 0) { $r.Out = ''; $r.Err = 'Wsl/Service/E_UNEXPECTED' }
                         return $r
                     }
@@ -661,7 +666,7 @@ Describe 'aap-runner host supervisor' {
 
             It 'reports an error and keeps Off pending while the distro still runs' -Tag 'off-terminate' {
                 Invoke-AapCycle
-                $script:calls | Should -Contain 'wsl --list --running --quiet'
+                $script:calls | Should -Contain 'wsl --list --verbose'
                 $AapRt.Mode | Should -Be 'on'
                 $script:keep.Killed | Should -BeFalse
                 $s = Get-AapStatusFile
@@ -681,8 +686,12 @@ Describe 'aap-runner host supervisor' {
                 (Get-AapStatusFile).state | Should -Be 'off'
             }
 
-            It 'counts the distro off when it no longer runs' -Tag 'off-terminate' {
-                $script:running = "Ubuntu-24.04`n"
+            It 'counts the distro off when <name>' -Tag 'off-terminate' -TestCases @(
+                @{ name = 'it is Stopped'; rows = @('* Ubuntu-24.04    Running         2', '  aap-runner      Stopped         2') }
+                @{ name = 'it is not registered'; rows = @('* Ubuntu-24.04    Running         2', '  docker-desktop  Running         2') }
+                @{ name = 'it is the Stopped default'; rows = @('* aap-runner      Stopped         2', '  Ubuntu-24.04    Running         2') }
+            ) {
+                $script:listOut = Get-AapWslVerbose $rows
                 Invoke-AapCycle
                 $AapRt.Mode | Should -Be 'off'
                 $script:keep.Killed | Should -BeTrue
@@ -696,8 +705,15 @@ Describe 'aap-runner host supervisor' {
                 $script:keep.Killed | Should -BeFalse
                 $s = Get-AapStatusFile
                 $s.state | Should -Be 'error'
-                $s.detail | Should -Match 'list --running failed \(exit 1\)'
-                Get-AapLogText | Should -Match 'list --running exit 1: Wsl/Service/E_UNEXPECTED'
+                $s.detail | Should -Match 'cannot tell whether aap-runner runs: wsl --list --verbose exit 1'
+                Get-AapLogText | Should -Match 'wsl --list --verbose exit 1: Wsl/Service/E_UNEXPECTED'
+            }
+
+            It 'keeps Off pending when the list cannot be parsed' -Tag 'off-list' {
+                $script:listOut = "Windows Subsystem for Linux has no installed distributions.`r`n"
+                Invoke-AapCycle
+                $AapRt.Mode | Should -Be 'on'
+                (Get-AapStatusFile).detail | Should -Match 'cannot tell whether aap-runner runs: unreadable wsl --list --verbose'
             }
         }
     }
@@ -959,23 +975,62 @@ Describe 'aap-runner host supervisor' {
         }
 
         It 'drains a distro left running when desired is off at startup' {
-            $script:responder = { param($line) if ($line -eq '--list --running --quiet') { return (Get-AapFakeResult 0 "Ubuntu-24.04`naap-runner") }; return (Get-AapFakeResult 0 '') }
+            $script:responder = { param($line) if ($line -eq '--list --verbose') { return (Get-AapFakeResult 0 (Get-AapWslVerbose @('* Ubuntu-24.04    Stopped         2', '  aap-runner      Running         2'))) }; return (Get-AapFakeResult 0 '') }
             Write-AapStateFile '{"desired":"off"}'
             Initialize-AapMode
             $AapRt.Mode | Should -Be 'on'
         }
 
         # Unknown, not "not running"; still no guess at on, which would start the distro to drain it.
-        It 'logs a failing --list --running at startup and leaves the mode off' -Tag 'init-mode-list' {
+        It 'logs a failing wsl --list --verbose at startup and leaves the mode off' -Tag 'init-mode-list' {
             $script:responder = {
                 param($line)
-                if ($line -eq '--list --running --quiet') { $r = Get-AapFakeResult 1 ''; $r.Err = 'E_UNEXPECTED'; return $r }
+                if ($line -eq '--list --verbose') { $r = Get-AapFakeResult 1 ''; $r.Err = 'E_UNEXPECTED'; return $r }
                 return (Get-AapFakeResult 0 '')
             }
             Write-AapStateFile '{"desired":"off"}'
             Initialize-AapMode
             $AapRt.Mode | Should -Be 'off'
-            Get-AapLogText | Should -Match 'WARN wsl --list --running exit 1: E_UNEXPECTED; cannot tell whether aap-runner runs'
+            Get-AapLogText | Should -Match 'WARN cannot tell whether aap-runner runs: wsl --list --verbose exit 1: E_UNEXPECTED'
+        }
+
+        It 'leaves the mode off without a WARN when aap-runner is <name>' -Tag 'init-mode-list' -TestCases @(
+            @{ name = 'Stopped'; rows = @('* Ubuntu-24.04    Running         2', '  aap-runner      Stopped         2') }
+            @{ name = 'not registered'; rows = @('* Ubuntu-24.04    Running         2') }
+        ) {
+            $script:rows = $rows
+            $script:responder = { param($line) if ($line -eq '--list --verbose') { return (Get-AapFakeResult 0 (Get-AapWslVerbose $script:rows)) }; return (Get-AapFakeResult 0 '') }
+            Write-AapStateFile '{"desired":"off"}'
+            Initialize-AapMode
+            $AapRt.Mode | Should -Be 'off'
+            Get-AapLogText | Should -Not -Match 'WARN'
+        }
+    }
+
+    Describe 'distro state from wsl --list --verbose' {
+        # rows get the header Get-AapWslVerbose adds; raw is the whole output as is.
+        It 'reads <name> as <want>' -Tag 'wsl-list' -TestCases @(
+            @{ name = 'aap-runner Running'; rows = @('  aap-runner      Running         2'); raw = $null; want = 'running' }
+            @{ name = 'aap-runner Stopped'; rows = @('  aap-runner      Stopped         2'); raw = $null; want = 'stopped' }
+            @{ name = 'aap-runner absent'; rows = @('* Ubuntu-24.04    Running         2'); raw = $null; want = 'stopped' }
+            @{ name = 'aap-runner as the * default'; rows = @('* aap-runner      Running         2', '  Ubuntu-24.04    Stopped         2'); raw = $null; want = 'running' }
+            @{ name = 'extra distros around it'; rows = @('* Ubuntu-24.04    Running         2', '  aap-runner      Stopped         2', '  aap-runner-old  Running         2', '  docker-desktop  Running         2'); raw = $null; want = 'stopped' }
+            @{ name = 'a prefix match only'; rows = @('  aap-runner-old  Running         2'); raw = $null; want = 'stopped' }
+            @{ name = 'a state that is neither'; rows = @('  aap-runner      Installing      2'); raw = $null; want = 'unknown' }
+            @{ name = 'no header'; rows = $null; raw = "aap-runner Running 2`r`n"; want = 'unknown' }
+            @{ name = 'empty output'; rows = $null; raw = ''; want = 'unknown' }
+        ) {
+            $text = $raw
+            if ($null -ne $rows) { $text = Get-AapWslVerbose $rows }
+            ConvertFrom-AapWslList $text 'aap-runner' | Should -BeExactly $want
+        }
+
+        It 'is unknown, with the reason, when wsl fails' -Tag 'wsl-list' {
+            $script:responder = { param($line) $r = Get-AapFakeResult -1 ''; $r.Err = 'E_ACCESSDENIED'; return $r }
+            $d = Get-AapDistroState
+            $d.State | Should -BeExactly 'unknown'
+            $d.Why | Should -BeExactly 'wsl --list --verbose exit -1: E_ACCESSDENIED'
+            $script:calls | Should -Be @('wsl --list --verbose')
         }
     }
 

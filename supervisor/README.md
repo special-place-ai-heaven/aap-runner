@@ -46,12 +46,17 @@ it.** The only reason is that WSL sessions belong to the logon session
   it (cached until it is back, so a retry never re-reads the new file as the
   old one) or removes the file if there was none; a file that could not be put
   back is logged as `ERROR` and never counts as applied. A failed
-  `wsl --terminate` is checked with `wsl --list --running`; while the distro
-  still runs, or the list itself fails (its exit code and stderr are logged),
-  the status is `error` with `... and aap-runner still runs` or
-  `... and wsl --list --running failed (exit N)` and Off tries again. At
-  supervisor start a failing `--list --running` is logged as `WARN` and the
-  distro is treated as not known to run (no `wsl` call that would start it).
+  `wsl --terminate` is checked with `wsl --list --verbose` (not
+  `--list --running`, which fails when nothing runs): the `aap-runner` row's
+  STATE `Running` is running, `Stopped` or no row is not running, and a
+  failing call, output without the `NAME STATE VERSION` header or any other
+  state word is unknown (logged with the exit code and stderr or the output).
+  While it runs or is unknown the status is `error` with
+  `... and aap-runner still runs` or
+  `... and cannot tell whether aap-runner runs: <why>` and Off tries again.
+  The same check runs at supervisor start: unknown is logged as `WARN` and
+  the distro is treated as not known to run (no `wsl` call that would start
+  it).
 - **Off:** runs `aap-runner-manager --drain`, waits up to 6 h for the manager
   to exit after its job, then `wsl.exe --terminate aap-runner`. Flipping back to
   on while draining undrains instead. A job still running after the 6 h is

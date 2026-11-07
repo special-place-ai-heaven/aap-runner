@@ -2235,12 +2235,12 @@ function Invoke-AapOff {
     if ($r.Code -ne 0) {
         Write-AapLog "terminate exit $($r.Code): $(Format-AapText $r.Err)"
         # Off only once the distro is gone; a list that fails proves nothing.
-        $l = Invoke-AapWsl -Arguments @('--list', '--running', '--quiet')
+        $d = Get-AapDistroState
         $why = $null
-        if ($l.Code -ne 0) {
-            Write-AapLog "wsl --list --running exit $($l.Code): $(Format-AapText $l.Err)"
-            $why = "wsl --list --running failed (exit $($l.Code))"
-        } elseif (@(Split-AapLine $l.Out) -contains $AapCfg.Distro) {
+        if ($d.State -ceq 'unknown') {
+            Write-AapLog $d.Why
+            $why = "cannot tell whether $($AapCfg.Distro) runs: $($d.Why)"
+        } elseif ($d.State -ceq 'running') {
             $why = "$($AapCfg.Distro) still runs"
         }
         if ($why) {
@@ -2325,20 +2325,50 @@ function Invoke-AapCycle {
     }
 }
 
+# Whether the distro runs, from `wsl --list --verbose` (it exits 0 while any
+# distro is installed; `--list --running` fails when none runs). Invoke-AapWsl
+# decodes it (WSL_UTF8, NULs stripped). @{ State = 'running' | 'stopped' |
+# 'unknown'; Why }: not registered is stopped; a failing call or output
+# without the NAME STATE VERSION header is unknown.
+function Get-AapDistroState {
+    $r = Invoke-AapWsl -Arguments @('--list', '--verbose')
+    if ($r.Code -ne 0) { return @{ State = 'unknown'; Why = "wsl --list --verbose exit $($r.Code): $(Format-AapText $r.Err)" } }
+    $state = ConvertFrom-AapWslList $r.Out $AapCfg.Distro
+    $why = ''
+    if ($state -ceq 'unknown') { $why = "unreadable wsl --list --verbose: $(Format-AapText $r.Out)" }
+    return @{ State = $state; Why = $why }
+}
+
+# One row per distro under a NAME STATE VERSION header; the default carries a
+# leading '*'. Running is running, Stopped or no row is stopped, any other
+# state word (Installing, Converting, ...) or no header is unknown.
+function ConvertFrom-AapWslList([string]$Text, [string]$Name) {
+    $lines = @(Split-AapLine $Text)
+    if (-not ($lines | Where-Object { $_ -match '^\*?\s*NAME\s+STATE\s+VERSION\s*$' })) { return 'unknown' }
+    foreach ($l in $lines) {
+        $f = @(($l -replace '^\s*\*?\s*', '') -split '\s+')
+        if ($f.Count -lt 2 -or $f[0] -cne $Name) { continue }
+        if ($f[1] -ceq 'Running') { return 'running' }
+        if ($f[1] -ceq 'Stopped') { return 'stopped' }
+        return 'unknown'
+    }
+    return 'stopped'
+}
+
 # A supervisor that was killed leaves the distro running (and its keep-alive
 # child). When desired is off at startup and the distro runs, treat it as On
 # so the next cycle drains and terminates it. When desired is on, the start
 # sequence is idempotent and simply runs again.
 function Initialize-AapMode {
     if ((Read-AapDesired) -ne 'off') { return }
-    $r = Invoke-AapWsl -Arguments @('--list', '--running', '--quiet')
-    if ($r.Code -ne 0) {
+    $d = Get-AapDistroState
+    if ($d.State -ceq 'unknown') {
         # Unknown, not "not running". No guess at on: a wsl call into a
         # stopped distro would start it just to drain it.
-        Write-AapLog "WARN wsl --list --running exit $($r.Code): $(Format-AapText $r.Err); cannot tell whether $($AapCfg.Distro) runs"
+        Write-AapLog "WARN cannot tell whether $($AapCfg.Distro) runs: $($d.Why)"
         return
     }
-    if (@(Split-AapLine $r.Out) -contains $AapCfg.Distro) {
+    if ($d.State -ceq 'running') {
         Write-AapLog "$($AapCfg.Distro) is running while desired is off; will drain"
         $AapRt.Mode = 'on'
     }
