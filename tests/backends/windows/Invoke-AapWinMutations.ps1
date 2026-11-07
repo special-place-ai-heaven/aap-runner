@@ -2,7 +2,7 @@
 # psdirect-call.ps1 carries '# check:<name>'. For each name this copies supervisor\ (the backend imports ..\..\capacity and ..\..\broker) to a temp
 # folder, replaces the condition of every if-statement tagged with that name by $false (found with the PowerShell parser,
 # not by text search), and runs the tests tagged <name> against the copy in a child process. A check is covered only if
-# at least one of its tests then fails. Exit 0 when every check is covered.
+# at least one of its tests then fails and the child leaves its own TEMP empty. Exit 0 when every check is covered.
 #   pwsh -File tests/backends/windows/Invoke-AapWinMutations.ps1 [-Name <check>...]
 param([string[]]$Name, [string]$One, [string]$ModulePath)
 Set-StrictMode -Version 2.0
@@ -52,15 +52,22 @@ try {
             $lineNos += @($mine | ForEach-Object { "$($s.Name):$_" })
         }
         $module = Join-Path $dir 'backends\windows\AapWinBackend.psm1'
-        $out = & $exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath -One $tag -ModulePath $module 2>&1
+        # The child's TEMP (its Pester test drives) is a folder of its own that must be empty when it exits: a mutant that
+        # leaves anything behind (a folder only SYSTEM and Administrators may open) is reported, never left in TEMP.
+        $tmp = Join-Path $work "$tag\tmp"
+        [void][IO.Directory]::CreateDirectory($tmp)
+        $saved = @($env:TEMP, $env:TMP)
+        try { $env:TEMP = $tmp; $env:TMP = $tmp; $out = & $exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath -One $tag -ModulePath $module 2>&1 }
+        finally { $env:TEMP = $saved[0]; $env:TMP = $saved[1] }
         $m = [regex]::Match(($out -join "`n"), 'MUTANT \S+ tests=(\d+) failed=(\d+)')
         $count = $(if ($m.Success) { [int]$m.Groups[1].Value } else { 0 }); $failed = $(if ($m.Success) { [int]$m.Groups[2].Value } else { 0 })
-        $verdict = $(if ($count -eq 0) { 'NO-TESTS' } elseif ($failed -gt 0) { 'KILLED' } else { 'SURVIVED' })
+        $verdict = $(if ([IO.Directory]::GetFileSystemEntries($tmp).Count) { 'LEFTOVER' } elseif ($count -eq 0) { 'NO-TESTS' } elseif ($failed -gt 0) { 'KILLED' } else { 'SURVIVED' })
         $rows.Add([pscustomobject]@{ Check = $tag; Lines = ($lineNos -join ','); Tests = $count; Failed = $failed; Verdict = $verdict })
         Write-Host ('{0,-22} {1,-9} tests={2} failed={3}' -f $tag, $verdict, $count, $failed)
     }
 } finally {
-    if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+    # A LEFTOVER may be undeletable here: say where it is instead of failing before the summary.
+    try { if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force } } catch { Write-Warning "left behind: $work ($($_.Exception.Message))" }
 }
 $bad = @($rows | Where-Object { $_.Verdict -ne 'KILLED' })
 "MUTATIONS host=$($PSVersionTable.PSVersion) checks=$($rows.Count) killed=$($rows.Count - $bad.Count) not_killed=$($bad.Count) $(@($bad | ForEach-Object { "$($_.Check):$($_.Verdict)" }) -join ' ')"

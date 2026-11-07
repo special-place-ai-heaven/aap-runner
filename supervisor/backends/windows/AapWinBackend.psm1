@@ -54,6 +54,7 @@ $script:BootMinutes = 15                # guest-transport.md: probe until 15 min
 $script:LeaseWindowMinutes = 15         # a lease call the broker never recorded cannot be recorded after this (55 s run cap)
 $script:RetrySeconds = 60               # a pending release is asked again at most this often
 $script:TeardownTries = 3               # ARCHITECTURE.md section 10: three retries over 15 s, then quarantined
+$script:MeasureTries = 3                # clone folder walks per step before 'clone not measurable' (a file can vanish mid-walk)
 $script:TeardownPauseSeconds = 5
 # ponytail: fixed VHDX metadata headroom under scratch_gib; replace with the P02.1 measurement of a full VHDX.
 $script:ScratchHeadroomBytes = 67108864
@@ -69,7 +70,7 @@ $script:BuildVmRe = '^aap-wbuild-[0-9a-f]{8}\z'   # the image builder's build VM
 $script:GenerationRe = '^win25-vs2026-x64/[0-9]{8}\.[0-9]+\.[0-9]+-aap\.[0-9]+\z'
 $script:Reserved = '^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]) *(\..*)?$'
 $script:ProviderOps = @('GetVolumeGuid', 'GetHostSecurity', 'HashFile', 'NewDiffDisk', 'GetVhdParent', 'NewDisk', 'WriteUnattend', 'NewVm',
-    'GetVmConfig', 'StartVm', 'StopVm', 'RemoveVm', 'ListVms', 'MeasureBytes')
+    'GetVmConfig', 'StartVm', 'StopVm', 'RemoveVm', 'ListVms', 'MeasureBytes', 'DismountDisk')
 $script:VmGroupSid = 'S-1-5-83-0'      # NT VIRTUAL MACHINE\Virtual Machines: may read a sealed base (P06), nothing more
 # The lease outcomes journaled right after the lease call (a repeated `ready` `done` record: `op` has no lease field), so a
 # restarted supervisor never takes a broker that lost an issued lease for one that never recorded it.
@@ -1171,6 +1172,11 @@ function Invoke-AapWinDestroy($B, $r, $j, [switch]$Force, [switch]$Urgent) {
                 & $B.Provider.RemoveVm @{ VmId = $vm.Id }
             }
         } catch { $null = $_ }
+        # A disk a crash left mounted on the host (inside WriteUnattend or NewDisk) holds its file open: dismount it once
+        # the VM is gone, or the folder never goes. Only a plain file is passed; a link is removed as an entry below.
+        foreach ($disk in @((Join-Path $clone 'os.avhdx'), (Join-Path $scratch 'scratch.vhdx'))) {
+            try { if ((Get-AapWinPathKind $disk) -ceq 'file') { & $B.Provider.DismountDisk @{ Path = $disk } } } catch { $null = $_ }   # check:stale-mount
+        }
         Invoke-AapWinFault 'destroy:after-vm'
         try { & $B.Network.Detach @{ VmId = $vmId; VmName = $name; Profile = 'windows' }; $detached = $true } catch { $null = $_ }
         try { Remove-AapWinTree $clone $B.Storage.clone_root.Path } catch { $null = $_ }
@@ -1256,7 +1262,11 @@ function Get-AapWinLimitBreach($B, $r, $j) {
     if (-not $vm.Count) { return $null }
     if ($vm[0].State -like 'Paused*') { return 'vm paused' }   # check:vm-paused
     $clone = Join-Path $B.Storage.clone_root.Path ([string]$r.reservation_id)
-    try { $bytes = [double](& $B.Provider.MeasureBytes @{ Path = $clone }) } catch { return 'clone not measurable' }
+    # A walk can meet a file Hyper-V deletes under it (a transient race): walk again, up to MeasureTries; only a folder
+    # that never measures is a broken limit.
+    $bytes = $null
+    for ($try = 1; $null -eq $bytes -and $try -le $script:MeasureTries; $try++) { try { $bytes = [double](& $B.Provider.MeasureBytes @{ Path = $clone }) } catch { $null = $_ } }
+    if ($null -eq $bytes) { return 'clone not measurable' }   # check:clone-measure
     if ($bytes -gt [double]$r.clone_gib * $script:GiB) { return 'clone over cap' }   # check:clone-cap
     $rid = [string]$r.reservation_id
     $now = Get-AapWinNow $B

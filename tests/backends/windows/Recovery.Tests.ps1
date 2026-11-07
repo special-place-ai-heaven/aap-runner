@@ -264,6 +264,27 @@ Describe 'reconcile callbacks' {
         (Get-WinRes $w $x.Id).state | Should -Be 'reconciled'
     }
 
+    It 'a disk a crash left mounted on the host is dismounted by the destroy reconcile asks for' -Tag 'stale-mount' {
+        $x = New-WinAt 'busy'
+        $w = $x.W
+        $B = $x.B
+        $disks = @((Join-Path $w.Clones "$($x.Id)\os.avhdx"), (Join-Path $w.Scratch "$($x.Id)\scratch.vhdx"))
+        try {
+            foreach ($d in $disks) { Mount-WinStale $d }
+            & (Get-Module AapCapacity) { function script:Get-AapUtcNow { [DateTime]::UtcNow.AddSeconds(120) } }
+            try {
+                [void](Invoke-AapReconcile -Root $w.Cap -Inventory { Get-AapWinInventory -Backend $B } -BrokerStatus { param($r) Get-AapWinBrokerStatus -Backend $B -Reservation $r } -RelaxedTrustForTests)
+                Set-WinKnob $w @{ RunnerBusy = $false; RunnerStatus = 'offline' }
+                $rec = Invoke-AapReconcile -Root $w.Cap -Inventory { Get-AapWinInventory -Backend $B } -BrokerStatus { param($r) Get-AapWinBrokerStatus -Backend $B -Reservation $r } -RelaxedTrustForTests
+            } finally { & (Get-Module AapCapacity) { function script:Get-AapUtcNow { [DateTime]::UtcNow } } }
+            @($rec.Actions | Where-Object { $_.action -eq 'destroy' }).Count | Should -Be 1
+            (Invoke-AapWinStep -Backend $B -Reservation (Get-WinRes $w $x.Id)).Action | Should -Be 'destroyed'
+            (Get-WinRes $w $x.Id).state | Should -Be 'reconciled'
+            @(Get-WinCalls $w 'DismountDisk *') | Should -Be @($disks | ForEach-Object { "DismountDisk $_" })
+            @(Get-WinCalls $w 'RemoveVm *').Count | Should -Be 1
+        } finally { Clear-WinMounts }
+    }
+
     It 'the broker status callback without a lease, after a journaled job end, and with the broker down' {
         $x = New-WinAt 'creating'
         (Get-AapWinBrokerStatus -Backend $x.B -Reservation (Get-WinRes $x.W $x.Id)).status | Should -Be 'absent'
