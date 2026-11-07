@@ -3,7 +3,7 @@
 Windows tray front-end for the self-hosted runner. The window only reads and writes JSON files in
 `C:\ProgramData\aap-runner` (writes only under
 `inbox\`, including `inbox\jobs\`) and opens the logs folder. It never runs `wsl.exe`. GitHub setup is the one place that calls the public GitHub API, and it sends no credentials.
-The same exe has an elevated `--helper` mode (below) that shells out to the existing PowerShell install scripts.
+The same exe has an elevated `--helper` mode (below) that shells out to the existing PowerShell install scripts, and replaces the installed tray exe for `update`.
 On a fresh PC it opens the first-run wizard. Per-user setup drafts are stored under
 `%LOCALAPPDATA%\aap-runner`; they never authorize elevated actions.
 
@@ -17,8 +17,8 @@ admin-written.
 | `inbox\state.json` | tray (atomic: `.tmp` then rename) | `{"desired":"on"}` or `{"desired":"off"}` |
 | `inbox\settings.json` | tray (atomic) | `{"runner_count":1..5,"job_cpus":1..28,"job_memory_gib":1..80,"paused":false}` plus schema 2 keys; `"windows_runner_count":0..4` is reserved for a tray with a Windows backend and never written by this one in schema 2. Schema 3 ([`settings-v3.schema.json`](../../parity/contracts/settings-v3.schema.json), every key) over a stored schema 3 file, or while a fresh `status.v5.json` lists 3 in `settings_schemas`, see below |
 | `inbox\tray.log` | tray, appended if `inbox\` exists | one line per failed write/spawn |
-| `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`, or the `identity` request below. Install uses schema 2 (First-run wizard). The elevated helper reads it. |
-| `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code` |
+| `inbox\jobs\<id>.json` | tray | schema 1 request: `{"schema":1,"id":"<16 hex>","verb":"verify"|"repair"}`, or the `identity` request below. Install uses schema 2 (First-run wizard); `update` is schema 1 plus `exe_path` and `sha256` (Tray update). The elevated helper reads it. |
+| `jobs\<id>\status.json` | elevated helper | schema 1: `state` is `queued`, `running`, `passed`, `failed`, or `rejected`, plus `step` and `exit_code`; a passed `update` adds `sha256` (the installed exe) |
 | `jobs\<id>\log.txt`, `exit.txt` | elevated helper | live log and the process exit code |
 | `status.json` | supervisor, never the tray | `{"state":"off\|starting\|idle\|running\|draining\|paused\|error","job":"…","updated":"<RFC3339>","detail":"…","runner_count":N,"job_cpus":N,"job_memory_gib":N,"repo":"owner/name","run_url":"https://github.com/…/actions/runs/N"}` (the last five optional; `repo` and `run_url` may be `""`). Schema 4 adds `work_disk_gib`, `work_disk_free_gb`, `work_disk_floor_gb` and `cleaning`; schema 3 still reads, with no disk sample and cleaning false. A schema above 4 is rejected. |
 | `status.v5.json` | supervisor, never the tray | [`status-v5.schema.json`](../../parity/contracts/status-v5.schema.json): both profiles, every backend's slots, storage, the legacy pool. Read at most 64 KiB; missing, unparseable, stale (over 180 s old, or `updated` in the future), a `schema` other than 5, or not exactly the Linux and Windows profiles = not there, and the tray keeps to `status.json` and settings schema 2. A Windows profile with `backend: windows-host` (the interim runner on this PC) replaces the window's Windows "not installed" text, see below |
@@ -79,7 +79,7 @@ admin-written.
 ## Menu
 
 State line (with applied limits when reported, e.g. `Idle · 2 runners · 24 cpu · 72 GiB total`; same text
-as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, GitHub setup…, Identity…, Verify install, Repair install, Open logs, version, Quit.
+as the tooltip), Open job, Start, Stop, Restart, Pause/Resume, Settings…, GitHub setup…, Identity…, Verify install, Repair install, Update tray…, Open logs, version, Quit.
 Left click on the icon opens the same window.
 
 - Dark menu: the menu follows the Windows app theme (HKCU `...\Themes\Personalize` `AppsUseLightTheme`).
@@ -298,9 +298,9 @@ runner parity and planned zccache migration are assessed separately in
 
 ## Elevated helper
 
-`aap-runner-tray.exe --helper <verb> <id>` with `<verb>` `verify`, `repair`, `identity`, or `install` and `<id>` 16 lowercase hex digits.
+`aap-runner-tray.exe --helper <verb> <id>` with `<verb>` `verify`, `repair`, `identity`, `install`, or `update` and `<id>` 16 lowercase hex digits; `update` takes a third argument, the expected sha256 (Tray update).
 The menu items write `inbox\jobs\<id>.json` and start that command through ShellExecute `runas` (one UAC prompt).
-The helper accepts only schema 1 plus that verb and id; `identity` must carry the nine fields above, each re-checked, and the other two verbs must carry nothing else. Every directory it uses is
+The helper accepts only schema 1 plus that verb and id; `identity` must carry the nine fields above, each re-checked, `install` (schema 2) its fields from the First-run wizard, `update` the five fields under Tray update, and `verify` and `repair` nothing else. Every directory it uses is
 under `C:\ProgramData\aap-runner` or a fixed install path (`C:\wsl`, the work VHDX, the two task names). A junction
 on the way is refused. `AAP_FAKE_BASE` is not consulted.
 
@@ -317,8 +317,104 @@ reinstalls the supervisor task, remounts the VHDX, and restarts `AAP-CRRR-Superv
 `identity` (`helper-run.ps1 -Verb identity -Id <id>`) reads `inbox\jobs\<id>.json` itself, re-checks every field with the rules above, and opens that request once (`CreateFileW` `GENERIC_READ`, `FILE_SHARE_READ` plus `FILE_SHARE_DELETE`, `OPEN_EXISTING`, `FILE_FLAG_OPEN_REPARSE_POINT` | `FILE_FLAG_BACKUP_SEMANTICS`). The JSON is at most 4096 bytes read from that handle, and the owner SID comes from `GetSecurityInfo` on the same handle, then `ProfileList`. It opens the key once the same way and checks that handle: a reparse point is `key file is a reparse point`, a directory is not a regular file, and `GetFinalPathNameByHandleW` (the `\\?\` prefix stripped) must be an `X:\...` path under the requester profile or the reason is `key file is not under <profile>`. Size comes from `GetFileSizeEx` (empty, or 16 KiB or more, refused). The PEM header is the first line from `ReadFile` on that handle; the buffer is cleared and the handle is seeked back to 0. The same handle is duplicated onto the one `wsl` stdin. There is no second open by name. Before `wsl`, `inbox\state.json` `desired` must be exactly `on` and `status.json` `state` must not be `draining` or `paused`, or the helper exits 2 with `pool is off; retry when idle or running` or `pool is <state>; retry when idle or running` and does not start `wsl`. Otherwise the observed status is a 6th argument, exactly `idle`, `running`, or `hold` (`hold` covers any other state, such as starting, error, or missing). Inside the distro the script writes `app.pem.tmp` (root, 0400) and `manager.conf.tmp` with `AAP_GITHUB_ORG`, `AAP_GITHUB_APP_ID`, `AAP_GITHUB_APP_INSTALLATION_ID`, `AAP_RUNNER_GROUP`, `AAP_RUNNER_LABELS`, and `AAP_GITHUB_APP_PRIVATE_KEY_PATH=/etc/aap-runner/app.pem` replaced in place (appended when missing) and every other line kept, then runs `AAP_MANAGER_CONF=manager.conf.tmp aap-runner-manager --check-limits`. Drain happens before the swap, and only when that 6th argument is `idle` or `running` and `systemctl is-active` is `active`. The loop count and sleep are `AAP_DRAIN_ITERS` (default 120) and `AAP_DRAIN_SLEEP` (default 5). On timeout it prints `FAIL pool did not drain in 10 min; retry when idle`, leaves the tmp files, does not swap, and exits 1. The swap copies an existing key to `app.pem.bak` (root, 0400), moves the new key into place, then moves the conf; if the conf move fails, the backup is moved back over the key (or the new key is removed when there was no backup). The backup is removed only after both moves succeed. A drain that is still active after 10 min runs `--undrain`, deletes the `.tmp` files, and exits with `FAIL pool did not drain in 10 min; retry when idle`, which is the tray step. After a drain that does finish, the helper re-reads desired and status before `--undrain` and `systemctl start`; if desired is off or the status is draining or paused it skips the restart and prints `identity installed; pool left paused`. `starting` and `error` are refused. `off` and a missing status are allowed only while the unit is inactive. A key with more than one hard link is refused. The key handle is the child stdin (`CreateProcessW` / `STARTF_USESTDHANDLES`); `WSLENV` is removed for that child and for the direct `wsl.exe` calls. `--undrain` and `systemctl start` run only when the 6th argument was `idle` or `running` and the drain finished; otherwise the new identity applies at the next start. The log carries `INFO identity org … app … installation … group … labels …`, `key installed: 1 file, N bytes`, `manager.conf updated: …`, the pool line, and `PASS identity` only when wsl exits 0 and a copied line starts with `key installed:` (exit 0 without that line is `FAIL identity key installed line missing`); never the key, the key path, or the conf. The scripts are compiled into
 the exe and written under `jobs\<id>\scripts` before they run. The window tails `log.txt`.
 
-The window finds the current job from `%TEMP%\aap-runner-tray\helper.json` (schema 1, id, verb, optional error). The tray only accepts a result whose `id` was issued by this process; a file left by a previous run is ignored.
+The window finds the current job from `%TEMP%\aap-runner-tray\helper.json` (schema 1, id, verb, optional error). The tray only accepts a result whose `id` was issued by this process; a file left by a previous run is ignored. The exception is `update` (below): for 15 minutes after the pointer was written, the window shows an update job it did not issue, but only from a job folder, its ancestors and a `status.json` that are all admin-only (the same rule as install resume).
 The helper does not read that file. The supervisor does not read it either.
+
+## Tray update
+
+Update tray… (tray menu) replaces `C:\Program Files\aap-runner\aap-runner-tray.exe` with a build the
+owner picks: one UAC prompt, then one confirmation box, no console. Only the installed tray offers
+it (the tray checks its own handle-resolved path first).
+
+1. The tray shows the classic Open dialog (`*.exe`, started in `%USERPROFILE%\Downloads`) and runs
+   the candidate checks of step 5 on the pick, so a refused location is reported before the prompt.
+   It reads the file (at most 64 MiB), computes its SHA-256 (CNG), and writes
+   `{"schema":1,"id":"<16 hex>","verb":"update","exe_path":"C:\\...\\aap-runner-tray.exe","sha256":"<64 lowercase hex>"}`
+   (exactly these five fields) to `inbox\jobs\<id>.json`. If that write fails nothing is started.
+2. It starts `--helper update <id> <sha256>` through `runas`: the expected hash is also on the
+   elevated command line, and every other verb takes exactly `<verb> <id>`. Once the prompt is
+   accepted it opens the window on Status (left running) and quits itself; a declined prompt leaves
+   it running.
+3. In `--helper` mode (every verb) the process first calls
+   `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` and exits 2 if that fails. Then, when it
+   runs from the installed path, it deletes `aap-runner-tray.exe.prev`: the build that replaced it
+   has started, so the old one is no longer kept as a startable fallback. A `.prev` still running
+   (an old window) stays until the next elevated run.
+4. The helper, before copying anything, refuses unless it runs from exactly
+   `C:\Program Files\aap-runner\aap-runner-tray.exe` (handle-resolved, compared case-insensitively),
+   that exe is admin-only and on a fixed local drive, and its folder and every ancestor pass the
+   admin-only checks above. It re-validates the request: schema 1, the id and verb match the command
+   line, no identity or sizing field, `sha256` is 64 lowercase hex and equal to the command line's,
+   and `exe_path` is a plain `X:\...\*.exe` under 1 KiB made of letters, digits, space, `_`, `.`, `-`
+   and `\` only (so no UNC, `\\?\`, `\\.\`, `/`, `:` after the drive (no alternate data stream),
+   `..`, quote or control character), with no empty or trailing-dot/space component and no DOS
+   device name (`CON`, `NUL`, `COM1`…).
+5. It opens the candidate once (`FILE_FLAG_OPEN_REPARSE_POINT`, sharing read only) and checks that
+   handle: not a reparse point, a regular file, one hard link, 1 byte to 64 MiB, and
+   `GetFinalPathNameByHandleW` equal to the requested path on a fixed local drive. Then the
+   installer's location rule, with the elevated token's user: the file's owner (read from the same
+   handle) is that user or Administrators, no other SID has an allow ACE with write, append,
+   write-attributes, delete, write-DAC, write-owner or generic write/all on it, its folder passes the
+   same test, and no ancestor lets another SID delete, delete a child, or change its DACL or owner.
+   A refusal says to keep the new build in a folder only you, SYSTEM and Administrators can
+   change (for example `C:\aap-builds` with inheritance removed).
+6. It copies from that handle, create-new, into `C:\Program Files\aap-runner\staging\<id>.exe`. The
+   staging folder is created owned by Administrators with SYSTEM and Administrators ACEs only (no
+   Users read ACE), and an existing one that grants any other SID anything is refused.
+7. It hashes the staged copy, never the user's file, and refuses a mismatch with the command line's
+   `sha256` (the reason names only the expected hash: `status.json` is readable by every user). The
+   staged copy must be an x64 (`0x8664`) PE32+ executable, not a DLL, whose version resource has
+   `ProductName` `aap-runner-tray`, `OriginalFilename` `aap-runner-tray.exe` and a `FILEVERSION`
+   (set in `assets/aap-runner-tray.rc` from the Cargo version). Downgrade rule: a `FILEVERSION`
+   lower than the installed exe's is refused; an equal one is allowed (commits between version bumps
+   share a version); an installed exe without a version resource counts as 0.
+8. It shows a Yes/No box (system-modal, topmost, set to the foreground, No is the default) with
+   the candidate path, size and sha256. Only Yes continues; a box that cannot be shown, or no
+   answer within 5 minutes, is No. While the job is running (the box may be open) the window waits
+   up to 9 minutes (the 4-minute no-result bound plus the 5-minute box bound) before it restarts the
+   tray; the watch itself lasts 15 minutes.
+9. The staged copy gets the installed tray's ACL (SYSTEM and Administrators full, Users read and
+   execute, not inherited) and must then pass the admin-only check. Swap: a stale `.prev` is deleted
+   first (if that fails nothing changes); the installed exe is renamed to `.prev` (retried for up to
+   30 s) and given a protected DACL with no execute right (SYSTEM and Administrators may read and
+   delete it), so it cannot be started or elevated before step 3 deletes it; then the staged copy is
+   renamed into place. If either fails the `.prev` is renamed back and gets the installed tray's ACL
+   again.
+   Windows can rename a running image, so a window still running the old build keeps running from
+   `.prev`.
+10. `status.json` ends `passed` with step `installed sha256 <hex>` and `"sha256":"<hex>"`, and the
+    log says `PASS update installed sha256 <hex>`. A refusal (bad request or command line, wrong
+    install path, location, link, bad hash, not a PE, wrong product, older version, No in the box) is
+    `rejected` with the reason and the old build stays; a failed swap is `failed`. The staged copy is
+    deleted on every path.
+11. The window shows the job (Update · passed · installed sha256 …). While the pointer names an
+    update written in the last 15 minutes it does not close for a missing tray. Once the job has
+    finished either way, or after 4 minutes with no result, and while no tray holds the lock, it
+    starts the installed tray once, with the same checks as the wizard's Done. If the window is
+    closed before that, the tray comes back at the next logon.
+
+Threat model. `C:\ProgramData\aap-runner\inbox` is user-writable, and the tray runs as the owner,
+so any program running as the owner can start an update by itself: write a request and start
+`--helper update <id> <sha256>` through `runas`. No race is needed. UAC then names the installed
+tray, not the candidate. The helper's confirmation box, which shows the candidate path, size and
+sha256 and defaults to No, is a speed bump, not a boundary: it is not on the secure desktop, so a
+program running as you can cover or imitate it, or press Yes through an input route it can obtain
+(UIAccess-style). Compare the hash with the build you made and answer Yes only for an update you
+started, but do not rely on the box against malware already running as you. The real fix is
+Authenticode signing, which needs a certificate (owner decision Q8).
+
+The build's source tree and output folder must be private too (only you, SYSTEM and
+Administrators can change them). Otherwise another account can plant the build before you copy it,
+and "keep it in a private folder" only launders that file. Build into a private output folder
+outside the profile with inheritance removed, for example a `CARGO_TARGET_DIR` of `C:\aap-builds`.
+
+What the helper does prevent: another account cannot supply or swap the build, because the
+candidate must be owned by the requesting user or Administrators, writable only by them, in a
+folder only they can write, with no ancestor another account can replace, and with one hard link;
+the file cannot change between the check and the install, because only the helper's admin-only copy
+is hashed and installed; it installs only an x64 tray-named executable whose version is not lower,
+only at the one fixed path, and only from the installed tray. The version-resource names are a guard
+against picking the wrong file, not a trust check: anyone can set them.
 
 ## Icon (after Fathom's `mark.rs`)
 
@@ -347,4 +443,5 @@ cargo test
 
 First-run installation copies the binary to `%ProgramFiles%\aap-runner\aap-runner-tray.exe`
 (the `install-supervisor.ps1 -TrayExe` default). The supervisor installer registers
-autostart. Existing live installations are updated only by the owner after review.
+autostart. Existing live installations are updated only by the owner after review, through
+Update tray… (above).

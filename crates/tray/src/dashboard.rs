@@ -684,6 +684,8 @@ struct Dash {
     /// Latest elevated Verify/Repair, polled from the temp pointer and `jobs\<id>\`.
     job: Option<crate::helper::JobUi>,
     job_at: Instant,
+    /// This window already restarted the tray after a tray update.
+    relaunched: bool,
     /// The GitHub setup checklist replaces the right column's cards.
     github: bool,
     setup: crate::github_setup::Store,
@@ -763,6 +765,7 @@ impl Dash {
             want_focus: None,
             job: None,
             job_at: Instant::now(),
+            relaunched: false,
             github: false,
             setup: crate::github_setup::Store::load(crate::github_setup::path()),
             github_arm: false,
@@ -2717,8 +2720,20 @@ impl eframe::App for Dash {
         }
         self.setup.pump();
         if self.read_at.elapsed() >= REFRESH {
-            if crate::window_exits_without_tray(crate::probe_tray_lock()) {
+            let lock = crate::probe_tray_lock();
+            // The tray quits itself to be updated; this window restarts it, so it stays open.
+            let update = crate::helper::update_watch(&self.base);
+            if crate::window_exits_without_tray(lock) && update.is_none() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            if let Some(watch) = update
+                && !self.relaunched
+                && crate::helper::relaunch_due(watch, lock == crate::TrayLock::Free)
+            {
+                self.relaunched = true;
+                if let Err(e) = crate::helper::start_installed_tray() {
+                    self.note = Some((format!("could not restart the tray: {e}"), Instant::now()));
+                }
             }
             if self.github {
                 self.setup.retry();
