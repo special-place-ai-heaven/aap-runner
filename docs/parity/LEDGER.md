@@ -1,6 +1,6 @@
 # Parity implementation ledger
 
-Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-11-06 (ledger reconcile, see "Reconcile - 2026-11-06" below) on origin/main b5c946b: the COMPLETE set is unchanged from close 6. COMPLETE additions: R2.1 (#103) and R1.1 (#104), cleanup verified CLEAN-WITH-NOTES 2026-11-06 (their receipts validate once PR #107 merges). IN_PROGRESS: P02.4 and P02.5 (contract revisions merged as #80 and #79 on 2026-10-22, cleanup verified CLEAN-WITH-NOTES 2026-11-06, lab proof and conformance work open), P10.0, P13.5, P13.5b and P16 (#99 retired the maintained sccache wiring; broker support and coordinator-controlled legacy reservations remain). PR_OPEN: P13.5c (#83). The global no-new-dispatch barrier is OPEN: the verifier pass `verifier-pass-2026-11-06.md` (parity work directory) signed the receipts of #79, #80, coordinator PR #81, #103 and #104. Open PRs: #82 (P09.x hard-cap contract, needed by P10.6/P11.3), #83 (P13.5c), #84 (P02.5 Linux conformance, pester-backends failing). Owner decision Q1 is SUPERSEDED by the owner's 2026-11-05 runner group decision. The close-6 status follows for history.
+Revision 3 (executing since 2026-10-19; D0 authorized). Status as of 2026-11-07 (ledger reconcile, see "Reconcile - 2026-11-07" below) on origin/main 16d0870: the COMPLETE set of close 6 is unchanged. COMPLETE additions since close 6, each cleanup receipt verified CLEAN-WITH-NOTES by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batches 2-6 and 8): R2.1 (#103), R1.1 (#104), R1.2 (#108), P08.2 (#110), R1.3 (#112), P08.1 (#113) and P05.1 (#109). Coordinator PR #111 (P17/P18 oracle refresh) is verified too (batch 7). IN_PROGRESS: P02.4 and P02.5 (contract revisions merged as #80 and #79 on 2026-10-22, cleanup verified CLEAN-WITH-NOTES 2026-11-06, lab proof and conformance work open), P10.0, P13.5, P13.5b and P16 (#99 retired the maintained sccache wiring; broker support and coordinator-controlled legacy reservations remain; P16 is also R1 step 5). PR_OPEN: P13.5c (#83). The global no-new-dispatch barrier is OPEN: every merged parity receipt and receipted coordinator PR has a verifier verdict. Open PRs: #82 (P09.x hard-cap contract, needed by P10.6/P11.3), #83 (P13.5c), #84 (P02.5 Linux conformance, pester-backends failing). Live rollout of fcb04b1 done 2026-11-06 (canary job and finalize pending). Owner decision Q1 is SUPERSEDED by the owner's 2026-11-05 runner group decision. The close-6 status follows for history.
 
 Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, P02.2, P03, P03.1, P04, P04.1, P05, P06, P06.1, P06.2, P07, P07.1, P08, P09, P10, P10.2, P10.3, P11, P11.1, P11.2, P12, P13, P13.1, P13.2, P13.3, P13.4, P14, P15, P17, P18 and P20.0 are COMPLETE (P03.1, P04.1, P12 and P14 cleanup-verified 2026-10-22 by an independent read-only verifier). P13.5 and P13.5b are merged and cleanup-verified but IN_PROGRESS: they merged without an independent review, the independent post-merge review returned FIX-FIRST on both, and their remainder item P13.5c is NOT_STARTED. Every cleanup receipt in the parity evidence store (52) now carries an independent verifier verdict (pass 1 on 2026-10-22 at 02:17 CEST for P03.1, P04.1, P12, P13.5, P13.5b, P14 and coordinator PR #72; pass 2 at 03:58 CEST for coordinator PRs #65, #73 and #77), so the global no-new-dispatch barrier is OPEN; the close-4 entry that recorded #65 as verified CLEAN had no recorded evidence before pass 2. Nothing is PR_OPEN, and the contract-revision PRs #79 (P02.5) and #80 (P02.4) are open while their items stay NOT_STARTED. Wave 6 is current. States below are current; everything not listed otherwise is NOT_STARTED. ledger.json is the machine-readable dispatch/ownership source. These are proposed paths; commands and oracles are implemented by the owning task before they can certify an outcome. Every item uses the merge-and-clean lifecycle in WORKTREES.md. Only COMPLETE dependencies unlock work; merged or gate-verified alone does not.
 
@@ -123,7 +123,7 @@ Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, 
 - Pinned execution lane: Luna high; ownership: `tools/parity-certify/**`, `tests/parity-certify/**`.
 - Deliverable: Use the evidence-bundle waivers field in certify and bind exit_code; fix the certify.py re.match $ trailing-newline acceptance (use fullmatch or \Z).
 - Acceptance: Each fix has a test that fails without it; a waiver unbound to its workload is refused; a trailing-newline value is rejected; both PowerShell hosts green.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE (2026-11-06) — PR #109 (branch `fix/p05-1-certify-hardening`, head `6f384cc`) merged at `16d0870` on 2026-11-06; hosted CI 5/5 on the head; receipt P05.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 8; notes: the two reviews are recorded in-session only, no registry manifest, main push CI on the merge still queued, the pin note on main is looser than the receipt's list). The harness change re-pinned the P17/P18 oracles to hosted runs 42301321135 (Linux 44/44) and 42301328046 (Windows 47/47), on the same images as the #111 pins and identical to runs 42239305519 / 42239311263 by definition id (status, exit_code and expected; command, log hashes, timestamps and the source-tree hash differ).
 - Why: P05 review follow-ups: certify ignores the evidence-bundle waivers and exit_code binding, and its regex accepts a trailing newline.
 
 ## P06 — Build the native Windows image
@@ -164,7 +164,7 @@ Status as of 2026-10-22 (ledger close 6) on origin/main a55cb7b: P00, P01, P02, 
 - Pinned execution lane: Luna high; ownership: `supervisor/broker/**`, `distro/worker-auth.sh`, `tests/broker/**`, `tests/worker_auth_test.sh`.
 - Deliverable: Move the audit log dir from /var/log to /var/lib/aap-runner/broker; rm -f the lease file on create failure only when it is empty; raise the client TimeoutSeconds floor to 60; correct the exit-code comment.
 - Acceptance: Each change has a test that fails without it; worker_auth_test.sh green on real Linux in hosted CI; both PowerShell hosts green; independent security review (secret-bearing path).
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED (planned).
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE (2026-11-06) — PR #113 (branch `fix/p08-1-broker-notes`, head `ce8ec37`) merged at `5df813c` on 2026-11-06; hosted CI 5/5 on the head; receipt P08.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 6; notes: the review is recorded in-session only, no registry manifest, the merged tree was never CI-tested on its own). Process deviation recorded in the receipt and confirmed by the verifier (B6.3): #113 merged 7 s after #111, before #111's cleanup was verified; both are verified now, and no cleanup consequence followed.
 - Why: P08 review notes that were non-blocking: audit log location, lease-file removal on create failure, client timeout floor and an exit-code comment.
 
 ## P09 — Implement one mixed-fleet capacity allocator
@@ -277,7 +277,7 @@ New follow-ups (all NOT_STARTED): P08.2 re-checks that the runner is still idle 
 - Pinned execution lane: Sol medium; ownership: `distro/worker-auth.sh`, `tests/worker_auth_test.sh`.
 - Deliverable: In `distro/worker-auth.sh`, re-check that the runner is still idle immediately before sending the release request, so a busy or unreadable runner keeps its lease instead of being released.
 - Acceptance: A runner that turns busy (or whose status is unreadable) between the idle read and the release request is not released; worker_auth_test.sh green on real Linux in hosted CI.
-- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: NOT_STARTED.
+- Closure: independent verification/review at exact head, agent merge, durable evidence and independently verified cleanup receipt. Current state: COMPLETE (2026-11-06) — PR #110 (branch `fix/p08-2-release-idle-recheck`, head `e666f57`) merged at `1f1988d` on 2026-11-06; hosted CI 5/5 on the head; receipt P08.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 4; notes: the review is recorded in-session only, no registry manifest).
 - Why: the P12 cross-family review found the busy? re-check before releasing a runner fails OPEN on an unreadable status; the same release path is reached from worker-auth.sh.
 
 ## P13.5 — Give zccache an empty stdin in the cache shim
@@ -521,13 +521,32 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 
 - Prerequisites: P12, P20.0 (COMPLETE). Ownership: `parity/contracts/status-settings.md`, `status-v5.schema.json`, `validate.py` and fixtures, `supervisor/aap-runner-supervisor.ps1` and its tests, `crates/tray/src/{state,settings_panel,dashboard}.rs`.
 - Deliverable: status-settings revision 4: the Windows profile reports `backend: windows-host` with `host_runner` (`online`, `busy`, `stopped`) while the interim runner is installed and no Windows VM backend is loaded; the supervisor detects it read-only (logon task, listener and worker processes); the tray names it and its state with one warning line. Report only: no start or stop, no JIT registration (later R2 slices).
-- Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #103 (branch `feat/windows-host-backend`, head `5b55b9f`) merged at `279eed4` on 2026-11-06; receipt R2.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 2; notes: stale base-clone statements, no registry manifest, the review recorded in-session only). Schema dependency: the receipt validates only once PR #107 (receipt item and branch patterns widened) merges.
+- Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #103 (branch `feat/windows-host-backend`, head `5b55b9f`) merged at `279eed4` on 2026-11-06; receipt R2.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 2; notes: stale base-clone statements, no registry manifest, the review recorded in-session only). PR #107 (receipt item and branch patterns widened) merged 2026-11-06 at `5309a62`; the receipt validates with origin/main's validator.
 
 ## R1.1 — Tiered Linux pool contract and tray (roadmap R1, steps 1 and 4)
 
 - Prerequisites: P12, P20.0 (COMPLETE); owner brief R1 (2026-11-04). Ownership: `parity/contracts/status-settings.md`, `settings-v4.schema.json`, `status-v5.schema.json`, `validate.py` and fixtures, `distro/README.md` (label lines only), `crates/tray/**`.
 - Deliverable: status-settings revision 5: settings schema 4 (`linux_light_count` 0..10, `linux_heavy_count` 0..2 instead of `runner_count`), status slots carry `tier` with fixed tier slot numbers and 17-slot maxima while schema 4 is applied; the tray's Light | Heavy count picker, compact always-drawn Linux cards (disabled slots grey) and painted tier icons, writing schema 4 only when a stored schema 4 file or a fresh `status.v5.json` allows it. Manager (step 2) and supervisor (step 3) tiers are separate items.
-- Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #104 (branch `feat/tray-tiers`, head `3bc41c4`) merged at `b5c946b` on 2026-11-06; receipt R1.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 2; same notes as R2.1). Schema dependency: the receipt validates only once PR #107 merges.
+- Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #104 (branch `feat/tray-tiers`, head `3bc41c4`) merged at `b5c946b` on 2026-11-06; receipt R1.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 2; same notes as R2.1). PR #107 merged 2026-11-06 at `5309a62`; the receipt validates with origin/main's validator.
+
+## R1.2 — Manager runs the heavy and light Linux tiers (roadmap R1, step 2)
+
+- Prerequisites: R1.1 (COMPLETE). Ownership: `distro/{manager,bootstrap,evidence,labels}.sh`, `distro/README.md`, `distro/staging.sha256`, `parity/contracts/status-settings.md`, `tests/manager_*_test.sh`.
+- Deliverable: the distro manager runs two Linux tiers, heavy 0..2 and light 0..10, each with its own labels, limits and slot numbering, reading settings schema 4 and writing the tiered status slots of R1.1.
+- Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #108 (branch `feat/manager-tiers`, head `a6c184c`) merged at `b531a1f` on 2026-11-06; hosted CI 5/5 on the head; receipt R1.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 3; notes: the review is recorded in-session only, no registry manifest, main push CI on the merge still queued, the live install copy not inspected).
+
+## R1.3 — Supervisor applies settings schema 4 and the tray mirrors the reservation rule (roadmap R1, step 3)
+
+- Prerequisites: R1.1 (COMPLETE). Ownership: `supervisor/aap-runner-supervisor.ps1` and its README and tests, `parity/contracts/{status-settings.md,settings-v4.schema.json,validate.py,README.md}` and fixtures, `crates/tray/src/{settings,settings_panel}.rs`, `crates/tray/README.md`.
+- Deliverable: the supervisor validates and applies settings schema 4 (tiered Linux pool) and keeps reading older files; the tray mirrors the supervisor reservation rule and refuses schema 4 tiers whose reservations exceed the memory total.
+- Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #112 (branch `feat/supervisor-schema-4`, head `7c8aea7`) merged at `fcb04b1` on 2026-11-06; hosted CI 5/5 on the head; receipt R1.3-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 5; notes: the review, one MEDIUM finding fixed in `7c8aea7`, is recorded in-session only; no registry manifest; main push CI on the merge still queued; the live install copy not inspected). This is the commit rolled out live on 2026-11-06 (see "Reconcile - 2026-11-07").
+
+## R1.4 — Tray shows what each runner is doing and its occupancy (owner regression report 2026-11-07)
+
+- Prerequisites: R1.3 (COMPLETE). Ownership: `crates/tray/src/{dashboard,state}.rs`, `crates/tray/README.md`.
+- Deliverable: each runner card shows, while busy, its repo, job and run link and its own CPU and memory occupancy (the per-slot `cpu_cores`/`mem_gib` the manager already samples); the pool Cores/Memory/Disk bars show real samples instead of "no sample"; the tier tiles stay.
+- Why: the owner, verbatim 2026-11-07: "this GUI is a regression. I need to see what each runner is doing and their occupancy" (the R1.1 compact tiles dropped per-runner activity and usage). Queued after the current work, as the owner asked.
+- Closure: as every item. Current state: NOT_STARTED.
 
 ## Reconcile - 2026-11-06
 
@@ -550,3 +569,37 @@ Merged outside the parity worktree lifecycle (no parity receipts; not ledger ite
 Owner decisions: Q1 SUPERSEDED by the owner on 2026-11-05 (public repositories allowed on both groups, fork approval for all outside collaborators; `distro/README.md`, PR #101). Q2 restated 2026-10-26 (PR #86 body). Q4 reaffirmed by `docs/ROADMAP.md` R3 (2026-11-04); contract PR #82 open. Q3 has no record of being applied, and its precondition (the old Q1 answer) needs restating by the owner. Q5 unchanged. Q6's contract merged (#79); conformance open.
 
 NOT_STARTED items whose prerequisites are all COMPLETE (the barrier is open): P00.1, P02.1 (lab gate D2 and the owner), P02.3 (owner Q3), P05.1, P08.1, P08.2, P10.1, P10.6 and P11.3 (contract PR #82 first), P12.2, P21, P22.1, P22.2, P25.1.
+
+## Reconcile - 2026-11-07
+
+Brings this file and ledger.json from origin/main b5c946b to origin/main 16d0870. Read from `git log origin/main`, `gh pr view`, the parity evidence store and `verifier-pass-2026-11-06.md` (parity work directory), batches 3-8.
+
+| Item | Delivery state |
+| --- | --- |
+| R1.2 #108 b531a1f | COMPLETE (new item): receipt R1.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06, batch 3 |
+| P08.2 #110 1f1988d | COMPLETE: receipt P08.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06, batch 4 |
+| R1.3 #112 fcb04b1 | COMPLETE (new item): receipt R1.3-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06, batch 5 |
+| P08.1 #113 5df813c | COMPLETE: receipt P08.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06, batch 6; merged 7 s after #111, before #111's cleanup was verified (deviation recorded in the receipt, confirmed accurate) |
+| coordinator PR #111 31b2712 (P17/P18 oracle refresh) | merged; receipt coord-oracle-refresh-2026-11-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06, batch 7. GitHub rolled its hosted images to 20261101.360.1 (Linux) and 20261103.298.1 (Windows); CI had stayed green on the stale oracles because `check_hosted_run` only compares against the recorded run. The oracles are re-pinned to runs 42239305519 (Linux 44/44) and 42239311263 (Windows 47/47) |
+| P05.1 #109 16d0870 | COMPLETE: receipt P05.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-07, batch 8. The harness change re-pinned the P17/P18 oracles to runs 42301321135 and 42301328046, identical by definition id to the #111 pins |
+
+Counts (ledger.json tasks): 70 items (68 on 2026-11-06 plus R1.2 and R1.3): 40 COMPLETE (was 35), 6 IN_PROGRESS (P02.4, P02.5, P10.0, P13.5, P13.5b, P16), 1 PR_OPEN (P13.5c), 23 NOT_STARTED (was 26).
+
+Barrier: OPEN. The verifier pass signed every receipt that was pending or missing: batch 3 R1.2 (#108), batch 4 P08.2 (#110), batch 5 R1.3 (#112), batch 6 P08.1 (#113), batch 7 coordinator #111, batch 8 P05.1 (#109), on top of batches 1 and 2 of the first reconcile. Cleanup-receipt schema fixes #107 and #115 are merged, so all of these receipts validate with origin/main's validator. The 7 s deviation (#113 over #111) is recorded; both receipts are verified.
+
+Rule: CI-wiring PRs (#114, the `ci-hosted` label and concurrency group) and cleanup-receipt schema fixes (#107, #115) are coordinator support, not ledger items, and get no receipt.
+
+Live rollout (2026-11-06): the owner chose "Both halves now" and the rollout of fcb04b1 ran at about 22:46-23:15 CET: supervisor 20F51C69..., tray C2E3CFFE..., distro scripts and runner image sha256:954816e4546b. `status.v5` now lists `settings_schemas` 1,2,4. The canary job and the finalize step are still pending.
+
+Owner rules recorded 2026-11-06: the resource cap is 90% of CPU, RAM and disk (supersedes 97%); the interim Windows runner now runs at Idle priority; zero visible terminal windows.
+
+Owner decisions: unchanged from the 2026-11-06 reconcile (Q1 SUPERSEDED, Q2 restated, Q3 unapplied, Q4 contract PR #82 open, Q5 unchanged, Q6 conformance open).
+
+NOT_STARTED items whose prerequisites are all COMPLETE (the barrier is open): P00.1, P02.1 (lab gate D2 and the owner), P02.3 (owner Q3), P10.1, P10.6 and P11.3 (contract PR #82 first), P12.2, P21, P22.1, P22.2, P25.1. Off the queue since 2026-11-06: P05.1, P08.1 and P08.2 (COMPLETE).
+
+Remaining blockers:
+- P02.1 (the lab proof, gate D2 and the owner) blocks P10.0 and P02.4, and through P10.0 blocks P10.4, P10.5 and P12.1.
+- P16 is R1 step 5 (the allocator adopts the Linux pool as its first backend) and is IN_PROGRESS: broker support and coordinator-controlled legacy reservations remain. P19 waits on P16, P22 waits on P16 (and on P20 and P21), and the chain P20 (via P19), P23, P24, P25, P26, P27 and P28 waits behind them. Nothing waits on R1 step 4: the tray work is in R1.1, COMPLETE.
+- P13.5 stays IN_PROGRESS until its remainder P13.5c (#83, open, CI green, independent review not recorded) lands; P13.5b needs P13.5 COMPLETE.
+- P10.6 and P11.3 are ready but their contract revision #82 is unmerged; P02.5's Linux conformance #84 has pester-backends failing and its Windows side has no PR.
+- Pending on the live install: the canary job and finalize for the 2026-11-06 rollout.
