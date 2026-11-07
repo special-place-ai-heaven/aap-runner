@@ -1,10 +1,11 @@
 //! Elevated helper (`--helper <verb> <id>`) and the non-elevated side that asks for it.
 //!
 //! The tray writes `inbox\jobs\<id>.json` and starts this exe with `runas` (one UAC prompt).
-//! The helper trusts nothing in that file except schema 1, a verb of `verify`, `repair`, or
-//! `identity`, and an id of 16 lowercase hex digits that matches the command line. An `identity`
-//! request also carries the org, ids, group, labels, and the key file path, each re-checked here
-//! and again by the script. Every other path is built from `C:\ProgramData\aap-runner` plus that
+//! The helper trusts nothing in that file except the schema, a verb of `verify`, `repair`,
+//! `identity`, `install`, or `update`, and an id of 16 lowercase hex digits that matches the
+//! command line. An `identity` request also carries the org, ids, group, labels, and the key file
+//! path, each re-checked here and again by the script; `update` carries a candidate path and a
+//! sha256 (see `update.rs`). Every other path is built from `C:\ProgramData\aap-runner` plus that
 //! id. A reparse point on the way is refused, not followed.
 //!
 //! Progress lands in `jobs\<id>\` (`status.json`, `log.txt`, `exit.txt`), which the tray polls.

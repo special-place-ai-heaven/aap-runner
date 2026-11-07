@@ -300,7 +300,7 @@ runner parity and planned zccache migration are assessed separately in
 
 `aap-runner-tray.exe --helper <verb> <id>` with `<verb>` `verify`, `repair`, `identity`, `install`, or `update` and `<id>` 16 lowercase hex digits.
 The menu items write `inbox\jobs\<id>.json` and start that command through ShellExecute `runas` (one UAC prompt).
-The helper accepts only schema 1 plus that verb and id; `identity` must carry the nine fields above, each re-checked, and the other two verbs must carry nothing else. Every directory it uses is
+The helper accepts only schema 1 plus that verb and id; `identity` must carry the nine fields above, each re-checked, `install` (schema 2) its fields from the First-run wizard, `update` the five fields under Tray update, and `verify` and `repair` nothing else. Every directory it uses is
 under `C:\ProgramData\aap-runner` or a fixed install path (`C:\wsl`, the work VHDX, the two task names). A junction
 on the way is refused. `AAP_FAKE_BASE` is not consulted.
 

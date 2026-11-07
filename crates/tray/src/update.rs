@@ -394,7 +394,10 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
-        dir
+        // The long name, as GetFinalPathNameByHandleW reports it: a hosted runner's TEMP is
+        // `C:\Users\RUNNER~1\...`, which check_path refuses and no final path equals.
+        let long = fs::canonicalize(&dir).unwrap();
+        PathBuf::from(crate::win::strip_extended_path(&long.to_string_lossy()))
     }
 
     fn sha_of(bytes: &[u8]) -> String {
