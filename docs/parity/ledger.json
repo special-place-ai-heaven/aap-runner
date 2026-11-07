@@ -1913,6 +1913,23 @@
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/112",
       "branch": "feat/supervisor-schema-4",
       "note": "Merged 2026-11-06 at fcb04b1 (PR #112, head 7c8aea7, base b531a1f; commits a8fa992 and 7c8aea7); hosted CI 5/5 SUCCESS on the recorded head before the merge; cleanup receipt R1.3-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 5). 12 files (supervisor script, README and tests; tray settings.rs, settings_panel.rs and README; contracts README, status-settings.md, settings-v4.schema.json, validate.py and two settings-v4 fixtures). The change touches the supervisor script that runs on the live host; the live install was not inspected by the verifier. It is the commit rolled out live on 2026-11-06 (see the decisions list)."
+    },
+    {
+      "id": "R1.4",
+      "title": "Tray shows what each runner is doing and its occupancy (owner regression report 2026-11-07)",
+      "earliest_wave": 8,
+      "needs": [
+        "R1.3"
+      ],
+      "owns": [
+        "crates/tray/src/{dashboard,state}.rs",
+        "crates/tray/README.md"
+      ],
+      "lane": "Claude (coordinator)",
+      "delivery_state": "NOT_STARTED",
+      "deliverable": "Each runner card shows, while busy, its repo, job and run link and its own CPU and memory occupancy (the per-slot cpu_cores/mem_gib the manager already samples, mirrored in status.v5 slots); the pool Cores/Memory/Disk bars show real samples instead of no sample; the tier tiles stay. Restores what the pre-R1 cards showed.",
+      "acceptance": "Owner, verbatim 2026-11-07: \"this GUI is a regression. I need to see what each runner is doing and their occupancy\". Tests for the card content with and without a job and with and without samples; live check on the owner PC with a busy slot; hosted CI 5/5.",
+      "why": "The R1.1 compact tiles dropped per-runner activity and usage; the owner cannot see what the pool is doing."
     }
   ],
   "authorization": {

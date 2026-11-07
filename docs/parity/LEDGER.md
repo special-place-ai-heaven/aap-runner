@@ -541,6 +541,13 @@ Fixed in this close: ledger.json `as_of`, `origin_main`, `in_flight` and `cleanu
 - Deliverable: the supervisor validates and applies settings schema 4 (tiered Linux pool) and keeps reading older files; the tray mirrors the supervisor reservation rule and refuses schema 4 tiers whose reservations exceed the memory total.
 - Closure: as every item. Current state: COMPLETE (2026-11-06) — PR #112 (branch `feat/supervisor-schema-4`, head `7c8aea7`) merged at `fcb04b1` on 2026-11-06; hosted CI 5/5 on the head; receipt R1.3-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (`verifier-pass-2026-11-06.md` (parity work directory), batch 5; notes: the review, one MEDIUM finding fixed in `7c8aea7`, is recorded in-session only; no registry manifest; main push CI on the merge still queued; the live install copy not inspected). This is the commit rolled out live on 2026-11-06 (see "Reconcile - 2026-11-07").
 
+## R1.4 — Tray shows what each runner is doing and its occupancy (owner regression report 2026-11-07)
+
+- Prerequisites: R1.3 (COMPLETE). Ownership: `crates/tray/src/{dashboard,state}.rs`, `crates/tray/README.md`.
+- Deliverable: each runner card shows, while busy, its repo, job and run link and its own CPU and memory occupancy (the per-slot `cpu_cores`/`mem_gib` the manager already samples); the pool Cores/Memory/Disk bars show real samples instead of "no sample"; the tier tiles stay.
+- Why: the owner, verbatim 2026-11-07: "this GUI is a regression. I need to see what each runner is doing and their occupancy" (the R1.1 compact tiles dropped per-runner activity and usage). Queued after the current work, as the owner asked.
+- Closure: as every item. Current state: NOT_STARTED.
+
 ## Reconcile - 2026-11-06
 
 Brings this file and ledger.json from close 6 (origin/main a55cb7b) to origin/main b5c946b. Read from `git log origin/main`, `gh pr view` and the parity evidence store.
