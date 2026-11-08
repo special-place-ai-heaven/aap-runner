@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   bash:
-    runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Linux","X64","fresh","light"]') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - run: bash distro/bootstrap.sh --self-check
@@ -105,6 +105,32 @@ jobs:
     runs-on: ${{ (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'ci-hosted'))) && fromJSON('["self-hosted","Linux","X64","fresh","light"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Self-hosted Linux runners ship no Rust: install rustup 1.28.2
+      # (sha256-pinned), then the toolchain rust-toolchain.toml names.
+      # Skips the download where rustup already exists (GitHub-hosted).
+      - name: Ensure rustup and the rust-toolchain.toml toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+            curl --proto '=https' --tlsv1.2 -fsSL -o "$RUNNER_TEMP/rustup-init" \
+              https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init
+            echo "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  $RUNNER_TEMP/rustup-init" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/rustup-init"
+            "$RUNNER_TEMP/rustup-init" -y --no-modify-path --default-toolchain none
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # The fresh runners set RUSTC_WRAPPER=sccache without installing
+          # sccache; a pass-through of that name keeps cargo working.
+          if [ "${RUSTC_WRAPPER:-}" = sccache ] && ! command -v sccache >/dev/null 2>&1; then
+            mkdir -p "$HOME/.local/bin"
+            printf '%s\n' '#!/bin/bash' 'exec "$@"' > "$HOME/.local/bin/sccache"
+            chmod +x "$HOME/.local/bin/sccache"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+          rustup toolchain install
+
       - run: cargo fmt --all --check
       - run: cargo clippy -p aap-pool-core --all-targets --locked -- -D warnings
       - run: cargo test -p aap-pool-core --locked
