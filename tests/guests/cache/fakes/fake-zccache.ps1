@@ -22,8 +22,9 @@
 # timeout stops it, and the log then stays empty (the count assertion fails). Any byte before EOF fails the call
 # with exit 7: on a UTF-8 console .NET Framework's StandardInput writer emits its encoding's three-byte preamble
 # into the pipe at Start, which the module now prevents (P13.5b). ReadAsync plus a wait budget was also wrong: it
-# cannot tell a loaded VM from an open stdin (P13.5). fake-stdin-facts.log records what each probe saw, with byte
-# counts and hex, for failure messages.
+# cannot tell a loaded VM from an open stdin (P13.5). fake-stdin-facts.log records what each probe saw: process
+# facts and the byte COUNT received, never the bytes themselves (P13.5c: input the probe did not expect is not
+# written to disk).
 $ErrorActionPreference = 'Stop'
 $all = [Environment]::GetCommandLineArgs()
 $i = 1
@@ -64,7 +65,6 @@ if ($env:FAKE_ZC_STDIN -eq '1') {
     $n = $s.Read($buf, 0, $buf.Length)   # synchronous: data or EOF at once, an open stdin blocks
     while ($n -gt 0) {
         $drained += $n
-        Add-Line $facts ("drained: {0}" -f ((($buf[0..([Math]::Min($n, 16) - 1)] | ForEach-Object { '{0:x2}' -f $_ }) -join ' ')))
         $n = $s.Read($buf, 0, $buf.Length)
     }
     if ($drained -gt 0) {

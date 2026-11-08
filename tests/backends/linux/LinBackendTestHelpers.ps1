@@ -56,6 +56,50 @@ function Set-LinModuleVar([string]$Name, $Value) { & (Get-Module AapLinBackend) 
 function Get-LinModuleVar([string]$Name) { & (Get-Module AapLinBackend) { param($n) Get-Variable -Scope Script -Name $n -ValueOnly } $Name }
 function Invoke-LinInModule([scriptblock]$Block, [object[]]$ArgumentList = @()) { & (Get-Module AapLinBackend) $Block @ArgumentList }
 
+# A PowerShell host (Windows PowerShell 5.1 or 7) run in a process of its own with a console of its own: CreateNoWindow gives
+# it a new hidden console, so a suite hosted by 7, or by a host with no console, still reaches the Windows PowerShell 5.1
+# behaviours, and this process's console is never touched. -Utf8Console starts the host behind cmd.exe's chcp 65001, so its
+# console input code page is UTF-8 as a CI host's is and a 5.1 host reads a preamble-bearing [Console]::InputEncoding;
+# without it the console is the machine's default. Standard input is a pipe closed at once. Every token is double-quoted.
+$script:Ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$script:Pwsh7 = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+$script:HostSwitches = @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass')
+function Invoke-LinHosted([string]$Shell, [string[]]$FileArgs, [switch]$Utf8Console, [int]$TimeoutSeconds = 180) {
+    $exe = $(if ($Shell -eq 'pwsh') { $script:Pwsh7 } else { $script:Ps51 })
+    $tokens = @($exe) + $script:HostSwitches + @('-File') + $FileArgs
+    foreach ($t in $tokens) { if ($t.Contains('"') -or $t.EndsWith('\')) { throw "Invoke-LinHosted: cannot quote $t" } }
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    if ($Utf8Console) {
+        $psi.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+        $psi.Arguments = '/d /s /c ""' + (Join-Path $env:SystemRoot 'System32\chcp.com') + '" 65001 >nul & ' + (($tokens | ForEach-Object { '"' + $_ + '"' }) -join ' ') + '"'
+    } else {
+        $psi.FileName = $exe
+        $psi.Arguments = (@($tokens | Select-Object -Skip 1 | ForEach-Object { '"' + $_ + '"' }) -join ' ')
+    }
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    # A PowerShell 7 caller leaves its module path behind; Windows PowerShell 5.1 must rebuild its own.
+    if ($exe -eq $script:Ps51) { [void]$psi.EnvironmentVariables.Remove('PSModulePath') }
+    $p = [Diagnostics.Process]::Start($psi)
+    $timedOut = $false
+    try {
+        $null = $p.Handle   # Windows PowerShell 5.1 reports no ExitCode unless the handle was opened while running
+        $p.StandardInput.Close()
+        $o = $p.StandardOutput.ReadToEndAsync(); $e = $p.StandardError.ReadToEndAsync()
+        # One deadline for the host's exit and for draining its output: a descendant that keeps stdout or stderr open must
+        # not hold the suite past it.
+        $until = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+        $timedOut = -not $p.WaitForExit($TimeoutSeconds * 1000)
+        if (-not $timedOut) { $timedOut = -not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($o, $e), [int][Math]::Max(0, ($until - [DateTime]::UtcNow).TotalMilliseconds)) }
+        [pscustomobject]@{ Code = $(if ($timedOut) { $null } else { $p.ExitCode }); TimedOut = $timedOut; Out = $(if ($o.IsCompleted) { $o.Result } else { '' }); Err = $(if ($e.IsCompleted) { $e.Result } else { '' }) }
+    } finally {
+        # Whatever ended this call (the deadline, an exception, a stopped run), nothing of its process tree is left.
+        if ($timedOut -or -not $p.HasExited) { try { $null = & (Join-Path $env:SystemRoot 'System32\taskkill.exe') /T /F /PID $p.Id 2>&1 } catch { $null = $_ } }
+        $p.Dispose()
+    }
+}
+function Write-LinDriver([string]$Dir, [string]$Name, [string]$Text) { [void][IO.Directory]::CreateDirectory($Dir); $f = Join-Path $Dir $Name; [IO.File]::WriteAllText($f, $Text, $script:Utf8); $f }
+
 # ---- the world -----------------------------------------------------------------------------------------------------
 
 function New-LinWorld {
