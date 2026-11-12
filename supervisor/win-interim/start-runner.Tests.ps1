@@ -124,10 +124,10 @@ Describe 'interim Windows runner start script' {
             Start-AapInterimRunner $root 0 | Should -Be 0
             $st.starts + $st.jobs | Should -Be 0
         }
-        It 'enters the job, then starts run.cmd and returns its exit code' {
+        It 'enters the job, then starts run.cmd, and reports 1 when run.cmd ends so the task restarts it' {
             Set-Content -LiteralPath (Join-Path $root '.runner') -Value '{}'
             Mock Start-AapInterimProcess { if ($st.jobs -ne 1) { throw 'run.cmd started outside the job' }; $st.starts++; 7 }
-            Start-AapInterimRunner $root 0 | Should -Be 7
+            Start-AapInterimRunner $root 0 | Should -Be 1
             $st.starts | Should -Be 1
         }
         It 'starts nothing and exits <Code> when a foreign listener is <State>' -TestCases @(

@@ -20,8 +20,10 @@
 # There is no graceful stop for a hidden listener; after a kill GitHub keeps the old session for a
 # minute or two and the new listener retries until it gets one.
 #
-# Exit codes: run.cmd's own (0 for almost every ending); 0 nothing to do (not configured, another
-# instance holds the mutex, a job is in progress on a foreign listener); 1 refused or failed.
+# Exit codes: 0 nothing to do (not configured, another instance holds the mutex, a job is in
+# progress on a foreign listener); 1 refused, failed, or run.cmd ended (the task's restart-on-failure
+# then starts the runner again). The job object does not allow breakaway: whatever a CI job leaves
+# running in the background ends with the script too.
 # One line per decision is appended to start-runner.log beside this script.
 #
 # Dot-source safe: with -NoRun only the functions are defined (tests).
@@ -151,8 +153,11 @@ function Start-AapInterimRunner([string]$Dir, [int]$StopWaitSeconds) {
     Enter-AapInterimJob
     Write-AapInterimLog "starting run.cmd (foreign listener: $state)"
     $code = Start-AapInterimProcess $Dir
-    Write-AapInterimLog "run.cmd exited $code"
-    return $code
+    # The runner should run for as long as this script does. run.cmd returns 0 for almost every
+    # ending (crash, session conflict), so report a failure and let the task's restart-on-failure
+    # start it again.
+    Write-AapInterimLog "run.cmd exited $code; reporting 1 so the task restarts the runner"
+    return 1
 }
 
 $script:AapInterimLog = Join-Path $PSScriptRoot 'start-runner.log'
