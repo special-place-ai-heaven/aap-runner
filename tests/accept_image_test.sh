@@ -97,6 +97,7 @@ printf '#!/bin/bash\n[[ "$1" == -u ]] && shift 2\n[[ "$1" == -- ]] && shift\n[[ 
 printf '#!/bin/bash\necho "${NODE_SEEN}"\n' > "${bin}/node"
 printf '#!/bin/bash\necho 11.0.0\n' > "${bin}/npm"
 printf '#!/bin/bash\necho jq-1.7.1\n' > "${bin}/jq"
+printf '#!/bin/bash\necho "cmake version 3.28.3"\n' > "${bin}/cmake"
 printf '#!/bin/bash\necho runner\n' > "${bin}/id"
 printf '#!/bin/bash\nexit 0\n' > "${bin}/install"
 printf '#!/bin/bash\necho "zccache %s"\n' "${want_zc}" > "${zc}/bin/zccache"
@@ -205,7 +206,7 @@ echo "leftovers ok"
 
 run_verify aap-accept:t2
 [[ "${rc}" -eq 0 && "${out}" == *"accept: PASS"* ]] || fail "a good image did not pass (rc ${rc}): ${out}"
-for c in build mounts preflight init runner node npm jq zccache sccache sudo zccache-init; do
+for c in build mounts preflight init runner node npm jq cmake zccache sccache sudo zccache-init; do
   [[ "${out}" == *"accept: ${c} ok"* ]] || fail "check ${c} was not reported ok: ${out}"
 done
 [[ "$(cat "${zc}/budget")" =~ ^[1-9][0-9]*$ ]] || fail "the probe gave zccache init a budget of '$(cat "${zc}/budget")'"
