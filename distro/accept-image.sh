@@ -185,6 +185,7 @@ probe() { # TAG
     echo "node=$(node --version 2>&1)"
     echo "npm=$(npm --version > /dev/null 2>&1 && echo present || echo missing)"
     echo "jq=$(jq --version 2>&1)"
+    echo "cmake=$(cmake --version 2>&1 | head -n 1)"
     echo "zccache=$('"${ZC_DIR}"'/bin/zccache --version 2>&1 | head -n 1)"
     echo "sccache=$(command -v sccache || echo absent)"
     echo "sudo=$(id -nG runner | tr " " "\n" | grep -qx sudo && echo member || echo none)"
@@ -249,6 +250,7 @@ verify() { # CONTEXT [TAG]
   expect node "$(fact node)" "v$(dockerfile_pin "${df}" 's#.*nodejs\.org/dist/v([0-9.]+)/.*#\1#p')" exact
   expect npm "$(fact npm)" present exact
   expect jq "$(fact jq)" jq- prefix
+  expect cmake "$(fact cmake)" "cmake version " prefix
   expect zccache "$(fact zccache)" "zccache $(dockerfile_pin "${df}" 's#.*releases/download/([0-9.]+)/\$\{archive\}.*#\1#p')" exact
   expect sccache "$(fact sccache)" absent exact
   expect sudo "$(fact sudo)" none exact "runner has no sudo"

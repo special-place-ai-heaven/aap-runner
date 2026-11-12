@@ -19,6 +19,7 @@ RUN apt-get update \
       bash \
       build-essential \
       ca-certificates \
+      cmake \
       curl \
       git \
       gnupg \
