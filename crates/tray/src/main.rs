@@ -33,8 +33,8 @@ use state::{DEFAULT_BASE, Desired, Snapshot, Status};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -44,6 +44,8 @@ const POLL: Duration = Duration::from_secs(5);
 /// ponytail: theme poll like Fathom; RegNotifyChangeKeyValue if 2 s ever matters.
 const THEME_POLL: Duration = Duration::from_secs(2);
 const RESTART_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// How long a failed action's reason replaces the status line and tooltip.
+const NOTICE_TTL: Duration = Duration::from_secs(5 * 60);
 /// Absolute: a bare `explorer.exe` would be found in the tray's own folder first.
 const EXPLORER: &str = r"C:\Windows\explorer.exe";
 const TICK: Duration = Duration::from_millis(16);
@@ -171,18 +173,33 @@ pub(crate) fn probe_tray_lock() -> TrayLock {
     }
 }
 
-fn set_desired(base: &Path, d: Desired) {
-    if let Err(e) = state::write_desired(base, d) {
+/// Logs a failure and returns what the owner is told; the caller shows it and must not
+/// present the unwritten value as the state.
+fn set_desired(base: &Path, d: Desired) -> Result<(), String> {
+    state::write_desired(base, d).map_err(|e| {
         state::log(base, &format!("write {d:?} failed: {e}"));
-    }
+        let word = if d == Desired::On { "on" } else { "off" };
+        format!("Could not turn the pool {word}: {e}")
+    })
 }
 
-fn toggle_pause(base: &Path) {
-    let mut s = settings::read_settings(base);
+fn toggle_pause(base: &Path) -> Result<(), String> {
+    toggle_pause_with(base, &settings::VmLimit::read())
+}
+
+/// Flips `paused` in the stored file. A file the tray rejects is not rewritten from defaults:
+/// the owner fixes it in Settings first.
+fn toggle_pause_with(base: &Path, vm: &settings::VmLimit) -> Result<(), String> {
+    let Some(mut s) = settings::read_settings_to_edit(base) else {
+        let msg = "settings.json is not valid; fix it in Settings first";
+        state::log(base, &format!("pause: {msg}"));
+        return Err(msg.to_string());
+    };
     s.paused = !s.paused;
-    if let Err(e) = settings::write_settings(base, &s, &settings::VmLimit::read()) {
+    settings::write_settings(base, &s, vm).map_err(|e| {
         state::log(base, &format!("write settings failed: {e}"));
-    }
+        format!("Could not save settings: {e}")
+    })
 }
 
 /// Start this exe with `args`; the child takes its own lock, so a repeat is a no-op.
@@ -196,23 +213,55 @@ fn spawn_self(base: &Path, args: &[&str]) -> Option<Child> {
     }
 }
 
-fn open_logs(base: &Path) {
-    if let Err(e) = Command::new(EXPLORER).arg(base.join("logs")).spawn() {
-        state::log(base, &format!("open logs failed: {e}"));
+/// Logs a failed `explorer.exe` start and returns the same text for the owner.
+pub(crate) fn open_failed(base: &Path, what: &str, e: &std::io::Error) -> String {
+    let msg = format!("open {what} failed: {e}");
+    state::log(base, &msg);
+    msg
+}
+
+fn open_logs(base: &Path) -> Result<(), String> {
+    Command::new(EXPLORER)
+        .arg(base.join("logs"))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| open_failed(base, "logs", &e))
+}
+
+/// A restart that is still waiting must not leave the pool off when the tray goes away.
+fn leave_on_if_restarting(base: &Path, restarting: &AtomicBool) {
+    // ponytail: cannot tell this restart's off from a Stop pressed meanwhile; Quit mid-restart wins.
+    if restarting.load(Ordering::SeqCst) {
+        let _ = set_desired(base, Desired::On);
     }
 }
 
 /// Ask the open window to show `view`.
-fn request_view(base: &Path, view: View) {
-    if let Err(e) = dashboard::write_request(&dashboard::request_path(), view) {
+fn request_view(base: &Path, view: View, job: Option<&str>) {
+    if let Err(e) = dashboard::write_request_job(&dashboard::request_path(), view, job) {
         state::log(base, &format!("write view request failed: {e}"));
     }
 }
 
+/// The window's command line: the view, plus the job the tray just launched (`--job <id>`),
+/// which the window did not issue and so adopts.
+fn window_args(view: View, job: Option<&str>) -> Vec<&str> {
+    let mut args = view.args().to_vec();
+    if let Some(id) = job {
+        args.extend(["--job", id]);
+    }
+    args
+}
+
 /// Open the window as `view` asks (`None`: Status), or focus it if it is open and pass `view`
 /// on (`None`: no change). `toggle`: a left click on the icon closes it when it was the last
-/// active window.
-fn show_window(base: &Path, view: Option<View>, toggle: Option<Option<isize>>) -> Option<Child> {
+/// active window. `job`: the id of the job the tray just launched, for the window to show.
+fn show_window(
+    base: &Path,
+    view: Option<View>,
+    toggle: Option<Option<isize>>,
+    job: Option<&str>,
+) -> Option<Child> {
     match (win::find_window(&dashboard_title()), toggle) {
         (Some(h), Some(last)) if last == Some(h) => {
             win::close(h);
@@ -220,12 +269,12 @@ fn show_window(base: &Path, view: Option<View>, toggle: Option<Option<isize>>) -
         }
         (Some(h), _) => {
             if let Some(view) = view {
-                request_view(base, view);
+                request_view(base, view, job);
             }
             win::focus(h);
             None
         }
-        (None, _) => spawn_self(base, view.unwrap_or(View::Status).args()),
+        (None, _) => spawn_self(base, &window_args(view.unwrap_or(View::Status), job)),
     }
 }
 
@@ -269,8 +318,12 @@ fn main() {
         View::from_args(&args)
     } {
         // One window: a second request passes its view to the open one and focuses it.
+        let job = dashboard::job_arg(&args);
+        if let Some(id) = job {
+            helper::adopt_job_id(id);
+        }
         let Some(_lock) = single_instance("aap-runner-tray-dashboard.lock") else {
-            request_view(&base, view);
+            request_view(&base, view, job);
             if let Some(h) = win::find_window(&dashboard_title()) {
                 win::focus(h);
             }
@@ -293,6 +346,39 @@ fn main() {
     if let Err(e) = run_tray(&base) {
         state::log(&base, &format!("tray failed: {e}"));
     }
+}
+
+/// Runs a restart; what the owner must be told, if anything. Whatever goes wrong, desired ends on.
+fn run_restart(base: &Path, poll: Duration, timeout: Duration) -> Option<String> {
+    let msg = match state::restart(base, poll, timeout) {
+        Ok(state::Restart::Done | state::Restart::Overridden) => return None,
+        Ok(state::Restart::TimedOut) => format!(
+            "Restart timed out after {} min; runners left on",
+            timeout.as_secs() / 60
+        ),
+        Ok(state::Restart::Unknown) => {
+            "Restart stopped: the supervisor stopped reporting; runners left on".to_string()
+        }
+        Err(e) => match set_desired(base, Desired::On) {
+            Ok(()) => format!("Restart failed: {e}; runners left on"),
+            Err(_) => format!("Restart failed: {e}; runners may be off, press Start"),
+        },
+    };
+    state::log(base, &msg);
+    Some(msg)
+}
+
+/// Verify/Repair from the menu: launch, then show the window with that job (the window is
+/// another process and adopts the id the tray issued).
+fn launch_and_show(base: &Path, verb: helper::Verb, window: &mut Option<Child>) {
+    if let Err(e) = helper::launch(base, verb) {
+        state::log(base, &e);
+    }
+    let job = helper::take_issued_id();
+    track_window(
+        window,
+        show_window(base, Some(View::Status), None, job.as_deref()),
+    );
 }
 
 fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -346,6 +432,9 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let menu_rx = MenuEvent::receiver();
     let click_rx = TrayIconEvent::receiver();
     let restarting = Arc::new(AtomicBool::new(false));
+    // What the last action that failed tells the owner; it replaces the status line for a while.
+    let (notice_tx, notice_rx) = mpsc::channel::<String>();
+    let mut notice: Option<(String, Instant)> = None;
     let mut light = win::taskbar_uses_light_theme();
     let mut size = mark::tuned_size_for_dpi(win::system_dpi());
     let mut theme_read = Instant::now();
@@ -369,7 +458,12 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
             if let Some(mut child) = window.take() {
                 let _ = child.kill();
             }
+            leave_on_if_restarting(base, &restarting);
             return Ok(());
+        }
+        while let Ok(msg) = notice_rx.try_recv() {
+            notice = Some((msg, Instant::now()));
+            next_poll = Instant::now();
         }
         if let Some(h) = win::foreground_app() {
             last_app = Some(h);
@@ -387,6 +481,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                         base,
                         in_problem.then_some(View::Diagnostics),
                         Some(last_app),
+                        None,
                     ),
                 );
             }
@@ -394,37 +489,42 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(e) = menu_rx.try_recv() {
             let id = e.id();
             if id == start.id() {
-                set_desired(base, Desired::On);
+                notice = set_desired(base, Desired::On)
+                    .err()
+                    .map(|e| (e, Instant::now()));
             } else if id == stop.id() {
-                set_desired(base, Desired::Off);
+                notice = set_desired(base, Desired::Off)
+                    .err()
+                    .map(|e| (e, Instant::now()));
             } else if id == restart.id() && !restarting.swap(true, Ordering::SeqCst) {
-                let (base, flag) = (base.to_path_buf(), restarting.clone());
+                let (base, flag, tx) = (base.to_path_buf(), restarting.clone(), notice_tx.clone());
                 thread::spawn(move || {
-                    match state::restart(&base, POLL, RESTART_TIMEOUT) {
-                        Ok(true) => {}
-                        Ok(false) => state::log(&base, "restart: timed out waiting for off"),
-                        Err(e) => state::log(&base, &format!("restart failed: {e}")),
+                    if let Some(msg) = run_restart(&base, POLL, RESTART_TIMEOUT) {
+                        let _ = tx.send(msg);
                     }
                     flag.store(false, Ordering::SeqCst);
                 });
             } else if id == pause.id() {
-                toggle_pause(base);
+                notice = toggle_pause(base).err().map(|e| (e, Instant::now()));
             } else if id == settings_item.id() {
-                track_window(&mut window, show_window(base, Some(View::Settings), None));
+                track_window(
+                    &mut window,
+                    show_window(base, Some(View::Settings), None, None),
+                );
             } else if id == github_item.id() {
-                track_window(&mut window, show_window(base, Some(View::Github), None));
+                track_window(
+                    &mut window,
+                    show_window(base, Some(View::Github), None, None),
+                );
             } else if id == identity_item.id() {
-                track_window(&mut window, show_window(base, Some(View::Identity), None));
+                track_window(
+                    &mut window,
+                    show_window(base, Some(View::Identity), None, None),
+                );
             } else if id == verify_item.id() {
-                if let Err(e) = helper::launch(base, helper::Verb::Verify) {
-                    state::log(base, &e);
-                }
-                track_window(&mut window, show_window(base, Some(View::Status), None));
+                launch_and_show(base, helper::Verb::Verify, &mut window);
             } else if id == repair_item.id() {
-                if let Err(e) = helper::launch(base, helper::Verb::Repair) {
-                    state::log(base, &e);
-                }
-                track_window(&mut window, show_window(base, Some(View::Status), None));
+                launch_and_show(base, helper::Verb::Repair, &mut window);
             } else if id == update_item.id() {
                 let start = std::env::var_os("USERPROFILE")
                     .map(PathBuf::from)
@@ -435,24 +535,35 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                         Ok(()) => {
                             // The tray quits before the helper swaps the exe; the window (left
                             // running, not killed) shows the result and starts the installed tray.
-                            let _ = show_window(base, Some(View::Status), None);
+                            let _ = show_window(base, Some(View::Status), None, None);
+                            leave_on_if_restarting(base, &restarting);
                             return Ok(());
                         }
-                        Err(e) => state::log(base, &e),
+                        Err(e) => {
+                            // The reason sits in the pointer under the id just issued; the
+                            // window shows it.
+                            state::log(base, &e);
+                            let job = helper::take_issued_id();
+                            track_window(
+                                &mut window,
+                                show_window(base, Some(View::Status), None, job.as_deref()),
+                            );
+                        }
                     }
                 }
             } else if id == open_job.id() {
                 if let Some(url) = job_url.as_deref().filter(|u| state::valid_run_url(u))
                     && let Err(e) = Command::new(EXPLORER).arg(url).spawn()
                 {
-                    state::log(base, &format!("open job failed: {e}"));
+                    notice = Some((open_failed(base, "job", &e), Instant::now()));
                 }
             } else if id == logs.id() {
-                open_logs(base);
+                notice = open_logs(base).err().map(|e| (e, Instant::now()));
             } else if id == quit.id() {
                 if let Some(mut child) = window.take() {
                     let _ = child.kill();
                 }
+                leave_on_if_restarting(base, &restarting);
                 return Ok(()); // dropping `tray` removes the icon; no file is touched
             }
             next_poll = Instant::now();
@@ -499,8 +610,14 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 state::log(base, &format!("write history failed: {e}"));
             }
             current = (snap.status.sym(), snap.busy());
+            let live_notice = notice
+                .as_ref()
+                .filter(|(_, at)| at.elapsed() < NOTICE_TTL)
+                .map(|(msg, _)| msg.as_str());
             let text = if busy {
                 "Restarting\u{2026}".to_string()
+            } else if let Some(msg) = live_notice {
+                msg.to_string()
             } else {
                 snap.line()
             };
@@ -510,6 +627,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
             }
             let tip = if busy {
                 "AAP Runner \u{b7} Restarting\u{2026}".to_string()
+            } else if let Some(msg) = live_notice {
+                cap_units(&format!("AAP Runner \u{b7} {msg}"), TOOLTIP_UNITS)
             } else {
                 tooltip(&snap, line.as_deref())
             };
@@ -682,6 +801,107 @@ mod tests {
             dashboard_title(),
             format!("AAP Runner \u{b7} v0.5.0 ({})", env!("AAP_TRAY_COMMIT"))
         );
+    }
+
+    fn desired_in(base: &Path) -> Desired {
+        state::read_desired(base)
+    }
+
+    #[test]
+    fn a_restart_that_times_out_leaves_the_pool_on_and_says_so() {
+        let base = state::temp_base("main-restart-timeout");
+        std::fs::write(
+            base.join("status.json"),
+            r#"{"state":"running","job":"x","updated":"2099-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        let msg = run_restart(&base, Duration::ZERO, Duration::ZERO).unwrap();
+        assert_eq!(msg, "Restart timed out after 0 min; runners left on");
+        assert_eq!(desired_in(&base), Desired::On);
+        let failed = run_restart(&base.join("nope"), Duration::ZERO, Duration::ZERO).unwrap();
+        assert!(failed.starts_with("Restart failed: "), "{failed}");
+        std::fs::write(
+            base.join("status.json"),
+            r#"{"state":"off","updated":"2099-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(run_restart(&base, Duration::ZERO, Duration::ZERO), None);
+        assert_eq!(desired_in(&base), Desired::On);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn quitting_during_a_restart_writes_on() {
+        let base = state::temp_base("main-restart-quit");
+        state::write_desired(&base, Desired::Off).unwrap();
+        leave_on_if_restarting(&base, &AtomicBool::new(false));
+        assert_eq!(desired_in(&base), Desired::Off, "no restart: untouched");
+        leave_on_if_restarting(&base, &AtomicBool::new(true));
+        assert_eq!(desired_in(&base), Desired::On);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_failed_start_or_stop_is_reported_not_swallowed() {
+        let base = state::temp_base("main-set-desired");
+        assert_eq!(set_desired(&base, Desired::On), Ok(()));
+        assert_eq!(desired_in(&base), Desired::On);
+        let gone = base.join("nope");
+        let e = set_desired(&gone, Desired::Off).unwrap_err();
+        assert!(e.starts_with("Could not turn the pool off: "), "{e}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn pause_refuses_a_settings_file_it_cannot_load() {
+        let base = state::temp_base("main-pause");
+        let path = base.join("inbox").join("settings.json");
+        let vm = settings::VmLimit::ASSUMED;
+        // Missing file: today's behaviour, defaults with `paused` flipped.
+        toggle_pause_with(&base, &vm).unwrap();
+        assert!(settings::read_settings(&base).paused);
+        toggle_pause_with(&base, &vm).unwrap();
+        assert!(!settings::read_settings(&base).paused);
+        for rejected in [
+            r#"{"runner_count":2,"sharing":"shared"}"#,
+            "{",
+            r#"{"runner_count":9}"#,
+        ] {
+            std::fs::write(&path, rejected).unwrap();
+            let e = toggle_pause_with(&base, &vm).unwrap_err();
+            assert_eq!(e, "settings.json is not valid; fix it in Settings first");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                rejected,
+                "untouched"
+            );
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_window_gets_the_job_the_tray_launched() {
+        assert_eq!(window_args(View::Status, None), ["--dashboard"]);
+        assert_eq!(
+            window_args(View::Status, Some("0123456789abcdef")),
+            ["--dashboard", "--job", "0123456789abcdef"]
+        );
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let spawned = args(&window_args(View::Status, Some("0123456789abcdef")));
+        assert_eq!(View::from_args(&spawned), Some(View::Status));
+        assert_eq!(dashboard::job_arg(&spawned), Some("0123456789abcdef"));
+        assert_eq!(dashboard::job_arg(&args(&["--dashboard"])), None);
+        assert_eq!(dashboard::job_arg(&args(&["--dashboard", "--job"])), None);
+    }
+
+    #[test]
+    fn a_failed_explorer_start_is_logged_and_returned() {
+        let base = state::temp_base("main-open-failed");
+        let e = std::io::Error::other("boom");
+        assert_eq!(open_failed(&base, "logs", &e), "open logs failed: boom");
+        let log = std::fs::read_to_string(base.join("inbox").join("tray.log")).unwrap();
+        assert!(log.contains("open logs failed: boom"), "{log}");
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

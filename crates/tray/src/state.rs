@@ -626,21 +626,41 @@ pub fn write_desired(base: &Path, desired: Desired) -> io::Result<()> {
     write_atomic(&inbox(base).join("state.json"), body)
 }
 
-/// Write off, wait until the supervisor reports `off`, then write on.
-/// Returns `Ok(false)` on timeout, leaving desired = off.
-pub fn restart(base: &Path, poll: Duration, timeout: Duration) -> io::Result<bool> {
+/// How a [`restart`] ended. Every outcome but `Overridden` leaves desired = on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restart {
+    /// The supervisor reported `off`, then desired went back to on.
+    Done,
+    /// The pool did not report `off` in time (a long job is draining); desired is on again.
+    TimedOut,
+    /// The supervisor stopped reporting; desired is on again so it starts when it returns.
+    Unknown,
+    /// The owner wrote `on` meanwhile (Start in the window): nothing more was written.
+    Overridden,
+}
+
+/// Write off, wait until the supervisor reports `off`, then write on. Whatever stops the wait
+/// (timeout, status unknown) writes on, so a restart never leaves the pool off; only an `on`
+/// the owner wrote during the wait ends it without a write.
+pub fn restart(base: &Path, poll: Duration, timeout: Duration) -> io::Result<Restart> {
     write_desired(base, Desired::Off)?;
     let deadline = Instant::now() + timeout;
-    loop {
-        if read_status(base, SystemTime::now()).status == Status::Off {
-            write_desired(base, Desired::On)?;
-            return Ok(true);
+    let outcome = loop {
+        if read_desired(base) == Desired::On {
+            return Ok(Restart::Overridden);
+        }
+        match read_status(base, SystemTime::now()).status {
+            Status::Off => break Restart::Done,
+            Status::Unknown => break Restart::Unknown,
+            _ => {}
         }
         if Instant::now() >= deadline {
-            return Ok(false);
+            break Restart::TimedOut;
         }
         thread::sleep(poll);
-    }
+    };
+    write_desired(base, Desired::On)?;
+    Ok(outcome)
 }
 
 /// Append a line to `inbox/tray.log` if that folder exists; otherwise silent.
@@ -964,15 +984,73 @@ mod tests {
             json("running", "2099-01-01T00:00:00Z"),
         )
         .unwrap();
-        assert!(!restart(&base, Duration::ZERO, Duration::ZERO).unwrap());
-        assert_eq!(read(), r#"{"desired":"off"}"#);
+        assert_eq!(
+            restart(&base, Duration::ZERO, Duration::ZERO).unwrap(),
+            Restart::TimedOut
+        );
+        assert_eq!(
+            read(),
+            r#"{"desired":"on"}"#,
+            "a timeout never leaves it off"
+        );
         fs::write(
             base.join("status.json"),
             json("off", "2099-01-01T00:00:00Z"),
         )
         .unwrap();
-        assert!(restart(&base, Duration::ZERO, Duration::ZERO).unwrap());
+        assert_eq!(
+            restart(&base, Duration::ZERO, Duration::ZERO).unwrap(),
+            Restart::Done
+        );
         assert_eq!(read(), r#"{"desired":"on"}"#);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn restart_leaves_on_when_the_status_goes_unknown() {
+        let base = temp_base("restart-unknown");
+        // No status.json: the supervisor is not reporting.
+        assert_eq!(
+            restart(&base, Duration::ZERO, Duration::from_secs(60)).unwrap(),
+            Restart::Unknown
+        );
+        assert_eq!(read_desired(&base), Desired::On);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn restart_stops_waiting_when_the_owner_presses_start() {
+        let base = temp_base("restart-override");
+        fs::write(
+            base.join("status.json"),
+            json("running", "2099-01-01T00:00:00Z"),
+        )
+        .unwrap();
+        let owner = {
+            let base = base.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(50));
+                write_desired(&base, Desired::On).unwrap();
+            })
+        };
+        let started = Instant::now();
+        assert_eq!(
+            restart(&base, Duration::from_millis(5), Duration::from_secs(30)).unwrap(),
+            Restart::Overridden
+        );
+        owner.join().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "stopped waiting"
+        );
+        assert_eq!(read_desired(&base), Desired::On);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn restart_that_cannot_write_is_an_error() {
+        let base = temp_base("restart-io");
+        assert!(restart(&base.join("nope"), Duration::ZERO, Duration::ZERO).is_err());
         fs::remove_dir_all(&base).unwrap();
     }
 
