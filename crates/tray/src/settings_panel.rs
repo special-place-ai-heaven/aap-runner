@@ -66,6 +66,8 @@ pub struct SettingsPanel {
     sharing: Sharing,
     vm: VmLimit,
     write_error: Option<String>,
+    /// Why Start/Stop/Pause did not happen, for the window's note line (`take_action_error`).
+    action_error: Option<String>,
     /// The Windows profile while `status.v5.json` reports the interim runner on this PC.
     host: Option<ProfileV5>,
 }
@@ -100,6 +102,7 @@ impl SettingsPanel {
             sharing: stored.sharing,
             vm: VmLimit::read(),
             write_error: None,
+            action_error: None,
             host: read_host(base),
         }
     }
@@ -139,6 +142,11 @@ impl SettingsPanel {
             s.linux_heavy_count,
             s.schema >= 4 && self.numbered,
         )
+    }
+
+    /// The stored file is settings schema 4 (it holds tier counts).
+    pub fn stored_tiers(&self) -> bool {
+        self.stored.schema >= 4
     }
 
     fn revert(&mut self) {
@@ -273,8 +281,10 @@ impl SettingsPanel {
         }
         let r = ui.add_enabled(base.join("logs").is_dir(), egui::Button::new("Open logs"));
         focus.track(ui, p, &r);
-        if r.clicked() {
-            crate::open_logs(base);
+        if r.clicked()
+            && let Err(e) = crate::open_logs(base)
+        {
+            self.action_error = Some(e);
         }
     }
 
@@ -303,16 +313,40 @@ impl SettingsPanel {
                 r
             };
             if r.clicked() {
-                *desired = if on { Desired::Off } else { Desired::On };
-                crate::set_desired(base, *desired);
+                self.press_power(base, desired);
             }
             let r = ui.button(self.stored.toggle_label());
             focus.track(ui, p, &r);
             if r.clicked() {
-                crate::toggle_pause(base);
-                self.reload(base);
+                self.press_pause(base);
             }
         });
+    }
+
+    /// Start/Stop: the shown state flips only once the write succeeded.
+    fn press_power(&mut self, base: &Path, desired: &mut Desired) {
+        let next = if *desired == Desired::On {
+            Desired::Off
+        } else {
+            Desired::On
+        };
+        match crate::set_desired(base, next) {
+            Ok(()) => *desired = next,
+            Err(e) => self.action_error = Some(e),
+        }
+    }
+
+    /// Pause/Resume: refused, with the reason, when the file cannot be rewritten safely.
+    fn press_pause(&mut self, base: &Path) {
+        if let Err(e) = crate::toggle_pause_with(base, &self.vm) {
+            self.action_error = Some(e);
+        }
+        self.reload(base);
+    }
+
+    /// The reason the last Start/Stop/Pause press failed, once.
+    pub fn take_action_error(&mut self) -> Option<String> {
+        self.action_error.take()
     }
 
     fn inputs(
@@ -358,7 +392,7 @@ impl SettingsPanel {
                 &mut self.tier,
                 &[(Tier::Light, "Light"), (Tier::Heavy, "Heavy")],
                 |t| tiers || t == Tier::Light,
-                p.os(Os::Linux),
+                Chosen::Solid(p.os(Os::Linux)),
                 focus,
             )
             .on_hover_text(if tiers { TIER_TIP } else { TIERS_LATER });
@@ -375,7 +409,7 @@ impl SettingsPanel {
                     &mut self.linux,
                     &TIER_COUNTS,
                     |n| fits_linux.contains(&n),
-                    p.os(Os::Linux),
+                    Chosen::Solid(p.os(Os::Linux)),
                     focus,
                 ),
                 Tier::Heavy => segmented(
@@ -384,7 +418,7 @@ impl SettingsPanel {
                     &mut self.heavy,
                     &TIER_COUNTS[..3],
                     |n| fits_heavy.contains(&n),
-                    p.os(Os::Linux),
+                    Chosen::Solid(p.os(Os::Linux)),
                     focus,
                 ),
             };
@@ -405,14 +439,15 @@ impl SettingsPanel {
                 &mut self.windows,
                 &COUNTS,
                 |n| fits_windows.contains(&n),
-                p.os(Os::Windows),
+                windows_chosen(p),
                 focus,
             )
             .on_hover_text(WINDOWS_INERT);
         });
         ui.horizontal(|ui| {
             label(ui, "Each");
-            ui.label(RichText::new(windows.text).color(p.over).small());
+            // Truncated: no text here may widen the fixed column and clip the rows below.
+            ui.add(egui::Label::new(RichText::new(windows.text).color(p.over).small()).truncate());
         })
         .response
         .on_hover_text(windows.tip);
@@ -436,7 +471,7 @@ impl SettingsPanel {
                 &mut self.sharing,
                 &[(Sharing::Slice, "Slice"), (Sharing::Fixed, "Fixed")],
                 |_| true,
-                p.accent,
+                Chosen::Solid(p.accent),
                 focus,
             )
             .on_hover_text(SHARING_TIP);
@@ -534,6 +569,14 @@ fn now(ui: &mut egui::Ui, p: &Palette, text: String) {
     });
 }
 
+/// How a picker draws its selected cell: filled while the choice is in force, an outline in the
+/// same colour while it is stored but starts nothing (shape, not colour, says which).
+#[derive(Clone, Copy)]
+enum Chosen {
+    Solid(egui::Color32),
+    Hollow(egui::Color32),
+}
+
 /// Equal cells, the selected one filled with `selected_fill` (a profile colour or the accent);
 /// cells `allowed` refuses are greyed and inert. Cells shrink to share the row width. Only the
 /// selected cell is a Tab stop; Left and Right move the selection to an allowed neighbour while
@@ -544,9 +587,13 @@ fn segmented<T: Copy + PartialEq>(
     value: &mut T,
     options: &[(T, &str)],
     allowed: impl Fn(T) -> bool,
-    selected_fill: egui::Color32,
+    chosen: Chosen,
     focus: &mut Focus,
 ) -> egui::Response {
+    let (accent, hollow) = match chosen {
+        Chosen::Solid(c) => (c, false),
+        Chosen::Hollow(c) => (c, true),
+    };
     let on_accent = if p.dark {
         crate::dashboard::hex(0x1E1F22)
     } else {
@@ -561,7 +608,9 @@ fn segmented<T: Copy + PartialEq>(
         for (i, (v, text)) in options.iter().enumerate() {
             let selected = *value == *v;
             let ok = allowed(*v);
-            let color = if selected {
+            let color = if selected && hollow {
+                accent
+            } else if selected {
                 on_accent
             } else if ok {
                 p.text
@@ -581,8 +630,8 @@ fn segmented<T: Copy + PartialEq>(
                 Sense::hover()
             };
             let (rect, r) = ui.allocate_exact_size(size, sense);
-            let fill = if selected {
-                selected_fill
+            let fill = if selected && !hollow {
+                accent
             } else if !ok {
                 p.bg
             } else if r.hovered() && enabled {
@@ -593,6 +642,10 @@ fn segmented<T: Copy + PartialEq>(
             ui.painter().rect_filled(rect, 0.0, fill);
             ui.painter()
                 .rect_stroke(rect, 0.0, Stroke::new(1.0, p.border), StrokeKind::Inside);
+            if selected && hollow {
+                ui.painter()
+                    .rect_stroke(rect, 0.0, Stroke::new(2.0, accent), StrokeKind::Inside);
+            }
             ui.painter()
                 .galley(rect.center() - galley.size() / 2.0, galley, color);
             r.widget_info(|| {
@@ -708,15 +761,16 @@ fn windows_line(
     host: Option<&ProfileV5>,
 ) -> WindowsLine {
     if let Some(h) = host {
-        // The line keeps only the state word ("stopped"); the reason, up to 200 characters,
-        // goes to the hover tip so it cannot widen the column.
+        // The line keeps the short name and only the state word ("stopped"), so it fits the
+        // column at every state; the full name and the reason, up to 200 characters, go to the
+        // hover tip.
         let state = h.host_state();
         let word = state.split(':').next().unwrap_or_default();
         return WindowsLine {
-            text: format!("{HOST_RUNNER_NAME} \u{b7} {word}"),
+            text: format!("interim runner \u{b7} {word}"),
             tip: format!(
-                "{state}. {HOST_RUNNER_WARNING} It is outside the counts above, which wait for \
-                 the native Windows backend."
+                "The {HOST_RUNNER_NAME}: {state}. {HOST_RUNNER_WARNING} It is outside the counts \
+                 above, which wait for the native Windows backend."
             ),
         };
     }
@@ -737,6 +791,15 @@ fn windows_line(
             cpus * windows,
             gib * windows
         ),
+    }
+}
+
+/// The Windows picker's selected cell: an outline until a backend runs the count.
+fn windows_chosen(p: &Palette) -> Chosen {
+    if WINDOWS_BACKEND {
+        Chosen::Solid(p.os(Os::Windows))
+    } else {
+        Chosen::Hollow(p.os(Os::Windows))
     }
 }
 
@@ -1005,6 +1068,49 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
     }
 
+    /// A Start/Stop press that cannot be written does not flip the shown state; the reason
+    /// goes to the note line.
+    #[test]
+    fn a_failed_start_keeps_the_shown_state_and_reports() {
+        let base = crate::state::temp_base("panel-power");
+        let mut panel = SettingsPanel::load(&base);
+        let mut desired = Desired::Off;
+        panel.press_power(&base, &mut desired);
+        assert_eq!(desired, Desired::On);
+        assert_eq!(panel.take_action_error(), None);
+        panel.press_power(&base, &mut desired);
+        assert_eq!(desired, Desired::Off);
+        let gone = base.join("nope");
+        panel.press_power(&gone, &mut desired);
+        assert_eq!(desired, Desired::Off, "unwritten: not shown as on");
+        let e = panel.take_action_error().unwrap();
+        assert!(e.starts_with("Could not turn the pool on: "), "{e}");
+        assert_eq!(panel.take_action_error(), None, "taken once");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Pause on a stored file the tray rejects writes nothing and says why; a missing file
+    /// still pauses.
+    #[test]
+    fn pause_on_a_rejected_file_refuses_and_reports() {
+        let base = crate::state::temp_base("panel-pause");
+        let path = base.join("inbox").join("settings.json");
+        let mut panel = SettingsPanel::load(&base);
+        panel.vm = VmLimit::ASSUMED;
+        panel.press_pause(&base);
+        assert_eq!(panel.take_action_error(), None);
+        assert!(settings::read_settings(&base).paused);
+        let hand_edited = r#"{"runner_count":2,"job_cpus":8,"sharing":"shared"}"#;
+        std::fs::write(&path, hand_edited).unwrap();
+        panel.press_pause(&base);
+        assert_eq!(
+            panel.take_action_error().as_deref(),
+            Some("settings.json is not valid; fix it in Settings first")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), hand_edited);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
     /// A stored schema 3 file shows its own two counts (Windows only included), Linux 0 is a
     /// choice, and Apply keeps schema 3 with the edited Windows count.
     #[test]
@@ -1163,8 +1269,12 @@ mod tests {
         let v = crate::state::parse_status_v5(&json, now).unwrap();
         for windows in [0, 2] {
             let w = windows_line(&e, windows, &vm, v.windows_host());
-            assert_eq!(w.text, "interim runner on this PC \u{b7} busy");
-            assert!(w.tip.starts_with("busy. "), "{}", w.tip);
+            assert_eq!(w.text, "interim runner \u{b7} busy");
+            assert!(
+                w.tip.starts_with("The interim runner on this PC: busy. "),
+                "{}",
+                w.tip
+            );
             assert!(w.tip.contains(HOST_RUNNER_WARNING), "{}", w.tip);
         }
     }
@@ -1186,7 +1296,7 @@ mod tests {
         host.host_runner = Some("stopped".into());
         host.unavailable_reason = reason.clone();
         let w = windows_line(&e, 0, &vm, v.windows_host());
-        assert_eq!(w.text, "interim runner on this PC \u{b7} stopped");
+        assert_eq!(w.text, "interim runner \u{b7} stopped");
         assert!(w.tip.contains(&reason), "{}", w.tip);
     }
 

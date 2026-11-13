@@ -184,6 +184,9 @@ pub struct Snapshot {
     pub work_disk_floor_gb: Option<f64>,
     /// True while the manager is cleaning the work disk.
     pub cleaning: bool,
+    /// `Unknown` because a present, fresh `status.json` could not be used by this build, not
+    /// because the service stopped; `detail` then holds the reason.
+    pub unreadable: bool,
 }
 
 /// `https://github.com/<owner>/<repo>/actions/runs/<digits>` and nothing else, the same as
@@ -235,6 +238,17 @@ impl Snapshot {
             work_disk_free_gb: None,
             work_disk_floor_gb: None,
             cleaning: false,
+            unreadable: false,
+        }
+    }
+
+    /// A status file that is there but this build cannot use; `why` is shown and copied.
+    fn unreadable(why: impl Into<String>, updated: Option<SystemTime>) -> Self {
+        Snapshot {
+            detail: why.into(),
+            updated,
+            unreadable: true,
+            ..Snapshot::bare(Status::Unknown)
         }
     }
 
@@ -253,6 +267,16 @@ impl Snapshot {
         valid_run_url(&self.run_url).then_some(self.run_url.as_str())
     }
 
+    /// The state word of the header and the tooltip. A status file this build cannot read is
+    /// not a service that stopped.
+    pub fn label(&self) -> &'static str {
+        if self.unreadable && self.status == Status::Unknown {
+            "Status unreadable"
+        } else {
+            self.status.sym().label()
+        }
+    }
+
     fn status_text(&self) -> String {
         match &self.status {
             Status::Running(job) if !self.repo.is_empty() => {
@@ -263,6 +287,7 @@ impl Snapshot {
                     format!("Running {short} \u{b7} {job}")
                 }
             }
+            Status::Unknown if self.unreadable => "Unknown (status file unreadable)".into(),
             status => status.text(),
         }
     }
@@ -338,35 +363,60 @@ fn slot_sym(state: &str) -> Sym {
     }
 }
 
-/// Missing inbox = not installed; missing/bad/stale/oversized status.json = unknown.
+/// Missing inbox = not installed; missing or stale status.json = unknown (service not running);
+/// a fresh one this build cannot read = unknown with `unreadable` and the reason.
 pub fn read_status(base: &Path, now: SystemTime) -> Snapshot {
     if !inbox(base).is_dir() {
         return Snapshot::bare(Status::NotInstalled);
     }
-    match read_bounded(&base.join("status.json")) {
-        Some(json) => parse_status(&json, now),
-        None => Snapshot::bare(Status::Unknown),
+    let path = base.join("status.json");
+    if let Some(json) = read_bounded(&path) {
+        return parse_status(&json, now);
+    }
+    // Not read: missing, locked, or present but too large / not UTF-8. Only a file written
+    // lately (by its modified time; a future one counts as fresh) is a file this build rejects.
+    let Ok(meta) = fs::metadata(&path) else {
+        return Snapshot::bare(Status::Unknown);
+    };
+    let fresh = meta
+        .modified()
+        .is_ok_and(|m| now.duration_since(m).map_or(true, |age| age <= STALE_AFTER));
+    if !fresh {
+        Snapshot::bare(Status::Unknown)
+    } else if meta.len() > MAX_STATUS_BYTES {
+        Snapshot::unreadable("the file is larger than 64 KiB", None)
+    } else if File::open(&path).is_ok() {
+        Snapshot::unreadable("the file is not valid UTF-8 text", None)
+    } else {
+        Snapshot::bare(Status::Unknown)
     }
 }
 
 pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
-    let unknown = Snapshot::bare(Status::Unknown);
     // PowerShell 5 writes UTF-8 with a BOM.
-    let Ok(raw) = serde_json::from_str::<RawStatus>(json.trim_start_matches('\u{feff}')) else {
-        return unknown;
+    let raw = match serde_json::from_str::<RawStatus>(json.trim_start_matches('\u{feff}')) {
+        Ok(raw) => raw,
+        Err(e) => return Snapshot::unreadable(format!("not valid status JSON: {e}"), None),
     };
     let Some(updated) = parse_rfc3339(&raw.updated) else {
-        return unknown;
+        return Snapshot::unreadable("its timestamp is missing or malformed", None);
     };
-    // A timestamp in the future (clock skew) counts as fresh.
-    if now
-        .duration_since(updated)
-        .is_ok_and(|age| age > STALE_AFTER)
-    {
-        return Snapshot {
-            updated: Some(updated),
-            ..unknown
-        };
+    match now.duration_since(updated) {
+        Ok(age) if age > STALE_AFTER => {
+            return Snapshot {
+                updated: Some(updated),
+                ..Snapshot::bare(Status::Unknown)
+            };
+        }
+        // Small clock skew stays fresh; further ahead the wall clock was stepped back.
+        Err(e) if e.duration() > STALE_AFTER => {
+            let why = format!(
+                "its timestamp is {} min in the future; check the PC clock",
+                e.duration().as_secs() / 60
+            );
+            return Snapshot::unreadable(why, Some(updated));
+        }
+        _ => {}
     }
     if raw.schema.is_some_and(|v| v > SCHEMA) {
         return Snapshot {
@@ -382,7 +432,10 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
         "draining" => Status::Draining,
         "paused" => Status::Paused,
         "error" => Status::Error(raw.detail.clone()),
-        _ => return unknown,
+        other => {
+            let word: String = other.chars().take(32).collect();
+            return Snapshot::unreadable(format!("unknown state \"{word}\""), Some(updated));
+        }
     };
     let applied = Applied {
         runner_count: raw.runner_count,
@@ -447,6 +500,7 @@ pub fn parse_status(json: &str, now: SystemTime) -> Snapshot {
         work_disk_free_gb: raw.work_disk_free_gb,
         work_disk_floor_gb: raw.work_disk_floor_gb,
         cleaning: raw.cleaning,
+        unreadable: false,
     }
 }
 
@@ -588,13 +642,18 @@ pub enum Desired {
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
-    {
+    let written = (|| {
         let mut f = File::create(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
+        drop(f);
+        // std::fs::rename replaces the destination on Windows (MOVEFILE_REPLACE_EXISTING).
+        fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp); // a full disk must not strand a half-written .tmp
     }
-    // std::fs::rename replaces the destination on Windows (MOVEFILE_REPLACE_EXISTING).
-    fs::rename(&tmp, path)
+    written
 }
 
 /// Retry now: desired on plus a new `retry` stamp, which makes the supervisor reset its
@@ -626,21 +685,44 @@ pub fn write_desired(base: &Path, desired: Desired) -> io::Result<()> {
     write_atomic(&inbox(base).join("state.json"), body)
 }
 
-/// Write off, wait until the supervisor reports `off`, then write on.
-/// Returns `Ok(false)` on timeout, leaving desired = off.
-pub fn restart(base: &Path, poll: Duration, timeout: Duration) -> io::Result<bool> {
+/// How a [`restart`] ended. Every outcome but `Overridden` leaves desired = on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restart {
+    /// The supervisor reported `off`, then desired went back to on.
+    Done,
+    /// The pool did not report `off` in time (a long job is draining); desired is on again.
+    TimedOut,
+    /// The supervisor stopped reporting; desired is on again so it starts when it returns.
+    Unknown,
+    /// The owner wrote `on` meanwhile (Start in the window): nothing more was written.
+    Overridden,
+}
+
+/// Write off, wait until the supervisor reports `off`, then write on. Whatever stops the wait
+/// (timeout, status unknown) writes on, so a restart never leaves the pool off; only an `on`
+/// the owner wrote during the wait ends it without a write. One unknown read is ridden out (the
+/// status file can be mid-replace); two in a row end the wait.
+pub fn restart(base: &Path, poll: Duration, timeout: Duration) -> io::Result<Restart> {
     write_desired(base, Desired::Off)?;
     let deadline = Instant::now() + timeout;
-    loop {
-        if read_status(base, SystemTime::now()).status == Status::Off {
-            write_desired(base, Desired::On)?;
-            return Ok(true);
+    let mut unknown = false;
+    let outcome = loop {
+        if read_desired(base) == Desired::On {
+            return Ok(Restart::Overridden);
+        }
+        match read_status(base, SystemTime::now()).status {
+            Status::Off => break Restart::Done,
+            Status::Unknown if unknown => break Restart::Unknown,
+            Status::Unknown => unknown = true,
+            _ => unknown = false,
         }
         if Instant::now() >= deadline {
-            return Ok(false);
+            break Restart::TimedOut;
         }
         thread::sleep(poll);
-    }
+    };
+    write_desired(base, Desired::On)?;
+    Ok(outcome)
 }
 
 /// Append a line to `inbox/tray.log` if that folder exists; otherwise silent.
@@ -747,6 +829,28 @@ pub(crate) fn fixture(rel: &str) -> String {
 }
 
 #[cfg(test)]
+/// RFC 3339 UTC for `t` (Howard Hinnant's civil_from_days), so a test can write "now".
+pub(crate) fn rfc(t: SystemTime) -> String {
+    let secs = t.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem / 60 % 60,
+        rem % 60
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -842,10 +946,20 @@ mod tests {
             status(&json("idle", "2026-10-12T08:00:01Z"), now),
             Status::Idle
         );
+        // Small clock skew stays fresh; more than STALE_AFTER ahead is not trusted.
         assert_eq!(
-            status(&json("idle", "2099-01-01T00:00:00Z"), now),
+            status(&json("idle", "2026-10-12T08:05:00Z"), now),
             Status::Idle
         );
+        let ahead = parse_status(&json("idle", "2026-10-12T08:07:00Z"), now);
+        assert_eq!(ahead.status, Status::Unknown);
+        assert!(ahead.unreadable);
+        assert!(
+            ahead.detail.contains("3 min in the future"),
+            "{}",
+            ahead.detail
+        );
+        assert!(ahead.detail.contains("PC clock"), "{}", ahead.detail);
         assert_eq!(status(&json("idle", "yesterday"), now), Status::Unknown);
         assert_eq!(status("not json", now), Status::Unknown);
         assert_eq!(status(r#"{"state":"idle"}"#, now), Status::Unknown);
@@ -900,16 +1014,71 @@ mod tests {
     #[test]
     fn oversized_status_is_unknown() {
         let base = temp_base("oversized");
-        let body = json("idle", "2099-01-01T00:00:00Z");
+        let body = json("idle", &rfc(SystemTime::now()));
         let padded = |len: usize| format!("{body}{}", " ".repeat(len - body.len()));
         let limit = MAX_STATUS_BYTES as usize;
         fs::write(base.join("status.json"), padded(limit)).unwrap();
         assert_eq!(read_status(&base, SystemTime::now()).status, Status::Idle);
         fs::write(base.join("status.json"), padded(limit + 1)).unwrap();
-        assert_eq!(
-            read_status(&base, SystemTime::now()).status,
-            Status::Unknown
+        let big = read_status(&base, SystemTime::now());
+        assert_eq!(big.status, Status::Unknown);
+        assert!(
+            big.unreadable && big.detail.contains("64 KiB"),
+            "{}",
+            big.detail
         );
+        // Not touched for a while: the service is gone, whatever the file says.
+        let old = SystemTime::now() - STALE_AFTER * 2;
+        File::options()
+            .write(true)
+            .open(base.join("status.json"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let gone = read_status(&base, SystemTime::now());
+        assert_eq!((gone.status, gone.unreadable), (Status::Unknown, false));
+        // Fresh bytes that are not UTF-8.
+        fs::write(base.join("status.json"), [0xff, 0xfe, 0x00]).unwrap();
+        let bin = read_status(&base, SystemTime::now());
+        assert!(
+            bin.unreadable && bin.detail.contains("UTF-8"),
+            "{}",
+            bin.detail
+        );
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_status_file_this_build_cannot_read_is_not_a_dead_service() {
+        let now = at("2026-10-12T08:01:00Z");
+        let t = "2026-10-12T08:00:00Z";
+        let reason = |json: &str| {
+            let s = parse_status(json, now);
+            assert_eq!(s.status, Status::Unknown, "{json}");
+            assert!(s.unreadable, "{json}");
+            s.detail
+        };
+        assert!(reason("not json").contains("JSON"));
+        assert!(reason(&json("bogus", t)).contains("\"bogus\""));
+        assert!(reason(&json("idle", "yesterday")).contains("timestamp"));
+        let typed = r#"{"state":"idle","updated":"2026-10-12T08:00:00Z","runner_count":"2"}"#;
+        assert!(reason(typed).contains("JSON"));
+        // Stale means the service stopped writing: that stays "not running".
+        let stale = parse_status(&json("idle", t), at("2026-10-12T08:03:01Z"));
+        assert_eq!((&stale.status, stale.unreadable), (&Status::Unknown, false));
+        assert_eq!(stale.line(), "Unknown (supervisor not running)");
+        let bad = parse_status("not json", now);
+        assert_eq!(bad.line(), "Unknown (status file unreadable)");
+        assert!(!Snapshot::bare(Status::Unknown).unreadable);
+    }
+
+    #[test]
+    fn a_failed_atomic_write_leaves_no_tmp() {
+        let base = temp_base("write-fail");
+        let dest = base.join("dest");
+        fs::create_dir(&dest).unwrap(); // a directory cannot be replaced by a file
+        assert!(write_atomic(&dest, b"x").is_err());
+        assert!(!base.join("dest.tmp").exists());
         fs::remove_dir_all(&base).unwrap();
     }
 
@@ -958,21 +1127,89 @@ mod tests {
     fn restart_writes_on_after_off_or_times_out() {
         let base = temp_base("restart");
         let read = || fs::read_to_string(inbox(&base).join("state.json")).unwrap();
-        // A future timestamp counts as fresh, so the test needs no clock formatting.
-        fs::write(
-            base.join("status.json"),
-            json("running", "2099-01-01T00:00:00Z"),
-        )
-        .unwrap();
-        assert!(!restart(&base, Duration::ZERO, Duration::ZERO).unwrap());
-        assert_eq!(read(), r#"{"desired":"off"}"#);
-        fs::write(
-            base.join("status.json"),
-            json("off", "2099-01-01T00:00:00Z"),
-        )
-        .unwrap();
-        assert!(restart(&base, Duration::ZERO, Duration::ZERO).unwrap());
+        let fresh = rfc(SystemTime::now());
+        fs::write(base.join("status.json"), json("running", &fresh)).unwrap();
+        assert_eq!(
+            restart(&base, Duration::ZERO, Duration::ZERO).unwrap(),
+            Restart::TimedOut
+        );
+        assert_eq!(
+            read(),
+            r#"{"desired":"on"}"#,
+            "a timeout never leaves it off"
+        );
+        fs::write(base.join("status.json"), json("off", &fresh)).unwrap();
+        assert_eq!(
+            restart(&base, Duration::ZERO, Duration::ZERO).unwrap(),
+            Restart::Done
+        );
         assert_eq!(read(), r#"{"desired":"on"}"#);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn restart_leaves_on_when_the_status_goes_unknown() {
+        let base = temp_base("restart-unknown");
+        // No status.json: the supervisor is not reporting.
+        assert_eq!(
+            restart(&base, Duration::ZERO, Duration::from_secs(60)).unwrap(),
+            Restart::Unknown
+        );
+        assert_eq!(read_desired(&base), Desired::On);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn restart_rides_out_one_unknown_status_read() {
+        let base = temp_base("restart-blip");
+        // The first read finds no status.json; the supervisor's `off` lands before the second.
+        let supervisor = {
+            let base = base.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(20));
+                let fresh = rfc(SystemTime::now());
+                fs::write(base.join("status.json"), json("off", &fresh)).unwrap();
+            })
+        };
+        assert_eq!(
+            restart(&base, Duration::from_millis(300), Duration::from_secs(30)).unwrap(),
+            Restart::Done
+        );
+        supervisor.join().unwrap();
+        assert_eq!(read_desired(&base), Desired::On);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn restart_stops_waiting_when_the_owner_presses_start() {
+        let base = temp_base("restart-override");
+        let fresh = rfc(SystemTime::now());
+        fs::write(base.join("status.json"), json("running", &fresh)).unwrap();
+        let owner = {
+            let base = base.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(50));
+                write_desired(&base, Desired::On).unwrap();
+            })
+        };
+        let started = Instant::now();
+        assert_eq!(
+            restart(&base, Duration::from_millis(5), Duration::from_secs(30)).unwrap(),
+            Restart::Overridden
+        );
+        owner.join().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "stopped waiting"
+        );
+        assert_eq!(read_desired(&base), Desired::On);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn restart_that_cannot_write_is_an_error() {
+        let base = temp_base("restart-io");
+        assert!(restart(&base.join("nope"), Duration::ZERO, Duration::ZERO).is_err());
         fs::remove_dir_all(&base).unwrap();
     }
 

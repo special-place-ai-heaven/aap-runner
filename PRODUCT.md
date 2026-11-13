@@ -31,14 +31,14 @@ A no-token, no-`wsl.exe` tray front-end over a locked-down distro, with a fresh 
 
 ## Capabilities and Constraints
 
-- Linux profile 0..5 runners and Windows profile 0..5, at most 5 together. No Windows backend exists yet, so Windows runners are shown as "not installed" and start nothing.
+- Linux profile in two tiers, up to 2 heavy and 10 light runners (settings schema 4; before it 0..5 untiered), and Windows profile 0..5. No Windows backend exists yet, so a Windows count is shown as "not installed", drawn as an outline in its picker, and starts nothing. The interim Windows runner on this PC is separate from that count and has its own card.
 - Pool caps (CPU, memory, IO cap, sharing) are edited in the window, applied atomically, and bounded by the host VM minus a reserve.
 - Actions: Power On/Off, Start/Stop, Pause/Resume, Apply/Revert, Verify, Repair, Open logs, Open job, GitHub setup, Identity.
 - The tray never runs `wsl.exe`, holds no token, and never shows a console window. Every elevated action goes through one UAC prompt to the helper mode of the same exe.
 - Install (owner requirement): the initial install is a single file. On Windows the exe is the sole binary. The user puts it in an `aap-runner` folder and runs it; install, setup and run all happen from there, and every other folder and file is created as needed. Linux follows the same model and is expected to be easier. The current installer copies the exe to `%ProgramFiles%\aap-runner` and stages PowerShell scripts; the owner's target is one self-contained file.
 - The tray looks identical on Windows and Linux: same layout, symbols, colours and behaviour; only OS integration (tray icon, autostart, elevation) may differ.
 - Interface contracts (`status.json`, `settings.json`, `inbox\*`) are versioned in `crates/tray/README.md`; a GUI change that touches them also updates the contract doc and the other sides' tests.
-- Window size is bounded: 760 x 760 default and minimum height, five runner cards fit without scrolling in the default window, and the left column has no scroll area.
+- Window size is bounded: 760 x 760 default and minimum height. The twelve Linux tiles (one fixed height, busy or idle), one Windows card and the 60-minute chart fit without scrolling in the default window, and the left column has no scroll area.
 
 ## Brand Commitments
 

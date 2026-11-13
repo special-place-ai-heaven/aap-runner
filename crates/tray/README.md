@@ -25,8 +25,14 @@ admin-written.
 | `logs\` | supervisor | opened by "Open logs" via `C:\Windows\explorer.exe` (absolute path) |
 
 - `inbox\` missing: `Not installed`; Start/Stop/Restart, Pause/Resume and Settings are disabled.
-- `status.json` missing, unparseable, larger than 64 KiB (not read), or `updated` older than
-  3 minutes: `Unknown (supervisor not running)`.
+- `status.json` missing, or `updated` older than 3 minutes (or, for a file too large or not UTF-8,
+  not modified for 3 minutes): `Unknown (supervisor not running)`; the error panel says the service
+  is not running and offers Restart service.
+- `status.json` fresh but unusable by this build (larger than 64 KiB, not valid JSON for this build, a
+  bad `updated`, an unknown `state` word, or `updated` more than 3 minutes in the future, a stepped-back
+  PC clock; up to 3 minutes of skew is accepted): `Unknown (status file unreadable)` in the menu, `Status unreadable` as the state word of the header and the tooltip (not `Service not running`); the error panel
+  says the file could not be read and why, and offers Open logs, not Restart service. Copy diagnostics
+  carries the reason.
 - `settings.json` missing, unparseable, out of range, or with fewer than 1 CPU / 1 GiB per runner:
   defaults `1 runner x 26 CPUs x 72 GiB / not paused`.
 - 1 to 5 runners. `job_cpus` and `job_memory_gib` are the pool caps, not per job: the manager divides
@@ -91,7 +97,18 @@ Left click on the icon opens the same window.
   when it flips; the menu itself is not rebuilt.
 
 - Polls `status.json` every 5 s. Restart writes `off`, waits up to 15 min for `state: off`, then writes `on`.
-- Pause/Resume flips `paused` in `settings.json`; the label follows the file.
+  It always ends with `on` unless the owner changed it meanwhile: a timeout, a write error or a status that
+  reads Unknown on two polls in a row (one is ridden out) also writes `on`, and for 5 min the status line and tooltip add `Restart timed out after
+  15 min; runners left on` (or the matching reason) to the state (`Idle · 12 runners … · Restart timed out…`
+  in the menu, `AAP Runner · Idle · Restart timed out…` in the tooltip; the state is never replaced); an `on` read back during the wait (Start in the
+  window) ends the wait with nothing more written; Quit (or the update hand-off) while a restart waits writes
+  `on` first.
+- A Start, Stop, Pause or Open logs that fails shows its reason the same way (added to the status line and
+  tooltip, 5 min)
+  and in `inbox\tray.log`; nothing shows the unwritten value as the state.
+- Pause/Resume flips `paused` in `settings.json`; the label follows the file. When `settings.json` exists but
+  the tray rejects it (bad value, unknown key in schema 3/4, over 64 KiB) Pause/Resume writes nothing and says
+  `settings.json is not valid; fix it in Settings first`; a missing file still pauses from the defaults.
 - Settings… opens the window (or focuses it) with the focus on the settings column (see Window).
 - GitHub setup… opens the same window with the checklist in place of the runner cards (`--github`).
 - Identity… opens the same window with the identity page in place of the runner cards (`--identity`).
@@ -115,7 +132,8 @@ tray icon opens it (or closes it when it is the active window). The layout is th
 addendum of the design doc.
 
 - **Left column:** `Power On/Off` (the desired state from `inbox\state.json`), `Start`/`Stop` and
-  `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Then the edits: Linux
+  `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Power flips only after
+  the write succeeded; a failed Start/Stop/Pause/Open logs/job link shows its reason on the note line. Then the edits: Linux
   `Light | Heavy` (which tier the picker edits; Heavy is greyed with a tooltip until the tray may
   write settings schema 4) with a muted `now 3` from `status.json` (the tooltip has
   `now 3 · 8.7 CPU 24 GiB`), the one count picker under it, labelled with the tier's glyph and name
@@ -125,10 +143,14 @@ addendum of the design doc.
   host keeps 2 CPU 8 GiB), under schema 4 the tier table instead (`Each 1 CPU 3 GiB cap 4/8`,
   `Each 8 CPU 20 GiB may burst`); Windows
   `0 | … | 5` with one amber line `not installed · 5 CPU 14 GiB` (the prospective even share; the
-  tooltip says it is prospective and that nothing starts; `interim runner on this PC · online`,
-  `busy` or `stopped: <reason>` instead while `status.v5.json` reports `backend: windows-host`,
-  its tooltip the warning `Unisolated: jobs run directly on this PC (owner accepted 2026-10-20).`,
-  and a Windows card with the same state and warning in the room the Linux slots leave), the row's tooltip carrying the full
+  tooltip says it is prospective and that nothing starts; `interim runner · online`,
+  `busy` or `stopped` instead while `status.v5.json` reports `backend: windows-host`,
+  its tooltip the full name, the stopped reason and the warning
+  `Unisolated: jobs run directly on this PC (owner accepted 2026-10-20).`,
+  and a Windows card with the same state and warning in the room the Linux slots leave; the line is
+  cut with an ellipsis rather than widen the column). While no Windows backend runs the count, the
+  selected Windows cell is an outline in the Windows colour, not a filled cell: a filled cell is a
+  count in force. The row's tooltip carries the full
   `Windows backend not installed — coming with the native Windows runner` note. Cells above the
   budget the other row leaves are greyed and inert (Linux 0 too, until a Windows backend exists).
   Each row label carries its OS glyph and colour. IO cap 0..100 % in steps of 5, Sharing
@@ -145,7 +167,7 @@ addendum of the design doc.
   Disk comes with the status itself, not the sample. `no sample` means no value at all.
   All rows are fixed height; there is no scroll area in the left column. The footer
   (Verify/Repair/Open logs) follows in the normal top-down flow after a fixed gap.
-  `SIZE[1]` = `MIN_SIZE[1]` = 760 px = max(left worst case 760, tile grid right 644); a test keeps
+  `SIZE[1]` = `MIN_SIZE[1]` = 760 px = max(left worst case 760, tile grid right 596); a test keeps
   the left worst case at most 780 pt (1080p at 125 %);
   a new left-column row that does not fit grows SIZE[1], never adds a scrollbar.
 - **Profile identity:** Linux is a Tux-style penguin glyph in green, Windows the four-pane window
@@ -161,32 +183,44 @@ addendum of the design doc.
   `Windows N not installed` while Windows runners are chosen (`Windows interim online`, `busy` or
   `stopped` while `status.v5.json` reports the interim runner on this PC, with the warning as its
   tooltip), `All OK` or
-  the `1 problem` button). Below the header (in every state including Off and Not installed): one
+  the `1 problem` button). Off shows no counts, except `Windows interim online` or `busy`: that
+  runner is its own scheduled task and keeps taking jobs while the pool is off, so the Off page
+  then reads `Linux runners are off.` with the interim runner's card under it, and
+  `Runners are off. No jobs are taken.` only when it is stopped or absent. Below the header (in every state including Off and Not installed): one
   status line for the current Verify/Repair job (format: `Verify · failed · exit 1` on failure,
   `Repair · running…` while active, `Verify · ok` on success; with a `· Open log`
   CollapsingHeader when log lines are available; log panel keyed on a fixed id, not the label text).
-  Then the Linux tiles, every slot always drawn, all one fixed size (80 px, two per row, six rows):
+  Then the Linux tiles, every slot always drawn, all one fixed size busy or idle (72 px, two per
+  row, six rows; a test measures the drawn grid):
   `Heavy 1`, `Heavy 2`, `Light 1` … `Light 10`, each with the penguin and tier glyphs, state and
   elapsed on one row, `title · repo` (a link to the run, full text and URL in a tooltip, copy
-  button) or `Waiting for a job` on the second, and on the third the slot's sampled CPU and memory
+  button) or `Waiting for a job` on the second (a chosen slot that no runner reports, as while the
+  service is down or starting, reads `No status` and `Not reported by the service` instead: no
+  waiting runner is claimed), and on the third the slot's sampled CPU and memory
   against its share, busy or idle: `1.0/8 cores · 5.2/20 GiB` (heavy: the 8 CPU / 20 GiB
   reservation; light: the 4 CPU / 8 GiB cap; untiered: the even share of the pool), `-` for a
   value docker left out, in the over colour past the share, `no sample` with no sample. A slot the manager gave up on (`state` `retired`) shows the error symbol and colour, the word `Retired` and `gave up; restarts with the pool` in place of the job row, with no occupancy row; any other unknown state word still shows `Starting`. A tile shows the status slot of the same number (status-settings.md Tiers: heavy 1..2,
-  light 3..12 under settings schema 4; before it slot N is `Light N` and the heavy tiles show none).
+  light 3..12 under settings schema 4; before it slot N is `Light N` and the heavy tiles show none;
+  with no readable status there is no slot to map, and a stored schema 4 file names the tiles by tier).
   A tile no stored count chooses and no runner reports is fully grey and dim (`Not chosen`, or
   `Needs settings schema 4` on the heavy tiles before it). Then one `Windows 1`… placeholder per
   chosen Windows runner (unchanged, 102 px), `Not installed` and `Starts nothing`, never shown as
-  running. The tiles fit a 768 px work area; with one Windows card (the interim runner) they fit the default height, more scroll. The last 60 minutes follows below (scrolls at small sizes).
+  running. The interim runner's card names a stored Windows count on its second line
+  (`Interim runner on this PC · Windows count 2 starts nothing yet`). The tiles, one Windows card
+  (the interim runner) and the last 60 minutes fit the default height with every slot busy; more
+  Windows cards scroll.
 - **Error panel:** replaces the right column's cards, with `< Back to runners` on top. It opens by itself
   when the state enters an error class; the `1 problem` button, an error symbol, `--dashboard --problem`
   and a left click in an error state reopen it. It holds the one-liner, raw detail and since, the class's
   primary action and Copy diagnostics, the last 20 log lines, the last 10 problems, and version, paths,
-  Verify install, and Repair install. An old manager's primary action is Repair install.
+  Verify install, and Repair install. An old manager's primary action is Repair install. An unreadable status file's is Open logs.
 - **Keyboard:** Tab runs down the left column, then the right. F6 jumps to the first control of the other
   column. Esc leaves the error panel, then closes the window. `--settings` puts the focus on Start/Stop;
   with a problem the initial focus is the problem button.
 - A second request (menu item, icon click, another `--settings`) writes `status`, `settings`, `github`, `identity` or
   `diagnostics` to `%TEMP%\aap-runner-tray\view.request` and focuses the open window, which takes the file.
+  Verify install, Repair install and a refused Update tray… from the menu add the job id: `status <id>` in that
+  file, or `--job <id>` (16 lowercase hex) after `--dashboard` when the tray starts the window.
 
 ## GitHub setup
 
@@ -317,7 +351,7 @@ reinstalls the supervisor task, remounts the VHDX, and restarts `AAP-CRRR-Superv
 `identity` (`helper-run.ps1 -Verb identity -Id <id>`) reads `inbox\jobs\<id>.json` itself, re-checks every field with the rules above, and opens that request once (`CreateFileW` `GENERIC_READ`, `FILE_SHARE_READ` plus `FILE_SHARE_DELETE`, `OPEN_EXISTING`, `FILE_FLAG_OPEN_REPARSE_POINT` | `FILE_FLAG_BACKUP_SEMANTICS`). The JSON is at most 4096 bytes read from that handle, and the owner SID comes from `GetSecurityInfo` on the same handle, then `ProfileList`. It opens the key once the same way and checks that handle: a reparse point is `key file is a reparse point`, a directory is not a regular file, and `GetFinalPathNameByHandleW` (the `\\?\` prefix stripped) must be an `X:\...` path under the requester profile or the reason is `key file is not under <profile>`. Size comes from `GetFileSizeEx` (empty, or 16 KiB or more, refused). The PEM header is the first line from `ReadFile` on that handle; the buffer is cleared and the handle is seeked back to 0. The same handle is duplicated onto the one `wsl` stdin. There is no second open by name. Before `wsl`, `inbox\state.json` `desired` must be exactly `on` and `status.json` `state` must not be `draining` or `paused`, or the helper exits 2 with `pool is off; retry when idle or running` or `pool is <state>; retry when idle or running` and does not start `wsl`. Otherwise the observed status is a 6th argument, exactly `idle`, `running`, or `hold` (`hold` covers any other state, such as starting, error, or missing). Inside the distro the script writes `app.pem.tmp` (root, 0400) and `manager.conf.tmp` with `AAP_GITHUB_ORG`, `AAP_GITHUB_APP_ID`, `AAP_GITHUB_APP_INSTALLATION_ID`, `AAP_RUNNER_GROUP`, `AAP_RUNNER_LABELS`, and `AAP_GITHUB_APP_PRIVATE_KEY_PATH=/etc/aap-runner/app.pem` replaced in place (appended when missing) and every other line kept, then runs `AAP_MANAGER_CONF=manager.conf.tmp aap-runner-manager --check-limits`. Drain happens before the swap, and only when that 6th argument is `idle` or `running` and `systemctl is-active` is `active`. The loop count and sleep are `AAP_DRAIN_ITERS` (default 120) and `AAP_DRAIN_SLEEP` (default 5). On timeout it prints `FAIL pool did not drain in 10 min; retry when idle`, leaves the tmp files, does not swap, and exits 1. The swap copies an existing key to `app.pem.bak` (root, 0400), moves the new key into place, then moves the conf; if the conf move fails, the backup is moved back over the key (or the new key is removed when there was no backup). The backup is removed only after both moves succeed. A drain that is still active after 10 min runs `--undrain`, deletes the `.tmp` files, and exits with `FAIL pool did not drain in 10 min; retry when idle`, which is the tray step. After a drain that does finish, the helper re-reads desired and status before `--undrain` and `systemctl start`; if desired is off or the status is draining or paused it skips the restart and prints `identity installed; pool left paused`. `starting` and `error` are refused. `off` and a missing status are allowed only while the unit is inactive. A key with more than one hard link is refused. The key handle is the child stdin (`CreateProcessW` / `STARTF_USESTDHANDLES`); `WSLENV` is removed for that child and for the direct `wsl.exe` calls. `--undrain` and `systemctl start` run only when the 6th argument was `idle` or `running` and the drain finished; otherwise the new identity applies at the next start. The log carries `INFO identity org … app … installation … group … labels …`, `key installed: 1 file, N bytes`, `manager.conf updated: …`, the pool line, and `PASS identity` only when wsl exits 0 and a copied line starts with `key installed:` (exit 0 without that line is `FAIL identity key installed line missing`); never the key, the key path, or the conf. The scripts are compiled into
 the exe and written under `jobs\<id>\scripts` before they run. The window tails `log.txt`.
 
-The window finds the current job from `%TEMP%\aap-runner-tray\helper.json` (schema 1, id, verb, optional error). The tray only accepts a result whose `id` was issued by this process; a file left by a previous run is ignored. The exception is `update` (below): for 15 minutes after the pointer was written, the window shows an update job it did not issue, but only from a job folder, its ancestors and a `status.json` that are all admin-only (the same rule as install resume).
+The window finds the current job from `%TEMP%\aap-runner-tray\helper.json` (schema 1, id, verb, optional error). The window only accepts a result whose `id` it issued itself or was handed by the tray that just launched the job (`--job <id>`, or the `view.request` file when the window is already open; an id that is not 16 lowercase hex is not adopted); a file left by a previous run is ignored. A launch refusal, and an Update tray… pre-check refusal (written as an `update` pointer with `error`), is shown that way. The exception is `update` (below): for 15 minutes after the pointer was written, the window shows an update job it did not issue, but only from a job folder, its ancestors and a `status.json` that are all admin-only (the same rule as install resume).
 The helper does not read that file. The supervisor does not read it either.
 
 ## Tray update

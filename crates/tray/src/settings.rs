@@ -474,19 +474,26 @@ pub(crate) fn parse_wslconfig(text: &str) -> (Option<u32>, Option<u32>) {
 /// Caps and divisibility are not checked here, so the window can show and fix such a file.
 /// A schema 3 file must pass every schema 3 rule; another schema above 2 is not this tray's.
 pub fn read_settings(base: &Path) -> Settings {
-    let Some(text) = read_bounded(&inbox(base).join("settings.json")) else {
-        return Settings::default();
+    read_settings_to_edit(base).unwrap_or_default()
+}
+
+/// What a writer that rewrites the stored file may start from: the file as stored, defaults when
+/// there is none, and `None` when a file is there that this tray rejects (a rewrite would
+/// replace the owner's values with defaults).
+pub fn read_settings_to_edit(base: &Path) -> Option<Settings> {
+    let path = inbox(base).join("settings.json");
+    let Some(text) = read_bounded(&path) else {
+        return (!path.exists()).then(Settings::default);
     };
     if let Some(v4) = parse_v4(&text) {
-        return v4.settings();
+        return Some(v4.settings());
     }
     if let Some(v3) = parse_v3(&text) {
-        return v3.settings();
+        return Some(v3.settings());
     }
     serde_json::from_str::<Settings>(text.trim_start_matches('\u{feff}'))
         .ok()
         .filter(|s| s.schema < 3 && s.check_shape().is_ok())
-        .unwrap_or_default()
 }
 
 /// Writes schema 3 over a stored schema 3 file, or while a fresh `status.v5.json` lists it in
@@ -1096,6 +1103,35 @@ mod tests {
             read_settings(&base),
             with(|s| (s.runner_count, s.paused) = (2, true))
         );
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_rejected_file_is_told_from_a_missing_one() {
+        let base = temp_base("settings-to-edit");
+        let path = inbox(&base).join("settings.json");
+        assert_eq!(
+            read_settings_to_edit(&base),
+            Some(Settings::default()),
+            "missing: start from defaults"
+        );
+        let oversized = format!("{{\"runner_count\":2}}{}", " ".repeat(70 * 1024));
+        for rejected in [
+            "not json",
+            r#"{"runner_count":2,"sharing":"shared"}"#,
+            r#"{"runner_count":9}"#,
+            r#"{"schema":7}"#,
+            oversized.as_str(),
+        ] {
+            fs::write(&path, rejected).unwrap();
+            assert_eq!(read_settings_to_edit(&base), None, "{rejected:.40}");
+            assert_eq!(read_settings(&base), Settings::default(), "{rejected:.40}");
+        }
+        fs::write(&path, "\u{feff}{\"runner_count\":2,\"paused\":true}").unwrap();
+        assert_eq!(read_settings_to_edit(&base), Some(read_settings(&base)));
+        let s = Settings::from_per_runner(2, 12, 36, true);
+        write_settings(&base, &s, &VM).unwrap();
+        assert_eq!(read_settings_to_edit(&base), Some(s));
         fs::remove_dir_all(&base).unwrap();
     }
 
