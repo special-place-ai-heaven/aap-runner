@@ -642,8 +642,8 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(target.join("k.pem"), PEM).unwrap();
         let link = home.join("link");
-        let status = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
-            .args(["/d", "/c", "mklink", "/J"])
+        let status = crate::win::test_cmd()
+            .args(["mklink", "/J"])
             .arg(&link)
             .arg(&target)
             .status()
@@ -658,10 +658,7 @@ mod tests {
             check_key_file(&link.join("k.pem"), &home),
             Err(format!("Key file is not under {}", home.display()))
         );
-        let _ = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
-            .args(["/d", "/c", "rmdir"])
-            .arg(&link)
-            .status();
+        let _ = crate::win::test_cmd().args(["rmdir"]).arg(&link).status();
         let _ = std::fs::remove_dir_all(home.parent().unwrap());
     }
 

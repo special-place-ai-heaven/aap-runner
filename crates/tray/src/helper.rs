@@ -2576,8 +2576,8 @@ mod tests {
         let link = base.join("link");
         fs::create_dir(&target).unwrap();
         fs::write(target.join("secret.txt"), "super-secret-key-material").unwrap();
-        let status = Command::new(r"C:\Windows\System32\cmd.exe")
-            .args(["/d", "/c", "mklink", "/J"])
+        let status = crate::win::test_cmd()
+            .args(["mklink", "/J"])
             .arg(&link)
             .arg(&target)
             .status()
@@ -2586,10 +2586,7 @@ mod tests {
         let err = ensure_real_dir(&link.join("child"));
         assert!(err.is_err(), "created through a junction: {err:?}");
         assert!(!target.join("child").exists());
-        let _ = Command::new(r"C:\Windows\System32\cmd.exe")
-            .args(["/d", "/c", "rmdir"])
-            .arg(&link)
-            .status();
+        let _ = crate::win::test_cmd().args(["rmdir"]).arg(&link).status();
         let _ = fs::remove_dir_all(&base);
     }
 
@@ -2781,10 +2778,8 @@ fn launch_hands_the_resolved_path_to_runas() {
     let link = root.join("link");
     std::fs::create_dir_all(&target).unwrap();
     std::fs::write(target.join("tray.exe"), b"x").unwrap();
-    let status = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
+    let status = crate::win::test_cmd()
         .args([
-            "/d",
-            "/c",
             "mklink",
             "/J",
             &link.display().to_string(),
@@ -2863,8 +2858,8 @@ fn launch_hands_the_resolved_path_to_runas() {
         "UNC server not in refusal: {refusal}"
     );
     POINTER_DIR.with(|d| *d.borrow_mut() = None);
-    let _ = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
-        .args(["/d", "/c", "rmdir", &link.display().to_string()])
+    let _ = crate::win::test_cmd()
+        .args(["rmdir", &link.display().to_string()])
         .status();
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -989,9 +989,41 @@ unsafe fn psid_text(sid: PSID) -> std::io::Result<String> {
     Ok(text)
 }
 
+/// `cmd.exe /d /c` for a test (junctions have no std API), with no console window. The test
+/// binary is a GUI-subsystem exe like the tray itself, so it has no console to share and every
+/// console child without this flag opens a visible terminal.
+#[cfg(test)]
+pub(crate) fn test_cmd() -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new(r"C:\Windows\System32\cmd.exe");
+    cmd.args(["/d", "/c"]).creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    cmd
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_test_starts_cmd_with_a_console_window() {
+        // Every cmd.exe spawn goes through `test_cmd`, which sets CREATE_NO_WINDOW.
+        let needle = concat!("System32", r"\cmd", ".exe");
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut hits = Vec::new();
+        for entry in std::fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let n = text.matches(needle).count();
+            if n > 0 {
+                hits.push((path.file_name().unwrap().to_string_lossy().into_owned(), n));
+            }
+        }
+        assert_eq!(
+            hits,
+            [("win.rs".to_string(), 1)],
+            "use crate::win::test_cmd()"
+        );
+    }
     use std::sync::atomic::{AtomicI32, Ordering};
 
     static MODE: AtomicI32 = AtomicI32::new(-1);
@@ -1036,10 +1068,8 @@ mod tests {
         let link = root.join("link");
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(target.join("tray.exe"), b"x").unwrap();
-        let status = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
+        let status = crate::win::test_cmd()
             .args([
-                "/d",
-                "/c",
                 "mklink",
                 "/J",
                 &link.display().to_string(),
@@ -1052,8 +1082,8 @@ mod tests {
         let text = resolved.path.to_string_lossy().to_ascii_lowercase();
         assert!(text.contains(r"\target\tray.exe"), "{text}");
         assert!(!text.contains(r"\link\"), "{text}");
-        let _ = std::process::Command::new(r"C:\Windows\System32\cmd.exe")
-            .args(["/d", "/c", "rmdir", &link.display().to_string()])
+        let _ = crate::win::test_cmd()
+            .args(["rmdir", &link.display().to_string()])
             .status();
         let _ = std::fs::remove_dir_all(&root);
     }
