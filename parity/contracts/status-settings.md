@@ -285,8 +285,8 @@ it through the controls it already has. No settings schema changes.
   stays `busy` until its job ends.
 
 Limits: (a) a job in progress is never killed, so the runner stops after it; (b) with a listener
-registered, GitHub may hand it the next queued job in the moment before it stops; that job is lost and
-re-queued; (c) settings below schema 3 carry no Windows count, so the interim runner is off until a
+registered, GitHub may hand it the next queued job in the moment before it stops; that job fails;
+(c) settings below schema 3 carry no Windows count, so the interim runner is off until a
 schema 3 or 4 count of 1 or more is stored; (d) with the supervisor not running nobody updates the
 control file, and the runner keeps its last instruction.
 
