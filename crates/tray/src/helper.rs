@@ -46,10 +46,34 @@ pub fn install_process() -> Option<win::ProcessIdentity> {
     INSTALL_PROCESS.lock().ok().and_then(|p| *p)
 }
 
+thread_local! {
+    /// The id the last `write_pointer` on this thread issued: the tray hands it to the window
+    /// it opens, which is another process and so did not issue it.
+    static LAST_ISSUED: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 fn register_id(id: &str) {
     let _ = ISSUED_IDS.lock().map(|mut s| {
         s.insert(id.to_string());
     });
+    LAST_ISSUED.with(|last| *last.borrow_mut() = Some(id.to_string()));
+}
+
+/// The id of the last launch or refusal on this thread, once; `None` when nothing was issued
+/// since the previous call.
+pub fn take_issued_id() -> Option<String> {
+    LAST_ISSUED.with(|last| last.borrow_mut().take())
+}
+
+/// The window shows the job the tray just launched: an id of the right shape that the tray
+/// passed on (`--job`, `view.request`) counts as issued. Anything else is not adopted.
+pub fn adopt_job_id(id: &str) -> bool {
+    let ok = valid_id(id);
+    if ok {
+        register_id(id);
+    }
+    ok
 }
 
 fn is_issued_id(id: &str) -> bool {
@@ -1400,6 +1424,16 @@ pub fn launch_install(
 /// installed tray asks (the helper re-checks). The request must be written before the prompt,
 /// because the caller quits right after this returns `Ok`.
 pub fn launch_update(base: &Path, candidate: &Path) -> Result<(), String> {
+    // A refusal before the prompt goes to the pointer's `error` like every other verb's, so the
+    // window shows the reason.
+    let (resolved, path, sha) = match check_update(candidate) {
+        Ok(checked) => checked,
+        Err(e) => return refuse_elevation(Verb::Update, &e),
+    };
+    launch_payload(base, Verb::Update, resolved, None, None, Some((path, sha)))
+}
+
+fn check_update(candidate: &Path) -> Result<(win::ResolvedExe, String, String), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let resolved = win::resolve_exe(&exe).map_err(|e| e.to_string())?;
     update::check_self(&resolved.path, Path::new(update::INSTALL_DIR))?;
@@ -1415,7 +1449,7 @@ pub fn launch_update(base: &Path, candidate: &Path) -> Result<(), String> {
         update::private_location(&user),
     )?);
     let sha = update::sha256_file(candidate)?;
-    launch_payload(base, Verb::Update, resolved, None, None, Some((path, sha)))
+    Ok((resolved, path, sha))
 }
 
 fn launch_with(base: &Path, verb: Verb, identity: Option<identity::Valid>) -> Result<(), String> {
@@ -2872,4 +2906,65 @@ fn not_fixed_drive_message_format() {
         msg,
         r"tray exe is not on a fixed local drive: C:\x\t.exe (drive type 4)"
     );
+}
+
+/// The tray issues the id, the window is another process: the id the tray hands over is the
+/// only one the window adopts, and only when it has the shape of one.
+#[test]
+fn the_window_adopts_only_the_id_the_tray_handed_over() {
+    let base = std::env::temp_dir().join(format!("aap-adopt-{}", std::process::id()));
+    let pointer = base.join("helper.json");
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let id = "0123456789abcdef";
+    std::fs::write(
+        &pointer,
+        format!(r#"{{"schema":1,"id":"{id}","verb":"verify","error":"declined here"}}"#),
+    )
+    .unwrap();
+    assert!(
+        load_job_from(&pointer, &base).is_none(),
+        "not issued by this process, not handed over: ignored"
+    );
+    for bad in [
+        "",
+        "0123456789ABCDEF",
+        "0123456789abcde",
+        "0123456789abcdeg",
+        "../../etc/passwd",
+    ] {
+        assert!(!adopt_job_id(bad), "{bad}");
+    }
+    assert!(
+        load_job_from(&pointer, &base).is_none(),
+        "a refused id adopts nothing"
+    );
+    assert!(adopt_job_id(id));
+    assert_eq!(load_job_from(&pointer, &base).unwrap().state, "declined");
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// An update refused by the pre-checks reaches the window as a pointer error under an id the
+/// tray can hand over; a launch's id is handed over once.
+#[test]
+fn an_update_refused_before_the_prompt_leaves_a_reason_and_an_id() {
+    let root = std::env::temp_dir().join(format!("aap-upd-refuse-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    POINTER_DIR.with(|d| *d.borrow_mut() = Some(root.clone()));
+    let _ = take_issued_id();
+    // The test exe is not the installed tray, so the pre-check refuses.
+    let e = launch_update(&root, &root.join("candidate.exe")).unwrap_err();
+    assert!(!e.is_empty());
+    let id = take_issued_id().expect("the refusal issued an id");
+    assert!(valid_id(&id));
+    assert_eq!(take_issued_id(), None, "handed over once");
+    let job = load_job_from(&root.join("helper.json"), &root).unwrap();
+    assert_eq!(
+        (job.verb.as_str(), job.state.as_str()),
+        ("update", "declined")
+    );
+    assert_eq!(job.step, sanitize_step(&e));
+    POINTER_DIR.with(|d| *d.borrow_mut() = None);
+    let _ = std::fs::remove_dir_all(&root);
 }

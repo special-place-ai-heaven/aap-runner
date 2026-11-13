@@ -97,7 +97,16 @@ Left click on the icon opens the same window.
   when it flips; the menu itself is not rebuilt.
 
 - Polls `status.json` every 5 s. Restart writes `off`, waits up to 15 min for `state: off`, then writes `on`.
-- Pause/Resume flips `paused` in `settings.json`; the label follows the file.
+  It always ends with `on` unless the owner changed it meanwhile: a timeout, a write error or a status that
+  turns Unknown also writes `on`, and the status line and tooltip then read `Restart timed out after 15 min;
+  runners left on` (or the matching reason) for 5 min; an `on` read back during the wait (Start in the
+  window) ends the wait with nothing more written; Quit (or the update hand-off) while a restart waits writes
+  `on` first.
+- A Start, Stop, Pause or Open logs that fails shows its reason the same way (status line and tooltip, 5 min)
+  and in `inbox\tray.log`; nothing shows the unwritten value as the state.
+- Pause/Resume flips `paused` in `settings.json`; the label follows the file. When `settings.json` exists but
+  the tray rejects it (bad value, unknown key in schema 3/4, over 64 KiB) Pause/Resume writes nothing and says
+  `settings.json is not valid; fix it in Settings first`; a missing file still pauses from the defaults.
 - Settings… opens the window (or focuses it) with the focus on the settings column (see Window).
 - GitHub setup… opens the same window with the checklist in place of the runner cards (`--github`).
 - Identity… opens the same window with the identity page in place of the runner cards (`--identity`).
@@ -121,7 +130,8 @@ tray icon opens it (or closes it when it is the active window). The layout is th
 addendum of the design doc.
 
 - **Left column:** `Power On/Off` (the desired state from `inbox\state.json`), `Start`/`Stop` and
-  `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Then the edits: Linux
+  `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Power flips only after
+  the write succeeded; a failed Start/Stop/Pause/Open logs/job link shows its reason on the note line. Then the edits: Linux
   `Light | Heavy` (which tier the picker edits; Heavy is greyed with a tooltip until the tray may
   write settings schema 4) with a muted `now 3` from `status.json` (the tooltip has
   `now 3 · 8.7 CPU 24 GiB`), the one count picker under it, labelled with the tier's glyph and name
@@ -207,6 +217,8 @@ addendum of the design doc.
   with a problem the initial focus is the problem button.
 - A second request (menu item, icon click, another `--settings`) writes `status`, `settings`, `github`, `identity` or
   `diagnostics` to `%TEMP%\aap-runner-tray\view.request` and focuses the open window, which takes the file.
+  Verify install, Repair install and a refused Update tray… from the menu add the job id: `status <id>` in that
+  file, or `--job <id>` (16 lowercase hex) after `--dashboard` when the tray starts the window.
 
 ## GitHub setup
 
@@ -337,7 +349,7 @@ reinstalls the supervisor task, remounts the VHDX, and restarts `AAP-CRRR-Superv
 `identity` (`helper-run.ps1 -Verb identity -Id <id>`) reads `inbox\jobs\<id>.json` itself, re-checks every field with the rules above, and opens that request once (`CreateFileW` `GENERIC_READ`, `FILE_SHARE_READ` plus `FILE_SHARE_DELETE`, `OPEN_EXISTING`, `FILE_FLAG_OPEN_REPARSE_POINT` | `FILE_FLAG_BACKUP_SEMANTICS`). The JSON is at most 4096 bytes read from that handle, and the owner SID comes from `GetSecurityInfo` on the same handle, then `ProfileList`. It opens the key once the same way and checks that handle: a reparse point is `key file is a reparse point`, a directory is not a regular file, and `GetFinalPathNameByHandleW` (the `\\?\` prefix stripped) must be an `X:\...` path under the requester profile or the reason is `key file is not under <profile>`. Size comes from `GetFileSizeEx` (empty, or 16 KiB or more, refused). The PEM header is the first line from `ReadFile` on that handle; the buffer is cleared and the handle is seeked back to 0. The same handle is duplicated onto the one `wsl` stdin. There is no second open by name. Before `wsl`, `inbox\state.json` `desired` must be exactly `on` and `status.json` `state` must not be `draining` or `paused`, or the helper exits 2 with `pool is off; retry when idle or running` or `pool is <state>; retry when idle or running` and does not start `wsl`. Otherwise the observed status is a 6th argument, exactly `idle`, `running`, or `hold` (`hold` covers any other state, such as starting, error, or missing). Inside the distro the script writes `app.pem.tmp` (root, 0400) and `manager.conf.tmp` with `AAP_GITHUB_ORG`, `AAP_GITHUB_APP_ID`, `AAP_GITHUB_APP_INSTALLATION_ID`, `AAP_RUNNER_GROUP`, `AAP_RUNNER_LABELS`, and `AAP_GITHUB_APP_PRIVATE_KEY_PATH=/etc/aap-runner/app.pem` replaced in place (appended when missing) and every other line kept, then runs `AAP_MANAGER_CONF=manager.conf.tmp aap-runner-manager --check-limits`. Drain happens before the swap, and only when that 6th argument is `idle` or `running` and `systemctl is-active` is `active`. The loop count and sleep are `AAP_DRAIN_ITERS` (default 120) and `AAP_DRAIN_SLEEP` (default 5). On timeout it prints `FAIL pool did not drain in 10 min; retry when idle`, leaves the tmp files, does not swap, and exits 1. The swap copies an existing key to `app.pem.bak` (root, 0400), moves the new key into place, then moves the conf; if the conf move fails, the backup is moved back over the key (or the new key is removed when there was no backup). The backup is removed only after both moves succeed. A drain that is still active after 10 min runs `--undrain`, deletes the `.tmp` files, and exits with `FAIL pool did not drain in 10 min; retry when idle`, which is the tray step. After a drain that does finish, the helper re-reads desired and status before `--undrain` and `systemctl start`; if desired is off or the status is draining or paused it skips the restart and prints `identity installed; pool left paused`. `starting` and `error` are refused. `off` and a missing status are allowed only while the unit is inactive. A key with more than one hard link is refused. The key handle is the child stdin (`CreateProcessW` / `STARTF_USESTDHANDLES`); `WSLENV` is removed for that child and for the direct `wsl.exe` calls. `--undrain` and `systemctl start` run only when the 6th argument was `idle` or `running` and the drain finished; otherwise the new identity applies at the next start. The log carries `INFO identity org … app … installation … group … labels …`, `key installed: 1 file, N bytes`, `manager.conf updated: …`, the pool line, and `PASS identity` only when wsl exits 0 and a copied line starts with `key installed:` (exit 0 without that line is `FAIL identity key installed line missing`); never the key, the key path, or the conf. The scripts are compiled into
 the exe and written under `jobs\<id>\scripts` before they run. The window tails `log.txt`.
 
-The window finds the current job from `%TEMP%\aap-runner-tray\helper.json` (schema 1, id, verb, optional error). The tray only accepts a result whose `id` was issued by this process; a file left by a previous run is ignored. The exception is `update` (below): for 15 minutes after the pointer was written, the window shows an update job it did not issue, but only from a job folder, its ancestors and a `status.json` that are all admin-only (the same rule as install resume).
+The window finds the current job from `%TEMP%\aap-runner-tray\helper.json` (schema 1, id, verb, optional error). The window only accepts a result whose `id` it issued itself or was handed by the tray that just launched the job (`--job <id>`, or the `view.request` file when the window is already open; an id that is not 16 lowercase hex is not adopted); a file left by a previous run is ignored. A launch refusal, and an Update tray… pre-check refusal (written as an `update` pointer with `error`), is shown that way. The exception is `update` (below): for 15 minutes after the pointer was written, the window shows an update job it did not issue, but only from a job folder, its ancestors and a `status.json` that are all admin-only (the same rule as install resume).
 The helper does not read that file. The supervisor does not read it either.
 
 ## Tray update

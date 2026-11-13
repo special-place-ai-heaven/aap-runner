@@ -66,6 +66,8 @@ pub struct SettingsPanel {
     sharing: Sharing,
     vm: VmLimit,
     write_error: Option<String>,
+    /// Why Start/Stop/Pause did not happen, for the window's note line (`take_action_error`).
+    action_error: Option<String>,
     /// The Windows profile while `status.v5.json` reports the interim runner on this PC.
     host: Option<ProfileV5>,
 }
@@ -100,6 +102,7 @@ impl SettingsPanel {
             sharing: stored.sharing,
             vm: VmLimit::read(),
             write_error: None,
+            action_error: None,
             host: read_host(base),
         }
     }
@@ -278,8 +281,10 @@ impl SettingsPanel {
         }
         let r = ui.add_enabled(base.join("logs").is_dir(), egui::Button::new("Open logs"));
         focus.track(ui, p, &r);
-        if r.clicked() {
-            crate::open_logs(base);
+        if r.clicked()
+            && let Err(e) = crate::open_logs(base)
+        {
+            self.action_error = Some(e);
         }
     }
 
@@ -308,16 +313,40 @@ impl SettingsPanel {
                 r
             };
             if r.clicked() {
-                *desired = if on { Desired::Off } else { Desired::On };
-                crate::set_desired(base, *desired);
+                self.press_power(base, desired);
             }
             let r = ui.button(self.stored.toggle_label());
             focus.track(ui, p, &r);
             if r.clicked() {
-                crate::toggle_pause(base);
-                self.reload(base);
+                self.press_pause(base);
             }
         });
+    }
+
+    /// Start/Stop: the shown state flips only once the write succeeded.
+    fn press_power(&mut self, base: &Path, desired: &mut Desired) {
+        let next = if *desired == Desired::On {
+            Desired::Off
+        } else {
+            Desired::On
+        };
+        match crate::set_desired(base, next) {
+            Ok(()) => *desired = next,
+            Err(e) => self.action_error = Some(e),
+        }
+    }
+
+    /// Pause/Resume: refused, with the reason, when the file cannot be rewritten safely.
+    fn press_pause(&mut self, base: &Path) {
+        if let Err(e) = crate::toggle_pause_with(base, &self.vm) {
+            self.action_error = Some(e);
+        }
+        self.reload(base);
+    }
+
+    /// The reason the last Start/Stop/Pause press failed, once.
+    pub fn take_action_error(&mut self) -> Option<String> {
+        self.action_error.take()
     }
 
     fn inputs(
@@ -1036,6 +1065,49 @@ mod tests {
         assert!(panel.write_error.is_some());
         assert_eq!(settings::read_settings(&base), panel.stored);
         assert_eq!(panel.stored.runner_count, 2);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A Start/Stop press that cannot be written does not flip the shown state; the reason
+    /// goes to the note line.
+    #[test]
+    fn a_failed_start_keeps_the_shown_state_and_reports() {
+        let base = crate::state::temp_base("panel-power");
+        let mut panel = SettingsPanel::load(&base);
+        let mut desired = Desired::Off;
+        panel.press_power(&base, &mut desired);
+        assert_eq!(desired, Desired::On);
+        assert_eq!(panel.take_action_error(), None);
+        panel.press_power(&base, &mut desired);
+        assert_eq!(desired, Desired::Off);
+        let gone = base.join("nope");
+        panel.press_power(&gone, &mut desired);
+        assert_eq!(desired, Desired::Off, "unwritten: not shown as on");
+        let e = panel.take_action_error().unwrap();
+        assert!(e.starts_with("Could not turn the pool on: "), "{e}");
+        assert_eq!(panel.take_action_error(), None, "taken once");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Pause on a stored file the tray rejects writes nothing and says why; a missing file
+    /// still pauses.
+    #[test]
+    fn pause_on_a_rejected_file_refuses_and_reports() {
+        let base = crate::state::temp_base("panel-pause");
+        let path = base.join("inbox").join("settings.json");
+        let mut panel = SettingsPanel::load(&base);
+        panel.vm = VmLimit::ASSUMED;
+        panel.press_pause(&base);
+        assert_eq!(panel.take_action_error(), None);
+        assert!(settings::read_settings(&base).paused);
+        let hand_edited = r#"{"runner_count":2,"job_cpus":8,"sharing":"shared"}"#;
+        std::fs::write(&path, hand_edited).unwrap();
+        panel.press_pause(&base);
+        assert_eq!(
+            panel.take_action_error().as_deref(),
+            Some("settings.json is not valid; fix it in Settings first")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), hand_edited);
         std::fs::remove_dir_all(&base).unwrap();
     }
 

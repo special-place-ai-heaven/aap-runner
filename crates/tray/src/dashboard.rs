@@ -96,18 +96,43 @@ pub fn request_path() -> PathBuf {
     History::path().with_file_name("view.request")
 }
 
+#[cfg(test)]
 pub fn write_request(path: &Path, view: View) -> std::io::Result<()> {
+    write_request_job(path, view, None)
+}
+
+/// As `write_request`, plus the id of the job the tray just launched: `<word> <id>`.
+pub fn write_request_job(path: &Path, view: View, job: Option<&str>) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    state::write_atomic(path, view.word().as_bytes())
+    let text = match job {
+        Some(id) => format!("{} {id}", view.word()),
+        None => view.word().to_owned(),
+    };
+    state::write_atomic(path, text.as_bytes())
 }
 
 /// The pending request, if any; it is removed either way.
+#[cfg(test)]
 fn take_request(path: &Path) -> Option<View> {
+    take_request_job(path).map(|(view, _)| view)
+}
+
+/// The pending request and the job id it carries (not checked here: `helper::adopt_job_id`).
+fn take_request_job(path: &Path) -> Option<(View, Option<String>)> {
     let text = std::fs::read_to_string(path).ok()?;
     let _ = std::fs::remove_file(path);
-    View::ALL.into_iter().find(|v| v.word() == text.trim())
+    let mut words = text.split_whitespace();
+    let word = words.next()?;
+    let view = View::ALL.into_iter().find(|v| v.word() == word)?;
+    Some((view, words.next().map(str::to_owned)))
+}
+
+/// The id after `--job` on the window's command line.
+pub fn job_arg(args: &[String]) -> Option<&str> {
+    let at = args.iter().position(|a| a == "--job")?;
+    args.get(at + 1).map(String::as_str)
 }
 
 /// Default inner size. The window cannot shrink below min_size(); nothing scrolls in the left column.
@@ -952,8 +977,7 @@ impl Dash {
                 return;
             }
             Action::OpenLogs => {
-                crate::open_logs(&self.base);
-                return;
+                crate::open_logs(&self.base).map(|()| "Opening the logs.".to_string())
             }
             Action::Repair => crate::helper::launch(&self.base, crate::helper::Verb::Repair)
                 .map(|()| "Approve the prompt to repair.".to_string()),
@@ -1830,7 +1854,7 @@ impl Dash {
                     && let Some(url) = checked(url)
                     && let Err(e) = Command::new(crate::EXPLORER).arg(url).spawn()
                 {
-                    state::log(&self.base, &format!("open job failed: {e}"));
+                    self.note = Some((crate::open_failed(&self.base, "job", &e), Instant::now()));
                 }
             }
             if let Some(url) = link {
@@ -2828,7 +2852,10 @@ impl eframe::App for Dash {
             self.ident.tick(&profile_dir());
         }
         ctx.request_repaint_after(Duration::from_secs(1));
-        if let Some(view) = take_request(&request_path()) {
+        if let Some((view, job)) = take_request_job(&request_path()) {
+            if let Some(id) = job {
+                crate::helper::adopt_job_id(&id);
+            }
             self.open(view);
         }
         let (esc, f6) = ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::F6)));
@@ -2881,6 +2908,9 @@ impl eframe::App for Dash {
                 focus
             })
             .inner;
+        if let Some(e) = self.settings.take_action_error() {
+            self.note = Some((e, Instant::now()));
+        }
         self.right_first = None;
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
@@ -3027,6 +3057,29 @@ mod tests {
         assert_eq!(take_request(&path), None);
         assert!(!path.exists(), "a bad request is removed too");
         assert_eq!(request_path().file_name().unwrap(), "view.request");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_request_carries_the_job_the_tray_launched() {
+        let base = state::temp_base("request-job");
+        let path = base.join("view.request");
+        write_request_job(&path, View::Status, Some("0123456789abcdef")).unwrap();
+        assert_eq!(
+            take_request_job(&path),
+            Some((View::Status, Some("0123456789abcdef".to_string())))
+        );
+        assert!(!path.exists());
+        write_request_job(&path, View::Settings, None).unwrap();
+        assert_eq!(take_request_job(&path), Some((View::Settings, None)));
+        // A plain request still reads as a view alone.
+        std::fs::write(&path, "github").unwrap();
+        assert_eq!(take_request(&path), Some(View::Github));
+        std::fs::write(&path, "bogus 0123456789abcdef").unwrap();
+        assert_eq!(take_request_job(&path), None);
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(job_arg(&args(&["--dashboard", "--job", "ab"])), Some("ab"));
+        assert_eq!(job_arg(&args(&["--dashboard"])), None);
         std::fs::remove_dir_all(&base).unwrap();
     }
 
