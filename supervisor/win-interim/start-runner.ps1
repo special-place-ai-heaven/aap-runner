@@ -8,8 +8,14 @@
 #   1. One instance of this script at a time (a machine-wide mutex held for its whole life).
 #   2. The script puts itself in a Windows job object that kills every process in it when the
 #      script ends, however it ends. run.cmd, Runner.Listener and Runner.Worker are born in that
-#      job, so none of them can outlive the script. Stopping the task therefore stops the runner
-#      (and a job in progress), and the next start is clean.
+#      job, so none of them can outlive the script, and the next start is clean.
+# Stopping the task does NOT stop the runner: it ends only the outer conhost, and this script, its
+# run.cmd and the listener keep running. The supervisor turns the runner off through the control
+# file instead (-ControlFile, host-runner.json beside its status.json): off exactly when the file
+# parses as JSON with schema 1 and desired "off"; anything else, a missing file included, is on.
+# Off is read once after the mutex is held (exit 0 before anything is killed or started) and then
+# every 2 s while run.cmd runs: with a job in progress the script keeps waiting (never kills a
+# worker); otherwise it returns, and the job object ends the listener with it.
 # So: a listener is running  =>  its script is running  =>  the mutex is held  =>  a second start
 # exits 0 without reading any other process (which fails across logon sessions anyway).
 #
@@ -21,7 +27,7 @@
 # minute or two and the new listener retries until it gets one.
 #
 # Exit codes: 0 nothing to do (not configured, another instance holds the mutex, a job is in
-# progress on a foreign listener); 1 refused, failed, or run.cmd ended (the task's restart-on-failure
+# progress on a foreign listener, turned off by the control file); 1 refused, failed, or run.cmd ended (the task's restart-on-failure
 # then starts the runner again). The job object does not allow breakaway: whatever a CI job leaves
 # running in the background ends with the script too.
 # One line per decision is appended to start-runner.log beside this script.
@@ -31,6 +37,7 @@ param(
     [string]$Dir = 'C:\aap-win-interim\runner',
     [int]$StopWaitSeconds = 15,
     [string]$MutexName = 'Global\AapWinInterimRunnerStart',
+    [string]$ControlFile = 'C:\ProgramData\aap-runner\host-runner.json',
     [switch]$NoRun
 )
 
@@ -131,18 +138,47 @@ function Add-AapInterimGitBash([string]$GitBin = 'C:\Program Files\Git\bin') {
     return $true
 }
 
-# run.cmd hidden, below normal priority; returns its exit code.
-function Start-AapInterimProcess([string]$Dir) {
+# The supervisor's switch: $true only for a file that parses as JSON with schema 1 and desired
+# exactly "off". Missing, unreadable, malformed, another schema or any other word means on.
+function Test-AapInterimOff([string]$ControlFile) {
+    try {
+        $o = [IO.File]::ReadAllText($ControlFile) | ConvertFrom-Json
+        return ($null -ne $o -and ($o.schema -is [int] -or $o.schema -is [long]) -and $o.schema -eq 1 -and
+            $o.desired -is [string] -and $o.desired -ceq 'off')
+    } catch { return $false }
+}
+
+# Waits for run.cmd in slices, reading the control file each slice. Returns run.cmd's exit code,
+# or $null once the runner is turned off and no job is in progress. A job in progress is never
+# touched: the script keeps waiting and logs once per stop request; a withdrawn request is forgotten.
+function Wait-AapInterimProcess($Process, [string]$Dir, [string]$ControlFile, [int]$SliceMs = 2000) {
+    $asked = $false
+    while (-not $Process.WaitForExit($SliceMs)) {
+        if (-not (Test-AapInterimOff $ControlFile)) { $asked = $false; continue }
+        $now = Get-AapInterimProcesses $Dir
+        if ($now.Workers.Count -gt 0 -or $now.Unknown.Count -gt 0) {
+            if (-not $asked) { Write-AapInterimLog 'turned off by the supervisor; waiting for the job in progress' }
+            $asked = $true
+            continue
+        }
+        Write-AapInterimLog 'turned off by the supervisor; no job in progress, stopping the runner'
+        return $null
+    }
+    return [int]$Process.ExitCode
+}
+
+# run.cmd hidden, below normal priority; returns what Wait-AapInterimProcess returns.
+function Start-AapInterimProcess([string]$Dir, [string]$ControlFile) {
     $p = Start-Process -FilePath $env:ComSpec -ArgumentList '/c', 'run.cmd' -WorkingDirectory $Dir -WindowStyle Hidden -PassThru
     $null = $p.Handle
     try { $p.PriorityClass = 'BelowNormal' } catch { Write-AapInterimLog "priority not set: $($_.Exception.Message)" }
-    $p.WaitForExit()
-    return [int]$p.ExitCode
+    return (Wait-AapInterimProcess $p $Dir $ControlFile)
 }
 
 # The whole decision, for a caller that holds the mutex; returns the exit code.
-function Start-AapInterimRunner([string]$Dir, [int]$StopWaitSeconds) {
+function Start-AapInterimRunner([string]$Dir, [int]$StopWaitSeconds, [string]$ControlFile) {
     if (-not (Test-Path -LiteralPath (Join-Path $Dir '.runner'))) { return 0 }
+    if (Test-AapInterimOff $ControlFile) { Write-AapInterimLog 'turned off by the supervisor; nothing started'; return 0 }
     if (-not (Add-AapInterimGitBash)) { Write-AapInterimLog 'Git Bash not found; PATH unchanged, shell: bash may resolve to the WSL launcher' }
     $state = Stop-AapInterimForeign $Dir $StopWaitSeconds
     switch ($state) {
@@ -152,7 +188,8 @@ function Start-AapInterimRunner([string]$Dir, [int]$StopWaitSeconds) {
     }
     Enter-AapInterimJob
     Write-AapInterimLog "starting run.cmd (foreign listener: $state)"
-    $code = Start-AapInterimProcess $Dir
+    $code = Start-AapInterimProcess $Dir $ControlFile
+    if ($null -eq $code) { return 0 }
     # The runner should run for as long as this script does. run.cmd returns 0 for almost every
     # ending (crash, session conflict), so report a failure and let the task's restart-on-failure
     # start it again.
@@ -174,7 +211,7 @@ try {
         Write-AapInterimLog 'another instance of this script is running the runner; nothing started'
         exit 0
     }
-    exit (Start-AapInterimRunner $Dir $StopWaitSeconds)
+    exit (Start-AapInterimRunner $Dir $StopWaitSeconds $ControlFile)
 } catch {
     Write-AapInterimLog "failed: $($_.Exception.Message)"
     exit 1

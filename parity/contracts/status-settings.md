@@ -1,4 +1,4 @@
-# Status and settings contract (settings schemas 3, 4 and 5, status schema 5, revision 6)
+# Status and settings contract (settings schemas 3, 4 and 5, status schema 5, revision 7)
 
 Owners: **P12** (supervisor side, `supervisor/README.md`, both-side tests) and **P20** (tray).
 Readers: P19, P22. Schemas: [`settings-v3.schema.json`](settings-v3.schema.json), [`settings-v4.schema.json`](settings-v4.schema.json),
@@ -27,6 +27,9 @@ ceiling of 6 hours, in place of `lease_wall_clock_hours`; schemas 3 and 4 are un
 `status.v5.json` stays schema 5, gains an optional per-slot `vm_lifetime_cap` object and may advertise settings schema
 5. The supervisor and the tray still implement revision 5 until the follow-ups in the
 [README](README.md#revision-follow-ups-p09x-owner-decision-q4-carried-by-other-owners) land.
+
+Revision 7 (R2.2, 2026-11-13): the supervisor starts and stops the interim Windows runner through
+`host-runner.json`, and the `windows-host` profile gains `host_control`; see Windows host control below.
 
 ## Before P12 (what an older supervisor or tray still does)
 
@@ -248,6 +251,44 @@ exactly then:
 `count` and `share_percent` stay what the settings give: the interim runner is outside the five
 pool slots, so it adds no slot and no count. With no install folder the Windows profile reports what
 it did before revision 4. `windows-host` is never the Linux profile's backend.
+
+## Windows host control (revision 7)
+
+Revision 7 (R2.2, 2026-11-13): the supervisor starts and stops the interim runner; the tray controls
+it through the controls it already has. No settings schema changes.
+
+- **Wanted.** The runner is wanted exactly when `inbox/state.json` says `on`, `inbox/settings.json` is
+  not paused, and its Windows count (`windows_runner_count` of schema 3 or 4 settings) is at least 1.
+  The supervisor reads both from the inbox file itself every cycle, with every settings check except
+  the one that waits for the manager's tiers, so the switch works on the first cycle, before the Linux
+  pool is up and while it is in error. Schema 1 or 2 settings, or no file, count as 0 (not paused). A
+  file that is present but refused gives no decision that cycle: the control file stays as it is and
+  nothing is started. It is the file's count, not the profile's reported `count`, which stays as
+  revision 4 describes.
+- **The control file.** The supervisor keeps `host-runner.json` beside `status.json`
+  (`{"schema":1,"desired":"on"}` or `"off"`, written atomically, only when it differs), checked every
+  cycle in every mode, Off included (no `wsl.exe` call). The start script reads it at start (off: exit 0
+  before stopping or starting anything) and every 2 s while `run.cmd` runs. Exactly `schema` 1 with
+  `desired` `"off"` is off; anything else, a missing file included, is on.
+- **Start.** When wanted and the logon task is not running, the supervisor starts it, retrying a failed
+  start with the shared backoff. It never stops the task or a process: stopping the task does not stop
+  the runner.
+- **Stop.** Off ends the runner only when no job is in progress: the start script exits and its job
+  object ends `run.cmd` and the listener. A job in progress is never killed; the runner stops after it.
+  A withdrawn request is forgotten.
+- **Status.** Every `windows-host` profile carries `host_control: true` (a boolean, only on a
+  `windows-host` profile; absent means an older supervisor that only reports). A `stopped` runner that
+  is not wanted has exactly one `unavailable_reason`, the first that applies: `turned off: runners are
+  off`, `turned off: paused`, `turned off: Windows count 0`; with a refused settings file and the control file
+  off, `turned off: settings not accepted`. A wanted, stopped runner keeps the missing
+  piece; after a failed task start it adds `; ` and the error. A busy runner that is no longer wanted
+  stays `busy` until its job ends.
+
+Limits: (a) a job in progress is never killed, so the runner stops after it; (b) with a listener
+registered, GitHub may hand it the next queued job in the moment before it stops; that job is lost and
+re-queued; (c) settings below schema 3 carry no Windows count, so the interim runner is off until a
+schema 3 or 4 count of 1 or more is stored; (d) with the supervisor not running nobody updates the
+control file, and the runner keeps its last instruction.
 
 ## Allocator reasons in status detail (DECIDED, P09 review 2026-10-20)
 

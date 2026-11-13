@@ -175,6 +175,10 @@ function Initialize-AapRuntime {
     # Per VM profile: $null, or @{ Kind = 'Win'|'Lin'; B = <backend context> }.
     $AapRt.Vm = @{ linux = $null; windows = $null }
     $AapRt.VmWhy = @{ linux = 'capacity module not installed'; windows = 'capacity module not installed' }
+    # Interim Windows runner control (Sync-AapHostRunner): the last failed task
+    # start's error text, and the last DryRun line (logged once, not every cycle).
+    $AapRt.HostStartErr = ''
+    $AapRt.HostDryLog = $null
     # Per VM profile: $null, or the active generation @{ Id; State; BaseSha256;
     # MemOverheadMib; CloneGib; ScratchGib; IoMbps } (catalog and pin).
     $AapRt.Generation = @{ linux = $null; windows = $null }
@@ -416,11 +420,27 @@ function Read-AapDesired {
 # (ManagerTiers). A newer schema, and a schema 4 file this supervisor cannot
 # run, is refused and kept in SettingsWhy for the status detail.
 function Read-AapSettingsFile {
+    $accepted = @(1, 2)
+    if ($AapRt.Cap) { $accepted = @(1, 2, 3) } elseif ($AapRt.ManagerTiers -eq $true) { $accepted = @(1, 2, 4) }
+    $r = Test-AapSettingsFile $accepted
+    if ($null -ne $r.Settings) { $AapRt.Settings = $r.Settings }
+    $AapRt.SettingsWhy = $r.Newer
+    if ($r.Warn -and $r.Warn -ne $AapRt.LastSettingsWarn) { Write-AapLog "WARN $($r.Warn); keeping the last valid settings" }
+    $AapRt.LastSettingsWarn = $r.Warn
+    return $AapRt.Settings
+}
+
+# The checks of Read-AapSettingsFile against the schemas in $Accepted, changing
+# nothing: @{ Settings; Warn; Newer }. Settings is the default set when the file
+# is missing and $null when the file is refused (Warn says why). Sync-AapHostRunner
+# also reads through this, without the manager-tier gate.
+function Test-AapSettingsFile($Accepted) {
     $obj = Read-AapJsonFile 'settings.json'
+    $set = $null
     $warn = $null
     $newer = $null
     if ($null -eq $obj) {
-        $AapRt.Settings = @{ Limits = $null; Paused = $false; Profiles = $null; Schema = $null }
+        $set = @{ Limits = $null; Paused = $false; Profiles = $null; Schema = $null }
     } elseif ($obj -is [string]) {
         $warn = $obj
     } else {
@@ -429,8 +449,7 @@ function Read-AapSettingsFile {
         $optional = @('schema', 'io_percent', 'sharing', 'windows_runner_count')
         $schema = $null
         if ($names -ccontains 'schema') { $schema = $obj.schema }
-        $accepted = @(1, 2)
-        if ($AapRt.Cap) { $accepted = @(1, 2, 3) } elseif ($AapRt.ManagerTiers -eq $true) { $accepted = @(1, 2, 4) }
+        $accepted = @($Accepted)
         $whole = ($schema -is [int] -or $schema -is [long])
         if ($whole -and $schema -gt 2 -and $accepted -notcontains $schema) {   # check:settings-newer
             $warn = "settings.json schema $schema is newer than this supervisor accepts ($($accepted -join ', '))"
@@ -438,7 +457,7 @@ function Read-AapSettingsFile {
         } elseif ($whole -and ($schema -eq 3 -or $schema -eq 4)) {
             if ($schema -eq 3) { $warn = ConvertFrom-AapSettingsV3 $obj } else { $warn = ConvertFrom-AapSettingsV4 $obj }
             if ($warn -isnot [string]) {
-                $AapRt.Settings = $warn
+                $set = $warn
                 $warn = $null
             } elseif ($schema -eq 4) {
                 $newer = $warn
@@ -473,7 +492,7 @@ function Read-AapSettingsFile {
             }
             if (-not $warn) {
                 if ($null -ne $io) { $io = [int]$io }
-                $AapRt.Settings = @{
+                $set = @{
                     Limits   = @{ RunnerCount = [int]$obj.runner_count; JobCpus = [int]$obj.job_cpus; JobMemoryGib = [int]$obj.job_memory_gib; IoPercent = $io; Sharing = $sharing }
                     Paused   = [bool]$obj.paused
                     Profiles = @{ Linux = [int]$obj.runner_count; Windows = 0; ShareMode = 'even'; LinuxShare = $null; WindowsShare = $null; Reserve = 10; LinuxBackend = 'wsl-legacy'; LeaseHours = 6 }
@@ -482,10 +501,7 @@ function Read-AapSettingsFile {
             }
         }
     }
-    $AapRt.SettingsWhy = $newer
-    if ($warn -and $warn -ne $AapRt.LastSettingsWarn) { Write-AapLog "WARN $warn; keeping the last valid settings" }
-    $AapRt.LastSettingsWarn = $warn
-    return $AapRt.Settings
+    return @{ Settings = $set; Warn = $warn; Newer = $newer }
 }
 
 # Schema 3 (settings-v3.schema.json and its validate.py rules): exactly these
@@ -790,7 +806,7 @@ function New-AapV5Profile([string]$Profile, $Doc, $St, $Live, [string]$StorageSt
     }
     # The interim runner stands in while no Windows VM backend is loaded and no
     # Windows VM slot is live (status-settings.md, Windows host).
-    if ($Profile -ceq 'windows' -and -not $AapRt.Vm.windows -and -not $mine.Count) {
+    if ($Profile -ceq 'windows' -and (Test-AapHostRunnerShown $mine)) {
         $h = Get-AapHostRunner
         if ($h) {
             $o.backend = 'windows-host'
@@ -798,7 +814,16 @@ function New-AapV5Profile([string]$Profile, $Doc, $St, $Live, [string]$StorageSt
             $o.generation_state = $null
             $o.available = $h.State -cne 'stopped'
             $o.unavailable_reason = $h.Why
+            if ($h.State -ceq 'stopped') {
+                # R2.2: a runner that is not wanted says why it is off; a wanted one
+                # keeps the missing piece, plus a failed task start's error text.
+                $off = Get-AapHostRunnerOff
+                if ($null -eq $off -and (Get-AapHostControlText) -ceq '{"schema":1,"desired":"off"}') { $off = 'turned off: settings not accepted' }
+                if ($off) { $o.unavailable_reason = $off }
+                elseif ($AapRt.HostStartErr) { $o.unavailable_reason = "$($h.Why); $($AapRt.HostStartErr)" }
+            }
             $o.host_runner = $h.State
+            $o.host_control = $true
         }
     }
     if ($o.image_generation) { $o.image_generation = Format-AapV5Text $o.image_generation 80 }
@@ -830,6 +855,87 @@ function Get-AapHostRunner {
     if (-not @($mine | Where-Object { $_.Name -eq 'Runner.Listener.exe' }).Count) { return @{ State = 'stopped'; Why = 'runner listener not running' } }   # check:host-runner-listener
     if (@($mine | Where-Object { $_.Name -eq 'Runner.Worker.exe' }).Count) { return @{ State = 'busy'; Why = '' } }   # check:host-runner-busy
     return @{ State = 'online'; Why = '' }
+}
+
+# The Windows profile is the interim runner's (backend windows-host) while its
+# install folder exists, no Windows VM backend is loaded and no Windows VM slot
+# ($Mine) is live. The status write and Sync-AapHostRunner both ask this.
+function Test-AapHostRunnerShown($Mine) {
+    return ([IO.Directory]::Exists($AapCfg.HostRunnerDir) -and -not $AapRt.Vm.windows -and -not @($Mine).Count)
+}
+
+# R2.2 wanted rule (status-settings.md, Windows host control): '' when the
+# interim runner is wanted, else the turned-off reason, first match; $null (no
+# decision) when settings.json is present but refused. Paused and the Windows
+# count come from the inbox file itself every cycle, checked like the On path
+# but without the manager-tier gate, not from the applied $AapRt.Settings (empty
+# at every start and Off -> On) nor from the count the status reports.
+function Get-AapHostRunnerOff {
+    if ((Read-AapDesired) -cne 'on') { return 'turned off: runners are off' }   # check:host-wanted-desired
+    $accepted = @(1, 2, 4)
+    if ($AapRt.Cap) { $accepted = @(1, 2, 3) }
+    $s = (Test-AapSettingsFile $accepted).Settings
+    if ($null -eq $s) { return $null }   # check:host-wanted-accepted
+    if ($s.Paused) { return 'turned off: paused' }   # check:host-wanted-paused
+    $p = $s.Profiles
+    if ($null -eq $p -or [int]$p.Windows -lt 1) { return 'turned off: Windows count 0' }   # check:host-wanted-count
+    return ''
+}
+
+# host-runner.json as written, or $null when it is missing or unreadable.
+function Get-AapHostControlText {
+    try { return [IO.File]::ReadAllText((Join-Path $AapCfg.DataDir 'host-runner.json')) } catch { return $null }
+}
+
+# R2.2: keep host-runner.json at the wanted value and start the logon task when
+# the runner is wanted and the task is not running. Never stops the task or a
+# process: the start script reads the file and ends itself once no job is in
+# progress (its job object takes the listener along). No wsl.exe call.
+function Sync-AapHostRunner {
+    if (-not [IO.Directory]::Exists($AapCfg.HostRunnerDir) -or $AapRt.Vm.windows) { return }
+    $mine = @()
+    if ($AapRt.Cap -and $AapRt.CapReady) {
+        $st = Invoke-AapCap 'Get-AapAllocatorState'
+        if ($st.Ok) { $mine = @($st.State.reservations | Where-Object { $_.profile -ceq 'windows' -and $_.backend -ceq 'hyperv-vm' -and $_.state -cne 'reconciled' }) }
+    }
+    if (-not (Test-AapHostRunnerShown $mine)) { return }
+    $off = Get-AapHostRunnerOff
+    # Refused settings: no decision this cycle; the control file stays as it is.
+    if ($null -eq $off) { return }
+    $want = $(if ($off) { 'off' } else { 'on' })
+    $text = '{"schema":1,"desired":"' + $want + '"}'
+    $have = Get-AapHostControlText
+    $name = $AapCfg.HostRunnerTask
+    $task = $null
+    if (-not $off) { $task = Get-ScheduledTask -TaskPath '\' -TaskName $name -ErrorAction SilentlyContinue }
+    $start = ($task -and ([string]$task.State).ToLowerInvariant() -cne 'running')
+    if ($AapCfg.DryRun) {
+        $line = "DRYRUN host runner $want"
+        if ($have -cne $text) { $line += "; would write host-runner.json $text" }
+        if ($start) { $line += "; would Start-ScheduledTask \$name" }
+        if ($line -cne $AapRt.HostDryLog) { Write-AapLog $line }
+        $AapRt.HostDryLog = $line
+        return
+    }
+    if ($have -cne $text) {   # check:host-control-write
+        Write-AapJsonAtomic 'host-runner.json' ([ordered]@{ schema = 1; desired = $want })
+        Write-AapLog "host runner $want ($(if ($off) { $off } else { 'wanted' }))"
+    }
+    if ($off) {
+        $AapRt.HostStartErr = ''
+        $AapRt.Retry.Remove('host-runner-start')
+        return
+    }
+    if (-not $start -or -not (Test-AapRetryDue 'host-runner-start')) { return }   # check:host-start-running
+    try {
+        Start-ScheduledTask -TaskPath '\' -TaskName $name -ErrorAction Stop
+        $AapRt.HostStartErr = ''
+        Write-AapLog "started logon task \$name"
+        Clear-AapRetry 'host-runner-start'
+    } catch {
+        $AapRt.HostStartErr = "starting logon task \$name failed: $($_.Exception.Message)"
+        Register-AapRetryFailure 'host-runner-start' $AapRt.HostStartErr
+    }
 }
 
 # status.v5.json (parity/contracts/status-v5.schema.json): status.json's state
@@ -2307,6 +2413,8 @@ function Get-AapAction([string]$Desired, [string]$Mode) {
 # One loop iteration. Off makes no wsl.exe call, so the distro stays stopped
 # and Vmmem can exit. The status file is refreshed every HeartbeatSeconds.
 function Invoke-AapCycle {
+    # R2.2: the interim Windows runner follows the same switch, in every mode.
+    Sync-AapHostRunner
     $desired = Read-AapDesired
     $action = Get-AapAction $desired $AapRt.Mode
     $now = Get-AapNow

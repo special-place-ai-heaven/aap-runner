@@ -439,6 +439,10 @@
             "stopped"
           ],
           "description": "Present exactly when backend is windows-host: online (logon task running, listener up, no job), busy (a job runs), stopped (the reason names the missing piece)."
+        },
+        "host_control": {
+          "type": "boolean",
+          "description": "Revision 5: true when this supervisor starts and stops the interim runner (host-runner.json). Only on a windows-host profile; absent means an older supervisor that only reports."
         }
       }
     },
