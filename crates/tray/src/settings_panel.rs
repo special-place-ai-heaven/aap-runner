@@ -141,6 +141,11 @@ impl SettingsPanel {
         )
     }
 
+    /// The stored file is settings schema 4 (it holds tier counts).
+    pub fn stored_tiers(&self) -> bool {
+        self.stored.schema >= 4
+    }
+
     fn revert(&mut self) {
         self.linux = self.stored.runner_count;
         self.heavy = self.stored.linux_heavy_count;
@@ -358,7 +363,7 @@ impl SettingsPanel {
                 &mut self.tier,
                 &[(Tier::Light, "Light"), (Tier::Heavy, "Heavy")],
                 |t| tiers || t == Tier::Light,
-                p.os(Os::Linux),
+                Chosen::Solid(p.os(Os::Linux)),
                 focus,
             )
             .on_hover_text(if tiers { TIER_TIP } else { TIERS_LATER });
@@ -375,7 +380,7 @@ impl SettingsPanel {
                     &mut self.linux,
                     &TIER_COUNTS,
                     |n| fits_linux.contains(&n),
-                    p.os(Os::Linux),
+                    Chosen::Solid(p.os(Os::Linux)),
                     focus,
                 ),
                 Tier::Heavy => segmented(
@@ -384,7 +389,7 @@ impl SettingsPanel {
                     &mut self.heavy,
                     &TIER_COUNTS[..3],
                     |n| fits_heavy.contains(&n),
-                    p.os(Os::Linux),
+                    Chosen::Solid(p.os(Os::Linux)),
                     focus,
                 ),
             };
@@ -405,14 +410,15 @@ impl SettingsPanel {
                 &mut self.windows,
                 &COUNTS,
                 |n| fits_windows.contains(&n),
-                p.os(Os::Windows),
+                windows_chosen(p),
                 focus,
             )
             .on_hover_text(WINDOWS_INERT);
         });
         ui.horizontal(|ui| {
             label(ui, "Each");
-            ui.label(RichText::new(windows.text).color(p.over).small());
+            // Truncated: no text here may widen the fixed column and clip the rows below.
+            ui.add(egui::Label::new(RichText::new(windows.text).color(p.over).small()).truncate());
         })
         .response
         .on_hover_text(windows.tip);
@@ -436,7 +442,7 @@ impl SettingsPanel {
                 &mut self.sharing,
                 &[(Sharing::Slice, "Slice"), (Sharing::Fixed, "Fixed")],
                 |_| true,
-                p.accent,
+                Chosen::Solid(p.accent),
                 focus,
             )
             .on_hover_text(SHARING_TIP);
@@ -534,6 +540,14 @@ fn now(ui: &mut egui::Ui, p: &Palette, text: String) {
     });
 }
 
+/// How a picker draws its selected cell: filled while the choice is in force, an outline in the
+/// same colour while it is stored but starts nothing (shape, not colour, says which).
+#[derive(Clone, Copy)]
+enum Chosen {
+    Solid(egui::Color32),
+    Hollow(egui::Color32),
+}
+
 /// Equal cells, the selected one filled with `selected_fill` (a profile colour or the accent);
 /// cells `allowed` refuses are greyed and inert. Cells shrink to share the row width. Only the
 /// selected cell is a Tab stop; Left and Right move the selection to an allowed neighbour while
@@ -544,9 +558,13 @@ fn segmented<T: Copy + PartialEq>(
     value: &mut T,
     options: &[(T, &str)],
     allowed: impl Fn(T) -> bool,
-    selected_fill: egui::Color32,
+    chosen: Chosen,
     focus: &mut Focus,
 ) -> egui::Response {
+    let (accent, hollow) = match chosen {
+        Chosen::Solid(c) => (c, false),
+        Chosen::Hollow(c) => (c, true),
+    };
     let on_accent = if p.dark {
         crate::dashboard::hex(0x1E1F22)
     } else {
@@ -561,7 +579,9 @@ fn segmented<T: Copy + PartialEq>(
         for (i, (v, text)) in options.iter().enumerate() {
             let selected = *value == *v;
             let ok = allowed(*v);
-            let color = if selected {
+            let color = if selected && hollow {
+                accent
+            } else if selected {
                 on_accent
             } else if ok {
                 p.text
@@ -581,8 +601,8 @@ fn segmented<T: Copy + PartialEq>(
                 Sense::hover()
             };
             let (rect, r) = ui.allocate_exact_size(size, sense);
-            let fill = if selected {
-                selected_fill
+            let fill = if selected && !hollow {
+                accent
             } else if !ok {
                 p.bg
             } else if r.hovered() && enabled {
@@ -593,6 +613,10 @@ fn segmented<T: Copy + PartialEq>(
             ui.painter().rect_filled(rect, 0.0, fill);
             ui.painter()
                 .rect_stroke(rect, 0.0, Stroke::new(1.0, p.border), StrokeKind::Inside);
+            if selected && hollow {
+                ui.painter()
+                    .rect_stroke(rect, 0.0, Stroke::new(2.0, accent), StrokeKind::Inside);
+            }
             ui.painter()
                 .galley(rect.center() - galley.size() / 2.0, galley, color);
             r.widget_info(|| {
@@ -708,15 +732,16 @@ fn windows_line(
     host: Option<&ProfileV5>,
 ) -> WindowsLine {
     if let Some(h) = host {
-        // The line keeps only the state word ("stopped"); the reason, up to 200 characters,
-        // goes to the hover tip so it cannot widen the column.
+        // The line keeps the short name and only the state word ("stopped"), so it fits the
+        // column at every state; the full name and the reason, up to 200 characters, go to the
+        // hover tip.
         let state = h.host_state();
         let word = state.split(':').next().unwrap_or_default();
         return WindowsLine {
-            text: format!("{HOST_RUNNER_NAME} \u{b7} {word}"),
+            text: format!("interim runner \u{b7} {word}"),
             tip: format!(
-                "{state}. {HOST_RUNNER_WARNING} It is outside the counts above, which wait for \
-                 the native Windows backend."
+                "The {HOST_RUNNER_NAME}: {state}. {HOST_RUNNER_WARNING} It is outside the counts \
+                 above, which wait for the native Windows backend."
             ),
         };
     }
@@ -737,6 +762,15 @@ fn windows_line(
             cpus * windows,
             gib * windows
         ),
+    }
+}
+
+/// The Windows picker's selected cell: an outline until a backend runs the count.
+fn windows_chosen(p: &Palette) -> Chosen {
+    if WINDOWS_BACKEND {
+        Chosen::Solid(p.os(Os::Windows))
+    } else {
+        Chosen::Hollow(p.os(Os::Windows))
     }
 }
 
@@ -1163,8 +1197,12 @@ mod tests {
         let v = crate::state::parse_status_v5(&json, now).unwrap();
         for windows in [0, 2] {
             let w = windows_line(&e, windows, &vm, v.windows_host());
-            assert_eq!(w.text, "interim runner on this PC \u{b7} busy");
-            assert!(w.tip.starts_with("busy. "), "{}", w.tip);
+            assert_eq!(w.text, "interim runner \u{b7} busy");
+            assert!(
+                w.tip.starts_with("The interim runner on this PC: busy. "),
+                "{}",
+                w.tip
+            );
             assert!(w.tip.contains(HOST_RUNNER_WARNING), "{}", w.tip);
         }
     }
@@ -1186,7 +1224,7 @@ mod tests {
         host.host_runner = Some("stopped".into());
         host.unavailable_reason = reason.clone();
         let w = windows_line(&e, 0, &vm, v.windows_host());
-        assert_eq!(w.text, "interim runner on this PC \u{b7} stopped");
+        assert_eq!(w.text, "interim runner \u{b7} stopped");
         assert!(w.tip.contains(&reason), "{}", w.tip);
     }
 

@@ -159,12 +159,53 @@ fn linux_tiles(light: u32, heavy: u32, tiered: bool) -> Vec<LinuxTile> {
 }
 
 /// Whether a tile is live (a count chooses it or a runner reports its slot; else grey and dim),
-/// and its second line while no job shows there.
+/// and its second line while no job shows there. A chosen slot that nothing reports does not
+/// claim a waiting runner: the service is down, still starting, or has not created it.
 fn tile_look(t: LinuxTile, reported: bool) -> (bool, &'static str) {
-    match (t.chosen || reported, t.slot) {
-        (true, _) => (true, "Waiting for a job"),
-        (false, None) => (false, "Needs settings schema 4"),
-        (false, Some(_)) => (false, "Not chosen"),
+    match (reported, t.chosen, t.slot) {
+        (true, _, _) => (true, "Waiting for a job"),
+        (false, true, _) => (true, "Not reported by the service"),
+        (false, false, None) => (false, "Needs settings schema 4"),
+        (false, false, Some(_)) => (false, "Not chosen"),
+    }
+}
+
+/// Whether the tiles are named and numbered by tier. `numbered`: a fresh status lists settings
+/// schema 4. With no readable status (`down`) there is no slot to map, so a stored schema 4 file
+/// names them: the heavy tiles then do not say they need a schema the file already has.
+fn tiles_tiered(numbered: bool, stored_tiers: bool, down: bool) -> bool {
+    numbered || (stored_tiers && down)
+}
+
+/// A row of exactly `h`: the content is centred in it and cannot change the height.
+fn fixed_row<R>(ui: &mut egui::Ui, h: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let (_, rect) = ui.allocate_space(vec2(ui.available_width(), h));
+    let mut row = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    add(&mut row)
+}
+
+/// The Off page's line and whether the interim Windows runner's card follows it: that runner is
+/// its own scheduled task and keeps taking jobs while the Linux pool is off.
+fn off_page(host: Option<&ProfileV5>) -> (&'static str, bool) {
+    match host.and_then(|h| h.host_runner.as_deref()) {
+        Some("online" | "busy") => ("Linux runners are off.", true),
+        _ => ("Runners are off. No jobs are taken.", false),
+    }
+}
+
+/// The interim runner card's second line; a stored Windows count is named there as inert, so a
+/// count of 2 beside one card explains itself.
+fn host_line(h: &ProfileV5, chosen: u32) -> String {
+    if !h.unavailable_reason.is_empty() {
+        return h.unavailable_reason.clone();
+    }
+    match chosen {
+        0 => "Interim runner on this PC".into(),
+        n => format!("Interim runner on this PC \u{b7} Windows count {n} starts nothing yet"),
     }
 }
 
@@ -283,12 +324,12 @@ fn card_height() -> f32 {
         + 2.0 // frame border 1 px each side
 }
 
-/// One Linux tile: the state row and the title row (both floored to INTERACT_H), the occupancy
-/// caption, the tile's margins and border. Every tile has this height, chosen or not.
+/// One Linux tile: the state row (floored to INTERACT_H), the title row, the occupancy caption,
+/// the tile's margins and border. Every tile has this height: chosen or not, busy or idle.
 fn tile_height() -> f32 {
     INTERACT_H
         + CARD_ITEM_GAP
-        + CARD_TITLE_H
+        + TILE_TITLE_H
         + CARD_ITEM_GAP
         + CAPTION_H
         + 2.0 * TILE_MARGIN_V as f32
@@ -351,6 +392,9 @@ const LOG_ROWS: usize = 20;
 const CARD_SYM_H: f32 = 20.0;
 /// Title-row / "Waiting for a job" row height, allocated explicitly in drawing.
 const CARD_TITLE_H: f32 = 24.0;
+/// A Linux tile's second row: the job link, the waiting line or the retired note. Fixed, so a
+/// tile is the same height busy or idle; the 24 px copy button overhangs into the row gaps.
+const TILE_TITLE_H: f32 = 16.0;
 /// Mini-bar row height inside a runner card, allocated explicitly in drawing.
 const CARD_BARS_H: f32 = 18.0;
 /// Frame vertical inner-margin (each side) on a runner card.
@@ -1380,19 +1424,22 @@ impl Dash {
                     .font(FontId::new(16.0, semibold()))
                     .color(p.state(sym)),
             );
-            if !matches!(
-                self.snap.status,
-                Status::NotInstalled | Status::Off | Status::Unknown
-            ) {
-                let host = self.settings.host();
+            // Off keeps the interim Windows runner in the header: it runs whatever the pool does.
+            let off = self.snap.status == Status::Off;
+            let host = self.settings.host();
+            if !matches!(self.snap.status.sym(), Sym::NotInstalled | Sym::Down)
+                && (!off || off_page(host).1)
+            {
                 let (linux, windows) = header_counts(
                     self.snap.busy(),
                     self.snap.runners(),
                     self.settings.windows(),
                     host,
                 );
-                os_glyph(ui, &p, Os::Linux, 14.0, p.bg);
-                ui.label(linux);
+                if !off {
+                    os_glyph(ui, &p, Os::Linux, 14.0, p.bg);
+                    ui.label(linux);
+                }
                 if let Some(windows) = windows {
                     os_glyph(ui, &p, Os::Windows, 14.0, p.bg);
                     let r = ui.label(RichText::new(windows).color(p.muted));
@@ -1545,7 +1592,9 @@ impl Dash {
 
     /// The twelve Linux tiles, two per row, every one the same size whether chosen or not.
     fn linux_grid(&mut self, ui: &mut egui::Ui, slots: &[Slot], even: (Option<f64>, Option<f64>)) {
-        let (light, heavy, tiered) = self.settings.linux_counts();
+        let (light, heavy, numbered) = self.settings.linux_counts();
+        let down = self.snap.status.sym() == Sym::Down;
+        let tiered = tiles_tiered(numbered, self.settings.stored_tiers(), down);
         let gap = 8.0;
         let w = ((ui.available_width() - gap) / TILE_COLUMNS as f32).floor();
         for row in linux_tiles(light, heavy, tiered).chunks(TILE_COLUMNS as usize) {
@@ -1605,7 +1654,7 @@ impl Dash {
                             .color(color),
                     );
                     let Some(slot) = slot else {
-                        let word = if on { "Waiting" } else { "Off" };
+                        let word = if on { "No status" } else { "Off" };
                         ui.label(RichText::new(word).color(p.muted));
                         return;
                     };
@@ -1633,13 +1682,13 @@ impl Dash {
                 match slot {
                     Some(slot) if slot.note().is_some() => {
                         let note = slot.note().unwrap_or_default();
-                        ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
+                        fixed_row(ui, TILE_TITLE_H, |ui| {
                             ui.label(RichText::new(note).color(p.state(slot.state)).small());
                         });
                     }
                     Some(slot) if slot.busy() || !slot.job.is_empty() => self.title_row(ui, slot),
                     _ => {
-                        ui.allocate_ui(vec2(ui.available_width(), CARD_TITLE_H), |ui| {
+                        fixed_row(ui, TILE_TITLE_H, |ui| {
                             ui.label(RichText::new(idle_line).color(p.muted).small());
                         });
                     }
@@ -1647,16 +1696,12 @@ impl Dash {
                 let occupancy = slot
                     .filter(|s| !s.retired)
                     .map(|s| occupancy_line(s.cpu_cores, s.mem_gib, share, sampled));
-                ui.allocate_ui_with_layout(
-                    vec2(ui.available_width(), CAPTION_H),
-                    Layout::left_to_right(Align::Center),
-                    |ui| {
-                        if let Some((text, over)) = occupancy {
-                            let color = if over { p.over } else { p.muted };
-                            ui.label(RichText::new(text).color(color).small());
-                        }
-                    },
-                );
+                fixed_row(ui, CAPTION_H, |ui| {
+                    if let Some((text, over)) = occupancy {
+                        let color = if over { p.over } else { p.muted };
+                        ui.label(RichText::new(text).color(color).small());
+                    }
+                });
             })
         });
         let edge = if on { p.os(Os::Linux) } else { p.border };
@@ -1707,11 +1752,7 @@ impl Dash {
     fn host_card(&mut self, ui: &mut egui::Ui, h: &ProfileV5) {
         let p = self.pal();
         let (sym, word) = host_sym(h);
-        let what = if h.unavailable_reason.is_empty() {
-            "Interim runner on this PC".to_string()
-        } else {
-            h.unavailable_reason.clone()
-        };
+        let what = host_line(h, self.settings.windows());
         let frame = card_frame(&p).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
             ui.set_width(ui.available_width());
@@ -1758,7 +1799,7 @@ impl Dash {
             format!("{title} \u{b7} {short}")
         };
         let link = slot.link().map(str::to_owned);
-        ui.horizontal(|ui| {
+        fixed_row(ui, TILE_TITLE_H, |ui| {
             let w = ui.available_width() - if link.is_some() { 24.0 + 8.0 } else { 0.0 };
             let color = if link.is_some() { p.accent } else { p.text };
             let sense = if link.is_some() {
@@ -1767,7 +1808,7 @@ impl Dash {
                 Sense::hover()
             };
             let r = ui
-                .allocate_ui(vec2(w, CARD_TITLE_H), |ui| {
+                .allocate_ui(vec2(w, TILE_TITLE_H), |ui| {
                     ui.add(
                         egui::Label::new(RichText::new(&text).color(color))
                             .truncate()
@@ -2583,7 +2624,14 @@ impl Dash {
         match self.snap.status.clone() {
             _ if self.panel && self.problem.is_some() => self.error_panel(ui),
             Status::NotInstalled => self.empty(ui, "AAP Runner is not installed on this PC."),
-            Status::Off => self.empty(ui, "Runners are off. No jobs are taken."),
+            Status::Off => {
+                let host = self.settings.host().cloned();
+                let (text, card) = off_page(host.as_ref());
+                self.empty(ui, text);
+                if let Some(h) = host.filter(|_| card) {
+                    self.host_card(ui, &h);
+                }
+            }
             status => {
                 if status == Status::Paused {
                     ui.label(match self.snap.busy() {
@@ -3265,45 +3313,51 @@ mod tests {
             r#"{"runner_count":5,"job_cpus":26,"job_memory_gib":72}"#,
         )
         .unwrap();
-        write_host_v5(&base, "online");
-        let mut panel = SettingsPanel::load(&base);
-        assert_eq!(
-            panel.host().map(|h| h.host_state()).as_deref(),
-            Some("online")
-        );
-        let snap = Snapshot::bare(Status::Idle);
-        let mut desired = Desired::On;
-        let context = egui::Context::default();
-        context.set_fonts(fonts());
-        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
-            egui::Panel::left("l").exact_size(LEFT_W).show(ui, |ui| {
-                panel.show_top(ui, &DARK, &base, &snap, &mut desired);
+        // The longest state word used to push the line past the column and clip the rows below.
+        for word in ["online", "busy", "stopped"] {
+            write_host_v5(&base, word);
+            let mut panel = SettingsPanel::load(&base);
+            assert_eq!(panel.host().map(|h| h.host_state()).as_deref(), Some(word));
+            let snap = Snapshot::bare(Status::Idle);
+            let mut desired = Desired::On;
+            let context = egui::Context::default();
+            context.set_fonts(fonts());
+            context.all_styles_mut(style);
+            let frame = egui::Frame::new().inner_margin(PAD as i8);
+            let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+                egui::Panel::left("l")
+                    .exact_size(LEFT_W)
+                    .frame(frame)
+                    .show(ui, |ui| {
+                        panel.show_top(ui, &DARK, &base, &snap, &mut desired);
+                    });
             });
-        });
-        let texts: Vec<(String, f32)> = output
-            .shapes
-            .iter()
-            .filter_map(|s| match &s.shape {
-                egui::Shape::Text(t) => {
-                    Some((t.galley.text().to_string(), t.pos.x + t.galley.size().x))
-                }
-                _ => None,
-            })
-            .collect();
-        output.textures_delta.clear();
-        let line = texts
-            .iter()
-            .find(|(t, _)| t == "interim runner on this PC \u{b7} online")
-            .unwrap_or_else(|| panic!("no interim line: {texts:?}"));
-        assert!(
-            line.1 <= LEFT_W,
-            "the line ends at {} past the {LEFT_W} column",
-            line.1
-        );
-        assert!(
-            !texts.iter().any(|(t, _)| t.contains("not installed")),
-            "{texts:?}"
-        );
+            let texts: Vec<(String, f32)> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => {
+                        Some((t.galley.text().to_string(), t.pos.x + t.galley.size().x))
+                    }
+                    _ => None,
+                })
+                .collect();
+            output.textures_delta.clear();
+            let want = format!("interim runner \u{b7} {word}");
+            let line = texts
+                .iter()
+                .find(|(t, _)| *t == want)
+                .unwrap_or_else(|| panic!("no interim line: {texts:?}"));
+            assert!(
+                line.1 <= LEFT_W - PAD,
+                "{want} ends at {} past the padded {LEFT_W} column",
+                line.1
+            );
+            assert!(
+                !texts.iter().any(|(t, _)| t.contains("not installed")),
+                "{texts:?}"
+            );
+        }
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -3402,15 +3456,15 @@ mod tests {
 
     #[test]
     fn every_linux_tile_is_drawn_with_one_fixed_size() {
-        // 80 = 24 state row + 4 gap + 24 title row + 4 gap + 16 occupancy + 2 x 3 margin
+        // 72 = 24 state row + 4 gap + 16 title row + 4 gap + 16 occupancy + 2 x 3 margin
         // + 2 border.
-        assert_eq!(tile_height(), 80.0);
+        assert_eq!(tile_height(), 72.0);
         assert!(
             tile_height() < card_height(),
             "compact: shorter than a card"
         );
         // Six rows of two, 4 apart, whatever the counts.
-        assert_eq!(linux_grid_height(), 6.0 * 80.0 + 5.0 * 4.0);
+        assert_eq!(linux_grid_height(), 6.0 * 72.0 + 5.0 * 4.0);
         for (light, heavy, tiered) in [(0, 0, false), (3, 0, false), (10, 2, true), (1, 0, true)] {
             let tiles = linux_tiles(light, heavy, tiered);
             assert_eq!(tiles.len(), 12, "{light} {heavy} {tiered}");
@@ -3444,7 +3498,12 @@ mod tests {
     #[test]
     fn unchosen_tiles_are_grey_and_dim_unless_a_runner_reports() {
         let tiles = linux_tiles(2, 0, false);
-        assert_eq!(tile_look(tiles[2], false), (true, "Waiting for a job"));
+        // Chosen, but nothing reports it: no runner is claimed to be waiting there.
+        assert_eq!(
+            tile_look(tiles[2], false),
+            (true, "Not reported by the service")
+        );
+        assert_eq!(tile_look(tiles[2], true), (true, "Waiting for a job"));
         assert_eq!(tile_look(tiles[5], false), (false, "Not chosen"));
         assert_eq!(
             tile_look(tiles[0], false),
@@ -3683,6 +3742,124 @@ mod tests {
             "right column overflows 768p: {rh:.0} > {}",
             clamped_window_height(768.0, title)
         );
+    }
+
+    #[test]
+    fn every_tile_is_one_height_busy_idle_retired_or_unreported() {
+        let base = state::temp_base("dash-tile-height");
+        std::fs::write(
+            state::inbox(&base).join("settings.json"),
+            r#"{"runner_count":5,"job_cpus":26,"job_memory_gib":72}"#,
+        )
+        .unwrap();
+        let now = SystemTime::now();
+        let busy = |n: u32| {
+            format!(
+                r#"{{"slot":{n},"state":"running","job":"A long job name that needs an ellipsis",
+                "repo":"o/r","run_url":"https://github.com/o/r/actions/runs/7","started_at":"{}",
+                "cpu_cores":1,"mem_gib":5}}"#,
+                chrono_free_at(now)
+            )
+        };
+        let all_busy: Vec<String> = (1..=5).map(busy).collect();
+        let mixed = [
+            busy(1),
+            r#"{"slot":2,"state":"idle","cpu_cores":0,"mem_gib":0.1}"#.to_string(),
+            r#"{"slot":3,"state":"retired"}"#.to_string(),
+        ];
+        // No slot at all, a mix, and every chosen slot busy: the grid never changes height.
+        for slots in [&[][..], &mixed[..], &all_busy[..]] {
+            let json = format!(
+                r#"{{"schema":4,"state":"running","updated":"{}","slots":[{}]}}"#,
+                chrono_free_at(now),
+                slots.join(",")
+            );
+            let mut d = Dash::new(base.clone());
+            d.snap = state::parse_status(&json, now);
+            let slots = d.snap.slots.clone();
+            let context = egui::Context::default();
+            context.set_fonts(fonts());
+            context.all_styles_mut(style);
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(480.0, 800.0))),
+                ..Default::default()
+            };
+            let mut height = 0.0;
+            let mut output = context.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
+                    let top = ui.cursor().top();
+                    d.linux_grid(ui, &slots, (Some(5.2), Some(14.4)));
+                    // The cursor sits one item gap below the last row.
+                    height = ui.cursor().top() - top - CARD_ITEM_GAP;
+                });
+            });
+            output.textures_delta.clear();
+            assert_eq!(height, linux_grid_height(), "{} slots", slots.len());
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_stored_tier_file_names_the_tiles_while_no_status_is_readable() {
+        // A fresh status that lists schema 4 numbers the slots by tier.
+        assert!(tiles_tiered(true, true, false));
+        // Status readable but not listing 4: the supervisor numbers 1..N untiered.
+        assert!(!tiles_tiered(false, true, false));
+        // No readable status: the stored file is the only word, and it has tiers.
+        assert!(tiles_tiered(false, true, true));
+        assert!(!tiles_tiered(false, false, true));
+    }
+
+    #[test]
+    fn off_keeps_a_live_interim_windows_runner_in_view() {
+        let host = |state: Option<&str>| ProfileV5 {
+            profile: "windows".into(),
+            os: "Windows".into(),
+            backend: "windows-host".into(),
+            count: 0,
+            share_percent: None,
+            per_runner: state::Res {
+                cpus: 0,
+                mem_gib: 0,
+            },
+            profile_cap: state::Res {
+                cpus: 0,
+                mem_gib: 0,
+            },
+            image_generation: None,
+            generation_state: None,
+            available: true,
+            unavailable_reason: String::new(),
+            host_runner: state.map(str::to_owned),
+        };
+        assert_eq!(
+            off_page(None),
+            ("Runners are off. No jobs are taken.", false)
+        );
+        assert_eq!(
+            off_page(Some(&host(Some("stopped")))),
+            ("Runners are off. No jobs are taken.", false)
+        );
+        // It is its own scheduled task: Off does not stop it, so "no jobs are taken" would lie.
+        for live in ["online", "busy"] {
+            assert_eq!(
+                off_page(Some(&host(Some(live)))),
+                ("Linux runners are off.", true)
+            );
+        }
+        // The card names a stored Windows count as inert, beside the one runner that exists.
+        let h = host(Some("online"));
+        assert_eq!(host_line(&h, 0), "Interim runner on this PC");
+        assert_eq!(
+            host_line(&h, 2),
+            "Interim runner on this PC \u{b7} Windows count 2 starts nothing yet"
+        );
+        let missing = ProfileV5 {
+            unavailable_reason: "runner folder missing".into(),
+            ..host(None)
+        };
+        assert_eq!(host_line(&missing, 2), "runner folder missing");
     }
 
     #[test]

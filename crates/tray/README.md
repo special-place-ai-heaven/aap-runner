@@ -125,10 +125,14 @@ addendum of the design doc.
   host keeps 2 CPU 8 GiB), under schema 4 the tier table instead (`Each 1 CPU 3 GiB cap 4/8`,
   `Each 8 CPU 20 GiB may burst`); Windows
   `0 | … | 5` with one amber line `not installed · 5 CPU 14 GiB` (the prospective even share; the
-  tooltip says it is prospective and that nothing starts; `interim runner on this PC · online`,
-  `busy` or `stopped: <reason>` instead while `status.v5.json` reports `backend: windows-host`,
-  its tooltip the warning `Unisolated: jobs run directly on this PC (owner accepted 2026-10-20).`,
-  and a Windows card with the same state and warning in the room the Linux slots leave), the row's tooltip carrying the full
+  tooltip says it is prospective and that nothing starts; `interim runner · online`,
+  `busy` or `stopped` instead while `status.v5.json` reports `backend: windows-host`,
+  its tooltip the full name, the stopped reason and the warning
+  `Unisolated: jobs run directly on this PC (owner accepted 2026-10-20).`,
+  and a Windows card with the same state and warning in the room the Linux slots leave; the line is
+  cut with an ellipsis rather than widen the column). While no Windows backend runs the count, the
+  selected Windows cell is an outline in the Windows colour, not a filled cell: a filled cell is a
+  count in force. The row's tooltip carries the full
   `Windows backend not installed — coming with the native Windows runner` note. Cells above the
   budget the other row leaves are greyed and inert (Linux 0 too, until a Windows backend exists).
   Each row label carries its OS glyph and colour. IO cap 0..100 % in steps of 5, Sharing
@@ -145,7 +149,7 @@ addendum of the design doc.
   Disk comes with the status itself, not the sample. `no sample` means no value at all.
   All rows are fixed height; there is no scroll area in the left column. The footer
   (Verify/Repair/Open logs) follows in the normal top-down flow after a fixed gap.
-  `SIZE[1]` = `MIN_SIZE[1]` = 760 px = max(left worst case 760, tile grid right 644); a test keeps
+  `SIZE[1]` = `MIN_SIZE[1]` = 760 px = max(left worst case 760, tile grid right 596); a test keeps
   the left worst case at most 780 pt (1080p at 125 %);
   a new left-column row that does not fit grows SIZE[1], never adds a scrollbar.
 - **Profile identity:** Linux is a Tux-style penguin glyph in green, Windows the four-pane window
@@ -161,22 +165,32 @@ addendum of the design doc.
   `Windows N not installed` while Windows runners are chosen (`Windows interim online`, `busy` or
   `stopped` while `status.v5.json` reports the interim runner on this PC, with the warning as its
   tooltip), `All OK` or
-  the `1 problem` button). Below the header (in every state including Off and Not installed): one
+  the `1 problem` button). Off shows no counts, except `Windows interim online` or `busy`: that
+  runner is its own scheduled task and keeps taking jobs while the pool is off, so the Off page
+  then reads `Linux runners are off.` with the interim runner's card under it, and
+  `Runners are off. No jobs are taken.` only when it is stopped or absent. Below the header (in every state including Off and Not installed): one
   status line for the current Verify/Repair job (format: `Verify · failed · exit 1` on failure,
   `Repair · running…` while active, `Verify · ok` on success; with a `· Open log`
   CollapsingHeader when log lines are available; log panel keyed on a fixed id, not the label text).
-  Then the Linux tiles, every slot always drawn, all one fixed size (80 px, two per row, six rows):
+  Then the Linux tiles, every slot always drawn, all one fixed size busy or idle (72 px, two per
+  row, six rows; a test measures the drawn grid):
   `Heavy 1`, `Heavy 2`, `Light 1` … `Light 10`, each with the penguin and tier glyphs, state and
   elapsed on one row, `title · repo` (a link to the run, full text and URL in a tooltip, copy
-  button) or `Waiting for a job` on the second, and on the third the slot's sampled CPU and memory
+  button) or `Waiting for a job` on the second (a chosen slot that no runner reports, as while the
+  service is down or starting, reads `No status` and `Not reported by the service` instead: no
+  waiting runner is claimed), and on the third the slot's sampled CPU and memory
   against its share, busy or idle: `1.0/8 cores · 5.2/20 GiB` (heavy: the 8 CPU / 20 GiB
   reservation; light: the 4 CPU / 8 GiB cap; untiered: the even share of the pool), `-` for a
   value docker left out, in the over colour past the share, `no sample` with no sample. A slot the manager gave up on (`state` `retired`) shows the error symbol and colour, the word `Retired` and `gave up; restarts with the pool` in place of the job row, with no occupancy row; any other unknown state word still shows `Starting`. A tile shows the status slot of the same number (status-settings.md Tiers: heavy 1..2,
-  light 3..12 under settings schema 4; before it slot N is `Light N` and the heavy tiles show none).
+  light 3..12 under settings schema 4; before it slot N is `Light N` and the heavy tiles show none;
+  with no readable status there is no slot to map, and a stored schema 4 file names the tiles by tier).
   A tile no stored count chooses and no runner reports is fully grey and dim (`Not chosen`, or
   `Needs settings schema 4` on the heavy tiles before it). Then one `Windows 1`… placeholder per
   chosen Windows runner (unchanged, 102 px), `Not installed` and `Starts nothing`, never shown as
-  running. The tiles fit a 768 px work area; with one Windows card (the interim runner) they fit the default height, more scroll. The last 60 minutes follows below (scrolls at small sizes).
+  running. The interim runner's card names a stored Windows count on its second line
+  (`Interim runner on this PC · Windows count 2 starts nothing yet`). The tiles, one Windows card
+  (the interim runner) and the last 60 minutes fit the default height with every slot busy; more
+  Windows cards scroll.
 - **Error panel:** replaces the right column's cards, with `< Back to runners` on top. It opens by itself
   when the state enters an error class; the `1 problem` button, an error symbol, `--dashboard --problem`
   and a left click in an error state reopen it. It holds the one-liner, raw detail and since, the class's
