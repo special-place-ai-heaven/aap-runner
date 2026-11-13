@@ -29,6 +29,8 @@ pub enum Class {
     LimitsRefused,
     /// Tray-derived: `status.json` missing or stale.
     SupervisorDown,
+    /// Tray-derived: `status.json` is fresh but this build cannot read it.
+    StatusUnreadable,
     /// Log-only: a drain hit its time limit.
     DrainTimeout,
     Other,
@@ -63,7 +65,7 @@ impl Class {
             Class::LimitsRefused => Action::Settings,
             Class::SupervisorDown => Action::RestartService,
             Class::ManagerOld => Action::Repair,
-            Class::DrainTimeout | Class::Other => Action::OpenLogs,
+            Class::StatusUnreadable | Class::DrainTimeout | Class::Other => Action::OpenLogs,
         }
     }
 
@@ -75,7 +77,7 @@ impl Class {
             Class::RestartLoop => &["unhealthy", "after start", "systemctl", "status error"],
             Class::LimitsRefused => &["limits", "status paused", "status error"],
             Class::DrainTimeout => &["drain"],
-            Class::SupervisorDown => &["supervisor", "ERROR"],
+            Class::SupervisorDown | Class::StatusUnreadable => &["supervisor", "ERROR"],
             Class::Other => &["status error", "ERROR"],
         }
     }
@@ -85,6 +87,7 @@ impl Class {
 /// while paused. `probe_exit` is the last `WARN probe exit N` from the log.
 pub fn current(snap: &Snapshot, probe_exit: Option<i64>) -> Option<Class> {
     match &snap.status {
+        Status::Unknown if snap.unreadable => Some(Class::StatusUnreadable),
         Status::Unknown => Some(Class::SupervisorDown),
         Status::Error(detail) => Some(classify(detail, probe_exit)),
         Status::Paused if limits_refused(&snap.detail) => Some(Class::LimitsRefused),
@@ -112,7 +115,8 @@ pub fn classify(detail: &str, probe_exit: Option<i64>) -> Class {
     }
 }
 
-/// The plain one-liner. `age` is how old `status.json` is (Supervisor down only).
+/// The plain one-liner. `age` is how old `status.json` is (Supervisor down only); `detail` is
+/// the reason for Status unreadable.
 pub fn one_liner(class: Class, detail: &str, age: Option<Duration>) -> String {
     match class {
         Class::Mount => match retry_secs(detail) {
@@ -135,6 +139,9 @@ pub fn one_liner(class: Class, detail: &str, age: Option<Duration>) -> String {
             ),
             None => "The background service is not running.".into(),
         },
+        Class::StatusUnreadable => format!(
+            "The service's status file could not be read ({detail}). Update the app or check logs."
+        ),
         Class::DrainTimeout => "A job was stopped after the 6 h drain limit.".into(),
         Class::Other if detail.trim().is_empty() => "The service reported an error.".into(),
         Class::Other => detail.into(),
@@ -358,6 +365,15 @@ mod tests {
             "The background service is not running. Last update 4 min ago."
         );
         assert_eq!(one_liner(Class::Other, "disk full", None), "disk full");
+        assert_eq!(
+            one_liner(Class::StatusUnreadable, "unknown state \"x\"", None),
+            "The service's status file could not be read (unknown state \"x\"). Update the app or check logs."
+        );
+        assert_eq!(Class::StatusUnreadable.action(), Action::OpenLogs);
+        let unreadable = crate::state::parse_status("not json", SystemTime::now());
+        assert_eq!(current(&unreadable, None), Some(Class::StatusUnreadable));
+        let gone = Snapshot::bare(Status::Unknown);
+        assert_eq!(current(&gone, None), Some(Class::SupervisorDown));
         assert_eq!(Class::Mount.action(), Action::Retry);
         assert_eq!(Class::LimitsRefused.action(), Action::Settings);
         assert_eq!(Class::SupervisorDown.action(), Action::RestartService);
