@@ -230,10 +230,11 @@ fn off_page(host: Option<&ProfileV5>) -> (&'static str, bool) {
     }
 }
 
-/// A controlling supervisor runs the interim runner exactly while the pool is on and not paused
-/// and the Windows count is 1 or more.
-fn host_wanted(status: &Status, windows: u32) -> bool {
-    !matches!(status, Status::Off | Status::Paused) && windows >= 1
+/// A controlling supervisor runs the interim runner exactly while the desired state is On, the
+/// stored settings are not paused and the stored Windows count is 1 or more. These are its own
+/// inputs; the pool status lags them (Draining while Linux jobs finish after Off or Pause).
+fn host_wanted(desired: Desired, paused: bool, windows: u32) -> bool {
+    desired == Desired::On && !paused && windows >= 1
 }
 
 /// The interim runner card's second line. Under a controlling supervisor: why it is stopped
@@ -1802,7 +1803,11 @@ impl Dash {
         let p = self.pal();
         let (sym, word) = host_sym(h);
         let windows = self.settings.windows();
-        let what = host_line(h, windows, host_wanted(&self.snap.status, windows));
+        let what = host_line(
+            h,
+            windows,
+            host_wanted(self.desired, self.settings.paused(), windows),
+        );
         let frame = card_frame(&p).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
             ui.set_width(ui.available_width());
@@ -4010,15 +4015,36 @@ mod tests {
     }
 
     #[test]
-    fn the_runner_is_wanted_only_while_on_unpaused_with_a_windows_count() {
-        for (status, windows, want) in [
-            (Status::Idle, 1, true),
-            (Status::Running("j".into()), 2, true),
-            (Status::Idle, 0, false),
-            (Status::Off, 1, false),
-            (Status::Paused, 1, false),
+    fn the_runner_is_wanted_only_while_desired_on_unpaused_with_a_windows_count() {
+        // The pool status lags Off and Pause (Draining while Linux jobs finish): it is not an
+        // input. Desired, the stored paused flag and the stored count are.
+        for (desired, paused, windows, want) in [
+            (Desired::On, false, 1, true),
+            (Desired::On, false, 2, true),
+            (Desired::On, false, 0, false),
+            (Desired::On, true, 1, false),
+            (Desired::Off, false, 1, false),
+            (Desired::Off, true, 0, false),
         ] {
-            assert_eq!(host_wanted(&status, windows), want, "{status:?} {windows}");
+            assert_eq!(
+                host_wanted(desired, paused, windows),
+                want,
+                "{desired:?} paused={paused} count={windows}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_draining_pool_does_not_keep_the_runner_wanted() {
+        // Off or Pause while Linux jobs run: the status stays Draining, the runner is not wanted.
+        let busy = controlled("busy", "");
+        for (desired, paused) in [(Desired::Off, false), (Desired::On, true)] {
+            let wanted = host_wanted(desired, paused, 1);
+            assert_eq!(
+                host_line(&busy, 1, wanted),
+                "Finishes its job, then stops",
+                "{desired:?} paused={paused}"
+            );
         }
     }
 
@@ -4027,9 +4053,9 @@ mod tests {
         // Profile count 0 (the supervisor has no Windows slots), stored count 2: wanted.
         let h = controlled("busy", "");
         assert_eq!(h.count, 0);
-        assert!(host_wanted(&Status::Idle, 2));
+        assert!(host_wanted(Desired::On, false, 2));
         assert_eq!(
-            host_line(&h, 2, host_wanted(&Status::Idle, 2)),
+            host_line(&h, 2, host_wanted(Desired::On, false, 2)),
             "Interim runner on this PC"
         );
     }

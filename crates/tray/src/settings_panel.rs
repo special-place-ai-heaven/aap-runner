@@ -149,6 +149,11 @@ impl SettingsPanel {
         self.stored.windows_runner_count
     }
 
+    /// The stored `paused` flag.
+    pub fn paused(&self) -> bool {
+        self.stored.paused
+    }
+
     /// The supervisor starts and stops the interim runner, so the Windows row is a 0 / 1 control.
     fn windows_controlled(&self) -> bool {
         self.host.as_ref().is_some_and(ProfileV5::host_controlled)

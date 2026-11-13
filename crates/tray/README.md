@@ -231,7 +231,7 @@ addendum of the design doc.
   running. The interim runner's card names a stored Windows count on its second line
   (`Interim runner on this PC · Windows count 2 starts nothing yet`); under a controlling
   supervisor it never says that: stopped shows the reason with a capital (`Turned off: Windows
-  count 0`), busy while the runner is no longer wanted (Off, paused or count 0) `Finishes its job,
+  count 0`), busy while the runner is no longer wanted (desired state Off, stored `paused`, or stored count 0; the pool status, which stays Draining while Linux jobs finish, is not an input) `Finishes its job,
   then stops`, else `Interim runner on this PC`. The tiles, one Windows card
   (the interim runner) and the last 60 minutes fit the default height with every slot busy; more
   Windows cards scroll.
