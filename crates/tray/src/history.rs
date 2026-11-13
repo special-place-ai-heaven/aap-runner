@@ -13,6 +13,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const SAMPLES: usize = 60;
 pub const PROBLEMS: usize = 10;
+/// A recorded problem line is cut here, so one huge supervisor detail cannot push
+/// `history.json` past the 64 KiB read bound and blank the whole history.
+pub const LINE_CHARS: usize = 200;
 
 /// One pool sample at `sampled_at` (unix seconds).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -63,8 +66,9 @@ impl History {
         write_atomic(path, &serde_json::to_vec(self)?)
     }
 
-    /// Take a poll: a new sample when `sampled_at` advanced, a transition when the problem class
-    /// changed. Returns whether anything changed.
+    /// Take a poll: a new sample when `sampled_at` changed, a transition when the problem class
+    /// changed. Returns whether anything changed. `sampled_at` is the distro's clock, which gets
+    /// stepped back: an earlier one drops the stored samples after it (from the wrong clock).
     pub fn observe(
         &mut self,
         snap: &Snapshot,
@@ -75,8 +79,11 @@ impl History {
         let mut changed = false;
         if let Some(t) = snap.sampled_at.map(secs)
             && (snap.pool.cpu_cores.is_some() || snap.pool.mem_gib.is_some())
-            && self.samples.back().is_none_or(|s| t > s.t)
+            && self.samples.back().is_none_or(|s| t != s.t)
         {
+            while self.samples.back().is_some_and(|s| s.t >= t) {
+                self.samples.pop_back();
+            }
             self.samples.push_back(Sample {
                 t,
                 cores: snap.pool.cpu_cores,
@@ -102,7 +109,7 @@ impl History {
                     since: now,
                     until: None,
                     class,
-                    line: line.to_owned(),
+                    line: line.chars().take(LINE_CHARS).collect(),
                 });
                 if self.problems.len() > PROBLEMS {
                     self.problems.pop_front();
@@ -111,6 +118,32 @@ impl History {
             changed = true;
         }
         changed
+    }
+}
+
+/// Whether the mirror file is behind the memory: a failed save is retried on every poll
+/// until it succeeds, and only the first failure of a streak is reported.
+#[derive(Debug, Default)]
+pub struct Mirror {
+    dirty: bool,
+    failing: bool,
+}
+
+impl Mirror {
+    /// `changed` is what `observe` returned. The error is `Some` only on the first failure.
+    pub fn sync(&mut self, history: &History, path: &Path, changed: bool) -> Option<io::Error> {
+        self.dirty |= changed;
+        if !self.dirty {
+            return None;
+        }
+        match history.save(path) {
+            Ok(()) => {
+                self.dirty = false;
+                self.failing = false;
+                None
+            }
+            Err(e) => (!std::mem::replace(&mut self.failing, true)).then_some(e),
+        }
     }
 }
 
@@ -150,9 +183,10 @@ mod tests {
         assert_eq!(h.samples.front().unwrap().cores, Some(10.0));
         assert_eq!(h.samples.back().unwrap().t, 1000 + 60 * 69);
         assert!(
-            !h.observe(&sampled(10, 1.0), None, "", at(0)),
-            "older sample"
+            h.observe(&sampled(10, 1.0), None, "", at(0)),
+            "an older sample is a stepped-back clock: it replaces the later ones"
         );
+        assert_eq!(h.samples.len(), 1);
         let no_pool = Snapshot {
             sampled_at: Some(at(999_999)),
             ..Snapshot::bare(Status::Idle)
@@ -161,6 +195,76 @@ mod tests {
             !h.observe(&no_pool, None, "", at(0)),
             "no numbers, no sample"
         );
+    }
+
+    #[test]
+    fn a_clock_stepped_back_does_not_freeze_the_chart() {
+        let mut h = History::default();
+        for t in [1000, 1060, 1120, 1180] {
+            assert!(h.observe(&sampled(t, 1.0), None, "", at(0)));
+        }
+        // The distro clock steps back to 1070: the samples after it were from the wrong clock.
+        assert!(h.observe(&sampled(1070, 2.0), None, "", at(0)));
+        let ts: Vec<u64> = h.samples.iter().map(|s| s.t).collect();
+        assert_eq!(ts, [1000, 1060, 1070]);
+        assert!(!h.observe(&sampled(1070, 3.0), None, "", at(0)), "repeat");
+        assert!(
+            h.observe(&sampled(1130, 4.0), None, "", at(0)),
+            "keeps going"
+        );
+        // Back onto a stored second: replaced, not duplicated.
+        assert!(h.observe(&sampled(1060, 5.0), None, "", at(0)));
+        let ts: Vec<u64> = h.samples.iter().map(|s| s.t).collect();
+        assert_eq!(ts, [1000, 1060]);
+        assert_eq!(h.samples.back().unwrap().cores, Some(5.0));
+    }
+
+    #[test]
+    fn a_huge_problem_line_is_cut_on_a_char_boundary() {
+        let mut h = History::default();
+        let long = "\u{e9}".repeat(10_000);
+        h.observe(
+            &Snapshot::bare(Status::Idle),
+            Some(Class::Other),
+            &long,
+            at(1),
+        );
+        let line = &h.problems[0].line;
+        assert_eq!(line.chars().count(), LINE_CHARS);
+        assert!(line.chars().all(|c| c == '\u{e9}'));
+        let dir = crate::state::temp_base("history-cap");
+        let path = dir.join("history.json");
+        h.save(&path).unwrap();
+        assert_eq!(History::load(&path), h);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_save_is_retried_until_it_works_and_logged_once() {
+        let dir = crate::state::temp_base("history-retry");
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, "a file where the folder should be").unwrap();
+        let path = blocker.join("history.json");
+        let mut h = History::default();
+        let mut mirror = Mirror::default();
+        let idle = Snapshot::bare(Status::Idle);
+        let changed = h.observe(&idle, Some(Class::Mount), "disk", at(100));
+        assert!(mirror.sync(&h, &path, changed).is_some(), "first failure");
+        assert!(
+            mirror.sync(&h, &path, false).is_none(),
+            "same streak, not again"
+        );
+        std::fs::remove_file(&blocker).unwrap();
+        assert!(mirror.sync(&h, &path, false).is_none());
+        assert_eq!(
+            History::load(&path),
+            h,
+            "saved by the retry, nothing changed since"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(mirror.sync(&h, &path, false).is_none());
+        assert!(!path.exists(), "clean again: no more writes");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

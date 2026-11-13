@@ -362,6 +362,7 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut last_app = None;
     let history_path = History::path();
     let mut history = History::load(&history_path);
+    let mut mirror = history::Mirror::default();
     let mut window: Option<Child> = None;
 
     loop {
@@ -493,9 +494,8 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
             let age = snap.updated.and_then(|u| now.duration_since(u).ok());
             let line = class.map(|c| problem::one_liner(c, detail, age));
             in_problem = class.is_some();
-            if history.observe(&snap, class, line.as_deref().unwrap_or(""), now)
-                && let Err(e) = history.save(&history_path)
-            {
+            let changed = history.observe(&snap, class, line.as_deref().unwrap_or(""), now);
+            if let Some(e) = mirror.sync(&history, &history_path, changed) {
                 state::log(base, &format!("write history failed: {e}"));
             }
             current = (snap.status.sym(), snap.busy());
@@ -621,7 +621,7 @@ mod tests {
             tooltip(&Snapshot::bare(Status::Unknown), None),
             "AAP Runner \u{b7} Service not running"
         );
-        let now = SystemTime::now();
+        let now = state::parse_rfc3339("2099-01-01T00:00:30Z").unwrap();
         let old = parse_status(
             r#"{"state":"running","job":"test-pg","updated":"2099-01-01T00:00:00Z","runner_count":3}"#,
             now,

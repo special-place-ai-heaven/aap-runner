@@ -25,8 +25,14 @@ admin-written.
 | `logs\` | supervisor | opened by "Open logs" via `C:\Windows\explorer.exe` (absolute path) |
 
 - `inbox\` missing: `Not installed`; Start/Stop/Restart, Pause/Resume and Settings are disabled.
-- `status.json` missing, unparseable, larger than 64 KiB (not read), or `updated` older than
-  3 minutes: `Unknown (supervisor not running)`.
+- `status.json` missing, or `updated` older than 3 minutes (or, for a file too large or not UTF-8,
+  not modified for 3 minutes): `Unknown (supervisor not running)`; the error panel says the service
+  is not running and offers Restart service.
+- `status.json` fresh but unusable by this build (larger than 64 KiB, not valid JSON for this build, a
+  bad `updated`, an unknown `state` word, or `updated` more than 3 minutes in the future, a stepped-back
+  PC clock; up to 3 minutes of skew is accepted): `Unknown (status file unreadable)`; the error panel
+  says the file could not be read and why, and offers Open logs, not Restart service. Copy diagnostics
+  carries the reason.
 - `settings.json` missing, unparseable, out of range, or with fewer than 1 CPU / 1 GiB per runner:
   defaults `1 runner x 26 CPUs x 72 GiB / not paused`.
 - 1 to 5 runners. `job_cpus` and `job_memory_gib` are the pool caps, not per job: the manager divides
@@ -195,7 +201,7 @@ addendum of the design doc.
   when the state enters an error class; the `1 problem` button, an error symbol, `--dashboard --problem`
   and a left click in an error state reopen it. It holds the one-liner, raw detail and since, the class's
   primary action and Copy diagnostics, the last 20 log lines, the last 10 problems, and version, paths,
-  Verify install, and Repair install. An old manager's primary action is Repair install.
+  Verify install, and Repair install. An old manager's primary action is Repair install. An unreadable status file's is Open logs.
 - **Keyboard:** Tab runs down the left column, then the right. F6 jumps to the first control of the other
   column. Esc leaves the error panel, then closes the window. `--settings` puts the focus on Start/Stop;
   with a problem the initial focus is the problem button.
