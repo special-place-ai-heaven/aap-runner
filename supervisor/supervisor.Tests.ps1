@@ -1907,6 +1907,61 @@ Describe 'aap-runner host supervisor' {
             $script:calls | Should -Contain 'task AAP-Win-Interim-Runner'
         }
 
+        It 'the first cycle of a run writes on and never off (manager tiers <tiers>)' -Tag 'host-wanted-accepted' -TestCases @(
+            @{ tiers = 'unknown'; value = $null }
+            @{ tiers = 'known'; value = $true }
+        ) {
+            Initialize-AapRuntime
+            $AapRt.ManagerTiers = $value
+            [IO.File]::WriteAllText($script:control, '{"schema":1,"desired":"on"}')
+            Invoke-AapCycle
+            Get-AapControl | Should -BeExactly '{"schema":1,"desired":"on"}'
+            Get-AapLogText | Should -Not -Match 'host runner off'
+            $script:calls | Should -Contain 'task AAP-Win-Interim-Runner'
+        }
+
+        It 'stays controllable while the Linux pool is in an error state' {
+            Initialize-AapRuntime
+            $script:mountResult = 1
+            Invoke-AapCycle
+            (Get-AapStatusFile).state | Should -Be 'error'
+            Get-AapControl | Should -BeExactly '{"schema":1,"desired":"on"}'
+            Write-AapSettingsFile (Get-AapV4Text @{ windows_runner_count = 0; linux_light_count = 8 })
+            $script:clock.Now = $script:clock.Now.AddSeconds(30)
+            Invoke-AapCycle
+            Get-AapControl | Should -BeExactly '{"schema":1,"desired":"off"}'
+        }
+
+        It 'a missing settings file means Windows count 0' -Tag 'host-wanted-count' {
+            Remove-Item -LiteralPath (Join-Path $AapCfg.DataDir 'inbox\settings.json')
+            Sync-AapHostRunner
+            Get-AapControl | Should -BeExactly '{"schema":1,"desired":"off"}'
+            Get-AapLogText | Should -Match ([regex]::Escape('host runner off (turned off: Windows count 0)'))
+        }
+
+        It 'a refused settings file (<case>) leaves a <control> control file alone and starts nothing' -Tag 'host-wanted-accepted' -TestCases @(
+            @{ case = 'not JSON'; text = '{nope'; control = 'on'; why = 'logon task \AAP-Win-Interim-Runner is ready, not running' }
+            @{ case = 'Windows count 9'; text = $null; control = 'off'; why = 'turned off: settings not accepted' }
+            @{ case = 'not JSON'; text = '{nope'; control = 'missing'; why = 'logon task \AAP-Win-Interim-Runner is ready, not running' }
+        ) {
+            if ($null -eq $text) { $text = Get-AapV4Text @{ windows_runner_count = 9; linux_light_count = 8 } }
+            $want = $null
+            if ($control -ne 'missing') {
+                $want = '{"schema":1,"desired":"' + $control + '"}'
+                [IO.File]::WriteAllText($script:control, $want)
+            }
+            Write-AapSettingsFile $text
+            Sync-AapHostRunner
+            if ($null -eq $want) { Test-Path -LiteralPath $script:control | Should -BeFalse }
+            else { Get-AapControl | Should -BeExactly $want }
+            $script:calls | Should -Not -Contain 'task AAP-Win-Interim-Runner'
+            Get-AapLogText | Should -Not -Match 'host runner (on|off)'
+            Write-AapStatus 'idle' '' ''
+            $w = (Get-AapV5File).profiles[1]
+            $w.unavailable_reason | Should -BeExactly $why
+            Test-AapV5Contract | Should -Be 'ok'
+        }
+
         It 'writes off and starts nothing when <case>' -Tag 'host-wanted-desired', 'host-wanted-paused', 'host-wanted-count' -TestCases @(
             @{ case = 'runners are off'; state = '{"desired":"off"}'; over = @{} }
             @{ case = 'paused'; state = '{"desired":"on"}'; over = @{ paused = $true } }

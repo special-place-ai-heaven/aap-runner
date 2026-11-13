@@ -420,11 +420,27 @@ function Read-AapDesired {
 # (ManagerTiers). A newer schema, and a schema 4 file this supervisor cannot
 # run, is refused and kept in SettingsWhy for the status detail.
 function Read-AapSettingsFile {
+    $accepted = @(1, 2)
+    if ($AapRt.Cap) { $accepted = @(1, 2, 3) } elseif ($AapRt.ManagerTiers -eq $true) { $accepted = @(1, 2, 4) }
+    $r = Test-AapSettingsFile $accepted
+    if ($null -ne $r.Settings) { $AapRt.Settings = $r.Settings }
+    $AapRt.SettingsWhy = $r.Newer
+    if ($r.Warn -and $r.Warn -ne $AapRt.LastSettingsWarn) { Write-AapLog "WARN $($r.Warn); keeping the last valid settings" }
+    $AapRt.LastSettingsWarn = $r.Warn
+    return $AapRt.Settings
+}
+
+# The checks of Read-AapSettingsFile against the schemas in $Accepted, changing
+# nothing: @{ Settings; Warn; Newer }. Settings is the default set when the file
+# is missing and $null when the file is refused (Warn says why). Sync-AapHostRunner
+# also reads through this, without the manager-tier gate.
+function Test-AapSettingsFile($Accepted) {
     $obj = Read-AapJsonFile 'settings.json'
+    $set = $null
     $warn = $null
     $newer = $null
     if ($null -eq $obj) {
-        $AapRt.Settings = @{ Limits = $null; Paused = $false; Profiles = $null; Schema = $null }
+        $set = @{ Limits = $null; Paused = $false; Profiles = $null; Schema = $null }
     } elseif ($obj -is [string]) {
         $warn = $obj
     } else {
@@ -433,8 +449,7 @@ function Read-AapSettingsFile {
         $optional = @('schema', 'io_percent', 'sharing', 'windows_runner_count')
         $schema = $null
         if ($names -ccontains 'schema') { $schema = $obj.schema }
-        $accepted = @(1, 2)
-        if ($AapRt.Cap) { $accepted = @(1, 2, 3) } elseif ($AapRt.ManagerTiers -eq $true) { $accepted = @(1, 2, 4) }
+        $accepted = @($Accepted)
         $whole = ($schema -is [int] -or $schema -is [long])
         if ($whole -and $schema -gt 2 -and $accepted -notcontains $schema) {   # check:settings-newer
             $warn = "settings.json schema $schema is newer than this supervisor accepts ($($accepted -join ', '))"
@@ -442,7 +457,7 @@ function Read-AapSettingsFile {
         } elseif ($whole -and ($schema -eq 3 -or $schema -eq 4)) {
             if ($schema -eq 3) { $warn = ConvertFrom-AapSettingsV3 $obj } else { $warn = ConvertFrom-AapSettingsV4 $obj }
             if ($warn -isnot [string]) {
-                $AapRt.Settings = $warn
+                $set = $warn
                 $warn = $null
             } elseif ($schema -eq 4) {
                 $newer = $warn
@@ -477,7 +492,7 @@ function Read-AapSettingsFile {
             }
             if (-not $warn) {
                 if ($null -ne $io) { $io = [int]$io }
-                $AapRt.Settings = @{
+                $set = @{
                     Limits   = @{ RunnerCount = [int]$obj.runner_count; JobCpus = [int]$obj.job_cpus; JobMemoryGib = [int]$obj.job_memory_gib; IoPercent = $io; Sharing = $sharing }
                     Paused   = [bool]$obj.paused
                     Profiles = @{ Linux = [int]$obj.runner_count; Windows = 0; ShareMode = 'even'; LinuxShare = $null; WindowsShare = $null; Reserve = 10; LinuxBackend = 'wsl-legacy'; LeaseHours = 6 }
@@ -486,10 +501,7 @@ function Read-AapSettingsFile {
             }
         }
     }
-    $AapRt.SettingsWhy = $newer
-    if ($warn -and $warn -ne $AapRt.LastSettingsWarn) { Write-AapLog "WARN $warn; keeping the last valid settings" }
-    $AapRt.LastSettingsWarn = $warn
-    return $AapRt.Settings
+    return @{ Settings = $set; Warn = $warn; Newer = $newer }
 }
 
 # Schema 3 (settings-v3.schema.json and its validate.py rules): exactly these
@@ -806,6 +818,7 @@ function New-AapV5Profile([string]$Profile, $Doc, $St, $Live, [string]$StorageSt
                 # R2.2: a runner that is not wanted says why it is off; a wanted one
                 # keeps the missing piece, plus a failed task start's error text.
                 $off = Get-AapHostRunnerOff
+                if ($null -eq $off -and (Get-AapHostControlText) -ceq '{"schema":1,"desired":"off"}') { $off = 'turned off: settings not accepted' }
                 if ($off) { $o.unavailable_reason = $off }
                 elseif ($AapRt.HostStartErr) { $o.unavailable_reason = "$($h.Why); $($AapRt.HostStartErr)" }
             }
@@ -852,14 +865,26 @@ function Test-AapHostRunnerShown($Mine) {
 }
 
 # R2.2 wanted rule (status-settings.md, Windows host control): '' when the
-# interim runner is wanted, else the turned-off reason, first match. Reads the
-# accepted settings' Windows count, not the count the status reports.
+# interim runner is wanted, else the turned-off reason, first match; $null (no
+# decision) when settings.json is present but refused. Paused and the Windows
+# count come from the inbox file itself every cycle, checked like the On path
+# but without the manager-tier gate, not from the applied $AapRt.Settings (empty
+# at every start and Off -> On) nor from the count the status reports.
 function Get-AapHostRunnerOff {
     if ((Read-AapDesired) -cne 'on') { return 'turned off: runners are off' }   # check:host-wanted-desired
-    if ($AapRt.Settings.Paused) { return 'turned off: paused' }   # check:host-wanted-paused
-    $p = $AapRt.Settings.Profiles
+    $accepted = @(1, 2, 4)
+    if ($AapRt.Cap) { $accepted = @(1, 2, 3) }
+    $s = (Test-AapSettingsFile $accepted).Settings
+    if ($null -eq $s) { return $null }   # check:host-wanted-accepted
+    if ($s.Paused) { return 'turned off: paused' }   # check:host-wanted-paused
+    $p = $s.Profiles
     if ($null -eq $p -or [int]$p.Windows -lt 1) { return 'turned off: Windows count 0' }   # check:host-wanted-count
     return ''
+}
+
+# host-runner.json as written, or $null when it is missing or unreadable.
+function Get-AapHostControlText {
+    try { return [IO.File]::ReadAllText((Join-Path $AapCfg.DataDir 'host-runner.json')) } catch { return $null }
 }
 
 # R2.2: keep host-runner.json at the wanted value and start the logon task when
@@ -875,11 +900,11 @@ function Sync-AapHostRunner {
     }
     if (-not (Test-AapHostRunnerShown $mine)) { return }
     $off = Get-AapHostRunnerOff
+    # Refused settings: no decision this cycle; the control file stays as it is.
+    if ($null -eq $off) { return }
     $want = $(if ($off) { 'off' } else { 'on' })
-    $path = Join-Path $AapCfg.DataDir 'host-runner.json'
     $text = '{"schema":1,"desired":"' + $want + '"}'
-    $have = $null
-    try { $have = [IO.File]::ReadAllText($path) } catch { $have = $null }
+    $have = Get-AapHostControlText
     $name = $AapCfg.HostRunnerTask
     $task = $null
     if (-not $off) { $task = Get-ScheduledTask -TaskPath '\' -TaskName $name -ErrorAction SilentlyContinue }

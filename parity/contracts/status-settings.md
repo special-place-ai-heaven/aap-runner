@@ -257,10 +257,14 @@ it did before revision 4. `windows-host` is never the Linux profile's backend.
 Revision 7 (R2.2, 2026-11-13): the supervisor starts and stops the interim runner; the tray controls
 it through the controls it already has. No settings schema changes.
 
-- **Wanted.** The runner is wanted exactly when `inbox/state.json` says `on`, the accepted settings are
-  not paused, and the accepted settings' Windows count (`windows_runner_count` of schema 3 or 4
-  settings) is at least 1. Schema 1 or 2 settings, or no accepted settings, count as 0. It is the
-  accepted count, not the profile's reported `count`, which stays as revision 4 describes.
+- **Wanted.** The runner is wanted exactly when `inbox/state.json` says `on`, `inbox/settings.json` is
+  not paused, and its Windows count (`windows_runner_count` of schema 3 or 4 settings) is at least 1.
+  The supervisor reads both from the inbox file itself every cycle, with every settings check except
+  the one that waits for the manager's tiers, so the switch works on the first cycle, before the Linux
+  pool is up and while it is in error. Schema 1 or 2 settings, or no file, count as 0 (not paused). A
+  file that is present but refused gives no decision that cycle: the control file stays as it is and
+  nothing is started. It is the file's count, not the profile's reported `count`, which stays as
+  revision 4 describes.
 - **The control file.** The supervisor keeps `host-runner.json` beside `status.json`
   (`{"schema":1,"desired":"on"}` or `"off"`, written atomically, only when it differs), checked every
   cycle in every mode, Off included (no `wsl.exe` call). The start script reads it at start (off: exit 0
@@ -275,7 +279,8 @@ it through the controls it already has. No settings schema changes.
 - **Status.** Every `windows-host` profile carries `host_control: true` (a boolean, only on a
   `windows-host` profile; absent means an older supervisor that only reports). A `stopped` runner that
   is not wanted has exactly one `unavailable_reason`, the first that applies: `turned off: runners are
-  off`, `turned off: paused`, `turned off: Windows count 0`. A wanted, stopped runner keeps the missing
+  off`, `turned off: paused`, `turned off: Windows count 0`; with a refused settings file and the control file
+  off, `turned off: settings not accepted`. A wanted, stopped runner keeps the missing
   piece; after a failed task start it adds `; ` and the error. A busy runner that is no longer wanted
   stays `busy` until its job ends.
 
