@@ -176,8 +176,10 @@ function Initialize-AapRuntime {
     $AapRt.Vm = @{ linux = $null; windows = $null }
     $AapRt.VmWhy = @{ linux = 'capacity module not installed'; windows = 'capacity module not installed' }
     # Interim Windows runner control (Sync-AapHostRunner): the last failed task
-    # start's error text, and the last DryRun line (logged once, not every cycle).
+    # start's error text, the last control failure and the last DryRun line
+    # (each logged once, not every cycle).
     $AapRt.HostStartErr = ''
+    $AapRt.HostSyncErr = ''
     $AapRt.HostDryLog = $null
     # Per VM profile: $null, or the active generation @{ Id; State; BaseSha256;
     # MemOverheadMib; CloneGib; ScratchGib; IoMbps } (catalog and pin).
@@ -926,12 +928,23 @@ function Sync-AapHostRunner {
         $AapRt.Retry.Remove('host-runner-start')
         return
     }
+    # A start is pending until the runner reports online or busy (the script may
+    # exit at once): the next start waits on the failure backoff until then.
+    if ($AapRt.Retry['host-runner-start'] -and @('online', 'busy') -ccontains (Get-AapHostRunner).State) {   # check:host-start-pending
+        $AapRt.Retry.Remove('host-runner-start')
+    }
     if (-not $start -or -not (Test-AapRetryDue 'host-runner-start')) { return }   # check:host-start-running
     try {
         Start-ScheduledTask -TaskPath '\' -TaskName $name -ErrorAction Stop
         $AapRt.HostStartErr = ''
         Write-AapLog "started logon task \$name"
-        Clear-AapRetry 'host-runner-start'
+        $r = $AapRt.Retry['host-runner-start']
+        if ($null -eq $r) {
+            $r = @{ Failures = 0; Msg = $null; At = $null }
+            $AapRt.Retry['host-runner-start'] = $r
+        }
+        $r.Failures++
+        $r.At = (Get-AapNow).AddSeconds((Get-AapBackoffDelay $r.Failures))
     } catch {
         $AapRt.HostStartErr = "starting logon task \$name failed: $($_.Exception.Message)"
         Register-AapRetryFailure 'host-runner-start' $AapRt.HostStartErr
@@ -2414,7 +2427,16 @@ function Get-AapAction([string]$Desired, [string]$Mode) {
 # and Vmmem can exit. The status file is refreshed every HeartbeatSeconds.
 function Invoke-AapCycle {
     # R2.2: the interim Windows runner follows the same switch, in every mode.
-    Sync-AapHostRunner
+    # A failure there (a locked host-runner.json) is logged once per message and
+    # retried next cycle; it never skips the rest of the cycle.
+    try {
+        Sync-AapHostRunner
+        $AapRt.HostSyncErr = ''
+    } catch {
+        $m = "interim Windows runner control failed: $($_.Exception.Message)"
+        if ($m -cne $AapRt.HostSyncErr) { Write-AapLog $m }   # check:host-sync-log
+        $AapRt.HostSyncErr = $m
+    }
     $desired = Read-AapDesired
     $action = Get-AapAction $desired $AapRt.Mode
     $now = Get-AapNow

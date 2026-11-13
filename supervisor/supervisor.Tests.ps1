@@ -2019,6 +2019,48 @@ Describe 'aap-runner host supervisor' {
             $AapRt.HostStartErr | Should -BeExactly ''
         }
 
+        It 'holds a start as pending until the runner is seen, then resets the backoff' -Tag 'host-start-pending' {
+            $starts = { @($script:calls | Where-Object { $_ -ceq 'task AAP-Win-Interim-Runner' }).Count }
+            Sync-AapHostRunner
+            Sync-AapHostRunner
+            & $starts | Should -Be 1 -Because 'the script exited at once and the task is Ready again'
+            $script:clock.Now = $script:clock.Now.AddSeconds(10)
+            Sync-AapHostRunner
+            Sync-AapHostRunner
+            & $starts | Should -Be 2
+            $log = Get-AapLogText
+            @([regex]::Matches($log, 'started logon task')).Count | Should -Be 2
+            $log | Should -Not -Match 'failed|failure'
+            $AapRt.HostStartErr | Should -BeExactly ''
+            $script:hostTask = 'Running'
+            $script:hostProcs = @([pscustomobject]@{ Name = 'Runner.Listener.exe'; Path = (Join-Path $AapCfg.HostRunnerDir 'bin\Runner.Listener.exe') })
+            Sync-AapHostRunner
+            $script:hostTask = 'Ready'
+            $script:hostProcs = @()
+            Sync-AapHostRunner
+            & $starts | Should -Be 3 -Because 'a runner seen online clears the backoff'
+            Sync-AapHostRunner
+            Write-AapStateFile '{"desired":"off"}'
+            Sync-AapHostRunner
+            Write-AapStateFile '{"desired":"on"}'
+            Sync-AapHostRunner
+            & $starts | Should -Be 4 -Because 'off and on again resets the backoff'
+        }
+
+        It 'a failing control-file write skips only the runner control, logs once and retries' -Tag 'host-sync-log' {
+            Write-AapStateFile '{"desired":"off"}'
+            Mock Write-AapJsonAtomic -ParameterFilter { $Name -eq 'host-runner.json' } { throw 'sharing violation' }
+            Invoke-AapCycle
+            Invoke-AapCycle
+            Test-Path -LiteralPath $script:control | Should -BeFalse
+            @([regex]::Matches((Get-AapLogText), 'interim Windows runner control failed: sharing violation')).Count | Should -Be 1
+            (Get-AapStatusFile).state | Should -Be 'off'
+            Mock Write-AapJsonAtomic -ParameterFilter { $Name -eq 'host-runner.json' } { [IO.File]::WriteAllText($script:control, '{"schema":1,"desired":"off"}') }
+            Invoke-AapCycle
+            Get-AapControl | Should -BeExactly '{"schema":1,"desired":"off"}'
+            $AapRt.HostSyncErr | Should -BeExactly ''
+        }
+
         It 'does nothing without the install folder or with a Windows VM backend' -TestCases @(
             @{ case = 'folder' }
             @{ case = 'vm' }
