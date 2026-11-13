@@ -98,7 +98,7 @@ Left click on the icon opens the same window.
 
 - Polls `status.json` every 5 s. Restart writes `off`, waits up to 15 min for `state: off`, then writes `on`.
   It always ends with `on` unless the owner changed it meanwhile: a timeout, a write error or a status that
-  turns Unknown also writes `on`, and for 5 min the status line and tooltip add `Restart timed out after
+  reads Unknown on two polls in a row (one is ridden out) also writes `on`, and for 5 min the status line and tooltip add `Restart timed out after
   15 min; runners left on` (or the matching reason) to the state (`Idle · 12 runners … · Restart timed out…`
   in the menu, `AAP Runner · Idle · Restart timed out…` in the tooltip; the state is never replaced); an `on` read back during the wait (Start in the
   window) ends the wait with nothing more written; Quit (or the update hand-off) while a restart waits writes

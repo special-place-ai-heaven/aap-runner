@@ -700,18 +700,21 @@ pub enum Restart {
 
 /// Write off, wait until the supervisor reports `off`, then write on. Whatever stops the wait
 /// (timeout, status unknown) writes on, so a restart never leaves the pool off; only an `on`
-/// the owner wrote during the wait ends it without a write.
+/// the owner wrote during the wait ends it without a write. One unknown read is ridden out (the
+/// status file can be mid-replace); two in a row end the wait.
 pub fn restart(base: &Path, poll: Duration, timeout: Duration) -> io::Result<Restart> {
     write_desired(base, Desired::Off)?;
     let deadline = Instant::now() + timeout;
+    let mut unknown = false;
     let outcome = loop {
         if read_desired(base) == Desired::On {
             return Ok(Restart::Overridden);
         }
         match read_status(base, SystemTime::now()).status {
             Status::Off => break Restart::Done,
-            Status::Unknown => break Restart::Unknown,
-            _ => {}
+            Status::Unknown if unknown => break Restart::Unknown,
+            Status::Unknown => unknown = true,
+            _ => unknown = false,
         }
         if Instant::now() >= deadline {
             break Restart::TimedOut;
@@ -1152,6 +1155,27 @@ mod tests {
             restart(&base, Duration::ZERO, Duration::from_secs(60)).unwrap(),
             Restart::Unknown
         );
+        assert_eq!(read_desired(&base), Desired::On);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn restart_rides_out_one_unknown_status_read() {
+        let base = temp_base("restart-blip");
+        // The first read finds no status.json; the supervisor's `off` lands before the second.
+        let supervisor = {
+            let base = base.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(20));
+                let fresh = rfc(SystemTime::now());
+                fs::write(base.join("status.json"), json("off", &fresh)).unwrap();
+            })
+        };
+        assert_eq!(
+            restart(&base, Duration::from_millis(300), Duration::from_secs(30)).unwrap(),
+            Restart::Done
+        );
+        supervisor.join().unwrap();
         assert_eq!(read_desired(&base), Desired::On);
         fs::remove_dir_all(&base).unwrap();
     }
