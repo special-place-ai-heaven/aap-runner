@@ -1438,13 +1438,13 @@ impl Dash {
                 &p,
                 p.bg,
                 problem.is_some(),
-                format!("State, {}", sym.label()),
+                format!("State, {}", self.snap.label()),
             );
             if r.clicked() && problem.is_some() {
                 self.show_panel();
             }
             ui.label(
-                RichText::new(sym.label())
+                RichText::new(self.snap.label())
                     .font(FontId::new(16.0, semibold()))
                     .color(p.state(sym)),
             );

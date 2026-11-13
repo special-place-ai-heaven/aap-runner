@@ -267,6 +267,16 @@ impl Snapshot {
         valid_run_url(&self.run_url).then_some(self.run_url.as_str())
     }
 
+    /// The state word of the header and the tooltip. A status file this build cannot read is
+    /// not a service that stopped.
+    pub fn label(&self) -> &'static str {
+        if self.unreadable && self.status == Status::Unknown {
+            "Status unreadable"
+        } else {
+            self.status.sym().label()
+        }
+    }
+
     fn status_text(&self) -> String {
         match &self.status {
             Status::Running(job) if !self.repo.is_empty() => {

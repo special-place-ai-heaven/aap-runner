@@ -88,12 +88,21 @@ fn cap_units(s: &str, max: usize) -> String {
     out
 }
 
+/// `AAP Runner · Idle · Could not turn the pool off: <reason>`: the state word, then what the
+/// last failed action tells the owner.
+fn notice_tip(label: &str, notice: &str) -> String {
+    cap_units(
+        &format!("AAP Runner \u{b7} {label} \u{b7} {notice}"),
+        TOOLTIP_UNITS,
+    )
+}
+
 /// One line: `AAP Runner · 2/3 busy · 14 cores · 41 GiB · Workspace, Backend Tests`,
 /// `AAP Runner · Idle · 0/3 busy`, `AAP Runner · Error · <one-liner>`,
 /// `AAP Runner · Paused · 1 job finishing`. Job titles are cut to fit 127 UTF-16 units.
 fn tooltip(snap: &Snapshot, problem_line: Option<&str>) -> String {
     let (busy, runners) = (snap.busy(), snap.runners());
-    let label = snap.status.sym().label();
+    let label = snap.label();
     let body = match &snap.status {
         Status::Running(job) => {
             let mut t = format!("{busy}/{runners} busy");
@@ -614,23 +623,21 @@ fn run_tray(base: &Path) -> Result<(), Box<dyn std::error::Error>> {
                 .as_ref()
                 .filter(|(_, at)| at.elapsed() < NOTICE_TTL)
                 .map(|(msg, _)| msg.as_str());
-            let text = if busy {
-                "Restarting\u{2026}".to_string()
-            } else if let Some(msg) = live_notice {
-                msg.to_string()
-            } else {
-                snap.line()
+            // The state stays readable: a notice is added to it, never shown in its place.
+            let text = match (busy, live_notice) {
+                (true, _) => "Restarting\u{2026}".to_string(),
+                (false, Some(msg)) => format!("{} \u{b7} {msg}", snap.line()),
+                (false, None) => snap.line(),
             };
             if shown_text.as_ref() != Some(&text) {
                 status_item.set_text(&text);
                 shown_text = Some(text);
             }
-            let tip = if busy {
-                "AAP Runner \u{b7} Restarting\u{2026}".to_string()
-            } else if let Some(msg) = live_notice {
-                cap_units(&format!("AAP Runner \u{b7} {msg}"), TOOLTIP_UNITS)
-            } else {
-                tooltip(&snap, line.as_deref())
+            // With a notice the tooltip keeps the state word and drops the detail: both fit.
+            let tip = match (busy, live_notice) {
+                (true, _) => "AAP Runner \u{b7} Restarting\u{2026}".to_string(),
+                (false, Some(msg)) => notice_tip(snap.label(), msg),
+                (false, None) => tooltip(&snap, line.as_deref()),
             };
             if shown_tip.as_ref() != Some(&tip) {
                 let _ = tray.set_tooltip(Some(&tip));
@@ -800,6 +807,24 @@ mod tests {
         assert_eq!(
             dashboard_title(),
             format!("AAP Runner \u{b7} v0.5.0 ({})", env!("AAP_TRAY_COMMIT"))
+        );
+    }
+
+    #[test]
+    fn a_notice_keeps_the_state_word_and_an_unreadable_status_is_named() {
+        assert_eq!(
+            notice_tip("Idle", "Could not turn the pool off: denied"),
+            "AAP Runner \u{b7} Idle \u{b7} Could not turn the pool off: denied"
+        );
+        assert!(notice_tip("Idle", &"x".repeat(300)).encode_utf16().count() <= TOOLTIP_UNITS);
+        let now = SystemTime::now();
+        let bad = state::parse_status(r#"{"state":"idle","updated":"not a time"}"#, now);
+        assert_eq!(bad.label(), "Status unreadable");
+        assert_eq!(tooltip(&bad, None), "AAP Runner \u{b7} Status unreadable");
+        let gone = Snapshot::bare(Status::Unknown);
+        assert_eq!(
+            tooltip(&gone, None),
+            "AAP Runner \u{b7} Service not running"
         );
     }
 

@@ -30,7 +30,7 @@ admin-written.
   is not running and offers Restart service.
 - `status.json` fresh but unusable by this build (larger than 64 KiB, not valid JSON for this build, a
   bad `updated`, an unknown `state` word, or `updated` more than 3 minutes in the future, a stepped-back
-  PC clock; up to 3 minutes of skew is accepted): `Unknown (status file unreadable)`; the error panel
+  PC clock; up to 3 minutes of skew is accepted): `Unknown (status file unreadable)` in the menu, `Status unreadable` as the state word of the header and the tooltip (not `Service not running`); the error panel
   says the file could not be read and why, and offers Open logs, not Restart service. Copy diagnostics
   carries the reason.
 - `settings.json` missing, unparseable, out of range, or with fewer than 1 CPU / 1 GiB per runner:
@@ -98,11 +98,13 @@ Left click on the icon opens the same window.
 
 - Polls `status.json` every 5 s. Restart writes `off`, waits up to 15 min for `state: off`, then writes `on`.
   It always ends with `on` unless the owner changed it meanwhile: a timeout, a write error or a status that
-  turns Unknown also writes `on`, and the status line and tooltip then read `Restart timed out after 15 min;
-  runners left on` (or the matching reason) for 5 min; an `on` read back during the wait (Start in the
+  turns Unknown also writes `on`, and for 5 min the status line and tooltip add `Restart timed out after
+  15 min; runners left on` (or the matching reason) to the state (`Idle · 12 runners … · Restart timed out…`
+  in the menu, `AAP Runner · Idle · Restart timed out…` in the tooltip; the state is never replaced); an `on` read back during the wait (Start in the
   window) ends the wait with nothing more written; Quit (or the update hand-off) while a restart waits writes
   `on` first.
-- A Start, Stop, Pause or Open logs that fails shows its reason the same way (status line and tooltip, 5 min)
+- A Start, Stop, Pause or Open logs that fails shows its reason the same way (added to the status line and
+  tooltip, 5 min)
   and in `inbox\tray.log`; nothing shows the unwritten value as the state.
 - Pause/Resume flips `paused` in `settings.json`; the label follows the file. When `settings.json` exists but
   the tray rejects it (bad value, unknown key in schema 3/4, over 64 KiB) Pause/Resume writes nothing and says
