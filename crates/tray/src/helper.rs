@@ -2911,7 +2911,8 @@ fn the_window_adopts_only_the_id_the_tray_handed_over() {
     let pointer = base.join("helper.json");
     let _ = std::fs::remove_dir_all(&base);
     std::fs::create_dir_all(&base).unwrap();
-    let id = "0123456789abcdef";
+    // An id no other test uses: issued ids live in one process-wide set, and tests share it.
+    let id = "ad09ad09ad09ad09";
     std::fs::write(
         &pointer,
         format!(r#"{{"schema":1,"id":"{id}","verb":"verify","error":"declined here"}}"#),
