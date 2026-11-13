@@ -4023,6 +4023,18 @@ mod tests {
     }
 
     #[test]
+    fn wanted_follows_the_stored_count_not_the_profile_count() {
+        // Profile count 0 (the supervisor has no Windows slots), stored count 2: wanted.
+        let h = controlled("busy", "");
+        assert_eq!(h.count, 0);
+        assert!(host_wanted(&Status::Idle, 2));
+        assert_eq!(
+            host_line(&h, 2, host_wanted(&Status::Idle, 2)),
+            "Interim runner on this PC"
+        );
+    }
+
+    #[test]
     fn off_page_for_a_controlled_runner_follows_its_state() {
         assert_eq!(
             off_page(Some(&controlled("busy", ""))),

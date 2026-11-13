@@ -1536,6 +1536,18 @@ mod tests {
     }
 
     #[test]
+    fn the_stored_count_decides_the_cell_not_the_profile_count() {
+        let base = crate::state::temp_base("settings-panel-host-count");
+        // The fixture's windows-host profile reports count 0; settings.json stores 2.
+        write_host_v5(&base, Some(true), "[1,2,3]");
+        write_v3(&base, 3, 2);
+        let panel = SettingsPanel::load(&base);
+        assert_eq!(panel.host().map(|h| h.count), Some(0));
+        assert_eq!((panel.windows(), panel.windows_cell()), (2, 1));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn a_controlled_choice_reaches_the_supervisor_not_the_tray_local_file() {
         let base = crate::state::temp_base("settings-panel-host-carry");
         // A schema 2 file and an old tray-local choice of 3: the supervisor reads 0 from that file.
