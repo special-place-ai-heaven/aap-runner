@@ -1932,14 +1932,19 @@ Describe 'aap-runner host supervisor' {
             Get-AapControl | Should -BeExactly '{"schema":1,"desired":"off"}'
         }
 
-        It 'a missing settings file means Windows count 0' -Tag 'host-wanted-count' {
-            Remove-Item -LiteralPath (Join-Path $AapCfg.DataDir 'inbox\settings.json')
+        It 'a settings file <case> gives <reason>' -Tag 'host-wanted-count', 'host-wanted-paused' -TestCases @(
+            @{ case = 'that is missing'; text = $null; reason = 'turned off: Windows count 0' }
+            @{ case = 'of schema 2'; text = '{"schema":2,"runner_count":3,"job_cpus":19,"job_memory_gib":72,"paused":false}'; reason = 'turned off: Windows count 0' }
+            @{ case = 'of schema 2, paused'; text = '{"schema":2,"runner_count":3,"job_cpus":19,"job_memory_gib":72,"paused":true}'; reason = 'turned off: paused' }
+        ) {
+            if ($null -eq $text) { Remove-Item -LiteralPath (Join-Path $AapCfg.DataDir 'inbox\settings.json') }
+            else { Write-AapSettingsFile $text }
             Sync-AapHostRunner
             Get-AapControl | Should -BeExactly '{"schema":1,"desired":"off"}'
-            Get-AapLogText | Should -Match ([regex]::Escape('host runner off (turned off: Windows count 0)'))
+            Get-AapLogText | Should -Match ([regex]::Escape("host runner off ($reason)"))
         }
 
-        It 'a refused settings file (<case>) leaves a <control> control file alone and starts nothing' -Tag 'host-wanted-accepted' -TestCases @(
+        It 'a refused settings file (<case>) leaves a <control> control file alone and starts nothing' -Tag 'host-wanted-accepted', 'host-sync-no-decision', 'host-status-not-accepted' -TestCases @(
             @{ case = 'not JSON'; text = '{nope'; control = 'on'; why = 'logon task \AAP-Win-Interim-Runner is ready, not running' }
             @{ case = 'Windows count 9'; text = $null; control = 'off'; why = 'turned off: settings not accepted' }
             @{ case = 'not JSON'; text = '{nope'; control = 'missing'; why = 'logon task \AAP-Win-Interim-Runner is ready, not running' }

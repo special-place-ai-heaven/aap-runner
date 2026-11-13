@@ -818,7 +818,7 @@ function New-AapV5Profile([string]$Profile, $Doc, $St, $Live, [string]$StorageSt
                 # R2.2: a runner that is not wanted says why it is off; a wanted one
                 # keeps the missing piece, plus a failed task start's error text.
                 $off = Get-AapHostRunnerOff
-                if ($null -eq $off -and (Get-AapHostControlText) -ceq '{"schema":1,"desired":"off"}') { $off = 'turned off: settings not accepted' }
+                if ($null -eq $off -and (Get-AapHostControlText) -ceq '{"schema":1,"desired":"off"}') { $off = 'turned off: settings not accepted' }   # check:host-status-not-accepted
                 if ($off) { $o.unavailable_reason = $off }
                 elseif ($AapRt.HostStartErr) { $o.unavailable_reason = "$($h.Why); $($AapRt.HostStartErr)" }
             }
@@ -901,7 +901,7 @@ function Sync-AapHostRunner {
     if (-not (Test-AapHostRunnerShown $mine)) { return }
     $off = Get-AapHostRunnerOff
     # Refused settings: no decision this cycle; the control file stays as it is.
-    if ($null -eq $off) { return }
+    if ($null -eq $off) { return }   # check:host-sync-no-decision
     $want = $(if ($off) { 'off' } else { 'on' })
     $text = '{"schema":1,"desired":"' + $want + '"}'
     $have = Get-AapHostControlText
