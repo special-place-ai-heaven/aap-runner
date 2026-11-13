@@ -3980,10 +3980,23 @@ mod tests {
             ("turned off: runners are off", "Turned off: runners are off"),
             ("turned off: paused", "Turned off: paused"),
             ("turned off: Windows count 0", "Turned off: Windows count 0"),
+            (
+                "turned off: settings not accepted",
+                "Turned off: settings not accepted",
+            ),
             ("runner folder missing", "Runner folder missing"),
         ] {
             assert_eq!(host_line(&stopped(reason), 0, false), want);
         }
+        // The supervisor's own stopped file, as written.
+        let json =
+            state::fixture("status-v5/valid/windows-host-controlled-stopped-turned-off.json");
+        let now = state::parse_rfc3339("2026-10-19T18:01:00Z").unwrap();
+        let v = state::parse_status_v5(&json, now).unwrap();
+        assert_eq!(
+            host_line(v.windows_host().unwrap(), 0, false),
+            "Turned off: Windows count 0"
+        );
         // A count above 1 still means the one runner; no "starts nothing" wording.
         for count in [0, 1, 2, 5] {
             for runner in ["online", "busy"] {

@@ -1418,6 +1418,34 @@ mod tests {
         assert!(!vm.host_controlled(), "only the windows-host backend");
     }
 
+    /// The files the supervisor's own tests write (revision 7), read by the tray as they are.
+    #[test]
+    fn the_supervisors_host_control_fixtures_read_as_controlled() {
+        let now = at("2026-10-19T18:01:00Z");
+        for (name, runner, available, reason) in [
+            ("online", "online", true, ""),
+            ("busy", "busy", true, ""),
+            (
+                "stopped-turned-off",
+                "stopped",
+                false,
+                "turned off: Windows count 0",
+            ),
+        ] {
+            let json = fixture(&format!(
+                "status-v5/valid/windows-host-controlled-{name}.json"
+            ));
+            let v = parse_status_v5(&json, now).unwrap_or_else(|| panic!("{name} did not parse"));
+            let h = v
+                .windows_host()
+                .unwrap_or_else(|| panic!("{name}: no host profile"));
+            assert!(h.host_controlled(), "{name}");
+            assert_eq!(h.host_runner.as_deref(), Some(runner), "{name}");
+            assert_eq!(h.available, available, "{name}");
+            assert_eq!(h.unavailable_reason, reason, "{name}");
+        }
+    }
+
     #[test]
     fn status_v5_is_ignored_when_newer_stale_or_unreadable() {
         let now = at("2026-10-19T18:01:00Z");
