@@ -54,6 +54,18 @@ admin-written.
   that times the Linux count (3 Linux + 2 Windows on 26 / 72 caps: 5 CPUs and 14 GiB each, Linux
   15 / 42). The window shows that even share for Windows now, marked prospective. With Windows 0
   the file is exactly what it was before.
+- Interim Windows runner control (`host_control`): while the Windows profile of a fresh
+  `status.v5.json` has `backend: windows-host` and `host_control: true`, the supervisor starts and
+  stops the interim runner: it runs exactly while the pool is On, not paused and the settings'
+  Windows count is at least 1. Count 0, Pause and Off stop it after its current job (a job is never
+  killed); a count above 1 still means the one runner. The tray then writes that count into
+  `settings.json` (schema 3 or 4, the stored one or the one the status lists, with the edit's
+  count, not the reported one) and never into the tray-local file, which is not in force while
+  the supervisor controls the runner (a file below schema 3 shows Windows 0). Without a schema 3 or
+  4 to carry it the Windows row is greyed. A stopped runner's `unavailable_reason` is then one of
+  `turned off: runners are off`, `turned off: paused`, `turned off: Windows count 0`, else it names
+  the missing piece. An older supervisor, or `host_control` absent or false, behaves as above: the
+  count starts nothing and Off, Pause and a count of 0 leave the interim runner running.
 - Settings schema 4 (R1 tiers, [`settings-v4.schema.json`](../../parity/contracts/settings-v4.schema.json)):
   over a stored valid schema 4 file, or while a fresh `status.v5.json` lists 4, Apply and
   Pause/Resume write schema 4 (`linux_light_count` 0..10, `linux_heavy_count` 0..2 instead of
@@ -132,7 +144,8 @@ tray icon opens it (or closes it when it is the active window). The layout is th
 addendum of the design doc.
 
 - **Left column:** `Power On/Off` (the desired state from `inbox\state.json`), `Start`/`Stop` and
-  `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`). Power flips only after
+  `Pause`/`Resume` (immediate, as in the menu; Pause rewrites only `paused`; under a controlling
+  supervisor Off and Pause also stop the interim Windows runner after its current job). Power flips only after
   the write succeeded; a failed Start/Stop/Pause/Open logs/job link shows its reason on the note line. Then the edits: Linux
   `Light | Heavy` (which tier the picker edits; Heavy is greyed with a tooltip until the tray may
   write settings schema 4) with a muted `now 3` from `status.json` (the tooltip has
@@ -153,6 +166,13 @@ addendum of the design doc.
   count in force. The row's tooltip carries the full
   `Windows backend not installed — coming with the native Windows runner` note. Cells above the
   budget the other row leaves are greyed and inert (Linux 0 too, until a Windows backend exists).
+  While the supervisor controls the interim runner (`host_control: true`) the row is instead two
+  filled cells, `0 | 1`: 1 runs the runner, 0 stops it after its current job (hover: `Windows runner
+  on this PC: 1 runs it, 0 stops it after its current job. Only one exists until the Windows VM
+  backend.`). A stored count of 1 or more shows cell 1 and is not a change (a stored 2 stays 2 until
+  0 is picked); Apply writes the count to `settings.json`. The row is greyed, with a tooltip, while
+  `settings.json` cannot carry the count (no schema 3 or 4). The line under it still reads
+  `interim runner · <state>`, its tooltip now saying the row above starts and stops it.
   Each row label carries its OS glyph and colour. IO cap 0..100 % in steps of 5, Sharing
   `Slice | Fixed`. IO cap and Sharing have a muted `now ·` line from `status.json`
   (`now -` when nothing runs). While edits differ from `inbox\settings.json`: `N changes not applied`,
@@ -186,7 +206,10 @@ addendum of the design doc.
   the `1 problem` button). Off shows no counts, except `Windows interim online` or `busy`: that
   runner is its own scheduled task and keeps taking jobs while the pool is off, so the Off page
   then reads `Linux runners are off.` with the interim runner's card under it, and
-  `Runners are off. No jobs are taken.` only when it is stopped or absent. Below the header (in every state including Off and Not installed): one
+  `Runners are off. No jobs are taken.` only when it is stopped or absent. Under a controlling
+  supervisor Off stops that runner after its job: a busy one reads `Linux runners are off. The
+  Windows runner finishes its job, then stops.` with its card, a runner still online for a few
+  seconds reads `Linux runners are off.`, a stopped one the all-off text. Below the header (in every state including Off and Not installed): one
   status line for the current Verify/Repair job (format: `Verify · failed · exit 1` on failure,
   `Repair · running…` while active, `Verify · ok` on success; with a `· Open log`
   CollapsingHeader when log lines are available; log panel keyed on a fixed id, not the label text).
@@ -206,7 +229,10 @@ addendum of the design doc.
   `Needs settings schema 4` on the heavy tiles before it). Then one `Windows 1`… placeholder per
   chosen Windows runner (unchanged, 102 px), `Not installed` and `Starts nothing`, never shown as
   running. The interim runner's card names a stored Windows count on its second line
-  (`Interim runner on this PC · Windows count 2 starts nothing yet`). The tiles, one Windows card
+  (`Interim runner on this PC · Windows count 2 starts nothing yet`); under a controlling
+  supervisor it never says that: stopped shows the reason with a capital (`Turned off: Windows
+  count 0`), busy while the runner is no longer wanted (Off, paused or count 0) `Finishes its job,
+  then stops`, else `Interim runner on this PC`. The tiles, one Windows card
   (the interim runner) and the last 60 minutes fit the default height with every slot busy; more
   Windows cards scroll.
 - **Error panel:** replaces the right column's cards, with `< Back to runners` on top. It opens by itself

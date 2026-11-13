@@ -215,16 +215,41 @@ fn fixed_row<R>(ui: &mut egui::Ui, h: f32, add: impl FnOnce(&mut egui::Ui) -> R)
 
 /// The Off page's line and whether the interim Windows runner's card follows it: that runner is
 /// its own scheduled task and keeps taking jobs while the Linux pool is off.
+///
+/// While the supervisor controls that runner, Off stops it after its current job: a busy one
+/// says so, and a stopped one leaves the all-off text.
 fn off_page(host: Option<&ProfileV5>) -> (&'static str, bool) {
+    let controlled = host.is_some_and(ProfileV5::host_controlled);
     match host.and_then(|h| h.host_runner.as_deref()) {
+        Some("busy") if controlled => (
+            "Linux runners are off. The Windows runner finishes its job, then stops.",
+            true,
+        ),
         Some("online" | "busy") => ("Linux runners are off.", true),
         _ => ("Runners are off. No jobs are taken.", false),
     }
 }
 
-/// The interim runner card's second line; a stored Windows count is named there as inert, so a
-/// count of 2 beside one card explains itself.
-fn host_line(h: &ProfileV5, chosen: u32) -> String {
+/// A controlling supervisor runs the interim runner exactly while the pool is on and not paused
+/// and the Windows count is 1 or more.
+fn host_wanted(status: &Status, windows: u32) -> bool {
+    !matches!(status, Status::Off | Status::Paused) && windows >= 1
+}
+
+/// The interim runner card's second line. Under a controlling supervisor: why it is stopped
+/// (its reason, capitalised), or that a job it is no longer wanted for finishes first. Else a
+/// stored Windows count is named as inert, so a count of 2 beside one card explains itself.
+fn host_line(h: &ProfileV5, chosen: u32, wanted: bool) -> String {
+    if h.host_controlled() {
+        if h.host_runner.as_deref() == Some("busy") && !wanted {
+            return "Finishes its job, then stops".into();
+        }
+        let mut reason = h.unavailable_reason.chars();
+        return match reason.next() {
+            Some(c) => c.to_uppercase().chain(reason).collect(),
+            None => "Interim runner on this PC".into(),
+        };
+    }
     if !h.unavailable_reason.is_empty() {
         return h.unavailable_reason.clone();
     }
@@ -1776,7 +1801,8 @@ impl Dash {
     fn host_card(&mut self, ui: &mut egui::Ui, h: &ProfileV5) {
         let p = self.pal();
         let (sym, word) = host_sym(h);
-        let what = host_line(h, self.settings.windows());
+        let windows = self.settings.windows();
+        let what = host_line(h, windows, host_wanted(&self.snap.status, windows));
         let frame = card_frame(&p).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = CARD_ITEM_GAP;
             ui.set_width(ui.available_width());
@@ -3319,14 +3345,19 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
     }
 
-    /// status.v5.json from the contract fixture with `updated` now and `host_runner` set.
-    fn write_host_v5(base: &std::path::Path, host: &str) {
+    /// status.v5.json from the contract fixture with `updated` now and `host_runner` set, and
+    /// `host_control: true` beside it when `control`.
+    fn write_host_v5(base: &std::path::Path, host: &str, control: bool) {
         let now = chrono_free_now();
         let json = state::fixture("status-v5/valid/windows-host-busy.json")
             .replace("2026-10-19T18:00:00Z", &now)
             .replace(
                 r#""host_runner": "busy""#,
-                &format!(r#""host_runner": "{host}""#),
+                &if control {
+                    format!(r#""host_runner": "{host}", "host_control": true"#)
+                } else {
+                    format!(r#""host_runner": "{host}""#)
+                },
             );
         std::fs::write(base.join("status.v5.json"), json).unwrap();
     }
@@ -3367,8 +3398,15 @@ mod tests {
         )
         .unwrap();
         // The longest state word used to push the line past the column and clip the rows below.
-        for word in ["online", "busy", "stopped"] {
-            write_host_v5(&base, word);
+        for (word, control) in [
+            ("online", false),
+            ("busy", false),
+            ("stopped", false),
+            ("online", true),
+            ("busy", true),
+            ("stopped", true),
+        ] {
+            write_host_v5(&base, word, control);
             let mut panel = SettingsPanel::load(&base);
             assert_eq!(panel.host().map(|h| h.host_state()).as_deref(), Some(word));
             let snap = Snapshot::bare(Status::Idle);
@@ -3885,6 +3923,7 @@ mod tests {
             available: true,
             unavailable_reason: String::new(),
             host_runner: state.map(str::to_owned),
+            host_control: None,
         };
         assert_eq!(
             off_page(None),
@@ -3903,16 +3942,107 @@ mod tests {
         }
         // The card names a stored Windows count as inert, beside the one runner that exists.
         let h = host(Some("online"));
-        assert_eq!(host_line(&h, 0), "Interim runner on this PC");
+        assert_eq!(host_line(&h, 0, true), "Interim runner on this PC");
         assert_eq!(
-            host_line(&h, 2),
+            host_line(&h, 2, true),
             "Interim runner on this PC \u{b7} Windows count 2 starts nothing yet"
         );
         let missing = ProfileV5 {
             unavailable_reason: "runner folder missing".into(),
             ..host(None)
         };
-        assert_eq!(host_line(&missing, 2), "runner folder missing");
+        assert_eq!(host_line(&missing, 2, true), "runner folder missing");
+    }
+
+    /// The interim runner as a supervisor that controls it reports it.
+    fn controlled(runner: &str, reason: &str) -> ProfileV5 {
+        let json = state::fixture("status-v5/valid/windows-host-busy.json");
+        let now = state::parse_rfc3339("2026-10-19T18:01:00Z").unwrap();
+        let v = state::parse_status_v5(&json, now).unwrap();
+        ProfileV5 {
+            host_runner: Some(runner.into()),
+            host_control: Some(true),
+            unavailable_reason: reason.into(),
+            available: reason.is_empty(),
+            ..v.windows_host().unwrap().clone()
+        }
+    }
+
+    #[test]
+    fn a_controlled_runner_card_says_why_it_is_stopped_and_never_starts_nothing() {
+        let stopped = |reason| controlled("stopped", reason);
+        for (reason, want) in [
+            ("turned off: runners are off", "Turned off: runners are off"),
+            ("turned off: paused", "Turned off: paused"),
+            ("turned off: Windows count 0", "Turned off: Windows count 0"),
+            ("runner folder missing", "Runner folder missing"),
+        ] {
+            assert_eq!(host_line(&stopped(reason), 0, false), want);
+        }
+        // A count above 1 still means the one runner; no "starts nothing" wording.
+        for count in [0, 1, 2, 5] {
+            for runner in ["online", "busy"] {
+                let line = host_line(&controlled(runner, ""), count, true);
+                assert_eq!(line, "Interim runner on this PC", "{runner} {count}");
+            }
+        }
+        // Wanted off (Off, Pause or count 0) while a job runs: it finishes, then stops.
+        assert_eq!(
+            host_line(&controlled("busy", ""), 1, false),
+            "Finishes its job, then stops"
+        );
+        assert_eq!(
+            host_line(&controlled("online", ""), 1, false),
+            "Interim runner on this PC"
+        );
+        // An older supervisor: as before.
+        let mut old = controlled("online", "");
+        old.host_control = None;
+        assert_eq!(
+            host_line(&old, 2, true),
+            "Interim runner on this PC \u{b7} Windows count 2 starts nothing yet"
+        );
+        old.host_runner = Some("busy".into());
+        assert_eq!(
+            host_line(&old, 2, false),
+            "Interim runner on this PC \u{b7} Windows count 2 starts nothing yet"
+        );
+    }
+
+    #[test]
+    fn the_runner_is_wanted_only_while_on_unpaused_with_a_windows_count() {
+        for (status, windows, want) in [
+            (Status::Idle, 1, true),
+            (Status::Running("j".into()), 2, true),
+            (Status::Idle, 0, false),
+            (Status::Off, 1, false),
+            (Status::Paused, 1, false),
+        ] {
+            assert_eq!(host_wanted(&status, windows), want, "{status:?} {windows}");
+        }
+    }
+
+    #[test]
+    fn off_page_for_a_controlled_runner_follows_its_state() {
+        assert_eq!(
+            off_page(Some(&controlled("busy", ""))),
+            (
+                "Linux runners are off. The Windows runner finishes its job, then stops.",
+                true
+            )
+        );
+        assert_eq!(
+            off_page(Some(&controlled("online", ""))),
+            ("Linux runners are off.", true)
+        );
+        assert_eq!(
+            off_page(Some(&controlled("stopped", "turned off: runners are off"))),
+            ("Runners are off. No jobs are taken.", false)
+        );
+        // Without host_control the old pages hold: a live runner is kept in view as before.
+        let mut old = controlled("busy", "");
+        old.host_control = None;
+        assert_eq!(off_page(Some(&old)), ("Linux runners are off.", true));
     }
 
     #[test]

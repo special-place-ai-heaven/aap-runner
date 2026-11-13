@@ -2,7 +2,8 @@
 //! settings `inbox\settings.json` holds. Start/Stop and Pause/Resume act at once, as the menu
 //! does; the Linux and Windows counts, IO cap and Sharing are edits that Apply writes. Every
 //! runner gets an even share of the caps whatever its OS, shown to one decimal. The file stores
-//! Linux's part of the caps; the Windows count is stored only, it starts nothing yet.
+//! Linux's part of the caps; the Windows count is stored only, it starts nothing yet, unless the
+//! supervisor controls the interim Windows runner: then the row is a 0 / 1 control for it.
 
 use crate::dashboard::{CAP_ERROR_H, Palette, button, primary_button, ring, semibold};
 use crate::mark::Sym;
@@ -24,6 +25,16 @@ const SHARING_TIP: &str = "Slice: idle share can be borrowed. Fixed: hard limit 
 /// Under the Windows row while no Windows backend exists.
 pub const WINDOWS_INERT: &str =
     "Windows backend not installed \u{2014} coming with the native Windows runner. Starts nothing.";
+
+/// The controlled Windows row: one interim runner exists, so 0 stops it and 1 runs it.
+const HOST_COUNTS: [(u32, &str); 2] = [(0, "0"), (1, "1")];
+
+const HOST_TIP: &str = "Windows runner on this PC: 1 runs it, 0 stops it after its current job. \
+     Only one exists until the Windows VM backend.";
+
+/// Shown on the greyed controlled row while the supervisor cannot read the count from a file.
+const HOST_LATER: &str = "Controlling the Windows runner needs a supervisor that reads settings \
+     schema 3 or 4.";
 
 const COUNTS: [(u32, &str); 6] = [(0, "0"), (1, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")];
 
@@ -70,6 +81,8 @@ pub struct SettingsPanel {
     action_error: Option<String>,
     /// The Windows profile while `status.v5.json` reports the interim runner on this PC.
     host: Option<ProfileV5>,
+    /// `settings.json` can carry a Windows count the supervisor reads (`settings::windows_carriable`).
+    carry: bool,
 }
 
 /// What the window needs from the left column for keyboard focus (F6, `--settings`).
@@ -89,7 +102,8 @@ impl Focus {
 
 impl SettingsPanel {
     pub fn load(base: &Path) -> Self {
-        let stored = settings::read_with_windows_choice(base);
+        let host = read_host(base);
+        let stored = read_stored(base, host.as_ref());
         SettingsPanel {
             stored,
             linux: stored.runner_count,
@@ -103,20 +117,22 @@ impl SettingsPanel {
             vm: VmLimit::read(),
             write_error: None,
             action_error: None,
-            host: read_host(base),
+            host,
+            carry: settings::windows_carriable(base),
         }
     }
 
     /// Re-read the file. Inputs with no pending change follow it; pending edits stay pending.
     pub fn reload(&mut self, base: &Path) {
         let follow = self.changes() == 0;
-        self.stored = settings::read_with_windows_choice(base);
+        self.host = read_host(base);
+        self.stored = read_stored(base, self.host.as_ref());
         self.tiers = settings::tiers_writable(base);
+        self.carry = settings::windows_carriable(base);
         self.numbered = lists_v4(base);
         if !self.tiers {
             self.tier = Tier::Light;
         }
-        self.host = read_host(base);
         if follow {
             self.revert();
         }
@@ -127,9 +143,38 @@ impl SettingsPanel {
         self.host.as_ref()
     }
 
-    /// The stored Windows count (the cards show it; nothing runs it yet).
+    /// The stored Windows count (the cards show it; only a supervisor that controls the interim
+    /// runner acts on it).
     pub fn windows(&self) -> u32 {
         self.stored.windows_runner_count
+    }
+
+    /// The supervisor starts and stops the interim runner, so the Windows row is a 0 / 1 control.
+    fn windows_controlled(&self) -> bool {
+        self.host.as_ref().is_some_and(ProfileV5::host_controlled)
+    }
+
+    /// The controlled picker can be used: the file can carry the count. Greyed otherwise.
+    fn windows_pickable(&self) -> bool {
+        self.windows_controlled() && self.carry
+    }
+
+    /// The Windows cell in force: 0 or 1 when controlled (any count of 1 or more is one runner),
+    /// else the count itself.
+    fn windows_cell(&self) -> u32 {
+        if self.windows_controlled() {
+            self.windows.min(1)
+        } else {
+            self.windows
+        }
+    }
+
+    /// A pick on the Windows row. A cell already in force leaves the edit alone, so a stored 2
+    /// stays 2 (not a change) until the owner picks 0.
+    fn pick_windows(&mut self, cell: u32) {
+        if cell != self.windows_cell() {
+            self.windows = cell;
+        }
     }
 
     /// The stored light and heavy counts, and whether they are tiers: a stored schema 4 file and a
@@ -214,8 +259,14 @@ impl SettingsPanel {
         let edit = self.edit();
         // settings.json first (it never carries the Windows count without a backend), then the
         // tray-local Windows count.
-        let written = settings::write_settings(base, &edit, &self.vm).and_then(|()| {
-            if WINDOWS_BACKEND {
+        let written = if self.windows_controlled() {
+            // The supervisor reads the count from settings.json; no tray-local copy.
+            settings::write_host_settings(base, &edit, &self.vm)
+        } else {
+            settings::write_settings(base, &edit, &self.vm)
+        }
+        .and_then(|()| {
+            if WINDOWS_BACKEND || self.windows_controlled() {
                 Ok(())
             } else {
                 settings::write_windows_choice(
@@ -433,16 +484,32 @@ impl SettingsPanel {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             os_label(ui, p, Os::Windows);
-            segmented(
-                ui,
-                p,
-                &mut self.windows,
-                &COUNTS,
-                |n| fits_windows.contains(&n),
-                windows_chosen(p),
-                focus,
-            )
-            .on_hover_text(WINDOWS_INERT);
+            if self.windows_controlled() {
+                let pickable = self.windows_pickable();
+                let mut cell = self.windows_cell();
+                segmented(
+                    ui,
+                    p,
+                    &mut cell,
+                    &HOST_COUNTS,
+                    |n| pickable && fits_windows.contains(&n),
+                    Chosen::Solid(p.os(Os::Windows)),
+                    focus,
+                )
+                .on_hover_text(if pickable { HOST_TIP } else { HOST_LATER });
+                self.pick_windows(cell);
+            } else {
+                segmented(
+                    ui,
+                    p,
+                    &mut self.windows,
+                    &COUNTS,
+                    |n| fits_windows.contains(&n),
+                    windows_chosen(p),
+                    focus,
+                )
+                .on_hover_text(WINDOWS_INERT);
+            }
         });
         ui.horizontal(|ui| {
             label(ui, "Each");
@@ -511,7 +578,7 @@ impl SettingsPanel {
             let r = button(ui, p, "Revert");
             focus.has |= r.has_focus();
             if r.clicked() {
-                self.stored = settings::read_with_windows_choice(base);
+                self.stored = read_stored(base, self.host.as_ref());
                 self.revert();
             }
         });
@@ -732,6 +799,16 @@ fn tier_line(tier: Tier, light: u32, heavy: u32) -> LinuxLine {
     }
 }
 
+/// What the window shows as stored. While the supervisor controls the interim runner, a file
+/// below schema 3 carries no Windows count for it: the tray-local choice is not in force.
+fn read_stored(base: &Path, host: Option<&ProfileV5>) -> Settings {
+    let mut s = settings::read_with_windows_choice(base);
+    if s.schema < 3 && host.is_some_and(ProfileV5::host_controlled) {
+        s.windows_runner_count = 0;
+    }
+    s
+}
+
 /// `status.v5.json`'s Windows profile while it is the interim runner on this PC.
 fn read_host(base: &Path) -> Option<ProfileV5> {
     crate::state::read_status_v5(base, SystemTime::now())?
@@ -768,10 +845,17 @@ fn windows_line(
         let word = state.split(':').next().unwrap_or_default();
         return WindowsLine {
             text: format!("interim runner \u{b7} {word}"),
-            tip: format!(
-                "The {HOST_RUNNER_NAME}: {state}. {HOST_RUNNER_WARNING} It is outside the counts \
-                 above, which wait for the native Windows backend."
-            ),
+            tip: if h.host_controlled() {
+                format!(
+                    "The {HOST_RUNNER_NAME}: {state}. {HOST_RUNNER_WARNING} The Windows row above \
+                     starts and stops it."
+                )
+            } else {
+                format!(
+                    "The {HOST_RUNNER_NAME}: {state}. {HOST_RUNNER_WARNING} It is outside the \
+                     counts above, which wait for the native Windows backend."
+                )
+            },
         };
     }
     if windows == 0 {
@@ -1350,6 +1434,144 @@ mod tests {
         panel.windows = 0;
         panel.revert();
         assert_eq!((panel.linux, panel.windows, panel.changes()), (3, 2, 0));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A fresh `status.v5.json` from the interim runner fixture: `host_control` as given (absent
+    /// for `None`) and the settings schemas the supervisor lists.
+    fn write_host_v5(base: &Path, control: Option<bool>, schemas: &str) {
+        let mut v: serde_json::Value = serde_json::from_str(&crate::state::fixture(
+            "status-v5/valid/windows-host-busy.json",
+        ))
+        .unwrap();
+        v["updated"] = crate::state::rfc(SystemTime::now()).into();
+        v["settings_schemas"] = serde_json::from_str(schemas).unwrap();
+        let host = v["profiles"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|p| p["backend"] == "windows-host")
+            .unwrap();
+        if let Some(c) = control {
+            host["host_control"] = c.into();
+        }
+        std::fs::write(base.join("status.v5.json"), v.to_string()).unwrap();
+    }
+
+    /// The stored schema 3 file of the contract (even sharing), with Linux and Windows counts.
+    fn write_v3(base: &Path, linux: u32, windows: u32) {
+        let mut v: serde_json::Value = serde_json::from_str(&crate::state::fixture(
+            "settings-v3/valid/windows-only-even.json",
+        ))
+        .unwrap();
+        v["runner_count"] = linux.into();
+        v["windows_runner_count"] = windows.into();
+        // The whole pool the window derives, so an untouched edit equals the file.
+        v["job_cpus"] = 26.into();
+        v["job_memory_gib"] = 72.into();
+        std::fs::write(
+            crate::state::inbox(base).join("settings.json"),
+            v.to_string(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn only_a_controlling_supervisor_makes_windows_a_zero_or_one_choice() {
+        let base = crate::state::temp_base("settings-panel-host-ctl");
+        for (control, want) in [(None, false), (Some(false), false), (Some(true), true)] {
+            write_host_v5(&base, control, "[1,2,3]");
+            assert_eq!(SettingsPanel::load(&base).windows_controlled(), want);
+        }
+        assert_eq!(
+            HOST_TIP,
+            "Windows runner on this PC: 1 runs it, 0 stops it after its current job. Only one exists \
+         until the Windows VM backend."
+        );
+        // Not a controlled picker: the count is the picker's own, whatever it is.
+        write_host_v5(&base, Some(false), "[1,2,3]");
+        write_v3(&base, 3, 2);
+        let mut panel = SettingsPanel::load(&base);
+        assert_eq!((panel.windows_cell(), panel.windows), (2, 2));
+        panel.pick_windows(1);
+        assert_eq!(panel.windows, 1, "uncontrolled picks are taken as they are");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_controlled_picker_shows_cell_one_for_any_stored_count_and_picks_zero_or_one() {
+        let base = crate::state::temp_base("settings-panel-host-pick");
+        write_host_v5(&base, Some(true), "[1,2,3]");
+        write_v3(&base, 3, 2);
+        let mut panel = SettingsPanel::load(&base);
+        panel.vm = VmLimit::ASSUMED;
+        assert!(panel.windows_controlled() && panel.windows_pickable());
+        // A stored 2 shows cell 1 and is not a change; the stored value is not clamped.
+        assert_eq!((panel.windows_cell(), panel.windows), (1, 2));
+        assert_eq!((panel.changes(), panel.pending()), (0, false));
+        panel.pick_windows(1);
+        assert_eq!(
+            (panel.windows, panel.changes()),
+            (2, 0),
+            "cell 1 is already in force"
+        );
+        panel.pick_windows(0);
+        assert_eq!(
+            (panel.windows_cell(), panel.windows, panel.changes()),
+            (0, 0, 1)
+        );
+        assert!(panel.pending());
+        assert!(panel.apply(&base), "{:?}", panel.write_error);
+        assert_eq!(settings::read_settings(&base).windows_runner_count, 0);
+        panel.pick_windows(1);
+        assert_eq!((panel.windows, panel.changes()), (1, 1));
+        assert!(panel.apply(&base), "{:?}", panel.write_error);
+        let s = settings::read_settings(&base);
+        assert_eq!(
+            (s.schema, s.runner_count, s.windows_runner_count),
+            (3, 3, 1)
+        );
+        assert_eq!(panel.changes(), 0);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_controlled_choice_reaches_the_supervisor_not_the_tray_local_file() {
+        let base = crate::state::temp_base("settings-panel-host-carry");
+        // A schema 2 file and an old tray-local choice of 3: the supervisor reads 0 from that file.
+        std::fs::write(
+            crate::state::inbox(&base).join("settings.json"),
+            r#"{"runner_count":3,"job_cpus":26,"job_memory_gib":72}"#,
+        )
+        .unwrap();
+        settings::write_windows_choice(&settings::windows_choice_path(&base), 3).unwrap();
+        write_host_v5(&base, Some(true), "[1,2,3]");
+        let mut panel = SettingsPanel::load(&base);
+        panel.vm = VmLimit::ASSUMED;
+        assert_eq!((panel.windows, panel.windows_cell()), (0, 0));
+        assert!(panel.windows_pickable());
+        panel.pick_windows(1);
+        assert!(panel.apply(&base), "{:?}", panel.write_error);
+        let s = settings::read_settings(&base);
+        assert_eq!(
+            (s.schema, s.runner_count, s.windows_runner_count),
+            (3, 3, 1)
+        );
+        assert_eq!(
+            settings::read_windows_choice(&settings::windows_choice_path(&base)),
+            3,
+            "the tray-local file is not touched"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_controlled_picker_is_greyed_while_the_file_cannot_carry_it() {
+        let base = crate::state::temp_base("settings-panel-host-grey");
+        write_host_v5(&base, Some(true), "[1,2]");
+        let panel = SettingsPanel::load(&base);
+        assert!(panel.windows_controlled());
+        assert!(!panel.windows_pickable(), "no schema 3 or 4 to write it in");
         std::fs::remove_dir_all(&base).unwrap();
     }
 }
