@@ -138,6 +138,28 @@ Describe 'interim Windows runner start script' {
             Start-AapInterimRunner $root 0 | Should -Be $Code
             $st.starts + $st.jobs | Should -Be 0
         }
+        It 'exits 0 before stopping or starting anything when the control file says off' -Tag 'interim-control-off' {
+            Set-Content -LiteralPath (Join-Path $root '.runner') -Value '{}'
+            $ctl = Join-Path $root 'host-runner.json'
+            [IO.File]::WriteAllText($ctl, '{"schema":1,"desired":"off"}')
+            Mock Stop-AapInterimForeign { throw 'a foreign listener was touched' }
+            Start-AapInterimRunner $root 0 $ctl | Should -Be 0
+            $st.starts + $st.jobs | Should -Be 0
+            $st.stopped.Count | Should -Be 0
+        }
+        It 'starts as before when the control file says on' {
+            Set-Content -LiteralPath (Join-Path $root '.runner') -Value '{}'
+            $ctl = Join-Path $root 'host-runner.json'
+            [IO.File]::WriteAllText($ctl, '{"schema":1,"desired":"on"}')
+            Start-AapInterimRunner $root 0 $ctl | Should -Be 1
+            $st.starts | Should -Be 1
+        }
+        It 'exits 0, not 1, when the runner was turned off while it ran' -Tag 'interim-control-off' {
+            Set-Content -LiteralPath (Join-Path $root '.runner') -Value '{}'
+            Mock Start-AapInterimProcess { $st.starts++; $null }
+            Start-AapInterimRunner $root 0 | Should -Be 0
+            $st.starts | Should -Be 1
+        }
         It 'puts Git Bash first on PATH once, and reports a missing Git Bash' {
             $git = Join-Path $root 'Git\bin'
             New-Item -ItemType Directory -Path $git | Out-Null
@@ -147,6 +169,76 @@ Describe 'interim Windows runner start script' {
             Add-AapInterimGitBash $git | Should -BeTrue
             Add-AapInterimGitBash $git | Should -BeTrue
             $env:Path | Should -Be "$git;$($script:oldPath)"
+        }
+    }
+
+    Context 'the control file' {
+        BeforeEach {
+            $script:ctl = Join-Path $TestDrive 'host-runner.json'
+            if (Test-Path -LiteralPath $ctl) { Remove-Item -LiteralPath $ctl }
+            # A run.cmd that runs for $st.slices slices, then exits with 7.
+            $st.slices = 99
+            $script:proc = [pscustomobject]@{ ExitCode = 7 }
+            $proc | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($ms) $script:st.slices--; return ($script:st.slices -lt 0) }
+        }
+
+        It 'reads <text> as off=<off>' -Tag 'interim-control-parse' -TestCases @(
+            @{ text = '{"schema":1,"desired":"off"}'; off = $true }
+            @{ text = '{"schema":1,"desired":"on"}'; off = $false }
+            @{ text = '{"schema":1,"desired":"OFF"}'; off = $false }
+            @{ text = '{"schema":2,"desired":"off"}'; off = $false }
+            @{ text = '{"schema":"1","desired":"off"}'; off = $false }
+            @{ text = '{"desired":"off"}'; off = $false }
+            @{ text = '{nope'; off = $false }
+            @{ text = ''; off = $false }
+            @{ text = $null; off = $false }
+        ) {
+            if ($null -ne $text) { [IO.File]::WriteAllText($ctl, $text) }
+            Test-AapInterimOff $ctl | Should -Be $off
+        }
+
+        It 'returns run.cmd''s exit code while the runner stays on' {
+            $st.slices = 3
+            [IO.File]::WriteAllText($ctl, '{"schema":1,"desired":"on"}')
+            Wait-AapInterimProcess $proc $dir $ctl 0 | Should -Be 7
+        }
+
+        It 'returns $null once turned off with no job, so the job object ends the listener' -Tag 'interim-control-off' {
+            [IO.File]::WriteAllText($ctl, '{"schema":1,"desired":"off"}')
+            $st.procs = @($listener, $runcmd, $shell)
+            $null -eq (Wait-AapInterimProcess $proc $dir $ctl 0) | Should -BeTrue
+            $st.stopped.Count | Should -Be 0 -Because 'the script ends itself; it kills nothing'
+        }
+
+        It 'never ends a job in progress, logs the request once, and stops after the job' -Tag 'interim-control-busy' {
+            [IO.File]::WriteAllText($ctl, '{"schema":1,"desired":"off"}')
+            $st.procs = @($listener, $runcmd, $shell, $worker)
+            $script:waits = 0
+            $proc | Add-Member -Force -MemberType ScriptMethod -Name WaitForExit -Value {
+                param($ms)
+                $script:waits++
+                if ($script:waits -eq 4) { $script:st.procs = @($script:listener, $script:runcmd, $script:shell) }
+                return $false
+            }
+            $null -eq (Wait-AapInterimProcess $proc $dir $ctl 0) | Should -BeTrue
+            $script:waits | Should -Be 4
+            Should -Invoke Write-AapInterimLog -ParameterFilter { $Line -like '*waiting for the job in progress*' } -Times 1 -Exactly
+            $st.stopped.Count | Should -Be 0
+        }
+
+        It 'forgets a stop request that is withdrawn during a job' -Tag 'interim-control-busy' {
+            [IO.File]::WriteAllText($ctl, '{"schema":1,"desired":"off"}')
+            $st.procs = @($listener, $runcmd, $shell, $worker)
+            $script:waits = 0
+            $proc | Add-Member -Force -MemberType ScriptMethod -Name WaitForExit -Value {
+                param($ms)
+                $script:waits++
+                if ($script:waits -eq 3) { [IO.File]::WriteAllText($script:ctl, '{"schema":1,"desired":"on"}') }
+                if ($script:waits -eq 4) { $script:st.procs = @($script:listener, $script:runcmd, $script:shell) }
+                return ($script:waits -ge 6)
+            }
+            Wait-AapInterimProcess $proc $dir $ctl 0 | Should -Be 7
+            Should -Invoke Write-AapInterimLog -ParameterFilter { $Line -like '*waiting for the job in progress*' } -Times 1 -Exactly
         }
     }
 
