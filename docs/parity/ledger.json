@@ -1933,6 +1933,48 @@
       "note": "Merged 2026-11-06 at 279eed4 (PR #103); hosted CI green on the recorded head before the merge; cleanup receipt R2.1-attempt-1 verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 2). PR #107 (cleanup receipts accept roadmap items and feat/ branches) merged 2026-11-06 at 5309a62; the receipt now validates with origin/main's parity/contracts/validate.py (verifier batch 3, B3.3)."
     },
     {
+      "id": "R2.2",
+      "title": "The supervisor starts and stops the interim Windows runner (roadmap R2, slice 2)",
+      "earliest_wave": 8,
+      "needs": [
+        "R2.1"
+      ],
+      "owns": [
+        "parity/contracts/status-settings.md",
+        "parity/contracts/status-v5.schema.json",
+        "parity/contracts/validate.py",
+        "parity/contracts/README.md",
+        "parity/contracts/fixtures/status-v5/**",
+        "supervisor/aap-runner-supervisor.ps1",
+        "supervisor/supervisor.Tests.ps1",
+        "supervisor/README.md",
+        "supervisor/win-interim/start-runner.ps1",
+        "supervisor/win-interim/start-runner.Tests.ps1",
+        "crates/tray/src/state.rs",
+        "crates/tray/src/settings.rs",
+        "crates/tray/src/settings_panel.rs",
+        "crates/tray/src/dashboard.rs",
+        "crates/tray/README.md",
+        "PRODUCT.md",
+        "docs/ROADMAP.md"
+      ],
+      "lane": "Claude (coordinator)",
+      "delivery_state": "COMPLETE",
+      "deliverable": "status-settings revision 7 (status 5): the supervisor starts and stops the interim Windows runner (scheduled task AAP-Win-Interim-Runner) from the Windows count in the settings and the Off and Pause switches, through a control file host-runner.json beside status.json that the runner's start script polls (new -ControlFile); a job in progress is never interrupted; a failed or short-lived start is retried on a shared backoff (10, 30, 60, 120 s, then every 300 s) that resets only after the runner has stayed up 300 s; the windows-host profile carries host_control and says why a stopped runner is stopped; the tray's Windows row becomes a 0/1 switch and names the states. Limits stated in the contract (PR description): a job in progress is never killed; a job handed to a runner in the instant before it stops fails and GitHub does not re-queue it (the one-job just-in-time registration of a later R2 slice closes this); settings below schema 3 carry no Windows count, so the runner is off until a count of 1 or more is stored; with the supervisor not running nobody updates the control file; one runner exists, so counts above 1 still mean one.",
+      "acceptance": "Not stated before the work (the item was added at its merge). The checks the PR description and the receipt record: cargo fmt, clippy -D warnings and cargo test for the tray crate; Pester 5.7.1 on supervisor/ on Windows PowerShell 5.1 and pwsh 7; python parity/contracts/validate.py; mutation checks for the new supervisor branches; hosted CI 5/5.",
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/137",
+        "method": "merge-commit",
+        "accepted_head": "9882ad6de49984a88c0e1dee84400161409653ed",
+        "merge_sha": "ca0e7617e85c8f6fa75f94970dd6dd62a9884504"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\R2.2-attempt-1.receipt.json (verified CLEAN-WITH-NOTES 2026-11-14 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-14.md, batch 1; notes: the orch-review at 0e6f0cc has no file; the Pester, cargo and validate.py figures and the screenshots are recorded in-session only; the receipt itself says the PR-description figures were not rerun; the remote branch is retained on purpose))",
+      "why": "Until this item the interim Windows runner was only reported (R2.1) and kept running whatever the tray said (PR description).",
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/137",
+      "branch": "feat/r2-2-host-runner-control",
+      "note": "Merged 2026-11-14 at ca0e761 (PR #137, head 9882ad6, base d2d9e11; first parent d2d9e11, main after #136), COMPLETE as merged and not installed; hosted CI 5/5 SUCCESS on the recorded head (the pester-backends job is job 132274608258 of run 43538921089, on a GitHub-hosted windows-latest runner, 1h5m32s); cleanup receipt R2.2-attempt-1 verified CLEAN-WITH-NOTES 2026-11-14 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-14.md, batch 1; notes: the orch-review at 0e6f0cc has no file; the Pester, cargo and validate.py figures and the screenshots are recorded in-session only; the receipt itself says the PR-description figures were not rerun; the remote branch is retained on purpose). 21 files: PRODUCT.md, docs/ROADMAP.md, crates/tray (README.md, src/dashboard.rs, src/settings.rs, src/settings_panel.rs, src/state.rs), parity/contracts (README.md, status-settings.md, status-v5.schema.json, validate.py, 5 status-v5 fixtures), supervisor (README.md, aap-runner-supervisor.ps1, supervisor.Tests.ps1, win-interim/start-runner.ps1, win-interim/start-runner.Tests.ps1). Reviews: ecc:orch-review at 0e6f0cc: APPROVE, no findings (no file; recorded in-session only). A second review at 0e6f0cc, PowerShell and security (parity/R2.2/attempt-1/ps-review.md): 1 HIGH (a successful start cleared the retry at once, so a start script that exits immediately was started again every 5 s without limit), 1 MEDIUM (an unguarded control-file write could skip the rest of the supervisor cycle), 1 LOW (contract wording); fixed in 92c7f31 and f4aae4e. A delta review of 0e6f0cc..f936137 (parity/R2.2/attempt-1/delta-review.md): fix before merge, F1 MEDIUM (a listener that lives a few seconds and exits was restarted without limit), F2 MEDIUM (a failed control-file write is not visible in status), F3 LOW (the contract did not describe the changed start behaviour), F4 and F5 LOW (test and log wording); F1, F3 and F4 were fixed and F2 documented as a limit in 9882ad6, and the same reviewer then approved 9882ad6 (section 'Follow-up'). GitHub lists 0 reviews on the PR. Left open on purpose and queued for the Live Apply supervisor change (receipt): F5, and the two optional wording notes of the approval of 9882ad6: (1) the contract does not say that a supervisor restart also resets the backoff; (2) the README says 'stayed up 300 s' while the code takes one sample at 300 s or later. Recorded in-session only (receipt and PR description; the verifier did not rerun them): Pester 482 of 482 on Windows PowerShell 5.1 and on PowerShell 7 at 9882ad6, cargo test 247 passed, validate.py PASS (16 schemas, 90 valid and 316 invalid fixtures, 3 valid and 2 invalid new), the orch-review and the screenshots. NOT INSTALLED: the live install is unchanged by this merge (receipt, protected_state) and waits for the owner's word. The new supervisor script (supervisor/aap-runner-supervisor.ps1) and the new supervisor/win-interim/start-runner.ps1 must be installed together. The remote branch feat/r2-2-host-runner-control still exists, at 9882ad6 (the verifier saw it present on 2026-11-14): a session hook (pro-workflow git-blast-radius) blocked git push origin --delete and the coordinator did not go around it; it waits for the owner's word. The worktrees and the three local branches are gone (observed by the verifier)."
+    },
+    {
       "id": "R1.1",
       "title": "Tiered Linux pool contract and tray (roadmap R1, steps 1 and 4)",
       "earliest_wave": 7,
