@@ -2472,7 +2472,7 @@
       "item": "ci-runner-routing-linux-light",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/133",
       "merge_sha": "021b1eba1924cec610cf5fc19b7c557252bf0303",
-      "what": "CI routing: the bash and pool-core jobs move from ubuntu-latest to the self-hosted Linux light runners for push and same-repo PRs (fork PRs and PRs labelled ci-hosted stay hosted), and a second commit installs the pinned Rust toolchain on those runners (.github/workflows/ci.yml only)",
+      "what": "CI routing: the pool-core job moves from ubuntu-latest to the self-hosted Linux light runners for push and same-repo PRs (fork PRs and PRs labelled ci-hosted stay hosted); the first commit moved bash too and the second moved it back, so bash stays on ubuntu-latest; the second commit also installs the pinned Rust toolchain on the Linux light runner (.github/workflows/ci.yml only)",
       "cleanup": "none verified: no verified cleanup receipt exists (verifier-pass-2026-11-14.md, 'Not covered by this pass') and the remote branch ci/runner-routing-linux-light still exists. Under the rule of 2026-11-14 (every merged PR gets a cleanup receipt) one is owed. gh pr view 133 lists 0 reviews",
       "note": "Merged 2026-11-08 at 021b1eb (head 64a8dcf, first parent 7a71280, main after #83); hosted CI 5/5 SUCCESS on the head."
     },
