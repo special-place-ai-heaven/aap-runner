@@ -18,22 +18,7 @@
   "as_of": "2026-11-07",
   "origin_main": "27a1621fb490ca1146d183815cb989921366ec0d",
   "current_wave": 6,
-  "in_flight": [
-    {
-      "item": "P13.5c",
-      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/83",
-      "head": "6df256aae68c3055c58b83e470581ee369f5fd6a",
-      "state": "PR_OPEN",
-      "note": "hosted CI 4/4 SUCCESS on the head; no independent review recorded"
-    },
-    {
-      "item": "P02.5 (Linux conformance: P11 seed, P15)",
-      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/84",
-      "head": "2b03f23ba06a12a74d9df3e092084213b1f5d93e",
-      "state": "PR_OPEN",
-      "note": "hosted CI pester-backends FAILURE on the head (bash, pester, tray SUCCESS)"
-    }
-  ],
+  "in_flight": [],
   "cleanup_barrier_state": "OPEN (2026-11-07): the independent read-only verifier pass C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md (batches 1-14) has signed every parity receipt and receipted coordinator PR that was pending or missing since the first 2026-11-06 reconcile, all CLEAN-WITH-NOTES: batch 1 P02.4-attempt-1 (PR #80), P02.5-attempt-1 (PR #79), coord-ledger-close-6-attempt-1 (PR #81); batch 2 R2.1-attempt-1 (PR #103), R1.1-attempt-1 (PR #104); batch 3 R1.2-attempt-1 (PR #108); batch 4 P08.2-attempt-1 (PR #110); batch 5 R1.3-attempt-1 (PR #112); batch 6 P08.1-attempt-1 (PR #113); batch 7 coord-oracle-refresh-2026-11-attempt-1 (PR #111); batch 8 P05.1-attempt-1 (PR #109); batch 9 coord-ledger-reconcile-2026-11-06-attempt-1 (PR #106) and coord-ledger-close-2026-11-07-attempt-1 (PR #116); batch 10 P22.1-attempt-1 (PR #117), P22.2-attempt-1 (PR #118), P12.2-attempt-1 (PR #119); batch 11 R1.4-attempt-1 (PR #120); batch 12 coord-ledger-close-2026-11-07b-attempt-1 (PR #121), P00.1-attempt-1 (PR #122), P10.1-attempt-1 (PR #123); batch 13 coord-ledger-close-2026-11-07c-attempt-1 (PR #124), P25.1-attempt-1 (PR #125); batch 14 coord-fix-manager-slot-backoff-attempt-1 (PR #127), coord-p09-cap-contract-v5-attempt-1 (PR #126), coord-fix-supervisor-unchecked-drain-attempt-1 (PR #128). PR #107 and #115 (cleanup-receipt schema fixes) are merged, so all of these receipts validate with origin/main's parity/contracts/validate.py. No merged parity item or receipted coordinator PR lacks a verifier verdict. Recorded deviation: #113 merged 7 s after #111, before #111's cleanup was verified (receipt P08.1-attempt-1, batch 6 B6.3); both are verified now, so the barrier is open for both. CI-wiring PRs (#105, #114 and earlier) and cleanup-receipt schema fixes (#107, #115) are coordinator support, not ledger items, and carry no receipt by rule. This close itself is a coordinator PR whose receipt is written after it merges.",
   "tasks": [
     {
@@ -1756,7 +1741,7 @@
       "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P02.5-attempt-1.receipt.json (verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md, batch 1: registry manifest not listed as retained after a rebase; stale main-state statements; file touched ~1.5 min after it was written)",
       "why": "The Highs from the cross-family review need a guest-side binding of vm_id/reservation/lease_generation to the clone; KVP-on leaks the host name.",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/79",
-      "note": "Ledger reconcile 2026-11-06: owner approval Q6 is recorded (2026-10-21/22); the contract revision (guest-transport revision 2) merged as PR #79 at c7ee17a on 2026-10-22; its cleanup receipt was verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md). Conformance: the Linux side (P11 seed, P15) is PR #84, open, with pester-backends failing on its head; the Windows side (P10 WriteUnattend, P14) has no PR; the independent security review is not recorded. Not COMPLETE."
+      "note": "Ledger reconcile 2026-11-06: owner approval Q6 is recorded (2026-10-21/22); the contract revision (guest-transport revision 2) merged as PR #79 at c7ee17a on 2026-10-22; its cleanup receipt was verified CLEAN-WITH-NOTES 2026-11-06 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-06.md). Conformance as of 2026-11-14: the Linux side (P11 seed, P15) merged as PR #84 (branch parity/p11-p15-guest-identity, head 7429b51, hosted CI 5/5 SUCCESS, run 42413878069) at 935b324 on 2026-11-07; receipt coord-p11-p15-guest-identity-attempt-2 verified CLEAN-WITH-NOTES 2026-11-14 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-14.md, batch 8; note: the receipt does not say at which head ecc:orch-review ran; 80ad875 was the reviewed-and-tested head and 7429b51, the only commit after it, changes one line of AapLinBackend.psm1 and adds tests, and whether it was reviewed is recorded in-session only). The receipt records a security-reviewer pass on that PR, clean to merge (no Critical, High or Medium; in-session only). The Windows side (P10 WriteUnattend, P14): gh pr list --state open returns no PR and no merged PR for it is recorded; an independent security review of the item as a whole is not recorded. Not COMPLETE."
     },
     {
       "id": "P22.2",
@@ -1836,14 +1821,19 @@
         "tests/backends/windows/Invoke-AapWinMutations.ps1"
       ],
       "lane": "Sol high",
-      "delivery_state": "PR_OPEN",
+      "delivery_state": "IN_PROGRESS",
       "deliverable": "Fix exactly the findings of the independent post-merge review of PRs #75 and #76 (Codex gpt-6.1-sol, high, read-only, 2026-10-22): (1) HIGH, PR #76: restore the console input encoding in a finally around Process.Start in Invoke-AapZcProcess (guests/cache/windows/AapZcCache.psm1) and in the Linux backend's HyperV ssh-keygen start (supervisor/backends/linux/AapLinBackend.HyperV.psm1), so a failed start (missing executable, denied launch) cannot leave the caller's encoding changed; (2) MEDIUM, PR #76: give the ssh-keygen swap the same Windows PowerShell 5.1 guard as the cache module and serialize cooperating starters across save, swap, start and restore, so a second runspace cannot observe the temporary encoding, and document the concurrency constraint; (3) MEDIUM, PR #76: tests that exercise the wrapped Windows PowerShell 5.1 path (the cache tests launch pwsh 7 today), both console encodings and failed starts, plus a provider test with a harmless fake executable; (4) HIGH, PR #75: a closed stdin must be empty: suppress the preamble and require zero bytes (the merged probe accepted the BOM; PR #76 fixes only the normal start path); (5) MEDIUM, PR #75: test the Windows initialization separately in a child whose input pipe stays open and assert its own probe records; (6) MEDIUM, PR #75: make the Linux probe (tests/guests/cache/fakes/fake-zccache) read one byte explicitly and reject any byte instead of taking read exit status 1 as zero bytes; (7) LOW: the fake writes process metadata and stdin hex to disk, keep counts only. Also investigate and record why the P12 mutation survivor (stdin-bom: the tagged conditions at supervisor/backends/linux/AapLinBackend.psm1 line ~873 and supervisor/backends/windows/AapWinBackend.psm1 line ~805, replaced by $false in tests/backends/linux/Invoke-AapLinMutations.ps1 and tests/backends/windows/Invoke-AapWinMutations.ps1) survives under pwsh 7; PR #76 does not touch those modules, so the survivor is still open, and a code change in them needs an ownership revision.",
       "acceptance": "Every finding has a test that fails on the pre-change code (heads 04b4ba2 and 680b820; main 729d3e7) and passes after the fix: a failed Process.Start with a preamble-bearing original encoding leaves that encoding unchanged; cooperating starters never observe or restore a foreign encoding; the wrapped Windows PowerShell 5.1 path is exercised under UTF-8 and non-UTF-8 consoles; the initialization probe fails without the production fix; the Linux probe rejects 'x' followed by EOF; the P12 survivor is either killed by a new check or recorded as a documented platform exception with evidence; tests/guests/cache and the backend suites are green on both PowerShell hosts and real Linux in hosted CI; independent review READY at the exact head, because P13.5 and P13.5b merged without one. Commits use the required special-place-administrator noreply identity.",
-      "merge_proof": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/83",
+        "method": "merge-commit",
+        "accepted_head": "6df256aae68c3055c58b83e470581ee369f5fd6a",
+        "merge_sha": "7a712806cda8973fcff61b9c1045c40f8d45732e"
+      },
       "cleanup_receipt": null,
       "branch": "parity/p13-5c-stdin-restore",
       "why": "The independent post-merge review (Codex gpt-6.1-sol, high, read-only, 2026-10-22; replies t005-ledger6-sol and t006-p135-post-merge-sol in the parity work directory) returned FIX-FIRST on PRs #75 and #76, which merged without an independent review. Also recorded here: the five implementation commits 6637d71, d278cae, 98801d3, 04b4ba2 (PR #75) and 680b820 (PR #76) carry the literal placeholder author and committer email [EMAIL] instead of the required noreply identity; history is not rewritten.",
-      "note": "Owner is the coordinator. P13.5c is the remainder item of the early-merged P13.5b (and P13.5): its prerequisite is the merged P13.5b code, not P13.5b's COMPLETE state, and P13.5 and P13.5b stay IN_PROGRESS until P13.5c lands and is independently reviewed. Ledger reconcile 2026-11-06: PR #83 is open (head 6df256a, hosted CI 4/4 SUCCESS); its independent review READY at the exact head, which the acceptance requires, is not recorded.",
+      "note": "Owner is the coordinator. P13.5c is the remainder item of the early-merged P13.5b (and P13.5): its prerequisite is the merged P13.5b code, not P13.5b's COMPLETE state, and P13.5 and P13.5b stay IN_PROGRESS until P13.5c lands and is independently reviewed. Ledger close 2026-11-14: PR #83 merged at 7a71280 on 2026-11-08 (08:26 UTC; hosted CI 4/4 SUCCESS on the head: bash, pester, pester-backends, tray; first parent 935b324, main after #84; the branch was cut at a55cb7b). IN_PROGRESS, not COMPLETE, in the form of P13.5 and P13.5b: no cleanup receipt exists in the parity evidence store (verifier-pass-2026-11-14.md lists PR #83 as not covered), no independent review READY at the exact head is recorded and gh pr view 83 lists 0 reviews. The remote branch parity/p13-5c-stdin-restore still exists, at 6df256a. A local branch of the same name is one commit ahead of origin/main: 9d8026c, dated 2026-10-24, whose parent is 79d1feb; it is not the merged head (6df256a is not an ancestor of it) and it is on no remote branch, so it holds work that was not in PR #83. The PR description reports that each finding was reproduced on origin/main and fixed, that the review's preferred fix was refuted by measurement so the swap stays, and that the P12 stdin-bom survivor is now killed on both PowerShell editions; none of that is verified here. It also lists starters it does not cover: supervisor/broker/aap-broker.psm1, psdirect-call.ps1, Invoke-AapWsl -StdIn in the supervisor and Install-AapKeyFromStdin in installer/install-host.ps1.",
       "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/83",
       "head": "6df256aae68c3055c58b83e470581ee369f5fd6a"
     },
@@ -2507,7 +2497,7 @@
       "status": "DECIDED",
       "decided": "2026-10-21/22 (owner decision session)",
       "answer": "Hard VM lifetime cap of 6 hours for all repositories.",
-      "still_open": "Not implemented in the backends. The contract is merged: PR #126 (077c5cd, 2026-11-07; cleanup receipt verified CLEAN-WITH-NOTES, batch 14) carries the 6-hour cap as settings schema 5 (vm_lifetime_cap_hours 1..6, replacing lease_wall_clock_hours) and supersedes PR #82, which was closed unmerged (its remote branch deleted on the owner's word; the worktree's uncommitted edits are saved as evidence/p09-hardcap-attempt2-uncommitted.patch in the parity work directory). P10.6 (Windows backend) and P11.3 (Linux backend) are NOT_STARTED and ready; the lab proof is gated on the owner. The supervisor and tray still write and accept settings 4 until a supervisor item applies schema 5; the #126 follow-ups are item P09.1.",
+      "still_open": "Implemented in the Linux backend only: P11.3 is COMPLETE (PR #131, e6fef16, 2026-11-07; not wired into the live pool). The contract is merged: PR #126 (077c5cd, 2026-11-07; cleanup receipt verified CLEAN-WITH-NOTES, batch 14) carries the 6-hour cap as settings schema 5 (vm_lifetime_cap_hours 1..6, replacing lease_wall_clock_hours) and supersedes PR #82, which was closed unmerged (its remote branch deleted on the owner's word; the worktree's uncommitted edits are saved as evidence/p09-hardcap-attempt2-uncommitted.patch in the parity work directory). P10.6 (Windows backend) stays NOT_STARTED and ready; the lab proof is gated on the owner. The supervisor and tray still write and accept settings 4 until a supervisor item applies schema 5; the #126 follow-ups are item P09.1.",
       "source_2": "docs/ROADMAP.md R3 (owner decision 2026-11-04) lists the P10.6 six-hour lifetime cap as remaining work."
     },
     {
@@ -2528,7 +2518,7 @@
       "status": "APPROVED",
       "decided": "2026-10-21/22 (owner decision session)",
       "answer": "APPROVED: the host writes an offline per-clone guest identity record into the Windows unattend/answer file and the Linux cloud-init seed (fields vm_id, reservation_id, lease_generation, expected scratch disk size/identity); Hyper-V KVP stays off; the SMBIOS UUID alternative is rejected.",
-      "still_open": "The contract revision merged as PR #79 (c7ee17a, 2026-10-22; cleanup receipt verified CLEAN-WITH-NOTES 2026-11-06). Conformance: the Linux side (P11 seed, P15) is PR #84, open, pester-backends failing on its head; the Windows side (P10 WriteUnattend, P14) has no PR; the independent security review is not recorded. P02.5 is IN_PROGRESS."
+      "still_open": "The contract revision merged as PR #79 (c7ee17a, 2026-10-22; cleanup receipt verified CLEAN-WITH-NOTES 2026-11-06). Conformance: the Linux side (P11 seed, P15) merged as PR #84 (935b324, 2026-11-07; receipt verified CLEAN-WITH-NOTES 2026-11-14); the Windows side (P10 WriteUnattend, P14) has no open PR and no merged PR is recorded; the independent security review of the item is not recorded. P02.5 is IN_PROGRESS."
     },
     {
       "id": "Q7",
