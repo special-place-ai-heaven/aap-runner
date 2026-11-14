@@ -1884,16 +1884,20 @@
         "tests/backends/linux/**"
       ],
       "lane": "Sol high",
-      "tokens": [
-        "suite"
-      ],
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "Linux backend part of owner decision Q4: the supervisor enforces a 6 hour wall-clock cap per VM, independent of the job and of the guest. At the cap the VM is stopped, reclaimed through the verified-teardown path, and the job is reported failed with an explicit reason; the slot is not reused before verified teardown. A guest reply and the runner's GitHub status (online, busy) never extend or reset the cap, and its start time is persisted, not held only in memory.",
       "acceptance": "Fake-backed tests prove the cap fires at the boundary, survives a supervisor restart (the start time is persisted, not held in memory) and reclaims a guest that ignores shutdown; the Linux backend suite is green on both PowerShell hosts and in hosted CI. The lab proof is gated on the owner.",
-      "merge_proof": null,
-      "cleanup_receipt": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/131",
+        "method": "merge-commit",
+        "accepted_head": "e539b00825e87abd21ee159ba372d89bdd8b05c9",
+        "merge_sha": "e6fef16f2a31f9576c655e9be9d84d4ba7980000"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\P11.3-attempt-1.receipt.json (verified CLEAN 2026-11-14 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-14.md, batch 2, corrections and re-check: the first pass was CLEAN-WITH-NOTES because the scope named a file PR #131 does not change; corrected and re-checked; review and test counts recorded in-session only))",
       "why": "Owner decision Q4 (2026-10-21/22): a hard VM lifetime cap of 6 hours for all repositories. The Linux backend inherits the P10 gap (supervisor/backends/linux/INTEGRATION.md request 3: hard VM lifetime cap, as the Windows twin's request 4): a guest that holds its runner credential can keep GitHub reporting its runner online and busy, so a heartbeat-quarantined slot may never be freed. Same contract dependency as P10.6: allocator.md (Wall-clock rule), status-settings.md and the README still say the wall clock only flags and never destroys, backend-lifecycle.md has no lifetime-cap result, and lease_wall_clock_hours (1..72, default 6) must be reconciled with the fixed 6 hour cap. Update 2026-11-07: that contract revision is merged as PR #126 (077c5cd): the cap is settings schema 5 (vm_lifetime_cap_hours 1..6 replaces lease_wall_clock_hours), with allocator.md, backend-lifecycle (cap evidence, destroy intent) and status-v5 updated; #82 was closed unmerged and is superseded.",
-      "note": "Ledger close 2026-11-07 (fourth): the contract revision this item needed (the 6-hour lifetime cap) is merged as PR #126 at 077c5cd, settings schema 5 (vm_lifetime_cap_hours 1..6); PR #82 was closed unmerged and superseded. The item no longer waits on #82; its prerequisites are as listed (P11, P12, both COMPLETE). The supervisor and tray still write and accept settings 4 until a supervisor item applies schema 5. The #126 follow-ups (v3/v4 tightening, v4 7..72 presentation, vm-cap-notes slot names, whether a slot cap requires settings 5 applied) are item P09.1 and may refine the contract this item implements against. docs/ROADMAP.md R3 (owner-approved 2026-11-04) lists the six-hour cap as remaining work (P10.6; P11.3 is its Linux twin)."
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/131",
+      "branch": "feat/p11-3-linux-vm-lifetime-cap",
+      "note": "Ledger close 2026-11-07 (fourth): the contract revision this item needed (the 6-hour lifetime cap) merged as PR #126 at 077c5cd, settings schema 5 (vm_lifetime_cap_hours 1..6); PR #82 was closed unmerged and superseded. The supervisor and tray still write and accept settings 4 until a supervisor item applies schema 5; the #126 follow-ups are item P09.1. docs/ROADMAP.md R3 (owner-approved 2026-11-04) lists the six-hour cap as remaining work (P10.6; P11.3 is its Linux twin). Ledger close 2026-11-14: Merged 2026-11-07 at e6fef16 (PR #131, head e539b00, base 27a1621; first parent 4719354, main after #130); hosted CI 5/5 SUCCESS on the recorded head (run 42402310703; the earlier head fead334 also passed run 42395333772 but was not merged, a review regression); cleanup receipt P11.3-attempt-1 verified CLEAN 2026-11-14 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-14.md, batch 2, corrections and re-check): the first pass was CLEAN-WITH-NOTES because the receipt's scope listed tests/backends/linux/Invoke-AapLinMutations.ps1, which PR #131 does not change; the coordinator corrected the scope text to the PR's nine files and the verifier re-checked it; merge parents and base match, CI success on the PR head, disposed resources absent, every commit hash resolves, no secrets; review and test counts are recorded in-session only. Scope: 9 files, 4 under supervisor/backends/linux (AapLinBackend.psm1, AapLinBackend.HyperV.psm1, INTEGRATION.md, README.md) and 5 under tests/backends/linux (LifetimeCap, Lifecycle, Hygiene and Transport .Tests.ps1, LinBackendTestHelpers.ps1). The Linux Hyper-V backend enforces the settings-schema-5 VM lifetime cap (1..6 h, default 6): age from acquired_at on a never-backwards clock, Hyper-V turn-off, a durable lifetime_cap destroy intent, verified teardown, a cap_breach hold and a start gate; not wired into the live pool. Reviews as the receipt records them: ecc:orch-review APPROVE; security-reviewer in three passes, final verdict clean to merge with one Low follow-up (a duplicate same-name VM is not covered while the recorded VM is in cap_breach); ecc:silent-failure-hunter and ecc:pr-test-analyzer findings fixed in fead334. Local, from the receipt: Linux backend and supervisor Pester 736/736 on pwsh 7.6.9 and on Windows PowerShell 5.1; the mutation runner killed all 27 cap checks. The lab proof is still gated on the owner; the Windows twin P10.6 is not touched by this PR. GitHub lists 0 reviews on the PR."
     },
     {
       "id": "R2.1",
@@ -2062,17 +2066,20 @@
         "crates/tray/**"
       ],
       "lane": "Sol medium",
-      "tokens": [
-        "compile",
-        "suite"
-      ],
-      "delivery_state": "NOT_STARTED",
+      "delivery_state": "COMPLETE",
       "deliverable": "A slot whose status.json state word is retired renders as retired on its runner card instead of starting. Today the tray treats an unknown state word as starting; status.json carries retired for a slot the manager gave up on (PR #127) and status.v5 maps it to the lifecycle quarantined (PR #128). The tray follows the same mapping.",
       "acceptance": "Tray tests for a retired slot in both tiers fail on current main (the card shows starting) and pass after; other unknown state words keep their current rendering; cargo fmt --all --check, cargo clippy --all-targets --locked -D warnings and cargo test --locked green; hosted CI 5/5; a live check with a dev build (hidden GUI) against a read-only copy of a status file with a retired slot. The installed tray changes only on the owner's word.",
-      "merge_proof": null,
-      "cleanup_receipt": null,
+      "merge_proof": {
+        "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/130",
+        "method": "merge-commit",
+        "accepted_head": "739424ef3c2d9f30d7a9d00f3e7650e214eaf060",
+        "merge_sha": "4719354c284e23745a2f19bd3788870f3a54e181"
+      },
+      "cleanup_receipt": "C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\evidence\\R1.5-attempt-1.receipt.json (verified CLEAN 2026-11-14 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-14.md, batch 4: test counts recorded in-session only; the retired-slot screenshot was not looked at))",
       "why": "PR #128 states that the tray reads status.json and still shows an unknown state word as starting, so a retired slot (a pool that gave up on it) looks like it is coming up.",
-      "note": "Owns crates/tray/**, which overlaps P19 and P20 (the claim gate refuses an overlapping lease, so only one of them is claimed at a time). Queued 2026-11-07 by the fourth ledger close."
+      "pr": "https://github.com/special-place-ai-heaven/aap-runner/pull/130",
+      "branch": "fix/r1-5-tray-retired-slot",
+      "note": "Merged 2026-11-07 at 4719354 (PR #130, head 739424e, base 27a1621; first parent a16a895, main after #129); hosted CI 5/5 SUCCESS on the recorded head (run 42380866949; run 42380866895 on the same head was cancelled by the concurrency group); cleanup receipt R1.5-attempt-1 verified CLEAN 2026-11-14 by an independent read-only verifier (C:\\AI_STUFF\\PROGRAMMING\\aap-runner-work\\parity\\verifier-pass-2026-11-14.md, batch 4: merge parents and base match, CI success on the PR head, disposed resources absent, every commit hash resolves, no secrets; the test counts are recorded in-session only and the retired-slot screenshot was not looked at). Scope: 4 files (crates/tray/src/state.rs, crates/tray/src/dashboard.rs, crates/tray/src/main.rs, crates/tray/README.md). A manager 'retired' slot now renders as Retired (error symbol, note, no occupancy row, no error-panel click) on heavy and light cards; other unknown state words still render as starting. Reviews and tests as the receipt records them: ecc:orch-review APPROVE (0 findings); ecc:rust-reviewer approve with two MEDIUM test gaps, fixed in 739424e; cargo fmt, clippy -D warnings and cargo test --locked (208 tray tests) green; the two new retired-slot tests red on main and green on the branch; a live dev-build screenshot against a copied status.json kept as parity/R1.5/retired-slot.png. Installed: the live tray was replaced on 2026-11-13 by main d2d9e11, which contains this merge (the coordinator's install record, not inspected here). GitHub lists 0 reviews on the PR."
     },
     {
       "id": "P19.1",
