@@ -928,9 +928,12 @@ function Sync-AapHostRunner {
         $AapRt.Retry.Remove('host-runner-start')
         return
     }
-    # A start is pending until the runner reports online or busy (the script may
-    # exit at once): the next start waits on the failure backoff until then.
-    if ($AapRt.Retry['host-runner-start'] -and @('online', 'busy') -ccontains (Get-AapHostRunner).State) {   # check:host-start-pending
+    # A start stays pending until the runner is online or busy a full longest
+    # backoff step (300 s) after it. Until then every next start waits on the
+    # backoff, so a script that exits at once and a listener that dies after a
+    # while both settle at one start per 300 s.
+    $r = $AapRt.Retry['host-runner-start']
+    if ($r -and $r.Since -and (Get-AapNow) -ge $r.Since.AddSeconds((Get-AapBackoffDelay 5)) -and @('online', 'busy') -ccontains (Get-AapHostRunner).State) {   # check:host-start-pending
         $AapRt.Retry.Remove('host-runner-start')
     }
     if (-not $start -or -not (Test-AapRetryDue 'host-runner-start')) { return }   # check:host-start-running
@@ -949,6 +952,7 @@ function Sync-AapHostRunner {
         $AapRt.HostStartErr = "starting logon task \$name failed: $($_.Exception.Message)"
         Register-AapRetryFailure 'host-runner-start' $AapRt.HostStartErr
     }
+    $AapRt.Retry['host-runner-start'].Since = Get-AapNow
 }
 
 # status.v5.json (parity/contracts/status-v5.schema.json): status.json's state

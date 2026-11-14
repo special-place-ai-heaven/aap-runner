@@ -2019,7 +2019,8 @@ Describe 'aap-runner host supervisor' {
             $AapRt.HostStartErr | Should -BeExactly ''
         }
 
-        It 'holds a start as pending until the runner is seen, then resets the backoff' -Tag 'host-start-pending' {
+        It 'holds a start as pending until the runner has stayed up, then resets the backoff' -Tag 'host-start-pending' {
+            $listener = @([pscustomobject]@{ Name = 'Runner.Listener.exe'; Path = (Join-Path $AapCfg.HostRunnerDir 'bin\Runner.Listener.exe') })
             $starts = { @($script:calls | Where-Object { $_ -ceq 'task AAP-Win-Interim-Runner' }).Count }
             Sync-AapHostRunner
             Sync-AapHostRunner
@@ -2032,19 +2033,50 @@ Describe 'aap-runner host supervisor' {
             @([regex]::Matches($log, 'started logon task')).Count | Should -Be 2
             $log | Should -Not -Match 'failed|failure'
             $AapRt.HostStartErr | Should -BeExactly ''
+            # 20 s: the second wait is 30 s, and a listener that was up for a
+            # moment and died does not shorten it.
+            $script:clock.Now = $script:clock.Now.AddSeconds(10)
+            Sync-AapHostRunner
+            & $starts | Should -Be 2 -Because 'the second wait is 30 s, not 10'
             $script:hostTask = 'Running'
-            $script:hostProcs = @([pscustomobject]@{ Name = 'Runner.Listener.exe'; Path = (Join-Path $AapCfg.HostRunnerDir 'bin\Runner.Listener.exe') })
+            $script:hostProcs = $listener
             Sync-AapHostRunner
             $script:hostTask = 'Ready'
             $script:hostProcs = @()
             Sync-AapHostRunner
-            & $starts | Should -Be 3 -Because 'a runner seen online clears the backoff'
+            & $starts | Should -Be 2 -Because 'a listener that died early keeps the backoff'
+            # 40 s: due, third start. Then the task runs with no listener.
+            $script:clock.Now = $script:clock.Now.AddSeconds(20)
+            Sync-AapHostRunner
+            & $starts | Should -Be 3
+            $script:hostTask = 'Running'
+            $script:clock.Now = $script:clock.Now.AddSeconds(400)
+            Sync-AapHostRunner
+            & $starts | Should -Be 3 -Because 'a running task is not started again'
+            $AapRt.Retry['host-runner-start'].Failures | Should -Be 3 -Because 'no listener: the start is still pending'
+            # Fourth start, then the runner stays up: 299 s is not enough, 300 s is.
+            $script:hostTask = 'Ready'
+            Sync-AapHostRunner
+            & $starts | Should -Be 4
+            $script:hostTask = 'Running'
+            $script:hostProcs = $listener
+            $script:clock.Now = $script:clock.Now.AddSeconds(299)
+            Sync-AapHostRunner
+            $AapRt.Retry['host-runner-start'].Failures | Should -Be 4
+            $script:clock.Now = $script:clock.Now.AddSeconds(1)
+            Sync-AapHostRunner
+            $AapRt.Retry['host-runner-start'] | Should -BeNullOrEmpty -Because 'a runner that stayed up 300 s resets the backoff'
+            $script:hostTask = 'Ready'
+            $script:hostProcs = @()
+            Sync-AapHostRunner
+            & $starts | Should -Be 5 -Because 'after the reset the next start is at once'
+            $AapRt.Retry['host-runner-start'].Failures | Should -Be 1
             Sync-AapHostRunner
             Write-AapStateFile '{"desired":"off"}'
             Sync-AapHostRunner
             Write-AapStateFile '{"desired":"on"}'
             Sync-AapHostRunner
-            & $starts | Should -Be 4 -Because 'off and on again resets the backoff'
+            & $starts | Should -Be 6 -Because 'off and on again resets the backoff'
         }
 
         It 'a failing control-file write skips only the runner control, logs once and retries' -Tag 'host-sync-log' {
@@ -2059,6 +2091,10 @@ Describe 'aap-runner host supervisor' {
             Invoke-AapCycle
             Get-AapControl | Should -BeExactly '{"schema":1,"desired":"off"}'
             $AapRt.HostSyncErr | Should -BeExactly ''
+            Write-AapStateFile '{"desired":"on"}'
+            Mock Write-AapJsonAtomic -ParameterFilter { $Name -eq 'host-runner.json' } { throw 'sharing violation' }
+            { Sync-AapHostRunner } | Should -Throw -ExpectedMessage '*sharing violation*'
+            $script:calls | Should -Not -Contain 'task AAP-Win-Interim-Runner' -Because 'a failed write leaves the start for the next cycle'
         }
 
         It 'does nothing without the install folder or with a Windows VM backend' -TestCases @(

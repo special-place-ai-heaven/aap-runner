@@ -270,9 +270,12 @@ it through the controls it already has. No settings schema changes.
   cycle in every mode, Off included (no `wsl.exe` call). The start script reads it at start (off: exit 0
   before stopping or starting anything) and every 2 s while `run.cmd` runs. Exactly `schema` 1 with
   `desired` `"off"` is off; anything else, a missing file included, is on.
-- **Start.** When wanted and the logon task is not running, the supervisor starts it, retrying a failed
-  start with the shared backoff. It never stops the task or a process: stopping the task does not stop
-  the runner.
+- **Start.** When wanted and the logon task is not running, the supervisor starts it. After every
+  start, failed or not, the next one waits on the shared backoff (10, 30, 60, 120, then every 300 s).
+  The backoff resets once the runner is online or busy 300 s or more after its last start, and when the
+  runner is turned off. So a start script that exits at once, or a listener that keeps dying, settles
+  at no more than one start per 300 s. It never stops the task or a process: stopping the task does
+  not stop the runner.
 - **Stop.** Off ends the runner only when no job is in progress: the start script exits and its job
   object ends `run.cmd` and the listener. A job in progress is never killed; the runner stops after it.
   A withdrawn request is forgotten.
@@ -287,8 +290,10 @@ it through the controls it already has. No settings schema changes.
 Limits: (a) a job in progress is never killed, so the runner stops after it; (b) with a listener
 registered, GitHub may hand it the next queued job in the moment before it stops; that job fails;
 (c) settings below schema 3 carry no Windows count, so the interim runner is off until a
-schema 3 or 4 count of 1 or more is stored; (d) with the supervisor not running nobody updates the
-control file, and the runner keeps its last instruction.
+schema 3 or 4 count of 1 or more is stored; (d) with the supervisor not running, or while it cannot
+write the control file, the runner keeps its last instruction. A failed write is logged once per
+error and tried again every cycle; no start is made in a cycle whose write failed, and status does
+not show the failure.
 
 ## Allocator reasons in status detail (DECIDED, P09 review 2026-10-20)
 
