@@ -504,16 +504,53 @@ pub fn write_settings(base: &Path, s: &Settings, vm: &VmLimit) -> io::Result<()>
     write_settings_at(base, s, vm, SystemTime::now())
 }
 
+/// `write_settings` for a supervisor that controls the interim Windows runner: it reads the
+/// edit's Windows count from schema 3 or 4, so that count is written, not the reported one.
+pub fn write_host_settings(base: &Path, s: &Settings, vm: &VmLimit) -> io::Result<()> {
+    write_host_settings_at(base, s, vm, SystemTime::now())
+}
+
 fn write_settings_at(base: &Path, s: &Settings, vm: &VmLimit, now: SystemTime) -> io::Result<()> {
+    write_settings_with(base, s, vm, now, false)
+}
+
+fn write_host_settings_at(
+    base: &Path,
+    s: &Settings,
+    vm: &VmLimit,
+    now: SystemTime,
+) -> io::Result<()> {
+    write_settings_with(base, s, vm, now, true)
+}
+
+/// Whether the file can carry a Windows count the supervisor reads: schema 3 or 4 is stored, or a
+/// fresh `status.v5.json` lists one. The window greys the interim runner's picker otherwise.
+pub fn windows_carriable(base: &Path) -> bool {
+    windows_carriable_at(base, SystemTime::now())
+}
+
+fn windows_carriable_at(base: &Path, now: SystemTime) -> bool {
+    kept_v4(base, now).is_some() || kept_v3(base, now).is_some()
+}
+
+/// `carry_windows`: the edit's Windows count is written even when it was not read from a schema
+/// 3 or 4 file (see `write_host_settings`).
+fn write_settings_with(
+    base: &Path,
+    s: &Settings,
+    vm: &VmLimit,
+    now: SystemTime,
+    carry_windows: bool,
+) -> io::Result<()> {
     let invalid = |e: String| io::Error::new(io::ErrorKind::InvalidInput, e);
     let bytes = match (kept_v4(base, now), kept_v3(base, now)) {
         (Some((kept, own_windows)), _) => {
-            let v4 = SettingsV4::edited(s, kept, own_windows);
+            let v4 = SettingsV4::edited(s, kept, own_windows || carry_windows);
             v4.check().map_err(invalid)?;
             serde_json::to_vec(&v4)?
         }
         (None, Some(kept)) => {
-            let v3 = SettingsV3::edited(s, kept);
+            let v3 = SettingsV3::edited(s, kept, carry_windows);
             v3.settings().validate(vm).map_err(invalid)?;
             v3.check().map_err(invalid)?;
             if s.linux_heavy_count > 0 {
@@ -576,10 +613,10 @@ impl SettingsV3 {
     /// The window's edit over the kept keys. The Windows count is the edit's when it was read
     /// from a schema 3 file (or the tray has a Windows backend), else the kept one: a tray-local
     /// choice never reaches the supervisor.
-    fn edited(s: &Settings, kept: SettingsV3) -> SettingsV3 {
+    fn edited(s: &Settings, kept: SettingsV3, carry_windows: bool) -> SettingsV3 {
         SettingsV3 {
             runner_count: s.runner_count,
-            windows_runner_count: if WINDOWS_BACKEND || s.schema >= 3 {
+            windows_runner_count: if WINDOWS_BACKEND || s.schema >= 3 || carry_windows {
                 s.windows_runner_count
             } else {
                 kept.windows_runner_count
@@ -1594,6 +1631,34 @@ mod tests {
         assert_eq!(w["lease_wall_clock_hours"], 6);
         assert_eq!(parse_v3(&w.to_string()).map(|v| v.check()), Some(Ok(())));
         assert_eq!(read_settings(&base).runner_count, 3);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_host_controlled_windows_count_is_the_edits_in_schemas_three_and_four() {
+        let base = temp_base("settings-host-carry");
+        let s = Settings::derived(3, 1, false, &VM);
+        // The fixture reports Windows 2: a plain write keeps it, a host-controlled one writes the
+        // edit's 1, because the supervisor that controls the interim runner reads that count.
+        for (schemas, schema) in [("[1,2,3]", 3), ("[1,2,3,4]", 4)] {
+            let file = inbox(&base).join("settings.json");
+            let _ = fs::remove_file(&file);
+            write_v5(&base, schemas, FRESH);
+            assert!(windows_carriable_at(&base, now()), "{schemas}");
+            write_settings_at(&base, &s, &VM, now()).unwrap();
+            assert_eq!(written(&base)["windows_runner_count"], 2, "{schemas}");
+            let _ = fs::remove_file(&file);
+            write_host_settings_at(&base, &s, &VM, now()).unwrap();
+            let w = written(&base);
+            assert_eq!(
+                (w["schema"].clone(), w["windows_runner_count"].clone()),
+                (schema.into(), 1.into())
+            );
+        }
+        // A supervisor that reads only schema 2 cannot carry the count.
+        let _ = fs::remove_file(inbox(&base).join("settings.json"));
+        write_v5(&base, "[1,2]", FRESH);
+        assert!(!windows_carriable_at(&base, now()));
         fs::remove_dir_all(&base).unwrap();
     }
 

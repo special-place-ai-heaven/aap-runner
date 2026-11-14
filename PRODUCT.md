@@ -31,9 +31,9 @@ A no-token, no-`wsl.exe` tray front-end over a locked-down distro, with a fresh 
 
 ## Capabilities and Constraints
 
-- Linux profile in two tiers, up to 2 heavy and 10 light runners (settings schema 4; before it 0..5 untiered), and Windows profile 0..5. No Windows backend exists yet, so a Windows count is shown as "not installed", drawn as an outline in its picker, and starts nothing. The interim Windows runner on this PC is separate from that count and has its own card.
+- Linux profile in two tiers, up to 2 heavy and 10 light runners (settings schema 4; before it 0..5 untiered), and Windows profile 0..5. No Windows backend exists yet, so a Windows count is shown as "not installed", drawn as an outline in its picker, and starts nothing. The interim Windows runner on this PC has its own card; when the supervisor controls it, the Windows row is a 0 / 1 switch for it and Off, Pause and 0 stop it after its current job (older supervisors: it is only shown).
 - Pool caps (CPU, memory, IO cap, sharing) are edited in the window, applied atomically, and bounded by the host VM minus a reserve.
-- Actions: Power On/Off, Start/Stop, Pause/Resume, Apply/Revert, Verify, Repair, Open logs, Open job, GitHub setup, Identity.
+- Actions (the owner controls everything from the tray): Power On/Off, Start/Stop, Pause/Resume, Apply/Revert, Verify, Repair, Open logs, Open job, GitHub setup, Identity.
 - The tray never runs `wsl.exe`, holds no token, and never shows a console window. Every elevated action goes through one UAC prompt to the helper mode of the same exe.
 - Install (owner requirement): the initial install is a single file. On Windows the exe is the sole binary. The user puts it in an `aap-runner` folder and runs it; install, setup and run all happen from there, and every other folder and file is created as needed. Linux follows the same model and is expected to be easier. The current installer copies the exe to `%ProgramFiles%\aap-runner` and stages PowerShell scripts; the owner's target is one self-contained file.
 - The tray looks identical on Windows and Linux: same layout, symbols, colours and behaviour; only OS integration (tray icon, autostart, elevation) may differ.

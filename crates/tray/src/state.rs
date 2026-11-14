@@ -542,6 +542,9 @@ pub struct ProfileV5 {
     /// `online`, `busy` or `stopped`, present exactly with `backend: windows-host`.
     #[serde(default)]
     pub host_runner: Option<String>,
+    /// `true` when the supervisor starts and stops the interim runner; absent on older ones.
+    #[serde(default)]
+    pub host_control: Option<bool>,
 }
 
 /// The Windows row's name for `backend: windows-host` (status-settings.md, Windows host).
@@ -551,6 +554,11 @@ pub const HOST_RUNNER_WARNING: &str =
     "Unisolated: jobs run directly on this PC (owner accepted 2026-10-20).";
 
 impl ProfileV5 {
+    /// The interim runner on this PC, and a supervisor that starts and stops it.
+    pub fn host_controlled(&self) -> bool {
+        self.backend == "windows-host" && self.host_control == Some(true)
+    }
+
     /// The interim runner's state: `online`, `busy`, or `stopped` and the missing piece.
     pub fn host_state(&self) -> String {
         match self.host_runner.as_deref() {
@@ -1384,6 +1392,58 @@ mod tests {
             v.windows_host().unwrap().host_state(),
             "stopped: runner listener not running"
         );
+    }
+
+    #[test]
+    fn host_control_parses_and_gates_host_controlled() {
+        let now = at("2026-10-19T18:01:00Z");
+        let good = fixture("status-v5/valid/windows-host-busy.json");
+        let h = parse_status_v5(&good, now).unwrap();
+        let h = h.windows_host().unwrap();
+        assert_eq!(h.host_control, None, "an older supervisor writes none");
+        assert!(!h.host_controlled());
+        for (value, controlled) in [("true", true), ("false", false)] {
+            let json = good.replace(
+                "\"host_runner\": \"busy\"",
+                &format!("\"host_runner\": \"busy\", \"host_control\": {value}"),
+            );
+            let v = parse_status_v5(&json, now).unwrap();
+            let h = v.windows_host().unwrap();
+            assert_eq!(h.host_control, Some(value == "true"));
+            assert_eq!(h.host_controlled(), controlled);
+        }
+        let mut vm = h.clone();
+        vm.host_control = Some(true);
+        vm.backend = "hyperv-vm".into();
+        assert!(!vm.host_controlled(), "only the windows-host backend");
+    }
+
+    /// The files the supervisor's own tests write (revision 7), read by the tray as they are.
+    #[test]
+    fn the_supervisors_host_control_fixtures_read_as_controlled() {
+        let now = at("2026-10-19T18:01:00Z");
+        for (name, runner, available, reason) in [
+            ("online", "online", true, ""),
+            ("busy", "busy", true, ""),
+            (
+                "stopped-turned-off",
+                "stopped",
+                false,
+                "turned off: Windows count 0",
+            ),
+        ] {
+            let json = fixture(&format!(
+                "status-v5/valid/windows-host-controlled-{name}.json"
+            ));
+            let v = parse_status_v5(&json, now).unwrap_or_else(|| panic!("{name} did not parse"));
+            let h = v
+                .windows_host()
+                .unwrap_or_else(|| panic!("{name}: no host profile"));
+            assert!(h.host_controlled(), "{name}");
+            assert_eq!(h.host_runner.as_deref(), Some(runner), "{name}");
+            assert_eq!(h.available, available, "{name}");
+            assert_eq!(h.unavailable_reason, reason, "{name}");
+        }
     }
 
     #[test]

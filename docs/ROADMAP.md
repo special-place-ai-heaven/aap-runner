@@ -46,6 +46,10 @@ job and registers with a just-in-time config from the broker instead of a standi
 The tray shows the mode and one warning line: it runs unisolated on this PC (owner accepted
 2026-10-20). Retired when R3 is certified.
 
+Start and stop landed in R2.2 (2026-11-13): the supervisor starts the logon task when the runner is
+wanted and turns it off through `host-runner.json`, never during a job ([contract](../parity/contracts/status-settings.md#windows-host-control-revision-7)).
+Just-in-time registration remains.
+
 Proof that the runner takes jobs at all: `.github/workflows/windows-interim-smoke.yml`
 (manual dispatch only).
 

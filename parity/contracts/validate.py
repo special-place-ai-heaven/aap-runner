@@ -748,6 +748,8 @@ def sem_status_v5(doc):
             raise Invalid(f"profile {p['profile']}: host_runner is reported exactly when the backend is windows-host")
         if "host_runner" in p and p["available"] != (p["host_runner"] != "stopped"):
             raise Invalid(f"profile {p['profile']}: a windows-host profile is available exactly when its runner is not stopped")
+        if "host_control" in p and p["backend"] != "windows-host":
+            raise Invalid(f"profile {p['profile']}: host_control is reported only on a windows-host profile")
     slots = [s["slot"] for s in doc["slots"]]
     if len(slots) != len(set(slots)):
         raise Invalid("duplicate slot number")
